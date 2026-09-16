@@ -396,12 +396,7 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     writer.completed(1);
     wait(&writer, |status| status.durable_tick == 1);
     let source = writer.directory().to_owned();
-    drop(writer);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while read_lease(&source).is_none() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    drop_and_wait(writer);
     std::fs::write(source.join("watchdog.json"), b"[\"original stall\"]").unwrap();
     let recovered = inspect(&source).unwrap().replay;
     let replacement =
@@ -427,11 +422,7 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
         b"[\"original stall\"]"
     );
     let next = replacement.directory().to_owned();
-    drop(replacement);
-    while read_lease(&next).is_none() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    drop_and_wait(replacement);
     assert_eq!(latest_interrupted(&root).unwrap().directory, next);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -566,12 +557,7 @@ fn recovered_source_can_be_claimed_once_even_by_cached_callers() {
     writer.completed(1);
     wait(&writer, |status| status.durable_tick == 1);
     let source = writer.directory().to_owned();
-    drop(writer);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while inactive(&source).is_none() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    drop_and_wait(writer);
     let replay = inspect(&source).unwrap().replay;
     let a = RecoveryWriter::start_recovered(root.clone(), replay.clone(), 1, Some(source.clone()))
         .unwrap();
@@ -581,7 +567,7 @@ fn recovered_source_can_be_claimed_once_even_by_cached_callers() {
         wait(writer, |status| status.ready || status.error.is_some());
     }
     assert_ne!(a.status().ready, b.status().ready);
-    let (winner, loser) = if a.status().ready { (&a, &b) } else { (&b, &a) };
+    let (winner, loser) = if a.status().ready { (a, b) } else { (b, a) };
     assert!(!loser.directory().exists());
     let marker = std::fs::read(source.join("superseded.json")).unwrap();
     let marker_json: serde_json::Value = serde_json::from_slice(&marker).unwrap();
@@ -603,12 +589,8 @@ fn recovered_source_can_be_claimed_once_even_by_cached_callers() {
         std::fs::read(source.join("superseded.json")).unwrap(),
         marker
     );
-    let winner_path = winner.directory().to_owned();
-    drop((a, b, late));
-    while inactive(&winner_path).is_none() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    drop((loser, late));
+    drop_and_wait(winner);
     std::fs::remove_dir_all(root).unwrap();
 }
 

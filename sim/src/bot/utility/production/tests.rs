@@ -55,6 +55,47 @@ fn add_building(obs: &mut Observation, id: u32, kind: BuildingKind, queue: Vec<U
 }
 
 #[test]
+fn spare_core_snapshot_matches_recounting_each_candidate() {
+    let mut obs = observation();
+    obs.my_units = UnitKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(id, &kind)| unit(id as u32, kind))
+        .collect();
+    obs.my_queues = vec![vec![
+        UnitKind::Sentinel,
+        UnitKind::Warden,
+        UnitKind::Buzzard,
+    ]];
+    let intents = [Intent::TrainAt {
+        building: BuildingId(1),
+        kind: UnitKind::Breaker,
+    }];
+    for health in [1, 2, 4] {
+        for unit in &mut obs.my_units {
+            unit.hp = unit.kind.stats().max_hp / health;
+        }
+        for excluded in [vec![], vec![UnitId(0), UnitId(3), UnitId(3), UnitId(8)]] {
+            for floor in 0..20 {
+                let core = combat_core_status(&obs, &excluded, &intents, floor);
+                for unit in obs
+                    .my_units
+                    .iter()
+                    .filter(|unit| !excluded.contains(&unit.id))
+                {
+                    let mut without = excluded.clone();
+                    without.push(unit.id);
+                    assert_eq!(
+                        core.can_spare(unit),
+                        combat_core_status(&obs, &without, &intents, floor).ready
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn core_status_counts_only_unreserved_line_hulls_and_exact_pipeline_work() {
     let mut obs = observation();
     let mut wounded = unit(10, UnitKind::Sentinel);

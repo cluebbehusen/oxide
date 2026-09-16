@@ -5,6 +5,7 @@ use crate::bot::allocation::{
     ClaimBundle, Confidence, ExecutionSafety, ProducerJobClaim, ProposalCase, StrategicValue,
     TimeToImpact, Urgency,
 };
+use crate::bot::query_work::QueryPurpose;
 use chassis::{Tick, fx::Fx};
 use std::collections::BTreeMap;
 
@@ -363,7 +364,7 @@ fn newborn_at_factory(
             .filter(|building| building.id != producer && building.kind == BuildingKind::Airworks)
             .all(|building| {
                 unit.tile
-                    .chebyshev(crate::bot::standing_force::air_production_spawn_tile(
+                    .chebyshev(crate::bot::navigation::commands::air_production_spawn_tile(
                         building,
                         Some(context.orientation),
                     ))
@@ -374,7 +375,6 @@ fn newborn_at_factory(
 struct ReconRoutes<'a> {
     ground: RouteProjection<'a>,
     air: RouteProjection<'a>,
-    costs: BTreeMap<(UnitKind, TilePos, TilePos), Option<u32>>,
 }
 
 impl<'a> ReconRoutes<'a> {
@@ -415,14 +415,15 @@ impl<'a> ReconRoutes<'a> {
             }
         }
         Self {
-            costs: BTreeMap::new(),
             ground: RouteProjection::ground_avoiding_with_public_terrain(
+                QueryPurpose::ReconApproach,
                 obs,
                 context.briefing,
                 context.orientation,
                 |tile| danger.contains(tile),
             ),
             air: RouteProjection::avoiding_with_public_terrain(
+                QueryPurpose::ReconApproach,
                 obs,
                 Domain::Air,
                 context.briefing,
@@ -445,16 +446,9 @@ impl<'a> ReconRoutes<'a> {
     }
 
     fn arrival(&mut self, now: Tick, from: TilePos, goal: TilePos, kind: UnitKind) -> Option<Tick> {
-        let key = (kind, from, goal);
-        let cost = if let Some(cost) = self.costs.get(&key) {
-            *cost
-        } else {
-            let cost = self
-                .for_kind(kind)
-                .safe_command_route_cost(from, goal, false);
-            self.costs.insert(key, cost);
-            cost
-        }?;
+        let cost = self
+            .for_kind(kind)
+            .safe_command_route_cost(from, goal, false)?;
         Some(
             now.saturating_add(super::economic_value::travel_ticks(kind, cost))
                 .saturating_add(24),
@@ -1263,6 +1257,14 @@ impl UtilityPolicy {
                     continue;
                 }
             }
+            let mut excluded = context.unavailable.to_vec();
+            excluded.extend_from_slice(&owned);
+            let core = combat_core_status(obs, &excluded, &[], u64::from(minimum_core));
+            let available_workers = obs
+                .my_units
+                .iter()
+                .filter(|unit| unit.kind.stats().harvest.is_some() && !owned.contains(&unit.id))
+                .count();
             let mut live: Vec<_> = obs
                 .my_units
                 .iter()
@@ -1305,22 +1307,12 @@ impl UtilityPolicy {
                 })
                 .filter(|(_, unit)| {
                     if unit.kind.stats().harvest.is_some() {
-                        return obs
-                            .my_units
-                            .iter()
-                            .filter(|other| {
-                                other.kind.stats().harvest.is_some() && !owned.contains(&other.id)
-                            })
-                            .count()
-                            > 2;
+                        return available_workers > 2;
                     }
                     if unit.kind.stats().weapons.is_empty() {
                         return true;
                     }
-                    let mut excluded = context.unavailable.to_vec();
-                    excluded.extend_from_slice(&owned);
-                    excluded.push(unit.id);
-                    combat_core_status(obs, &excluded, &[], u64::from(minimum_core)).ready
+                    core.can_spare(unit)
                 })
                 .collect();
             live.sort_by_key(|(preference, unit)| {
@@ -1371,7 +1363,7 @@ impl UtilityPolicy {
                     {
                         continue;
                     }
-                    let origin = crate::bot::standing_force::air_production_spawn_tile(
+                    let origin = crate::bot::navigation::commands::air_production_spawn_tile(
                         building,
                         Some(context.orientation),
                     );
@@ -1429,7 +1421,7 @@ impl UtilityPolicy {
                         .my_buildings
                         .iter()
                         .find(|building| building.id == lane.producer)?;
-                    let origin = crate::bot::standing_force::air_production_spawn_tile(
+                    let origin = crate::bot::navigation::commands::air_production_spawn_tile(
                         building,
                         Some(context.orientation),
                     );
@@ -1726,6 +1718,7 @@ mod tests {
             },
         ];
         let map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: 40,
             map_height: 30,
             starting_foundries: vec![
@@ -1785,6 +1778,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources,
             profile,

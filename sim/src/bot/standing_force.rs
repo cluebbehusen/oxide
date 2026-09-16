@@ -5,6 +5,7 @@
 //! unit would improve the ordinary force now, without turning an idle factory
 //! into a reason to buy something.
 
+use crate::bot::query_work::QueryPurpose;
 use core::cmp::Reverse;
 use std::collections::BTreeMap;
 
@@ -16,11 +17,16 @@ use super::allocation::{
 };
 use super::executive::{full_ground_strength, ground_strength, weapon_burst_dps100};
 use super::intelligence::{ContactEvidence, StrategicIntelligence};
+#[cfg(test)]
+use super::navigation::commands::RouteProjection;
+#[cfg(test)]
+use super::navigation::commands::air_production_spawn_tile;
+use super::navigation::commands::production_spawn_doorstep;
+use super::navigation::service::ServiceRoutes;
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::profile::{ResolvedProfile, Specialty};
 use super::resources::{ProducerEgress, ResourceSnapshot};
-use super::routing::{RouteProjection, production_spawn_doorstep};
 use crate::ids::{BuildingId, UnitId};
 use crate::stats::{BuildingKind, Domain, Role, UnitKind};
 use chassis::Tick;
@@ -182,6 +188,88 @@ pub(crate) struct StandingForceProposal {
     pub(crate) raid: Option<super::raid::RaidProcurementRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StandingForceCommitment {
+    pub(crate) proposal: StandingForceProposal,
+    pub(crate) job: super::allocation::ScheduledProducerJob,
+}
+
+impl StandingForceCommitment {
+    pub(crate) fn obligation(&self) -> super::allocation::ImportedObligation {
+        use super::allocation::{
+            ClaimBundle, ObligationClass, ObligationKey, ProducerJobClaim, imported_obligation,
+        };
+        let job = self.job;
+        imported_obligation(
+            ObligationClass::PersistentPlan,
+            self.proposal.observed_at(),
+            ObligationKey::StandingForceSaving(self.proposal.key()),
+            ClaimBundle::new(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![ProducerJobClaim::fixed(
+                    job.producer,
+                    job.kind,
+                    job.enqueued_at,
+                    job.starts_at,
+                    job.ready_at,
+                    job.ready_before,
+                )],
+            )
+            .expect("one exact production commitment has no duplicate claims"),
+        )
+    }
+
+    pub(crate) fn covers(
+        &self,
+        reason: StandingForceReason,
+        service: StandingForceServiceKey,
+    ) -> bool {
+        reason == self.proposal.reason
+            && (service == self.proposal.service
+                || matches!(
+                    (reason, self.proposal.service, service),
+                    (StandingForceReason::GroundPressure, StandingForceServiceKey::Point(old), StandingForceServiceKey::Point(new))
+                        if old.chebyshev(new) <= 8
+                ))
+    }
+
+    pub(crate) fn still_useful(
+        &self,
+        obs: &Observation,
+        demands: &[CapabilityDemand],
+        briefing: &PublicMapBriefing,
+        orientation: Orientation,
+    ) -> bool {
+        let mut routes = ServiceRoutes::new(
+            QueryPurpose::ForceReadiness,
+            obs,
+            Some(briefing),
+            Some(orientation),
+        );
+        if obs.tick > self.job.enqueued_at
+            || demands
+                .iter()
+                .any(|demand| demand.case.urgency == Urgency::Pressing)
+            || !demands.iter().any(|demand| {
+                demand.kind == self.proposal.kind
+                    && self.covers(demand.reason, demand.service)
+                    && routes.producer_reaches_any(
+                        self.job.producer,
+                        self.job.kind,
+                        &[demand.service],
+                    )
+            })
+        {
+            return false;
+        }
+        routes.producer_reaches_any(self.job.producer, self.job.kind, &[self.proposal.service])
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StandingForceFunding {
     Immediate,
@@ -249,6 +337,13 @@ impl StandingForceProposal {
         self.ready_before
     }
 
+    pub(crate) fn reservation_deadline(&self) -> Tick {
+        self.accumulation()
+            .map_or(self.ready_before, |(through, _, _)| {
+                through.saturating_add(self.ready_before.saturating_sub(self.observed_at))
+            })
+    }
+
     /// Canonical completed producers that can satisfy the shallow request.
     pub(crate) fn eligible_producers(&self) -> &[BuildingId] {
         &self.eligible_producers
@@ -259,7 +354,7 @@ impl StandingForceProposal {
         self.minimum_residual_scrap
     }
 
-    /// Capital-only bounded wait that competes in shared allocation without
+    /// Bounded future purchase that competes in shared allocation without
     /// making its future provider an enqueue-now command.
     pub(crate) const fn accumulation(&self) -> Option<(Tick, u32, u32)> {
         match self.funding {
@@ -511,10 +606,10 @@ impl ComponentInventory {
         domain: Domain,
         targets: &[StandingGroundTarget],
         roster: &InventoryRoster,
-        routing: &mut ServiceRouting<'_>,
+        routing: &mut StandingServices<'_>,
     ) -> Inventory {
         self.ensure(domain, roster, routing);
-        let component_ids = routing.components_for_targets(domain, targets);
+        let component_ids = routing.navigation.components_for_targets(domain, targets);
         let members = match domain {
             Domain::Ground => self.ground.as_ref(),
             Domain::Air => self.air.as_ref(),
@@ -537,7 +632,7 @@ impl ComponentInventory {
         &mut self,
         domain: Domain,
         roster: &InventoryRoster,
-        routing: &mut ServiceRouting<'_>,
+        routing: &mut StandingServices<'_>,
     ) {
         let already_indexed = match domain {
             Domain::Ground => self.ground.is_some(),
@@ -665,7 +760,7 @@ pub(crate) fn derive_standing_force_with_demand(
     let core_bodies = tuning.minimum_core_equivalents;
     let core_strength = sentinel_strength.saturating_mul(u64::from(core_bodies));
     let mut candidates = Vec::new();
-    let mut routing = ServiceRouting::new(obs, context.public_map, context.orientation);
+    let mut routing = StandingServices::new(obs, context.public_map, context.orientation);
     let mut component_inventory = ComponentInventory::default();
     let home_targets = [context.home];
     let home_inventory =
@@ -808,7 +903,9 @@ pub(crate) fn derive_standing_force_with_demand(
 
     let air_demands = hostile_air_demands(obs.tick, intelligence);
     if !air_demands.is_empty() {
-        let home_air_components = routing.components_for_targets(Domain::Air, &home_targets);
+        let home_air_components = routing
+            .navigation
+            .components_for_targets(Domain::Air, &home_targets);
         for air in demand_components(Domain::Air, air_demands, &mut routing) {
             if !air
                 .route_components
@@ -875,16 +972,19 @@ pub(crate) fn derive_standing_force_with_demand(
             &defense.targets,
             DemandBasis {
                 reason: StandingForceReason::SiegePressure,
-                case: threat_case(
-                    defense.observed.strongest_evidence(),
-                    StrategicValue::Material,
-                ),
+                case: ProposalCase {
+                    urgency: Urgency::Timely,
+                    confidence: contact_confidence(defense.observed.strongest_evidence()),
+                    value: StrategicValue::Material,
+                    time_to_impact: TimeToImpact::Near,
+                    safety: ExecutionSafety::Managed,
+                },
                 unmet,
             },
         ));
     }
 
-    for demand in repair::unmet_work(obs, context, resources, &mut routing) {
+    for demand in repair::unmet_work(obs, context, resources, &mut routing.navigation) {
         let wounded_targets = demand.targets;
         let mut support = candidates_for_kinds(
             obs,
@@ -944,9 +1044,13 @@ pub(crate) fn derive_standing_force_with_demand(
             else {
                 continue;
             };
-            let Some(origin) =
-                production_spawn_doorstep(obs, building, context.public_map, context.orientation)
-            else {
+            let Some(origin) = production_spawn_doorstep(
+                QueryPurpose::ForceReadiness,
+                obs,
+                building,
+                context.public_map,
+                context.orientation,
+            ) else {
                 continue;
             };
             for (kind, ready_at) in lane.queued_readiness() {
@@ -971,7 +1075,8 @@ pub(crate) fn derive_standing_force_with_demand(
                 if total <= owned.saturating_add(already) {
                     continue;
                 }
-                let Some(travel) = routing.repair_travel(origin, request.tile, kind) else {
+                let Some(travel) = routing.navigation.repair_travel(origin, request.tile, kind)
+                else {
                     continue;
                 };
                 if ready_at.saturating_add(travel) >= obs.tick.saturating_add(1_800) {
@@ -1048,9 +1153,13 @@ pub(crate) fn derive_standing_force_with_demand(
         ));
     }
 
-    let home_components = routing.components_for_targets(Domain::Ground, &home_targets);
+    let home_components = routing
+        .navigation
+        .components_for_targets(Domain::Ground, &home_targets);
     for projection in demand_components(Domain::Air, projection_demands, &mut routing) {
-        let ground_components = routing.components_for_targets(Domain::Ground, &projection.targets);
+        let ground_components = routing
+            .navigation
+            .components_for_targets(Domain::Ground, &projection.targets);
         if ground_components
             .iter()
             .any(|component| home_components.binary_search(component).is_ok())
@@ -1134,7 +1243,7 @@ fn force_projection_candidates(
     resources: &ResourceSnapshot,
     profile: &ResolvedProfile,
     inventory: Inventory,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
     targets: &[StandingGroundTarget],
 ) -> impl Iterator<Item = DemandCandidate> {
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel).max(1);
@@ -1325,7 +1434,7 @@ fn line_candidates(
     obs: &Observation,
     resources: &ResourceSnapshot,
     profile: &ResolvedProfile,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
     targets: &[StandingGroundTarget],
     basis: DemandBasis,
     needs_screen_body: bool,
@@ -1365,7 +1474,7 @@ fn air_defense_candidates(
     obs: &Observation,
     resources: &ResourceSnapshot,
     profile: &ResolvedProfile,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
     ground_targets: &[StandingGroundTarget],
     air_targets: &[StandingGroundTarget],
     basis: DemandBasis,
@@ -1430,7 +1539,7 @@ fn siege_candidates(
     obs: &Observation,
     resources: &ResourceSnapshot,
     profile: &ResolvedProfile,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
     targets: &[StandingGroundTarget],
     basis: DemandBasis,
 ) -> Vec<DemandCandidate> {
@@ -1462,7 +1571,7 @@ fn candidates_for_kinds(
     obs: &Observation,
     resources: &ResourceSnapshot,
     profile: &ResolvedProfile,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
     spec: CandidateSpec<'_>,
     specialty: impl Fn(UnitKind) -> Specialty,
     usefulness: impl Fn(UnitKind) -> u128,
@@ -1530,7 +1639,7 @@ fn eligible_producers(
     _obs: &Observation,
     resources: &ResourceSnapshot,
     kind: UnitKind,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
     targets: &[StandingGroundTarget],
 ) -> Option<(Vec<BuildingId>, Tick)> {
     let mut choices = Vec::new();
@@ -1544,7 +1653,10 @@ fn eligible_producers(
         ) {
             continue;
         }
-        if !routing.producer_reaches_any(lane.producer, kind, targets) {
+        if !routing
+            .navigation
+            .producer_reaches_any(lane.producer, kind, targets)
+        {
             continue;
         }
         let Some(ready_before) = timing.no_block_latest_ready_tick.checked_add(1) else {
@@ -1602,379 +1714,117 @@ fn useful_provider_capacity(full: u64, missing: u64, reason: StandingForceReason
     covered.saturating_add(durable_headroom)
 }
 
-/// Adds a capital-only wait beside one need's affordable fallback when
-/// completed income can reach a strictly better completed-producer option
-/// within the two alternatives' exact production horizons. Shared allocation
-/// decides whether the wait or fallback survives alongside other work.
+/// Adds a stronger completed-provider purchase within the strategic preparation
+/// window. A temporarily empty bank cannot erase the opportunity to save.
 fn apply_bounded_provider_accumulation(
     obs: &Observation,
     resources: &ResourceSnapshot,
     candidates: &mut [DemandCandidate],
 ) {
-    let current_scrap = resources.current_scrap().amount();
-    let affordable = |candidate: &DemandCandidate| current_scrap >= candidate.kind.stats().cost;
-    let held_current = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| affordable(candidate))
-        .filter(|(_, candidate)| {
-            !candidates.iter().any(|other| {
-                other.reason == candidate.reason
-                    && other.service == candidate.service
-                    && affordable(other)
-                    && candidate_rank(other) > candidate_rank(candidate)
-            })
-        })
-        .filter(|(_, current_best)| {
-            current_best.reason != StandingForceReason::CoreRecovery
-                && current_best.case.urgency != Urgency::Pressing
-        })
-        .filter(|(_, current_best)| {
-            candidates
-                .iter()
-                .filter(|candidate| {
-                    candidate.reason == current_best.reason
-                        && candidate.service == current_best.service
-                })
-                .filter(|candidate| !affordable(candidate))
-                .filter(|candidate| candidate.provider_value > current_best.provider_value)
-                .filter(|candidate| candidate_rank(candidate) > candidate_rank(current_best))
-                .any(|candidate| {
-                    let fallback_delay = current_best.ready_before.saturating_sub(obs.tick);
-                    let accumulation_deadline =
-                        candidate.ready_before.saturating_add(fallback_delay);
-                    current_scrap.saturating_add(
-                        resources
-                            .forecast()
-                            .income_through(accumulation_deadline)
-                            .amount(),
-                    ) >= candidate.kind.stats().cost
-                })
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-
-    for current_index in held_current {
-        let current_best = &candidates[current_index];
-        let selected = candidates
+    let bank = resources.current_scrap().amount();
+    let mut groups = BTreeMap::<(StandingForceReason, StandingForceServiceKey), Vec<usize>>::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if candidate.reason != StandingForceReason::CoreRecovery
+            && candidate.case.urgency != Urgency::Pressing
+        {
+            groups
+                .entry((candidate.reason, candidate.service))
+                .or_default()
+                .push(index);
+        }
+    }
+    for indices in groups.values() {
+        let fallback = indices
             .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                candidate.reason == current_best.reason && candidate.service == current_best.service
+            .copied()
+            .filter(|index| candidates[*index].kind.stats().cost <= bank)
+            .max_by_key(|index| candidate_rank(&candidates[*index]))
+            .or_else(|| {
+                indices
+                    .iter()
+                    .copied()
+                    .min_by_key(|index| (candidates[*index].kind.stats().cost, *index))
             })
-            .filter(|(_, candidate)| !affordable(candidate))
-            .filter(|(_, candidate)| candidate.provider_value > current_best.provider_value)
-            .filter(|(_, candidate)| candidate_rank(candidate) > candidate_rank(current_best))
-            .filter_map(|(index, candidate)| {
-                let fallback_delay = current_best.ready_before.saturating_sub(obs.tick);
-                let through = candidate.ready_before.saturating_add(fallback_delay);
-                (current_scrap
-                    .saturating_add(resources.forecast().income_through(through).amount())
-                    >= candidate.kind.stats().cost)
+            .unwrap();
+        let base = &candidates[fallback];
+        let selected = indices
+            .iter()
+            .copied()
+            .filter(|index| candidates[*index].kind.stats().cost > bank)
+            .filter(|index| {
+                candidates[*index].provider_value > base.provider_value
+                    && candidate_rank(&candidates[*index]) > candidate_rank(base)
+            })
+            .filter_map(|index| {
+                let candidate = &candidates[index];
+                let production = candidate.ready_before.saturating_sub(obs.tick);
+                let through = obs
+                    .tick
+                    .saturating_add(super::strategy::connected_preparation_horizon())
+                    .saturating_sub(production);
+                (through >= obs.tick
+                    && bank.saturating_add(resources.forecast().income_through(through).amount())
+                        >= candidate.kind.stats().cost)
                     .then_some((index, through))
             })
-            .min_by(|(left, left_through), (right, right_through)| {
-                candidates[*left]
-                    .kind
-                    .stats()
-                    .cost
-                    .cmp(&candidates[*right].kind.stats().cost)
-                    .then_with(|| left_through.cmp(right_through))
-                    .then_with(|| left.cmp(right))
+            .max_by_key(|(index, through)| {
+                (
+                    candidate_rank(&candidates[*index]),
+                    Reverse(*through),
+                    Reverse(*index),
+                )
             });
         if let Some((index, through)) = selected {
             let cost = candidates[index].kind.stats().cost;
-            let current_scrap = current_scrap.min(cost);
             candidates[index].funding = StandingForceFunding::Accumulate {
                 through,
-                current_scrap,
-                forecast_scrap: cost.saturating_sub(current_scrap),
+                current_scrap: bank.min(cost),
+                forecast_scrap: cost.saturating_sub(bank),
             };
         }
     }
 }
 
-#[derive(Debug, Default)]
-struct RouteComponentIndex {
-    representatives: Vec<TilePos>,
-    tiles: BTreeMap<TilePos, Option<usize>>,
-}
-
-impl RouteComponentIndex {
-    fn component(&mut self, routes: &mut RouteProjection<'_>, tile: TilePos) -> Option<usize> {
-        if let Some(component) = self.tiles.get(&tile) {
-            return *component;
-        }
-        if !routes.reaches(tile, tile) {
-            self.tiles.insert(tile, None);
-            return None;
-        }
-        for (component, representative) in self.representatives.iter().copied().enumerate() {
-            if routes.reaches(tile, representative) {
-                self.tiles.insert(tile, Some(component));
-                return Some(component);
-            }
-        }
-        let component = self.representatives.len();
-        self.representatives.push(tile);
-        self.tiles.insert(tile, Some(component));
-        Some(component)
-    }
-}
-
-pub(crate) struct ServiceRouting<'a> {
-    obs: &'a Observation,
-    public_map: Option<&'a PublicMapBriefing>,
-    orientation: Option<Orientation>,
-    ground_routes: RouteProjection<'a>,
-    air_routes: Option<RouteProjection<'a>>,
-    ground_components: RouteComponentIndex,
-    air_components: RouteComponentIndex,
-    ground_target_components: BTreeMap<StandingGroundTarget, Vec<usize>>,
-    air_target_components: BTreeMap<StandingGroundTarget, Vec<usize>>,
-    ground_producer_components: BTreeMap<BuildingId, Option<usize>>,
-    air_producer_components: BTreeMap<BuildingId, Option<usize>>,
+struct StandingServices<'a> {
+    navigation: ServiceRoutes<'a>,
     capability_demands: Vec<CapabilityDemand>,
-    travel: BTreeMap<(UnitKind, TilePos, TilePos), Option<Tick>>,
 }
-
-impl<'a> ServiceRouting<'a> {
-    pub(crate) fn new(
+impl<'a> StandingServices<'a> {
+    fn new(
         obs: &'a Observation,
         public_map: Option<&'a PublicMapBriefing>,
         orientation: Option<Orientation>,
     ) -> Self {
         Self {
-            obs,
-            public_map,
-            orientation,
-            ground_routes: service_route_projection(obs, Domain::Ground, public_map, orientation),
-            air_routes: None,
-            ground_components: RouteComponentIndex::default(),
-            air_components: RouteComponentIndex::default(),
-            ground_target_components: BTreeMap::new(),
-            air_target_components: BTreeMap::new(),
-            ground_producer_components: BTreeMap::new(),
-            air_producer_components: BTreeMap::new(),
+            navigation: ServiceRoutes::new(
+                QueryPurpose::ForceReadiness,
+                obs,
+                public_map,
+                orientation,
+            ),
             capability_demands: Vec::new(),
-            travel: BTreeMap::new(),
         }
     }
-
-    pub(crate) fn origin_serves(
-        &mut self,
-        origin: TilePos,
-        kind: UnitKind,
-        service: StandingGroundTarget,
-    ) -> bool {
-        let Some(component) = self.component(kind.stats().domain, origin) else {
-            return false;
-        };
-        self.components_for_target(kind.stats().domain, service)
-            .binary_search(&component)
-            .is_ok()
-    }
-
-    fn repair_travel(&mut self, from: TilePos, goal: TilePos, kind: UnitKind) -> Option<Tick> {
-        let key = (kind, from, goal);
-        if let Some(travel) = self.travel.get(&key) {
-            return *travel;
-        }
-        let travel = self
-            .origin_serves(from, kind, StandingGroundTarget::point(goal))
-            .then(|| {
-                let cost = self
-                    .ground_routes
-                    .safe_command_route_cost(from, goal, false)?;
-                let speed = u128::try_from(kind.stats().speed.to_bits())
-                    .ok()
-                    .filter(|speed| *speed > 0)?;
-                u64::try_from((u128::from(cost) << 32).div_ceil(speed.checked_mul(10)?)).ok()
-            })
-            .flatten();
-        self.travel.insert(key, travel);
-        travel
-    }
-
     fn inventory_origin_components(&mut self, member: InventoryMember) -> Vec<usize> {
         match member.origin {
-            InventoryOrigin::AirUnit(origin) => self.origin_components(Domain::Air, origin),
+            InventoryOrigin::AirUnit(origin) => {
+                self.navigation.origin_components(Domain::Air, origin)
+            }
             InventoryOrigin::AirProducer(producer) => self
+                .navigation
                 .producer_component(producer, member.kind)
                 .into_iter()
                 .collect(),
-            InventoryOrigin::GroundUnit(origin) => self.origin_components(Domain::Ground, origin),
+            InventoryOrigin::GroundUnit(origin) => {
+                self.navigation.origin_components(Domain::Ground, origin)
+            }
             InventoryOrigin::GroundProducer(producer) => self
+                .navigation
                 .producer_component(producer, member.kind)
                 .into_iter()
                 .collect(),
         }
     }
-
-    pub(crate) fn producer_reaches_any(
-        &mut self,
-        producer: BuildingId,
-        kind: UnitKind,
-        targets: &[StandingGroundTarget],
-    ) -> bool {
-        let Some(producer_component) = self.producer_component(producer, kind) else {
-            return false;
-        };
-        self.components_for_targets(kind.stats().domain, targets)
-            .binary_search(&producer_component)
-            .is_ok()
-    }
-
-    fn producer_component(&mut self, producer: BuildingId, kind: UnitKind) -> Option<usize> {
-        let domain = kind.stats().domain;
-        let cached = match domain {
-            Domain::Ground => self.ground_producer_components.get(&producer),
-            Domain::Air => self.air_producer_components.get(&producer),
-        };
-        if let Some(component) = cached {
-            return *component;
-        }
-        let building = self
-            .obs
-            .my_buildings
-            .iter()
-            .find(|building| building.id == producer && building.built && building.hp > 0)?;
-        let origin = match domain {
-            Domain::Ground => {
-                production_spawn_doorstep(self.obs, building, self.public_map, self.orientation)?
-            }
-            Domain::Air => air_production_spawn_tile(building, self.orientation),
-        };
-        let component = self.component(domain, origin);
-        match domain {
-            Domain::Ground => {
-                self.ground_producer_components.insert(producer, component);
-            }
-            Domain::Air => {
-                self.air_producer_components.insert(producer, component);
-            }
-        }
-        component
-    }
-
-    fn components_for_targets(
-        &mut self,
-        domain: Domain,
-        targets: &[StandingGroundTarget],
-    ) -> Vec<usize> {
-        let mut components = Vec::new();
-        for target in targets {
-            components.extend(self.components_for_target(domain, *target));
-        }
-        components.sort_unstable();
-        components.dedup();
-        components
-    }
-
-    fn components_for_target(
-        &mut self,
-        domain: Domain,
-        target: StandingGroundTarget,
-    ) -> Vec<usize> {
-        let cached = match domain {
-            Domain::Ground => self.ground_target_components.get(&target),
-            Domain::Air => self.air_target_components.get(&target),
-        };
-        if let Some(components) = cached {
-            return components.clone();
-        }
-        let goals = match (domain, target) {
-            (_, StandingGroundTarget::Point(tile)) => vec![tile],
-            (Domain::Ground, StandingGroundTarget::Footprint { anchor, size }) => {
-                crate::tick::rect_adjacent_tiles(anchor, size).collect()
-            }
-            (Domain::Air, StandingGroundTarget::Footprint { anchor, size }) => (0..size.1)
-                .flat_map(|dy| (0..size.0).map(move |dx| anchor.offset(dx, dy)))
-                .collect(),
-        };
-        let mut components = goals
-            .into_iter()
-            .filter_map(|goal| self.component(domain, goal))
-            .collect::<Vec<_>>();
-        components.sort_unstable();
-        components.dedup();
-        match domain {
-            Domain::Ground => {
-                self.ground_target_components
-                    .insert(target, components.clone());
-            }
-            Domain::Air => {
-                self.air_target_components
-                    .insert(target, components.clone());
-            }
-        }
-        components
-    }
-
-    fn origin_components(&mut self, domain: Domain, origin: TilePos) -> Vec<usize> {
-        if let Some(component) = self.component(domain, origin) {
-            return vec![component];
-        }
-        let mut components = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-            .into_iter()
-            .filter_map(|(dx, dy)| self.component(domain, origin.offset(dx, dy)))
-            .collect::<Vec<_>>();
-        components.sort_unstable();
-        components.dedup();
-        components
-    }
-
-    fn component(&mut self, domain: Domain, tile: TilePos) -> Option<usize> {
-        match domain {
-            Domain::Ground => self
-                .ground_components
-                .component(&mut self.ground_routes, tile),
-            Domain::Air => {
-                if self.air_routes.is_none() {
-                    self.air_routes = Some(service_route_projection(
-                        self.obs,
-                        Domain::Air,
-                        self.public_map,
-                        self.orientation,
-                    ));
-                }
-                self.air_components.component(
-                    self.air_routes
-                        .as_mut()
-                        .expect("air projection was initialized"),
-                    tile,
-                )
-            }
-        }
-    }
-}
-
-fn service_route_projection<'a>(
-    obs: &'a Observation,
-    domain: Domain,
-    public_map: Option<&'a PublicMapBriefing>,
-    orientation: Option<Orientation>,
-) -> RouteProjection<'a> {
-    match (public_map, orientation) {
-        (Some(briefing), Some(orientation)) => {
-            RouteProjection::with_public_terrain_and_orientation(obs, domain, briefing, orientation)
-        }
-        (Some(briefing), None) => RouteProjection::with_public_terrain(obs, domain, briefing),
-        (None, Some(orientation)) => RouteProjection::with_orientation(obs, domain, orientation),
-        (None, None) => RouteProjection::new(obs, domain),
-    }
-}
-
-pub(crate) fn air_production_spawn_tile(
-    producer: &super::observation::BuildingObs,
-    orientation: Option<Orientation>,
-) -> TilePos {
-    let size = producer.kind.tier_stats(producer.tier).size;
-    let world_anchor = orientation.map_or(producer.anchor, |orientation| {
-        orientation.anchor(producer.anchor, size)
-    });
-    let world_spawn = world_anchor.offset(size.0 / 2, size.1 / 2);
-    orientation.map_or(world_spawn, |orientation| orientation.tile(world_spawn))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2057,12 +1907,14 @@ impl DemandComponent {
 fn demand_components(
     domain: Domain,
     mut demands: Vec<LocatedDemand>,
-    routing: &mut ServiceRouting<'_>,
+    routing: &mut StandingServices<'_>,
 ) -> Vec<DemandComponent> {
     demands.sort_unstable_by_key(|demand| demand.target);
     let mut components = Vec::<DemandComponent>::new();
     for demand in demands {
-        let route_components = routing.components_for_target(domain, demand.target);
+        let route_components = routing
+            .navigation
+            .components_for_target(domain, demand.target);
         if route_components.is_empty() {
             continue;
         }
@@ -2319,6 +2171,74 @@ mod tests {
     use crate::scenario::{BotDifficulty, BotStance};
     use chassis::grid::TilePos;
 
+    #[test]
+    fn saved_ground_reinforcement_tracks_local_motion_without_changing_its_schedule() {
+        use super::super::allocation::{ClaimOwner, ScheduledProducerJob};
+        let mut obs = observation(100);
+        add_producer(&mut obs, 0, BuildingKind::Fabricator, vec![]);
+        let site = TilePos::new(15, 10);
+        let mut proposal = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: obs.tick,
+            ready_before: 2000,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::GroundPressure,
+            specialty: Specialty::Fortification,
+            personality_emphasis: 50,
+            case: ProposalCase {
+                urgency: Urgency::Timely,
+                confidence: Confidence::Current,
+                value: StrategicValue::Material,
+                time_to_impact: TimeToImpact::Near,
+                safety: ExecutionSafety::Managed,
+            },
+            eligible_producers: vec![BuildingId(0)],
+        });
+        proposal.service = StandingForceServiceKey::Point(site);
+        let job = ScheduledProducerJob {
+            owner: ClaimOwner::Proposal(super::super::allocation::ProposalKey::StandingForce(
+                proposal.key(),
+            )),
+            producer: BuildingId(0),
+            kind: proposal.kind,
+            request_ordinal: 0,
+            enqueued_at: 600,
+            starts_at: 600,
+            ready_at: 1100,
+            ready_before: 2000,
+            current_scrap: 100,
+            forecast_scrap: 200,
+        };
+        let saving = StandingForceCommitment { proposal, job };
+        let mut demand = CapabilityDemand {
+            kind: UnitKind::Warden,
+            service: StandingForceServiceKey::Point(site.offset(2, 0)),
+            reason: StandingForceReason::GroundPressure,
+            case: saving.proposal.case,
+            unmet: 3,
+            baseline: UnitKind::Sentinel,
+            provider_value: 100,
+        };
+        let briefing = public_map(&obs, vec![]);
+        let orientation = Orientation::for_home(&obs, TilePos::new(2, 2));
+        assert!(saving.still_useful(&obs, &[demand.clone()], &briefing, orientation));
+        assert_eq!(saving.job, job);
+        let divided = public_map(
+            &obs,
+            (0..obs.map_height)
+                .map(|y| (TilePos::new(16, y), Terrain::Rock))
+                .collect(),
+        );
+        assert!(
+            !saving.still_useful(&obs, &[demand.clone()], &divided, orientation),
+            "nearby demand across a sealed front cannot inherit the saved producer"
+        );
+        demand.service = StandingForceServiceKey::Point(site.offset(9, 0));
+        assert!(!saving.still_useful(&obs, &[demand.clone()], &briefing, orientation));
+        demand.service = StandingForceServiceKey::Point(site);
+        demand.reason = StandingForceReason::SiegePressure;
+        assert!(!saving.still_useful(&obs, &[demand], &briefing, orientation));
+    }
+
     fn observation(scrap: u32) -> Observation {
         Observation {
             tick: 120,
@@ -2336,6 +2256,7 @@ mod tests {
         non_ground_terrain: Vec<(TilePos, Terrain)>,
     ) -> PublicMapBriefing {
         PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: Vec::new(),
@@ -2802,6 +2723,27 @@ mod tests {
             .expect("the allocator must retain the affordable fallback as an alternative");
         assert_eq!(fallback.accumulation(), None);
 
+        let mut empty_bank = obs.clone();
+        empty_bank.scrap = 0;
+        let waiting = derive_all(
+            &empty_bank,
+            &StrategicIntelligence::new(),
+            &profile,
+            tuning,
+            context,
+        );
+        let wait = waiting
+            .iter()
+            .find(|proposal| proposal.key_kind() == UnitKind::Warden)
+            .expect(
+                "steady income can fund an advanced provider even before a fallback is affordable",
+            );
+        assert!(wait.accumulation().is_some());
+        assert!(
+            wait.reservation_deadline()
+                <= obs.tick + super::super::strategy::connected_preparation_horizon()
+        );
+
         obs.tick += 1;
         obs.scrap = UnitKind::Warden.stats().cost;
         let proposal = derive(
@@ -2823,7 +2765,6 @@ mod tests {
         let mut obs = observation(UnitKind::Sentinel.stats().cost);
         add_producer(&mut obs, 1, BuildingKind::Foundry, Vec::new());
         add_producer(&mut obs, 2, BuildingKind::Fabricator, Vec::new());
-        add_reclaimers(&mut obs, 10, 1);
         fill_core(&mut obs, 8);
         let profile = profile(20, 10, 20, 100);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
@@ -3519,10 +3460,11 @@ mod tests {
         let target = TilePos::new(22, 10);
         let producer = &obs.my_buildings[0];
 
-        let spawn = production_spawn_doorstep(&obs, producer, None, None)
-            .expect("the canonical outward doorstep remains open");
+        let spawn =
+            production_spawn_doorstep(QueryPurpose::NavigationTest, &obs, producer, None, None)
+                .expect("the canonical outward doorstep remains open");
         assert_eq!(spawn, TilePos::new(13, 10));
-        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
         assert!(
             !routes.reaches(spawn, target),
             "the authoritative spawn is isolated beside the Fabricator"

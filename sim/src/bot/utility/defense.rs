@@ -1,21 +1,32 @@
 //! Fog-honest valuation and approach-lane scoring for static defenses.
 
+use crate::bot::query_work::QueryPurpose;
+mod barricade;
+mod coverage;
+mod fronts;
+pub(super) mod progressive;
 mod pruning;
+mod resource_assets;
 mod routes;
 mod routing_cache;
+mod upgrades;
 
+pub(super) use resource_assets::ResourceAssets;
+use resource_assets::scrap_assets;
 pub(super) use routing_cache::DefenseRoutingCache;
 
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
+use crate::bot::navigation::paths::{EndpointRoutes, path_cost};
 use crate::bot::{Orientation, PublicMapBriefing, StartingFoundry};
 use crate::map::Terrain;
-use crate::stats::{
-    CHARGE_TRIGGER_RADIUS, PATH_EXPANSION_CAP, SAPPER_CONTACT_RANGE, SCRAP_NODE_AMOUNT, WeaponStats,
-};
+#[cfg(test)]
+use crate::stats::PATH_EXPANSION_CAP;
+use crate::stats::{CHARGE_TRIGGER_RADIUS, SAPPER_CONTACT_RANGE, SCRAP_NODE_AMOUNT, WeaponStats};
 use chassis::fx::{Fx, Vec2Fx};
-use chassis::grid::{CARDINALS, DIAGONALS};
-use routes::{CandidateRoutes, Scratch};
+use routes::CandidateRoutes;
+#[cfg(test)]
+use routes::Scratch;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -40,6 +51,7 @@ enum DefenseEvidenceScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DefenseSiteSearch {
     Best,
+    Progressive,
     #[cfg(test)]
     Any,
     #[cfg(test)]
@@ -164,6 +176,8 @@ struct FutureGroundProducerEgress {
 pub(super) struct DefenseGrounding<'a> {
     public_starts: Vec<StartingFoundry>,
     ground: GroundKnowledge<'a>,
+    build_routes: routing::BuildRouteProjection<'a>,
+    placement: super::terrain::PlacementGeometry<'a>,
     assets: Vec<DefendedAsset>,
     future_ground_producers: Vec<FutureGroundProducerEgress>,
 }
@@ -171,6 +185,7 @@ pub(super) struct DefenseGrounding<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BuilderSafetyKey {
     builder: UnitId,
+    origin: TilePos,
     anchor: TilePos,
     size: (i32, i32),
     defer: bool,
@@ -179,13 +194,14 @@ struct BuilderSafetyKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct BuilderTravelKey {
     builder: UnitId,
+    origin: TilePos,
     placement: PlacementFootprint,
 }
 
 #[derive(Clone, Copy)]
 struct BuilderSafetyContext<'a> {
     obs: &'a Observation,
-    briefing: &'a PublicMapBriefing,
+    routes: &'a routing::BuildRouteProjection<'a>,
     danger: &'a super::danger::HarvestDangerProjection,
     orientation: Option<Orientation>,
 }
@@ -212,12 +228,6 @@ struct ReinforcementRouteKey {
     anchor: TilePos,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BaselineEndpointRoute {
-    path: Option<Vec<TilePos>>,
-    exhausted: bool,
-}
-
 #[derive(Default)]
 struct DefenseEvaluationCache {
     builder_safety: BTreeMap<BuilderSafetyKey, bool>,
@@ -226,8 +236,8 @@ struct DefenseEvaluationCache {
     resource_access: BTreeMap<ResourceAccessKey, bool>,
     reinforcement_travel: BTreeMap<ReinforcementRouteKey, Option<u32>>,
     supported_assets: BTreeMap<PlacementFootprint, BTreeSet<usize>>,
-    rerouted_approaches: BTreeMap<(DefenseDomain, PlacementFootprint), Option<Vec<Approach>>>,
-    baseline_endpoint_routes: BTreeMap<(DefenseDomain, TilePos, TilePos), BaselineEndpointRoute>,
+    barricade_approaches: BTreeMap<PlacementFootprint, Option<Vec<barricade::ApproachCost>>>,
+    baseline_endpoint_routes: EndpointRoutes,
     #[cfg(test)]
     stats: DefenseThinkCacheStats,
 }
@@ -282,27 +292,30 @@ pub(super) struct DefenseThinkCacheStats {
     pub(super) reinforcement_route_hits: usize,
     pub(super) supported_assets_builds: usize,
     pub(super) supported_assets_hits: usize,
-    pub(super) rerouted_approach_builds: usize,
-    pub(super) rerouted_approach_hits: usize,
+    pub(super) coverage_batches: usize,
+    pub(super) coverage_scores: usize,
 }
 
 impl<'a> DefenseGrounding<'a> {
     pub(super) fn new(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
     ) -> Self {
-        Self::new_inner(policy, obs, briefing, None)
+        Self::new_inner(query_purpose, policy, obs, briefing, None)
     }
 
     fn new_inner(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         future_egress_orientation: Option<Orientation>,
     ) -> Self {
         let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts).retained(policy, false);
+        let ground = GroundKnowledge::new(query_purpose, obs, briefing, &public_starts)
+            .retained(policy, false);
         let assets = defended_assets(policy, obs, &ground);
         let future_ground_producers =
             future_egress_orientation.map_or_else(Vec::new, |orientation| {
@@ -320,6 +333,8 @@ impl<'a> DefenseGrounding<'a> {
         Self {
             public_starts,
             ground,
+            build_routes: routing::BuildRouteProjection::new(query_purpose, obs, Some(briefing)),
+            placement: super::terrain::PlacementGeometry::new(obs),
             assets,
             future_ground_producers,
         }
@@ -343,33 +358,22 @@ impl<'a> DefenseGrounding<'a> {
             (0..placement.size.0)
                 .any(|dx| !self.ground.obs.visible(placement.anchor.offset(dx, dy)))
         });
-        match orientation {
-            Some(orientation) => {
-                routing::build_command_path_cost_with_public_terrain_and_orientation(
-                    self.ground.obs,
-                    self.ground.briefing,
-                    builder,
-                    placement.anchor,
-                    placement.size,
-                    defer,
-                    orientation,
-                )
-            }
-            None => routing::build_command_path_cost_with_public_terrain(
-                self.ground.obs,
-                self.ground.briefing,
-                builder,
-                placement.anchor,
-                placement.size,
+        self.build_routes.cost(
+            builder,
+            routing::BuildCommandTarget {
+                anchor: placement.anchor,
+                size: placement.size,
                 defer,
-            ),
-        }
+            },
+            orientation,
+        )
     }
 }
 
 impl<'a> DefenseThinkContext<'a> {
     #[cfg(test)]
     pub(super) fn new(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -377,6 +381,7 @@ impl<'a> DefenseThinkContext<'a> {
         building_contacts: &'a [BuildingContact],
     ) -> Self {
         Self::new_inner(
+            query_purpose,
             policy,
             obs,
             briefing,
@@ -387,6 +392,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     pub(super) fn new_oriented(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -395,6 +401,7 @@ impl<'a> DefenseThinkContext<'a> {
         orientation: Orientation,
     ) -> Self {
         Self::new_inner(
+            query_purpose,
             policy,
             obs,
             briefing,
@@ -405,6 +412,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     fn new_inner(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -418,6 +426,7 @@ impl<'a> DefenseThinkContext<'a> {
             unit_contacts,
             building_contacts,
             grounding: DefenseGrounding::new_inner(
+                query_purpose,
                 policy,
                 obs,
                 briefing,
@@ -511,7 +520,7 @@ impl<'a> DefenseThinkContext<'a> {
             policy,
             BuilderSafetyContext {
                 obs: self.obs,
-                briefing: self.briefing,
+                routes: &self.grounding.build_routes,
                 danger: &self.danger,
                 orientation: self.future_egress_orientation,
             },
@@ -538,123 +547,12 @@ impl<'a> DefenseThinkContext<'a> {
         self.building_contacts
     }
 
-    pub(super) fn upgrade_evidence(&mut self, kind: BuildingKind) -> DefenseOpportunityEvidence {
-        let Some(profile) = DefenseProfile::for_kind(kind) else {
-            return DefenseOpportunityEvidence::PublicPrior;
-        };
-        self.ensure_projection(profile.domain);
-        let projection = match profile.domain {
-            DefenseDomain::Ground => self.ground_projection.as_ref().and_then(Option::as_ref),
-            DefenseDomain::Air => self.air_projection.as_ref().and_then(Option::as_ref),
-        };
-        projection.map_or(DefenseOpportunityEvidence::PublicPrior, |projection| {
-            projection.evidence
-        })
-    }
-
-    pub(super) fn upgrade_value(&mut self, building: &BuildingObs, horizon: u64) -> u64 {
-        let Some(upgrade) = building.kind.upgrade_from(building.tier) else {
-            return 0;
-        };
-        if building.kind == BuildingKind::Array {
-            return self.array_upgrade_value(building, horizon, u64::from(upgrade.build_ticks));
-        }
-        let Some(profile) = DefenseProfile::for_kind(building.kind) else {
-            return 0;
-        };
-        self.ensure_projection(profile.domain);
-        let projection = match profile.domain {
-            DefenseDomain::Ground => self.ground_projection.as_ref().and_then(Option::as_ref),
-            DefenseDomain::Air => self.air_projection.as_ref().and_then(Option::as_ref),
-        };
-        let Some(projection) = projection else {
-            return 0;
-        };
-        let mut upgraded = building.clone();
-        upgraded.tier += 1;
-        let dps = |building: &BuildingObs| {
-            building
-                .kind
-                .tier_stats(building.tier)
-                .weapons
-                .iter()
-                .filter(|weapon| weapon_targets_domain(weapon, profile.domain))
-                .map(|weapon| {
-                    u64::from(weapon.damage)
-                        .saturating_mul(u64::from(weapon.salvo))
-                        .saturating_mul(100)
-                        / u64::from(weapon.cooldown_ticks.max(1))
-                })
-                .fold(0, u64::saturating_add)
-        };
-        let old_dps = dps(building);
-        let new_dps = dps(&upgraded);
-        if new_dps == 0 {
-            return 0;
-        }
-        let active_ticks = horizon.saturating_sub(u64::from(upgrade.build_ticks));
-        let mut value = 0u64;
-        for (index, asset) in self.grounding.assets.iter().enumerate() {
-            let mut marginal = 0;
-            for approach in projection
-                .approaches
-                .iter()
-                .filter(|approach| approach.asset == index)
-            {
-                let currently_covered = approach.path.iter().any(|tile| {
-                    building_covers(self.obs, self.briefing, building, *tile, profile.domain)
-                });
-                // The self-refit cannot retreat or be cancelled. Do not remove
-                // a needed firing position while a current attacker is near it.
-                if currently_covered
-                    && projection.evidence == DefenseOpportunityEvidence::CurrentArmed
-                    && approach.path.len() <= DEFENSE_RADIUS as usize
-                {
-                    return 0;
-                }
-                for &tile in &approach.path {
-                    if !building_covers(self.obs, self.briefing, &upgraded, tile, profile.domain) {
-                        continue;
-                    }
-                    let before =
-                        if building_covers(self.obs, self.briefing, building, tile, profile.domain)
-                        {
-                            old_dps
-                        } else {
-                            0
-                        };
-                    let gain = new_dps
-                        .saturating_mul(active_ticks)
-                        .saturating_sub(before.saturating_mul(horizon));
-                    let redundancy = projection
-                        .existing
-                        .iter()
-                        .filter(|other| {
-                            other.id != building.id
-                                && building_covers(
-                                    self.obs,
-                                    self.briefing,
-                                    other,
-                                    tile,
-                                    profile.domain,
-                                )
-                        })
-                        .count() as u64;
-                    let covered_value = u64::from(asset.value)
-                        .saturating_mul(u64::from(UnitKind::Sentinel.stats().cost));
-                    marginal = marginal.max(
-                        covered_value.saturating_mul(gain)
-                            / new_dps
-                                .saturating_mul(horizon)
-                                .saturating_mul(redundancy.saturating_add(1))
-                                .max(1),
-                    );
-                }
-            }
-            value = value.saturating_add(marginal);
-        }
-        value.saturating_mul(u64::from(building.hp))
-            / u64::from(building.kind.tier_stats(building.tier).max_hp.max(1))
+    pub(super) fn upgrade_quote(
+        &self,
+        building: &BuildingObs,
+        horizon: u64,
+    ) -> (u64, DefenseOpportunityEvidence) {
+        upgrades::quote(self, building, horizon)
     }
 
     fn array_upgrade_value(&self, building: &BuildingObs, horizon: u64, offline: u64) -> u64 {
@@ -669,6 +567,16 @@ impl<'a> DefenseThinkContext<'a> {
             dx * dx + dy * dy <= i64::from(radius) * i64::from(radius)
         };
         let radius = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        let terrain = self.briefing.regions();
+        let other_arrays = self
+            .obs
+            .my_buildings
+            .iter()
+            .chain(&self.obs.ally_buildings)
+            .filter(|other| {
+                other.id != building.id && other.built && other.kind == BuildingKind::Array
+            })
+            .collect::<Vec<_>>();
         let mut before = 0u64;
         let mut after = 0u64;
         for y in (building.anchor.y - radius).max(0)
@@ -678,24 +586,12 @@ impl<'a> DefenseThinkContext<'a> {
                 ..=(building.anchor.x + radius).min(self.obs.map_width - 1)
             {
                 let tile = TilePos::new(x, y);
-                if self
-                    .briefing
-                    .terrain_at(tile)
-                    .is_none_or(|terrain| terrain.blocks_ground())
-                {
+                if terrain.region_at(tile).is_none() {
                     continue;
                 }
-                if self
-                    .obs
-                    .my_buildings
+                if other_arrays
                     .iter()
-                    .chain(&self.obs.ally_buildings)
-                    .any(|other| {
-                        other.id != building.id
-                            && other.built
-                            && other.kind == BuildingKind::Array
-                            && covers(other, tile, other.tier)
-                    })
+                    .any(|other| covers(other, tile, other.tier))
                 {
                     continue;
                 }
@@ -745,14 +641,19 @@ impl<'a> DefenseThinkContext<'a> {
             building_doorsteps(&self.grounding.ground, anchor, footprint.size)
         };
         let candidate = (movement_domain == DefenseDomain::Ground).then_some(footprint);
-        let cost = shortest_path_between(
-            &self.grounding.ground,
-            &[unit.tile],
-            &goals,
-            candidate,
-            movement_domain,
-        )
-        .map(|(_, _, path)| path_cost(&path));
+        let board = routing_cache::board(&self.grounding.ground, movement_domain);
+        let cost = board
+            .cache
+            .borrow_mut()
+            .costs
+            .between_sets(
+                self.grounding.ground.query_purpose,
+                board.grid,
+                candidate.and_then(|candidate| routing_cache::overlay(candidate, movement_domain)),
+                &[unit.tile],
+                &goals,
+            )
+            .available_cost();
         self.evaluation.reinforcement_travel.insert(key, cost);
         #[cfg(test)]
         {
@@ -767,13 +668,17 @@ impl<'a> DefenseThinkContext<'a> {
             DefenseDomain::Air => &mut self.air_projection,
         };
         if slot.is_none() {
-            *slot = Some(strategic_lane_projection(
-                self.obs,
-                self.unit_contacts,
-                self.building_contacts,
-                &self.grounding,
-                domain,
-            ));
+            if let crate::bot::planning::Progress::Ready(projection) =
+                prepare_strategic_lane_projection(
+                    self.obs,
+                    self.unit_contacts,
+                    self.building_contacts,
+                    &self.grounding,
+                    domain,
+                )
+            {
+                *slot = Some(projection);
+            }
             #[cfg(test)]
             {
                 self.projection_builds[match domain {
@@ -804,12 +709,14 @@ pub(super) struct ResourceAccessGuard<'a> {
 #[cfg(test)]
 impl<'a> ResourceAccessGuard<'a> {
     pub(super) fn new(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
     ) -> Self {
         let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts).retained(policy, false);
+        let ground = GroundKnowledge::new(query_purpose, obs, briefing, &public_starts)
+            .retained(policy, false);
         let assets = defended_assets(policy, obs, &ground);
         Self { ground, assets }
     }
@@ -842,13 +749,19 @@ impl<'a> ResourceAccessGuard<'a> {
             (0..placement.size.0)
                 .any(|dx| !self.ground.obs.visible(placement.anchor.offset(dx, dy)))
         });
-        routing::build_command_path_cost_with_public_terrain(
+        routing::BuildRouteProjection::new(
+            self.ground.query_purpose,
             self.ground.obs,
-            self.ground.briefing,
+            Some(self.ground.briefing),
+        )
+        .cost(
             builder,
-            anchor,
-            placement.size,
-            defer,
+            routing::BuildCommandTarget {
+                anchor,
+                size: placement.size,
+                defer,
+            },
+            None,
         )
     }
 }
@@ -869,6 +782,7 @@ fn cached_safe_implicit_builder(
     ordered.into_iter().find_map(|builder| {
         let key = BuilderSafetyKey {
             builder: builder.id,
+            origin: builder.tile,
             anchor,
             size,
             defer,
@@ -882,31 +796,16 @@ fn cached_safe_implicit_builder(
         } else {
             let blocked =
                 |tile| policy.harvest_location_contested(tile) || context.danger.contains(tile);
-            let safe = match context.orientation {
-                Some(orientation) => {
-                    routing::build_command_path_avoids_with_public_terrain_and_orientation(
-                        context.obs,
-                        context.briefing,
-                        builder,
-                        routing::BuildCommandTarget {
-                            anchor,
-                            size,
-                            defer,
-                        },
-                        orientation,
-                        blocked,
-                    )
-                }
-                None => routing::build_command_path_avoids_with_public_terrain(
-                    context.obs,
-                    context.briefing,
-                    builder,
+            let safe = context.routes.avoids(
+                builder,
+                routing::BuildCommandTarget {
                     anchor,
                     size,
                     defer,
-                    blocked,
-                ),
-            };
+                },
+                context.orientation,
+                blocked,
+            );
             cache.builder_safety.insert(key, safe);
             #[cfg(test)]
             {
@@ -927,6 +826,7 @@ fn cached_builder_travel_cost(
 ) -> Option<u32> {
     let key = BuilderTravelKey {
         builder: builder.id,
+        origin: builder.tile,
         placement,
     };
     if let Some(cost) = cache.builder_travel.get(&key).copied() {
@@ -1125,6 +1025,7 @@ struct Coverage {
     reinforced: u32,
     unplanned_new: u32,
     unplanned_reinforced: u32,
+    novel_span: u32,
     interception: u32,
     protected_value: u32,
     planned_overlap: u32,
@@ -1132,6 +1033,25 @@ struct Coverage {
     spotted_reach: u32,
     redundant: u32,
     lateral: i32,
+}
+
+impl Coverage {
+    fn empty() -> Self {
+        Self {
+            new: 0,
+            reinforced: 0,
+            unplanned_new: 0,
+            unplanned_reinforced: 0,
+            novel_span: 0,
+            interception: 0,
+            protected_value: 0,
+            planned_overlap: 0,
+            blind_exposure: 0,
+            spotted_reach: 0,
+            redundant: 0,
+            lateral: i32::MAX,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1177,6 +1097,7 @@ impl Candidate {
         };
         (
             (
+                self.coverage.novel_span,
                 self.coverage.unplanned_new,
                 self.coverage.unplanned_reinforced,
             ),
@@ -1215,12 +1136,15 @@ struct PlannedDefense {
 }
 
 struct GroundKnowledge<'a> {
+    query_purpose: QueryPurpose,
     obs: &'a Observation,
     briefing: &'a PublicMapBriefing,
     air_blocked: Vec<bool>,
     ground_blocked: Vec<bool>,
     routing: Option<&'a std::cell::RefCell<DefenseRoutingCache>>,
     local_routing: std::cell::RefCell<DefenseRoutingCache>,
+    planning: Option<&'a crate::bot::planning::PlanningWork>,
+    local_planning: crate::bot::planning::PlanningWork,
     hypothetical: bool,
     scrap: BTreeMap<TilePos, u32>,
 }
@@ -1228,8 +1152,13 @@ struct GroundKnowledge<'a> {
 impl<'a> GroundKnowledge<'a> {
     fn retained(mut self, policy: &'a UtilityPolicy, hypothetical: bool) -> Self {
         self.routing = Some(&policy.defense_routing_cache);
+        self.planning = Some(&policy.planning);
         self.hypothetical = hypothetical;
         self
+    }
+
+    fn planning(&self) -> &crate::bot::planning::PlanningWork {
+        self.planning.unwrap_or(&self.local_planning)
     }
 
     fn routing(&self) -> &std::cell::RefCell<DefenseRoutingCache> {
@@ -1237,6 +1166,7 @@ impl<'a> GroundKnowledge<'a> {
     }
 
     fn new(
+        query_purpose: QueryPurpose,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         public_starts: &[StartingFoundry],
@@ -1313,12 +1243,15 @@ impl<'a> GroundKnowledge<'a> {
             }
         }
         Self {
+            query_purpose,
             obs,
             briefing,
             air_blocked: terrain.iter().map(|terrain| terrain.blocks_air()).collect(),
             ground_blocked,
             routing: None,
             local_routing: Default::default(),
+            planning: None,
+            local_planning: Default::default(),
             hypothetical: false,
             scrap,
         }
@@ -1442,30 +1375,10 @@ fn future_ground_producer_egress_certificate(
 
     let width = baseline.obs.map_width;
     let height = baseline.obs.map_height;
-    let cells = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
-    let mut reachable = vec![false; cells];
-    let start_index = tile_index(width, height, start).expect("an open doorstep is in bounds");
-    reachable[start_index] = true;
-    let mut frontier = VecDeque::from([start]);
-    while let Some(tile) = frontier.pop_front() {
-        for (dx, dy) in CARDINALS {
-            let next = tile.offset(dx, dy);
-            let Some(index) = tile_index(width, height, next) else {
-                continue;
-            };
-            if !reachable[index] && baseline.open(next, Some(footprint), DefenseDomain::Ground) {
-                reachable[index] = true;
-                frontier.push_back(next);
-            }
-        }
-    }
+    let reachable = crate::bot::navigation::flood::component(width, height, start, |tile| {
+        baseline.open(tile, Some(footprint), DefenseDomain::Ground)
+    })
+    .expect("an open doorstep is in bounds");
     let mut witnesses: Vec<_> = reachable
         .iter()
         .enumerate()
@@ -1502,14 +1415,14 @@ fn future_ground_producer_keeps_egress(
     ) else {
         return false;
     };
-    shortest_path_between(
-        combined,
-        &[spawn],
-        &[witness],
-        combined_candidate,
-        DefenseDomain::Ground,
+    crate::bot::navigation::search::reachable(
+        QueryPurpose::ConstructionExitSafety,
+        combined.obs.map_width,
+        combined.obs.map_height,
+        spawn,
+        witness,
+        |tile| combined.open(tile, combined_candidate, DefenseDomain::Ground),
     )
-    .is_some()
 }
 
 impl UtilityPolicy {
@@ -1641,11 +1554,21 @@ impl UtilityPolicy {
         }
 
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let baseline_ground =
-            GroundKnowledge::new(obs, briefing, &public_starts).retained(self, false);
+        let baseline_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::ConstructionAccess,
+            obs,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, false);
         let assets = defended_assets(self, obs, &baseline_ground);
-        let mut combined_ground =
-            GroundKnowledge::new(obs, briefing, &public_starts).retained(self, true);
+        let mut combined_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::ConstructionAccess,
+            obs,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, true);
         for site in &sites {
             if !site.blocks_ground {
                 continue;
@@ -1703,16 +1626,30 @@ impl UtilityPolicy {
             let size = kind.base_stats().size;
             let defer =
                 (0..size.1).any(|dy| (0..size.0).any(|dx| !obs.visible(anchor.offset(dx, dy))));
-            routing::build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
+            let blocked = |tile| {
+                (*kind == BuildingKind::Foundry && !obs.explored(tile))
+                    || self.harvest_location_contested(tile)
+                    || danger.contains(tile)
+            };
+            if blocked(builder.tile) {
+                return false;
+            }
+            routing::BuildRouteProjection::new(
+                QueryPurpose::ConstructionAccess,
                 obs,
-                briefing,
+                Some(briefing),
+            )
+            .avoids_with_blockers(
                 builder,
                 routing::BuildCommandTarget {
                     anchor: *anchor,
                     size,
                     defer,
                 },
-                orientation.expect("exact combined builder checks require a command orientation"),
+                Some(
+                    orientation
+                        .expect("exact combined builder checks require a command orientation"),
+                ),
                 |tile| {
                     sites.iter().any(|site| {
                         site.blocks_ground
@@ -1720,11 +1657,7 @@ impl UtilityPolicy {
                             && site.blocks(tile)
                     })
                 },
-                |tile| {
-                    (*kind == BuildingKind::Foundry && !obs.explored(tile))
-                        || self.harvest_location_contested(tile)
-                        || danger.contains(tile)
-                },
+                blocked,
             )
         })
     }
@@ -1757,15 +1690,20 @@ impl UtilityPolicy {
             unit.founding = None;
         }
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let ground =
-            GroundKnowledge::new(&unclaimed, briefing, &public_starts).retained(self, true);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
+            &unclaimed,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, true);
         let assets = defended_assets(self, &unclaimed, &ground);
         if assets.is_empty() {
             return false;
         }
-        approaches(&ground, &origins, &assets, None, profile.domain)
-            .into_iter()
-            .any(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+        emergency_approaches(&ground, &origins, &assets, profile.domain)
+            .next()
+            .is_some()
     }
 
     pub(super) fn current_emergency_defense_claim_is_useful(
@@ -1793,17 +1731,20 @@ impl UtilityPolicy {
             return false;
         }
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let ground =
-            GroundKnowledge::new(&unclaimed, briefing, &public_starts).retained(self, true);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
+            &unclaimed,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, true);
         let assets = defended_assets(self, &unclaimed, &ground);
         if assets.is_empty() {
             return false;
         }
         let origins = emergency_threat_origins(&unclaimed, profile.domain);
-        let approaches = approaches(&ground, &origins, &assets, None, profile.domain)
-            .into_iter()
-            .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
-            .collect::<Vec<_>>();
+        let approaches =
+            emergency_approaches(&ground, &origins, &assets, profile.domain).collect::<Vec<_>>();
         if origins.is_empty() || approaches.is_empty() {
             return false;
         }
@@ -1889,7 +1830,14 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::strategic(unit_contacts, building_contacts),
-            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+            grounding.get_or_insert_with(|| {
+                DefenseGrounding::new(
+                    crate::bot::query_work::QueryPurpose::NavigationTest,
+                    self,
+                    obs,
+                    briefing,
+                )
+            }),
         )
         .map(|quote| quote.placement.anchor)
     }
@@ -1917,7 +1865,14 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::strategic_existence(unit_contacts, building_contacts),
-            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+            grounding.get_or_insert_with(|| {
+                DefenseGrounding::new(
+                    crate::bot::query_work::QueryPurpose::NavigationTest,
+                    self,
+                    obs,
+                    briefing,
+                )
+            }),
         )
         .is_some()
     }
@@ -1940,7 +1895,12 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::current_emergency(unit_contacts, building_contacts),
-            &DefenseGrounding::new(self, obs, briefing),
+            &DefenseGrounding::new(
+                crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
+                self,
+                obs,
+                briefing,
+            ),
         )
         .map(|quote| quote.placement)
     }
@@ -1969,7 +1929,14 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::strategic(unit_contacts, building_contacts),
-            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+            grounding.get_or_insert_with(|| {
+                DefenseGrounding::new(
+                    crate::bot::query_work::QueryPurpose::NavigationTest,
+                    self,
+                    obs,
+                    briefing,
+                )
+            }),
         )
     }
 
@@ -1978,6 +1945,21 @@ impl UtilityPolicy {
         kind: BuildingKind,
         builders: &[&UnitObs],
         context: &mut DefenseThinkContext<'_>,
+    ) -> Option<StrategicDefenseQuote> {
+        self.strategic_defense_quote_in_context_search(
+            kind,
+            builders,
+            context,
+            DefenseSiteSearch::Progressive,
+        )
+    }
+
+    fn strategic_defense_quote_in_context_search(
+        &self,
+        kind: BuildingKind,
+        builders: &[&UnitObs],
+        context: &mut DefenseThinkContext<'_>,
+        search: DefenseSiteSearch,
     ) -> Option<StrategicDefenseQuote> {
         let profile = DefenseProfile::for_kind(kind)?;
         if builders.is_empty() {
@@ -1997,7 +1979,7 @@ impl UtilityPolicy {
             &context.grounding,
             projection,
             &context.danger,
-            DefenseSiteSearch::Best,
+            search,
             context.future_egress_orientation,
             &mut context.evaluation,
         )
@@ -2058,10 +2040,30 @@ fn strategic_lane_projection<'a>(
     grounding: &DefenseGrounding<'a>,
     domain: DefenseDomain,
 ) -> Option<StrategicLaneProjection<'a>> {
-    if grounding.assets.is_empty() {
-        return None;
+    match prepare_strategic_lane_projection(
+        obs,
+        unit_contacts,
+        building_contacts,
+        grounding,
+        domain,
+    ) {
+        crate::bot::planning::Progress::Ready(projection) => projection,
+        crate::bot::planning::Progress::Deferred
+        | crate::bot::planning::Progress::ProvenInfeasible => None,
     }
-    let (origins, approaches, evidence) = threat_origin_tiers(
+}
+
+fn prepare_strategic_lane_projection<'a>(
+    obs: &'a Observation,
+    unit_contacts: &[UnitContact],
+    building_contacts: &[BuildingContact],
+    grounding: &DefenseGrounding<'a>,
+    domain: DefenseDomain,
+) -> crate::bot::planning::Progress<Option<StrategicLaneProjection<'a>>> {
+    if grounding.assets.is_empty() {
+        return crate::bot::planning::Progress::Ready(None);
+    }
+    for (tier, origins) in threat_origin_tiers(
         obs,
         unit_contacts,
         building_contacts,
@@ -2071,8 +2073,15 @@ fn strategic_lane_projection<'a>(
     .into_iter()
     .enumerate()
     .filter(|(_, origins)| !origins.is_empty())
-    .find_map(|(tier, origins)| {
-        let approaches = approaches(&grounding.ground, &origins, &grounding.assets, None, domain);
+    {
+        let approaches =
+            match fronts::approaches(&grounding.ground, &origins, &grounding.assets, domain) {
+                crate::bot::planning::Progress::Ready(approaches) => approaches,
+                crate::bot::planning::Progress::Deferred => {
+                    return crate::bot::planning::Progress::Deferred;
+                }
+                crate::bot::planning::Progress::ProvenInfeasible => continue,
+            };
         let evidence = match tier {
             0 => DefenseOpportunityEvidence::CurrentArmed,
             1 if origins.iter().any(|origin| {
@@ -2086,15 +2095,18 @@ fn strategic_lane_projection<'a>(
             3 => DefenseOpportunityEvidence::PublicPrior,
             _ => unreachable!("the strategic evidence ladder has four tiers"),
         };
-        (!approaches.is_empty()).then_some((origins, approaches, evidence))
-    })?;
-    Some(StrategicLaneProjection {
-        origins,
-        approaches,
-        evidence,
-        existing: existing_defenses(obs, domain),
-        planned: planned_defenses(obs, domain),
-    })
+        if approaches.is_empty() {
+            continue;
+        }
+        return crate::bot::planning::Progress::Ready(Some(StrategicLaneProjection {
+            origins,
+            approaches,
+            evidence,
+            existing: existing_defenses(obs, domain),
+            planned: planned_defenses(obs, domain),
+        }));
+    }
+    crate::bot::planning::Progress::Ready(None)
 }
 
 fn emergency_lane_projection<'a>(
@@ -2106,9 +2118,7 @@ fn emergency_lane_projection<'a>(
         return None;
     }
     let origins = emergency_threat_origins(obs, domain);
-    let approaches = approaches(&grounding.ground, &origins, &grounding.assets, None, domain)
-        .into_iter()
-        .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+    let approaches = emergency_approaches(&grounding.ground, &origins, &grounding.assets, domain)
         .collect::<Vec<_>>();
     if origins.is_empty() || approaches.is_empty() {
         return None;
@@ -2145,110 +2155,183 @@ fn strategic_defense_quote_from_projection(
     let origins = &projection.origins;
     let approaches = &projection.approaches;
 
-    let mut candidate_tiles = BTreeSet::new();
-    for approach in approaches {
-        for seed in approach
-            .path
-            .iter()
-            .rev()
-            .take(INTERCEPTION_DEPTH + 1)
-            .copied()
-            .chain(assets[approach.asset].shape.candidate_seeds())
+    let coverage = (kind != BuildingKind::Barricade).then(|| {
+        #[cfg(test)]
         {
-            for dy in -profile.candidate_reach..=profile.candidate_reach {
-                for dx in -profile.candidate_reach..=profile.candidate_reach {
-                    if dx.abs().max(dy.abs()) <= profile.candidate_reach {
-                        candidate_tiles.insert(seed.offset(dx, dy));
-                    }
-                }
-            }
+            cache.stats.coverage_batches += 1;
         }
-    }
-    let mut candidate_tiles: Vec<_> = candidate_tiles.into_iter().collect();
-    candidate_tiles.sort_by_key(|tile| (tile.y, tile.x));
-
-    policy.prepare_ground_producer_egress(obs);
-    candidate_tiles.retain(|&anchor| policy.placement_valid_prepared(obs, kind, anchor));
-    let evaluate = |anchor| {
-        let placement = profile.footprint(anchor);
-        if future_egress_orientation.is_some_and(|orientation| {
-            !cached_future_ground_producer_egress_survives(grounding, orientation, cache, placement)
-        }) {
-            return None;
-        }
-        let mut ordered_builders = builders.to_vec();
-        ordered_builders
-            .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
-        let (builder, builder_travel) = ordered_builders.into_iter().find_map(|builder| {
-            let builder_travel = cached_builder_travel_cost(
-                grounding,
-                cache,
-                builder,
-                placement,
-                future_egress_orientation,
-            )?;
-            let safe = cached_safe_implicit_builder(
-                policy,
-                BuilderSafetyContext {
-                    obs,
-                    briefing,
-                    danger,
-                    orientation: future_egress_orientation,
-                },
-                cache,
-                kind,
-                anchor,
-                &[builder],
-            ) == Some(builder.id);
-            safe.then_some((builder.id, builder_travel))
-        })?;
-        let resource_detour_limit =
-            (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
-        if !cached_resource_access_survives(grounding, cache, placement, resource_detour_limit) {
-            return None;
-        }
-        let candidate_approaches = cached_operationally_supported_approaches(
-            ground,
-            assets,
-            approaches,
-            placement,
-            profile.domain,
-            (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_DETOUR_COST),
-            cache,
-        )?;
-        let coverage = score_coverage(
+        coverage::Batch::new(
             &CoverageContext {
                 obs,
                 briefing,
                 assets,
-                approaches: &candidate_approaches,
+                approaches,
                 existing: &projection.existing,
                 planned: &projection.planned,
             },
             profile,
-            anchor,
-        );
-        if coverage.new == 0 && coverage.reinforced == 0 {
-            return None;
+        )
+    });
+    policy.prepare_ground_producer_egress(obs);
+    use crate::bot::planning::Progress;
+    let mut evaluate = |anchor| {
+        let mut pending = false;
+        let candidate = (|| {
+            if !grounding.placement.valid(policy, kind, anchor) {
+                return None;
+            }
+            let placement = profile.footprint(anchor);
+            let prepared_coverage = if let Some(batch) = &coverage {
+                cache_supported_assets(ground, assets, placement, cache);
+                #[cfg(test)]
+                {
+                    cache.stats.coverage_scores += 1;
+                }
+                let supported = &cache.supported_assets[&placement];
+                let score = batch.score(anchor, |asset| supported.contains(&asset));
+                if score.new == 0 && score.reinforced == 0 {
+                    return None;
+                }
+                Some(score)
+            } else {
+                None
+            };
+            if !policy.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
+                || future_egress_orientation.is_some_and(|orientation| {
+                    !cached_future_ground_producer_egress_survives(
+                        grounding,
+                        orientation,
+                        cache,
+                        placement,
+                    )
+                })
+            {
+                return None;
+            }
+            let mut ordered_builders = builders.to_vec();
+            ordered_builders
+                .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
+            let (builder, builder_travel) = ordered_builders.into_iter().find_map(|builder| {
+                let safe = cached_safe_implicit_builder(
+                    policy,
+                    BuilderSafetyContext {
+                        obs,
+                        routes: &grounding.build_routes,
+                        danger,
+                        orientation: future_egress_orientation,
+                    },
+                    cache,
+                    kind,
+                    anchor,
+                    &[builder],
+                ) == Some(builder.id);
+                if !safe {
+                    return None;
+                }
+                let builder_travel = cached_builder_travel_cost(
+                    grounding,
+                    cache,
+                    builder,
+                    placement,
+                    future_egress_orientation,
+                )?;
+                Some((builder.id, builder_travel))
+            })?;
+            let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
+                .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
+            if !cached_resource_access_survives(grounding, cache, placement, resource_detour_limit)
+            {
+                return None;
+            }
+            let coverage = if let Some(coverage) = prepared_coverage {
+                coverage
+            } else {
+                let costs = match barricade::refine_supported_costs(
+                    ground,
+                    assets,
+                    approaches,
+                    placement,
+                    cache,
+                    matches!(search, DefenseSiteSearch::Progressive),
+                ) {
+                    Ok(costs) => costs?,
+                    Err(_) => {
+                        pending = true;
+                        return None;
+                    }
+                };
+                let coverage =
+                    barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied());
+                if coverage.new == 0 && coverage.reinforced == 0 {
+                    return None;
+                }
+                coverage
+            };
+            let threat_distance = origins
+                .iter()
+                .map(|origin| origin.anchor.manhattan(anchor))
+                .min()
+                .unwrap_or(i32::MAX);
+            Some((
+                Candidate {
+                    anchor,
+                    builder_travel,
+                    coverage,
+                    threat_distance,
+                },
+                builder,
+            ))
+        })();
+        if pending {
+            Progress::Deferred
+        } else {
+            candidate.map_or(Progress::ProvenInfeasible, Progress::Ready)
         }
-        let threat_distance = origins
-            .iter()
-            .map(|origin| origin.anchor.manhattan(anchor))
-            .min()
-            .unwrap_or(i32::MAX);
-        Some((
-            Candidate {
-                anchor,
-                builder_travel,
-                coverage,
-                threat_distance,
-            },
-            builder,
-        ))
     };
     let selected = match search {
+        DefenseSiteSearch::Progressive => {
+            let retained = policy.planning.site_incumbent(obs.tick, kind);
+            let incumbent = retained.map(&mut evaluate);
+            if let Some(Progress::Ready(candidate)) = incumbent {
+                Some(candidate)
+            } else {
+                if !matches!(incumbent, Some(Progress::Deferred)) {
+                    policy.planning.clear_site(kind);
+                }
+                let mut candidate_tiles = defense_candidate_tiles(
+                    policy,
+                    obs,
+                    assets,
+                    approaches,
+                    profile,
+                    &grounding.placement,
+                );
+                progressive::rank(&mut candidate_tiles, assets, approaches, profile);
+                if let Some(egress) = policy.ground_egress_cache.borrow().as_ref() {
+                    candidate_tiles.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
+                }
+                match policy.planning.site_progress(
+                    obs.tick,
+                    profile.kind,
+                    &candidate_tiles,
+                    evaluate,
+                    |candidate, prior| candidate.0.key(profile) > prior.0.key(profile),
+                ) {
+                    crate::bot::planning::Progress::Ready(candidate) => Some(candidate),
+                    crate::bot::planning::Progress::Deferred
+                    | crate::bot::planning::Progress::ProvenInfeasible => None,
+                }
+            }
+        }
         DefenseSiteSearch::Best => pruning::Bounds::new(ground, assets, approaches).best(
-            candidate_tiles,
+            defense_candidate_tiles(
+                policy,
+                obs,
+                assets,
+                approaches,
+                profile,
+                &grounding.placement,
+            ),
             &CoverageContext {
                 obs,
                 briefing,
@@ -2259,37 +2342,62 @@ fn strategic_defense_quote_from_projection(
             },
             profile,
             origins,
-            evaluate,
+            |anchor| match evaluate(anchor) {
+                Progress::Ready(value) => Some(value),
+                _ => None,
+            },
         ),
         #[cfg(test)]
-        DefenseSiteSearch::Any => candidate_tiles.into_iter().find_map(evaluate),
+        DefenseSiteSearch::Any => defense_candidate_tiles(
+            policy,
+            obs,
+            assets,
+            approaches,
+            profile,
+            &grounding.placement,
+        )
+        .into_iter()
+        .find_map(|anchor| match evaluate(anchor) {
+            Progress::Ready(value) => Some(value),
+            _ => None,
+        }),
         #[cfg(test)]
-        DefenseSiteSearch::Exhaustive => candidate_tiles
-            .into_iter()
-            .filter_map(evaluate)
-            .max_by_key(|(candidate, _)| candidate.key(profile)),
+        DefenseSiteSearch::Exhaustive => defense_candidate_tiles(
+            policy,
+            obs,
+            assets,
+            approaches,
+            profile,
+            &grounding.placement,
+        )
+        .into_iter()
+        .filter_map(|anchor| match evaluate(anchor) {
+            Progress::Ready(value) => Some(value),
+            _ => None,
+        })
+        .max_by_key(|(candidate, _)| candidate.key(profile)),
     };
     let (candidate, builder) = selected?;
     let placement = profile.footprint(candidate.anchor);
-    let candidate_approaches = cached_operationally_supported_approaches(
-        ground,
-        assets,
-        approaches,
-        placement,
-        profile.domain,
-        (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_DETOUR_COST),
-        cache,
-    )?;
-    let threat = candidate_threat_summary(
-        obs,
-        briefing,
-        &projection.existing,
-        &projection.planned,
-        profile,
-        candidate.anchor,
-        &candidate_approaches,
-        projection.evidence,
-    )?;
+    let threat = if profile.kind == BuildingKind::Barricade {
+        let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
+        barricade::threat_summary(&costs, projection.evidence)?
+    } else {
+        cache_supported_assets(ground, assets, placement, cache);
+        let supported = &cache.supported_assets[&placement];
+        candidate_threat_summary(
+            obs,
+            briefing,
+            &projection.existing,
+            &projection.planned,
+            profile,
+            candidate.anchor,
+            approaches
+                .iter()
+                .filter(|approach| supported.contains(&approach.asset)),
+            projection.evidence,
+        )?
+    };
     Some(StrategicDefenseQuote {
         placement: DefensePlacement {
             anchor: candidate.anchor,
@@ -2309,31 +2417,41 @@ fn strategic_defense_quote_from_projection(
     clippy::too_many_arguments,
     reason = "summarizes one frozen defense candidate against its scoring context"
 )]
-fn candidate_threat_summary(
+fn candidate_threat_summary<'a>(
     obs: &Observation,
     briefing: &PublicMapBriefing,
     existing: &[&BuildingObs],
     planned: &[PlannedDefense],
     profile: DefenseProfile,
     candidate: TilePos,
-    approaches: &[Approach],
+    approaches: impl IntoIterator<Item = &'a Approach>,
+    projection_evidence: DefenseOpportunityEvidence,
+) -> Option<CandidateThreatSummary> {
+    threat_summary_from_sources(
+        approaches
+            .into_iter()
+            .filter(|approach| {
+                approach_contributes_marginal_protection(
+                    obs, briefing, existing, planned, profile, candidate, approach,
+                )
+            })
+            .map(|approach| (approach.source, approach.baseline_cost)),
+        projection_evidence,
+    )
+}
+
+fn threat_summary_from_sources(
+    approaches: impl Iterator<Item = (ThreatOrigin, u32)>,
     projection_evidence: DefenseOpportunityEvidence,
 ) -> Option<CandidateThreatSummary> {
     let mut sources = BTreeSet::new();
     let mut threat_arrival_ticks = None;
-    for approach in approaches.iter().filter(|approach| {
-        approach_contributes_marginal_protection(
-            obs, briefing, existing, planned, profile, candidate, approach,
-        )
-    }) {
-        sources.insert(approach.source);
-        if let Some(arrival) = approach_threat_arrival_ticks(approach) {
+    for (source, baseline_cost) in approaches {
+        sources.insert(source);
+        if let Some(arrival) = source_threat_arrival_ticks(source, baseline_cost) {
             threat_arrival_ticks =
                 Some(threat_arrival_ticks.map_or(arrival, |earliest: u64| earliest.min(arrival)));
         }
-    }
-    if sources.is_empty() {
-        return None;
     }
     let evidence = match projection_evidence {
         DefenseOpportunityEvidence::CurrentArmed | DefenseOpportunityEvidence::CurrentFoothold => {
@@ -2391,11 +2509,9 @@ fn footprints_overlap(first: PlacementFootprint, second: PlacementFootprint) -> 
         && second.anchor.y < first.anchor.y + first.size.1
 }
 
-fn approach_threat_arrival_ticks(approach: &Approach) -> Option<u64> {
-    match approach.source.capability {
-        ThreatCapability::Mobile(kind) => {
-            Some(travel_ticks(approach.baseline_cost, kind.stats().speed))
-        }
+fn source_threat_arrival_ticks(source: ThreatOrigin, baseline_cost: u32) -> Option<u64> {
+    match source.capability {
+        ThreatCapability::Mobile(kind) => Some(travel_ticks(baseline_cost, kind.stats().speed)),
         ThreatCapability::StaticDefense { .. } => Some(0),
         ThreatCapability::Foothold => None,
     }
@@ -2501,100 +2617,6 @@ fn asset_sort_key(asset: &DefendedAsset) -> (i32, i32, u8) {
             (first.y, first.x, 1)
         }
     }
-}
-
-fn scrap_assets(
-    policy: &UtilityPolicy,
-    ground: &GroundKnowledge<'_>,
-    foundries: &[TilePos],
-) -> Vec<DefendedAsset> {
-    let mut remaining: BTreeSet<_> = ground
-        .scrap
-        .iter()
-        .filter(|(tile, amount)| **amount > 0 && !policy.dead_nodes.contains(tile))
-        .map(|(tile, _)| *tile)
-        .collect();
-    let mut clusters = Vec::new();
-    while let Some(seed) = remaining
-        .iter()
-        .min_by_key(|tile| (tile.y, tile.x))
-        .copied()
-    {
-        remaining.remove(&seed);
-        let mut open = VecDeque::from([seed]);
-        let mut tiles = Vec::new();
-        while let Some(tile) = open.pop_front() {
-            tiles.push(tile);
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    if (dx != 0 || dy != 0) && remaining.remove(&tile.offset(dx, dy)) {
-                        open.push_back(tile.offset(dx, dy));
-                    }
-                }
-            }
-        }
-        tiles.sort_by_key(|tile| (tile.y, tile.x));
-        let work_tiles = scrap_work_tiles(ground, &tiles, None);
-        if !resource_region_is_active(ground.obs, &tiles) {
-            continue;
-        }
-        let support = foundries
-            .iter()
-            .filter(|foundry| {
-                let own_distance = tiles
-                    .iter()
-                    .map(|tile| tile.chebyshev(**foundry))
-                    .min()
-                    .unwrap_or(i32::MAX);
-                own_distance <= HOME_SALVAGE_RADIUS
-            })
-            .filter_map(|foundry| {
-                shortest_path_between(
-                    ground,
-                    &building_doorsteps(ground, *foundry, BuildingKind::Foundry.base_stats().size),
-                    &work_tiles,
-                    None,
-                    DefenseDomain::Ground,
-                )
-                .map(|(_, _goal, path)| AccessRoute {
-                    foundry: *foundry,
-                    work_tiles: work_tiles.clone(),
-                    path,
-                })
-            })
-            .min_by_key(|route| {
-                (
-                    route.path.len(),
-                    route.foundry.y,
-                    route.foundry.x,
-                    route.path.clone(),
-                )
-            });
-        let Some(access) = support else { continue };
-        let total = tiles.iter().fold(0u32, |sum, tile| {
-            sum.saturating_add(ground.scrap.get(tile).copied().unwrap_or(0))
-        });
-        let value = total.div_ceil(SCRAP_NODE_AMOUNT).min(8);
-        if value > 0 {
-            clusters.push(DefendedAsset {
-                value,
-                shape: AssetShape::Scrap { tiles, work_tiles },
-                access: Some(access),
-            });
-        }
-    }
-    clusters
-}
-
-fn resource_region_is_active(obs: &Observation, resource_tiles: &[TilePos]) -> bool {
-    obs.my_units.iter().any(|unit| {
-        unit.kind.stats().harvest.is_some()
-            && unit.harvesting.is_some_and(|target| {
-                resource_tiles
-                    .binary_search_by_key(&(target.y, target.x), |tile| (tile.y, tile.x))
-                    .is_ok()
-            })
-    })
 }
 
 fn emergency_threat_origins(obs: &Observation, domain: DefenseDomain) -> Vec<ThreatOrigin> {
@@ -2792,6 +2814,58 @@ fn building_threat_capability(
     }
 }
 
+fn emergency_approaches<'a>(
+    ground: &'a GroundKnowledge<'_>,
+    origins: &'a [ThreatOrigin],
+    assets: &'a [DefendedAsset],
+    domain: DefenseDomain,
+) -> impl Iterator<Item = Approach> + 'a {
+    approach_candidates(
+        ground,
+        origins,
+        assets,
+        None,
+        domain,
+        Some(DEFENSE_RADIUS as usize),
+    )
+}
+
+fn threat_can_approach_within(
+    ground: &GroundKnowledge<'_>,
+    source: ThreatOrigin,
+    asset: &AssetShape,
+    goals: &[TilePos],
+    domain: DefenseDomain,
+    steps: usize,
+) -> bool {
+    match source.capability {
+        ThreatCapability::StaticDefense { .. } => true,
+        ThreatCapability::Mobile(kind) if domain == DefenseDomain::Ground => {
+            let range = if kind == UnitKind::Sapper {
+                SAPPER_CONTACT_RANGE
+            } else {
+                kind.stats()
+                    .weapons
+                    .iter()
+                    .find(|weapon| weapon.targets.ground)
+                    .map_or(Fx::ZERO, |weapon| weapon.range)
+            };
+            let reach = Fx::from_num(steps as i32) + range;
+            goals.iter().any(|goal| {
+                let offset =
+                    source.anchor.center() - asset.aim_point(source.anchor.center(), *goal);
+                offset.x.abs().max(offset.y.abs()) <= reach
+            })
+        }
+        _ => source.approach_tiles(ground, domain).iter().any(|start| {
+            goals
+                .iter()
+                .any(|goal| start.chebyshev(*goal) <= steps as i32)
+        }),
+    }
+}
+
+#[cfg(test)]
 fn approaches(
     ground: &GroundKnowledge<'_>,
     origins: &[ThreatOrigin],
@@ -2799,25 +2873,57 @@ fn approaches(
     candidate: Option<PlacementFootprint>,
     domain: DefenseDomain,
 ) -> Vec<Approach> {
+    approach_candidates(ground, origins, assets, candidate, domain, None).collect()
+}
+
+fn approach_candidates<'a>(
+    ground: &'a GroundKnowledge<'_>,
+    origins: &'a [ThreatOrigin],
+    assets: &'a [DefendedAsset],
+    candidate: Option<PlacementFootprint>,
+    domain: DefenseDomain,
+    maximum_steps: Option<usize>,
+) -> impl Iterator<Item = Approach> + 'a {
     assets
         .iter()
         .enumerate()
-        .flat_map(|(asset, defended)| {
+        .flat_map(move |(asset, defended)| {
             let goals = defended.shape.approach_tiles(ground, domain);
             origins.iter().filter_map(move |source| {
-                approach_path(ground, *source, &defended.shape, &goals, candidate, domain).map(
-                    |(goal, path)| Approach {
-                        asset,
-                        source: *source,
-                        goal,
-                        baseline_cost: path_cost(&path),
-                        path,
-                        disrupted: false,
-                    },
+                if maximum_steps.is_some_and(|steps| {
+                    !threat_can_approach_within(
+                        ground,
+                        *source,
+                        &defended.shape,
+                        &goals,
+                        domain,
+                        steps,
+                    )
+                }) {
+                    return None;
+                }
+                approach_path(
+                    ground,
+                    *source,
+                    &defended.shape,
+                    &goals,
+                    candidate,
+                    domain,
+                    None,
                 )
+                .filter(|(_, path)| {
+                    maximum_steps.is_none_or(|steps| path.len().saturating_sub(1) <= steps)
+                })
+                .map(|(goal, path)| Approach {
+                    asset,
+                    source: *source,
+                    goal,
+                    baseline_cost: path_cost(&path),
+                    path,
+                    disrupted: false,
+                })
             })
         })
-        .collect()
 }
 
 fn approach_path(
@@ -2827,6 +2933,13 @@ fn approach_path(
     goals: &[TilePos],
     candidate: Option<PlacementFootprint>,
     domain: DefenseDomain,
+    field: Option<
+        &std::cell::OnceCell<
+            crate::bot::planning::Progress<
+                std::sync::Arc<crate::bot::navigation::approaches::ApproachField>,
+            >,
+        >,
+    >,
 ) -> Option<(TilePos, Vec<TilePos>)> {
     if let ThreatCapability::StaticDefense { kind, tier } = source.capability {
         return static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
@@ -2861,33 +2974,43 @@ fn approach_path(
         }
     }
 
-    shortest_path_between(
-        ground,
-        &source.approach_tiles(ground, domain),
-        goals,
-        candidate,
-        domain,
-    )
-    .map(|(_, goal, path)| {
+    let starts = source.approach_tiles(ground, domain);
+    let route = match field {
+        Some(field) => match field.get_or_init(|| {
+            ground.planning().approach_field(
+                QueryPurpose::DefenseApproaches,
+                ground.obs.tick,
+                routing_cache::board(ground, domain).grid,
+                domain == DefenseDomain::Air,
+                goals,
+            )
+        }) {
+            crate::bot::planning::Progress::Ready(field) => field.path(&starts),
+            crate::bot::planning::Progress::Deferred
+            | crate::bot::planning::Progress::ProvenInfeasible => None,
+        },
+        None => shortest_path_between(ground, &starts, goals, candidate, domain)
+            .map(|(_, goal, path)| (goal, path)),
+    };
+    route.map(|(goal, path)| {
         let path = mobile_ground_standoff(source, asset, ground.briefing, goal, path, domain);
         (goal, path)
     })
 }
 
-fn approach_path_cached(
+fn approach_path_refined(
     routes: &mut CandidateRoutes<'_, '_>,
     source: ThreatOrigin,
     asset: &AssetShape,
     goals: &[TilePos],
-    baseline_endpoint_routes: &mut BTreeMap<
-        (DefenseDomain, TilePos, TilePos),
-        BaselineEndpointRoute,
-    >,
-) -> Option<(TilePos, Vec<TilePos>)> {
+    baseline_endpoint_routes: &mut EndpointRoutes,
+) -> Result<Option<(TilePos, Vec<TilePos>)>, crate::bot::navigation::paths::PendingRoute> {
     let (ground, candidate, domain) = routes.context();
     if let ThreatCapability::StaticDefense { kind, tier } = source.capability {
-        return static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
-            .map(|(goal, source_tile)| (goal, vec![source_tile]));
+        return Ok(
+            static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
+                .map(|(goal, source_tile)| (goal, vec![source_tile])),
+        );
     }
 
     if let ThreatCapability::Mobile(kind) = source.capability
@@ -2901,7 +3024,7 @@ fn approach_path_cached(
             })
             .min_by_key(|goal| (goal.y, goal.x))
         {
-            return Some((goal, vec![source.anchor]));
+            return Ok(Some((goal, vec![source.anchor])));
         }
 
         let retreat_goal = goals
@@ -2913,21 +3036,28 @@ fn approach_path_cached(
                 (source.anchor.center().dist_sq(aim), goal.y, goal.x)
             });
         if let Some(goal) = retreat_goal {
-            return retreat_to_mobile_firing_stand(ground, source, asset, goal, Some(candidate))
-                .map(|path| (goal, path));
+            return Ok(retreat_to_mobile_firing_stand(
+                ground,
+                source,
+                asset,
+                goal,
+                Some(candidate),
+            )
+            .map(|path| (goal, path)));
         }
     }
 
-    shortest_path_between_cached(
-        routes,
-        &source.approach_tiles(ground, domain),
-        goals,
-        baseline_endpoint_routes,
-    )
-    .map(|(_, goal, path)| {
-        let path = mobile_ground_standoff(source, asset, ground.briefing, goal, path, domain);
-        (goal, path)
-    })
+    Ok(routes
+        .paths
+        .refine_shortest(
+            &source.approach_tiles(ground, domain),
+            goals,
+            baseline_endpoint_routes,
+        )?
+        .map(|(_, goal, path)| {
+            let path = mobile_ground_standoff(source, asset, ground.briefing, goal, path, domain);
+            (goal, path)
+        }))
 }
 
 fn static_defense_attack(
@@ -2969,46 +3099,6 @@ fn approaches_with_candidate(
     domain: DefenseDomain,
     max_detour: Option<u32>,
 ) -> Option<Vec<Approach>> {
-    approaches_with_candidate_inner(
-        ground, assets, baseline, candidate, domain, max_detour, None,
-    )
-}
-
-fn approaches_with_candidate_cached(
-    ground: &GroundKnowledge<'_>,
-    assets: &[DefendedAsset],
-    baseline: &[Approach],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    max_detour: Option<u32>,
-    baseline_endpoint_routes: &mut BTreeMap<
-        (DefenseDomain, TilePos, TilePos),
-        BaselineEndpointRoute,
-    >,
-) -> Option<Vec<Approach>> {
-    approaches_with_candidate_inner(
-        ground,
-        assets,
-        baseline,
-        candidate,
-        domain,
-        max_detour,
-        Some(baseline_endpoint_routes),
-    )
-}
-
-fn approaches_with_candidate_inner(
-    ground: &GroundKnowledge<'_>,
-    assets: &[DefendedAsset],
-    baseline: &[Approach],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    max_detour: Option<u32>,
-    mut baseline_endpoint_routes: Option<
-        &mut BTreeMap<(DefenseDomain, TilePos, TilePos), BaselineEndpointRoute>,
-    >,
-) -> Option<Vec<Approach>> {
-    let mut routes = CandidateRoutes::new(ground, candidate, domain);
     let mut rerouted = Vec::with_capacity(baseline.len());
     for approach in baseline {
         if !candidate_affects_path(&approach.path, candidate, domain) {
@@ -3016,23 +3106,15 @@ fn approaches_with_candidate_inner(
             continue;
         }
         let goals = assets[approach.asset].shape.approach_tiles(ground, domain);
-        let (goal, path) = match baseline_endpoint_routes.as_deref_mut() {
-            Some(endpoint_routes) => approach_path_cached(
-                &mut routes,
-                approach.source,
-                &assets[approach.asset].shape,
-                &goals,
-                endpoint_routes,
-            ),
-            None => approach_path(
-                ground,
-                approach.source,
-                &assets[approach.asset].shape,
-                &goals,
-                Some(candidate),
-                domain,
-            ),
-        }?;
+        let (goal, path) = approach_path(
+            ground,
+            approach.source,
+            &assets[approach.asset].shape,
+            &goals,
+            Some(candidate),
+            domain,
+            None,
+        )?;
         let detour = path_cost(&path).saturating_sub(approach.baseline_cost);
         if max_detour.is_some_and(|limit| detour > limit) {
             return None;
@@ -3197,41 +3279,23 @@ fn supported_assets_for_candidate(
         .enumerate()
         .filter_map(|(index, asset)| {
             let goals = asset.shape.approach_tiles(ground, DefenseDomain::Ground);
-            if !doorsteps.iter().any(|start| {
-                goals
-                    .iter()
-                    .any(|goal| start.chebyshev(*goal) <= DEFENSE_RADIUS)
-            }) {
-                return None;
-            }
-            if !goals.iter().any(|goal| {
-                tile_index(ground.obs.map_width, ground.obs.map_height, *goal)
-                    .is_some_and(|goal| locally_reachable[goal])
-            }) {
-                return None;
-            }
-            shortest_path_between(
-                ground,
-                &doorsteps,
-                &goals,
-                Some(candidate),
-                DefenseDomain::Ground,
-            )
-            .filter(|(_, _, path)| path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
-            .map(|_| index)
+            goals
+                .iter()
+                .any(|goal| {
+                    tile_index(ground.obs.map_width, ground.obs.map_height, *goal)
+                        .is_some_and(|goal| locally_reachable[goal])
+                })
+                .then_some(index)
         })
         .collect()
 }
 
-fn cached_operationally_supported_approaches(
+fn cache_supported_assets(
     ground: &GroundKnowledge<'_>,
     assets: &[DefendedAsset],
-    baseline: &[Approach],
     candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    max_detour: Option<u32>,
     cache: &mut DefenseEvaluationCache,
-) -> Option<Vec<Approach>> {
+) {
     match cache.supported_assets.entry(candidate) {
         std::collections::btree_map::Entry::Occupied(_) => {
             #[cfg(test)]
@@ -3247,142 +3311,22 @@ fn cached_operationally_supported_approaches(
             }
         }
     }
-    let reroute_key = (domain, candidate);
-    match cache.rerouted_approaches.entry(reroute_key) {
-        std::collections::btree_map::Entry::Occupied(_) => {
-            #[cfg(test)]
-            {
-                cache.stats.rerouted_approach_hits += 1;
-            }
-        }
-        std::collections::btree_map::Entry::Vacant(entry) => {
-            entry.insert(approaches_with_candidate_cached(
-                ground,
-                assets,
-                baseline,
-                candidate,
-                domain,
-                None,
-                &mut cache.baseline_endpoint_routes,
-            ));
-            #[cfg(test)]
-            {
-                cache.stats.rerouted_approach_builds += 1;
-            }
-        }
-    }
-    let rerouted = cache.rerouted_approaches.get(&reroute_key)?.as_ref()?;
-    if max_detour.is_some_and(|limit| {
-        rerouted.iter().any(|approach| {
-            approach.disrupted
-                && path_cost(&approach.path).saturating_sub(approach.baseline_cost) > limit
-        })
-    }) {
-        return None;
-    }
-    let supported_assets = cache.supported_assets.get(&candidate)?;
-    Some(
-        rerouted
-            .iter()
-            .filter(|approach| supported_assets.contains(&approach.asset))
-            .cloned()
-            .collect(),
-    )
 }
 
-/// Cheap exact-negative preflight for the local support-radius query.
-///
-/// The ranked path remains authoritative below. This flood only avoids asking
-/// whole-map A* to prove that no route of at most `maximum_steps` can exist;
-/// whenever it answers yes, the original canonical path and length check still
-/// decide the result.
+/// Support is local walking reach, independent of global shortest-path ties.
 fn tiles_reachable_within_steps(
     ground: &GroundKnowledge<'_>,
     starts: &[TilePos],
     candidate: PlacementFootprint,
     maximum_steps: usize,
 ) -> Vec<bool> {
-    let width = ground.obs.map_width;
-    let height = ground.obs.map_height;
-    let area = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
-    let mut distance = vec![u8::MAX; area];
-    let mut open = VecDeque::new();
-    for start in starts.iter().copied() {
-        let Some(index) = tile_index(width, height, start) else {
-            continue;
-        };
-        if distance[index] == u8::MAX {
-            distance[index] = 0;
-            open.push_back(start);
-        }
-    }
-
-    while let Some(current) = open.pop_front() {
-        let current_index = tile_index(width, height, current)
-            .expect("the local route flood contains only in-bounds tiles");
-        let steps = usize::from(distance[current_index]);
-        if steps >= maximum_steps {
-            continue;
-        }
-        let mut cardinal_open = [false; 4];
-        for (dx, dy) in CARDINALS {
-            let next = current.offset(dx, dy);
-            if ground.open(next, Some(candidate), DefenseDomain::Ground) {
-                let slot = if dy == 0 {
-                    usize::from(dx < 0)
-                } else {
-                    2 + usize::from(dy < 0)
-                };
-                cardinal_open[slot] = true;
-                enqueue_local_route_tile(&mut distance, &mut open, width, height, next, steps + 1);
-            }
-        }
-        for (dx, dy) in DIAGONALS {
-            if cardinal_open[usize::from(dx < 0)] && cardinal_open[2 + usize::from(dy < 0)] {
-                let next = current.offset(dx, dy);
-                if ground.open(next, Some(candidate), DefenseDomain::Ground) {
-                    enqueue_local_route_tile(
-                        &mut distance,
-                        &mut open,
-                        width,
-                        height,
-                        next,
-                        steps + 1,
-                    );
-                }
-            }
-        }
-    }
-
-    distance
-        .into_iter()
-        .map(|steps| usize::from(steps) <= maximum_steps)
-        .collect()
-}
-
-fn enqueue_local_route_tile(
-    distance: &mut [u8],
-    open: &mut VecDeque<TilePos>,
-    width: i32,
-    height: i32,
-    tile: TilePos,
-    steps: usize,
-) {
-    let Some(index) = tile_index(width, height, tile) else {
-        return;
-    };
-    if usize::from(distance[index]) <= steps {
-        return;
-    }
-    distance[index] = u8::try_from(steps).unwrap_or(u8::MAX);
-    open.push_back(tile);
+    crate::bot::navigation::flood::within_steps(
+        ground.obs.map_width,
+        ground.obs.map_height,
+        starts,
+        |tile| ground.open(tile, Some(candidate), DefenseDomain::Ground),
+        maximum_steps,
+    )
 }
 
 fn shortest_path_between(
@@ -3392,219 +3336,22 @@ fn shortest_path_between(
     candidate: Option<PlacementFootprint>,
     domain: DefenseDomain,
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
-    let mut pairs: Vec<_> = starts
-        .iter()
-        .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
-        .collect();
-    pairs.sort_unstable_by_key(|(start, goal)| {
-        (octile_cost(*start, *goal), start.y, start.x, goal.y, goal.x)
-    });
-
-    let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
-    let mut proven_unreachable = BTreeSet::new();
-    let mut scratch = Scratch::default();
-    for (start, goal) in pairs {
-        if proven_unreachable.contains(&(start, goal)) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| octile_cost(start, goal) > path_cost(path))
-        {
-            // Every remaining pair has a strictly worse obstacle-free lower
-            // bound, so none can replace the complete route-choice key.
-            break;
-        }
-        if best.as_ref().is_some_and(|(_, _, path)| {
-            routing_cache::bound(ground, start, goal, domain) > path_cost(path)
-        }) {
-            continue;
-        }
-        let Some(mut path) =
-            routing_cache::path(ground, start, goal, candidate, domain, &mut scratch)
-        else {
-            if scratch.last_search_exhausted() {
-                // One exhaustive search proves the whole passability
-                // component. Reuse that proof for its other doorsteps.
-                let reached_starts: Vec<_> = starts
-                    .iter()
-                    .copied()
-                    .filter(|tile| scratch.last_search_reached(*tile))
-                    .collect();
-                for reached_start in reached_starts {
-                    for unreachable_goal in goals
-                        .iter()
-                        .copied()
-                        .filter(|tile| !scratch.last_search_reached(*tile))
-                    {
-                        proven_unreachable.insert((reached_start, unreachable_goal));
-                    }
-                }
-            }
-            continue;
-        };
-        path.insert(0, start);
-        let replace = best
-            .as_ref()
-            .is_none_or(|(best_start, best_goal, best_path)| {
-                (
-                    path_cost(&path),
-                    path.len(),
-                    start.y,
-                    start.x,
-                    goal.y,
-                    goal.x,
-                    path.as_slice(),
-                ) < (
-                    path_cost(best_path),
-                    best_path.len(),
-                    best_start.y,
-                    best_start.x,
-                    best_goal.y,
-                    best_goal.x,
-                    best_path.as_slice(),
-                )
-            });
-        if replace {
-            best = Some((start, goal, path));
-        }
-    }
-    best
+    crate::bot::navigation::paths::shortest_path_between(
+        routing_cache::board(ground, domain),
+        starts,
+        goals,
+        candidate.and_then(|candidate| routing_cache::overlay(candidate, domain)),
+    )
 }
 
+#[cfg(test)]
 fn shortest_path_between_cached(
     routes: &mut CandidateRoutes<'_, '_>,
     starts: &[TilePos],
     goals: &[TilePos],
-    baseline_endpoint_routes: &mut BTreeMap<
-        (DefenseDomain, TilePos, TilePos),
-        BaselineEndpointRoute,
-    >,
+    baseline: &mut EndpointRoutes,
 ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
-    let (ground, candidate, domain) = routes.context();
-    let mut pairs: Vec<_> = starts
-        .iter()
-        .flat_map(|start| goals.iter().map(move |goal| (*start, *goal)))
-        .collect();
-    pairs.sort_unstable_by_key(|(start, goal)| {
-        (octile_cost(*start, *goal), start.y, start.x, goal.y, goal.x)
-    });
-
-    let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
-    let mut scratch = Scratch::default();
-    let mut proven_unreachable = BTreeSet::new();
-    for (start, goal) in pairs {
-        if proven_unreachable.contains(&(start, goal)) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .is_some_and(|(_, _, path)| octile_cost(start, goal) > path_cost(path))
-        {
-            break;
-        }
-
-        if best.as_ref().is_some_and(|(_, _, path)| {
-            routing_cache::bound(ground, start, goal, domain) > path_cost(path)
-        }) {
-            continue;
-        }
-        let key = (domain, start, goal);
-        let baseline = match baseline_endpoint_routes.entry(key) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                let mut path = routing_cache::path(ground, start, goal, None, domain, &mut scratch);
-                if let Some(path) = path.as_mut() {
-                    path.insert(0, start);
-                }
-                entry.insert(BaselineEndpointRoute {
-                    path,
-                    exhausted: scratch.last_search_exhausted(),
-                })
-            }
-        };
-        if best.as_ref().is_some_and(|(_, _, best_path)| {
-            baseline
-                .path
-                .as_ref()
-                .is_some_and(|baseline_path| path_cost(baseline_path) > path_cost(best_path))
-        }) {
-            // A blocking footprint cannot improve this endpoint pair over its
-            // no-candidate route. Keep equal-cost pairs because the complete
-            // route-choice key can still prefer their length, endpoints, or
-            // canonical path.
-            continue;
-        }
-        let path = match &baseline.path {
-            Some(path) if !candidate_affects_path(path, candidate, domain) => Some(path.clone()),
-            Some(_) => {
-                let mut path = routes.path(start, goal, &mut scratch);
-                if let Some(path) = path.as_mut() {
-                    path.insert(0, start);
-                }
-                path
-            }
-            None if baseline.exhausted => None,
-            None => {
-                let mut path = routes.path(start, goal, &mut scratch);
-                if let Some(path) = path.as_mut() {
-                    path.insert(0, start);
-                }
-                path
-            }
-        };
-        let Some(path) = path else {
-            if scratch.last_search_exhausted() {
-                // Both baseline and candidate searches are lower bounds on
-                // connectivity after adding the candidate's blocking tiles.
-                for reached_start in starts
-                    .iter()
-                    .copied()
-                    .filter(|tile| scratch.last_search_reached(*tile))
-                {
-                    for unreachable_goal in goals
-                        .iter()
-                        .copied()
-                        .filter(|tile| !scratch.last_search_reached(*tile))
-                    {
-                        proven_unreachable.insert((reached_start, unreachable_goal));
-                    }
-                }
-            }
-            continue;
-        };
-        let replace = best
-            .as_ref()
-            .is_none_or(|(best_start, best_goal, best_path)| {
-                (
-                    path_cost(&path),
-                    path.len(),
-                    start.y,
-                    start.x,
-                    goal.y,
-                    goal.x,
-                    path.as_slice(),
-                ) < (
-                    path_cost(best_path),
-                    best_path.len(),
-                    best_start.y,
-                    best_start.x,
-                    best_goal.y,
-                    best_goal.x,
-                    best_path.as_slice(),
-                )
-            });
-        if replace {
-            best = Some((start, goal, path));
-        }
-    }
-    best
-}
-
-fn octile_cost(start: TilePos, goal: TilePos) -> u32 {
-    let dx = (start.x - goal.x).unsigned_abs();
-    let dy = (start.y - goal.y).unsigned_abs();
-    10 * dx.max(dy) + 4 * dx.min(dy)
+    routes.paths.shortest(starts, goals, baseline)
 }
 
 #[cfg(test)]
@@ -3645,31 +3392,12 @@ fn shortest_path_between_exhaustive(
         })
 }
 
-fn path_cost(path: &[TilePos]) -> u32 {
-    path.windows(2).fold(0, |cost, pair| {
-        cost + if pair[0].x != pair[1].x && pair[0].y != pair[1].y {
-            14
-        } else {
-            10
-        }
-    })
-}
-
 fn candidate_affects_path(
     path: &[TilePos],
     candidate: PlacementFootprint,
     domain: DefenseDomain,
 ) -> bool {
-    if domain == DefenseDomain::Air || !candidate.blocks_ground {
-        return false;
-    }
-    path.iter().any(|tile| candidate.blocks(*tile))
-        || path.windows(2).any(|pair| {
-            pair[0].x != pair[1].x
-                && pair[0].y != pair[1].y
-                && (candidate.blocks(TilePos::new(pair[1].x, pair[0].y))
-                    || candidate.blocks(TilePos::new(pair[0].x, pair[1].y)))
-        })
+    routing_cache::overlay(candidate, domain).is_some_and(|overlay| overlay.affects_path(path))
 }
 
 fn scrap_work_tiles(
@@ -3793,6 +3521,33 @@ fn planned_defenses(obs: &Observation, domain: DefenseDomain) -> Vec<PlannedDefe
     planned
 }
 
+fn defense_candidate_tiles(
+    policy: &UtilityPolicy,
+    obs: &Observation,
+    assets: &[DefendedAsset],
+    approaches: &[Approach],
+    profile: DefenseProfile,
+    placement: &super::terrain::PlacementGeometry<'_>,
+) -> Vec<TilePos> {
+    let seeds = approaches.iter().flat_map(|approach| {
+        approach
+            .path
+            .iter()
+            .rev()
+            .take(INTERCEPTION_DEPTH + 1)
+            .copied()
+            .chain(assets[approach.asset].shape.candidate_seeds())
+    });
+    let mut candidate_tiles = crate::bot::navigation::areas::square_neighborhoods(
+        obs.map_width,
+        obs.map_height,
+        seeds,
+        profile.candidate_reach,
+    );
+    candidate_tiles.retain(|&anchor| placement.valid(policy, profile.kind, anchor));
+    candidate_tiles
+}
+
 struct CoverageContext<'a> {
     obs: &'a Observation,
     briefing: &'a PublicMapBriefing,
@@ -3807,6 +3562,23 @@ fn score_coverage(
     profile: DefenseProfile,
     candidate: TilePos,
 ) -> Coverage {
+    if profile.kind == BuildingKind::Barricade {
+        return barricade::coverage(
+            context.assets,
+            context.planned,
+            candidate,
+            context.approaches.iter().map(barricade::ApproachCost::from),
+        );
+    }
+    coverage::Batch::new(context, profile).score(candidate, |_| true)
+}
+
+#[cfg(test)]
+fn reference_score_coverage(
+    context: &CoverageContext<'_>,
+    profile: DefenseProfile,
+    candidate: TilePos,
+) -> Coverage {
     let CoverageContext {
         obs,
         briefing,
@@ -3815,50 +3587,19 @@ fn score_coverage(
         existing,
         planned,
     } = context;
-    let mut coverage = Coverage {
-        new: 0,
-        reinforced: 0,
-        unplanned_new: 0,
-        unplanned_reinforced: 0,
-        interception: 0,
-        protected_value: 0,
-        planned_overlap: 0,
-        blind_exposure: 0,
-        spotted_reach: 0,
-        redundant: 0,
-        lateral: i32::MAX,
-    };
+    if profile.kind == BuildingKind::Barricade {
+        return barricade::coverage(
+            assets,
+            planned,
+            candidate,
+            approaches.iter().map(barricade::ApproachCost::from),
+        );
+    }
+    let mut coverage = Coverage::empty();
     for (asset_index, asset) in assets.iter().enumerate() {
         let asset_approaches = approaches
             .iter()
             .filter(|approach| approach.asset == asset_index);
-        if profile.kind == BuildingKind::Barricade {
-            let best_detour = asset_approaches
-                .filter(|approach| approach.disrupted)
-                .map(|approach| path_cost(&approach.path).saturating_sub(approach.baseline_cost))
-                .filter(|detour| *detour > 0)
-                .max();
-            if let Some(detour) = best_detour {
-                coverage.new = coverage.new.saturating_add(asset.value);
-                coverage.unplanned_new = coverage.unplanned_new.saturating_add(asset.value);
-                coverage.protected_value = coverage.protected_value.saturating_add(asset.value);
-                coverage.interception = coverage.interception.saturating_add(
-                    asset
-                        .value
-                        .saturating_mul(detour.div_ceil(10).min(INTERCEPTION_DEPTH as u32)),
-                );
-                coverage.lateral = 0;
-                if planned.iter().any(|defense| {
-                    defense.profile.kind == BuildingKind::Barricade
-                        && defense.anchor.chebyshev(candidate) <= 2
-                }) {
-                    coverage.planned_overlap = coverage
-                        .planned_overlap
-                        .saturating_add(asset.value.saturating_mul(detour.div_ceil(10)));
-                }
-            }
-            continue;
-        }
 
         let mut protects = false;
         let mut adds_new = false;
@@ -3870,6 +3611,7 @@ fn score_coverage(
         let mut blind_exposure = false;
         let mut uses_spotter = false;
         let mut best_depth = 0;
+        let mut novel_tiles = BTreeSet::new();
         for approach in asset_approaches {
             for (index, tile) in approach.path.iter().copied().enumerate() {
                 if profile.kind == BuildingKind::Bastion
@@ -3906,6 +3648,9 @@ fn score_coverage(
                     0 => {
                         adds_new = true;
                         adds_unplanned_new |= !planned_coverage;
+                        if !planned_coverage {
+                            novel_tiles.insert(tile);
+                        }
                     }
                     1 => {
                         reinforces = true;
@@ -3924,6 +3669,11 @@ fn score_coverage(
             }
         }
         if protects {
+            coverage.novel_span = coverage.novel_span.saturating_add(
+                asset
+                    .value
+                    .saturating_mul(novel_tiles.len().min(INTERCEPTION_DEPTH) as u32),
+            );
             coverage.protected_value = coverage.protected_value.saturating_add(asset.value);
             if adds_new {
                 coverage.new = coverage.new.saturating_add(asset.value);
@@ -4149,7 +3899,7 @@ fn weapon_covers_point(
 }
 
 fn closest_point_to_footprint(anchor: TilePos, size: (i32, i32), from: Vec2Fx) -> Vec2Fx {
-    let half = Fx::lit("0.5");
+    let half = chassis::fx::HALF;
     let min = anchor.center() - Vec2Fx::new(half, half);
     let max = min + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1));
     Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
@@ -4271,6 +4021,86 @@ mod tests {
         PublicMapBriefing::from_scenario(&scenario_with(|_| '.')).expect("briefing fixture")
     }
 
+    #[test]
+    fn defensive_refit_values_local_protection_without_searching_army_routes() {
+        let map = briefing();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        let turret = building(30, obs.me, BuildingKind::Turret, LEFT_HOME.offset(4, 0));
+        obs.my_buildings.push(turret.clone());
+        let policy = UtilityPolicy::new();
+        let context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
+        let ((benefit, evidence), work) =
+            crate::bot::navigation::work::measure(|| context.upgrade_quote(&turret, 6_000));
+        assert!(benefit >= u64::from(turret.kind.upgrade_from(0).unwrap().cost));
+        assert_eq!(evidence, DefenseOpportunityEvidence::PublicPrior);
+        assert_eq!(work.searches, 0);
+        assert_eq!(work.fields, 0);
+        assert_eq!(work.paths, 0);
+        assert_eq!(context.upgrade_quote(&turret, 1).0, 0);
+
+        let mut damaged = turret.clone();
+        damaged.hp /= 2;
+        assert!(context.upgrade_quote(&damaged, 6_000).0 < benefit);
+        let remote = building(31, obs.me, BuildingKind::Turret, TilePos::new(20, 0));
+        assert_eq!(context.upgrade_quote(&remote, 6_000).0, 0);
+
+        obs.enemy_units.push(unit(
+            90,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            turret.anchor.offset(3, 0),
+        ));
+        let context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
+        assert_eq!(
+            context.upgrade_quote(&turret, 6_000),
+            (0, DefenseOpportunityEvidence::CurrentArmed)
+        );
+    }
+
+    #[test]
+    fn defensive_refit_does_not_value_ground_threats_across_sealed_terrain() {
+        let map =
+            PublicMapBriefing::from_scenario(&scenario_with(
+                |tile| {
+                    if tile.x == 20 { '^' } else { '.' }
+                },
+            ))
+            .unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        let turret = building(30, obs.me, BuildingKind::Turret, LEFT_HOME.offset(4, 0));
+        obs.my_buildings.push(turret.clone());
+        obs.enemy_units.push(unit(
+            90,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            TilePos::new(30, 10),
+        ));
+        let policy = UtilityPolicy::new();
+        let context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
+        assert_eq!(context.upgrade_quote(&turret, 6_000).0, 0);
+    }
+
     fn barricade_lane(tile: TilePos) -> char {
         let bypass = tile.y == 9 && ((11..=13).contains(&tile.x) || (26..=28).contains(&tile.x));
         let main_lane = (10..=11).contains(&tile.y);
@@ -4382,6 +4212,79 @@ mod tests {
     }
 
     #[test]
+    fn coverage_batch_preserves_repeated_paths_and_asset_masks() {
+        let map = PublicMapBriefing::from_scenario(&scenario_with(|_| '.')).unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.my_buildings.push(building(
+            8,
+            obs.me,
+            BuildingKind::Turret,
+            TilePos::new(9, 8),
+        ));
+        obs.my_buildings.push(building(
+            9,
+            obs.me,
+            BuildingKind::Bastion,
+            TilePos::new(8, 12),
+        ));
+        let mut planned = building(10, obs.me, BuildingKind::Turret, TilePos::new(11, 8));
+        planned.built = false;
+        obs.my_buildings.push(planned);
+        let policy = UtilityPolicy::new();
+        let grounding = DefenseGrounding::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+        );
+        for kind in [
+            BuildingKind::Turret,
+            BuildingKind::Bastion,
+            BuildingKind::FlakTurret,
+            BuildingKind::ScuttleCharge,
+        ] {
+            let profile = DefenseProfile::for_kind(kind).unwrap();
+            let projection =
+                strategic_lane_projection(&obs, &[], &[], &grounding, profile.domain).unwrap();
+            assert!(!projection.approaches.is_empty());
+            let mut approaches = projection.approaches.clone();
+            for _ in 0..3 {
+                approaches.extend(projection.approaches.clone());
+            }
+            let context = CoverageContext {
+                obs: &obs,
+                briefing: &map,
+                assets: &grounding.assets,
+                approaches: &approaches,
+                existing: &projection.existing,
+                planned: &projection.planned,
+            };
+            let batch = coverage::Batch::new(&context, profile);
+            for parity in 0..2 {
+                let selected: Vec<_> = approaches
+                    .iter()
+                    .filter(|a| a.asset % 2 == parity)
+                    .cloned()
+                    .collect();
+                let reference = CoverageContext {
+                    approaches: &selected,
+                    ..context
+                };
+                for y in (0..HEIGHT).step_by(3) {
+                    for x in (0..WIDTH).step_by(3) {
+                        let anchor = TilePos::new(x, y);
+                        assert_eq!(
+                            batch.score(anchor, |asset| asset % 2 == parity),
+                            reference_score_coverage(&reference, profile, anchor),
+                            "{kind:?}, {anchor:?}, {parity}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn site_bounds_preserve_exact_quotes_across_roles_and_obstacles() {
         for shape in 0..3 {
             let scenario = scenario_with(|tile| {
@@ -4417,7 +4320,12 @@ mod tests {
                     BuildingKind::Barricade,
                 ] {
                     let policy = UtilityPolicy::new();
-                    let grounding = DefenseGrounding::new(&policy, &obs, &map);
+                    let grounding = DefenseGrounding::new(
+                        crate::bot::query_work::QueryPurpose::NavigationTest,
+                        &policy,
+                        &obs,
+                        &map,
+                    );
                     let profile = DefenseProfile::for_kind(kind).unwrap();
                     let projection =
                         strategic_lane_projection(&obs, &[], &[], &grounding, profile.domain)
@@ -4468,6 +4376,11 @@ mod tests {
                                 existing: &projection.existing,
                                 planned: &projection.planned,
                             };
+                            assert_eq!(
+                                score_coverage(&context, profile, anchor),
+                                reference_score_coverage(&context, profile, anchor),
+                                "batched coverage: {shape}, {defended}, {kind:?}, {anchor:?}"
+                            );
                             let exact = Candidate {
                                 anchor,
                                 builder_travel: 0,
@@ -4517,7 +4430,12 @@ mod tests {
             .to_vec();
         obs.visible.fill(true);
         let policy = UtilityPolicy::new();
-        let grounding = DefenseGrounding::new(&policy, &obs, &map);
+        let grounding = DefenseGrounding::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+        );
         let placement = PlacementFootprint {
             anchor: TilePos::new(8, 3),
             size: BuildingKind::Bastion.base_stats().size,
@@ -4722,12 +4640,197 @@ mod tests {
     }
 
     #[test]
+    fn barricade_costs_match_canonical_routes_for_mixed_threats_and_candidate_layouts() {
+        for lane in [false, true] {
+            let scenario = scenario_with(|tile| if lane { barricade_lane(tile) } else { '.' });
+            let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+            let mut obs = observation(PlayerId(0), LEFT_HOME);
+            if lane {
+                obs.known_peaks = (0..HEIGHT)
+                    .flat_map(|y| (0..WIDTH).map(move |x| TilePos::new(x, y)))
+                    .filter(|tile| barricade_lane(*tile) == '^')
+                    .collect();
+                obs.known_rock = obs.known_peaks.clone();
+            }
+            let policy = UtilityPolicy::new();
+            let starts = policy.uncleared_hostile_starts(&map, obs.me);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &starts,
+            )
+            .retained(&policy, false);
+            let assets = defended_assets(&policy, &obs, &ground);
+            let mut origins =
+                threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
+            for (tie, kind) in [(10, UnitKind::Sentinel), (11, UnitKind::Avalanche)] {
+                origins.push(ThreatOrigin {
+                    anchor: RIGHT_HOME.offset(-2, 0),
+                    size: None,
+                    capability: ThreatCapability::Mobile(kind),
+                    tie,
+                });
+            }
+            let baseline = approaches(&ground, &origins, &assets, None, DefenseDomain::Ground);
+            let anchors = sorted_tiles(
+                baseline
+                    .iter()
+                    .flat_map(|approach| approach.path.iter().copied()),
+            );
+            assert!(anchors.len() > 10);
+            let profile = DefenseProfile::for_kind(BuildingKind::Barricade).unwrap();
+            let mut cache = DefenseEvaluationCache::default();
+            for anchor in anchors.into_iter().step_by(2) {
+                let candidate = profile.footprint(anchor);
+                let expected = operationally_supported_approaches(
+                    &ground,
+                    &assets,
+                    &baseline,
+                    candidate,
+                    DefenseDomain::Ground,
+                    Some(MAX_BARRICADE_DETOUR_COST),
+                );
+                let actual =
+                    barricade::supported_costs(&ground, &assets, &baseline, candidate, &mut cache);
+                assert_eq!(
+                    actual,
+                    expected
+                        .as_ref()
+                        .map(|paths| paths.iter().map(barricade::ApproachCost::from).collect()),
+                    "lane {lane}, candidate {anchor:?}"
+                );
+                if let (Some(costs), Some(paths)) = (actual, expected) {
+                    assert_eq!(
+                        barricade::threat_summary(
+                            &costs,
+                            DefenseOpportunityEvidence::CurrentFoothold
+                        ),
+                        candidate_threat_summary(
+                            &obs,
+                            &map,
+                            &[],
+                            &[],
+                            profile,
+                            anchor,
+                            &paths,
+                            DefenseOpportunityEvidence::CurrentFoothold,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn barricade_quotes_use_shared_cost_queries_across_decisions() {
+        let scenario = scenario_with(barricade_lane);
+        let map = PublicMapBriefing::from_scenario(&scenario).expect("lane briefing");
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.my_units[0].tile = LEFT_HOME.offset(3, 1);
+        obs.known_peaks = (0..HEIGHT)
+            .flat_map(|y| (0..WIDTH).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| barricade_lane(*tile) == '^')
+            .collect();
+        obs.known_rock = obs.known_peaks.clone();
+        let builders: Vec<_> = obs.my_units.iter().collect();
+        let policy = UtilityPolicy::new();
+        let quote = || {
+            policy.strategic_defense_quote_grounded(
+                BuildingKind::Barricade,
+                &obs,
+                &map,
+                &[],
+                &[],
+                &builders,
+                &mut None,
+            )
+        };
+        let (first, cold_navigation) = crate::bot::navigation::work::measure(quote);
+        let first = first.expect("a useful wall site");
+        let work = policy.defense_routing_cache.borrow().costs.work();
+        assert!(
+            work.set_searches > 0,
+            "wall detours must use the shared endpoint-set cost query"
+        );
+        assert_eq!(
+            work.pair_searches, 0,
+            "this graph fits one complete set search"
+        );
+        let (second, warm_navigation) = crate::bot::navigation::work::measure(quote);
+        assert_eq!(second, Some(first));
+        assert!(cold_navigation.searches <= 64, "{cold_navigation:?}");
+        assert!(cold_navigation.expanded <= 1_600, "{cold_navigation:?}");
+        assert!(cold_navigation.paths <= 32, "{cold_navigation:?}");
+        assert!(cold_navigation.generations <= 3, "{cold_navigation:?}");
+        assert!(warm_navigation.searches <= 24, "{warm_navigation:?}");
+        assert!(warm_navigation.expanded <= 480, "{warm_navigation:?}");
+        assert!(warm_navigation.paths <= 12, "{warm_navigation:?}");
+        assert_eq!(warm_navigation.fields, 0);
+        assert_eq!(warm_navigation.generations, 0);
+        let repeated = policy.defense_routing_cache.borrow().costs.work();
+        assert_eq!(repeated.set_searches, work.set_searches);
+        assert!(repeated.hits > work.hits);
+    }
+
+    #[test]
+    fn candidate_enumeration_does_not_run_route_or_egress_proofs() {
+        let obs = observation(PlayerId(0), LEFT_HOME);
+        let map = briefing();
+        let policy = UtilityPolicy::new();
+        let starts = policy.uncleared_hostile_starts(&map, obs.me);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
+        let assets = defended_assets(&policy, &obs, &ground);
+        let baseline = approaches(
+            &ground,
+            &threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3],
+            &assets,
+            None,
+            DefenseDomain::Ground,
+        );
+        assert!(!baseline.is_empty());
+        policy.prepare_ground_producer_egress(&obs);
+        let profile = DefenseProfile::for_kind(BuildingKind::Turret).unwrap();
+        let (candidates, work) = crate::bot::navigation::work::measure(|| {
+            defense_candidate_tiles(
+                &policy,
+                &obs,
+                &assets,
+                &baseline,
+                profile,
+                &super::terrain::PlacementGeometry::new(&obs),
+            )
+        });
+        assert!(!candidates.is_empty());
+        assert_eq!(work.searches, 0, "{work:?}");
+        assert_eq!(work.fields, 0, "{work:?}");
+        assert_eq!(work.paths, 0, "{work:?}");
+        assert!(
+            candidates
+                .windows(2)
+                .all(|pair| (pair[0].y, pair[0].x) < (pair[1].y, pair[1].x))
+        );
+    }
+
+    #[test]
     fn one_think_context_reuses_exact_projection_and_route_answers() {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let map = briefing();
         let builders: Vec<_> = obs.my_units.iter().collect();
         let policy = UtilityPolicy::new();
-        let mut context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let mut context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
 
         for kind in [
             BuildingKind::Turret,
@@ -4735,15 +4838,17 @@ mod tests {
             BuildingKind::FlakTurret,
             BuildingKind::ScuttleCharge,
         ] {
-            let uncached = policy.strategic_defense_quote_grounded(
-                kind,
+            let cold_policy = policy.clone();
+            let mut cold_context = DefenseThinkContext::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &cold_policy,
                 &obs,
                 &map,
                 &[],
                 &[],
-                &builders,
-                &mut None,
             );
+            let uncached =
+                cold_policy.strategic_defense_quote_in_context(kind, &builders, &mut cold_context);
             let first = policy.strategic_defense_quote_in_context(kind, &builders, &mut context);
             let repeated = policy.strategic_defense_quote_in_context(kind, &builders, &mut context);
             assert_eq!(first, uncached, "{kind:?} changed under the think cache");
@@ -4767,7 +4872,8 @@ mod tests {
         assert!(stats.builder_travel_hits > 0);
         assert!(stats.resource_access_hits > 0);
         assert!(stats.supported_assets_hits > 0);
-        assert!(stats.rerouted_approach_hits > 0);
+        assert!(stats.coverage_batches > 0);
+        assert!(stats.coverage_scores > stats.coverage_batches);
         assert_eq!(policy.harvest_danger_build_count(), 1);
     }
 
@@ -4976,6 +5082,49 @@ mod tests {
     }
 
     #[test]
+    fn local_support_uses_one_bounded_flood_for_all_assets() {
+        let scenario = scenario_with(|tile| if tile.x == 18 && tile.y > 0 { '^' } else { '.' });
+        let briefing = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let obs = observation(PlayerId(0), LEFT_HOME);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &briefing,
+            &[],
+        );
+        let assets = [
+            TilePos::new(13, 10),
+            TilePos::new(20, 10),
+            TilePos::new(30, 10),
+        ]
+        .into_iter()
+        .map(|tile| DefendedAsset {
+            value: 1,
+            shape: AssetShape::Scrap {
+                tiles: vec![tile],
+                work_tiles: vec![tile],
+            },
+            access: None,
+        })
+        .collect::<Vec<_>>();
+        let candidate = DefenseProfile::for_kind(BuildingKind::Turret)
+            .unwrap()
+            .footprint(TilePos::new(16, 10));
+        let (supported, work) = crate::bot::navigation::work::measure(|| {
+            supported_assets_for_candidate(&ground, &assets, candidate)
+        });
+        assert_eq!(
+            supported,
+            BTreeSet::from([0]),
+            "nearby assets behind a long detour and distant assets are unsupported"
+        );
+        assert_eq!(work.searches, 1);
+        assert_eq!(work.paths, 0);
+        assert_eq!(work.fields, 0);
+        assert!(work.expanded <= 20 * 20, "{work:?}");
+    }
+
+    #[test]
     fn single_defense_candidates_preserve_a_deferred_foundry_future_egress() {
         let foundry_anchor = TilePos::new(10, 10);
         let exit = TilePos::new(12, 10);
@@ -5004,12 +5153,28 @@ mod tests {
         obs.my_units[0].founding = Some((BuildingKind::Foundry, foundry_anchor));
         let orientation = Orientation::for_home(&obs, LEFT_HOME);
         let policy = UtilityPolicy::new();
-        let mut context =
-            DefenseThinkContext::new_oriented(&policy, &obs, &map, &[], &[], orientation);
+        let mut context = DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+            orientation,
+        );
 
-        assert!(context.future_ground_producer_egress_survives(BuildingKind::Turret, safe_site,));
-        assert!(!context.future_ground_producer_egress_survives(BuildingKind::Turret, exit,));
-        assert!(!context.future_ground_producer_egress_survives(BuildingKind::Array, exit,));
+        let (_, work) = crate::bot::navigation::work::measure(|| {
+            assert!(
+                context.future_ground_producer_egress_survives(BuildingKind::Turret, safe_site)
+            );
+            assert!(!context.future_ground_producer_egress_survives(BuildingKind::Turret, exit));
+            assert!(!context.future_ground_producer_egress_survives(BuildingKind::Array, exit));
+        });
+        assert_eq!(
+            work.paths, 0,
+            "egress needs connectivity, not a shortest route"
+        );
+        assert_eq!(work.fields, 0);
         let stats = context.cache_stats();
         assert_eq!(stats.future_producer_baseline_builds, 1);
         assert_eq!(stats.future_producer_egress_builds, 2);
@@ -5042,13 +5207,36 @@ mod tests {
         );
         let policy = UtilityPolicy::new();
         let builders = vec![&obs.my_units[0]];
-        let mut unguarded = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        assert!(matches!(
+            policy.planning.site(
+                obs.tick,
+                BuildingKind::Turret,
+                &[exit],
+                |_| Some(()),
+                |_, _| false,
+            ),
+            crate::bot::planning::Progress::Ready(())
+        ));
+        let mut unguarded = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
         let otherwise_best = policy
-            .strategic_defense_quote_in_context(BuildingKind::Turret, &builders, &mut unguarded)
+            .strategic_defense_quote_in_context_search(
+                BuildingKind::Turret,
+                &builders,
+                &mut unguarded,
+                DefenseSiteSearch::Progressive,
+            )
             .expect("the public approach has an otherwise-useful Turret site");
         assert_eq!(otherwise_best.placement.anchor, exit);
 
         let mut guarded = DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
             &policy,
             &obs,
             &map,
@@ -5129,7 +5317,12 @@ mod tests {
     fn planned_producer_doorstep_tie_breaks_in_the_authoritative_frame() {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let map = briefing();
-        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         let footprint = PlacementFootprint {
             anchor: TilePos::new(8, 11),
             size: BuildingKind::Foundry.base_stats().size,
@@ -5265,7 +5458,12 @@ mod tests {
             "the southeast hostile prior must not strand the long gun behind home: {selected}",
         );
         let starts = UtilityPolicy::new().uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&UtilityPolicy::new(), &obs, &ground);
         let approaches = approaches(
             &ground,
@@ -5554,7 +5752,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins =
             threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -5595,7 +5798,12 @@ mod tests {
             .collect();
         corridor_obs.known_peaks = corridor_obs.known_rock.clone();
         let corridor_starts = policy.uncleared_hostile_starts(&corridor_map, corridor_obs.me);
-        let corridor_ground = GroundKnowledge::new(&corridor_obs, &corridor_map, &corridor_starts);
+        let corridor_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &corridor_obs,
+            &corridor_map,
+            &corridor_starts,
+        );
         let corridor_assets = defended_assets(&policy, &corridor_obs, &corridor_ground);
         let corridor_baseline = approaches(
             &corridor_ground,
@@ -5659,7 +5867,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins =
             threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -5934,7 +6147,12 @@ mod tests {
         visible.enemy_buildings.push(hostile.clone());
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, visible.me);
-        let ground = GroundKnowledge::new(&visible, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &visible,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &visible, &ground);
         let expansion_asset = assets
             .iter()
@@ -5970,7 +6188,12 @@ mod tests {
         let mut dark = visible.clone();
         dark.enemy_buildings.clear();
         let remembered = remembered_building(&hostile, dark.tick);
-        let remembered_ground = GroundKnowledge::new(&dark, &map, &starts);
+        let remembered_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &dark,
+            &map,
+            &starts,
+        );
         let remembered_origins = threat_origin_tiers(
             &dark,
             &[],
@@ -6014,7 +6237,12 @@ mod tests {
                 .push(building(20, PlayerId(1), kind, anchor));
             let policy = UtilityPolicy::new();
             let starts = policy.uncleared_hostile_starts(&map, obs.me);
-            let ground = GroundKnowledge::new(&obs, &map, &starts);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &starts,
+            );
             let origins = threat_origin_tiers(&obs, &[], &[], &starts, domain)[1].clone();
             let routes = approaches(
                 &ground,
@@ -6170,7 +6398,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let asset = DefendedAsset {
             value: 16,
             shape: AssetShape::Building {
@@ -6329,7 +6562,12 @@ mod tests {
         let obs = Observation::omniscient(&state, PlayerId(0));
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let home_asset = assets
             .iter()
@@ -6407,7 +6645,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(UnitKind::Avalanche), None]
         );
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let asset = DefendedAsset {
             value: 16,
             shape: AssetShape::Building {
@@ -6449,7 +6692,12 @@ mod tests {
             TilePos::new(30, 19),
         ];
         let hostile_starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &hostile_starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &hostile_starts,
+        );
 
         for (candidate, domain) in [
             (None, DefenseDomain::Ground),
@@ -6477,7 +6725,12 @@ mod tests {
             .hostile_starting_foundries(obs.me)
             .copied()
             .collect();
-        let divided = GroundKnowledge::new(&obs, &divided_map, &divided_starts);
+        let divided = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &divided_map,
+            &divided_starts,
+        );
         assert_eq!(
             shortest_path_between(&divided, &starts, &goals, None, DefenseDomain::Ground,),
             shortest_path_between_exhaustive(
@@ -6496,7 +6749,12 @@ mod tests {
         let scenario = scenario_with(|tile| if tile.x == 20 { '#' } else { '.' });
         let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
         let obs = observation(PlayerId(0), LEFT_HOME);
-        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         let candidate = PlacementFootprint {
             anchor: TilePos::new(1, 1),
             size: (1, 1),
@@ -6563,7 +6821,12 @@ mod tests {
         let map = PublicMapBriefing::from_scenario(&scenario).expect("route-cache briefing");
         let obs = observation(PlayerId(0), LEFT_HOME);
         let hostile_starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &hostile_starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &hostile_starts,
+        );
         let starts = [TilePos::new(8, 4), TilePos::new(8, 12), TilePos::new(8, 19)];
         let goals = [
             TilePos::new(30, 4),
@@ -6633,7 +6896,12 @@ mod tests {
             let obs = observation(PlayerId(0), LEFT_HOME);
             let policy = UtilityPolicy::new();
             let starts = policy.uncleared_hostile_starts(&map, obs.me);
-            let ground = GroundKnowledge::new(&obs, &map, &starts);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &starts,
+            );
             let asset = DefendedAsset {
                 value: 16,
                 shape: AssetShape::Building {
@@ -6676,8 +6944,12 @@ mod tests {
             let oriented_obs = orientation.observe(&right);
             let oriented_map = orientation.briefing(&map);
             let oriented_starts = policy.uncleared_hostile_starts(&oriented_map, oriented_obs.me);
-            let oriented_ground =
-                GroundKnowledge::new(&oriented_obs, &oriented_map, &oriented_starts);
+            let oriented_ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &oriented_obs,
+                &oriented_map,
+                &oriented_starts,
+            );
             let oriented_asset = DefendedAsset {
                 shape: AssetShape::Building {
                     anchor: LEFT_HOME,
@@ -6703,7 +6975,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let asset = DefendedAsset {
             value: 16,
             shape: AssetShape::Building {
@@ -6821,7 +7098,12 @@ mod tests {
         };
         let policy = UtilityPolicy::new();
         let first_starts = policy.uncleared_hostile_starts(&map, first_obs.me);
-        let first_ground = GroundKnowledge::new(&first_obs, &map, &first_starts);
+        let first_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &first_obs,
+            &map,
+            &first_starts,
+        );
         let first_route = approaches(
             &first_ground,
             &[origin],
@@ -6831,7 +7113,12 @@ mod tests {
         );
 
         let oriented_starts = policy.uncleared_hostile_starts(&oriented_map, oriented_obs.me);
-        let oriented_ground = GroundKnowledge::new(&oriented_obs, &oriented_map, &oriented_starts);
+        let oriented_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &oriented_obs,
+            &oriented_map,
+            &oriented_starts,
+        );
         let oriented_origin = ThreatOrigin {
             anchor: source,
             ..origin
@@ -6872,7 +7159,12 @@ mod tests {
         ]);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let home_asset = assets
             .iter()
@@ -6892,6 +7184,119 @@ mod tests {
                 .collect();
 
         assert_eq!(sources, BTreeSet::from([north, east]));
+    }
+
+    #[test]
+    fn voluntary_fronts_share_clumped_routes_but_keep_directions_and_weapon_roles() {
+        let map = briefing();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.enemy_units = (0..6)
+            .map(|index| {
+                unit(
+                    20 + index,
+                    PlayerId(1),
+                    UnitKind::Sentinel,
+                    TilePos::new(20 + index as i32, 10),
+                )
+            })
+            .chain([
+                unit(30, PlayerId(1), UnitKind::Avalanche, TilePos::new(24, 11)),
+                unit(31, PlayerId(1), UnitKind::Sentinel, TilePos::new(4, 1)),
+            ])
+            .collect();
+        let policy = UtilityPolicy::new();
+        let starts = policy.uncleared_hostile_starts(&map, obs.me);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
+        let assets = defended_assets(&policy, &obs, &ground);
+        let origins = &threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[0];
+        let reference = approaches(&ground, origins, &assets, None, DefenseDomain::Ground);
+        let crate::bot::planning::Progress::Ready(selected) =
+            fronts::approaches(&ground, origins, &assets, DefenseDomain::Ground)
+        else {
+            panic!("the small front fixture must finish in one decision");
+        };
+        assert!(!selected.is_empty());
+        assert!(selected.len() < reference.len());
+        assert!(
+            selected
+                .iter()
+                .any(|approach| approach.source.anchor == TilePos::new(4, 1))
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|approach| approach.source.mobile_kind() == Some(UnitKind::Avalanche))
+        );
+        for approach in selected {
+            assert!(
+                reference.contains(&approach),
+                "a representative must retain an exact reachable approach"
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_current_threat_coverage_does_not_fall_back_to_public_priors() {
+        use crate::bot::planning::{PlanningWork, Progress};
+        let map = briefing();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.enemy_units = vec![unit(
+            20,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            TilePos::new(WIDTH - 5, HEIGHT / 2),
+        )];
+        let mut policy = UtilityPolicy::new();
+        policy.planning = PlanningWork::with_allowance(300);
+        let started = obs.tick;
+        let mut context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
+        context.ensure_projection(DefenseDomain::Ground);
+        assert!(
+            context.ground_projection.is_none(),
+            "unfinished current evidence is not an empty completed projection"
+        );
+        assert_eq!(policy.planning.stats().pending_approach_fields, 1);
+        drop(context);
+        for tick in (started + 12..started + 120).step_by(12) {
+            obs.tick = tick;
+            let grounding = DefenseGrounding::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &policy,
+                &obs,
+                &map,
+            );
+            match prepare_strategic_lane_projection(
+                &obs,
+                &[],
+                &[],
+                &grounding,
+                DefenseDomain::Ground,
+            ) {
+                Progress::Ready(Some(projection)) => {
+                    assert_eq!(
+                        projection.evidence,
+                        DefenseOpportunityEvidence::CurrentArmed
+                    );
+                    assert!(!projection.approaches.is_empty());
+                    return;
+                }
+                Progress::Deferred => assert!(policy.planning.spent() <= 300),
+                _ => panic!("a visible connected threat cannot become a no-threat verdict"),
+            }
+        }
+        panic!("coverage must finish without restarting its field at each decision");
     }
 
     #[test]
@@ -7017,6 +7422,7 @@ mod tests {
             reinforced: 0,
             unplanned_new: 16,
             unplanned_reinforced: 0,
+            novel_span: 0,
             interception: 64,
             protected_value: 16,
             planned_overlap: 0,
@@ -7263,7 +7669,12 @@ mod tests {
         let open_obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&open_map, open_obs.me);
-        let ground = GroundKnowledge::new(&open_obs, &open_map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &open_obs,
+            &open_map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &open_obs, &ground);
         let origins =
             threat_origin_tiers(&open_obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -7306,7 +7717,12 @@ mod tests {
             PublicMapBriefing::from_scenario(&corridor_scenario).expect("corridor briefing");
         let corridor_obs = observation(PlayerId(0), LEFT_HOME);
         let corridor_starts = policy.uncleared_hostile_starts(&corridor_map, corridor_obs.me);
-        let corridor_ground = GroundKnowledge::new(&corridor_obs, &corridor_map, &corridor_starts);
+        let corridor_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &corridor_obs,
+            &corridor_map,
+            &corridor_starts,
+        );
         let corridor_assets = defended_assets(&policy, &corridor_obs, &corridor_ground);
         let corridor_origins = threat_origin_tiers(
             &corridor_obs,
@@ -7351,7 +7767,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let source = ThreatOrigin {
             anchor: TilePos::new(10, 4),
             size: None,
@@ -7416,7 +7837,12 @@ mod tests {
         obs.my_units[0].harvesting = Some(scrap);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let access = assets
             .iter()
@@ -7443,7 +7869,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let work = TilePos::new(14, 20);
         let foundry_doorsteps =
             building_doorsteps(&ground, LEFT_HOME, BuildingKind::Foundry.base_stats().size);
@@ -7533,7 +7964,12 @@ mod tests {
         obs.my_units[0].carrying = 1;
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert!(ground.scrap.contains_key(&frontier));
         let assets = defended_assets(&policy, &obs, &ground);
         assert!(
@@ -7589,7 +8025,12 @@ mod tests {
         );
 
         obs.my_units[0].harvesting = Some(frontier);
-        let worked_ground = GroundKnowledge::new(&obs, &map, &starts);
+        let worked_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let worked_assets = defended_assets(&policy, &obs, &worked_ground);
         let resource_asset = worked_assets
             .iter()
@@ -7657,7 +8098,14 @@ mod tests {
         blocked_obs.known_peaks = (0..HEIGHT).map(|y| TilePos::new(20, y)).collect();
         blocked_obs.known_rock = blocked_obs.known_peaks.clone();
         let policy = UtilityPolicy::new();
-        let mut blocked = DefenseThinkContext::new(&policy, &blocked_obs, &blocked_map, &[], &[]);
+        let mut blocked = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &blocked_obs,
+            &blocked_map,
+            &[],
+            &[],
+        );
         assert_eq!(
             blocked.reinforcement_travel_cost(
                 &blocked_obs.my_units[0],
@@ -7694,7 +8142,14 @@ mod tests {
             .map(|y| TilePos::new(20, y))
             .collect();
         routed_obs.known_rock = routed_obs.known_peaks.clone();
-        let mut routed = DefenseThinkContext::new(&policy, &routed_obs, &routed_map, &[], &[]);
+        let mut routed = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &routed_obs,
+            &routed_map,
+            &[],
+            &[],
+        );
         assert!(
             routed
                 .reinforcement_travel_cost(
@@ -8170,6 +8625,7 @@ mod tests {
             reinforced: 0,
             unplanned_new,
             unplanned_reinforced: 0,
+            novel_span: 0,
             interception: 32,
             protected_value: new,
             planned_overlap,
@@ -8221,7 +8677,12 @@ mod tests {
             LEFT_HOME.offset(3, 0),
         ));
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins =
             threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -8473,7 +8934,12 @@ mod tests {
             .extend([vec![UnitKind::Condor], Vec::new(), Vec::new(), Vec::new()]);
         obs.my_units[0].site = Some(BuildingId(4));
         let starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&UtilityPolicy::new(), &obs, &ground);
         let value_at = |anchor| {
             assets.iter().find_map(|asset| match asset.shape {
@@ -8499,19 +8965,173 @@ mod tests {
         let mut obs = observation(PlayerId(0), LEFT_HOME);
         obs.explored[(scrap.y * WIDTH + scrap.x) as usize] = false;
         let starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let dark = GroundKnowledge::new(&obs, &map, &starts);
+        let dark = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert_eq!(
             dark.scrap.get(&scrap),
             Some(&crate::stats::RICH_SCRAP_NODE_AMOUNT)
         );
 
         obs.explored[(scrap.y * WIDTH + scrap.x) as usize] = true;
-        let depleted = GroundKnowledge::new(&obs, &map, &starts);
+        let depleted = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert!(!depleted.scrap.contains_key(&scrap));
 
         obs.known_scrap.push((scrap, 175));
-        let live = GroundKnowledge::new(&obs, &map, &starts);
+        let live = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert_eq!(live.scrap.get(&scrap), Some(&175));
+    }
+
+    #[test]
+    fn emergency_range_pruning_preserves_artillery_and_exact_nearby_routes() {
+        for scenario in [
+            scenario_with(|_| '.'),
+            scenario_with(|tile| {
+                if tile.x == 18 && tile.y != 3 {
+                    '^'
+                } else {
+                    '.'
+                }
+            }),
+        ] {
+            let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+            let obs = observation(PlayerId(0), LEFT_HOME);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &[],
+            );
+            let assets = vec![DefendedAsset {
+                value: 16,
+                shape: AssetShape::Building {
+                    anchor: LEFT_HOME,
+                    size: BuildingKind::Foundry.base_stats().size,
+                },
+                access: None,
+            }];
+            for kind in UnitKind::ALL {
+                let domain = if kind.stats().domain == Domain::Air {
+                    DefenseDomain::Air
+                } else {
+                    DefenseDomain::Ground
+                };
+                for y in (0..HEIGHT).step_by(6) {
+                    for x in (0..WIDTH).step_by(6) {
+                        let origins = [ThreatOrigin {
+                            anchor: TilePos::new(x, y),
+                            size: None,
+                            capability: ThreatCapability::Mobile(kind),
+                            tie: 0,
+                        }];
+                        let expected: Vec<_> = approaches(&ground, &origins, &assets, None, domain)
+                            .into_iter()
+                            .filter(|approach| {
+                                approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize
+                            })
+                            .collect();
+                        let actual: Vec<_> =
+                            emergency_approaches(&ground, &origins, &assets, domain).collect();
+                        assert_eq!(actual, expected, "{kind:?} at {x},{y}");
+                    }
+                }
+            }
+            let distant = [ThreatOrigin {
+                anchor: TilePos::new(WIDTH - 1, HEIGHT - 1),
+                size: None,
+                capability: ThreatCapability::Mobile(UnitKind::Sentinel),
+                tie: 0,
+            }];
+            let (result, work) = crate::bot::navigation::work::measure(|| {
+                emergency_approaches(&ground, &distant, &assets, DefenseDomain::Ground).next()
+            });
+            assert!(result.is_none());
+            assert_eq!(work.searches, 0, "{work:?}");
+        }
+    }
+
+    #[test]
+    fn resource_access_evidence_is_shared_and_invalidates_on_effective_inputs() {
+        let node = TilePos::new(12, 10);
+        let scenario = scenario_with(|tile| if tile == node { 's' } else { '.' });
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.explored.fill(false);
+        obs.my_units[0].harvesting = Some(node);
+        let mut policy = UtilityPolicy::new();
+        let mut ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
+        let (baseline, cold) =
+            crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
+        assert!(!baseline.is_empty());
+        assert!(cold.searches > 0);
+        let (reused, warm) =
+            crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
+        assert_eq!(reused, baseline);
+        assert_eq!(warm.searches, 0);
+
+        for y in 0..HEIGHT {
+            ground.ground_blocked[(y * WIDTH + 8) as usize] = true;
+        }
+        assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
+        let mut ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        *ground.scrap.get_mut(&node).unwrap() *= 2;
+        let (richer, repriced) =
+            crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
+        assert_eq!(repriced.searches, 0);
+        assert!(richer[0].value > baseline[0].value);
+        assert_eq!(
+            richer,
+            scrap_assets(&UtilityPolicy::new(), &ground, &[LEFT_HOME])
+        );
+        ground.scrap.remove(&node);
+        assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
+
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        assert!(scrap_assets(&policy, &ground, &[]).is_empty());
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        policy.dead_nodes.push(node);
+        assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
+        policy.dead_nodes.clear();
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        let mut idle = obs.clone();
+        idle.my_units[0].harvesting = None;
+        let idle_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &idle,
+            &map,
+            &[],
+        );
+        assert!(scrap_assets(&policy, &idle_ground, &[LEFT_HOME]).is_empty());
     }
 
     #[test]
@@ -8544,7 +9164,12 @@ mod tests {
         }
         obs.explored.fill(false);
         let starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = scrap_assets(&UtilityPolicy::new(), &ground, &[LEFT_HOME, expansion]);
         let defended: BTreeSet<_> = assets
             .iter()

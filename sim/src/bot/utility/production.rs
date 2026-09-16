@@ -29,6 +29,18 @@ pub(in crate::bot) struct CombatCoreStatus {
     pub(in crate::bot) ready: bool,
 }
 
+impl CombatCoreStatus {
+    /// The candidate must be included in this snapshot's projected strength.
+    pub(super) fn can_spare(&self, unit: &UnitObs) -> bool {
+        let strength = if ordinary_core_unit(unit.kind) {
+            crate::bot::executive::unit_strength(unit)
+        } else {
+            0
+        };
+        self.projected_strength.saturating_sub(strength) >= self.target_strength
+    }
+}
+
 /// Restore the opening ordinary-combat floor with shallow Sentinel orders.
 ///
 /// This is a survival prerequisite, not standing-army policy. Once the floor

@@ -4,6 +4,7 @@ use super::*;
 use crate::bot::allocation::{
     ClaimBundle, Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::trace::{RepairProgramTrace, SupportLifecycleReason, SupportLifecycleTrace};
 use crate::ids::Target;
 use chassis::Tick;
@@ -279,6 +280,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
         let candidates = self.fresh_repair_assignments(EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources: &resources,
             profile: &profile,
@@ -402,7 +404,8 @@ impl UtilityPolicy {
                 )
                 .with_repair_work(&work)
                 .with_funded_repairers(&funded_repairers);
-        let mut service_routes = crate::bot::standing_force::ServiceRouting::new(
+        let mut service_routes = crate::bot::navigation::service::ServiceRoutes::new(
+            QueryPurpose::SupportRouting,
             obs,
             Some(context.briefing),
             Some(context.orientation),
@@ -427,7 +430,11 @@ impl UtilityPolicy {
         }
         sites.sort_by_key(|tile| (tile.y, tile.x));
         sites.dedup();
+        if sites.is_empty() {
+            return Vec::new();
+        }
         let mut geometry = super::defense::DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::SupportRouting,
             self,
             obs,
             context.briefing,
@@ -500,10 +507,12 @@ impl UtilityPolicy {
                 key: EconomicInvestmentKey::Build { kind, anchor },
                 builder: Some(builder),
                 cost: stats.cost,
+                valuation_cost: stats.cost,
                 current_capital: stats.cost,
                 observed_at: obs.tick,
                 ready_at: obs.tick.saturating_add(delay),
                 deadline: obs.tick.saturating_add(1_800),
+                fund_by: obs.tick,
                 case: ProposalCase {
                     urgency: Urgency::Timely,
                     confidence: Confidence::Current,
@@ -561,6 +570,7 @@ impl UtilityPolicy {
         let danger = &snapshot.danger;
         let patients = &snapshot.patients;
         let mut routes = routing::RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::SupportRouting,
             obs,
             context.briefing,
             context.orientation,
@@ -799,6 +809,7 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let mut routes = routing::RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::SupportRouting,
             obs,
             context.briefing,
             context.orientation,
@@ -887,16 +898,19 @@ impl UtilityPolicy {
         worker: &UnitObs,
         patient: &Patient,
     ) -> bool {
-        routing::build_command_path_avoids_with_public_terrain_and_orientation(
+        routing::BuildRouteProjection::new(
+            QueryPurpose::SupportRouting,
             context.obs,
-            context.briefing,
+            Some(context.briefing),
+        )
+        .avoids(
             worker,
             routing::BuildCommandTarget {
                 anchor: patient.tile,
                 size: patient.size,
                 defer: false,
             },
-            context.orientation,
+            Some(context.orientation),
             |tile| snapshot.danger.contains(tile) || self.harvest_location_contested(tile),
         )
     }
@@ -937,6 +951,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources,
             profile,

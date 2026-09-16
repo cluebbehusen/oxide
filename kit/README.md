@@ -44,3 +44,6 @@ cargo clippy -p oxide-kit --all-targets --locked -- -D warnings
 the existing parallel executor. It retains bounded timing history and runs an
 independent atomic-progress watchdog. Diagnostic output is observational;
 recovery's prepared/completed journal alone determines the playable prefix.
+Bot-total timings include incremental planning work counters when a decision
+runs. The counters cover shared field and site refinement, not every synchronous
+planner operation; phase durations remain necessary for finding other stalls.

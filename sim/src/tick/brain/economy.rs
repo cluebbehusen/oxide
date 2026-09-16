@@ -787,6 +787,22 @@ fn replacement_source(
 ) -> Option<KnownSource> {
     let unit = state.unit(id).expect("caller checked");
     let from = unit.tile();
+    let dx = anchor.x - from.x;
+    let dy = anchor.y - from.y;
+    let reversed = if dx == 0 && dy == 0 {
+        unit.heading >= 128
+    } else {
+        dy > 0 || (dy == 0 && dx > 0)
+    };
+    let orientation = if reversed { -1 } else { 1 };
+    // Exact economic ties follow the worker's approach, including its hull
+    // bearing when standing on the anchor, rather than an absolute map corner.
+    let coordinates = |pos: TilePos| {
+        (
+            orientation * (pos.y - anchor.y),
+            orientation * (pos.x - anchor.x),
+        )
+    };
     let mut candidates = Vec::new();
     for dy in -HARVEST_ZONE_RADIUS..=HARVEST_ZONE_RADIUS {
         for dx in -HARVEST_ZONE_RADIUS..=HARVEST_ZONE_RADIUS {
@@ -805,7 +821,7 @@ fn replacement_source(
     // Distance is the leading selection key. Once any source at the nearest
     // reachable distance wins, no farther source can displace it, so avoid
     // paying for routes whose first key component already loses.
-    candidates.sort_by_key(|(distance, source)| (*distance, source.pos.y, source.pos.x));
+    candidates.sort_by_key(|(distance, source)| (*distance, coordinates(source.pos)));
     let mut best: Option<(SourceScore, KnownSource)> = None;
     for (distance, source) in candidates {
         if best.as_ref().is_some_and(|(key, _)| distance > key.0) {
@@ -819,14 +835,15 @@ fn replacement_source(
             SourceKind::Scrap => 1,
         };
         let pos = source.pos;
+        let (y, x) = coordinates(pos);
         let key = (
             distance,
             route_len,
             Reverse(source.amount),
             pos.chebyshev(anchor),
             kind_key,
-            pos.y,
-            pos.x,
+            y,
+            x,
         );
         if best.as_ref().is_none_or(|(old, _)| key < *old) {
             best = Some((key, source));
@@ -1635,6 +1652,78 @@ mod harvest_zone_tests {
             Some(foundry.id)
         );
         assert_eq!(danger.route_search_count() - before, 2);
+    }
+
+    #[test]
+    fn mirrored_workers_replace_depleted_sources_in_their_local_frame() {
+        let mirror = |pos: TilePos| TilePos::new(39 - pos.x, 23 - pos.y);
+        let anchor = TilePos::new(7, 3);
+        for (from, sources) in [
+            (TilePos::new(6, 4), [TilePos::new(7, 2), TilePos::new(8, 3)]),
+            (TilePos::new(6, 3), [TilePos::new(7, 2), TilePos::new(7, 4)]),
+            (anchor, [TilePos::new(7, 2), TilePos::new(8, 3)]),
+        ] {
+            for reverse_ids in [false, true] {
+                for heading in [0u8, 64, 128, 192] {
+                    let mut rows = vec![vec!['.'; 40]; 24];
+                    rows[4][4] = '1';
+                    rows[18][34] = '2';
+                    for pos in sources.into_iter().flat_map(|pos| [pos, mirror(pos)]) {
+                        rows[pos.y as usize][pos.x as usize] = 's';
+                    }
+                    let mut scenario = Scenario::skirmish();
+                    scenario.map = rows
+                        .into_iter()
+                        .map(|row| row.into_iter().collect())
+                        .collect();
+                    scenario.units = [from, mirror(from)]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(player, pos)| UnitSpec {
+                            player: player as u8,
+                            kind: UnitKind::Harvester,
+                            x: pos.x,
+                            y: pos.y,
+                        })
+                        .collect();
+                    if reverse_ids {
+                        scenario.units.reverse();
+                    }
+                    let mut state = scenario.build().unwrap();
+                    for unit in &mut state.units {
+                        unit.heading = if unit.player == PlayerId(0) {
+                            heading
+                        } else {
+                            heading.wrapping_add(128)
+                        };
+                    }
+                    let selected: Vec<_> = [PlayerId(0), PlayerId(1)]
+                        .into_iter()
+                        .map(|player| {
+                            let worker = state
+                                .units
+                                .iter()
+                                .find(|unit| unit.player == player)
+                                .unwrap();
+                            let anchor = if player == PlayerId(0) {
+                                anchor
+                            } else {
+                                mirror(anchor)
+                            };
+                            let danger = GroundSalvageDanger::capture(&state, player);
+                            replacement_source(&state, &danger, worker.id, anchor, Some(anchor))
+                                .unwrap()
+                                .pos
+                        })
+                        .collect();
+                    assert_eq!(
+                        selected[1],
+                        mirror(selected[0]),
+                        "from={from:?}, heading={heading}, reverse_ids={reverse_ids}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

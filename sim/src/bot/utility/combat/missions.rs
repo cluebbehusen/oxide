@@ -1,6 +1,7 @@
 use super::*;
 use crate::bot::executive::{ArmyId, ArmyMission, ArmyObjective, ArmyPurpose};
 use crate::bot::experience::{Doctrine, ExperienceKey};
+use crate::bot::query_work::QueryPurpose;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::bot) struct GroundMissionInputs {
@@ -12,6 +13,63 @@ pub(in crate::bot) struct GroundMissionInputs {
 }
 
 impl UtilityPolicy {
+    pub(super) fn approach_defense_strength(
+        &self,
+        obs: &Observation,
+        army: &Army,
+        goal: TilePos,
+        mode: PolicyMode<'_>,
+    ) -> Option<u64> {
+        let defenses: Vec<_> = obs
+            .enemy_buildings
+            .iter()
+            .filter(|building| objective_building_strength(building, mode, obs.tick) > 0)
+            .collect();
+        if defenses.is_empty() {
+            return Some(0);
+        }
+        let leader = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.hp > 0 && army.members.contains(&unit.id))
+            .min_by_key(|unit| unit.id)?;
+        let destination = *self.ground_attack_goals(obs, goal, 1)?.first()?;
+        let routes = mode.public_map.map_or_else(
+            || {
+                crate::bot::navigation::commands::RouteProjection::known_ground(
+                    QueryPurpose::GroundTargetSelection,
+                    obs,
+                )
+            },
+            |map| {
+                crate::bot::navigation::commands::RouteProjection::with_public_terrain(
+                    QueryPurpose::GroundTargetSelection,
+                    obs,
+                    Domain::Ground,
+                    map,
+                )
+            },
+        );
+        let path = routes.command_route(leader.tile, destination)?;
+        Some(
+            defenses
+                .into_iter()
+                .filter(|building| {
+                    building.anchor.chebyshev(goal) <= 8
+                        || path.iter().any(|tile| {
+                            crate::bot::executive::threats::building_threatens(
+                                obs,
+                                building,
+                                *tile,
+                                Domain::Ground,
+                            )
+                        })
+                })
+                .map(|building| objective_building_strength(building, mode, obs.tick))
+                .sum(),
+        )
+    }
+
     pub(super) fn mission_army(
         &mut self,
         dials: &Dials,
@@ -593,19 +651,19 @@ impl UtilityPolicy {
                         }
                     }
                 }
+                let Some(approach_defenses) =
+                    self.approach_defense_strength(obs, &deploying, goal, mode)
+                else {
+                    continue;
+                };
                 let enemies: u64 = (obs
                     .enemy_units
                     .iter()
                     .filter(|unit| unit.tile.chebyshev(goal) <= 8)
                     .map(crate::bot::executive::unit_strength)
                     .sum::<u64>()
-                    + obs
-                        .enemy_buildings
-                        .iter()
-                        .filter(|building| building.anchor.chebyshev(goal) <= 8)
-                        .map(|building| objective_building_strength(building, mode, obs.tick))
-                        .sum::<u64>())
-                .saturating_mul(u64::from(dials.enemy_strength_scale))
+                    + approach_defenses)
+                    .saturating_mul(u64::from(dials.enemy_strength_scale))
                     / 10_000;
                 let floor = crate::bot::executive::full_ground_strength(UnitKind::Sentinel)
                     * if self.desperate {

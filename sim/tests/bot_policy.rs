@@ -107,6 +107,7 @@ fn construction_observation(scrap: u32) -> Observation {
         explored: vec![true; usize::try_from(map_width * map_height).unwrap()],
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
+        known_pits: Vec::new(),
         known_frames: Vec::new(),
         known_peaks: Vec::new(),
         known_wrecks: Vec::new(),

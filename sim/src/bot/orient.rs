@@ -36,11 +36,15 @@ impl Orientation {
     /// on a `width` × `height` map: flip whichever axes put home in the
     /// southeast, so the policy always reasons from the northwest.
     pub fn for_home(obs: &Observation, home: TilePos) -> Self {
+        Self::for_map(obs.map_width, obs.map_height, home)
+    }
+
+    pub(super) fn for_map(width: i32, height: i32, home: TilePos) -> Self {
         Self {
-            flip_x: 2 * home.x >= obs.map_width,
-            flip_y: 2 * home.y >= obs.map_height,
-            width: obs.map_width,
-            height: obs.map_height,
+            flip_x: 2 * home.x >= width,
+            flip_y: 2 * home.y >= height,
+            width,
+            height,
         }
     }
 
@@ -87,6 +91,15 @@ impl Orientation {
         mission.goal = self.tile(mission.goal);
         if let super::executive::ArmyPurpose::Pressure(target) = &mut mission.purpose {
             target.anchor = self.anchor(target.anchor, target.kind.base_stats().size);
+        }
+    }
+
+    pub(crate) fn episode(&self, report: &mut super::experience::EpisodeReport) {
+        let tile = self.tile(TilePos::new(report.context.x, report.context.y));
+        report.context.x = tile.x;
+        report.context.y = tile.y;
+        if let Some(objective) = &mut report.objective {
+            objective.anchor = self.anchor(objective.anchor, objective.kind.base_stats().size);
         }
     }
 
@@ -159,6 +172,7 @@ impl Orientation {
             .known_rock
             .iter_mut()
             .chain(o.known_peaks.iter_mut())
+            .chain(o.known_pits.iter_mut())
             .chain(o.blips.iter_mut())
             .chain(o.salvage_incidents.iter_mut())
             .chain(o.incoming_shells.iter_mut())
@@ -170,6 +184,7 @@ impl Orientation {
         o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
         o.known_peaks.sort_by_key(|p| (p.y, p.x));
+        o.known_pits.sort_by_key(|p| (p.y, p.x));
         o.blips.sort_by_key(|p| (p.y, p.x));
         for track in &mut o.contact_tracks {
             track.tile = self.tile(track.tile);
@@ -193,6 +208,7 @@ impl Orientation {
             return briefing.clone();
         }
         let mut oriented = briefing.clone();
+        oriented.regions = briefing.regions.oriented(self.flip_x, self.flip_y);
         let foundry_size = BuildingKind::Foundry.base_stats().size;
         for start in &mut oriented.starting_foundries {
             start.anchor = self.anchor(start.anchor, foundry_size);
@@ -418,6 +434,7 @@ mod tests {
             explored,
             known_scrap: vec![(TilePos::new(1, 0), 50), (TilePos::new(5, 0), 70)],
             known_rock: vec![TilePos::new(1, 1), TilePos::new(5, 1)],
+            known_pits: vec![TilePos::new(1, 1)],
             known_frames: vec![TilePos::new(1, 2), TilePos::new(5, 2)],
             known_peaks: vec![TilePos::new(1, 3), TilePos::new(5, 3)],
             known_wrecks: vec![(TilePos::new(2, 4), 30)],
@@ -427,6 +444,74 @@ mod tests {
             faction: Faction::Ferrous,
             my_shells: 2,
             incoming_shells: vec![TilePos::new(1, 5), TilePos::new(5, 5)],
+        }
+    }
+
+    #[test]
+    fn ground_episode_keeps_its_objective_in_the_observation_frame() {
+        use crate::bot::executive::ArmyObjective;
+        use crate::bot::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, Outcome, OutcomeReason,
+        };
+        for home in [
+            TilePos::new(4, 4),
+            TilePos::new(34, 4),
+            TilePos::new(34, 24),
+        ] {
+            for kind in [
+                BuildingKind::Foundry,
+                BuildingKind::Extractor,
+                BuildingKind::Turret,
+            ] {
+                let target = building(17, 1, kind, TilePos::new(15, 9));
+                let obs = Observation {
+                    map_width: 40,
+                    map_height: 32,
+                    enemy_buildings: vec![target.clone()],
+                    ..Default::default()
+                };
+                let orientation = Orientation::for_home(&obs, home);
+                let id = EpisodeId {
+                    owner: EpisodeOwner::Ground,
+                    serial: 3,
+                };
+                let original = EpisodeReport {
+                    id,
+                    credit: id,
+                    context: ExperienceKey {
+                        doctrine: Doctrine::Siege,
+                        x: 16,
+                        y: 10,
+                        subject: 17,
+                    },
+                    objective: Some(ArmyObjective::from_building(&target)),
+                    started_at: 100,
+                    finished_at: 300,
+                    participants: vec![UnitId(9)],
+                    phase: 1,
+                    outcome: Outcome::Ineffective,
+                    reason: OutcomeReason::ObservedCounter,
+                    observed_progress: 1,
+                    own_lost_value: 90,
+                    confidence: 1000,
+                    doctrine_eligible: false,
+                };
+                for has_objective in [false, true] {
+                    let mut original = original.clone();
+                    if !has_objective {
+                        original.objective = None;
+                    }
+                    let mut report = original.clone();
+                    orientation.episode(&mut report);
+                    let point = orientation.tile(TilePos::new(16, 10));
+                    assert_eq!((report.context.x, report.context.y), (point.x, point.y));
+                    if let Some(objective) = report.objective {
+                        assert!(objective.matches(&orientation.observe(&obs).enemy_buildings[0]));
+                    }
+                    orientation.episode(&mut report);
+                    assert_eq!(report, original);
+                }
+            }
         }
     }
 

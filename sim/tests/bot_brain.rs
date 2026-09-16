@@ -1393,6 +1393,7 @@ fn wounded_members_rotate_and_repaired_units_return_to_the_draft() {
         explored: vec![true; 24 * 13],
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
+        known_pits: Vec::new(),
         known_frames: Vec::new(),
         known_peaks: Vec::new(),
         known_wrecks: Vec::new(),

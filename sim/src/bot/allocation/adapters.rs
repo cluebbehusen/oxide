@@ -156,13 +156,7 @@ pub(crate) fn economic_investment_proposal(
 pub(crate) fn economic_investment_claims(
     proposal: &EconomicInvestment,
 ) -> Result<ClaimBundle, ClaimBundleError> {
-    let forecast = (proposal.current_capital < proposal.cost)
-        .then_some(ForecastClaim {
-            through: proposal.deadline,
-            amount: proposal.cost.saturating_sub(proposal.current_capital),
-        })
-        .into_iter()
-        .collect();
+    let immediate = proposal.fund_by <= proposal.observed_at;
     let claims = match proposal.key {
         EconomicInvestmentKey::Train { kind, producer, .. } => ClaimBundle::new(
             0,
@@ -178,8 +172,8 @@ pub(crate) fn economic_investment_claims(
             )],
         )?,
         EconomicInvestmentKey::Build { kind, anchor } => ClaimBundle::new(
-            proposal.current_capital,
-            forecast,
+            if immediate { proposal.cost } else { 0 },
+            Vec::new(),
             proposal.builder.into_iter().collect(),
             Vec::new(),
             vec![
@@ -189,8 +183,8 @@ pub(crate) fn economic_investment_claims(
             Vec::new(),
         )?,
         EconomicInvestmentKey::Upgrade { building, .. } => ClaimBundle::new(
-            proposal.current_capital,
-            forecast,
+            if immediate { proposal.cost } else { 0 },
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -199,7 +193,14 @@ pub(crate) fn economic_investment_claims(
         .with_building(building)
         .with_foregone_income(proposal.foregone_income.clone())?,
     };
-    Ok(claims)
+    if !immediate && !matches!(proposal.key, EconomicInvestmentKey::Train { .. }) {
+        claims.with_deferrable_capital(DeferrableCapitalClaim {
+            through: proposal.fund_by,
+            amount: proposal.cost,
+        })
+    } else {
+        Ok(claims)
+    }
 }
 
 impl AllocationPersonality {
@@ -266,17 +267,37 @@ pub(crate) fn standing_force_investment_proposal(
 ) -> Result<DomainInvestmentProposal, ClaimBundleError> {
     let personality_preference = u16::from(proposal.personality_emphasis());
     let claims = if let Some((through, current_scrap, forecast_scrap)) = proposal.accumulation() {
-        ClaimBundle::new(
-            current_scrap,
-            vec![ForecastClaim {
-                through,
-                amount: forecast_scrap,
-            }],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )?
+        if proposal.reason() == crate::bot::standing_force::StandingForceReason::WoundedSupport {
+            ClaimBundle::new(
+                current_scrap,
+                vec![ForecastClaim {
+                    through,
+                    amount: forecast_scrap,
+                }],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )?
+        } else {
+            ClaimBundle::new(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![ProducerJobClaim::flexible(
+                    proposal.key_kind(),
+                    proposal.observed_at(),
+                    through.saturating_add(
+                        proposal
+                            .ready_before()
+                            .saturating_sub(proposal.observed_at()),
+                    ),
+                    proposal.eligible_producers().to_vec(),
+                )],
+            )?
+        }
     } else {
         let job = ProducerJobClaim::immediate(
             proposal.key_kind(),
@@ -672,11 +693,26 @@ impl DomainAllocationResult {
     }
 
     /// Applies one retained additions-only scale step and updates its payload together.
+    #[cfg(test)]
     pub(crate) fn try_accept_connected_marginal(
         &mut self,
         capacity: &super::AllocationCapacity,
         marginal: &ConnectedMarginalVariant,
     ) -> Result<ClaimBundle, ConnectedMarginalError> {
+        self.refine_connected_marginal(capacity, marginal, &mut |capacity, claims| {
+            claims
+                .resolve(capacity)
+                .map(crate::bot::planning::Progress::Ready)
+        })
+        .map(|claims| claims.expect("synchronous refinement never yields"))
+    }
+
+    pub(super) fn refine_connected_marginal(
+        &mut self,
+        capacity: &super::AllocationCapacity,
+        marginal: &ConnectedMarginalVariant,
+        refine: &mut super::ProductionResolver<'_>,
+    ) -> Result<Option<ClaimBundle>, ConnectedMarginalError> {
         let (key, belongs) = self
             .accepted
             .iter()
@@ -700,8 +736,12 @@ impl DomainAllocationResult {
         }
         let claims =
             connected_marginal_claims(marginal).map_err(ConnectedMarginalError::MalformedClaims)?;
-        self.try_extend_connected_offense(capacity, key, &claims)
-            .map_err(ConnectedMarginalError::Conflict)?;
+        if !self
+            .refine_connected_offense(capacity, key, &claims, refine)
+            .map_err(ConnectedMarginalError::Conflict)?
+        {
+            return Ok(None);
+        }
         let selected = self
             .accepted
             .iter_mut()
@@ -722,7 +762,7 @@ impl DomainAllocationResult {
             selected.is_some_and(|payload| payload.select_marginal(marginal)),
             "a validated retained marginal token remains selectable"
         );
-        Ok(claims)
+        Ok(Some(claims))
     }
 
     /// Consumes allocation only after diagnostics and scale selection are complete.
@@ -758,7 +798,10 @@ impl DomainAllocationResult {
                     debug_assert!(payloads.defense.is_none());
                     payloads.defense = Some(payload);
                 }
-                (ProposalKey::Economy(_), DomainPayload::Economy(payload)) => {
+                (ProposalKey::Economy(_), DomainPayload::Economy(mut payload)) => {
+                    if !matches!(payload.key, EconomicInvestmentKey::Train { .. }) {
+                        payload.current_capital = claims.current_scrap();
+                    }
                     debug_assert!(payloads.economy.is_none());
                     payloads.economy = Some(payload);
                 }
@@ -1101,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn standing_force_adapter_makes_provider_wait_compete_as_capital_not_a_command() {
+    fn standing_force_adapter_schedules_provider_wait_without_forecast_commands() {
         let original = StandingForceProposal::fixture(StandingForceFixture {
             observed_at: NOW,
             ready_before: DEADLINE,
@@ -1122,21 +1165,12 @@ mod tests {
         let proposal = standing_force_investment_proposal(original.clone())
             .expect("a bounded wait is valid deferrable capital");
 
-        assert!(proposal.claims().producer_jobs().is_empty());
-        assert_eq!(
-            proposal.claims().current_scrap(),
-            UnitKind::Sentinel.stats().cost
-        );
-        assert_eq!(
-            proposal.claims().forecast_scrap(),
-            &[ForecastClaim {
-                through: DEADLINE,
-                amount: UnitKind::Warden
-                    .stats()
-                    .cost
-                    .saturating_sub(UnitKind::Sentinel.stats().cost),
-            }]
-        );
+        assert_eq!(proposal.claims().current_scrap(), 0);
+        assert!(proposal.claims().forecast_scrap().is_empty());
+        let job = &proposal.claims().producer_jobs()[0];
+        assert_eq!(job.kind(), UnitKind::Warden);
+        assert_eq!(job.eligible_producers(), &[BuildingId(3)]);
+        assert_eq!(job.ready_before(), DEADLINE + DEADLINE - NOW);
         assert_eq!(proposal.claims().deferrable_capital(), None);
         assert!(matches!(
             proposal.payload(),

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::RADAR_DETECT_RADIUS;
 use std::cmp::Reverse;
 
@@ -88,7 +89,12 @@ impl UtilityPolicy {
         }
 
         let kind = BuildingKind::Array;
-        let resource_access = ResourceAccessGuard::new(self, obs, briefing);
+        let resource_access = ResourceAccessGuard::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            self,
+            obs,
+            briefing,
+        );
         let danger =
             self.harvest_danger_projection(obs, Some(unit_contacts), Some(building_contacts));
         self.strategic_array_quote_with_candidate(
@@ -182,11 +188,8 @@ impl UtilityPolicy {
             }))
             .collect();
         let threats = self.array_threat_origins(obs, briefing, unit_contacts, building_contacts);
-        // The ring scan validates up to ~1.7k anchors. Prepare the egress
-        // cache once and answer each exact circular coverage query from row
-        // prefixes, so the equally large radar disc is not rescanned for
-        // every survivor.
         self.prepare_ground_producer_egress(obs);
+        let placement = super::terrain::PlacementGeometry::new(obs);
         let earliest_ready = builders
             .iter()
             .map(|worker| array_ready_at(obs.tick, worker, 0))
@@ -204,6 +207,16 @@ impl UtilityPolicy {
             .unwrap_or(u64::MAX);
 
         let mut candidates = Vec::new();
+        let danger =
+            self.harvest_danger_projection(obs, Some(unit_contacts), Some(building_contacts));
+        let builder_regions =
+            routing::RouteProjection::ground_avoiding(QueryPurpose::ArrayPlacement, obs, |tile| {
+                briefing
+                    .terrain_at(tile)
+                    .is_none_or(|terrain| terrain.blocks_ground())
+                    || danger.contains(tile)
+                    || self.harvest_location_contested(tile)
+            });
         let mut centers = std::collections::BTreeSet::from([(home_center.y, home_center.x)]);
         for question in &self.battlefield.coverage {
             if let Some(asset) = obs
@@ -215,6 +228,101 @@ impl UtilityPolicy {
                 centers.insert((asset.anchor.y + size.1 / 2, asset.anchor.x + size.0 / 2));
             }
         }
+        let candidate_at = |anchor| {
+            if !placement.valid(self, kind, anchor)
+                || !builders.iter().any(|builder| {
+                    crate::tick::rect_adjacent_tiles(anchor, kind.base_stats().size)
+                        .any(|door| builder_regions.reaches(builder.tile, door))
+                })
+            {
+                return None;
+            }
+            let (usable_radar, novel_radar, unexplored_sight) = coverage.coverage(anchor);
+            let threat_distance = threats
+                .iter()
+                .map(|threat| threat.manhattan(anchor))
+                .min()
+                .unwrap_or(i32::MAX);
+            let builder_distance = builders
+                .iter()
+                .map(|builder| builder.tile.manhattan(anchor))
+                .min()
+                .unwrap_or(i32::MAX);
+            let optimistic_ready = builders
+                .iter()
+                .map(|worker| {
+                    let size = kind.base_stats().size;
+                    let distance =
+                        (worker.tile.chebyshev(anchor) - size.0.max(size.1) - 1).max(0) as u32;
+                    array_ready_at(obs.tick, worker, distance.saturating_mul(10))
+                })
+                .min()
+                .expect("nonempty builders");
+            let strategic_radar = if optimistic_ready >= first_deadline {
+                coverage.ready_demand(anchor, &self.battlefield.coverage, optimistic_ready)
+            } else {
+                coverage.circle_sum(&coverage.strategic, anchor, &coverage.radar_half_widths)
+            };
+            Some(ArraySiteCandidate {
+                anchor,
+                usable_radar,
+                novel_radar,
+                strategic_radar,
+                threat_distance,
+                unexplored_sight,
+                builder_distance,
+                home_distance: home_center.chebyshev(anchor),
+            })
+        };
+        let mut evaluate = |mut candidate: ArraySiteCandidate| {
+            let anchor = candidate.anchor;
+            if candidate.novel_radar == 0
+                || !self.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
+            {
+                return None;
+            }
+            let (builder, builder_travel_cost) = quote_candidate(anchor)?;
+            let ready_at = builders
+                .iter()
+                .find(|unit| unit.id == builder)
+                .map_or(u64::MAX, |worker| {
+                    array_ready_at(obs.tick, worker, builder_travel_cost)
+                });
+            let strategic_radar =
+                coverage.ready_demand(anchor, &self.battlefield.coverage, ready_at);
+            candidate.strategic_radar = strategic_radar;
+            let (evidence, evidence_count) = array_opportunity_evidence(
+                obs,
+                unit_contacts,
+                building_contacts,
+                anchor,
+                &existing_arrays,
+            );
+            Some((
+                candidate,
+                StrategicArrayQuote {
+                    anchor,
+                    builder,
+                    usable_radar: candidate.usable_radar,
+                    novel_radar: candidate.novel_radar,
+                    strategic_radar,
+                    builder_travel_cost,
+                    evidence,
+                    evidence_count,
+                },
+            ))
+        };
+        if let Some(anchor) = self.planning.site_incumbent(obs.tick, kind) {
+            let in_neighborhood = centers.iter().any(|&(y, x)| {
+                (minimum_radius..=maximum_radius).contains(&TilePos::new(x, y).chebyshev(anchor))
+            });
+            if in_neighborhood
+                && let Some((_, quote)) = candidate_at(anchor).and_then(&mut evaluate)
+            {
+                return Some(quote);
+            }
+        }
+        self.planning.clear_site(kind);
         let mut considered = std::collections::BTreeSet::new();
         for (center_y, center_x) in centers {
             let center = TilePos::new(center_x, center_y);
@@ -225,110 +333,56 @@ impl UtilityPolicy {
                             continue;
                         }
                         let anchor = center.offset(dx, dy);
-                        if !considered.insert((anchor.y, anchor.x))
-                            || !self.placement_valid_prepared(obs, kind, anchor)
+                        if considered.insert((anchor.y, anchor.x))
+                            && let Some(candidate) = candidate_at(anchor)
                         {
-                            continue;
+                            candidates.push(candidate);
                         }
-                        let (usable_radar, novel_radar, unexplored_sight) =
-                            coverage.coverage(anchor);
-                        let threat_distance = threats
-                            .iter()
-                            .map(|threat| threat.manhattan(anchor))
-                            .min()
-                            .unwrap_or(i32::MAX);
-                        let builder_distance = builders
-                            .iter()
-                            .map(|builder| builder.tile.manhattan(anchor))
-                            .min()
-                            .unwrap_or(i32::MAX);
-                        let optimistic_ready = builders
-                            .iter()
-                            .map(|worker| {
-                                let size = kind.base_stats().size;
-                                let distance =
-                                    (worker.tile.chebyshev(anchor) - size.0.max(size.1) - 1).max(0)
-                                        as u32;
-                                array_ready_at(obs.tick, worker, distance.saturating_mul(10))
-                            })
-                            .min()
-                            .expect("nonempty builders");
-                        let strategic_radar = if optimistic_ready >= first_deadline {
-                            coverage.ready_demand(
-                                anchor,
-                                &self.battlefield.coverage,
-                                optimistic_ready,
-                            )
-                        } else {
-                            coverage.circle_sum(
-                                &coverage.strategic,
-                                anchor,
-                                &coverage.radar_half_widths,
-                            )
-                        };
-                        candidates.push(ArraySiteCandidate {
-                            anchor,
-                            usable_radar,
-                            novel_radar,
-                            strategic_radar,
-                            threat_distance,
-                            unexplored_sight,
-                            builder_distance,
-                            home_distance: home_center.chebyshev(anchor),
-                        });
                     }
                 }
             }
         }
         candidates.sort_unstable_by_key(|candidate| candidate.key());
-        let mut best: Option<(ArraySiteCandidate, StrategicArrayQuote)> = None;
-        for mut candidate in candidates.into_iter().rev() {
-            if best
-                .as_ref()
-                .is_some_and(|(chosen, _)| candidate.key() <= chosen.key())
-            {
-                break;
-            }
-            if candidate.novel_radar == 0 {
-                continue;
-            }
-            if let Some((builder, builder_travel_cost)) = quote_candidate(candidate.anchor) {
-                let ready_at = builders
-                    .iter()
-                    .find(|unit| unit.id == builder)
-                    .map_or(u64::MAX, |worker| {
-                        array_ready_at(obs.tick, worker, builder_travel_cost)
-                    });
-                let strategic_radar =
-                    coverage.ready_demand(candidate.anchor, &self.battlefield.coverage, ready_at);
-                candidate.strategic_radar = strategic_radar;
-                if best
-                    .as_ref()
-                    .is_some_and(|(chosen, _)| candidate.key() <= chosen.key())
-                {
-                    continue;
-                }
-                let (evidence, evidence_count) = array_opportunity_evidence(
-                    obs,
-                    unit_contacts,
-                    building_contacts,
-                    candidate.anchor,
-                    &existing_arrays,
-                );
-                let quote = StrategicArrayQuote {
-                    anchor: candidate.anchor,
-                    builder,
-                    usable_radar: candidate.usable_radar,
-                    novel_radar: candidate.novel_radar,
-                    strategic_radar,
-                    builder_travel_cost,
-                    evidence,
-                    evidence_count,
-                };
-                best = Some((candidate, quote));
-            }
+        let mut nearby = candidates.iter().collect::<Vec<_>>();
+        nearby.sort_by_cached_key(|candidate| {
+            let size = kind.base_stats().size;
+            let covers_builder = builders.iter().any(|builder| {
+                (0..size.0).contains(&(builder.tile.x - candidate.anchor.x))
+                    && (0..size.1).contains(&(builder.tile.y - candidate.anchor.y))
+            });
+            (
+                covers_builder,
+                candidate.builder_distance,
+                Reverse(candidate.key()),
+            )
+        });
+        let mut seen = std::collections::BTreeSet::new();
+        let mut anchors = candidates
+            .iter()
+            .rev()
+            .zip(nearby)
+            .flat_map(|(valuable, nearby)| [valuable.anchor, nearby.anchor])
+            .filter(|anchor| seen.insert(*anchor))
+            .collect::<Vec<_>>();
+        if let Some(egress) = self.ground_egress_cache.borrow().as_ref() {
+            anchors.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
         }
-        best.map(|(_, quote)| quote)
+        let candidates = candidates
+            .into_iter()
+            .map(|candidate| (candidate.anchor, candidate))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let progress = self.planning.site(
+            obs.tick,
+            kind,
+            &anchors,
+            |anchor| evaluate(candidates[&anchor]),
+            |(candidate, _), (prior, _)| candidate.key() > prior.key(),
+        );
+        match progress {
+            crate::bot::planning::Progress::Ready((_, quote)) => Some(quote),
+            crate::bot::planning::Progress::Deferred
+            | crate::bot::planning::Progress::ProvenInfeasible => None,
+        }
     }
 
     fn array_threat_origins(
@@ -727,6 +781,91 @@ mod tests {
     }
 
     #[test]
+    fn array_refinement_resumes_without_refilling_on_repeated_queries() {
+        let scenario = Scenario::skirmish();
+        let state = scenario.build().unwrap();
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut obs = Observation::omniscient(&state, PlayerId(0));
+        let home = obs.my_buildings[0].anchor;
+        let policy = UtilityPolicy::new();
+        let mut visited = Vec::new();
+        for tick in [0, 0, 24] {
+            obs.tick = tick;
+            let builders = obs
+                .my_units
+                .iter()
+                .filter(|unit| unit.kind == UnitKind::Harvester)
+                .collect::<Vec<_>>();
+            let (quote, work) = crate::bot::navigation::work::measure(|| {
+                policy.strategic_array_quote_with_candidate(
+                    &obs,
+                    &map,
+                    home,
+                    &[],
+                    &[],
+                    &builders,
+                    |anchor| {
+                        visited.push(anchor);
+                        None
+                    },
+                )
+            });
+            assert!(quote.is_none());
+            assert!(
+                work.egress_checks <= 4,
+                "Array enumeration must leave exact exit checks to its refinement slice: {work:?}"
+            );
+            assert_eq!(visited.len(), if tick == 0 { 4 } else { 8 });
+        }
+        let unique = visited.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            8,
+            "the next decision must continue beyond the failed prefix"
+        );
+    }
+
+    #[test]
+    fn retained_array_revalidates_one_site_before_enumerating_alternatives() {
+        let scenario = Scenario::skirmish();
+        let state = scenario.build().unwrap();
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut obs = Observation::omniscient(&state, PlayerId(0));
+        let home = obs.my_buildings[0].anchor;
+        let policy = UtilityPolicy::new();
+        let quote = |obs: &Observation| {
+            let builders = obs
+                .my_units
+                .iter()
+                .filter(|unit| unit.kind == UnitKind::Harvester)
+                .collect::<Vec<_>>();
+            policy.strategic_array_quote_with_candidate(
+                obs,
+                &map,
+                home,
+                &[],
+                &[],
+                &builders,
+                |_| Some((builders[0].id, 10)),
+            )
+        };
+        let (first, cold) = crate::bot::navigation::work::measure(|| quote(&obs));
+        let first = first.expect("an open map has a useful Array site");
+        assert!(cold.placement_checks > 100);
+        obs.tick = 12;
+        let (retained, warm) = crate::bot::navigation::work::measure(|| quote(&obs));
+        assert_eq!(retained, Some(first));
+        assert_eq!(warm.placement_checks, 1);
+        assert_eq!(warm.egress_checks, 1);
+        obs.tick = 24;
+        obs.known_rock.push(first.anchor);
+        obs.known_rock.sort_unstable();
+        let (replacement, changed) = crate::bot::navigation::work::measure(|| quote(&obs));
+        assert!(changed.placement_checks > 100);
+        assert_ne!(replacement.map(|quote| quote.anchor), Some(first.anchor));
+    }
+
+    #[test]
     fn array_selection_ranks_demand_at_the_exact_builder_ready_time() {
         use crate::bot::battlefield::{BattlefieldAssessment, CoverageDemand};
         let mut scenario = Scenario::skirmish();
@@ -769,6 +908,10 @@ mod tests {
             ],
             ..Default::default()
         });
+        policy.dead_anchors = (0..obs.map_height)
+            .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+            .filter(|anchor| *anchor != distant && *anchor != timely)
+            .collect();
         let quote = policy
             .strategic_array_quote_with_candidate(&obs, &map, home, &[], &[], &builders, |anchor| {
                 if anchor == distant {
@@ -784,6 +927,7 @@ mod tests {
         assert_eq!(quote.strategic_radar, 5);
         assert_eq!(quote.builder_travel_cost, 250);
 
+        policy.dead_anchors.clear();
         policy.battlefield = std::sync::Arc::new(Default::default());
         let mut quoted = 0;
         assert!(

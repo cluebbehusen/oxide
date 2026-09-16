@@ -6,10 +6,11 @@
 
 use super::difficulty::{DifficultyTuning, strategic_admission_tick};
 use super::executive::Intent;
+use super::navigation::commands::{RouteProjection, first_reachable_group};
 use super::observation::{Observation, UnitObs};
 use super::profile::ResolvedProfile;
-use super::routing::{RouteProjection, first_reachable_group};
 use super::strategy::StrategicDecision;
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, UnitKind};
@@ -227,7 +228,7 @@ impl RaidPlanner {
             paid_production: _,
         } = context;
         self.reconcile_procurement(obs);
-        let mut routes = RouteProjection::new(obs, Domain::Ground);
+        let mut routes = RouteProjection::new(QueryPurpose::RaidOperation, obs, Domain::Ground);
         self.muster.retain(|id| own_unit(obs, *id).is_some());
         if allow_new_operation
             && self.active.is_none()
@@ -943,6 +944,7 @@ mod tests {
         ));
         obs.my_queues.push(vec![UnitKind::Scuttler; paid]);
         let map = crate::bot::PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: vec![],
@@ -1007,7 +1009,8 @@ mod tests {
             while !obs.my_queues[0].is_empty() {
                 obs.tick += 24;
                 let orientation = crate::bot::orient::Orientation::for_home(&obs, HOME);
-                let origin = crate::bot::routing::production_spawn_doorstep(
+                let origin = crate::bot::navigation::commands::production_spawn_doorstep(
+                    QueryPurpose::NavigationTest,
                     &obs,
                     &obs.my_buildings[0],
                     Some(&map),

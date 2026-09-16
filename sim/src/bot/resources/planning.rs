@@ -151,6 +151,11 @@ impl ProducerPlanningProjection {
         )
     }
 
+    /// First production tick after all work already appended to this lane.
+    pub(crate) fn production_available_at(&self) -> Tick {
+        self.production_available_at
+    }
+
     /// First decision tick with a queue slot for this exact legal unit kind.
     pub(crate) fn earliest_enqueue_tick(&self, kind: UnitKind) -> Option<Tick> {
         self.trainable

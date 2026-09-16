@@ -198,6 +198,7 @@ impl Brain {
         if !self.decision_due(state) {
             return Vec::new();
         }
+        let _query_capture = super::query_work::Capture::new(observer);
         let observation_scope = PhaseScope::new(observer, BotPhase::Observation);
         let obs = if self.dials.fog_honest {
             Observation::fog_honest(state, self.player)
@@ -213,6 +214,7 @@ impl Brain {
         {
             return Vec::new();
         }
+        self.policy.planning.begin(state.current_tick());
         if let Some(recorder) = recorder.as_deref_mut() {
             recorder.begin(&obs);
         }
@@ -261,9 +263,7 @@ impl Brain {
             self.policy.observe_work_experience(&oriented);
             for journal in self.exec.ground_outcomes.values_mut() {
                 for mut report in std::mem::take(&mut journal.pending) {
-                    let tile = orientation.tile(TilePos::new(report.context.x, report.context.y));
-                    report.context.x = tile.x;
-                    report.context.y = tile.y;
+                    orientation.episode(&mut report);
                     mind.experience.report(report);
                 }
             }
@@ -361,6 +361,9 @@ impl Brain {
                     decision_commands: bounded_count(recovery_commands),
                     total_commands: bounded_count(commands.len()),
                 };
+            }
+            if let Some(observer) = observer {
+                observer.planning_work(self.policy.planning.stats());
             }
             return commands;
         }
@@ -518,8 +521,12 @@ impl Brain {
             &[],
             u64::from(self.dials.minimum_core_equivalents),
         );
-        let raid_exclusions =
+        let mut raid_exclusions =
             PlannerClaims::new(&enlisted, strategy, raids, lifts).without_raid(&team_claims);
+        raid_exclusions.extend(self.policy.reconnaissance.reservations());
+        raid_exclusions.extend(self.policy.support_reservations());
+        raid_exclusions.sort_unstable();
+        raid_exclusions.dedup();
         let raid_decision = if raid_was_active {
             raids
                 .as_mut()
@@ -652,6 +659,7 @@ impl Brain {
                     intelligence,
                     oriented_home,
                     StrategicCoordination {
+                        planning: Some(&self.policy.planning),
                         enlisted: &planner_claims,
                         lift_support: lift_support_request.as_ref(),
                         allow_new_operation: continue_connected || allow_new_voluntary_operations,
@@ -694,6 +702,10 @@ impl Brain {
                 .and_then(|planner| planner.active_connected_obligation(&oriented))
                 .is_some();
         let allocation_observation = oriented.clone();
+        let mut utility_reservations = self.policy.reconnaissance.reservations();
+        utility_reservations.extend(self.policy.support_reservations());
+        utility_reservations.sort_unstable();
+        utility_reservations.dedup();
         let ResidualCoordinationOutcome {
             strategic,
             team_decision,
@@ -718,6 +730,7 @@ impl Brain {
                 home: oriented_home,
                 armies: &armies,
                 enlisted: &enlisted,
+                utility_reservations: &utility_reservations,
                 minimum_core_equivalents: u64::from(self.dials.minimum_core_equivalents),
                 allocation_ok,
                 allow_new_voluntary_operations,
@@ -976,6 +989,9 @@ impl Brain {
             };
         }
         commands.extend(lowered);
+        if let Some(observer) = observer {
+            observer.planning_work(self.policy.planning.stats());
+        }
         commands
     }
 }
@@ -6671,7 +6687,7 @@ mod tests {
             .expect("the oriented observation retains the home Foundry")
             .anchor;
         let expected_returning =
-            super::super::routing::routable_command_subset_with_public_terrain_and_orientation(
+            super::super::navigation::commands::routable_command_subset_with_public_terrain_and_orientation(crate::bot::query_work::QueryPurpose::NavigationTest,
                 &oriented,
                 brain
                     .mind()
@@ -6983,6 +6999,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -7083,6 +7100,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -7173,6 +7191,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -7362,6 +7381,7 @@ mod tests {
             &intelligence,
             home,
             StrategicCoordination {
+                planning: None,
                 enlisted: &[],
                 lift_support: None,
                 allow_new_operation: true,
@@ -7610,6 +7630,11 @@ mod tests {
         assert_eq!(initial_started_at, admitted_at);
         let oriented = orientation.observe(&raw);
         let saved = brain.policy.validated_foundry_saving(&oriented, true);
+        let saved_site = brain
+            .policy
+            .foundry_builder_lease(&oriented)
+            .expect("the saved expansion retains its builder and site")
+            .anchor();
         assert!(saved > state.player(PlayerId(0)).scrap);
         assert!(brain.policy.operation_precedes_foundry_saving(admitted_at));
         assert_eq!(
@@ -7883,13 +7908,21 @@ mod tests {
                 "an issued connected assignment must not re-enter allocation"
             );
         }
-        let continued_raw = Observation::fog_honest(&visible_state, PlayerId(0));
-        assert_eq!(
-            brain
-                .policy
-                .validated_foundry_saving(&orientation.observe(&continued_raw), true),
-            saved
-        );
+        let continued_raw =
+            orientation.observe(&Observation::fog_honest(&visible_state, PlayerId(0)));
+        let retained = brain.policy.validated_foundry_saving(&continued_raw, true);
+        if retained == 0 {
+            assert!(
+                continued_raw
+                    .my_buildings
+                    .iter()
+                    .any(|building| building.kind == BuildingKind::Foundry
+                        && building.anchor == saved_site),
+                "the original expansion may release its reserve only after paying for its exact foundation"
+            );
+        } else {
+            assert_eq!(retained, saved);
+        }
     }
 
     #[test]

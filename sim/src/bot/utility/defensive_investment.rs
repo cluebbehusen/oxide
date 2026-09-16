@@ -224,6 +224,7 @@ impl UtilityPolicy {
             }
             let (context, eligible_builders) = prepared.get_or_insert_with(|| {
                 let context = DefenseThinkContext::new_oriented(
+                    crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
                     self,
                     obs,
                     briefing,
@@ -279,6 +280,8 @@ impl UtilityPolicy {
             };
             if let Some(proposal) = proposal {
                 proposals.push(proposal);
+            } else {
+                self.planning.clear_site(kind);
             }
         }
         proposals.sort_unstable_by_key(proposal_preference_key);
@@ -575,7 +578,9 @@ fn mobile_reinforcement_ticks(
     unavailable: &[UnitId],
 ) -> Option<u64> {
     let targets_air = defense == BuildingKind::FlakTurret;
-    obs.my_units
+    let (width, height) = defense.base_stats().size;
+    let mut candidates = obs
+        .my_units
         .iter()
         .filter(|unit| unit.hp > 0)
         .filter(|unit| unavailable.binary_search(&unit.id).is_err())
@@ -588,12 +593,34 @@ fn mobile_reinforcement_ticks(
                 }
             })
         })
-        .filter_map(|unit| {
-            context
-                .reinforcement_travel_cost(unit, defense, anchor)
-                .map(|path_cost| travel_ticks(path_cost, unit.kind.stats().speed))
+        .map(|unit| {
+            let distance = if unit.kind.stats().domain == Domain::Air {
+                unit.tile.chebyshev(anchor)
+            } else {
+                let dx = (anchor.x - 1 - unit.tile.x)
+                    .max(unit.tile.x - anchor.x - width)
+                    .max(0);
+                let dy = (anchor.y - 1 - unit.tile.y)
+                    .max(unit.tile.y - anchor.y - height)
+                    .max(0);
+                dx.max(dy)
+            };
+            let lower_bound = travel_ticks(distance as u32 * 10, unit.kind.stats().speed);
+            (lower_bound, unit)
         })
-        .min()
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|(lower_bound, unit)| (*lower_bound, unit.id));
+    let mut best = None;
+    for (lower_bound, unit) in candidates {
+        if best.is_some_and(|best| lower_bound >= best) {
+            break;
+        }
+        if let Some(cost) = context.reinforcement_travel_cost(unit, defense, anchor) {
+            let ticks = travel_ticks(cost, unit.kind.stats().speed);
+            best = Some(best.map_or(ticks, |prior: u64| prior.min(ticks)));
+        }
+    }
+    best
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1118,6 +1145,118 @@ mod tests {
     }
 
     #[test]
+    fn reinforcement_bounds_preserve_the_fastest_available_unit() {
+        let (mut obs, briefing) = opportunity_fixture();
+        obs.my_units = (0..24)
+            .map(|id| {
+                unit(
+                    id + 50,
+                    obs.me,
+                    if id % 3 == 0 {
+                        UnitKind::Moth
+                    } else {
+                        UnitKind::Sentinel
+                    },
+                    TilePos::new(2 + id as i32, 10),
+                )
+            })
+            .collect();
+        let policy = UtilityPolicy::new();
+        for defense in [
+            BuildingKind::Turret,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+        ] {
+            for anchor in [TilePos::new(9, 10), TilePos::new(30, 12)] {
+                for unavailable in [vec![], vec![UnitId(50), UnitId(51), UnitId(52)]] {
+                    let mut exact = DefenseThinkContext::new(
+                        crate::bot::query_work::QueryPurpose::NavigationTest,
+                        &policy,
+                        &obs,
+                        &briefing,
+                        &[],
+                        &[],
+                    );
+                    let expected = obs
+                        .my_units
+                        .iter()
+                        .filter(|unit| {
+                            !unavailable.contains(&unit.id)
+                                && unit.kind.stats().weapons.iter().any(|weapon| {
+                                    if defense == BuildingKind::FlakTurret {
+                                        weapon.targets.air
+                                    } else {
+                                        weapon.targets.ground
+                                    }
+                                })
+                        })
+                        .filter_map(|unit| {
+                            exact
+                                .reinforcement_travel_cost(unit, defense, anchor)
+                                .map(|cost| travel_ticks(cost, unit.kind.stats().speed))
+                        })
+                        .min();
+                    let mut pruned = DefenseThinkContext::new(
+                        crate::bot::query_work::QueryPurpose::NavigationTest,
+                        &policy,
+                        &obs,
+                        &briefing,
+                        &[],
+                        &[],
+                    );
+                    assert_eq!(
+                        mobile_reinforcement_ticks(
+                            &obs,
+                            &mut pruned,
+                            defense,
+                            anchor,
+                            &unavailable
+                        ),
+                        expected
+                    );
+                    assert!(
+                        pruned.cache_stats().reinforcement_route_builds
+                            <= exact.cache_stats().reinforcement_route_builds
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reinforcement_already_at_the_site_needs_one_cost_query_and_no_paths() {
+        let (mut obs, briefing) = opportunity_fixture();
+        let anchor = TilePos::new(9, 10);
+        obs.my_units = (0..24)
+            .map(|id| {
+                unit(
+                    id + 50,
+                    obs.me,
+                    UnitKind::Sentinel,
+                    TilePos::new(2 + id as i32, 10),
+                )
+            })
+            .collect();
+        let policy = UtilityPolicy::new();
+        let mut context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+            &[],
+            &[],
+        );
+        let (arrival, work) = crate::bot::navigation::work::measure(|| {
+            mobile_reinforcement_ticks(&obs, &mut context, BuildingKind::Turret, anchor, &[])
+        });
+        assert_eq!(arrival, Some(0));
+        assert_eq!(context.cache_stats().reinforcement_route_builds, 1);
+        assert_eq!(work.searches, 1);
+        assert_eq!(work.paths, 0);
+        assert_eq!(work.fields, 0);
+    }
+
+    #[test]
     fn claimed_mobile_reinforcement_cannot_downgrade_a_defense_case() {
         let (mut obs, briefing) = opportunity_fixture();
         obs.enemy_units.clear();
@@ -1136,7 +1275,14 @@ mod tests {
         };
         let policy = UtilityPolicy::new();
 
-        let mut available_context = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+        let mut available_context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+            &[],
+            &[],
+        );
         let available_reinforcement = mobile_reinforcement_ticks(
             &obs,
             &mut available_context,
@@ -1155,7 +1301,14 @@ mod tests {
         )
         .expect("the current threat admits a defense");
 
-        let mut claimed_context = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+        let mut claimed_context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+            &[],
+            &[],
+        );
         let claimed_reinforcement = mobile_reinforcement_ticks(
             &obs,
             &mut claimed_context,

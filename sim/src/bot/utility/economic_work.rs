@@ -3,8 +3,9 @@
 use super::economic_value::{
     HarvestWork, WorkerService, harvest_output, marginal_worker_return, travel_ticks,
 };
-use super::expansion::PublicGroundDistances;
 use super::*;
+use crate::bot::navigation::public_fields::PublicGroundDistances;
+use crate::bot::query_work::QueryPurpose;
 
 pub(super) struct HarvestRegion {
     pub(super) service: TilePos,
@@ -32,12 +33,13 @@ impl HarvestRegion {
         self.producer_access.get(&producer).copied()
     }
 
-    fn safe_door(&self, tile: TilePos, commands: &RouteProjection<'_>) -> bool {
+    fn harvest_corridor(&self, tile: TilePos, commands: &RouteProjection<'_>) -> bool {
         self.doors
             .iter()
             .min_by_key(|door| (door.chebyshev(tile), door.y, door.x))
             .is_some_and(|door| {
-                commands.direct_line_avoids_blocked(tile, *door)
+                self.distance(tile).is_some()
+                    && commands.direct_line_avoids_blocked(tile, *door)
                     && commands.command_path_avoids_blocked(tile, *door)
                     && commands.command_path_avoids_blocked(*door, tile)
             })
@@ -71,6 +73,7 @@ impl UtilityPolicy {
         let danger = self.harvest_danger_projection(obs, Some(contacts.0), Some(contacts.1));
         let blocked = |tile| danger.contains(tile) || self.harvest_location_contested(tile);
         let commands = RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::ConstructionAccess,
             obs,
             briefing,
             orientation,
@@ -84,28 +87,23 @@ impl UtilityPolicy {
             let (width, height) = site.kind.base_stats().size;
             let doors = (-1..=height)
                 .flat_map(|dy| (-1..=width).map(move |dx| site.anchor.offset(dx, dy)))
-                .filter(|tile| routing::ground_open(obs, *tile) && !blocked(*tile))
+                .filter(|tile| {
+                    routing::ground_open(QueryPurpose::ConstructionAccess, obs, *tile)
+                        && !blocked(*tile)
+                })
                 .collect::<Vec<_>>();
             if doors.is_empty() {
                 continue;
             }
             let distances = PublicGroundDistances::from_sources_avoiding(
+                QueryPurpose::ConstructionAccess,
                 briefing,
                 doors.iter().copied(),
-                |tile| blocked(tile) || !routing::ground_open(obs, tile),
+                |tile| !commands.open(tile),
             );
-            let mut route_cache = std::collections::BTreeMap::new();
-            let mut distance_from = |origin: TilePos| {
-                *route_cache.entry(origin).or_insert_with(|| {
-                    let door = doors
-                        .iter()
-                        .min_by_key(|door| (door.chebyshev(origin), door.y, door.x))?;
-                    (commands.direct_line_avoids_blocked(origin, *door)
-                        && commands.command_path_avoids_blocked(origin, *door))
-                    .then(|| distances.footprint_distance(origin, (1, 1)))
-                    .flatten()
-                })
-            };
+            let mut routes = crate::bot::navigation::public_fields::WorkRoutes::new(
+                &commands, &distances, &doors,
+            );
             let mut baseline = u64::MAX;
             for unit in &obs.my_units {
                 if unit.kind.stats().harvest.is_none()
@@ -116,7 +114,7 @@ impl UtilityPolicy {
                 {
                     continue;
                 }
-                if let Some(distance) = distance_from(unit.tile) {
+                if let Some(distance) = routes.distance(unit.tile) {
                     baseline = baseline.min(
                         travel_ticks(unit.kind, distance).saturating_add(
                             u64::from(construction.build_ticks)
@@ -135,6 +133,7 @@ impl UtilityPolicy {
                     continue;
                 };
                 let Some(spawn) = routing::production_spawn_doorstep(
+                    QueryPurpose::ConstructionAccess,
                     obs,
                     producer,
                     Some(briefing),
@@ -142,7 +141,7 @@ impl UtilityPolicy {
                 ) else {
                     continue;
                 };
-                let Some(distance) = distance_from(spawn) else {
+                let Some(distance) = routes.distance(spawn) else {
                     continue;
                 };
                 producer_distances.insert(lane.producer, distance);
@@ -192,20 +191,24 @@ impl UtilityPolicy {
         }
         let danger = self.harvest_danger_projection(obs, Some(contacts.0), Some(contacts.1));
         let commands = RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::HarvestValuation,
             obs,
             briefing,
             orientation,
             |tile| danger.contains(tile) || self.harvest_location_contested(tile),
         );
-        let blocked = |tile| {
-            !routing::ground_open(obs, tile)
-                || briefing
-                    .terrain_at(tile)
-                    .is_none_or(|terrain| terrain.blocks_ground())
-                || danger.contains(tile)
-                || self.harvest_location_contested(tile)
+        let blocked_cells = (0..obs.map_height)
+            .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+            .map(|tile| !commands.open(tile))
+            .collect::<Vec<_>>();
+        let blocked = |tile: TilePos| {
+            tile.x < 0
+                || tile.y < 0
+                || tile.x >= obs.map_width
+                || tile.y >= obs.map_height
+                || blocked_cells[(tile.y * obs.map_width + tile.x) as usize]
         };
-        let mut routes = RouteProjection::ground_avoiding(obs, blocked);
+        let routes = RouteProjection::ground_avoiding(QueryPurpose::HarvestValuation, obs, blocked);
         let mut dropoffs = obs
             .my_buildings
             .iter()
@@ -244,7 +247,12 @@ impl UtilityPolicy {
                 workers: Vec::new(),
                 doors: sources.clone(),
                 producer_access: std::collections::BTreeMap::new(),
-                distances: PublicGroundDistances::from_sources_avoiding(briefing, sources, blocked),
+                distances: PublicGroundDistances::from_sources_avoiding(
+                    QueryPurpose::HarvestValuation,
+                    briefing,
+                    sources,
+                    blocked,
+                ),
             })
             .collect::<Vec<_>>();
         let mut positions = vec![BTreeSet::new(); regions.len()];
@@ -281,7 +289,7 @@ impl UtilityPolicy {
                 .filter_map(|(index, region)| {
                     work_tiles
                         .iter()
-                        .filter(|tile| region.safe_door(**tile, &commands))
+                        .filter(|tile| region.harvest_corridor(**tile, &commands))
                         .filter_map(|tile| region.distance(*tile))
                         .min()
                         .map(|distance| (distance, region.service.y, region.service.x, index))
@@ -295,7 +303,7 @@ impl UtilityPolicy {
             weighted_haul[index] = weighted_haul[index]
                 .saturating_add(u128::from(distance).saturating_mul(u128::from(amount)));
             positions[index].extend(work_tiles.into_iter().filter(|tile| {
-                region.distance(*tile).is_some() && region.safe_door(*tile, &commands)
+                region.distance(*tile).is_some() && region.harvest_corridor(*tile, &commands)
             }));
         }
         for (index, region) in regions.iter_mut().enumerate() {
@@ -318,10 +326,12 @@ impl UtilityPolicy {
                 continue;
             }
             if let Some((index, region)) = regions.iter_mut().enumerate().find(|(_, region)| {
-                region.distance(unit.tile).is_some() && region.safe_door(unit.tile, &commands)
+                region.distance(unit.tile).is_some()
+                    && region.harvest_corridor(unit.tile, &commands)
             }) && let Some(distance) = work_distances[index]
                 .get_or_insert_with(|| {
                     PublicGroundDistances::from_sources_avoiding(
+                        QueryPurpose::HarvestValuation,
                         briefing,
                         positions[index].iter().copied(),
                         blocked,
@@ -344,6 +354,7 @@ impl UtilityPolicy {
                 continue;
             };
             let Some(spawn) = routing::production_spawn_doorstep(
+                QueryPurpose::HarvestValuation,
                 obs,
                 building,
                 Some(briefing),
@@ -353,7 +364,7 @@ impl UtilityPolicy {
             };
             for region in &mut regions {
                 if let Some(distance) = region.distance(spawn)
-                    && region.safe_door(spawn, &commands)
+                    && region.harvest_corridor(spawn, &commands)
                 {
                     region.producer_access.insert(
                         lane.producer,
@@ -415,5 +426,81 @@ impl ConstructionWork {
             );
         u64::from(self.value).saturating_mul(self.baseline.min(horizon).saturating_sub(completion))
             / horizon.max(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn harvest_corridor_requires_safe_command_detours_in_both_directions() {
+        let obs = Observation {
+            map_width: 13,
+            map_height: 9,
+            visible: vec![true; 117],
+            explored: vec![true; 117],
+            known_rock: (3..=5).map(|y| TilePos::new(6, y)).collect(),
+            ..Observation::default()
+        };
+        let map = PublicMapBriefing {
+            regions: Default::default(),
+            map_width: obs.map_width,
+            map_height: obs.map_height,
+            starting_foundries: Vec::new(),
+            teams: Vec::new(),
+            non_ground_terrain: Vec::new(),
+            extractor_frames: Vec::new(),
+            initial_scrap: Vec::new(),
+        };
+        let from = TilePos::new(2, 4);
+        let to = TilePos::new(10, 4);
+        for (danger, outward, returning) in [
+            (TilePos::new(6, 2), false, true),
+            (TilePos::new(6, 6), true, false),
+            (TilePos::new(0, 0), true, true),
+        ] {
+            let commands =
+                RouteProjection::ground_avoiding(QueryPurpose::HarvestValuation, &obs, |tile| {
+                    tile == danger
+                });
+            let region = HarvestRegion {
+                service: to,
+                work: HarvestWork {
+                    amount: 100,
+                    positions: 1,
+                    haul_cost: 100,
+                },
+                workers: Vec::new(),
+                distances: PublicGroundDistances::from_sources_avoiding(
+                    QueryPurpose::HarvestValuation,
+                    &map,
+                    [to],
+                    |tile| !commands.open(tile),
+                ),
+                doors: vec![to],
+                producer_access: Default::default(),
+            };
+            assert!(region.distance(from).is_some());
+            assert!(commands.direct_line_avoids_blocked(from, to));
+            assert_eq!(
+                region.harvest_corridor(from, &commands),
+                outward && returning
+            );
+            assert_eq!(commands.command_path_avoids_blocked(from, to), outward);
+            assert_eq!(commands.command_path_avoids_blocked(to, from), returning);
+            let (_, warm) = crate::bot::navigation::work::measure(|| {
+                for _ in 0..100 {
+                    assert_eq!(
+                        region.harvest_corridor(from, &commands),
+                        outward && returning
+                    );
+                }
+            });
+            assert_eq!(
+                warm.searches, 0,
+                "repeated harvest checks must reuse route proofs"
+            );
+        }
     }
 }

@@ -197,6 +197,7 @@ impl Executive {
             &body.members,
             body.state as u8,
         );
+        journal.observe_ground_contact(obs, body.state == ArmyState::Engaging);
         if let ArmyPurpose::Pressure(target) = mission.purpose {
             journal.bind_objective(target);
             journal.observe_objective(obs, target.observed_id(obs));

@@ -66,13 +66,14 @@ immutable PublicMapBriefing + fog-honest Observation
   current proposal set compares Foundry, connected offense, standing force,
   defense, economy, reconnaissance, and support. Each domain admits at most one
   fresh alternative per pass; retained assignments can run concurrently. The
-  allocator evaluates every zero-or-one choice from each domain without a
-  proposal-count or machine-word cutoff. Only accepted Support relief starts a
-  new team operation. Fresh lift, tactical raid execution, and unmigrated
-  utility work consume the resulting residual.
+  allocator uses bounded portfolio refinement. Validate it against small
+  exhaustive oracles, and distinguish unrefined alternatives from proven
+  conflicts. Only accepted Support relief starts a new team operation. Fresh
+  lift, tactical raid execution, and unmigrated utility work consume the
+  resulting residual.
 - `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
-  severed-ground transport operations, and `sim/src/bot/routing.rs` owns their
-  fog-honest route projection and exact command-subset checks.
+  severed-ground transport operations, and `sim/src/bot/navigation/commands.rs`
+  owns their fog-honest route projection and exact command-subset checks.
 - `UtilityPolicy` fills work not claimed by those operations, while `Executive`
   owns exact-unit bookkeeping and lowers every intent to commands.
 - `seat_bots` constructs controllers requested by scenario `BotConfig`.
@@ -302,13 +303,16 @@ stronger unlocked providers substitute when their role, route, cost, and
 readiness are better. Personality ranks otherwise legal providers and domains;
 it never removes a role or provider.
 
-Each standing-force alternative must be affordable from current scrap and ready
-through one exact completed producer now. A non-urgent demand may wait instead
-of buying a cheap fallback only when completed recurring income can make a
-strictly better unlocked provider current-affordable within the exact bounded
-production horizon. Forecast remains evidence: it never creates a proposal or
-funds a command. Core recovery and current threats spend immediately, and
-waiting for one need must not suppress an affordable counter for another.
+Immediate standing-force alternatives require current scrap and a completed
+producer. A non-urgent demand may also propose a future purchase when completed
+income supports a strictly better unlocked provider within a bounded production
+horizon. Retain an accepted purchase's exact schedule across decisions; never
+spend forecast credit as current scrap. Exercise maturation, lost production,
+vanished demand, lost income, and emergency preemption. Enemy fortifications
+alone justify deliberate siege preparation; current threats to our forces still
+spend immediately. Waiting for one need must not suppress a useful counter for
+another. Compare complete investment cases before counting compatible extras,
+and preserve stronger production slots when adding optional connected scale.
 Exclude exact units and paid queue work owned by persistent operations, retain
 the selected producer assignment through lowering, and select no more than one
 standing alternative per allocation pass. When a fresh connected operation is
@@ -638,15 +642,16 @@ player-facing controller's runtime decisions with
 `--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
 `--out` and `--candidate`, joins each record to its exact evaluation leg, and
 contains only fog-honest facts the current coordinator can state directly.
-Schema version 11 includes battlefield evidence, mission ownership, grounded
-outcomes and adjusted return, alongside exact economic, defensive, and support
-identities, building and repair-worker ownership, refit forecast losses, and
-complete combined-layout conflict sets. Test four-way closures even when every
-triple retains a route. Verify voluntary repair funding and preemption against
-ordinary commands, including decisions between macro-admission boundaries. It
-does not reconstruct explanations from a replay, infer reasons from absent
-planner output. Treat the sidecar as disposable diagnostic evidence and keep it
-out of production commits.
+Schema version 12 includes retained military producer schedules alongside
+battlefield evidence, mission ownership, grounded outcomes and adjusted return,
+alongside exact economic, defensive, and support identities, building and
+repair-worker ownership, refit forecast losses, and complete combined-layout
+conflict sets. Test four-way closures even when every triple retains a route.
+Verify voluntary repair funding and preemption against ordinary commands,
+including decisions between macro-admission boundaries. It does not reconstruct
+explanations from a replay or infer reasons from absent planner output. Treat
+the sidecar as disposable diagnostic evidence and keep it out of production
+commits.
 
 For controlled current-controller comparisons, run a paired block across both
 faction assignments and both map-end geometries:

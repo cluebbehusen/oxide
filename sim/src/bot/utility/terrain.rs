@@ -1,9 +1,92 @@
 //! Known-world routing, ferrying, and deterministic placement.
 
 use super::*;
-use crate::bot::routing;
+use crate::bot::navigation::egress::GroundEgressCache;
+use crate::bot::query_work::QueryPurpose;
 
 type PlannedFootprint = (BuildingKind, TilePos);
+
+pub(super) struct PlacementGeometry<'a> {
+    obs: &'a Observation,
+    open: Vec<bool>,
+    unclaimed: Vec<bool>,
+}
+
+impl<'a> PlacementGeometry<'a> {
+    pub(super) fn new(obs: &'a Observation) -> Self {
+        let cells = (obs.map_width.max(0) as usize) * (obs.map_height.max(0) as usize);
+        let mut open = vec![true; cells];
+        let index = |tile: TilePos| {
+            (tile.x >= 0 && tile.y >= 0 && tile.x < obs.map_width && tile.y < obs.map_height)
+                .then(|| (tile.y * obs.map_width + tile.x) as usize)
+        };
+        for tile in obs
+            .known_rock
+            .iter()
+            .copied()
+            .chain(obs.known_scrap.iter().map(|(tile, _)| *tile))
+        {
+            if let Some(index) = index(tile) {
+                open[index] = false;
+            }
+        }
+        let block = |grid: &mut Vec<bool>, anchor: TilePos, size: (i32, i32)| {
+            for dy in 0..size.1 {
+                for dx in 0..size.0 {
+                    if let Some(index) = index(anchor.offset(dx, dy)) {
+                        grid[index] = false;
+                    }
+                }
+            }
+        };
+        for building in obs
+            .my_buildings
+            .iter()
+            .chain(&obs.ally_buildings)
+            .chain(&obs.enemy_buildings)
+        {
+            block(&mut open, building.anchor, building.kind.base_stats().size);
+        }
+        let mut unclaimed = open.clone();
+        for anchor in &obs.known_frames {
+            block(&mut unclaimed, *anchor, (2, 2));
+        }
+        for (kind, anchor) in obs.my_units.iter().filter_map(|unit| unit.founding) {
+            block(&mut unclaimed, anchor, kind.base_stats().size);
+        }
+        for unit in obs
+            .enemy_units
+            .iter()
+            .filter(|unit| unit.body_domain() == Domain::Ground)
+        {
+            block(&mut unclaimed, unit.tile, (1, 1));
+        }
+        Self {
+            obs,
+            open,
+            unclaimed,
+        }
+    }
+
+    pub(super) fn valid(
+        &self,
+        policy: &UtilityPolicy,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> bool {
+        #[cfg(test)]
+        crate::bot::navigation::work::record(|work| work.placement_checks += 1);
+        let index = |tile: TilePos| (tile.y * self.obs.map_width + tile.x) as usize;
+        policy.placement_geometry_valid_with(
+            self.obs,
+            kind,
+            anchor,
+            None,
+            |tile| self.open[index(tile)],
+            |tile| self.unclaimed[index(tile)],
+        )
+    }
+}
 
 /// Membership form of the known-road flood: one BFS from home answers
 /// [`UtilityPolicy::ground_route_known`] for every candidate anchor.
@@ -30,89 +113,6 @@ impl KnownRoadReach {
                 })
             })
         })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GroundProducerEgress {
-    ring: Vec<TilePos>,
-    witnesses: Vec<TilePos>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GroundEgressCertificate {
-    routes: Vec<Vec<TilePos>>,
-    route_tiles: Vec<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GroundEgressLayout {
-    map_size: (i32, i32),
-    known_rock: Vec<TilePos>,
-    known_scrap: Vec<TilePos>,
-    blocking_buildings: Vec<PlannedFootprint>,
-    founding: Vec<PlannedFootprint>,
-    producers: Vec<(BuildingKind, TilePos, u8)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct GroundEgressCache {
-    layout: GroundEgressLayout,
-    base_open: Vec<bool>,
-    producers: Vec<GroundProducerEgress>,
-    decisions: std::collections::BTreeMap<
-        Vec<PlannedFootprint>,
-        Option<std::sync::Arc<GroundEgressCertificate>>,
-    >,
-}
-
-impl GroundEgressLayout {
-    fn from_observation(obs: &Observation) -> Self {
-        let known_scrap = obs.known_scrap.iter().map(|(tile, _)| *tile).collect();
-        let mut blocking_buildings: Vec<_> = obs
-            .my_buildings
-            .iter()
-            .chain(obs.ally_buildings.iter())
-            .chain(obs.enemy_buildings.iter())
-            .filter(|building| !building.kind.is_stealthy())
-            .map(|building| (building.kind, building.anchor))
-            .collect();
-        blocking_buildings.sort_unstable();
-        blocking_buildings.dedup();
-
-        let mut founding: Vec<_> = obs
-            .my_units
-            .iter()
-            .filter_map(|unit| unit.founding)
-            .filter(|(kind, _)| !kind.is_stealthy())
-            .collect();
-        founding.sort_unstable();
-        founding.dedup();
-
-        let mut producers: Vec<_> = obs
-            .my_buildings
-            .iter()
-            .filter(|building| {
-                building.built
-                    && building
-                        .kind
-                        .tier_stats(building.tier)
-                        .produces
-                        .iter()
-                        .any(|unit| unit.stats().domain == Domain::Ground)
-            })
-            .map(|building| (building.kind, building.anchor, building.tier))
-            .collect();
-        producers.sort_unstable();
-
-        Self {
-            map_size: (obs.map_width, obs.map_height),
-            known_rock: obs.known_rock.clone(),
-            known_scrap,
-            blocking_buildings,
-            founding,
-            producers,
-        }
     }
 }
 
@@ -147,35 +147,16 @@ impl UtilityPolicy {
         anchor: TilePos,
         enter: impl Fn(TilePos) -> bool,
     ) -> bool {
-        let (w, h) = (obs.map_width, obs.map_height);
-        if w <= 0 || h <= 0 {
-            return false;
-        }
-        let idx = |t: TilePos| (t.y * w + t.x) as usize;
-        let target = |t: TilePos| {
-            (anchor.x..anchor.x + 2).contains(&t.x) && (anchor.y..anchor.y + 2).contains(&t.y)
-        };
-        let in_bounds = |t: TilePos| t.x >= 0 && t.y >= 0 && t.x < w && t.y < h;
-        if !in_bounds(home) {
-            return false;
-        }
-        let mut seen = vec![false; (w * h) as usize];
-        let mut open = std::collections::VecDeque::new();
-        seen[idx(home)] = true;
-        open.push_back(home);
-        while let Some(t) = open.pop_front() {
-            if target(t) {
-                return true;
-            }
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let n = t.offset(dx, dy);
-                if in_bounds(n) && !seen[idx(n)] && enter(n) {
-                    seen[idx(n)] = true;
-                    open.push_back(n);
-                }
-            }
-        }
-        false
+        crate::bot::navigation::flood::reaches_any(
+            obs.map_width,
+            obs.map_height,
+            [home],
+            enter,
+            |tile| {
+                (anchor.x..anchor.x + 2).contains(&tile.x)
+                    && (anchor.y..anchor.y + 2).contains(&tile.y)
+            },
+        )
     }
 
     /// Home's known-road component in membership form, answering
@@ -185,9 +166,19 @@ impl UtilityPolicy {
     /// the same component once per candidate, which on frame-dense maps
     /// dominates the whole think.
     pub(super) fn known_road_reach(obs: &Observation, home: TilePos) -> KnownRoadReach {
+        let cells = (obs.map_width.max(0) as usize) * (obs.map_height.max(0) as usize);
+        let mut open = obs.explored.clone();
+        open.resize(cells, false);
+        for &tile in &obs.known_rock {
+            if let Some(index) =
+                crate::bot::navigation::flood::tile_index(obs.map_width, obs.map_height, tile)
+            {
+                open[index] = false;
+            }
+        }
         KnownRoadReach {
             component: Self::ground_component(obs, home, |t| {
-                obs.explored(t) && !obs.known_rock_at(t)
+                open[(t.y * obs.map_width + t.x) as usize]
             }),
             width: obs.map_width,
             height: obs.map_height,
@@ -203,26 +194,7 @@ impl UtilityPolicy {
         home: TilePos,
         enter: impl Fn(TilePos) -> bool,
     ) -> Option<Vec<bool>> {
-        let (w, h) = (obs.map_width, obs.map_height);
-        if w <= 0 || h <= 0 || home.x < 0 || home.y < 0 || home.x >= w || home.y >= h {
-            return None;
-        }
-        let idx = |t: TilePos| (t.y * w + t.x) as usize;
-        let in_bounds = |t: TilePos| t.x >= 0 && t.y >= 0 && t.x < w && t.y < h;
-        let mut seen = vec![false; (w * h) as usize];
-        let mut open = std::collections::VecDeque::new();
-        seen[idx(home)] = true;
-        open.push_back(home);
-        while let Some(t) = open.pop_front() {
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let n = t.offset(dx, dy);
-                if in_bounds(n) && !seen[idx(n)] && enter(n) {
-                    seen[idx(n)] = true;
-                    open.push_back(n);
-                }
-            }
-        }
-        Some(seen)
+        crate::bot::navigation::flood::component(obs.map_width, obs.map_height, home, enter)
     }
 
     /// The per-unit goals a ground AttackMove would fan out over under the
@@ -235,7 +207,7 @@ impl UtilityPolicy {
         goal: TilePos,
         count: usize,
     ) -> Option<Vec<TilePos>> {
-        routing::ground_command_goals(obs, goal, count)
+        routing::ground_command_goals(QueryPurpose::ConstructionAccess, obs, goal, count)
     }
 
     /// First anchor for `kind` ring-scanned outward from `near` whose
@@ -285,8 +257,11 @@ impl UtilityPolicy {
         mut final_check: impl FnMut(TilePos) -> bool,
     ) -> Option<TilePos> {
         self.prepare_ground_producer_egress(obs);
+        let geometry = PlacementGeometry::new(obs);
         candidates.into_iter().find(|anchor| {
-            self.placement_valid_prepared(obs, kind, *anchor) && final_check(*anchor)
+            geometry.valid(self, kind, *anchor)
+                && self.preserves_ground_producer_egress_prepared(&[], (kind, *anchor))
+                && final_check(*anchor)
         })
     }
 
@@ -322,6 +297,25 @@ impl UtilityPolicy {
         anchor: TilePos,
         retained: Option<(BuildingKind, TilePos)>,
     ) -> bool {
+        self.placement_geometry_valid_with(
+            obs,
+            kind,
+            anchor,
+            retained,
+            |tile| self.tile_open(obs, tile),
+            |tile| self.placement_tile_open_except(obs, tile, retained),
+        )
+    }
+
+    fn placement_geometry_valid_with(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        anchor: TilePos,
+        retained: Option<(BuildingKind, TilePos)>,
+        open: impl Fn(TilePos) -> bool,
+        unclaimed: impl Fn(TilePos) -> bool,
+    ) -> bool {
         if self.dead_anchors.contains(&anchor)
             || (retained != Some((kind, anchor)) && self.pending_sites.contains(&anchor))
         {
@@ -345,9 +339,9 @@ impl UtilityPolicy {
                     && (kind.is_stealthy()
                         || !self.work_experience.construction_work_tiles.contains(&tile))
                     && if kind == BuildingKind::Extractor {
-                        self.tile_open(obs, tile)
+                        open(tile)
                     } else {
-                        self.placement_tile_open_except(obs, tile, retained)
+                        unclaimed(tile)
                     }
             })
         });
@@ -358,7 +352,7 @@ impl UtilityPolicy {
             (-1..=height).any(|dy| {
                 let core = (0..width).contains(&dx) && (0..height).contains(&dy);
                 let tile = anchor.offset(dx, dy);
-                !core && in_bounds(tile) && obs.explored(tile) && self.tile_open(obs, tile)
+                !core && in_bounds(tile) && obs.explored(tile) && open(tile)
             })
         })
     }
@@ -379,438 +373,33 @@ impl UtilityPolicy {
     }
 
     pub(super) fn prepare_ground_producer_egress(&self, obs: &Observation) {
-        let layout = GroundEgressLayout::from_observation(obs);
-        let mut slot = self.ground_egress_cache.borrow_mut();
-        let layout_changed = slot.as_ref().is_none_or(|cache| cache.layout != layout);
-        if layout_changed {
-            let base_open = Self::ground_egress_base_open(obs);
-            let producers = Self::ground_producer_egress(obs, &base_open);
-            let certificate =
-                Self::ground_egress_certificate(&base_open, layout.map_size, &producers)
-                    .map(std::sync::Arc::new);
-            *slot = Some(GroundEgressCache {
-                layout,
-                base_open,
-                producers,
-                decisions: std::collections::BTreeMap::from([(Vec::new(), certificate)]),
-            });
-        }
+        GroundEgressCache::prepare(
+            QueryPurpose::ConstructionAccess,
+            &mut self.ground_egress_cache.borrow_mut(),
+            obs,
+        );
     }
-
     pub(super) fn preserves_ground_producer_egress_prepared(
         &self,
         accepted: &[PlannedFootprint],
         candidate: PlannedFootprint,
     ) -> bool {
-        if candidate.0.is_stealthy() {
-            return true;
-        }
-
-        let mut accepted = accepted.to_vec();
-        accepted.retain(|(kind, _)| !kind.is_stealthy());
-        accepted.sort_unstable();
-        accepted.dedup();
-
-        let mut slot = self.ground_egress_cache.borrow_mut();
-        let cache = slot
-            .as_mut()
-            .expect("ground-producer egress must be prepared before placement checks");
-        let accepted_certificate = if let Some(certificate) = cache.decisions.get(&accepted) {
-            certificate.clone()
-        } else {
-            let open = Self::ground_egress_open_with_plans(
-                &cache.base_open,
-                cache.layout.map_size,
-                &accepted,
-            );
-            let certificate =
-                Self::ground_egress_certificate(&open, cache.layout.map_size, &cache.producers)
-                    .map(std::sync::Arc::new);
-            cache
-                .decisions
-                .insert(accepted.clone(), certificate.clone());
-            certificate
-        };
-        let Some(accepted_certificate) = accepted_certificate else {
-            return false;
-        };
-
-        let mut planned = accepted.clone();
-        planned.push(candidate);
-        planned.sort_unstable();
-        planned.dedup();
-        if planned == accepted {
-            return true;
-        }
-        if let Some(certificate) = cache.decisions.get(&planned) {
-            return certificate.is_some();
-        }
-
-        let affected = Self::certificate_routes_blocked(
-            &accepted_certificate,
+        GroundEgressCache::preserves(
+            &mut self.ground_egress_cache.borrow_mut(),
+            accepted,
             candidate,
-            cache.layout.map_size,
-        );
-        let certificate = if affected.is_empty() {
-            Some(accepted_certificate)
-        } else {
-            let open = Self::ground_egress_open_with_plans(
-                &cache.base_open,
-                cache.layout.map_size,
-                &planned,
-            );
-            let mut routes = accepted_certificate.routes.clone();
-            let mut valid = true;
-            for producer_index in affected {
-                let Some(route) = Self::ground_producer_route(
-                    &open,
-                    cache.layout.map_size,
-                    &cache.producers[producer_index],
-                ) else {
-                    valid = false;
-                    break;
-                };
-                routes[producer_index] = route;
-            }
-            valid.then(|| {
-                std::sync::Arc::new(Self::ground_egress_certificate_from_routes(
-                    routes,
-                    cache.layout.map_size,
-                ))
-            })
-        };
-        let result = certificate.is_some();
-        cache.decisions.insert(planned, certificate);
-        result
-    }
-
-    fn ground_egress_certificate(
-        open: &[bool],
-        map_size: (i32, i32),
-        producers: &[GroundProducerEgress],
-    ) -> Option<GroundEgressCertificate> {
-        let routes: Option<Vec<_>> = producers
-            .iter()
-            .map(|producer| Self::ground_producer_route(open, map_size, producer))
-            .collect();
-        routes.map(|routes| Self::ground_egress_certificate_from_routes(routes, map_size))
-    }
-
-    fn ground_egress_certificate_from_routes(
-        routes: Vec<Vec<TilePos>>,
-        map_size: (i32, i32),
-    ) -> GroundEgressCertificate {
-        let cells = usize::try_from(map_size.0)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(map_size.1)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
-        let mut route_tiles = vec![0; cells.div_ceil(64)];
-        for route in &routes {
-            for tile in route {
-                let index = (tile.y * map_size.0 + tile.x) as usize;
-                route_tiles[index / 64] |= 1 << (index % 64);
-            }
-        }
-        GroundEgressCertificate {
-            routes,
-            route_tiles,
-        }
-    }
-
-    fn certificate_routes_blocked(
-        certificate: &GroundEgressCertificate,
-        candidate: PlannedFootprint,
-        map_size: (i32, i32),
-    ) -> Vec<usize> {
-        let (kind, anchor) = candidate;
-        let (width, height) = kind.base_stats().size;
-        let intersects_route = (0..height).any(|dy| {
-            (0..width).any(|dx| {
-                let tile = anchor.offset(dx, dy);
-                if tile.x < 0 || tile.y < 0 || tile.x >= map_size.0 || tile.y >= map_size.1 {
-                    return false;
-                }
-                let index = (tile.y * map_size.0 + tile.x) as usize;
-                certificate.route_tiles[index / 64] & (1 << (index % 64)) != 0
-            })
-        });
-        if !intersects_route {
-            return Vec::new();
-        }
-        certificate
-            .routes
-            .iter()
-            .enumerate()
-            .filter(|(_, route)| {
-                route
-                    .iter()
-                    .any(|tile| Self::candidate_blocks(kind, anchor, *tile))
-            })
-            .map(|(index, _)| index)
-            .collect()
-    }
-
-    fn ground_producer_route(
-        open: &[bool],
-        map_size: (i32, i32),
-        producer: &GroundProducerEgress,
-    ) -> Option<Vec<TilePos>> {
-        let index = |tile: TilePos| (tile.y * map_size.0 + tile.x) as usize;
-        let in_bounds = |tile: TilePos| {
-            tile.x >= 0 && tile.y >= 0 && tile.x < map_size.0 && tile.y < map_size.1
-        };
-        let witness = producer
-            .witnesses
-            .iter()
-            .copied()
-            .find(|tile| open[index(*tile)])?;
-        let spawn = producer
-            .ring
-            .iter()
-            .copied()
-            .find(|tile| in_bounds(*tile) && open[index(*tile)])?;
-        Self::planned_ground_path(open, map_size, spawn, witness)
-    }
-
-    #[cfg(test)]
-    fn planned_footprints_block(planned: &[PlannedFootprint], tile: TilePos) -> bool {
-        planned
-            .iter()
-            .any(|(kind, anchor)| Self::candidate_blocks(*kind, *anchor, tile))
-    }
-
-    fn ground_egress_base_open(obs: &Observation) -> Vec<bool> {
-        let cells = usize::try_from(obs.map_width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(obs.map_height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
-        let mut open = vec![true; cells];
-        let mut block = |tile: TilePos| {
-            if tile.x >= 0 && tile.y >= 0 && tile.x < obs.map_width && tile.y < obs.map_height {
-                open[(tile.y * obs.map_width + tile.x) as usize] = false;
-            }
-        };
-        for tile in &obs.known_rock {
-            block(*tile);
-        }
-        for (tile, _) in &obs.known_scrap {
-            block(*tile);
-        }
-        for building in obs
-            .my_buildings
-            .iter()
-            .chain(obs.ally_buildings.iter())
-            .chain(obs.enemy_buildings.iter())
-            .filter(|building| !building.kind.is_stealthy())
-        {
-            let (width, height) = building.kind.base_stats().size;
-            for dy in 0..height {
-                for dx in 0..width {
-                    block(building.anchor.offset(dx, dy));
-                }
-            }
-        }
-        for (kind, anchor) in obs.my_units.iter().filter_map(|unit| unit.founding) {
-            if kind.is_stealthy() {
-                continue;
-            }
-            let (width, height) = kind.base_stats().size;
-            for dy in 0..height {
-                for dx in 0..width {
-                    block(anchor.offset(dx, dy));
-                }
-            }
-        }
-        open
-    }
-
-    fn ground_egress_open_with_plans(
-        base_open: &[bool],
-        map_size: (i32, i32),
-        planned: &[PlannedFootprint],
-    ) -> Vec<bool> {
-        let mut open = base_open.to_vec();
-        for (kind, anchor) in planned {
-            if kind.is_stealthy() {
-                continue;
-            }
-            let (width, height) = kind.base_stats().size;
-            for dy in 0..height {
-                for dx in 0..width {
-                    let tile = anchor.offset(dx, dy);
-                    if tile.x >= 0 && tile.y >= 0 && tile.x < map_size.0 && tile.y < map_size.1 {
-                        open[(tile.y * map_size.0 + tile.x) as usize] = false;
-                    }
-                }
-            }
-        }
-        open
-    }
-
-    fn ground_producer_egress(obs: &Observation, base_open: &[bool]) -> Vec<GroundProducerEgress> {
-        let map_size = (obs.map_width, obs.map_height);
-        let labels = Self::ground_egress_components(base_open, map_size);
-        let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
-        obs.my_buildings
-            .iter()
-            .filter(|building| {
-                building.built
-                    && building
-                        .kind
-                        .tier_stats(building.tier)
-                        .produces
-                        .iter()
-                        .any(|unit| unit.stats().domain == Domain::Ground)
-            })
-            .filter_map(|producer| {
-                let ring: Vec<_> = crate::tick::rect_adjacent_tiles(
-                    producer.anchor,
-                    producer.kind.tier_stats(producer.tier).size,
-                )
-                .collect();
-                let current_spawn = ring.iter().copied().find(|tile| {
-                    tile.x >= 0
-                        && tile.y >= 0
-                        && tile.x < obs.map_width
-                        && tile.y < obs.map_height
-                        && base_open[index(*tile)]
-                })?;
-                let component = labels[index(current_spawn)];
-                let mut witnesses: Vec<_> = labels
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, label)| **label == component)
-                    .map(|(index, _)| {
-                        TilePos::new(index as i32 % obs.map_width, index as i32 / obs.map_width)
-                    })
-                    .collect();
-                witnesses.sort_unstable_by_key(|tile| {
-                    (
-                        std::cmp::Reverse(tile.chebyshev(producer.anchor)),
-                        tile.y,
-                        tile.x,
-                    )
-                });
-                Some(GroundProducerEgress { ring, witnesses })
-            })
-            .collect()
-    }
-
-    fn ground_egress_components(open: &[bool], map_size: (i32, i32)) -> Vec<u32> {
-        let index = |tile: TilePos| (tile.y * map_size.0 + tile.x) as usize;
-        let mut labels = vec![0; open.len()];
-        let mut next_label = 1u32;
-        for start_index in 0..open.len() {
-            if !open[start_index] || labels[start_index] != 0 {
-                continue;
-            }
-            let start = TilePos::new(
-                start_index as i32 % map_size.0,
-                start_index as i32 / map_size.0,
-            );
-            labels[start_index] = next_label;
-            let mut frontier = std::collections::VecDeque::from([start]);
-            while let Some(tile) = frontier.pop_front() {
-                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let next = tile.offset(dx, dy);
-                    if next.x < 0 || next.y < 0 || next.x >= map_size.0 || next.y >= map_size.1 {
-                        continue;
-                    }
-                    let next_index = index(next);
-                    if open[next_index] && labels[next_index] == 0 {
-                        labels[next_index] = next_label;
-                        frontier.push_back(next);
-                    }
-                }
-            }
-            next_label = next_label
-                .checked_add(1)
-                .expect("a ground map cannot contain u32::MAX components");
-        }
-        labels
-    }
-
-    fn planned_ground_path(
-        open_tiles: &[bool],
-        map_size: (i32, i32),
-        start: TilePos,
-        goal: TilePos,
-    ) -> Option<Vec<TilePos>> {
-        let in_bounds = |tile: TilePos| {
-            tile.x >= 0 && tile.y >= 0 && tile.x < map_size.0 && tile.y < map_size.1
-        };
-        if !in_bounds(start) || !in_bounds(goal) {
-            return None;
-        }
-        let index = |tile: TilePos| (tile.y * map_size.0 + tile.x) as usize;
-        if !open_tiles[index(start)] || !open_tiles[index(goal)] {
-            return None;
-        }
-        let tile =
-            |index: usize| TilePos::new(index as i32 % map_size.0, index as i32 / map_size.0);
-        let start_index = index(start);
-        let goal_index = index(goal);
-        let mut parent = vec![usize::MAX; open_tiles.len()];
-        let mut open = std::collections::VecDeque::from([start]);
-        parent[start_index] = start_index;
-        while let Some(current) = open.pop_front() {
-            if current == goal {
-                break;
-            }
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let next = current.offset(dx, dy);
-                if !in_bounds(next) || !open_tiles[index(next)] {
-                    continue;
-                }
-                let next_index = index(next);
-                if parent[next_index] != usize::MAX {
-                    continue;
-                }
-                parent[next_index] = index(current);
-                open.push_back(next);
-            }
-        }
-        if parent[goal_index] == usize::MAX {
-            return None;
-        }
-        let mut route = Vec::new();
-        let mut cursor = goal_index;
-        loop {
-            route.push(tile(cursor));
-            if cursor == start_index {
-                break;
-            }
-            cursor = parent[cursor];
-        }
-        route.reverse();
-        Some(route)
+        )
     }
 
     #[cfg(test)]
     fn planned_ground_open(obs: &Observation, tile: TilePos, planned: &[PlannedFootprint]) -> bool {
-        crate::bot::routing::ground_open(obs, tile)
+        crate::bot::navigation::commands::ground_open(QueryPurpose::NavigationTest, obs, tile)
             && !obs.my_units.iter().any(|unit| {
-                unit.founding
-                    .is_some_and(|(kind, anchor)| Self::candidate_blocks(kind, anchor, tile))
+                unit.founding.is_some_and(|(kind, anchor)| {
+                    GroundEgressCache::candidate_blocks(kind, anchor, tile)
+                })
             })
-            && !Self::planned_footprints_block(planned, tile)
-    }
-
-    fn candidate_blocks(kind: BuildingKind, anchor: TilePos, tile: TilePos) -> bool {
-        if kind.is_stealthy() {
-            return false;
-        }
-        let (width, height) = kind.base_stats().size;
-        (anchor.x..anchor.x + width).contains(&tile.x)
-            && (anchor.y..anchor.y + height).contains(&tile.y)
+            && !GroundEgressCache::planned_footprints_block(planned, tile)
     }
 
     fn placement_tile_open_except(
@@ -983,6 +572,58 @@ mod tests {
         anchor: TilePos,
     ) -> bool {
         policy.first_valid_placement(obs, kind, [anchor]) == Some(anchor)
+    }
+
+    #[test]
+    fn indexed_placement_matches_scalar_geometry_across_known_obstacles() {
+        let mut obs = observation();
+        obs.known_rock = vec![TilePos::new(3, 3), TilePos::new(3, 4)];
+        obs.known_scrap = vec![(TilePos::new(4, 3), 10)];
+        obs.known_frames = vec![TilePos::new(12, 8)];
+        obs.explored[0] = false;
+        add_building(&mut obs, BuildingKind::ScuttleCharge, TilePos::new(5, 5));
+        obs.enemy_units.push(UnitObs {
+            id: UnitId(90),
+            player: PlayerId(1),
+            kind: UnitKind::Sentinel,
+            tile: TilePos::new(10, 10),
+            hp: 60,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        });
+        let mut founder = obs.enemy_units[0].clone();
+        founder.id = UnitId(91);
+        founder.player = obs.me;
+        founder.kind = UnitKind::Harvester;
+        founder.founding = Some((BuildingKind::Fabricator, TilePos::new(2, 8)));
+        obs.my_units.push(founder);
+        let geometry = PlacementGeometry::new(&obs);
+        let mut policy = UtilityPolicy::new();
+        policy.pending_sites.push(TilePos::new(8, 10));
+        policy.dead_anchors.push(TilePos::new(10, 2));
+        policy
+            .work_experience
+            .construction_work_tiles
+            .insert(TilePos::new(4, 9));
+        for kind in BuildingKind::ALL {
+            for y in -1..=obs.map_height {
+                for x in -1..=obs.map_width {
+                    let anchor = TilePos::new(x, y);
+                    assert_eq!(
+                        geometry.valid(&policy, kind, anchor),
+                        policy.placement_geometry_valid(&obs, kind, anchor),
+                        "{kind:?} at {anchor:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1186,9 +827,8 @@ mod tests {
             repairing: false,
             grounded: false,
         });
-        assert_eq!(
-            GroundEgressLayout::from_observation(&with_mine),
-            GroundEgressLayout::from_observation(&obs),
+        assert!(
+            GroundEgressCache::same_layout(&with_mine, &obs),
             "a nonblocking foundation must not invalidate the egress cache"
         );
 
@@ -1198,13 +838,13 @@ mod tests {
             let cache = cold.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("cold egress is prepared");
             let index = (mine_anchor.y * with_mine.map_width + mine_anchor.x) as usize;
-            assert!(cache.base_open[index]);
+            assert!(cache.base_open()[index]);
             let certificate = cache
-                .decisions
+                .decisions()
                 .get(&Vec::new())
                 .and_then(Clone::clone)
                 .expect("the founding mine leaves a cold route certificate");
-            assert_eq!(certificate.routes[0].first(), Some(&mine_anchor));
+            assert_eq!(certificate.routes()[0].first(), Some(&mine_anchor));
         }
 
         let cached = UtilityPolicy::new();
@@ -1214,7 +854,7 @@ mod tests {
             .borrow()
             .as_ref()
             .expect("baseline egress is prepared")
-            .decisions
+            .decisions()
             .get(&Vec::new())
             .and_then(Clone::clone)
             .expect("the baseline has a route certificate");
@@ -1224,7 +864,7 @@ mod tests {
             .borrow()
             .as_ref()
             .expect("cached egress remains prepared")
-            .decisions
+            .decisions()
             .get(&Vec::new())
             .and_then(Clone::clone)
             .expect("the cached certificate remains valid");
@@ -1258,17 +898,17 @@ mod tests {
             let cache = policy.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("egress is prepared");
             assert_eq!(
-                cache.producers.len(),
+                cache.producer_count(),
                 1,
                 "the irrecoverably sealed producer is omitted"
             );
             let certificate = cache
-                .decisions
+                .decisions()
                 .get(&Vec::new())
                 .and_then(Clone::clone)
                 .expect("the usable producer still has a certificate");
-            assert_eq!(certificate.routes.len(), 1);
-            assert_eq!(certificate.routes[0].first(), Some(&last_spawn));
+            assert_eq!(certificate.routes().len(), 1);
+            assert_eq!(certificate.routes()[0].first(), Some(&last_spawn));
         }
 
         assert!(placement_valid(
@@ -1361,7 +1001,7 @@ mod tests {
             let cache = policy.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("egress cache is prepared");
             let baseline = cache
-                .decisions
+                .decisions()
                 .get(&Vec::new())
                 .and_then(Clone::clone)
                 .expect("the open fixture has a route certificate");
@@ -1369,14 +1009,15 @@ mod tests {
                 .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
                 .map(|anchor| (BuildingKind::Reclaimer, anchor))
                 .find(|candidate| {
-                    UtilityPolicy::certificate_routes_blocked(
+                    GroundEgressCache::certificate_routes_blocked(
                         &baseline,
                         *candidate,
-                        cache.layout.map_size,
+                        cache.map_size(),
                     )
                     .is_empty()
                 })
                 .expect("some tile lies outside the canonical route");
+            assert!(cache.certifies(candidate));
             (baseline, candidate)
         };
 
@@ -1386,7 +1027,7 @@ mod tests {
         let certificate = cache
             .as_ref()
             .expect("egress cache remains prepared")
-            .decisions
+            .decisions()
             .get(&vec![candidate])
             .and_then(Clone::clone)
             .expect("the accepted candidate has a certificate");
@@ -1402,20 +1043,21 @@ mod tests {
             let cache = policy.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("egress cache is prepared");
             let baseline = cache
-                .decisions
+                .decisions()
                 .get(&Vec::new())
                 .and_then(Clone::clone)
                 .expect("the open fixture has a route certificate");
-            let spawn = baseline.routes[0][0];
+            let spawn = baseline.routes()[0][0];
             let candidate = (BuildingKind::Reclaimer, spawn);
             assert_eq!(
-                UtilityPolicy::certificate_routes_blocked(
+                GroundEgressCache::certificate_routes_blocked(
                     &baseline,
                     candidate,
-                    cache.layout.map_size,
+                    cache.map_size(),
                 ),
                 vec![0]
             );
+            assert!(!cache.certifies(candidate));
             (baseline, candidate)
         };
 
@@ -1425,15 +1067,15 @@ mod tests {
         let certificate = cache
             .as_ref()
             .expect("egress cache remains prepared")
-            .decisions
+            .decisions()
             .get(&vec![candidate])
             .and_then(Clone::clone)
             .expect("an alternate route exists");
         assert!(!std::sync::Arc::ptr_eq(&baseline, &certificate));
         assert!(
-            certificate.routes[0]
+            certificate.routes()[0]
                 .iter()
-                .all(|tile| !UtilityPolicy::candidate_blocks(candidate.0, candidate.1, *tile))
+                .all(|tile| !GroundEgressCache::candidate_blocks(candidate.0, candidate.1, *tile))
         );
     }
 
@@ -1471,7 +1113,7 @@ mod tests {
             .borrow()
             .as_ref()
             .expect("the first query prepares the egress cache")
-            .decisions
+            .decisions()
             .len();
 
         assert!(
@@ -1484,7 +1126,7 @@ mod tests {
                 .borrow()
                 .as_ref()
                 .expect("the cache remains prepared")
-                .decisions
+                .decisions()
                 .len(),
             cached_decisions,
             "the repeated decision must reuse both the accepted certificate and rejected full plan"
@@ -1523,7 +1165,7 @@ mod tests {
             repairing: false,
             grounded: false,
         });
-        let open = UtilityPolicy::ground_egress_base_open(&obs);
+        let open = GroundEgressCache::ground_egress_base_open(&obs);
 
         for y in 0..obs.map_height {
             for x in 0..obs.map_width {
@@ -1643,15 +1285,14 @@ mod tests {
     #[test]
     fn egress_cache_layout_tracks_every_routing_input() {
         let obs = observation();
-        let baseline = GroundEgressLayout::from_observation(&obs);
 
         let mut with_rock = obs.clone();
         with_rock.known_rock.push(TilePos::new(1, 1));
-        assert_ne!(baseline, GroundEgressLayout::from_observation(&with_rock));
+        assert!(!GroundEgressCache::same_layout(&obs, &with_rock));
 
         let mut with_scrap = obs.clone();
         with_scrap.known_scrap.push((TilePos::new(1, 1), 10));
-        assert_ne!(baseline, GroundEgressLayout::from_observation(&with_scrap));
+        assert!(!GroundEgressCache::same_layout(&obs, &with_scrap));
 
         let mut with_building = obs.clone();
         with_building.enemy_buildings.push(BuildingObs {
@@ -1665,10 +1306,7 @@ mod tests {
             seen: true,
             tier: 0,
         });
-        assert_ne!(
-            baseline,
-            GroundEgressLayout::from_observation(&with_building)
-        );
+        assert!(!GroundEgressCache::same_layout(&obs, &with_building));
 
         let mut with_founding = obs.clone();
         with_founding.my_units.push(UnitObs {
@@ -1687,16 +1325,10 @@ mod tests {
             repairing: false,
             grounded: false,
         });
-        assert_ne!(
-            baseline,
-            GroundEgressLayout::from_observation(&with_founding)
-        );
+        assert!(!GroundEgressCache::same_layout(&obs, &with_founding));
 
-        let mut without_producer = obs;
+        let mut without_producer = obs.clone();
         without_producer.my_buildings[0].built = false;
-        assert_ne!(
-            baseline,
-            GroundEgressLayout::from_observation(&without_producer)
-        );
+        assert!(!GroundEgressCache::same_layout(&obs, &without_producer));
     }
 }

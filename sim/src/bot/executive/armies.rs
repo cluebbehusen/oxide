@@ -1,6 +1,9 @@
 //! Army lifecycle, marching, contact, and strength assessment.
 
 use super::*;
+use crate::bot::query_work::QueryPurpose;
+use crate::stats::Domain;
+use chassis::fx::Fx;
 use core::cmp::Reverse;
 
 const PULLBACK_NUM: u32 = 35;
@@ -240,7 +243,57 @@ impl Executive {
                 continue; // swept below
             }
             let mut members = roster.members(&army.members);
-            let in_contact = enemies_near(obs, &members, CONTACT_RADIUS);
+            let unit_contact = enemies_near(obs, &members, CONTACT_RADIUS);
+            let static_contact = members.iter().any(|member| {
+                obs.enemy_buildings.iter().any(|building| {
+                    building.seen
+                        && super::threats::building_threatens(
+                            obs,
+                            building,
+                            member.tile,
+                            member.body_domain(),
+                        )
+                })
+            });
+            let siege_contact = army.target.is_some_and(|target| {
+                obs.enemy_buildings.iter().any(|building| {
+                    building.seen && building.hp > 0 && building.anchor.chebyshev(target) <= 2
+                }) && members.iter().any(|unit| {
+                    is_artillery(unit)
+                        && unit.kind.stats().weapons.iter().any(|weapon| {
+                            let distance = unit.tile.center().dist_sq(target.center());
+                            weapon.targets.covers(Domain::Ground)
+                                && distance <= weapon.range * weapon.range
+                                && distance >= weapon.minimum_range * weapon.minimum_range
+                                && !chassis::path::line_blocked(
+                                    unit.tile.center(),
+                                    target.center(),
+                                    |tile| !obs.known_peaks.contains(&tile),
+                                )
+                        })
+                })
+            });
+            let in_contact = unit_contact || static_contact || siege_contact;
+            let unexplained_loss = self
+                .ground_outcomes
+                .get_mut(&army.id)
+                .is_some_and(|journal| {
+                    if let Some(ArmyMission {
+                        purpose: ArmyPurpose::Pressure(target),
+                        ..
+                    }) = self.missions.get(&army.id)
+                        && journal.observe_objective(obs, target.observed_id(obs))
+                    {
+                        journal.finish(
+                            obs,
+                            crate::bot::experience::Outcome::Complete,
+                            crate::bot::experience::OutcomeReason::ObjectiveObservedGone,
+                            750,
+                            false,
+                        );
+                    }
+                    journal.observe_ground_contact(obs, in_contact)
+                });
 
             // Rotate the badly wounded out, but only between fights.
             // Mid-engagement a wounded machine still deals full damage,
@@ -288,12 +341,41 @@ impl Executive {
             }
 
             let centroid = centroid(&members, centroid_frame);
+            if matches!(army.state, ArmyState::Pushing | ArmyState::Engaging)
+                && !in_contact
+                && !tiles_within(centroid, army.staging, 2)
+                && unexplained_loss
+            {
+                army.state = ArmyState::Withdrawing;
+                army.target = None;
+                army.focus = None;
+                army.progress = None;
+                self.ground_outcomes
+                    .get_mut(&army.id)
+                    .expect("observed casualty journal")
+                    .finish(
+                        obs,
+                        crate::bot::experience::Outcome::Inconclusive,
+                        crate::bot::experience::OutcomeReason::LostContact,
+                        0,
+                        false,
+                    );
+                out.push(PlayerCommand {
+                    player: me,
+                    command: Command::Move {
+                        units: army.members.clone(),
+                        goal: army.staging,
+                        queue: false,
+                    },
+                });
+                continue;
+            }
             if army.state != ArmyState::Withdrawing
                 && let Some(mission) = self.missions.get(&army.id)
                 && mission.purpose == ArmyPurpose::Recover
                 && centroid.chebyshev(mission.goal) > 2
             {
-                let (mine, theirs) = local_strength(obs, &members);
+                let (mine, theirs) = local_fight_strength(obs, &members);
                 if mine.saturating_mul(u64::from(WITHDRAW_MARGIN_DEN))
                     < theirs.saturating_mul(u64::from(WITHDRAW_MARGIN_NUM))
                     && !tiles_within(centroid, army.staging, 2)
@@ -347,6 +429,15 @@ impl Executive {
                     // idle exactly where it stood. Checked only on a LATER
                     // think than the order, since this think's commands
                     // have not executed yet.
+                    if !in_contact
+                        && all_idle
+                        && artillery_has_escort_quorum_with_roster(army, roster)
+                        && members.iter().any(|unit| is_artillery(unit) && !unit.idle)
+                        && let Some(target) = army.target
+                    {
+                        march_with_roster(me, obs, army, target, &mut out, roster);
+                        army.issued = None;
+                    }
                     let bounced = all_idle
                         && army.issued.is_some_and(|(at, from)| {
                             obs.tick > at && vanguard.chebyshev(from) <= 1
@@ -389,8 +480,8 @@ impl Executive {
                     }
                 }
                 ArmyState::Engaging => {
-                    let (mine, theirs) = local_strength(obs, &members);
-                    if theirs == 0 && (!in_contact) {
+                    let (mine, theirs) = local_fight_strength(obs, &members);
+                    if theirs == 0 && !in_contact {
                         if army
                             .target
                             .is_some_and(|target| objective_cleared(obs, target))
@@ -423,10 +514,18 @@ impl Executive {
                         army.progress = None;
                         out.push(PlayerCommand {
                             player: me,
-                            command: Command::AttackMove {
-                                units: army.members.clone(),
-                                goal: army.staging,
-                                queue: false,
+                            command: if !unit_contact {
+                                Command::Move {
+                                    units: army.members.clone(),
+                                    goal: army.staging,
+                                    queue: false,
+                                }
+                            } else {
+                                Command::AttackMove {
+                                    units: army.members.clone(),
+                                    goal: army.staging,
+                                    queue: false,
+                                }
                             },
                         });
                     } else {
@@ -583,6 +682,26 @@ impl Executive {
         }
         self.armies.retain(|a| !a.members.is_empty());
         self.observe_ground_outcomes(obs);
+        for army in &self.armies {
+            if army.state == ArmyState::Withdrawing
+                && let Some(mission) = self.missions.get_mut(&army.id)
+                && !matches!(mission.purpose, ArmyPurpose::Recover)
+            {
+                // Record the failed approach before replacing its responsibility.
+                *mission = ArmyMission {
+                    purpose: ArmyPurpose::Recover,
+                    goal: army.staging,
+                    accepted_at: obs.tick,
+                    deadline: obs.tick.saturating_add(1800),
+                    score: 0,
+                };
+            } else if army.state == ArmyState::Staging
+                && let Some(mission) = self.missions.get_mut(&army.id)
+                && mission.purpose == ArmyPurpose::Recover
+            {
+                mission.goal = army.staging;
+            }
+        }
         out
     }
 
@@ -768,11 +887,9 @@ fn artillery_has_escort_quorum_with_roster<'a>(army: &Army, roster: &impl UnitLo
 /// reach of the target, outside a defending turret's.
 const ARTY_STANDOFF: i32 = 7;
 
-/// Marching orders for a push: escorts attack-move onto the target;
-/// artillery holds a standoff point pulled back along the line of
-/// advance — and without an escort quorum (a third of the army) the
-/// guns stay at the staging ground instead. Nobody pushes blind
-/// artillery.
+/// Marching keeps an escorted siege within target sight and gun range.
+/// Without an escort quorum (a third of the army), guns remain at staging.
+/// Other pushes retain the ordinary advance with artillery behind the screen.
 pub(super) fn march(
     me: PlayerId,
     obs: &Observation,
@@ -786,7 +903,7 @@ pub(super) fn march(
 
 fn march_with_roster<'a>(
     me: PlayerId,
-    _obs: &'a Observation,
+    obs: &'a Observation,
     army: &Army,
     target: TilePos,
     out: &mut Vec<PlayerCommand>,
@@ -796,6 +913,105 @@ fn march_with_roster<'a>(
         .members
         .iter()
         .partition(|id| roster.get(**id).is_some_and(is_artillery));
+    if !arty.is_empty()
+        && obs
+            .enemy_buildings
+            .iter()
+            .any(|building| building.hp > 0 && building.anchor.chebyshev(target) <= 2)
+    {
+        let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
+        let distance = dx.abs().max(dy.abs());
+        let mut routes = crate::bot::navigation::commands::RouteProjection::new(
+            QueryPurpose::ExecutiveOrders,
+            obs,
+            Domain::Ground,
+        );
+        let sight = escorts
+            .iter()
+            .filter_map(|id| roster.get(*id))
+            .map(|unit| unit.kind.stats().vision)
+            .max()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        let positions: Vec<_> = (1..=distance.min(20))
+            .rev()
+            .filter_map(|pull| {
+                let tile = TilePos::new(
+                    target.x + dx * pull / distance,
+                    target.y + dy * pull / distance,
+                );
+                let in_range = arty.iter().all(|id| {
+                    roster.get(*id).is_some_and(|unit| {
+                        unit.kind.stats().weapons.iter().any(|weapon| {
+                            let distance = tile.center().dist_sq(target.center());
+                            let reach = (weapon.range - Fx::from_num(2)).max(Fx::from_num(0));
+                            weapon.targets.covers(Domain::Ground)
+                                && distance <= reach * reach
+                                && distance >= weapon.minimum_range * weapon.minimum_range
+                        })
+                    })
+                });
+                (in_range
+                    && tile.chebyshev(target) <= sight
+                    && army.members.iter().all(|id| {
+                        roster
+                            .get(*id)
+                            .is_some_and(|unit| routes.unit_reaches(unit, tile))
+                    }))
+                .then_some(tile)
+            })
+            .collect();
+        let stand = positions
+            .iter()
+            .copied()
+            .find(|tile| {
+                !obs.enemy_buildings.iter().any(|building| {
+                    super::threats::building_threatens(obs, building, *tile, Domain::Ground)
+                })
+            })
+            .or_else(|| positions.first().copied());
+        let goal = if artillery_has_escort_quorum_with_roster(army, roster) {
+            stand.unwrap_or(army.staging)
+        } else {
+            army.staging
+        };
+        let screen_goal = if goal == army.staging {
+            goal
+        } else {
+            arty.iter()
+                .filter_map(|id| roster.get(*id))
+                .max_by_key(|unit| (unit.tile.manhattan(goal), Reverse(unit.id)))
+                .and_then(|rear| routes.command_route(rear.tile, goal))
+                .map_or(goal, |path| path.get(2).copied().unwrap_or(goal))
+        };
+        if !escorts.is_empty() {
+            out.push(PlayerCommand {
+                player: me,
+                command: Command::Move {
+                    units: escorts,
+                    goal: screen_goal,
+                    queue: false,
+                },
+            });
+        }
+        out.push(PlayerCommand {
+            player: me,
+            command: if goal == army.staging {
+                Command::Move {
+                    units: arty,
+                    goal,
+                    queue: false,
+                }
+            } else {
+                Command::AttackMove {
+                    units: arty,
+                    goal,
+                    queue: false,
+                }
+            },
+        });
+        return;
+    }
     if !escorts.is_empty() {
         out.push(PlayerCommand {
             player: me,
@@ -967,22 +1183,79 @@ fn objective_cleared(obs: &Observation, target: TilePos) -> bool {
 /// the estimate stable when the line bends — a mean position can land in
 /// empty ground and blind every radius test around it — while stragglers
 /// don't sweep distant enemies into the count.
-fn local_strength(obs: &Observation, members: &[&UnitObs]) -> (u64, u64) {
-    let engaged: Vec<TilePos> = members
+fn local_fight_strength(obs: &Observation, members: &[&UnitObs]) -> (u64, u64) {
+    let defenses: Vec<_> = obs
+        .enemy_buildings
         .iter()
-        .filter(|m| {
-            obs.enemy_units
-                .iter()
-                .any(|e| mutually_relevant(m, e) && m.tile.chebyshev(e.tile) <= CONTACT_RADIUS)
+        .filter(|building| {
+            building.seen
+                && members.iter().any(|member| {
+                    super::threats::building_threatens(
+                        obs,
+                        building,
+                        member.tile,
+                        member.body_domain(),
+                    )
+                })
         })
-        .map(|m| m.tile)
         .collect();
-    let opposition: Vec<&UnitObs> = obs
+    let engaged: Vec<_> = members
+        .iter()
+        .copied()
+        .filter(|member| {
+            obs.enemy_units.iter().any(|enemy| {
+                mutually_relevant(member, enemy)
+                    && member.tile.chebyshev(enemy.tile) <= CONTACT_RADIUS
+            }) || defenses.iter().any(|building| {
+                super::threats::building_threatens(obs, building, member.tile, member.body_domain())
+            })
+        })
+        .collect();
+    let nearby: Vec<_> = members
+        .iter()
+        .copied()
+        .filter(|member| {
+            engaged
+                .iter()
+                .any(|front| member.tile.chebyshev(front.tile) <= ENGAGE_RADIUS)
+        })
+        .collect();
+    let opposition: Vec<_> = obs
         .enemy_units
         .iter()
-        .filter(|e| engaged.iter().any(|m| m.chebyshev(e.tile) <= ENGAGE_RADIUS))
+        .filter(|enemy| {
+            engaged
+                .iter()
+                .any(|front| front.tile.chebyshev(enemy.tile) <= ENGAGE_RADIUS)
+        })
         .collect();
-    matched_strength(members, &opposition)
+    let (mut mine, mut theirs) = matched_strength(&nearby, &opposition);
+    if !defenses.is_empty() {
+        mine = nearby
+            .iter()
+            .map(|unit| {
+                strength_vs(unit, crate::stats::Domain::Ground).max(
+                    if opposition
+                        .iter()
+                        .any(|enemy| enemy.body_domain() == crate::stats::Domain::Air)
+                    {
+                        strength_vs(unit, crate::stats::Domain::Air)
+                    } else {
+                        0
+                    },
+                )
+            })
+            .sum();
+        theirs = theirs.saturating_add(
+            defenses
+                .iter()
+                .map(|building| {
+                    super::threats::building_strength(building, crate::stats::Domain::Ground)
+                })
+                .sum::<u64>(),
+        );
+    }
+    (mine, theirs)
 }
 
 /// Whether marching this body into the visible force near `target` would
@@ -1175,6 +1448,248 @@ mod tests {
         ];
         obs.my_queues = vec![Vec::new(); obs.my_buildings.len()];
         obs
+    }
+
+    #[test]
+    fn siege_keeps_its_screen_with_the_guns_and_holds_while_firing() {
+        let staging = TilePos::new(4, 10);
+        let target = TilePos::new(26, 10);
+        let units = vec![
+            unit(
+                1,
+                PlayerId(0),
+                UnitKind::Bombard,
+                staging,
+                UnitKind::Bombard.stats().max_hp,
+                true,
+            ),
+            unit(
+                2,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                staging.offset(1, 0),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            ),
+            unit(
+                3,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                staging.offset(0, 1),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            ),
+        ];
+        let mut obs = observation(120, (40, 24), units, Vec::new());
+        obs.enemy_buildings
+            .push(building(90, PlayerId(1), BuildingKind::Turret, target));
+        let mut body = army(
+            1,
+            vec![UnitId(1), UnitId(2), UnitId(3)],
+            ArmyState::Pushing,
+            staging,
+        );
+        body.target = Some(target);
+        let mut out = Vec::new();
+        march(obs.me, &obs, &body, target, &mut out);
+        let stand = out
+            .iter()
+            .find_map(|command| match command.command {
+                Command::AttackMove { goal, .. } => Some(goal),
+                _ => None,
+            })
+            .unwrap();
+        let screen = out
+            .iter()
+            .find_map(|command| match command.command {
+                Command::Move { goal, .. } => Some(goal),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            screen.chebyshev(staging) <= 3,
+            "the faster screen must wait within support distance of the slow guns"
+        );
+        assert_ne!(stand, target);
+        assert_ne!(
+            stand, staging,
+            "a Bombard can find a reachable position outside the gun"
+        );
+        assert!(out.iter().any(
+            |command| matches!(command.command, Command::AttackMove { goal, .. } if goal == stand)
+        ));
+        assert!(
+            stand.chebyshev(target) < UnitKind::Sentinel.stats().vision,
+            "the screen must keep the artillery objective visible"
+        );
+        let mut parity = obs.clone();
+        parity.enemy_buildings[0].kind = BuildingKind::Bastion;
+        let mut parity_commands = Vec::new();
+        march(parity.me, &parity, &body, target, &mut parity_commands);
+        assert!(
+            parity_commands
+                .iter()
+                .all(|command| matches!(command.command,
+            Command::Move { goal, .. } | Command::AttackMove { goal, .. } if goal != staging)),
+            "an admitted escorted assault must not wait forever for range superiority over a Bastion"
+        );
+        for unit in &mut obs.my_units {
+            unit.tile = stand;
+        }
+        let mut executive = Executive::new();
+        executive.armies.push(body);
+        for tick in [132, 744] {
+            obs.tick = tick;
+            executive.maintain_player_facing(obs.me, &obs, staging);
+            assert_eq!(executive.armies.len(), 1);
+            assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+        }
+    }
+
+    #[test]
+    fn static_fire_counts_as_contact_and_withdrawal_does_not_reacquire_it() {
+        let staging = TilePos::new(3, 10);
+        let mut obs = observation(
+            24,
+            (40, 30),
+            vec![
+                unit(
+                    1,
+                    PlayerId(0),
+                    UnitKind::Sentinel,
+                    TilePos::new(20, 10),
+                    200,
+                    false,
+                ),
+                unit(
+                    2,
+                    PlayerId(0),
+                    UnitKind::Sentinel,
+                    TilePos::new(20, 11),
+                    200,
+                    false,
+                ),
+            ],
+            Vec::new(),
+        );
+        let mut turret = building(90, PlayerId(1), BuildingKind::Turret, TilePos::new(24, 10));
+        turret.tier = 2;
+        turret.hp = turret.kind.tier_stats(2).max_hp;
+        obs.enemy_buildings.push(turret);
+        let mut executive = Executive::default();
+        let mut body = army(0, vec![UnitId(1), UnitId(2)], ArmyState::Pushing, staging);
+        body.target = Some(TilePos::new(32, 10));
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective {
+                id: None,
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(32, 10),
+            }),
+            goal: TilePos::new(32, 10),
+            accepted_at: obs.tick,
+            deadline: obs.tick + 3600,
+            score: 100,
+        };
+        executive.armies.push(body);
+        executive.missions.insert(ArmyId(0), mission.clone());
+        executive.watch_ground_mission(&obs, ArmyId(0), &mission);
+        executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+        obs.tick += 12;
+        let commands = executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Withdrawing);
+        assert!(commands.iter().any(|command| matches!(&command.command,
+            Command::Move { units, goal, .. } if units == &[UnitId(1), UnitId(2)] && *goal == staging)));
+
+        let members: Vec<_> = obs.my_units.iter().collect();
+        obs.enemy_buildings[0].seen = false;
+        assert_eq!(local_fight_strength(&obs, &members), (0, 0));
+        obs.enemy_buildings[0].seen = true;
+        let kind = obs.enemy_buildings[0].kind;
+        obs.enemy_buildings[0].kind = BuildingKind::FlakTurret;
+        assert_eq!(local_fight_strength(&obs, &members), (0, 0));
+        obs.enemy_buildings[0].kind = kind;
+
+        let recovery = executive.missions[&ArmyId(0)].clone();
+        assert_eq!(recovery.purpose, ArmyPurpose::Recover);
+        assert_eq!(recovery.goal, staging);
+        assert_eq!(executive.ground_outcomes[&ArmyId(0)].pending.len(), 1);
+        assert_eq!(
+            executive.ground_outcomes[&ArmyId(0)].pending[0].reason,
+            crate::bot::experience::OutcomeReason::UnsafeApproach
+        );
+        obs.tick += 12;
+        executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.missions[&ArmyId(0)], recovery);
+        for unit in &mut obs.my_units {
+            unit.tile = staging;
+            unit.idle = true;
+        }
+        obs.enemy_buildings.clear();
+        obs.tick += 12;
+        executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Staging);
+        assert_eq!(executive.armies[0].target, None);
+        assert_eq!(executive.missions[&ArmyId(0)], recovery);
+        assert_eq!(executive.ground_outcomes[&ArmyId(0)].pending.len(), 1);
+    }
+
+    #[test]
+    fn unseen_casualty_prompts_a_return_without_inventing_a_target() {
+        let staging = TilePos::new(3, 10);
+        let mut obs = observation(
+            24,
+            (40, 30),
+            (1..=3)
+                .map(|id| {
+                    unit(
+                        id,
+                        PlayerId(0),
+                        UnitKind::Sentinel,
+                        TilePos::new(20, 10),
+                        200,
+                        false,
+                    )
+                })
+                .collect(),
+            Vec::new(),
+        );
+        let mut executive = Executive::default();
+        let mut body = army(
+            0,
+            vec![UnitId(1), UnitId(2), UnitId(3)],
+            ArmyState::Pushing,
+            staging,
+        );
+        body.target = Some(TilePos::new(32, 10));
+        executive.armies.push(body);
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective {
+                id: None,
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(32, 10),
+            }),
+            goal: TilePos::new(32, 10),
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        executive.watch_ground_mission(&obs, ArmyId(0), &mission);
+        executive.missions.insert(ArmyId(0), mission);
+        let mut intact = executive.clone();
+        intact.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_ne!(intact.armies[0].state, ArmyState::Withdrawing);
+        obs.tick += 12;
+        obs.my_units.remove(0);
+        let commands = executive.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Withdrawing);
+        assert_eq!(executive.armies[0].target, None);
+        assert!(!executive.ground_outcomes[&ArmyId(0)].pending[0].doctrine_eligible);
+        assert!(commands.iter().any(
+            |command| matches!(command.command, Command::Move { goal, .. } if goal == staging)
+        ));
     }
 
     #[test]
@@ -2004,6 +2519,16 @@ mod tests {
             ground_outcomes: Default::default(),
             mission_decisions: Default::default(),
         };
+        withdrawing.missions.insert(
+            ArmyId(1),
+            ArmyMission {
+                purpose: ArmyPurpose::Recover,
+                goal: TilePos::new(2, 2),
+                accepted_at: 0,
+                deadline: tick + 600,
+                score: 0,
+            },
+        );
         assert!(
             withdrawing
                 .maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
@@ -2013,6 +2538,8 @@ mod tests {
         assert_eq!(withdrawing.armies[0].state, ArmyState::Staging);
         assert_eq!(withdrawing.armies[0].staging, TilePos::new(10, 10));
         assert_eq!(withdrawing.armies[0].progress, None);
+        assert_eq!(withdrawing.missions[&ArmyId(1)].goal, TilePos::new(10, 10));
+        assert_eq!(withdrawing.missions[&ArmyId(1)].deadline, tick + 600);
         assert_eq!(
             withdrawing.armies[0].target, None,
             "the withdrawal threat tile must not survive into Staging as an objective"
@@ -3433,5 +3960,127 @@ mod tests {
             total_comparisons < units.len() * all_members.len() / 20,
             "one large army must not regress to roster-by-members work"
         );
+    }
+    #[test]
+    fn observed_objective_completion_survives_casualties() {
+        use crate::bot::experience::{Outcome, OutcomeReason};
+        let staging = TilePos::new(3, 10);
+        let target = TilePos::new(22, 10);
+        for lost in [false, true] {
+            let mut obs = observation(
+                24,
+                (40, 30),
+                (1..=3)
+                    .map(|id| {
+                        unit(
+                            id,
+                            PlayerId(0),
+                            UnitKind::Sentinel,
+                            TilePos::new(20, 10),
+                            200,
+                            false,
+                        )
+                    })
+                    .collect(),
+                Vec::new(),
+            );
+            obs.enemy_buildings
+                .push(building(90, PlayerId(1), BuildingKind::Foundry, target));
+            let mut body = army(
+                0,
+                vec![UnitId(1), UnitId(2), UnitId(3)],
+                ArmyState::Engaging,
+                staging,
+            );
+            body.target = Some(target);
+            let mut exec = Executive::default();
+            exec.armies.push(body);
+            let mission = ArmyMission {
+                purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(
+                    &obs.enemy_buildings[0],
+                )),
+                goal: target,
+                accepted_at: obs.tick,
+                deadline: obs.tick + 1800,
+                score: 100,
+            };
+            exec.watch_ground_mission(&obs, ArmyId(0), &mission);
+            exec.missions.insert(ArmyId(0), mission);
+            exec.observe_ground_outcomes(&obs);
+            obs.tick += 12;
+            obs.enemy_buildings.clear();
+            if lost {
+                obs.my_units.remove(0);
+            }
+            assert!(objective_cleared(&obs, target));
+            let commands = exec.maintain_player_facing(obs.me, &obs, staging);
+            let report = &exec.ground_outcomes[&ArmyId(0)].pending[0];
+            assert_eq!(report.outcome, Outcome::Complete);
+            assert_eq!(report.reason, OutcomeReason::ObjectiveObservedGone);
+            assert_eq!(report.own_lost_value > 0, lost);
+            assert!(commands.is_empty());
+        }
+    }
+
+    #[test]
+    fn observed_combat_losses_do_not_become_unexplained_after_contact_ends() {
+        let staging = TilePos::new(3, 10);
+        let target = TilePos::new(32, 10);
+        let mut obs = observation(
+            24,
+            (40, 30),
+            (1..=4)
+                .map(|id| {
+                    unit(
+                        id,
+                        PlayerId(0),
+                        UnitKind::Sentinel,
+                        TilePos::new(20, 10),
+                        200,
+                        false,
+                    )
+                })
+                .collect(),
+            vec![unit(
+                90,
+                PlayerId(1),
+                UnitKind::Sentinel,
+                TilePos::new(21, 10),
+                200,
+                false,
+            )],
+        );
+        obs.enemy_buildings
+            .push(building(91, PlayerId(1), BuildingKind::Foundry, target));
+        let mut body = army(
+            0,
+            vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)],
+            ArmyState::Engaging,
+            staging,
+        );
+        body.target = Some(target);
+        let mut executive = Executive::default();
+        executive.armies.push(body);
+        let mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(&obs.enemy_buildings[0])),
+            goal: target,
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        executive.watch_ground_mission(&obs, ArmyId(0), &mission);
+        executive.missions.insert(ArmyId(0), mission);
+        obs.my_units.remove(0);
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+        obs.tick += 12;
+        obs.enemy_units.clear();
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_ne!(executive.armies[0].state, ArmyState::Withdrawing);
+        assert!(executive.ground_outcomes[&ArmyId(0)].pending.is_empty());
+        obs.tick += 12;
+        obs.my_units.remove(0);
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Withdrawing);
     }
 }

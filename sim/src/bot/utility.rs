@@ -20,6 +20,7 @@
 use super::difficulty::{DifficultyTuning, strategic_admission_tick};
 use super::executive::{Army, ArmyState, Intent};
 use super::intelligence::{BuildingContact, UnitContact};
+use super::navigation::commands::{self as routing, RouteProjection};
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
 use super::resources::{
@@ -27,13 +28,13 @@ use super::resources::{
     CommitmentOwner, LedgerCheckpoint, ProducerLaneReservations, ResourceSnapshot, ScrapClaim,
     SiteFootprint, UnitClaimRole, builder_is_free,
 };
-use super::routing::{self, RouteProjection};
 use super::{PublicMapBriefing, StartingFoundry};
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::grid::TilePos;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 
 mod combat;
 pub(in crate::bot) use combat::{GroundMissionInputs, ground_weapon_reaches_footprint};
@@ -48,6 +49,7 @@ mod economic_work;
 mod economy;
 mod expansion;
 mod experience_work;
+mod extractor_development;
 mod production;
 mod reconnaissance;
 pub(crate) use reconnaissance::{
@@ -704,7 +706,9 @@ impl Dials {
 /// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtilityPolicy {
+    pub(in crate::bot) planning: super::planning::PlanningWork,
     defense_routing_cache: std::cell::RefCell<defense::DefenseRoutingCache>,
+    resource_assets: std::cell::RefCell<Option<defense::ResourceAssets>>,
     pub(in crate::bot) work_experience: experience_work::WorkExperience,
     pub(in crate::bot) ground_inputs: Option<combat::GroundMissionInputs>,
     pub(in crate::bot) battlefield: std::sync::Arc<super::battlefield::BattlefieldAssessment>,
@@ -713,13 +717,13 @@ pub struct UtilityPolicy {
     /// Construction changes far less often than the bot thinks; retaining this
     /// derived data keeps a fair full-component safety check out of the hot
     /// path without changing which placements are legal.
-    ground_egress_cache: std::cell::RefCell<Option<terrain::GroundEgressCache>>,
+    ground_egress_cache: std::cell::RefCell<Option<super::navigation::egress::GroundEgressCache>>,
     /// Lazily materialized, immutable worker-danger surface for the latest
     /// effective fog-honest threat layout.
     harvest_danger_cache: std::cell::RefCell<danger::HarvestDangerCache>,
     /// Bounded public-terrain route fields shared by expansion economics and
     /// security across repeated assessments and stationary route sources.
-    expansion_routing_cache: std::cell::RefCell<expansion::ExpansionRoutingCache>,
+    expansion_routing_cache: std::cell::RefCell<super::navigation::public_fields::PublicRoutes>,
     /// Largest hostile ground force observed within the difficulty's
     /// strategic memory window. Its exact old position may be stale; voluntary
     /// attack timing consumes only the common recent portion of this fact.
@@ -764,6 +768,7 @@ pub struct UtilityPolicy {
     /// fund while current scrap accumulates to its admission threshold.
     foundry_saving: Option<construction::FoundrySavingCommitment>,
     economic_saving: Option<EconomicInvestment>,
+    pub(in crate::bot) standing_saving: Option<super::standing_force::StandingForceCommitment>,
     economic_foundation: Option<EconomicInvestment>,
     economic_cancelled_founder: Option<(UnitId, BuildingKind, TilePos)>,
     economic_retry_at: u64,
@@ -983,17 +988,15 @@ impl PolicyCommitments {
         units.dedup();
         for unit in units {
             let owner = self.next_strategic_owner();
-            if resources.builders().iter().any(|builder| {
-                builder.id == unit
-                    && builder.obligation == Some(super::resources::BuilderObligation::Repair)
-            }) {
+            if let Some(obligation) = resources
+                .builders()
+                .iter()
+                .find(|builder| builder.id == unit)
+                .and_then(|builder| builder.obligation)
+            {
                 self.ledger
-                    .import_builder_obligation(
-                        owner,
-                        unit,
-                        super::resources::BuilderObligation::Repair,
-                    )
-                    .expect("retained repair ownership must match the observed program");
+                    .import_builder_obligation(owner, unit, obligation)
+                    .expect("retained builder ownership must match the observed program");
                 continue;
             }
             self.ledger
@@ -1185,6 +1188,14 @@ impl<'a> StrategicUtilityContext<'a> {
 }
 
 impl UtilityPolicy {
+    pub(in crate::bot) fn speculative_checkpoint(&mut self) -> Self {
+        // Continuations survive rollback, so the transaction never needs a copy of them.
+        let planning = std::mem::take(&mut self.planning);
+        let checkpoint = self.clone();
+        self.planning = planning;
+        checkpoint
+    }
+
     /// Fresh policy, no memory.
     pub fn new() -> Self {
         Self::default()
@@ -1307,37 +1318,7 @@ impl UtilityPolicy {
                 && tile.y >= target.y
                 && tile.y < target.y + target_size.1
         };
-        let cells = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
-        let mut visited = vec![false; cells];
-        let index = |tile: TilePos| usize::try_from(tile.y * width + tile.x).ok();
-        let Some(home_index) = index(home).filter(|index| *index < visited.len()) else {
-            return false;
-        };
-        visited[home_index] = true;
-        let mut frontier = VecDeque::from([home]);
-        while let Some(tile) = frontier.pop_front() {
-            if goal(tile) {
-                return true;
-            }
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let next = tile.offset(dx, dy);
-                let Some(next_index) = index(next).filter(|index| *index < visited.len()) else {
-                    continue;
-                };
-                if !visited[next_index] && open(next) {
-                    visited[next_index] = true;
-                    frontier.push_back(next);
-                }
-            }
-        }
-        false
+        super::navigation::flood::reaches_any(width, height, [home], open, goal)
     }
 
     fn shallow_sentinel_reinforcement(obs: &Observation, intents: &[Intent]) -> bool {
@@ -1558,29 +1539,22 @@ impl UtilityPolicy {
         let (width, height) = size;
         let defer = (0..height).any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
         candidates.sort_unstable_by_key(|unit| (unit.tile.manhattan(anchor), unit.id));
+        let routes =
+            routing::BuildRouteProjection::new(QueryPurpose::BuilderRouting, obs, public_map);
         candidates
             .iter()
             .copied()
-            .find(|unit| match public_map {
-                Some(public_map) => {
-                    crate::bot::routing::build_command_path_avoids_with_public_terrain(
-                        obs,
-                        public_map,
-                        unit,
+            .find(|unit| {
+                routes.avoids(
+                    unit,
+                    routing::BuildCommandTarget {
                         anchor,
                         size,
                         defer,
-                        |tile| self.harvest_location_contested(tile) || danger.contains(tile),
-                    )
-                }
-                None => crate::bot::routing::build_command_path_avoids(
-                    obs,
-                    unit,
-                    anchor,
-                    size,
-                    defer,
+                    },
+                    None,
                     |tile| self.harvest_location_contested(tile) || danger.contains(tile),
-                ),
+                )
             })
             .map(|unit| unit.id)
     }
@@ -2824,11 +2798,24 @@ impl UtilityPolicy {
         });
 
         let mut evacuations: Vec<(TilePos, Vec<UnitId>)> = Vec::new();
+        let ground = std::cell::OnceCell::new();
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some() && unit.tile.chebyshev(home) > 1 && endangered(unit)
         }) {
             if (!self.evacuating_workers.contains(&unit.id) || unit.idle)
-                && let Some(goal) = self.worker_evacuation_goal(obs, unit, home, &danger)
+                && let Some(goal) = self.worker_evacuation_goal(
+                    obs,
+                    unit,
+                    home,
+                    &danger,
+                    ground.get_or_init(|| {
+                        RouteProjection::new(
+                            QueryPurpose::EvacuationDestination,
+                            obs,
+                            Domain::Ground,
+                        )
+                    }),
+                )
             {
                 if let Some((_, workers)) = evacuations
                     .iter_mut()
@@ -2873,13 +2860,16 @@ impl UtilityPolicy {
         worker: &UnitObs,
         home: TilePos,
         danger: &danger::HarvestDangerProjection,
+        ground: &RouteProjection<'_>,
     ) -> Option<TilePos> {
-        let initial_danger = self.worker_escape_component(obs, worker.tile, danger);
-        let mut known_routes = RouteProjection::known_ground(obs);
-        let mut safe_routes = RouteProjection::ground_avoiding(obs, |tile| {
-            (self.harvest_location_contested(tile) || danger.contains(tile))
-                && !initial_danger.contains(&tile)
-        });
+        let initial_danger = self.worker_escape_component(obs, worker.tile, danger, ground);
+        let mut known_routes =
+            RouteProjection::known_ground(QueryPurpose::EvacuationDestination, obs);
+        let mut safe_routes =
+            RouteProjection::ground_avoiding(QueryPurpose::EvacuationDestination, obs, |tile| {
+                (self.harvest_location_contested(tile) || danger.contains(tile))
+                    && !initial_danger.contains(&tile)
+            });
         let search_origin = if initial_danger.is_empty() {
             home
         } else {
@@ -2888,31 +2878,31 @@ impl UtilityPolicy {
         let max_radius = obs.map_width.max(obs.map_height).max(0);
         for radius in 0..=max_radius {
             let mut best = None;
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx.abs().max(dy.abs()) != radius {
-                        continue;
-                    }
-                    let tile = search_origin.offset(dx, dy);
-                    if !routing::ground_open(obs, tile)
-                        || !obs.explored(tile)
-                        || !self.evacuation_standing_area_safe(obs, tile, danger)
-                        || !known_routes.unit_reaches(worker, tile)
-                        || !safe_routes.unit_reaches(worker, tile)
-                        || !safe_routes.direct_line_avoids_blocked(worker.tile, tile)
-                        || !safe_routes.command_path_avoids_blocked(worker.tile, tile)
-                    {
-                        continue;
-                    }
-                    let key = (
-                        worker.tile.manhattan(tile),
-                        tile.manhattan(home),
-                        tile.y,
-                        tile.x,
-                    );
-                    if best.is_none_or(|(_, current)| key < current) {
-                        best = Some((tile, key));
-                    }
+            crate::bot::query_work::record(
+                QueryPurpose::EvacuationDestination,
+                crate::bot::query_work::QueryOperation::EvacuationCandidates,
+                (radius as usize * 8).max(1),
+            );
+            for (dx, dy) in super::navigation::areas::square_ring(radius) {
+                let tile = search_origin.offset(dx, dy);
+                if !ground.open(tile)
+                    || !obs.explored(tile)
+                    || !self.evacuation_standing_area_safe(ground, tile, danger)
+                    || !known_routes.unit_reaches(worker, tile)
+                    || !safe_routes.unit_reaches(worker, tile)
+                    || !safe_routes.direct_line_avoids_blocked(worker.tile, tile)
+                    || !safe_routes.command_path_avoids_blocked(worker.tile, tile)
+                {
+                    continue;
+                }
+                let key = (
+                    worker.tile.manhattan(tile),
+                    tile.manhattan(home),
+                    tile.y,
+                    tile.x,
+                );
+                if best.is_none_or(|(_, current)| key < current) {
+                    best = Some((tile, key));
                 }
             }
             if let Some((tile, _)) = best {
@@ -2927,37 +2917,27 @@ impl UtilityPolicy {
         obs: &Observation,
         origin: TilePos,
         danger: &danger::HarvestDangerProjection,
+        ground: &RouteProjection<'_>,
     ) -> BTreeSet<TilePos> {
         let unsafe_at = |tile| self.harvest_location_contested(tile) || danger.contains(tile);
-        if !routing::ground_open(obs, origin) || !unsafe_at(origin) {
+        if !ground.open(origin) || !unsafe_at(origin) {
             return BTreeSet::new();
         }
-        let mut component = BTreeSet::from([origin]);
-        let mut frontier = vec![origin];
-        while let Some(tile) = frontier.pop() {
-            for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
-                let neighbor = tile.offset(dx, dy);
-                if routing::ground_open(obs, neighbor)
-                    && unsafe_at(neighbor)
-                    && component.insert(neighbor)
-                {
-                    frontier.push(neighbor);
-                }
-            }
-        }
-        component
+        super::navigation::flood::component_tiles(obs.map_width, obs.map_height, origin, |tile| {
+            ground.open(tile) && unsafe_at(tile)
+        })
     }
 
     fn evacuation_standing_area_safe(
         &self,
-        obs: &Observation,
+        ground: &RouteProjection<'_>,
         goal: TilePos,
         danger: &danger::HarvestDangerProjection,
     ) -> bool {
         (-1..=1).all(|dy| {
             (-1..=1).all(|dx| {
                 let tile = goal.offset(dx, dy);
-                !routing::ground_open(obs, tile)
+                !ground.open(tile)
                     || (!self.harvest_location_contested(tile) && !danger.contains(tile))
             })
         })
@@ -3968,6 +3948,18 @@ mod tests {
     }
 
     #[test]
+    fn reserved_founder_keeps_ownership_after_becoming_a_paid_builder() {
+        let mut worker = harvester(4, None);
+        worker.site = Some(BuildingId(23));
+        worker.idle = false;
+        let obs = obs_with(vec![worker]);
+        let commitments = PolicyCommitments::new(&obs, 0, &[UnitId(4), UnitId(4)], &[]);
+        assert_eq!(commitments.ledger.unit_claims().len(), 1);
+        let claim = &commitments.ledger.unit_claims()[0];
+        assert_eq!(claim.unit, UnitId(4));
+    }
+
+    #[test]
     fn ready_core_bootstrap_precedes_scouting_and_other_discretionary_spending() {
         let home = TilePos::new(2, 8);
         let frame = home.offset(6, 0);
@@ -4382,7 +4374,7 @@ mod tests {
         unit: &UnitObs,
         anchor: TilePos,
     ) -> bool {
-        crate::bot::routing::build_command_path_avoids(
+        crate::bot::navigation::commands::build_command_path_avoids(
             obs,
             unit,
             anchor,
@@ -5526,6 +5518,7 @@ mod tests {
         }];
         let quote = policy
             .fresh_economic_investments(EconomicInvestmentContext {
+                obligations: &[],
                 obs: &obs,
                 resources: &resources,
                 profile: &profile,

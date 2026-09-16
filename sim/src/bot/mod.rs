@@ -30,14 +30,16 @@ pub mod executive;
 mod experience;
 pub mod intelligence;
 pub mod lift;
+mod navigation;
 pub mod observation;
 pub mod observer;
 pub mod orient;
+mod planning;
 pub mod profile;
+mod query_work;
 pub mod raid;
 mod residual_coordination;
 mod resources;
-mod routing;
 mod standing_force;
 pub mod strategy;
 pub mod team;
@@ -127,6 +129,13 @@ pub fn seat_bots(
     scenario: &crate::Scenario,
 ) -> Result<Vec<SeatBot>, crate::scenario::ScenarioError> {
     let public_map = Arc::new(PublicMapBriefing::from_scenario(scenario)?);
+    if scenario
+        .players
+        .iter()
+        .any(|player| player.bot && player.bot_config.is_some())
+    {
+        public_map.prepare_navigation();
+    }
     Ok(scenario
         .players
         .iter()
