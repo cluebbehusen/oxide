@@ -20,7 +20,7 @@ fn area(width: i32, height: i32) -> usize {
         .unwrap_or(0)
 }
 
-pub(super) fn tile_index(width: i32, height: i32, tile: TilePos) -> Option<usize> {
+pub(in crate::bot) fn tile_index(width: i32, height: i32, tile: TilePos) -> Option<usize> {
     (tile.x >= 0 && tile.y >= 0 && tile.x < width && tile.y < height)
         .then(|| tile.y as usize * width as usize + tile.x as usize)
 }

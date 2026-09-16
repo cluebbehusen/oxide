@@ -165,9 +165,19 @@ impl UtilityPolicy {
     /// the same component once per candidate, which on frame-dense maps
     /// dominates the whole think.
     pub(super) fn known_road_reach(obs: &Observation, home: TilePos) -> KnownRoadReach {
+        let cells = (obs.map_width.max(0) as usize) * (obs.map_height.max(0) as usize);
+        let mut open = obs.explored.clone();
+        open.resize(cells, false);
+        for &tile in &obs.known_rock {
+            if let Some(index) =
+                crate::bot::navigation::flood::tile_index(obs.map_width, obs.map_height, tile)
+            {
+                open[index] = false;
+            }
+        }
         KnownRoadReach {
             component: Self::ground_component(obs, home, |t| {
-                obs.explored(t) && !obs.known_rock_at(t)
+                open[(t.y * obs.map_width + t.x) as usize]
             }),
             width: obs.map_width,
             height: obs.map_height,

@@ -557,6 +557,16 @@ impl<'a> DefenseThinkContext<'a> {
             dx * dx + dy * dy <= i64::from(radius) * i64::from(radius)
         };
         let radius = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        let terrain = self.briefing.regions();
+        let other_arrays = self
+            .obs
+            .my_buildings
+            .iter()
+            .chain(&self.obs.ally_buildings)
+            .filter(|other| {
+                other.id != building.id && other.built && other.kind == BuildingKind::Array
+            })
+            .collect::<Vec<_>>();
         let mut before = 0u64;
         let mut after = 0u64;
         for y in (building.anchor.y - radius).max(0)
@@ -566,24 +576,12 @@ impl<'a> DefenseThinkContext<'a> {
                 ..=(building.anchor.x + radius).min(self.obs.map_width - 1)
             {
                 let tile = TilePos::new(x, y);
-                if self
-                    .briefing
-                    .terrain_at(tile)
-                    .is_none_or(|terrain| terrain.blocks_ground())
-                {
+                if terrain.region_at(tile).is_none() {
                     continue;
                 }
-                if self
-                    .obs
-                    .my_buildings
+                if other_arrays
                     .iter()
-                    .chain(&self.obs.ally_buildings)
-                    .any(|other| {
-                        other.id != building.id
-                            && other.built
-                            && other.kind == BuildingKind::Array
-                            && covers(other, tile, other.tier)
-                    })
+                    .any(|other| covers(other, tile, other.tier))
                 {
                     continue;
                 }
