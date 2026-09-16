@@ -1254,6 +1254,14 @@ impl UtilityPolicy {
                     continue;
                 }
             }
+            let mut excluded = context.unavailable.to_vec();
+            excluded.extend_from_slice(&owned);
+            let core = combat_core_status(obs, &excluded, &[], u64::from(minimum_core));
+            let available_workers = obs
+                .my_units
+                .iter()
+                .filter(|unit| unit.kind.stats().harvest.is_some() && !owned.contains(&unit.id))
+                .count();
             let mut live: Vec<_> = obs
                 .my_units
                 .iter()
@@ -1296,22 +1304,12 @@ impl UtilityPolicy {
                 })
                 .filter(|(_, unit)| {
                     if unit.kind.stats().harvest.is_some() {
-                        return obs
-                            .my_units
-                            .iter()
-                            .filter(|other| {
-                                other.kind.stats().harvest.is_some() && !owned.contains(&other.id)
-                            })
-                            .count()
-                            > 2;
+                        return available_workers > 2;
                     }
                     if unit.kind.stats().weapons.is_empty() {
                         return true;
                     }
-                    let mut excluded = context.unavailable.to_vec();
-                    excluded.extend_from_slice(&owned);
-                    excluded.push(unit.id);
-                    combat_core_status(obs, &excluded, &[], u64::from(minimum_core)).ready
+                    core.can_spare(unit)
                 })
                 .collect();
             live.sort_by_key(|(preference, unit)| {

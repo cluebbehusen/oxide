@@ -1426,10 +1426,11 @@ builders. Safety queries reject dangerous origins before searching. On maps
 below the A* expansion cap, connectivity also identifies the selected doorstep,
 allowing a dangerous endpoint to reject a route before constructing it. Larger
 maps retain the capped search verdict. These checks preserve exact paths and
-doorstep preference. Build routes use the shared canonical-path service,
-including adaptive distance fields and bounded per-thread retention keyed by
-complete candidate passability. Danger is checked again on every use; cached
-paths cannot certify safety. Authoritative doorstep ranking remains query-local.
+doorstep preference. Build and ordinary movement routes use the shared
+canonical-path service, including adaptive distance fields and bounded
+per-thread retention keyed by complete candidate passability. Danger is checked
+again on every use; cached paths cannot certify safety. Authoritative doorstep
+ranking remains query-local.
 
 Test-only navigation work counters enforce structural regression bounds across
 consumers without using wall-clock timing or affecting controller state.

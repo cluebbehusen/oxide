@@ -29,6 +29,7 @@ pub(in crate::bot) struct RouteProjection<'a> {
     has_blocked_tiles: bool,
     labels: std::cell::OnceCell<std::sync::Arc<[u32]>>,
     domain_open: Vec<bool>,
+    command_surface: std::cell::OnceCell<Vec<bool>>,
 }
 
 impl<'a> RouteProjection<'a> {
@@ -92,6 +93,7 @@ impl<'a> RouteProjection<'a> {
             has_blocked_tiles: false,
             labels: std::cell::OnceCell::new(),
             domain_open,
+            command_surface: Default::default(),
         }
     }
 
@@ -108,6 +110,7 @@ impl<'a> RouteProjection<'a> {
     }
 
     fn set_public_terrain(&mut self, map: &'a PublicMapBriefing) {
+        self.command_surface.take();
         self.public_map = Some(map);
         if map.map_width < self.obs.map_width || map.map_height < self.obs.map_height {
             for y in 0..self.obs.map_height {
@@ -357,16 +360,32 @@ impl<'a> RouteProjection<'a> {
             self.command_orientation
                 .map_or(tile, |orientation| orientation.tile(tile))
         };
-        let path = crate::bot::navigation::search::canonical_path(
-            self.obs.map_width,
-            self.obs.map_height,
-            transform(from),
-            transform(to),
-            |tile| {
-                let tile = transform(tile);
-                self.domain_open(tile) && (!self.require_explored || self.obs.explored(tile))
-            },
-        )?;
+        let blocked = self.command_surface.get_or_init(|| {
+            (0..self.obs.map_height)
+                .flat_map(|y| (0..self.obs.map_width).map(move |x| TilePos::new(x, y)))
+                .map(|tile| {
+                    let tile = transform(tile);
+                    !self.domain_open(tile) || (self.require_explored && !self.obs.explored(tile))
+                })
+                .collect()
+        });
+        let grid = super::KnownGrid::new(self.obs.map_width, self.obs.map_height, blocked)?;
+        let path = super::paths::with_command_routes(|cache| {
+            super::paths::PathBoard {
+                grid,
+                class: match self.domain {
+                    Domain::Ground => super::paths::CacheClass::Ground,
+                    Domain::Air => super::paths::CacheClass::Air,
+                },
+                cache,
+            }
+            .path(
+                transform(from),
+                transform(to),
+                None,
+                &mut super::search::Search::default(),
+            )
+        })?;
         Some(path.into_iter().map(transform).collect())
     }
 
@@ -1805,6 +1824,82 @@ mod tests {
             optimized.paths + optimized.components,
             "no A* search should exhaust a disconnected component: {optimized:?}"
         );
+    }
+
+    #[test]
+    fn command_routes_share_fields_and_preserve_oriented_canonical_paths() {
+        let mut obs = observation();
+        obs.map_width = 80;
+        obs.map_height = 60;
+        obs.known_rock = (4..60).map(|y| TilePos::new(40, y)).collect();
+        obs.known_peaks = obs.known_rock.clone();
+        obs.explored = vec![true; 80 * 60];
+        for domain in [Domain::Ground, Domain::Air] {
+            for home in [
+                TilePos::new(0, 0),
+                TilePos::new(79, 0),
+                TilePos::new(0, 59),
+                TilePos::new(79, 59),
+            ] {
+                let orientation = Orientation::for_home(&obs, home);
+                let from = (20..50).map(|y| TilePos::new(70, y)).collect::<Vec<_>>();
+                let goal = TilePos::new(4, 40);
+                let (expected, reference) = super::super::work::measure(|| {
+                    from.iter()
+                        .map(|&from| {
+                            super::super::search::canonical_path(
+                                obs.map_width,
+                                obs.map_height,
+                                orientation.tile(from),
+                                orientation.tile(goal),
+                                |tile| domain_open(&obs, domain, orientation.tile(tile)),
+                            )
+                            .map(|path| {
+                                path.into_iter()
+                                    .map(|tile| orientation.tile(tile))
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                });
+                super::super::paths::with_command_routes(|cache| {
+                    *cache.borrow_mut() = Default::default()
+                });
+                let routes = RouteProjection::with_orientation(&obs, domain, orientation);
+                let (actual, work) = super::super::work::measure(|| {
+                    from.iter()
+                        .map(|&from| routes.command_route(from, goal))
+                        .collect::<Vec<_>>()
+                });
+                assert_eq!(actual, expected);
+                assert!(work.fields > 0, "{work:?}");
+                assert!(
+                    work.expanded < reference.expanded,
+                    "{work:?} vs {reference:?}"
+                );
+                let (_, warm) = super::super::work::measure(|| {
+                    for (&from, expected) in from.iter().zip(&expected) {
+                        assert_eq!(&routes.command_route(from, goal), expected);
+                    }
+                });
+                assert_eq!(warm.expanded, 0);
+
+                let mut changed = obs.clone();
+                changed.known_rock.push(goal);
+                changed.known_peaks.push(goal);
+                changed.known_rock.sort_unstable_by_key(|t| (t.y, t.x));
+                changed.known_peaks.sort_unstable_by_key(|t| (t.y, t.x));
+                let changed_routes =
+                    RouteProjection::with_orientation(&changed, domain, orientation);
+                assert_eq!(changed_routes.command_route(from[0], goal), None);
+                let unexplored = Observation {
+                    explored: vec![false; 80 * 60],
+                    ..obs.clone()
+                };
+                let explored_routes = RouteProjection::known_ground(&unexplored);
+                assert_eq!(explored_routes.command_route(from[0], goal), None);
+            }
+        }
     }
 
     #[test]
