@@ -25,7 +25,7 @@ pub(super) fn quote(
         context.obs,
         context.unit_contacts,
         context.building_contacts,
-        &context.grounding.public_starts,
+        &context.grounding.construction.public_starts,
         profile.domain,
     )
     .into_iter()
@@ -101,7 +101,7 @@ pub(super) fn quote(
         let mut marginal = 0;
         for tile in asset
             .shape
-            .approach_tiles(&context.grounding.ground, profile.domain)
+            .approach_tiles(&context.grounding.construction.ground, profile.domain)
         {
             if !covers(&upgraded, tile) {
                 continue;

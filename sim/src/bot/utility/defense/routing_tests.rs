@@ -1,6 +1,6 @@
-use super::super::tests::{LEFT_HOME, observation, scenario_with};
-use super::super::{DefenseDomain, GroundKnowledge, PlacementFootprint};
-use super::super::{
+use super::super::test_world::{LEFT_HOME, observation, scenario_with};
+use super::{DefenseDomain, GroundKnowledge, PlacementFootprint};
+use super::{
     PlayerId, PublicMapBriefing, UtilityPolicy, shortest_path_between,
     shortest_path_between_exhaustive,
 };
@@ -74,10 +74,10 @@ fn path(
     domain: DefenseDomain,
     search: &mut Search,
 ) -> Option<Vec<TilePos>> {
-    super::board(ground, domain).path(
+    super::routing_cache::board(ground, domain).path(
         start,
         goal,
-        candidate.and_then(|candidate| super::overlay(candidate, domain)),
+        candidate.and_then(|candidate| super::routing_cache::overlay(candidate, domain)),
         search,
     )
 }
@@ -87,7 +87,7 @@ fn bound(
     goal: TilePos,
     domain: DefenseDomain,
 ) -> u32 {
-    super::board(ground, domain).bound(start, goal)
+    super::routing_cache::board(ground, domain).bound(start, goal)
 }
 
 #[test]
@@ -260,11 +260,10 @@ fn shared_placement_routes_preserve_the_requesting_consumer() {
         let observer = Observer::default();
         {
             let _capture = Capture::new(Some(&observer));
-            let context =
-                super::super::DefenseThinkContext::new(purpose, &policy, &obs, &map, &[], &[]);
+            let context = super::DefenseThinkContext::new(purpose, &policy, &obs, &map, &[], &[]);
             assert!(
                 shortest_path_between(
-                    &context.grounding.ground,
+                    &context.grounding.construction.ground,
                     &[TilePos::new(8, 8)],
                     &[TilePos::new(12, 8)],
                     None,

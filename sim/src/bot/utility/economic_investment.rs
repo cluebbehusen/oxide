@@ -838,7 +838,7 @@ fn infrastructure_benefit(
 
 #[cfg(test)]
 mod tests {
-    use super::super::defense::DefenseThinkContext;
+    use super::super::construction_checks::ConstructionChecks;
     use super::*;
     use crate::bot::allocation::StandingForceServiceKey;
     use crate::bot::standing_force::StandingForceReason;
@@ -1721,7 +1721,7 @@ mod tests {
         obs.known_frames.push(TilePos::new(8, 26));
         map.extractor_frames = obs.known_frames.clone();
         let policy = UtilityPolicy::new();
-        let mut geometry = DefenseThinkContext::new_oriented(
+        let mut geometry = ConstructionChecks::new(
             crate::bot::query_work::QueryPurpose::NavigationTest,
             &policy,
             &obs,

@@ -1,14 +1,17 @@
-use super::{DefenseDomain, GroundKnowledge, PlacementFootprint};
-pub(in crate::bot::utility) use crate::bot::navigation::paths::PathQueries as DefenseRoutingCache;
+use super::{GroundKnowledge, KnowledgeDomain, PlacementFootprint};
+
 use crate::bot::navigation::{
     BlockedRect, KnownGrid,
     paths::{CacheClass, PathBoard},
 };
 
-pub(super) fn board<'a>(ground: &'a GroundKnowledge<'_>, domain: DefenseDomain) -> PathBoard<'a> {
+pub(in crate::bot::utility) fn board<'a>(
+    ground: &'a GroundKnowledge<'_>,
+    domain: KnowledgeDomain,
+) -> PathBoard<'a> {
     let (blocked, class) = match domain {
-        DefenseDomain::Air => (&ground.air_blocked, CacheClass::Air),
-        DefenseDomain::Ground => (
+        KnowledgeDomain::Air => (&ground.air_blocked, CacheClass::Air),
+        KnowledgeDomain::Ground => (
             &ground.ground_blocked,
             if ground.hypothetical {
                 CacheClass::Hypothetical
@@ -26,12 +29,12 @@ pub(super) fn board<'a>(ground: &'a GroundKnowledge<'_>, domain: DefenseDomain) 
     }
 }
 
-pub(super) fn overlay(candidate: PlacementFootprint, domain: DefenseDomain) -> Option<BlockedRect> {
-    (domain == DefenseDomain::Ground && candidate.blocks_ground).then_some(BlockedRect {
+pub(in crate::bot::utility) fn overlay(
+    candidate: PlacementFootprint,
+    domain: KnowledgeDomain,
+) -> Option<BlockedRect> {
+    (domain == KnowledgeDomain::Ground && candidate.blocks_ground).then_some(BlockedRect {
         anchor: candidate.anchor,
         size: candidate.size,
     })
 }
-
-#[cfg(test)]
-mod tests;

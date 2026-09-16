@@ -1,6 +1,6 @@
 //! Receding-horizon quotes for restoring frames around one support site.
 
-use super::defense::DefenseThinkContext;
+use super::construction_checks::ConstructionChecks;
 use super::economic_investment::{FundingCalendar, economic_case};
 use super::economic_value::travel_ticks;
 use super::*;
@@ -8,9 +8,10 @@ use crate::bot::query_work::QueryPurpose;
 use std::collections::BTreeMap;
 
 impl UtilityPolicy {
-    pub(super) fn value_extractor_developments(
-        &self,
-        context: EconomicInvestmentContext<'_>,
+    pub(super) fn value_extractor_developments<'a>(
+        &'a self,
+        context: EconomicInvestmentContext<'a>,
+        geometry: &mut Option<ConstructionChecks<'a>>,
         funding: &FundingCalendar<'_>,
         proposals: &mut Vec<EconomicInvestment>,
     ) {
@@ -98,15 +99,17 @@ impl UtilityPolicy {
         if sites.is_empty() {
             return;
         }
-        let mut geometry = DefenseThinkContext::new_oriented(
-            crate::bot::query_work::QueryPurpose::ExtractorCluster,
-            self,
-            obs,
-            context.briefing,
-            context.unit_contacts,
-            context.building_contacts,
-            context.orientation,
-        );
+        let geometry = geometry.get_or_insert_with(|| {
+            ConstructionChecks::new(
+                crate::bot::query_work::QueryPurpose::ExtractorCluster,
+                self,
+                obs,
+                context.briefing,
+                context.unit_contacts,
+                context.building_contacts,
+                context.orientation,
+            )
+        });
         let base_routes = RouteProjection::with_public_terrain(
             QueryPurpose::ExtractorCluster,
             obs,
@@ -166,7 +169,7 @@ impl UtilityPolicy {
                         && geometry
                             .future_ground_producer_egress_survives(BuildingKind::Foundry, anchor)
                         && geometry
-                            .safe_implicit_builder(self, BuildingKind::Foundry, anchor, &[worker])
+                            .safe_implicit_builder(BuildingKind::Foundry, anchor, &[worker])
                             .is_some())
                 {
                     Some((anchor, existing))
@@ -199,7 +202,6 @@ impl UtilityPolicy {
                     .filter_map(|index| {
                         let (_, frame, _) = original[*index].build()?;
                         geometry.safe_implicit_builder(
-                            self,
                             BuildingKind::Extractor,
                             frame,
                             &[&cursor],
