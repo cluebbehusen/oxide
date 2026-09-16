@@ -24,9 +24,8 @@ use super::navigation::commands::{self as routing, RouteProjection};
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
 use super::resources::{
-    BuilderLease, BuilderObligation, ClaimConflict, CommitmentDomain, CommitmentLedger,
-    CommitmentOwner, FoundationCancellations, LedgerCheckpoint, ProducerLaneReservations,
-    ResourceSnapshot, ScrapClaim, SiteFootprint, UnitClaimRole, builder_is_free,
+    BuilderLease, FoundationCancellations, ProducerLaneReservations, ResourceSnapshot,
+    SiteFootprint, builder_is_free,
 };
 use super::{PublicMapBriefing, StartingFoundry};
 use crate::bot::query_work::QueryPurpose;
@@ -856,256 +855,24 @@ struct ThinkContext<'a> {
     combat_core_exclusions: &'a [UnitId],
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
+    foundry: FoundryHandoff,
     voluntary_scrap_guard: Option<u32>,
     prelude: Vec<Intent>,
     producer_lane_reservations: &'a ProducerLaneReservations,
     mode: PolicyMode<'a>,
 }
 
-struct PolicyCommitments {
-    ledger: CommitmentLedger,
-    next_legacy_sequence: u32,
-    next_economy_sequence: u32,
-    next_strategic_sequence: u32,
-    foundry_saving_owner: Option<CommitmentOwner>,
-    foundry_saving_blocked: bool,
+/// Foundry capital and channel ownership already settled by allocation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct FoundryHandoff {
+    protected_scrap: u32,
+    committed: bool,
+    current_scrap: u32,
 }
 
-struct PolicyCommitmentsCheckpoint {
-    ledger: LedgerCheckpoint,
-    next_legacy_sequence: u32,
-    next_economy_sequence: u32,
-    next_strategic_sequence: u32,
-    foundry_saving_owner: Option<CommitmentOwner>,
-    foundry_saving_blocked: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FoundrySavingImport {
-    Imported,
-    Blocked(ClaimConflict),
-}
-
-fn strategic_production_claims(prelude: &[Intent]) -> Vec<(BuildingId, UnitKind)> {
-    prelude
-        .iter()
-        .filter_map(|intent| match intent {
-            Intent::TrainAt { building, kind } => Some((*building, *kind)),
-            _ => None,
-        })
-        .collect()
-}
-
-impl PolicyCommitments {
-    fn new(
-        obs: &Observation,
-        prior_scrap_commitment: u32,
-        reserved: &[UnitId],
-        strategic_production: &[(BuildingId, UnitKind)],
-    ) -> Self {
-        let resources = ResourceSnapshot::from_observation(obs);
-        let mut commitments = Self {
-            ledger: CommitmentLedger::new(&resources),
-            next_legacy_sequence: 0,
-            next_economy_sequence: 0,
-            next_strategic_sequence: 0,
-            foundry_saving_owner: None,
-            foundry_saving_blocked: false,
-        };
-        commitments.hold_legacy_saturating(prior_scrap_commitment);
-        commitments.import_strategic_reservations(reserved, &resources);
-        commitments.import_strategic_production(strategic_production);
-        commitments
-    }
-
-    fn available_scrap(&self) -> u32 {
-        self.ledger.available_scrap()
-    }
-
-    fn checkpoint(&self) -> PolicyCommitmentsCheckpoint {
-        PolicyCommitmentsCheckpoint {
-            ledger: self.ledger.checkpoint(),
-            next_legacy_sequence: self.next_legacy_sequence,
-            next_economy_sequence: self.next_economy_sequence,
-            next_strategic_sequence: self.next_strategic_sequence,
-            foundry_saving_owner: self.foundry_saving_owner,
-            foundry_saving_blocked: self.foundry_saving_blocked,
-        }
-    }
-
-    fn rollback(&mut self, checkpoint: PolicyCommitmentsCheckpoint) {
-        self.ledger
-            .rollback(checkpoint.ledger)
-            .expect("the checkpoint belongs to this observation");
-        self.next_legacy_sequence = checkpoint.next_legacy_sequence;
-        self.next_economy_sequence = checkpoint.next_economy_sequence;
-        self.next_strategic_sequence = checkpoint.next_strategic_sequence;
-        self.foundry_saving_owner = checkpoint.foundry_saving_owner;
-        self.foundry_saving_blocked = checkpoint.foundry_saving_blocked;
-    }
-
-    fn available_for_foundry_saving(&self) -> u32 {
-        let owned = self
-            .foundry_saving_owner
-            .and_then(|owner| {
-                self.ledger
-                    .holds()
-                    .iter()
-                    .find(|hold| hold.owner == owner)
-                    .map(|hold| hold.amount)
-            })
-            .unwrap_or(0);
-        self.available_scrap().saturating_add(owned)
-    }
-
-    fn next_legacy_owner(&mut self) -> CommitmentOwner {
-        let owner = CommitmentOwner::new(CommitmentDomain::Legacy, self.next_legacy_sequence);
-        self.next_legacy_sequence = self.next_legacy_sequence.saturating_add(1);
-        owner
-    }
-
-    fn next_economy_owner(&mut self) -> CommitmentOwner {
-        let owner = CommitmentOwner::new(CommitmentDomain::Economy, self.next_economy_sequence);
-        self.next_economy_sequence = self.next_economy_sequence.saturating_add(1);
-        owner
-    }
-
-    fn next_strategic_owner(&mut self) -> CommitmentOwner {
-        let owner = CommitmentOwner::new(CommitmentDomain::Strategic, self.next_strategic_sequence);
-        self.next_strategic_sequence = self.next_strategic_sequence.saturating_add(1);
-        owner
-    }
-
-    fn hold_legacy_saturating(&mut self, requested: u32) -> CommitmentOwner {
-        let held = requested.min(self.available_scrap());
-        let owner = self.next_legacy_owner();
-        self.ledger
-            .claim_scrap(owner, ScrapClaim::Hold(held))
-            .expect("a saturating legacy hold fits the observed bank");
-        owner
-    }
-
-    fn import_strategic_reservations(&mut self, reserved: &[UnitId], resources: &ResourceSnapshot) {
-        let mut units = reserved.to_vec();
-        units.sort_unstable();
-        units.dedup();
-        for unit in units {
-            let owner = self.next_strategic_owner();
-            if let Some(obligation) = resources
-                .builders()
-                .iter()
-                .find(|builder| builder.id == unit)
-                .and_then(|builder| builder.obligation)
-            {
-                self.ledger
-                    .import_builder_obligation(owner, unit, obligation)
-                    .expect("retained builder ownership must match the observed program");
-                continue;
-            }
-            self.ledger
-                .claim_unit(owner, unit, UnitClaimRole::Strategic)
-                .expect("strategic reservations must name distinct free own units");
-        }
-    }
-
-    fn import_strategic_production(&mut self, production: &[(BuildingId, UnitKind)]) {
-        for (building, kind) in production {
-            let owner = self.next_strategic_owner();
-            self.ledger
-                .append_production(owner, *building, *kind)
-                .expect("strategic production must name a legal contiguous producer slot");
-        }
-    }
-
-    fn import_deferred_claims(&mut self, obs: &Observation, claims: &[(BuildingKind, TilePos)]) {
-        let mut ordered = claims.to_vec();
-        ordered.sort_unstable_by_key(|(kind, anchor)| (*kind, anchor.y, anchor.x));
-        ordered.dedup();
-        for (kind, anchor) in ordered {
-            self.import_deferred_claim(obs, kind, anchor);
-        }
-    }
-
-    fn import_foundry_saving(
-        &mut self,
-        saving: &construction::FoundrySavingCommitment,
-    ) -> FoundrySavingImport {
-        let checkpoint = self.checkpoint();
-        let owner = self.next_economy_owner();
-        let held = saving.required_scrap.min(self.available_scrap());
-        let site = SiteFootprint::new(saving.plan.anchor, BuildingKind::Foundry.base_stats().size)
-            .expect("Foundries have a positive footprint");
-        let exact = self
-            .ledger
-            .claim_scrap(owner, ScrapClaim::Hold(held))
-            .and_then(|()| self.ledger.claim_site(owner, site))
-            .and_then(|()| self.ledger.claim_builder(owner, saving.plan.builder));
-        match exact {
-            Ok(()) => {
-                self.foundry_saving_owner = Some(owner);
-                self.foundry_saving_blocked = false;
-                FoundrySavingImport::Imported
-            }
-            Err(conflict) => {
-                self.rollback(checkpoint);
-                self.foundry_saving_blocked = true;
-                FoundrySavingImport::Blocked(conflict)
-            }
-        }
-    }
-
-    fn foundry_saving_blocked(&self) -> bool {
-        self.foundry_saving_blocked
-    }
-
-    fn import_deferred_claim(&mut self, obs: &Observation, kind: BuildingKind, anchor: TilePos) {
-        let checkpoint = self.checkpoint();
-        let owner = if kind == BuildingKind::Foundry {
-            self.next_economy_owner()
-        } else {
-            self.next_legacy_owner()
-        };
-        let cost = kind
-            .base_stats()
-            .construction
-            .map_or(0, |construction| construction.cost);
-        let held = cost.min(self.available_scrap());
-        let site = SiteFootprint::new(anchor, kind.base_stats().size)
-            .expect("constructible buildings have a positive footprint");
-        let obligation = BuilderObligation::Found { kind, anchor };
-        let exact = self
-            .ledger
-            .claim_scrap(owner, ScrapClaim::Hold(held))
-            .and_then(|()| self.ledger.claim_site(owner, site))
-            .and_then(|()| {
-                let mut founders: Vec<_> = obs
-                    .my_units
-                    .iter()
-                    .filter(|unit| unit.founding == Some((kind, anchor)))
-                    .map(|unit| unit.id)
-                    .collect();
-                founders.sort_unstable();
-                founders.dedup();
-                for founder in founders {
-                    self.ledger
-                        .import_builder_obligation(owner, founder, obligation)?;
-                }
-                Ok(())
-            });
-        if exact.is_err() {
-            self.rollback(checkpoint);
-            self.hold_legacy_saturating(cost);
-        }
-    }
-
-    fn import_legacy_spending(&mut self, remaining_budget: u32) {
-        let available = self.available_scrap();
-        debug_assert!(remaining_budget <= available);
-        let spent = available.saturating_sub(remaining_budget);
-        let owner = self.next_legacy_owner();
-        self.ledger
-            .claim_scrap(owner, ScrapClaim::SpendNow(spent))
-            .expect("the legacy budget delta fits its remaining bank");
+impl FoundryHandoff {
+    fn spending_after(self, available: u32) -> u32 {
+        available.saturating_sub(self.protected_scrap)
     }
 }
 
@@ -1126,6 +893,7 @@ pub(super) struct StrategicUtilityContext<'a> {
     public_map: &'a PublicMapBriefing,
     outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
+    foundry: FoundryHandoff,
     voluntary_scrap_guard: Option<u32>,
     prelude: Vec<Intent>,
     producer_lane_reservations: &'a ProducerLaneReservations,
@@ -1147,6 +915,7 @@ impl<'a> StrategicUtilityContext<'a> {
             public_map,
             outstanding_air_production_ticks: None,
             prior_scrap_commitment: 0,
+            foundry: FoundryHandoff::default(),
             voluntary_scrap_guard: None,
             prelude,
             producer_lane_reservations: ProducerLaneReservations::empty(),
@@ -1164,6 +933,11 @@ impl<'a> StrategicUtilityContext<'a> {
     /// factories on their own.
     pub(super) fn with_outstanding_air_production_ticks(mut self, ticks: u64) -> Self {
         self.outstanding_air_production_ticks = Some(ticks);
+        self
+    }
+
+    pub(in crate::bot) const fn with_foundry_handoff(mut self, foundry: FoundryHandoff) -> Self {
+        self.foundry = foundry;
         self
     }
 
@@ -2020,6 +1794,7 @@ impl UtilityPolicy {
                 combat_core_exclusions: reserved,
                 outstanding_air_production_ticks: None,
                 prior_scrap_commitment: 0,
+                foundry: FoundryHandoff::default(),
                 voluntary_scrap_guard: None,
                 prelude: Vec::new(),
                 producer_lane_reservations: ProducerLaneReservations::empty(),
@@ -2053,6 +1828,7 @@ impl UtilityPolicy {
                 combat_core_exclusions: context.combat_core_exclusions,
                 outstanding_air_production_ticks: context.outstanding_air_production_ticks,
                 prior_scrap_commitment: context.prior_scrap_commitment,
+                foundry: context.foundry,
                 voluntary_scrap_guard: context.voluntary_scrap_guard,
                 prelude: context.prelude,
                 producer_lane_reservations: context.producer_lane_reservations,
@@ -2079,6 +1855,7 @@ impl UtilityPolicy {
             combat_core_exclusions,
             outstanding_air_production_ticks,
             prior_scrap_commitment,
+            foundry,
             voluntary_scrap_guard,
             prelude,
             producer_lane_reservations,
@@ -2086,7 +1863,6 @@ impl UtilityPolicy {
         } = context;
         let strategic_reserved = reserved;
 
-        let strategic_production = strategic_production_claims(&prelude);
         let mut intents = prelude;
         if let Some((builder, kind, anchor)) = self.economic_cancelled_founder.take()
             && obs
@@ -2158,13 +1934,7 @@ impl UtilityPolicy {
             return intents;
         }
 
-        let mut commitments = PolicyCommitments::new(
-            obs,
-            prior_scrap_commitment,
-            strategic_reserved,
-            &strategic_production,
-        );
-        let utility_admission_scrap = commitments.available_scrap();
+        let utility_admission_scrap = obs.scrap.saturating_sub(prior_scrap_commitment);
 
         if utility_admission_scrap > self.bank_seen || obs.tick == 0 {
             self.bank_grew_at = obs.tick;
@@ -2193,7 +1963,6 @@ impl UtilityPolicy {
         );
         let opening_core_active =
             dials.minimum_core_equivalents > 0 && !opening_core_at_start.ready;
-        self.validated_foundry_saving(obs, !opening_core_active);
         let retained_deferred_claims = if opening_core_active {
             self.opening_core_deferred_claims(
                 obs,
@@ -2224,16 +1993,6 @@ impl UtilityPolicy {
         } else {
             Self::deferred_claims(obs)
         };
-        {
-            commitments.import_deferred_claims(obs, &retained_deferred_claims);
-            let foundry_import = self
-                .foundry_saving
-                .as_ref()
-                .map(|saving| commitments.import_foundry_saving(saving));
-            if matches!(foundry_import, Some(FoundrySavingImport::Blocked(_))) {
-                self.retain_blocked_foundry_saving(obs.tick);
-            }
-        }
         let cancelled: Vec<_> = obs
             .my_units
             .iter()
@@ -2241,7 +2000,11 @@ impl UtilityPolicy {
             .filter(|claim| !retained_deferred_claims.contains(claim))
             .collect();
         let cancellations = FoundationCancellations(&cancelled);
-        let mut budget = commitments.available_scrap();
+        let mut foundry = foundry;
+        let deferred_scrap = Self::deferred_claims_commitment(&retained_deferred_claims);
+        foundry.current_scrap = utility_admission_scrap.saturating_sub(deferred_scrap);
+        let mut budget =
+            foundry.spending_after(utility_admission_scrap.saturating_sub(deferred_scrap));
         let expansion_capital_promised;
 
         let harvesters = obs
@@ -2353,7 +2116,7 @@ impl UtilityPolicy {
         });
         if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
             let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
-            expansion_capital_promised = self.production_with_commitments(
+            expansion_capital_promised = self.residual_production(
                 dials,
                 obs,
                 ProductionContext::new(home_tile, construction_claims)
@@ -2363,7 +2126,7 @@ impl UtilityPolicy {
                     .with_voluntary_scrap_guard(Reserve::Exact(production_guard))
                     .with_producer_lane_reservations(producer_lane_reservations),
                 &mut budget,
-                &mut commitments,
+                foundry,
                 &mut intents,
             );
 
@@ -2379,7 +2142,7 @@ impl UtilityPolicy {
             }
         } else if dials.minimum_core_equivalents == 0 {
             // Zero-floor fixtures isolate residual work from the opening
-            // commitment while preserving the same resource ledger.
+            // commitment while preserving the same residual budget.
             let healthy_home_screen = obs
                 .my_units
                 .iter()
@@ -2404,7 +2167,7 @@ impl UtilityPolicy {
                 budget = construction_budget;
             }
             if outstanding_air_production_ticks.is_some() {
-                expansion_capital_promised = self.production_with_commitments(
+                expansion_capital_promised = self.residual_production(
                     dials,
                     obs,
                     ProductionContext::new(home_tile, construction_claims)
@@ -2413,17 +2176,17 @@ impl UtilityPolicy {
                         .with_public_map(mode.public_map)
                         .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
-                    &mut commitments,
+                    foundry,
                     &mut intents,
                 );
             } else {
-                expansion_capital_promised = self.production_with_commitments(
+                expansion_capital_promised = self.residual_production(
                     dials,
                     obs,
                     ProductionContext::new(home_tile, construction_claims)
                         .with_producer_lane_reservations(producer_lane_reservations),
                     &mut budget,
-                    &mut commitments,
+                    foundry,
                     &mut intents,
                 );
             }
@@ -3046,25 +2809,6 @@ impl UtilityPolicy {
             self.pending_sites.push(anchor);
         }
     }
-
-    /// Releases a frozen expansion lease only once its exact construction
-    /// command survives lowering. A refused or displaced intent remains owned
-    /// and can be retried on the next observation.
-    pub(super) fn record_dispatched_foundry_build(
-        &mut self,
-        builders: &[UnitId],
-        kind: BuildingKind,
-        anchor: TilePos,
-    ) {
-        let dispatched = self.foundry_saving.as_ref().is_some_and(|saving| {
-            kind == BuildingKind::Foundry
-                && saving.plan.anchor == anchor
-                && builders.contains(&saving.plan.builder)
-        });
-        if dispatched {
-            self.foundry_saving = None;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3481,7 +3225,6 @@ mod tests {
             kind: UnitKind::Sentinel,
         }];
 
-        let strategic_production = strategic_production_claims(&intents);
         let retained = UtilityPolicy::new().opening_core_deferred_claims(
             &obs,
             &dials,
@@ -3502,16 +3245,14 @@ mod tests {
                     && *building == BuildingId(10)
                     && *kind == UnitKind::Sentinel
         ));
-        let commitments = PolicyCommitments::new(&obs, 0, &[], &strategic_production);
-        let claims = commitments.ledger.producer_claims();
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].slot.producer, BuildingId(10));
-        assert_eq!(claims[0].slot.queue_index, 0);
-        assert_eq!(claims[0].kind, UnitKind::Sentinel);
+        assert_eq!(
+            super::production::planned_kinds_at(&intents, BuildingId(10)),
+            vec![UnitKind::Sentinel]
+        );
     }
 
     #[test]
-    fn prior_and_deferred_claims_reduce_the_observed_bank_exactly_once() {
+    fn shared_founders_reserve_one_construction_cost_per_site() {
         let fabricator = (BuildingKind::Fabricator, TilePos::new(9, 3));
         let turret = (BuildingKind::Turret, TilePos::new(4, 12));
         let mut obs = obs_with(vec![
@@ -3520,8 +3261,6 @@ mod tests {
             harvester(3, Some(turret)),
         ]);
         obs.scrap = 1_000;
-        let prior = 70;
-        let deferred = [fabricator, turret, fabricator];
         let expected_deferred = [fabricator.0, turret.0]
             .into_iter()
             .map(|kind| {
@@ -3532,85 +3271,22 @@ mod tests {
             })
             .sum::<u32>();
 
-        let mut commitments = PolicyCommitments::new(&obs, prior, &[], &[]);
-        commitments.import_deferred_claims(&obs, &deferred);
-
-        let after_obligations = obs.scrap - prior - expected_deferred;
-        assert_eq!(commitments.available_scrap(), after_obligations);
-        assert_eq!(commitments.ledger.held_scrap(), prior + expected_deferred);
-        assert_eq!(commitments.ledger.site_claims().len(), 2);
-        assert_eq!(commitments.ledger.unit_claims().len(), 3);
-        let deferred_owners: Vec<_> = commitments
-            .ledger
-            .site_claims()
-            .iter()
-            .map(|claim| claim.owner)
-            .collect();
-
-        commitments.import_legacy_spending(after_obligations - 13);
-        assert_eq!(commitments.available_scrap(), after_obligations - 13);
-        assert_eq!(commitments.ledger.spent_scrap(), 13);
-        let released = deferred_owners
-            .into_iter()
-            .map(|owner| commitments.ledger.release(owner))
-            .fold(
-                crate::bot::resources::ReleaseSummary::default(),
-                |mut total, released| {
-                    total.held_scrap = total.held_scrap.saturating_add(released.held_scrap);
-                    total.units += released.units;
-                    total.sites += released.sites;
-                    total.producers += released.producers;
-                    total
-                },
-            );
-        assert_eq!(released.held_scrap, expected_deferred);
-        assert_eq!((released.units, released.sites), (3, 2));
-        assert_eq!(commitments.available_scrap(), obs.scrap - prior - 13);
-    }
-
-    #[test]
-    fn policy_commitment_rollback_restores_owner_sequences_and_saving_handle() {
-        let mut obs = obs_with(vec![harvester(1, None)]);
-        obs.scrap = 100;
-        let mut commitments = PolicyCommitments::new(&obs, 10, &[], &[]);
-        let before_ledger = commitments.ledger.clone();
-        let before_sequences = (
-            commitments.next_legacy_sequence,
-            commitments.next_economy_sequence,
-            commitments.next_strategic_sequence,
-        );
-        let before_saving_owner = commitments.foundry_saving_owner;
-        let checkpoint = commitments.checkpoint();
-
-        let legacy = commitments.next_legacy_owner();
-        let economy = commitments.next_economy_owner();
-        let strategic = commitments.next_strategic_owner();
-        commitments.foundry_saving_owner = Some(economy);
-        commitments
-            .ledger
-            .claim_scrap(legacy, ScrapClaim::Hold(5))
-            .unwrap();
-        commitments
-            .ledger
-            .claim_builder(economy, UnitId(1))
-            .unwrap();
-        commitments
-            .ledger
-            .claim_scrap(strategic, ScrapClaim::SpendNow(7))
-            .unwrap();
-
-        commitments.rollback(checkpoint);
-
-        assert_eq!(commitments.ledger, before_ledger);
+        let claims = UtilityPolicy::deferred_claims(&obs);
+        assert_eq!(claims.len(), 2);
         assert_eq!(
-            (
-                commitments.next_legacy_sequence,
-                commitments.next_economy_sequence,
-                commitments.next_strategic_sequence,
-            ),
-            before_sequences
+            UtilityPolicy::deferred_claims_commitment(&claims),
+            expected_deferred
         );
-        assert_eq!(commitments.foundry_saving_owner, before_saving_owner);
+        let handoff = FoundryHandoff {
+            protected_scrap: 300,
+            committed: true,
+            current_scrap: 0,
+        };
+        assert_eq!(
+            handoff.spending_after(obs.scrap - 70 - expected_deferred),
+            obs.scrap - 70 - expected_deferred - 300
+        );
+        assert_eq!(handoff.spending_after(10), 0);
     }
 
     #[test]
@@ -3940,43 +3616,19 @@ mod tests {
     }
 
     #[test]
-    fn deferred_claim_owners_follow_kind_then_row_major_anchor() {
-        let first = (BuildingKind::Turret, TilePos::new(9, 2));
-        let second = (BuildingKind::Turret, TilePos::new(1, 8));
-        let mut obs = obs_with(Vec::new());
-        obs.scrap = 1_000;
-        let mut commitments = PolicyCommitments::new(&obs, 0, &[], &[]);
-
-        commitments.import_deferred_claims(&obs, &[second, first]);
-
-        let sites = commitments.ledger.site_claims();
-        assert_eq!(sites.len(), 2);
-        assert_eq!(
-            (sites[0].site, sites[0].owner),
-            (
-                SiteFootprint::new(first.1, first.0.base_stats().size).unwrap(),
-                CommitmentOwner::new(CommitmentDomain::Legacy, 1),
-            )
-        );
-        assert_eq!(
-            (sites[1].site, sites[1].owner),
-            (
-                SiteFootprint::new(second.1, second.0.base_stats().size).unwrap(),
-                CommitmentOwner::new(CommitmentDomain::Legacy, 2),
-            )
-        );
-    }
-
-    #[test]
     fn reserved_founder_keeps_ownership_after_becoming_a_paid_builder() {
         let mut worker = harvester(4, None);
         worker.site = Some(BuildingId(23));
         worker.idle = false;
         let obs = obs_with(vec![worker]);
-        let commitments = PolicyCommitments::new(&obs, 0, &[UnitId(4), UnitId(4)], &[]);
-        assert_eq!(commitments.ledger.unit_claims().len(), 1);
-        let claim = &commitments.ledger.unit_claims()[0];
-        assert_eq!(claim.unit, UnitId(4));
+        let resources = ResourceSnapshot::from_observation(&obs);
+        assert_eq!(
+            resources.builders()[0].obligation,
+            Some(crate::bot::resources::BuilderObligation::Build(BuildingId(
+                23
+            )))
+        );
+        assert!(!builder_is_free(&obs, &obs.my_units[0]));
     }
 
     #[test]

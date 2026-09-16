@@ -1414,17 +1414,27 @@ mod tests {
         let saved = fabricator(quotes(&policy, &obs, &map, &profile, &demands))
             .expect("the unclaimed map offers a technology site");
         let economy = expansion_economy(&Dials::balanced(), &obs, obs.scrap, Reserve::Exact(0));
-        policy.foundry_saving = Some(construction::FoundrySavingCommitment {
-            plan: construction::FoundryExpansionPlan {
-                anchor: saved,
-                builder: UnitId(2),
-                opportunity: expansion::FoundryOpportunity::capacity_only(saved, 1_000, economy),
-            },
-            accepted_at: obs.tick,
-            required_scrap: economy.foundry_cost,
-            forecast_basis: None,
-            blocked_since: None,
-        });
+        policy
+            .commit_adjudicated_foundry(
+                FreshFoundryProposal::fixture(
+                    saved,
+                    UnitId(2),
+                    economy.foundry_cost,
+                    0,
+                    0,
+                    obs.tick + 1_000,
+                    FoundryOpportunityCase::fixture(
+                        FoundryUrgency::Developmental,
+                        FoundryConfidence::Supported,
+                        FoundryStrategicValue::Incremental,
+                        FoundryTimeToImpact::Near,
+                        FoundryExecutionSafety::Secure,
+                    ),
+                ),
+                obs.tick,
+                &mut Vec::new(),
+            )
+            .unwrap();
         let alternative = fabricator(quotes(&policy, &obs, &map, &profile, &demands))
             .expect("a saved site must not repeatedly veto every technology proposal");
         let (width, height) = BuildingKind::Fabricator.base_stats().size;
