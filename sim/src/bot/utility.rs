@@ -1538,29 +1538,21 @@ impl UtilityPolicy {
         let (width, height) = size;
         let defer = (0..height).any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
         candidates.sort_unstable_by_key(|unit| (unit.tile.manhattan(anchor), unit.id));
+        let routes = routing::BuildRouteProjection::new(obs, public_map);
         candidates
             .iter()
             .copied()
-            .find(|unit| match public_map {
-                Some(public_map) => {
-                    crate::bot::navigation::commands::build_command_path_avoids_with_public_terrain(
-                        obs,
-                        public_map,
-                        unit,
+            .find(|unit| {
+                routes.avoids(
+                    unit,
+                    routing::BuildCommandTarget {
                         anchor,
                         size,
                         defer,
-                        |tile| self.harvest_location_contested(tile) || danger.contains(tile),
-                    )
-                }
-                None => crate::bot::navigation::commands::build_command_path_avoids(
-                    obs,
-                    unit,
-                    anchor,
-                    size,
-                    defer,
+                    },
+                    None,
                     |tile| self.harvest_location_contested(tile) || danger.contains(tile),
-                ),
+                )
             })
             .map(|unit| unit.id)
     }

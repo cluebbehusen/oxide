@@ -605,16 +605,16 @@ pub(in crate::bot) struct BuildCommandTarget {
     pub(in crate::bot) defer: bool,
 }
 
+#[cfg(test)]
 pub(in crate::bot) fn build_command_path_avoids(
     obs: &Observation,
     unit: &UnitObs,
     anchor: TilePos,
     size: (i32, i32),
     defer: bool,
-    mut blocked: impl FnMut(TilePos) -> bool,
+    blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
-    selected_build_command_path(
-        obs,
+    BuildRouteProjection::new(obs, None).avoids(
         unit,
         BuildCommandTarget {
             anchor,
@@ -622,10 +622,8 @@ pub(in crate::bot) fn build_command_path_avoids(
             defer,
         },
         None,
-        None,
-        |_| false,
+        blocked,
     )
-    .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
 }
 
 /// The exact Build-command route with immutable authored terrain included.
@@ -634,6 +632,7 @@ pub(in crate::bot) fn build_command_path_avoids(
 /// a player-facing bot receives the complete terrain map before play. Dynamic
 /// blockers still come exclusively from `obs`; starting resources and
 /// Foundries remain priors rather than live obstacles.
+#[cfg(test)]
 pub(in crate::bot) fn build_command_path_avoids_with_public_terrain(
     obs: &Observation,
     briefing: &PublicMapBriefing,
@@ -683,10 +682,9 @@ fn build_command_path_avoids_with_public_terrain_projected(
     unit: &UnitObs,
     target: BuildCommandTarget,
     orientation: Option<Orientation>,
-    mut blocked: impl FnMut(TilePos) -> bool,
+    blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
-    selected_build_command_path(obs, unit, target, Some(briefing), orientation, |_| false)
-        .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
+    BuildRouteProjection::new(obs, Some(briefing)).avoids(unit, target, orientation, blocked)
 }
 
 /// The exact Build-command route with authored terrain and additional frozen
@@ -720,15 +718,18 @@ fn build_command_path_avoids_with_public_terrain_and_blockers_projected(
     additional_blocked: impl Fn(TilePos) -> bool,
     mut blocked: impl FnMut(TilePos) -> bool,
 ) -> bool {
-    selected_build_command_path(
-        obs,
-        unit,
-        target,
-        Some(briefing),
-        orientation,
-        additional_blocked,
-    )
-    .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
+    if blocked(unit.tile) {
+        return false;
+    }
+    let routes = BuildRouteProjection::new(obs, Some(briefing));
+    if !routes.base_reaches(unit, target) {
+        return false;
+    }
+    let labels = routes.layout(target, additional_blocked);
+    routes.safe_endpoints(unit, target, orientation, &labels, &mut blocked)
+        && routes
+            .path_in_layout(unit, target, orientation, &labels)
+            .is_some_and(|path| path.into_iter().all(|tile| !blocked(tile)))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -752,6 +753,7 @@ pub(in crate::bot) struct BuildRouteProjection<'a> {
     routes: RouteProjection<'a>,
     scratch: std::cell::RefCell<crate::bot::navigation::search::Search>,
     last_path: std::cell::RefCell<Option<CachedBuildRoute>>,
+    last_layout: std::cell::RefCell<Option<(BuildCommandTarget, std::sync::Arc<[u32]>)>>,
     #[cfg(test)]
     searches: std::cell::Cell<usize>,
 }
@@ -768,11 +770,13 @@ impl<'a> BuildRouteProjection<'a> {
             ),
             scratch: Default::default(),
             last_path: Default::default(),
+            last_layout: Default::default(),
             #[cfg(test)]
             searches: Default::default(),
         }
     }
 
+    #[cfg(test)]
     fn path(
         &self,
         unit: &UnitObs,
@@ -782,26 +786,65 @@ impl<'a> BuildRouteProjection<'a> {
     ) -> Option<Vec<TilePos>> {
         #[cfg(test)]
         self.searches.set(self.searches.get() + 1);
-        let routes = &self.routes;
-        // Footprints and additional blockers only remove edges. A disconnected
-        // base doorstep cannot become reachable in a candidate layout.
-        if !crate::tick::rect_adjacent_tiles(target.anchor, target.size)
-            .any(|goal| routes.connected(unit.tile, goal))
-        {
+        if !self.base_reaches(unit, target) {
             return None;
         }
+        let labels = self.layout(target, additional_blocked);
+        self.path_in_layout(unit, target, orientation, &labels)
+    }
+
+    fn base_reaches(&self, unit: &UnitObs, target: BuildCommandTarget) -> bool {
+        // Candidate footprints only remove edges, so base disconnection is
+        // enough to reject a site without preparing its modified layout.
+        crate::tick::rect_adjacent_tiles(target.anchor, target.size)
+            .any(|goal| self.routes.connected(unit.tile, goal))
+    }
+
+    fn layout(
+        &self,
+        target: BuildCommandTarget,
+        additional_blocked: impl Fn(TilePos) -> bool,
+    ) -> std::sync::Arc<[u32]> {
+        let routes = &self.routes;
         let dimensions = (routes.obs.map_width, routes.obs.map_height);
-        let open = (0..dimensions.1)
-            .flat_map(|y| (0..dimensions.0).map(move |x| TilePos::new(x, y)))
-            .map(|tile| {
-                routes.open(tile)
-                    && !additional_blocked(tile)
-                    && (target.defer
-                        || !(0..target.size.0).contains(&(tile.x - target.anchor.x))
-                        || !(0..target.size.1).contains(&(tile.y - target.anchor.y)))
-            })
-            .collect();
-        let labels = super::components::labels(dimensions, open);
+        let mut open = routes.domain_open.clone();
+        for (index, open) in open.iter_mut().enumerate() {
+            let tile = TilePos::new(index as i32 % dimensions.0, index as i32 / dimensions.0);
+            *open &= !additional_blocked(tile);
+        }
+        if !target.defer {
+            for tile in (0..target.size.1)
+                .flat_map(|dy| (0..target.size.0).map(move |dx| target.anchor.offset(dx, dy)))
+            {
+                if let Some(index) = super::flood::tile_index(dimensions.0, dimensions.1, tile) {
+                    open[index] = false;
+                }
+            }
+        }
+        super::components::labels(dimensions, open)
+    }
+
+    fn cached_layout(&self, target: BuildCommandTarget) -> std::sync::Arc<[u32]> {
+        let mut last = self.last_layout.borrow_mut();
+        if let Some((previous, labels)) = last.as_ref()
+            && *previous == target
+        {
+            return std::sync::Arc::clone(labels);
+        }
+        let labels = self.layout(target, |_| false);
+        *last = Some((target, std::sync::Arc::clone(&labels)));
+        labels
+    }
+
+    fn path_in_layout(
+        &self,
+        unit: &UnitObs,
+        target: BuildCommandTarget,
+        orientation: Option<Orientation>,
+        labels: &[u32],
+    ) -> Option<Vec<TilePos>> {
+        let routes = &self.routes;
+        let dimensions = (routes.obs.map_width, routes.obs.map_height);
         selected_build_command_path_with_reach(
             routes.obs,
             unit,
@@ -811,7 +854,7 @@ impl<'a> BuildRouteProjection<'a> {
                 super::flood::tile_index(dimensions.0, dimensions.1, tile)
                     .is_some_and(|index| labels[index] != 0)
             },
-            |goal| super::components::connects(dimensions, &labels, unit.tile, goal),
+            |goal| super::components::connects(dimensions, labels, unit.tile, goal),
             &mut self.scratch.borrow_mut(),
         )
     }
@@ -836,7 +879,14 @@ impl<'a> BuildRouteProjection<'a> {
         {
             return previous.path.clone();
         }
-        let path = self.path(unit, target, orientation, |_| false);
+        #[cfg(test)]
+        self.searches.set(self.searches.get() + 1);
+        let path = if self.base_reaches(unit, target) {
+            let labels = self.cached_layout(target);
+            self.path_in_layout(unit, target, orientation, &labels)
+        } else {
+            None
+        };
         // Travel cost and danger validation consume the same selected route.
         // Retain only the most recent query, including an exact failed search.
         *last = Some(CachedBuildRoute {
@@ -863,11 +913,43 @@ impl<'a> BuildRouteProjection<'a> {
         orientation: Option<Orientation>,
         mut blocked: impl FnMut(TilePos) -> bool,
     ) -> bool {
+        if blocked(unit.tile) || !self.base_reaches(unit, target) {
+            return false;
+        }
+        let labels = self.cached_layout(target);
+        if !self.safe_endpoints(unit, target, orientation, &labels, &mut blocked) {
+            return false;
+        }
         self.cached_path(unit, target, orientation)
-            .is_some_and(|path| !blocked(unit.tile) && path.into_iter().all(|tile| !blocked(tile)))
+            .is_some_and(|path| path.into_iter().all(|tile| !blocked(tile)))
+    }
+
+    fn safe_endpoints(
+        &self,
+        unit: &UnitObs,
+        target: BuildCommandTarget,
+        orientation: Option<Orientation>,
+        labels: &[u32],
+        blocked: &mut impl FnMut(TilePos) -> bool,
+    ) -> bool {
+        // Below the expansion cap, connectivity proves which preferred door
+        // the command will reach. A dangerous door cannot have a safe route.
+        if labels.len() > crate::stats::PATH_EXPANSION_CAP as usize {
+            return true;
+        }
+        let obs = self.routes.obs;
+        let dimensions = (obs.map_width, obs.map_height);
+        build_command_goals(obs, unit, target, orientation, |tile| {
+            super::flood::tile_index(dimensions.0, dimensions.1, tile)
+                .is_some_and(|index| labels[index] != 0)
+        })
+        .into_iter()
+        .find(|goal| super::components::connects(dimensions, labels, unit.tile, *goal))
+        .is_some_and(|goal| !blocked(goal))
     }
 }
 
+#[cfg(test)]
 fn selected_build_command_path(
     obs: &Observation,
     unit: &UnitObs,
@@ -911,6 +993,35 @@ fn selected_build_command_path_with_reach(
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
         return None;
     }
+    let open = |tile| {
+        base_open(tile)
+            && (target.defer
+                || !super::BlockedRect {
+                    anchor: target.anchor,
+                    size: target.size,
+                }
+                .contains(tile))
+    };
+    let candidates = build_command_goals(obs, unit, target, orientation, open);
+    for goal in candidates {
+        if !reaches(goal) {
+            continue;
+        }
+        let Some(path) = scratch.path(obs.map_width, obs.map_height, unit.tile, goal, open) else {
+            continue;
+        };
+        return Some(path);
+    }
+    None
+}
+
+fn build_command_goals(
+    obs: &Observation,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Option<Orientation>,
+    base_open: impl Fn(TilePos) -> bool,
+) -> Vec<TilePos> {
     let BuildCommandTarget {
         anchor,
         size,
@@ -970,16 +1081,7 @@ fn selected_build_command_path_with_reach(
         );
         candidates[..near].rotate_left(rank % near);
     }
-    for goal in candidates {
-        if !reaches(goal) {
-            continue;
-        }
-        let Some(path) = scratch.path(obs.map_width, obs.map_height, unit.tile, goal, open) else {
-            continue;
-        };
-        return Some(path);
-    }
-    None
+    candidates
 }
 
 fn path_cost_from(start: TilePos, path: &[TilePos]) -> u32 {
@@ -1556,6 +1658,60 @@ mod tests {
                     routes.ground_command_reaches(TilePos::new(2, 3), TilePos::new(9, 3)),
                     provisional
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn builder_safety_rejects_unsafe_endpoints_without_searching_or_poisoning_routes() {
+        for dimensions in [(80, 60), (150, 150)] {
+            let mut obs = observation();
+            obs.map_width = dimensions.0;
+            obs.map_height = dimensions.1;
+            let mut builder = unit(1, Domain::Ground);
+            builder.tile = TilePos::new(2, 30);
+            obs.my_units = vec![builder];
+            let builder = &obs.my_units[0];
+            for defer in [false, true] {
+                let target = BuildCommandTarget {
+                    anchor: TilePos::new(70, 30),
+                    size: (2, 2),
+                    defer,
+                };
+                let expected = selected_build_command_path_with_open(
+                    &obs,
+                    builder,
+                    target,
+                    None,
+                    |tile| ground_open(&obs, tile),
+                    &mut crate::bot::navigation::search::Search::default(),
+                )
+                .unwrap();
+                let goal = *expected.last().unwrap();
+                let routes = BuildRouteProjection::new(&obs, None);
+                assert!(!routes.avoids(builder, target, None, |tile| tile == builder.tile));
+                assert_eq!(routes.searches.get(), 0);
+                assert!(!routes.avoids(builder, target, None, |tile| tile == goal));
+                assert_eq!(
+                    routes.searches.get(),
+                    usize::from(
+                        dimensions.0 * dimensions.1 > crate::stats::PATH_EXPANSION_CAP as i32
+                    ),
+                    "oversized maps must retain the capped search verdict"
+                );
+                assert!(routes.avoids(builder, target, None, |_| false));
+                assert_eq!(
+                    routes.cached_path(builder, target, None),
+                    Some(expected.clone())
+                );
+                assert_eq!(
+                    routes.cost(builder, target, None),
+                    Some(path_cost_from(builder.tile, &expected))
+                );
+                let middle = expected[expected.len() / 2];
+                assert!(!routes.avoids(builder, target, None, |tile| tile == middle));
+                assert!(routes.avoids(builder, target, None, |_| false));
+                assert_eq!(routes.searches.get(), 1);
             }
         }
     }

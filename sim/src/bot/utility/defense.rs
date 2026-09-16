@@ -2136,13 +2136,6 @@ fn strategic_defense_quote_from_projection(
             ordered_builders
                 .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
             let (builder, builder_travel) = ordered_builders.into_iter().find_map(|builder| {
-                let builder_travel = cached_builder_travel_cost(
-                    grounding,
-                    cache,
-                    builder,
-                    placement,
-                    future_egress_orientation,
-                )?;
                 let safe = cached_safe_implicit_builder(
                     policy,
                     BuilderSafetyContext {
@@ -2156,7 +2149,17 @@ fn strategic_defense_quote_from_projection(
                     anchor,
                     &[builder],
                 ) == Some(builder.id);
-                safe.then_some((builder.id, builder_travel))
+                if !safe {
+                    return None;
+                }
+                let builder_travel = cached_builder_travel_cost(
+                    grounding,
+                    cache,
+                    builder,
+                    placement,
+                    future_egress_orientation,
+                )?;
+                Some((builder.id, builder_travel))
             })?;
             let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
                 .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);

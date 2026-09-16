@@ -1413,13 +1413,15 @@ a weaker public-prior case. Direct attacks, minimum-range retreat, and firing
 standoff retain their weapon rules. Emergency response, Build commands, and
 candidate construction safety retain their exact route checks.
 
-Exact Build-route checks index observed and public ground passability once per
-defensive grounding and reuse A* storage across builders and candidate sites.
-Lazy component labels reject builder/site pairs with no connected base doorstep
-before searching candidate routes. A second connectivity surface includes the
-candidate footprint and additional blockers, rejecting disconnected preferred
-doorsteps before A*. Both checks preserve exact paths, doorstep preference, and
-bounded-search behavior. Danger checks and authoritative doorstep ranking remain
+Exact Build-route checks share observed and public ground passability across
+builders and reuse A* storage across candidate sites. Component labels include
+the candidate footprint and additional blockers, rejecting disconnected
+preferred doorsteps before A*. The most recent candidate layout is shared across
+builders. Safety queries reject dangerous origins before searching. On maps
+below the A* expansion cap, connectivity also identifies the selected doorstep,
+allowing a dangerous endpoint to reject a route before constructing it. Larger
+maps retain the capped search verdict. These checks preserve exact paths and
+doorstep preference. Danger checks and authoritative doorstep ranking remain
 query-local, so cached terrain cannot change the selected route. Travel-cost and
 safety checks share only their most recent exact route; danger is checked again
 on every use, and a changed builder, target, or orientation requires a new
