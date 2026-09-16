@@ -2796,11 +2796,18 @@ impl UtilityPolicy {
         });
 
         let mut evacuations: Vec<(TilePos, Vec<UnitId>)> = Vec::new();
+        let ground = std::cell::OnceCell::new();
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some() && unit.tile.chebyshev(home) > 1 && endangered(unit)
         }) {
             if (!self.evacuating_workers.contains(&unit.id) || unit.idle)
-                && let Some(goal) = self.worker_evacuation_goal(obs, unit, home, &danger)
+                && let Some(goal) = self.worker_evacuation_goal(
+                    obs,
+                    unit,
+                    home,
+                    &danger,
+                    ground.get_or_init(|| RouteProjection::new(obs, Domain::Ground)),
+                )
             {
                 if let Some((_, workers)) = evacuations
                     .iter_mut()
@@ -2845,8 +2852,9 @@ impl UtilityPolicy {
         worker: &UnitObs,
         home: TilePos,
         danger: &danger::HarvestDangerProjection,
+        ground: &RouteProjection<'_>,
     ) -> Option<TilePos> {
-        let initial_danger = self.worker_escape_component(obs, worker.tile, danger);
+        let initial_danger = self.worker_escape_component(obs, worker.tile, danger, ground);
         let mut known_routes = RouteProjection::known_ground(obs);
         let mut safe_routes = RouteProjection::ground_avoiding(obs, |tile| {
             (self.harvest_location_contested(tile) || danger.contains(tile))
@@ -2860,31 +2868,26 @@ impl UtilityPolicy {
         let max_radius = obs.map_width.max(obs.map_height).max(0);
         for radius in 0..=max_radius {
             let mut best = None;
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx.abs().max(dy.abs()) != radius {
-                        continue;
-                    }
-                    let tile = search_origin.offset(dx, dy);
-                    if !routing::ground_open(obs, tile)
-                        || !obs.explored(tile)
-                        || !self.evacuation_standing_area_safe(obs, tile, danger)
-                        || !known_routes.unit_reaches(worker, tile)
-                        || !safe_routes.unit_reaches(worker, tile)
-                        || !safe_routes.direct_line_avoids_blocked(worker.tile, tile)
-                        || !safe_routes.command_path_avoids_blocked(worker.tile, tile)
-                    {
-                        continue;
-                    }
-                    let key = (
-                        worker.tile.manhattan(tile),
-                        tile.manhattan(home),
-                        tile.y,
-                        tile.x,
-                    );
-                    if best.is_none_or(|(_, current)| key < current) {
-                        best = Some((tile, key));
-                    }
+            for (dx, dy) in super::navigation::areas::square_ring(radius) {
+                let tile = search_origin.offset(dx, dy);
+                if !ground.open(tile)
+                    || !obs.explored(tile)
+                    || !self.evacuation_standing_area_safe(ground, tile, danger)
+                    || !known_routes.unit_reaches(worker, tile)
+                    || !safe_routes.unit_reaches(worker, tile)
+                    || !safe_routes.direct_line_avoids_blocked(worker.tile, tile)
+                    || !safe_routes.command_path_avoids_blocked(worker.tile, tile)
+                {
+                    continue;
+                }
+                let key = (
+                    worker.tile.manhattan(tile),
+                    tile.manhattan(home),
+                    tile.y,
+                    tile.x,
+                );
+                if best.is_none_or(|(_, current)| key < current) {
+                    best = Some((tile, key));
                 }
             }
             if let Some((tile, _)) = best {
@@ -2899,26 +2902,27 @@ impl UtilityPolicy {
         obs: &Observation,
         origin: TilePos,
         danger: &danger::HarvestDangerProjection,
+        ground: &RouteProjection<'_>,
     ) -> BTreeSet<TilePos> {
         let unsafe_at = |tile| self.harvest_location_contested(tile) || danger.contains(tile);
-        if !routing::ground_open(obs, origin) || !unsafe_at(origin) {
+        if !ground.open(origin) || !unsafe_at(origin) {
             return BTreeSet::new();
         }
         super::navigation::flood::component_tiles(obs.map_width, obs.map_height, origin, |tile| {
-            routing::ground_open(obs, tile) && unsafe_at(tile)
+            ground.open(tile) && unsafe_at(tile)
         })
     }
 
     fn evacuation_standing_area_safe(
         &self,
-        obs: &Observation,
+        ground: &RouteProjection<'_>,
         goal: TilePos,
         danger: &danger::HarvestDangerProjection,
     ) -> bool {
         (-1..=1).all(|dy| {
             (-1..=1).all(|dx| {
                 let tile = goal.offset(dx, dy);
-                !routing::ground_open(obs, tile)
+                !ground.open(tile)
                     || (!self.harvest_location_contested(tile) && !danger.contains(tile))
             })
         })

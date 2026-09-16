@@ -2,6 +2,19 @@
 
 use chassis::grid::TilePos;
 
+/// Square perimeter offsets in row-major order, without visiting the interior.
+pub(in crate::bot) fn square_ring(radius: i32) -> impl Iterator<Item = (i32, i32)> {
+    let radius = radius.max(0);
+    (-radius..=radius).flat_map(move |dy| {
+        let step = if dy.abs() == radius {
+            1
+        } else {
+            radius as usize * 2
+        };
+        (-radius..=radius).step_by(step).map(move |dx| (dx, dy))
+    })
+}
+
 pub(in crate::bot) fn square_neighborhoods(
     width: i32,
     height: i32,
@@ -45,6 +58,19 @@ pub(in crate::bot) fn square_neighborhoods(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perimeter_preserves_square_scan_order_with_linear_output() {
+        for radius in 0i32..=64 {
+            let reference = (-radius..=radius)
+                .flat_map(|dy| (-radius..=radius).map(move |dx| (dx, dy)))
+                .filter(|&(dx, dy)| dx.abs().max(dy.abs()) == radius)
+                .collect::<Vec<_>>();
+            let actual = square_ring(radius).collect::<Vec<_>>();
+            assert_eq!(actual, reference);
+            assert_eq!(actual.len(), (radius as usize * 8).max(1));
+        }
+    }
 
     #[test]
     fn neighborhood_union_matches_scalar_distance_for_overlaps_edges_and_duplicates() {
