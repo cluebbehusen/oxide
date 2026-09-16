@@ -5,6 +5,7 @@
 pub(super) mod approaches;
 pub(super) mod areas;
 pub(super) mod commands;
+mod components;
 pub(super) mod distance_work;
 pub(super) mod egress;
 pub(super) mod flood;

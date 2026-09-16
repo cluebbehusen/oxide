@@ -6,13 +6,12 @@ use crate::bot::orient::Orientation;
 use crate::ids::UnitId;
 use crate::stats::{Domain, GOAL_SNAP_RADIUS};
 use chassis::grid::TilePos;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 type SafeRouteCosts = BTreeMap<(TilePos, TilePos, bool), Option<u32>>;
 
-/// Lazily labeled connected components for one movement domain. The first
-/// query from a component floods it once; later units and candidate goals use
-/// constant-time membership checks instead of repeating a map-sized search.
+/// Immutable movement projection. Connectivity queries share exact component
+/// labels with projections having the same complete passability surface.
 pub(in crate::bot) struct RouteProjection<'a> {
     obs: &'a Observation,
     public_map: Option<&'a PublicMapBriefing>,
@@ -28,16 +27,8 @@ pub(in crate::bot) struct RouteProjection<'a> {
     blocked_ground_rect: Option<(TilePos, (i32, i32))>,
     blocked_tiles: Vec<bool>,
     has_blocked_tiles: bool,
-    labels: std::cell::RefCell<Vec<u32>>,
-    next_label: std::cell::Cell<u32>,
-    /// Per-tile memo of the domain passability predicate: 0 unqueried,
-    /// 1 open, 2 closed. Known ground obstructions seed the memo once,
-    /// avoiding repeated entity searches during component floods.
-    /// The memo is sound because
-    /// the projection immutably borrows its observation for its whole
-    /// life; projection-local overlays and the explored requirement stay
-    /// outside it.
-    open_memo: std::cell::RefCell<Vec<u8>>,
+    labels: std::cell::OnceCell<std::sync::Arc<[u32]>>,
+    domain_open: Vec<bool>,
 }
 
 impl<'a> RouteProjection<'a> {
@@ -50,11 +41,11 @@ impl<'a> RouteProjection<'a> {
                     .and_then(|height| width.checked_mul(height))
             })
             .unwrap_or(0);
-        let mut open_memo = vec![0; cells];
+        let mut domain_open = vec![true; cells];
         if domain == Domain::Ground {
             let mut block = |tile: TilePos| {
                 if in_bounds(obs, tile) {
-                    open_memo[(tile.y * obs.map_width + tile.x) as usize] = 2;
+                    domain_open[(tile.y * obs.map_width + tile.x) as usize] = false;
                 }
             };
             for tile in obs
@@ -80,6 +71,13 @@ impl<'a> RouteProjection<'a> {
                 }
             }
         }
+        if domain == Domain::Air {
+            for &tile in &obs.known_peaks {
+                if in_bounds(obs, tile) {
+                    domain_open[(tile.y * obs.map_width + tile.x) as usize] = false;
+                }
+            }
+        }
         Self {
             obs,
             public_map: None,
@@ -92,9 +90,8 @@ impl<'a> RouteProjection<'a> {
             blocked_ground_rect: None,
             blocked_tiles: vec![false; cells],
             has_blocked_tiles: false,
-            labels: std::cell::RefCell::new(vec![0; cells]),
-            next_label: std::cell::Cell::new(1),
-            open_memo: std::cell::RefCell::new(open_memo),
+            labels: std::cell::OnceCell::new(),
+            domain_open,
         }
     }
 
@@ -106,8 +103,32 @@ impl<'a> RouteProjection<'a> {
         public_map: &'a PublicMapBriefing,
     ) -> Self {
         let mut projection = Self::new(obs, domain);
-        projection.public_map = Some(public_map);
+        projection.set_public_terrain(public_map);
         projection
+    }
+
+    fn set_public_terrain(&mut self, map: &'a PublicMapBriefing) {
+        self.public_map = Some(map);
+        if map.map_width < self.obs.map_width || map.map_height < self.obs.map_height {
+            for y in 0..self.obs.map_height {
+                for x in 0..self.obs.map_width {
+                    if x >= map.map_width || y >= map.map_height {
+                        let index = self.index(TilePos::new(x, y));
+                        self.domain_open[index] = false;
+                    }
+                }
+            }
+        }
+        for &(tile, terrain) in &map.non_ground_terrain {
+            let blocked = match self.domain {
+                Domain::Ground => terrain.blocks_ground(),
+                Domain::Air => terrain.blocks_air(),
+            };
+            if blocked && in_bounds(self.obs, tile) {
+                let index = self.index(tile);
+                self.domain_open[index] = false;
+            }
+        }
     }
 
     /// Movement projected in policy coordinates while reproducing group
@@ -202,7 +223,7 @@ impl<'a> RouteProjection<'a> {
         blocked: impl FnMut(TilePos) -> bool,
     ) -> Self {
         let mut projection = Self::avoiding(obs, domain, blocked);
-        projection.public_map = Some(briefing);
+        projection.set_public_terrain(briefing);
         projection.command_orientation = Some(orientation);
         projection
     }
@@ -239,9 +260,7 @@ impl<'a> RouteProjection<'a> {
             (self.obs.map_width, self.obs.map_height),
             from,
             to,
-            |tile| {
-                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
-            },
+            |tile| self.domain_open(tile) && (!self.require_explored || self.obs.explored(tile)),
             |tile| self.open(tile),
         ) {
             return safe;
@@ -272,7 +291,7 @@ impl<'a> RouteProjection<'a> {
             transform(to),
             |tile| {
                 let tile = transform(tile);
-                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
+                self.domain_open(tile) && (!self.require_explored || self.obs.explored(tile))
             },
         );
         self.safety
@@ -331,7 +350,7 @@ impl<'a> RouteProjection<'a> {
 
     /// Ordinary path in the caller's coordinate frame, without a danger overlay.
     pub(in crate::bot) fn command_route(&self, from: TilePos, to: TilePos) -> Option<Vec<TilePos>> {
-        if !in_bounds(self.obs, from) || !self.domain_open_memo(to) {
+        if !in_bounds(self.obs, from) || !self.domain_open(to) {
             return None;
         }
         let transform = |tile| {
@@ -345,7 +364,7 @@ impl<'a> RouteProjection<'a> {
             transform(to),
             |tile| {
                 let tile = transform(tile);
-                self.domain_open_memo(tile) && (!self.require_explored || self.obs.explored(tile))
+                self.domain_open(tile) && (!self.require_explored || self.obs.explored(tile))
             },
         )?;
         Some(path.into_iter().map(transform).collect())
@@ -478,7 +497,7 @@ impl<'a> RouteProjection<'a> {
         // A* uses a consistent octile heuristic, so each cell is expanded at
         // most once. Below the cap, cardinal connectivity has the same verdict
         // as its no-corner-cut search without repeating a search for each goal.
-        if self.labels.borrow().len() <= crate::stats::PATH_EXPANSION_CAP as usize {
+        if self.blocked_tiles.len() <= crate::stats::PATH_EXPANSION_CAP as usize {
             return self.reaches(from, to);
         }
         crate::bot::navigation::search::canonical_path(
@@ -492,53 +511,23 @@ impl<'a> RouteProjection<'a> {
     }
 
     fn label(&self, tile: TilePos) -> Option<u32> {
-        let mut labels = self.labels.borrow_mut();
-        if !self.open(tile) || labels.is_empty() {
+        if !self.open(tile) {
             return None;
         }
-        let index = self.index(tile);
-        if labels[index] != 0 {
-            return Some(labels[index]);
-        }
-        #[cfg(test)]
-        super::work::record(|work| {
-            work.components += 1;
-            work.searches += 1;
+        let labels = self.labels.get_or_init(|| {
+            let open = (0..self.obs.map_height)
+                .flat_map(|y| (0..self.obs.map_width).map(move |x| self.open(TilePos::new(x, y))))
+                .collect();
+            super::components::labels((self.obs.map_width, self.obs.map_height), open)
         });
-        let label = self.next_label.get();
-        self.next_label.set(
-            label
-                .checked_add(1)
-                .expect("map has fewer components than u32 labels"),
-        );
-        let mut open = VecDeque::from([tile]);
-        labels[index] = label;
-        while let Some(current) = open.pop_front() {
-            #[cfg(test)]
-            super::work::record(|work| {
-                work.expanded += 1;
-            });
-
-            // Cardinal connectivity is sufficient even though simulation A*
-            // also walks diagonally: no-corner-cut diagonals require both
-            // cardinal companions, so they never join two cardinal components.
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let next = current.offset(dx, dy);
-                let Some(next_index) =
-                    super::flood::tile_index(self.obs.map_width, self.obs.map_height, next)
-                else {
-                    continue;
-                };
-                if labels[next_index] == 0 && self.open(next) {
-                    labels[next_index] = label;
-                    open.push_back(next);
-                }
-            }
-        }
-        Some(label)
+        Some(labels[self.index(tile)])
     }
 
     pub(in crate::bot) fn open(&self, tile: TilePos) -> bool {
+        if let Some(labels) = self.labels.get() {
+            return super::flood::tile_index(self.obs.map_width, self.obs.map_height, tile)
+                .is_some_and(|index| labels[index] != 0);
+        }
         let blocked_by_candidate = self.domain == Domain::Ground
             && self
                 .blocked_ground_rect
@@ -550,30 +539,13 @@ impl<'a> RouteProjection<'a> {
         !blocked_by_candidate
             && !blocked_by_tile
             && (!self.require_explored || self.obs.explored(tile))
-            && self.domain_open_memo(tile)
+            && self.domain_open(tile)
     }
 
-    fn domain_open_memo(&self, tile: TilePos) -> bool {
+    fn domain_open(&self, tile: TilePos) -> bool {
         #[cfg(test)]
         super::work::record(|work| work.passability_queries += 1);
-        if !in_bounds(self.obs, tile) {
-            return false;
-        }
-        let index = self.index(tile);
-        let mut memo = self.open_memo.borrow_mut();
-        match memo[index] {
-            1 => true,
-            2 => false,
-            _ => {
-                let open = (self.domain == Domain::Ground
-                    || domain_open(self.obs, self.domain, tile))
-                    && self
-                        .public_map
-                        .is_none_or(|map| public_terrain_open(map, self.domain, tile));
-                memo[index] = if open { 1 } else { 2 };
-                open
-            }
-        }
+        in_bounds(self.obs, tile) && self.domain_open[self.index(tile)]
     }
 
     fn index(&self, tile: TilePos) -> usize {
@@ -1665,6 +1637,80 @@ mod tests {
     }
 
     #[test]
+    fn prepared_passability_matches_sparse_knowledge_with_all_overlays() {
+        for layout in 0..12 {
+            let mut obs = observation();
+            let tiles: Vec<_> = (0..obs.map_height)
+                .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+                .collect();
+            obs.known_rock = tiles
+                .iter()
+                .copied()
+                .filter(|t| (t.x + t.y + layout) % 7 == 0)
+                .collect();
+            obs.known_peaks = tiles
+                .iter()
+                .copied()
+                .filter(|t| (t.x * 3 + t.y + layout) % 11 == 0)
+                .collect();
+            obs.known_scrap = vec![(TilePos::new(4, 4), 20)];
+            obs.explored = tiles
+                .iter()
+                .map(|t| (t.x + t.y + layout) % 3 != 0)
+                .collect();
+            let mut site = building(3, 0, BuildingKind::Turret, TilePos::new(7, 3), true);
+            site.provisional = layout % 2 == 0;
+            obs.my_buildings.push(site);
+            for width in [8, 12, 16] {
+                let mut map = public_map(
+                    &obs,
+                    vec![
+                        (TilePos::new(2, 2), Terrain::Pit),
+                        (TilePos::new(3, 3), Terrain::Peak),
+                    ],
+                );
+                map.map_width = width;
+                map.map_height = width / 2;
+                for domain in [Domain::Ground, Domain::Air] {
+                    for explored in [false, true] {
+                        let mut projection = RouteProjection::avoiding(&obs, domain, |t| t.x == 5);
+                        projection.set_public_terrain(&map);
+                        projection.require_explored = explored;
+                        projection.blocked_ground_rect = Some((TilePos::new(8, 1), (2, 3)));
+                        let expected = |tile: TilePos| {
+                            domain_open(&obs, domain, tile)
+                                && public_terrain_open(&map, domain, tile)
+                                && (!explored || obs.explored(tile))
+                                && tile.x != 5
+                                && !(domain == Domain::Ground
+                                    && (8..10).contains(&tile.x)
+                                    && (1..4).contains(&tile.y))
+                        };
+                        for prepared in [false, true] {
+                            if prepared
+                                && let Some(tile) = tiles.iter().copied().find(|t| expected(*t))
+                            {
+                                assert!(projection.label(tile).is_some());
+                            }
+                            for tile in tiles
+                                .iter()
+                                .copied()
+                                .chain([TilePos::new(-1, 2), TilePos::new(12, 8)])
+                            {
+                                assert_eq!(
+                                    projection.open(tile),
+                                    expected(tile),
+                                    "{layout} {width} {domain:?} {explored} {prepared} {tile:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn component_flood_does_not_recheck_already_labeled_open_tiles() {
         let obs = Observation {
             map_width: 128,
@@ -1672,6 +1718,7 @@ mod tests {
             ..Default::default()
         };
         for domain in [Domain::Ground, Domain::Air] {
+            super::super::components::clear();
             let routes = RouteProjection::new(&obs, domain);
             let (_, work) = super::super::work::measure(|| {
                 assert!(routes.reaches(TilePos::new(0, 0), TilePos::new(127, 127)));
@@ -1686,6 +1733,12 @@ mod tests {
             });
             assert_eq!(warm.expanded, 0);
             assert_eq!(warm.components, 0);
+            let shared = RouteProjection::new(&obs, domain);
+            let (_, reused) = super::super::work::measure(|| {
+                assert!(shared.reaches(TilePos::new(0, 0), TilePos::new(127, 127)));
+            });
+            assert_eq!(reused.expanded, 0);
+            assert_eq!(reused.hits, 1);
         }
     }
 
@@ -1767,12 +1820,9 @@ mod tests {
             for y in -1..=obs.map_height {
                 for x in -1..=obs.map_width {
                     let tile = TilePos::new(x, y);
+                    assert_eq!(plain.domain_open(tile), domain_open(&obs, domain, tile));
                     assert_eq!(
-                        plain.domain_open_memo(tile),
-                        domain_open(&obs, domain, tile)
-                    );
-                    assert_eq!(
-                        public.domain_open_memo(tile),
+                        public.domain_open(tile),
                         domain_open(&obs, domain, tile) && public_terrain_open(&map, domain, tile)
                     );
                 }
