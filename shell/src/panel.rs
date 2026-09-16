@@ -101,7 +101,9 @@ pub enum CardAction {
     /// Clear the selected producers' rally points.
     ClearRally,
     /// Lift a built own building one tier through its automatic rebuild.
-    Upgrade(BuildingId),
+    Upgrade,
+    /// Abandon eligible selected fresh construction sites.
+    ScrapSites,
     /// Set a transport's cargo down around where it hovers.
     UnloadHere(oxide_sim::UnitId),
     /// Narrow the selection to one kind (Ctrl-click removes it
@@ -118,7 +120,7 @@ impl CardAction {
             Self::ArmBuild(kind) => Some(Action::Build(kind)),
             Self::ArmRally => Some(Action::SetRally),
             Self::ClearRally => Some(Action::ClearRally),
-            Self::Upgrade(_) => Some(Action::Upgrade),
+            Self::Upgrade => Some(Action::Upgrade),
             Self::UnloadHere(_) => Some(Action::Unload),
             _ => None,
         }
@@ -763,120 +765,39 @@ pub(crate) fn build_for_input(game: &Game, input: &crate::input::InputState) -> 
 
 fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
     let selected_buildings: Vec<_> = game
-        .selection
-        .buildings
+        .state
+        .buildings()
         .iter()
-        .filter_map(|id| game.state.building(*id))
+        .filter(|b| game.selection.buildings.contains(&b.id))
         .collect();
-    if selected_buildings.len() > 1 {
-        let first = selected_buildings[0];
+    if let Some(&first) = selected_buildings.first() {
         let owner = first.player;
+        let plural = selected_buildings.len() > 1;
+        let homogeneous = selected_buildings.iter().all(|b| b.kind == first.kind);
         let mut panel = Panel {
             info: info::SelectionInfo::default(),
-            title: format!("{} BUILDINGS", selected_buildings.len()),
-            summary: {
-                let mut kinds: Vec<BuildingKind> = selected_buildings
-                    .iter()
-                    .map(|building| building.kind)
-                    .collect();
-                kinds.sort_by_key(|kind| kind.name());
-                kinds.dedup();
-                format!("{} types", kinds.len())
+            title: if !plural {
+                entity_name(first.kind.tier_name(first.tier))
+            } else if homogeneous {
+                format!(
+                    "{} x {}",
+                    entity_name(first.kind.name()),
+                    selected_buildings.len()
+                )
+            } else {
+                format!("{} BUILDINGS", selected_buildings.len())
             },
+            summary: String::new(),
             portrait: CardIcon::Building(first.kind, first.tier),
             faction: game.state.player(owner).faction,
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
             queue_groups: Vec::new(),
-            queue_label: "queue".to_string(),
+            queue_label: "queue".into(),
         };
-        if owner != game.human {
-            return Some(panel);
-        }
-        let producers: Vec<BuildingId> = selected_buildings
-            .iter()
-            .filter(|building| building.built && !building.stats().produces.is_empty())
-            .map(|building| building.id)
-            .collect();
-        if !producers.is_empty() {
-            let any_rally = producers.iter().any(|id| {
-                game.state
-                    .building(*id)
-                    .is_some_and(|building| building.rally.is_some())
-            });
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Rally),
-                title: if any_rally {
-                    "Reset rallies".into()
-                } else {
-                    "Set rallies".into()
-                },
-                cost: None,
-                hotkey: chord(bindings, Action::SetRally),
-                action: CardAction::ArmRally,
-                enabled: true,
-                why: None,
-                desc: vec![format!(
-                    "Set one destination for {} producers.",
-                    producers.len()
-                )],
-                progress: None,
-            });
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Rally),
-                title: "Clear rallies".into(),
-                cost: None,
-                hotkey: chord(bindings, Action::ClearRally),
-                action: CardAction::ClearRally,
-                enabled: any_rally,
-                why: (!any_rally).then(|| "No rally points set.".into()),
-                desc: vec!["Return new units to their producer doors.".into()],
-                progress: None,
-            });
-        }
-        let production = crate::production::Production::inspect(game);
-        if selected_buildings.iter().all(|b| b.player == game.human) && production.homogeneous() {
-            panel.title = format!(
-                "{} x {}",
-                entity_name(first.kind.name()),
-                selected_buildings.len()
-            );
-            panel.summary = "One unit per available factory".into();
-            panel.cards.extend(production.cards(bindings));
-            (panel.queue, panel.queue_groups) = production.collective_queue();
-            panel.queue_label = "combined production".into();
-        }
-        return Some(panel);
-    }
-    if let Some(id) = game.selection.buildings.first().copied() {
-        let building = game.state.building(id)?;
-        let stats = building.stats();
-        let owner = building.player;
-        let mut panel = Panel {
-            info: info::SelectionInfo::default(),
-            title: if building.tier > 0 {
-                entity_name(building.kind.tier_name(building.tier))
-            } else {
-                entity_name(building.kind.name())
-            },
-            summary: String::new(),
-            portrait: CardIcon::Building(building.kind, building.tier),
-            faction: game.state.player(owner).faction,
-            roster: Vec::new(),
-            cards: Vec::new(),
-            queue: Vec::new(),
-            queue_groups: Vec::new(),
-            queue_label: production_queue_label(&building.queue, building.progress)
-                .unwrap_or_else(|| "queue".to_string()),
-        };
-        if owner != game.human {
-            // Foreign buildings inspect read-only: an allied building says
-            // whose they are; a hostile shows hp and kind, nothing
-            // more — no queue chips, no cards, no rally, no reach
-            // into anyone's production.
-            let hostile = game.state.hostile(game.human, owner);
-            if !hostile {
+        if selected_buildings.iter().any(|b| b.player != game.human) {
+            if !plural && !game.state.hostile(game.human, owner) {
                 panel.cards.push(Card {
                     icon: CardIcon::Verb(VerbIcon::Idle),
                     title: "Ally building".into(),
@@ -891,47 +812,23 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
             }
             return Some(panel);
         }
-        if !building.built {
-            // A committed upgrade is not a scrappable site: the sim
-            // refuses to demolish it, so the card must not offer to.
-            if building.tier > 0 {
-                panel.cards.push(Card {
-                    icon: CardIcon::Verb(VerbIcon::Cancel),
-                    title: "Upgrading".into(),
-                    cost: None,
-                    hotkey: String::new(),
-                    action: CardAction::None,
-                    enabled: false,
-                    why: Some("upgrades cannot be cancelled".into()),
-                    desc: vec!["The works returns to service when the upgrade finishes.".into()],
-                    progress: building.stats().construction.map(|construction| {
-                        (building.progress as f32 / construction.build_ticks.max(1) as f32)
-                            .clamp(0.0, 1.0)
-                    }),
-                });
-                return Some(panel);
+        let selected = crate::building_actions::SelectedBuildings::inspect(game);
+        panel.cards = selected.cards(bindings);
+        if plural {
+            let offline = selected.buildings.iter().filter(|b| !b.built).count();
+            let focused = selected
+                .buildings
+                .iter()
+                .filter(|b| b.focus.is_some())
+                .count();
+            panel.summary = format!(
+                "{} ready · {offline} offline",
+                selected.buildings.len() - offline
+            );
+            if focused > 0 {
+                panel.summary.push_str(&format!(" · {focused} targeting"));
             }
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Cancel),
-                title: "Scrap site".into(),
-                cost: None,
-                hotkey: chord(bindings, Action::StopOrScrap),
-                action: CardAction::Dispatch(Action::StopOrScrap),
-                enabled: true,
-                why: None,
-                desc: vec![
-                    if building.progress == 0 {
-                        "Abandon the unstarted site for a full refund."
-                    } else {
-                        "Abandon the site for a partial refund."
-                    }
-                    .into(),
-                ],
-                progress: None,
-            });
-            return Some(panel);
-        }
-        if !building.stats().weapons.is_empty() {
+        } else if let Some(building) = selected.buildings.first() {
             if let Some(target) = building.focus {
                 panel.queue_label = "target preference".into();
                 panel.queue.push(order_card(
@@ -944,110 +841,35 @@ fn build_panel(game: &Game, bindings: &BindingMap, build_menu_open: bool) -> Opt
                     true,
                     true,
                 ));
-            }
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Stop),
-                title: "Stop".into(),
-                cost: None,
-                hotkey: chord(bindings, Action::StopOrScrap),
-                action: CardAction::Dispatch(Action::StopOrScrap),
-                enabled: true,
-                why: None,
-                desc: vec!["Clear target preference; resume automatic fire.".into()],
-                progress: None,
-            });
-        }
-        let scrap = game.state.player(game.human).scrap;
-        if let Some(upgrade) = building.kind.upgrade_from(building.tier) {
-            let next = entity_name(building.kind.tier_name(building.tier + 1));
-            let tech_ok = upgrade.requires.iter().all(|req| {
-                game.state
-                    .buildings()
-                    .iter()
-                    .any(|b| b.player == game.human && b.kind == *req && b.built)
-            });
-            let (enabled, why) = if !tech_ok {
-                let need = upgrade
-                    .requires
-                    .iter()
-                    .map(|k| entity_name(k.name()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                (false, Some(format!("needs a standing {need}")))
-            } else if scrap < upgrade.cost {
-                (false, Some(format!("needs {} scrap", upgrade.cost)))
             } else {
-                (true, None)
-            };
-            panel.cards.push(Card {
-                icon: CardIcon::Building(building.kind, building.tier),
-                title: format!("Upgrade: {next}"),
-                cost: Some(upgrade.cost),
-                hotkey: chord(bindings, Action::Upgrade),
-                action: CardAction::Upgrade(building.id),
-                enabled,
-                why,
-                desc: vec![format!(
-                    "Offline for {} while upgrading.",
-                    tick_time_label(upgrade.build_ticks)
-                )],
-                progress: None,
-            });
+                panel.queue_label = production_queue_label(&building.queue, building.progress)
+                    .unwrap_or_else(|| "queue".into());
+            }
+            for (i, &kind) in building.queue.iter().enumerate() {
+                let progress = (i == 0).then(|| {
+                    (building.progress as f32 / kind.stats().train_ticks.max(1) as f32)
+                        .clamp(0.0, 1.0)
+                });
+                panel.queue.push(Card {
+                    icon: CardIcon::Unit(kind),
+                    title: entity_name(kind.name()),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::CancelQueue(building.id, i as u8),
+                    enabled: true,
+                    why: None,
+                    desc: vec!["Click to cancel; full refund.".into()],
+                    progress,
+                });
+            }
         }
-        if !stats.produces.is_empty() {
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Rally),
-                title: if building.rally.is_some() {
-                    "Reset rally".into()
-                } else {
-                    "Set rally".into()
-                },
-                cost: None,
-                hotkey: chord(bindings, Action::SetRally),
-                action: CardAction::ArmRally,
-                enabled: true,
-                why: None,
-                desc: vec![
-                    "Choose where newly trained units report.".into(),
-                    "A scrap rally sends new Harvesters straight to work.".into(),
-                ],
-                progress: None,
-            });
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Rally),
-                title: "Clear rally".into(),
-                cost: None,
-                hotkey: chord(bindings, Action::ClearRally),
-                action: CardAction::ClearRally,
-                enabled: building.rally.is_some(),
-                why: building
-                    .rally
-                    .is_none()
-                    .then(|| "No rally point set.".into()),
-                desc: vec!["New units will remain near the producer.".into()],
-                progress: None,
-            });
-        }
-        panel
-            .cards
-            .extend(crate::production::Production::inspect(game).cards(bindings));
-        for (i, &kind) in building.queue.iter().enumerate() {
-            // Only the head is being worked; the rest are prepaid ghosts.
-            let progress = (i == 0).then(|| {
-                let total = kind.stats().train_ticks.max(1);
-                (building.progress as f32 / total as f32).clamp(0.0, 1.0)
-            });
-            panel.queue.push(Card {
-                icon: CardIcon::Unit(kind),
-                title: entity_name(kind.name()),
-                cost: None,
-                hotkey: String::new(),
-                action: CardAction::CancelQueue(building.id, i as u8),
-                enabled: true,
-                why: None,
-                desc: vec!["Click to cancel; full refund.".into()],
-                progress,
-            });
+        let production = crate::production::Production::from_selected(selected);
+        if production.homogeneous() {
+            panel.cards.extend(production.cards(bindings));
+            if plural {
+                (panel.queue, panel.queue_groups) = production.collective_queue();
+                panel.queue_label = "combined production".into();
+            }
         }
         return Some(panel);
     }
@@ -1805,7 +1627,7 @@ mod tests {
             "the turret offers Stop and its tier upgrade"
         );
         assert!(
-            matches!(panel.cards[1].action, CardAction::Upgrade(_)),
+            matches!(panel.cards[1].action, CardAction::Upgrade),
             "the turret's card lifts its tier"
         );
         assert!(
@@ -1853,7 +1675,7 @@ mod tests {
         let upgrade = panel
             .cards
             .iter()
-            .find(|card| matches!(card.action, CardAction::Upgrade(id) if id == turret))
+            .find(|card| matches!(card.action, CardAction::Upgrade))
             .expect("turret offers its upgrade");
         assert!(upgrade.enabled, "automatic upgrades need no crew");
         assert!(

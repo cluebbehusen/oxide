@@ -1,17 +1,14 @@
 //! Selected-factory production, including commands staged before the next tick.
 
 use crate::action::{Action, BindingMap};
+use crate::building_actions::SelectedBuildings;
 use crate::game::Game;
 use crate::panel::{Card, CardAction, CardIcon, unit_flavor, unit_stat_line, weapon_lines};
 use crate::typography::entity_name;
-use oxide_sim::{Building, BuildingId, BuildingKind, Command, Faction, UnitKind};
+use oxide_sim::{Building, BuildingId, Command, UnitKind};
 
 pub(crate) struct Production {
-    buildings: Vec<Building>,
-    tech: Vec<BuildingKind>,
-    scrap: u32,
-    faction: Faction,
-    accepts: bool,
+    selected: SelectedBuildings,
 }
 
 pub(crate) struct Batch {
@@ -30,44 +27,20 @@ pub(crate) struct QueueGroup {
 
 impl Production {
     pub fn inspect(game: &Game) -> Self {
-        let snapshot = |buildings: &[Building], scrap, accepts| Self {
-            buildings: buildings
-                .iter()
-                .filter(|b| b.player == game.human && game.selection.buildings.contains(&b.id))
-                .cloned()
-                .collect(),
-            tech: buildings
-                .iter()
-                .filter(|b| b.player == game.human && b.built)
-                .map(|b| b.kind)
-                .collect(),
-            scrap,
-            faction: game.state.player(game.human).faction,
-            accepts,
-        };
-        if game.pending.is_empty() {
-            let player = game.state.player(game.human);
-            snapshot(
-                game.state.buildings(),
-                player.scrap,
-                game.state.result().is_none() && !player.resigned && game.home_foundry().is_some(),
-            )
-        } else {
-            game.state.inspect_command_phase(&game.pending, |state| {
-                snapshot(
-                    state.buildings(),
-                    state.scrap(game.human).unwrap_or(0),
-                    state.accepts_commands(game.human),
-                )
-            })
-        }
+        Self::from_selected(SelectedBuildings::inspect(game))
+    }
+
+    pub fn from_selected(selected: SelectedBuildings) -> Self {
+        Self { selected }
     }
 
     pub fn homogeneous(&self) -> bool {
-        self.buildings.first().is_some_and(|first| {
-            !first.kind.base_stats().produces.is_empty()
-                && self.buildings.iter().all(|b| b.kind == first.kind)
-        })
+        self.selected.homogeneous()
+            && self
+                .selected
+                .buildings
+                .first()
+                .is_some_and(|b| !b.kind.base_stats().produces.is_empty())
     }
 
     fn roster(&self, building: &Building) -> impl Iterator<Item = UnitKind> + '_ {
@@ -77,17 +50,19 @@ impl Production {
             .produces
             .iter()
             .copied()
-            .filter(|kind| kind.faction().is_none_or(|f| f == self.faction))
+            .filter(|kind| kind.faction().is_none_or(|f| f == self.selected.faction))
     }
 
     pub fn batch(&self, slot: usize) -> Option<Batch> {
         let homogeneous = self.homogeneous();
         let first = self
+            .selected
             .buildings
             .iter()
             .find(|b| (homogeneous || b.built) && self.roster(b).nth(slot).is_some())?;
         let kind = self.roster(first).nth(slot)?;
         let candidates: Vec<_> = self
+            .selected
             .buildings
             .iter()
             .filter(|b| {
@@ -104,7 +79,7 @@ impl Production {
             total: candidates.len(),
             reason: None,
         };
-        if !self.accepts {
+        if !self.selected.accepts {
             batch.reason = Some("production unavailable".into());
             return Some(batch);
         }
@@ -123,12 +98,12 @@ impl Production {
             .stats()
             .requires
             .iter()
-            .find(|req| !self.tech.contains(req))
+            .find(|req| !self.selected.tech.contains(req))
         {
             batch.reason = Some(format!("needs a standing {}", entity_name(req.name())));
             return Some(batch);
         }
-        let mut bank = self.scrap;
+        let mut bank = self.selected.scrap;
         let mut full = 0;
         let mut offline = 0;
         let mut unfunded = 0;
@@ -169,7 +144,7 @@ impl Production {
     }
 
     pub fn cards(&self, bindings: &BindingMap) -> Vec<Card> {
-        let Some(first) = self.buildings.first() else {
+        let Some(first) = self.selected.buildings.first() else {
             return Vec::new();
         };
         self.roster(first)
@@ -211,7 +186,8 @@ impl Production {
     fn cancel_target(&self, kind: UnitKind) -> Option<(BuildingId, u8)> {
         // Preserve active work: take a waiting slot from the back of a
         // factory queue first, then the least-progressed head.
-        self.buildings
+        self.selected
+            .buildings
             .iter()
             .flat_map(|b| {
                 b.queue
@@ -236,6 +212,7 @@ impl Production {
 
     pub fn collective_queue(&self) -> (Vec<Card>, Vec<QueueGroup>) {
         let mut kinds: Vec<_> = self
+            .selected
             .buildings
             .iter()
             .flat_map(|b| b.queue.iter().copied())
@@ -246,16 +223,19 @@ impl Production {
         let mut groups = Vec::new();
         for kind in kinds {
             let count = self
+                .selected
                 .buildings
                 .iter()
                 .map(|b| b.queue.iter().filter(|k| **k == kind).count())
                 .sum();
             let active = self
+                .selected
                 .buildings
                 .iter()
                 .filter(|b| b.queue.front() == Some(&kind))
                 .count();
             let next_ticks = self
+                .selected
                 .buildings
                 .iter()
                 .filter(|b| b.queue.front() == Some(&kind))
@@ -278,6 +258,7 @@ impl Production {
             }
             if let Some((id, index)) = self.cancel_target(kind) {
                 let b = self
+                    .selected
                     .buildings
                     .iter()
                     .find(|b| b.id == id)
@@ -341,7 +322,7 @@ pub(crate) fn cancel_one(game: &mut Game, kind: UnitKind) {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
-    use oxide_sim::{PlayerCommand, Scenario};
+    use oxide_sim::{BuildingKind, Faction, PlayerCommand, Scenario};
 
     fn factories(scrap: u32) -> Game {
         let mut scenario = Scenario::skirmish();
@@ -403,7 +384,7 @@ mod tests {
         assert!(game.state.result().is_none());
         assert!(!game.state.player(game.human).resigned);
         assert!(game.home_foundry().is_none());
-        assert!(!Production::inspect(&game).accepts);
+        assert!(!Production::inspect(&game).selected.accepts);
     }
 
     #[test]
@@ -493,7 +474,7 @@ mod tests {
         assert!(
             matches!(game.pending.last().unwrap().command, Command::CancelTrain { building, index: 1 } if building == ids[0])
         );
-        assert_eq!(Production::inspect(&game).scrap, 50);
+        assert_eq!(Production::inspect(&game).selected.scrap, 50);
         train(&mut game, 1); // 75 scrap must still be refused.
         assert!(matches!(
             game.pending.last().unwrap().command,
@@ -572,10 +553,13 @@ mod tests {
             },
         });
         train(&mut game, 0);
-        assert_eq!(Production::inspect(&game).scrap, 0);
-        assert_eq!(Production::inspect(&game).buildings[0].queue.len(), 1);
+        assert_eq!(Production::inspect(&game).selected.scrap, 0);
+        assert_eq!(
+            Production::inspect(&game).selected.buildings[0].queue.len(),
+            1
+        );
         cancel_one(&mut game, UnitKind::Harvester);
-        assert_eq!(Production::inspect(&game).scrap, 50);
+        assert_eq!(Production::inspect(&game).selected.scrap, 50);
     }
 
     #[test]

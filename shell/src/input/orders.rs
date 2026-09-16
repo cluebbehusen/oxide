@@ -10,18 +10,7 @@ use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::{Command, Target, UnitId};
 
 pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
-    game.selection
-        .buildings
-        .iter()
-        .copied()
-        .filter(|id| {
-            game.state.building(*id).is_some_and(|building| {
-                building.player == game.human
-                    && building.built
-                    && !building.stats().produces.is_empty()
-            })
-        })
-        .collect()
+    crate::building_actions::SelectedBuildings::inspect(game).producers()
 }
 
 pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2) {
@@ -181,23 +170,8 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if game.selection.units.is_empty() {
         if let Some((target, at, domain)) = known_hostile_target_at(game, world, tile) {
-            let defenses: Vec<_> =
-                game.selection
-                    .buildings
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        game.state.building(*id).is_some_and(|building| {
-                            building.player == game.human
-                                && building.built
-                                && building.kind.base_stats().weapons.first().is_some_and(
-                                    |weapon| {
-                                        domain.is_none_or(|domain| weapon.targets.covers(domain))
-                                    },
-                                )
-                        })
-                    })
-                    .collect();
+            let defenses =
+                crate::building_actions::SelectedBuildings::inspect(game).defenses(domain);
             if !defenses.is_empty() {
                 game.issue(Command::FocusFire {
                     buildings: defenses,
