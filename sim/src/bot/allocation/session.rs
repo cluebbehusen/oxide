@@ -224,13 +224,14 @@ fn residual_current_after_obligations(
     obligations: &[ImportedObligation],
     horizon: Tick,
     cadence: Tick,
+    planning: &crate::bot::planning::PlanningWork,
 ) -> Option<u32> {
     let mut allocation = CrossDomainAllocation::new(resources, horizon, cadence).ok()?;
     for obligation in obligations.iter().cloned() {
         allocation.import(obligation);
     }
     allocation
-        .resolve(AllocationPersonality::default(), None)
+        .resolve_planned(AllocationPersonality::default(), None, planning)
         .ok()
         .map(|settlement| settlement.residual_current_scrap())
 }
@@ -571,6 +572,7 @@ impl<'a> AllocationSession<'a> {
                 &obligations.obligations,
                 obligation_horizon(&obligations.obligations, plan.deadline),
                 self.context.dials.cadence,
+                &self.participants.policy.planning,
             )
             .unwrap_or(0);
             if guard > 0 {
@@ -880,17 +882,19 @@ impl<'a> AllocationSession<'a> {
         for (_, key) in unpaid.into_iter().rev() {
             let reason = if !claims.opening_core.ready {
                 crate::bot::trace::ReconReleaseReason::CoreRecovery
-            } else if residual_current_after_obligations(
-                &obligations.resources,
-                &obligations.obligations,
-                obligation_horizon(
+            } else if matches!(
+                obligations_resolve(
+                    &obligations.resources,
                     &obligations.obligations,
-                    self.context.observation.tick + self.context.dials.cadence,
+                    obligation_horizon(
+                        &obligations.obligations,
+                        self.context.observation.tick + self.context.dials.cadence,
+                    ),
+                    self.context.dials.cadence,
+                    &self.participants.policy.planning,
                 ),
-                self.context.dials.cadence,
-            )
-            .is_none()
-            {
+                Ok(crate::bot::planning::Progress::ProvenInfeasible) | Err(_)
+            ) {
                 crate::bot::trace::ReconReleaseReason::Unfundable
             } else {
                 break;
@@ -925,6 +929,7 @@ impl<'a> AllocationSession<'a> {
                     .saturating_add(self.context.dials.cadence),
             ),
             self.context.dials.cadence,
+            &self.participants.policy.planning,
         )
         .unwrap_or(0)
         .saturating_sub(self.participants.policy.shallow_sentinel_capital_reserve(
@@ -1473,9 +1478,14 @@ impl<'a> AllocationSession<'a> {
             for obligation in obligations.obligations.iter().cloned() {
                 allocation.import(obligation);
             }
-            allocation
-                .resolve(AllocationPersonality::default(), None)
-                .is_ok()
+            matches!(
+                allocation.resolve_planned(
+                    AllocationPersonality::default(),
+                    None,
+                    &self.participants.policy.planning
+                ),
+                Ok(_) | Err(AllocationError::Deferred)
+            )
         });
         if !feasible {
             let key = saving.proposal.key();
@@ -1777,6 +1787,7 @@ impl<'a> AllocationSession<'a> {
                 production_deadline: air_lift.lift_deadline,
             },
             &obligations.obligations,
+            &self.participants.policy.planning,
         ) {
             Ok(decision) => air_lift.lift_decision = decision,
             Err(error) => retain_first_coordinator_failure(
@@ -2032,7 +2043,11 @@ impl<'a> AllocationSession<'a> {
         let Err(AllocationError::ObligationConflict {
             obligation,
             conflict,
-        }) = allocation.resolve(AllocationPersonality::default(), None)
+        }) = allocation.resolve_planned(
+            AllocationPersonality::default(),
+            None,
+            &self.participants.policy.planning,
+        )
         else {
             return;
         };
@@ -2089,6 +2104,7 @@ impl<'a> AllocationSession<'a> {
             &obligations.obligations,
             self.context.dials.cadence,
             self.context.observation.tick,
+            &self.participants.policy.planning,
         ) else {
             retain_first_coordinator_failure(
                 &mut obligations.coordinator_failure,
@@ -2967,7 +2983,11 @@ impl<'a> AllocationSession<'a> {
         let Err(AllocationError::ObligationConflict {
             obligation,
             conflict,
-        }) = allocation.resolve(AllocationPersonality::default(), None)
+        }) = allocation.resolve_planned(
+            AllocationPersonality::default(),
+            None,
+            &self.participants.policy.planning,
+        )
         else {
             return;
         };
@@ -3069,7 +3089,11 @@ impl<'a> AllocationSession<'a> {
         let Err(AllocationError::ObligationConflict {
             obligation,
             conflict,
-        }) = allocation.resolve(AllocationPersonality::default(), None)
+        }) = allocation.resolve_planned(
+            AllocationPersonality::default(),
+            None,
+            &self.participants.policy.planning,
+        )
         else {
             return;
         };
@@ -3216,6 +3240,7 @@ impl<'a> AllocationSession<'a> {
                                 &prepared.obligations,
                                 prepared.allocation_horizon,
                                 self.context.dials.cadence,
+                                &self.participants.policy.planning,
                             )
                         })
                         .map_or(allocatable_voluntary_scrap_guard, |residual| {
@@ -3514,6 +3539,12 @@ impl<'a> AllocationSession<'a> {
                             &policy.planning,
                         ) {
                             Ok(resolved) => settlement = Some(resolved),
+                            Err(AllocationError::Deferred) => {
+                                match self.resolve_committed(&mut prepared) {
+                                    Some(resolved) => settlement = Some(resolved),
+                                    None => allocation_ok = false,
+                                }
+                            }
                             Err(_) => allocation_ok = false,
                         }
                     }
@@ -3534,6 +3565,53 @@ impl<'a> AllocationSession<'a> {
             snapshots,
             allocation_ok,
         }
+    }
+
+    fn resolve_committed(
+        &mut self,
+        prepared: &mut PreparedAllocation,
+    ) -> Option<CrossDomainSettlement> {
+        if prepared
+            .fresh_connected
+            .as_ref()
+            .is_some_and(FreshConnectedProposal::revises_active_operation)
+        {
+            remove_active_connected_obligation(&mut prepared.obligations);
+            prepared.active_connected =
+                self.participants.strategy.as_ref().and_then(|planner| {
+                    planner.active_connected_obligation(self.context.observation)
+                });
+            if let Some(active) = &prepared.active_connected {
+                prepared
+                    .obligations
+                    .push(active_connected_obligation(active).ok()?);
+            }
+        }
+        prepared.obligations.retain(|obligation| {
+            obligation
+                .claims
+                .producer_jobs()
+                .iter()
+                .all(|job| job.fixed_assignment().is_some())
+        });
+        prepared.fresh_lift_producer_jobs = 0;
+        prepared.fresh_connected = None;
+        let mut allocation = CrossDomainAllocation::new(
+            &prepared.resources,
+            prepared.allocation_horizon,
+            self.context.dials.cadence,
+        )
+        .ok()?;
+        for obligation in &prepared.obligations {
+            allocation.import(obligation.clone());
+        }
+        allocation
+            .resolve_planned(
+                AllocationPersonality::from_profile(self.context.profile),
+                self.trace.as_deref_mut(),
+                &self.participants.policy.planning,
+            )
+            .ok()
     }
 
     fn fresh_layouts(
@@ -4803,6 +4881,7 @@ struct ActiveLiftCurrentProductionContext<'a> {
 fn feasible_active_lift_current_production_prefix(
     context: ActiveLiftCurrentProductionContext<'_>,
     prior_obligations: &[ImportedObligation],
+    planning: &crate::bot::planning::PlanningWork,
 ) -> Result<StrategicDecision, AllocationCoordinatorFailureReasonTrace> {
     let ActiveLiftCurrentProductionContext {
         resources,
@@ -4818,10 +4897,20 @@ fn feasible_active_lift_current_production_prefix(
         .iter()
         .filter(|intent| matches!(intent, Intent::TrainAt { .. }))
         .count();
-    if requested == 0
-        || !obligations_resolve(resources, prior_obligations, production_deadline, cadence)?
-    {
+    use crate::bot::planning::Progress;
+    if requested == 0 {
         return Ok(decision.clone());
+    }
+    match obligations_resolve(
+        resources,
+        prior_obligations,
+        production_deadline,
+        cadence,
+        planning,
+    )? {
+        Progress::Ready(()) => {}
+        Progress::ProvenInfeasible => return Ok(decision.clone()),
+        Progress::Deferred => return Ok(strategic_decision_with_production_prefix(decision, 0)),
     }
 
     let mut feasible = 0_usize;
@@ -4846,12 +4935,20 @@ fn feasible_active_lift_current_production_prefix(
                 production_deadline,
             },
         );
-        if imported.is_ok()
-            && obligations_resolve(resources, &obligations, production_deadline, cadence)?
-        {
-            feasible = candidate_count;
-        } else {
+        if imported.is_err() {
             infeasible = candidate_count;
+            continue;
+        }
+        match obligations_resolve(
+            resources,
+            &obligations,
+            production_deadline,
+            cadence,
+            planning,
+        )? {
+            Progress::Ready(()) => feasible = candidate_count,
+            Progress::ProvenInfeasible => infeasible = candidate_count,
+            Progress::Deferred => break,
         }
     }
     Ok(strategic_decision_with_production_prefix(
@@ -4864,16 +4961,21 @@ fn obligations_resolve(
     obligations: &[ImportedObligation],
     horizon: Tick,
     cadence: Tick,
-) -> Result<bool, AllocationCoordinatorFailureReasonTrace> {
+    planning: &crate::bot::planning::PlanningWork,
+) -> Result<crate::bot::planning::Progress<()>, AllocationCoordinatorFailureReasonTrace> {
     let horizon = obligation_horizon(obligations, horizon);
     let mut allocation = CrossDomainAllocation::new(resources, horizon, cadence)
         .map_err(|error| AllocationCoordinatorFailureReasonTrace::from(&error))?;
     for obligation in obligations.iter().cloned() {
         allocation.import(obligation);
     }
-    Ok(allocation
-        .resolve(AllocationPersonality::default(), None)
-        .is_ok())
+    Ok(
+        match allocation.resolve_planned(AllocationPersonality::default(), None, planning) {
+            Ok(_) => crate::bot::planning::Progress::Ready(()),
+            Err(AllocationError::Deferred) => crate::bot::planning::Progress::Deferred,
+            Err(_) => crate::bot::planning::Progress::ProvenInfeasible,
+        },
+    )
 }
 
 fn older_saved_foundry_deferrable_capital(
@@ -5354,6 +5456,7 @@ fn retained_producer_context(
     obligations: &[ImportedObligation],
     cadence: Tick,
     observed_at: Tick,
+    planning: &crate::bot::planning::PlanningWork,
 ) -> Option<(ProducerLaneReservations, Vec<Intent>)> {
     let mut horizon = observed_at.saturating_add(cadence);
     for obligation in obligations {
@@ -5373,11 +5476,21 @@ fn retained_producer_context(
         }
     }
     let mut allocation = CrossDomainAllocation::new(resources, horizon, cadence).ok()?;
-    for obligation in obligations.iter().cloned() {
+    for obligation in obligations
+        .iter()
+        .filter(|obligation| {
+            obligation
+                .claims
+                .producer_jobs()
+                .iter()
+                .all(|job| job.fixed_assignment().is_some())
+        })
+        .cloned()
+    {
         allocation.import(obligation);
     }
     let settlement = allocation
-        .resolve(AllocationPersonality::default(), None)
+        .resolve_planned(AllocationPersonality::default(), None, planning)
         .ok()?;
     let due = settlement
         .producer_schedule()
@@ -6675,6 +6788,7 @@ mod tests {
             &[saved_foundry, active_island],
             cadence,
             observation.tick,
+            &crate::bot::planning::PlanningWork::default(),
         )
         .expect("the island lane and older Foundry horizon must settle together");
 
@@ -6781,6 +6895,7 @@ mod tests {
                 production_deadline: deadline,
             },
             &[],
+            &crate::bot::planning::PlanningWork::default(),
         )
         .expect("the exact producer projection is valid");
 
@@ -8338,6 +8453,122 @@ mod tests {
             &mut strategy,
             "lost accepted forecast funding",
         );
+    }
+
+    #[test]
+    fn deferred_mandatory_purchase_still_dispatches_accepted_production() {
+        let observation = connected_observation(1_200, 10_000);
+        let mut proposal = current_connected_proposal(&observation);
+        proposal
+            .bind_producer_assignments(connected_assignments(&proposal, false))
+            .unwrap();
+        let mut planner = StrategicPlanner::new();
+        planner.commit_connected_proposal(proposal).unwrap();
+        let active = planner.active_connected_obligation(&observation).unwrap();
+        let expected: Vec<_> = active
+            .provider_jobs()
+            .iter()
+            .filter(|job| job.timing().enqueued_at() == observation.tick)
+            .map(|job| Intent::TrainAt {
+                building: job.producer(),
+                kind: job.kind(),
+            })
+            .collect();
+        assert!(!expected.is_empty());
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let public_map = connected_briefing(&observation);
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&observation);
+        let mut policy = UtilityPolicy::new();
+        policy.planning = crate::bot::planning::PlanningWork::with_allowance(0);
+        let original_policy = policy.clone();
+        let mut strategy = Some(planner);
+        let mut lifts = None;
+        let mut team = None;
+        let mut raids = None;
+        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+        let mut input = prepared(&observation, None);
+        input.allocation_horizon = active.deadline();
+        input.connected_reserve_deadline = active.deadline();
+        input.connected_accepted_at = Some(active.accepted_at());
+        input
+            .obligations
+            .push(active_connected_obligation(&active).unwrap());
+        input.active_connected = Some(active.clone());
+        input.obligations.push(imported_obligation(
+            ObligationClass::PersistentPlan,
+            observation.tick,
+            ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 2,
+            },
+            ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::flexible(
+                    UnitKind::Skyhook,
+                    observation.tick,
+                    active.deadline(),
+                    vec![BuildingId(12)],
+                )],
+            )
+            .unwrap(),
+        ));
+        input.fresh_lift_producer_jobs = 1;
+        let mut trace = AllocationTrace::default();
+        let mut session = AllocationSession::new(
+            AllocationSessionContext {
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &observation,
+                home: TilePos::new(3, 10),
+                public_map: &public_map,
+                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
+                intelligence: &intelligence,
+                enlisted: &[],
+                lift_support: None,
+            },
+            AllocationParticipants {
+                policy: &mut policy,
+                strategy: &mut strategy,
+                lifts: &mut lifts,
+                team: &mut team,
+                raids: &mut raids,
+            },
+            advanced(snapshots),
+            Some(&mut trace),
+        );
+        let resolved = session.resolve(
+            input,
+            CommitSnapshots {
+                policy: original_policy,
+            },
+        );
+        assert!(resolved.allocation_ok);
+        assert_eq!(resolved.prepared.fresh_lift_producer_jobs, 0);
+        let outcome = session.commit_or_restore(resolved);
+        assert!(outcome.allocation_ok);
+        assert!(!outcome.accepted_connected);
+        assert_eq!(outcome.allocated_producer_intents.len(), expected.len());
+        for intent in expected {
+            assert!(outcome.allocated_producer_intents.contains(&intent));
+        }
+        let after = strategy
+            .as_ref()
+            .unwrap()
+            .active_connected_obligation(&observation)
+            .unwrap();
+        assert_eq!(after.provider_jobs(), active.provider_jobs());
+        assert_eq!(after.deadline(), active.deadline());
+        assert!(trace.error.is_none());
+        assert!(trace.coordinator_failure.is_none());
+        assert_eq!(policy.planning.spent(), 0);
     }
 
     #[test]

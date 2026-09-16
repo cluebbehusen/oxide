@@ -2399,7 +2399,7 @@ pub(in crate::bot) fn prospective_airworks_package_value(
 ) -> Option<u64> {
     use crate::bot::allocation::{
         AllocationCapacity, AllocationPersonality, allocate_requiring_planned,
-        allocate_with_incompatible_layouts, connected_investment_proposal, current_reserve_at,
+        connected_investment_proposal, current_reserve_at,
     };
     use crate::bot::planning::Progress;
     let site = candidate.anchor;
@@ -2429,14 +2429,16 @@ pub(in crate::bot) fn prospective_airworks_package_value(
     )
     .ok()?;
     // A new campaign cannot make retained obligations fit after buying its factory.
-    allocate_with_incompatible_layouts::<()>(
-        &capacity,
-        obligations.to_vec(),
-        Vec::new(),
-        AllocationPersonality::default(),
-        &[],
-    )
-    .ok()?;
+    if !matches!(
+        super::allocation::forecast::refine_obligations(
+            &capacity,
+            obligations,
+            request.coordination.planning?,
+        ),
+        super::planning::Progress::Ready(())
+    ) {
+        return None;
+    }
     prospective.scrap -= restored;
     let unavailable: Vec<_> = prospective.my_units.iter().map(|unit| unit.id).collect();
     let coordination = StrategicCoordination {

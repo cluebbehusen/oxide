@@ -1324,8 +1324,13 @@ minimum remains a deferred target; a pending active revision preserves its
 accepted assignments and deadline. Forecasts never reserve resources themselves.
 Fixed obligations reuse the same witness validator directly; they do not search
 for an alternative schedule. It checks current queue state, request identity,
-owner order, exact timing, and rebased funding. Obligations with unassigned
-producer jobs still use synchronous scheduling.
+owner order, exact timing, and rebased funding. Unassigned mandatory purchases
+use the same bounded service. If they remain pending, the session settles only
+committed claims, restores the prior connected operation instead of accepting
+its replacement, and leaves new transport requests unbound. Due accepted jobs,
+paid work, and emergency commitments continue. Read-only funding checks preserve
+existing plans on deferred results. The exhaustive production solver is compiled
+only as a test oracle.
 
 Site refinement and prospective Airworks targets use the same bounded candidate
 cursor. Airworks valuation admits two candidate factory sites and examines two

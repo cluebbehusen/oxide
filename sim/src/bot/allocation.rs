@@ -1406,6 +1406,8 @@ impl ImportedObligation {
 /// Invalid allocator input that cannot be resolved by portfolio selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AllocationError {
+    /// Mandatory production has not completed its bounded refinement.
+    Deferred,
     /// The same structural opportunity was submitted more than once.
     DuplicateProposalKey(ProposalKey),
     /// The same prior obligation was imported more than once.
@@ -1680,6 +1682,7 @@ pub(crate) fn allocate<Payload>(
     .expect("the unconstrained empty portfolio always preserves valid obligations"))
 }
 
+#[cfg(test)]
 pub(super) fn allocate_with_incompatible_layouts<Payload>(
     capacity: &AllocationCapacity,
     obligations: Vec<ImportedObligation>,
@@ -1756,6 +1759,7 @@ struct Refinement<'a> {
     production: &'a mut ProductionResolver<'a>,
 }
 
+#[cfg(test)]
 fn allocate_with_required<Payload>(
     capacity: &AllocationCapacity,
     obligations: Vec<ImportedObligation>,
@@ -1822,14 +1826,18 @@ fn allocate_refined<Payload>(
             })?;
     }
 
-    let mandatory_resolution = match mandatory.resolve(capacity) {
-        Ok(resolved) => resolved,
+    let mandatory_resolution = match mandatory.refine(capacity, refinement.production) {
+        Ok(super::planning::Progress::Ready(resolved)) => resolved,
+        Ok(super::planning::Progress::Deferred) => return Err(AllocationError::Deferred),
+        Ok(super::planning::Progress::ProvenInfeasible) => {
+            unreachable!("infeasible schedules carry their conflict")
+        }
         Err(conflict) => {
             let mut prefix = ClaimState::default();
             for obligation in &obligations {
                 let owner = obligation.owner();
                 prefix
-                    .try_apply_with_priority(
+                    .stage(
                         capacity,
                         owner,
                         &obligation.claims,
@@ -1839,6 +1847,16 @@ fn allocate_refined<Payload>(
                         obligation: owner,
                         conflict,
                     })?;
+                match prefix.refine(capacity, refinement.production) {
+                    Ok(super::planning::Progress::Ready(_)) => {}
+                    Ok(_) => return Err(AllocationError::Deferred),
+                    Err(conflict) => {
+                        return Err(AllocationError::ObligationConflict {
+                            obligation: owner,
+                            conflict,
+                        });
+                    }
+                }
             }
             return Err(AllocationError::ObligationConflict {
                 obligation: obligations
@@ -2613,6 +2631,7 @@ impl ClaimState {
             })
     }
 
+    #[cfg(test)]
     fn try_apply_with_priority(
         &mut self,
         capacity: &AllocationCapacity,
@@ -2841,11 +2860,21 @@ impl ClaimState {
         }
     }
 
-    fn resolve(
+    fn refine(
         &self,
         capacity: &AllocationCapacity,
-    ) -> Result<ResolvedClaimState, AllocationConflict> {
-        self.validate_production_bounds(capacity)?;
+        refine: &mut ProductionResolver<'_>,
+    ) -> Result<super::planning::Progress<ResolvedClaimState>, AllocationConflict> {
+        if let Some(resolved) = self.resolve_fixed(capacity) {
+            return resolved.map(super::planning::Progress::Ready);
+        }
+        refine(capacity, self)
+    }
+
+    fn resolve_fixed(
+        &self,
+        capacity: &AllocationCapacity,
+    ) -> Option<Result<ResolvedClaimState, AllocationConflict>> {
         if let Some(mut rows) = self
             .producer_jobs
             .iter()
@@ -2875,9 +2904,23 @@ impl ClaimState {
                     job.producer,
                 )
             });
-            return witness::validate(capacity, self, &rows, 0)
-                .ok_or_else(|| producer_schedule_conflict(&self.producer_jobs));
+            return Some(self.validate_production_bounds(capacity).and_then(|()| {
+                witness::validate(capacity, self, &rows, 0)
+                    .ok_or_else(|| producer_schedule_conflict(&self.producer_jobs))
+            }));
         }
+        None
+    }
+
+    #[cfg(test)]
+    fn resolve(
+        &self,
+        capacity: &AllocationCapacity,
+    ) -> Result<ResolvedClaimState, AllocationConflict> {
+        if let Some(resolved) = self.resolve_fixed(capacity) {
+            return resolved;
+        }
+        self.validate_production_bounds(capacity)?;
         self.resolve_with_funding_mode(capacity, JointFundingMode::PreferPriority)
             .or_else(|| {
                 self.resolve_with_funding_mode(
@@ -2888,6 +2931,7 @@ impl ClaimState {
             .ok_or_else(|| producer_schedule_conflict(&self.producer_jobs))
     }
 
+    #[cfg(test)]
     fn resolve_with_funding_mode(
         &self,
         capacity: &AllocationCapacity,
@@ -3219,6 +3263,7 @@ impl<'a> ProductionPortfolioSearch<'a> {
         .is_some()
     }
 
+    #[cfg(test)]
     fn find(
         &mut self,
         producers: &mut [ProducerPlanningProjection],
@@ -10167,6 +10212,64 @@ mod tests {
             outranking_basis(&canonical, &later),
             Some(OutrankingBasis::StructuralKey)
         );
+    }
+
+    #[test]
+    fn mandatory_refinement_defers_without_entering_the_exact_scheduler() {
+        let producer = BuildingId(7);
+        let basis = capacity(
+            1_000,
+            1_000,
+            vec![],
+            vec![producer_fixture(producer, 0, vec![UnitKind::Sentinel])],
+        );
+        let obligation = imported_obligation(
+            ObligationClass::PersistentPlan,
+            0,
+            ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 2,
+            },
+            bundle(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::flexible(
+                    UnitKind::Sentinel,
+                    0,
+                    1_000,
+                    vec![producer],
+                )],
+            ),
+        );
+        let mut calls = 0;
+        let result = allocate_refined::<()>(
+            &basis,
+            vec![obligation.clone()],
+            vec![],
+            AllocationPersonality::default(),
+            None,
+            &[],
+            &mut Refinement {
+                layout: &mut |_| None,
+                production: &mut |_, _| {
+                    calls += 1;
+                    Ok(super::super::planning::Progress::Deferred)
+                },
+            },
+        );
+        assert!(matches!(result, Err(AllocationError::Deferred)));
+        assert_eq!(calls, 1);
+        let exact = allocate::<()>(
+            &basis,
+            vec![obligation],
+            vec![],
+            AllocationPersonality::default(),
+        )
+        .unwrap();
+        assert_eq!(exact.producer_schedule.len(), 1);
     }
 
     #[test]

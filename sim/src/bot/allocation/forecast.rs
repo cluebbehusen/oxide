@@ -39,7 +39,27 @@ pub(in crate::bot) fn refine_obligation(
     candidate: ImportedObligation,
     planning: &PlanningWork,
 ) -> Progress<ImportedObligation> {
-    let mut obligations: Vec<_> = prior.iter().chain(std::iter::once(&candidate)).collect();
+    match refine_obligations(
+        capacity,
+        &prior
+            .iter()
+            .cloned()
+            .chain(std::iter::once(candidate.clone()))
+            .collect::<Vec<_>>(),
+        planning,
+    ) {
+        Progress::Ready(()) => Progress::Ready(candidate),
+        Progress::Deferred => Progress::Deferred,
+        Progress::ProvenInfeasible => Progress::ProvenInfeasible,
+    }
+}
+
+pub(in crate::bot) fn refine_obligations(
+    capacity: &AllocationCapacity,
+    obligations: &[ImportedObligation],
+    planning: &PlanningWork,
+) -> Progress<()> {
+    let mut obligations: Vec<_> = obligations.iter().collect();
     obligations.sort_by_key(|obligation| obligation.owner());
     let mut claims = ClaimState::default();
     for obligation in obligations {
@@ -56,8 +76,10 @@ pub(in crate::bot) fn refine_obligation(
             return Progress::ProvenInfeasible;
         }
     }
-    match planning.production(capacity.resources.observed_at(), capacity, &claims) {
-        Ok(Progress::Ready(_)) => Progress::Ready(candidate),
+    match claims.refine(capacity, &mut |capacity, claims| {
+        planning.production(capacity.resources.observed_at(), capacity, claims)
+    }) {
+        Ok(Progress::Ready(_)) => Progress::Ready(()),
         Ok(Progress::Deferred) => Progress::Deferred,
         Ok(Progress::ProvenInfeasible) | Err(_) => Progress::ProvenInfeasible,
     }

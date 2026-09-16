@@ -194,6 +194,7 @@ impl CrossDomainAllocation {
 
     /// Selects the best compatible portfolio, then tries cumulative connected
     /// additions from largest to smallest against the exact residual capacity.
+    #[cfg(test)]
     pub(crate) fn resolve(
         self,
         personality: AllocationPersonality,
@@ -211,6 +212,15 @@ impl CrossDomainAllocation {
                 },
             },
         )
+    }
+
+    pub(crate) fn resolve_planned(
+        self,
+        personality: AllocationPersonality,
+        trace: Option<&mut AllocationTrace>,
+        planning: &crate::bot::planning::PlanningWork,
+    ) -> Result<CrossDomainSettlement, AllocationError> {
+        self.resolve_validated(personality, trace, &mut |_| None, planning)
     }
 
     pub(crate) fn resolve_validated(

@@ -2605,6 +2605,8 @@ impl From<&AllocationConflict> for AllocationConflictTrace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum AllocationErrorTrace {
+    /// The shared allowance deferred mandatory production refinement.
+    Deferred,
     /// One structural proposal identity was repeated.
     DuplicateProposalKey {
         /// Repeated identity.
@@ -2646,6 +2648,7 @@ pub enum AllocationErrorTrace {
 impl From<AllocationError> for AllocationErrorTrace {
     fn from(value: AllocationError) -> Self {
         match value {
+            AllocationError::Deferred => Self::Deferred,
             AllocationError::DuplicateProposalKey(key) => {
                 Self::DuplicateProposalKey { key: key.into() }
             }
