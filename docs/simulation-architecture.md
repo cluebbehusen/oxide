@@ -1273,6 +1273,12 @@ inside a small rectangle around the candidate footprint. Blocked endpoints or
 failed local repairs use the full connectivity check; a failed local detour
 never proves that a producer is trapped.
 
+Each immutable campaign comparison shares ground and air connectivity, staging
+choices, and artillery firing stands across target selection, producer access,
+and exact group admission. Comparing another target or production mix does not
+rebuild its movement projections. These caches retain the ordinary command
+reachability and firing-position contracts.
+
 Match setup prepares and shares a public terrain index for each seat
 orientation, with connected components inside 16-by-16 regions and deterministic
 boundary links. Regional distances rank strategic targets; they do not certify

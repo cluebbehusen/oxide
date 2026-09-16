@@ -1383,7 +1383,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let preferred = [UnitId(3), UnitId(4), UnitId(5)];
-        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(&obs, Domain::Ground);
         assert!(routes.group_reaches_command_goal(&preferred, ALLY_BASE));
         assert!(
             !combat_core_status(&obs, &preferred, &[], 8).ready,

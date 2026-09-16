@@ -2264,7 +2264,7 @@ fn followup_assault_goal(
     survivors: &[UnitId],
     attempted: &[TilePos],
 ) -> Option<TilePos> {
-    let mut known_routes = RouteProjection::known_ground(obs);
+    let known_routes = RouteProjection::known_ground(obs);
     if let Some(building) = obs
         .enemy_buildings
         .iter()
@@ -2289,7 +2289,7 @@ fn followup_assault_goal(
         return Some(building.anchor);
     }
 
-    let mut projected_routes = RouteProjection::new(obs, Domain::Ground);
+    let projected_routes = RouteProjection::new(obs, Domain::Ground);
     (0..obs.map_height)
         .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
         .filter(|tile| {

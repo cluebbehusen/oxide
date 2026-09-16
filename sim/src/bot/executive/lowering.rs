@@ -863,7 +863,7 @@ impl Executive {
             .collect();
         candidates.sort_unstable();
 
-        let mut routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
+        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
         let mut draft = Vec::with_capacity((size as usize).min(candidates.len()));
         for (_, id) in candidates {
             if draft.len() == size as usize {
@@ -880,7 +880,7 @@ impl Executive {
     }
 
     fn consolidate_staging_armies(&mut self, obs: &Observation, staging: TilePos) -> Option<usize> {
-        let mut routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
+        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
         let candidates: Vec<ArmyId> = self
             .armies
             .iter()

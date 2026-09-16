@@ -381,7 +381,7 @@ impl<'a> RouteProjection<'a> {
     }
 
     pub(in crate::bot) fn group_reaches_command_goal(
-        &mut self,
+        &self,
         units: &[UnitId],
         goal: TilePos,
     ) -> bool {
@@ -420,7 +420,7 @@ impl<'a> RouteProjection<'a> {
     /// approach cannot determine the authoritative forward/reverse scan, so
     /// admission must prove both deterministic spread orders.
     pub(in crate::bot) fn all_command_spreads_reachable_from(
-        &mut self,
+        &self,
         from: TilePos,
         goal: TilePos,
         count: usize,
@@ -1910,11 +1910,11 @@ mod tests {
     fn known_wall_refuses_the_group_but_a_gap_restores_the_exact_route() {
         let mut obs = observation();
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(6, y)).collect();
-        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(&obs, Domain::Ground);
         assert!(!routes.group_reaches_command_goal(&[UnitId(1), UnitId(2)], TilePos::new(9, 4)));
 
         obs.known_rock.retain(|tile| tile.y != 4);
-        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(&obs, Domain::Ground);
         assert!(routes.group_reaches_command_goal(&[UnitId(1), UnitId(2)], TilePos::new(9, 4)));
     }
 
@@ -1956,7 +1956,7 @@ mod tests {
             "the authoritative half-turn assigns the south-east slot second"
         );
 
-        let mut legacy_routes = RouteProjection::new(&obs, Domain::Ground);
+        let legacy_routes = RouteProjection::new(&obs, Domain::Ground);
         assert!(
             legacy_routes.group_reaches_command_goal(&[UnitId(1), UnitId(2)], goal),
             "non-connected callers retain the legacy forward spread preflight"
@@ -1964,13 +1964,13 @@ mod tests {
 
         let orientation = Orientation::for_home(&obs, TilePos::new(1, 1));
         assert!(orientation.is_identity());
-        let mut routes = RouteProjection::with_orientation(&obs, Domain::Ground, orientation);
+        let routes = RouteProjection::with_orientation(&obs, Domain::Ground, orientation);
         assert!(
             !routes.group_reaches_command_goal(&[UnitId(1), UnitId(2)], goal),
             "an orientation-aware projection must reject the isolated slot assigned at execution"
         );
 
-        let mut future_group = RouteProjection::with_orientation(&obs, Domain::Ground, orientation);
+        let future_group = RouteProjection::with_orientation(&obs, Domain::Ground, orientation);
         assert!(
             !future_group.all_command_spreads_reachable_from(obs.my_units[0].tile, goal, 2),
             "admission without exact members must cover the rejected reverse scan"
@@ -2045,10 +2045,10 @@ mod tests {
         let divided_oriented = orientation.observe(&divided_world);
         let world_orientation = Orientation::for_home(&divided_world, TilePos::new(0, 0));
         assert!(world_orientation.is_identity());
-        let mut world_routes =
+        let world_routes =
             RouteProjection::with_orientation(&divided_world, Domain::Ground, world_orientation);
         let expected_reachable = world_routes.group_reaches_command_goal(&ids, goal);
-        let mut oriented_routes =
+        let oriented_routes =
             RouteProjection::with_orientation(&divided_oriented, Domain::Ground, orientation);
 
         assert!(
@@ -2224,7 +2224,7 @@ mod tests {
         );
 
         assert_eq!(retained, vec![UnitId(1), UnitId(4)]);
-        let mut ground = RouteProjection::new(&obs, Domain::Ground);
+        let ground = RouteProjection::new(&obs, Domain::Ground);
         assert!(
             ground.group_reaches_command_goal(
                 &[UnitId(1), UnitId(1), UnitId(999)],
@@ -2332,7 +2332,7 @@ mod tests {
         let anchor = TilePos::new(5, 3);
         let size = (2, 2);
 
-        let mut current = RouteProjection::new(&obs, Domain::Ground);
+        let current = RouteProjection::new(&obs, Domain::Ground);
         assert!(
             current.group_reaches_command_goal(&[UnitId(1)], anchor),
             "the current map makes the trapped founder look eligible"

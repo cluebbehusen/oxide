@@ -1,27 +1,29 @@
-//! Artillery geometry and command reachability for one immutable planning batch.
+//! Shared movement and firing geometry for one immutable campaign planning batch.
 
 use super::*;
 use std::cell::RefCell;
 
 type StandOptions = BTreeMap<(SuppressionOrigin, Target), Vec<TilePos>>;
 
-pub(super) struct SuppressionRoutes<'a> {
+pub(super) struct CampaignRoutes<'a> {
     obs: &'a Observation,
     intel: &'a StrategicIntelligence,
     public_map: Option<&'a PublicMapBriefing>,
     routes: RouteProjection<'a>,
+    air: RouteProjection<'a>,
+    staging: RefCell<BTreeMap<(TilePos, TilePos), Option<TilePos>>>,
     options: RefCell<StandOptions>,
     #[cfg(test)]
     queries: std::cell::Cell<usize>,
 }
 
-impl core::fmt::Debug for SuppressionRoutes<'_> {
+impl core::fmt::Debug for CampaignRoutes<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SuppressionRoutes").finish_non_exhaustive()
+        f.debug_struct("CampaignRoutes").finish_non_exhaustive()
     }
 }
 
-impl<'a> SuppressionRoutes<'a> {
+impl<'a> CampaignRoutes<'a> {
     pub(super) fn new(
         obs: &'a Observation,
         intel: &'a StrategicIntelligence,
@@ -33,10 +35,33 @@ impl<'a> SuppressionRoutes<'a> {
             intel,
             public_map,
             routes: route_projection_with_orientation(obs, Domain::Ground, public_map, orientation),
+            air: route_projection_with_orientation(obs, Domain::Air, public_map, orientation),
+            staging: RefCell::new(BTreeMap::new()),
             options: RefCell::new(BTreeMap::new()),
             #[cfg(test)]
             queries: std::cell::Cell::new(0),
         }
+    }
+
+    pub(super) fn ground(&self) -> &RouteProjection<'a> {
+        &self.routes
+    }
+
+    pub(super) fn air(&self) -> &RouteProjection<'a> {
+        &self.air
+    }
+
+    pub(super) fn staging(&self, home: TilePos, target: TilePos) -> Option<TilePos> {
+        if let Some(staging) = self.staging.borrow().get(&(home, target)) {
+            return *staging;
+        }
+        let staging =
+            artillery_staging_with_routes(self.obs, home, target, self.public_map, &self.routes);
+        let mut retained = self.staging.borrow_mut();
+        if retained.len() < 256 {
+            retained.insert((home, target), staging);
+        }
+        staging
     }
 
     fn with_stands<T>(

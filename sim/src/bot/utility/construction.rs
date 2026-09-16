@@ -1856,8 +1856,7 @@ impl UtilityPolicy {
             return Some(Intent::CancelSite { building: site.id });
         }
 
-        let mut routes =
-            crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
+        let routes = crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
         obs.my_buildings
             .iter()
             .filter(|building| {
