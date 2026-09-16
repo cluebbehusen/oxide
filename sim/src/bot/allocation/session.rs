@@ -3241,357 +3241,307 @@ impl<'a> AllocationSession<'a> {
             self.observer,
             crate::bot::observer::BotPhase::Portfolio,
         );
-        let mut allocation_ok = prepared.coordinator_failure.is_none();
-        let revises_active = prepared
-            .fresh_connected
-            .as_ref()
-            .is_some_and(FreshConnectedProposal::revises_active_operation);
-        let mut settlement = None;
-        if allocation_ok {
-            match CrossDomainAllocation::new(
-                &prepared.resources,
-                prepared.allocation_horizon,
-                self.context.dials.cadence,
-            ) {
-                Ok(mut allocation) => {
-                    let layouts = Self::fresh_layouts(&prepared);
-                    let allocatable_voluntary_scrap_guard = prepared
-                        .voluntary_scrap_guard
-                        .min(prepared.resources.current_scrap().amount());
-                    let active_revision_voluntary_scrap_guard = prepared
-                        .fresh_connected
-                        .as_ref()
-                        .filter(|proposal| proposal.revises_active_operation())
-                        .and_then(|_| {
-                            residual_current_after_obligations(
-                                &prepared.resources,
-                                &prepared.obligations,
-                                prepared.allocation_horizon,
-                                self.context.dials.cadence,
-                                &self.participants.policy.planning,
-                            )
-                        })
-                        .map_or(allocatable_voluntary_scrap_guard, |residual| {
-                            residual.min(allocatable_voluntary_scrap_guard)
-                        });
-                    for obligation in prepared.obligations.iter().cloned() {
-                        allocation.import(obligation);
-                    }
-                    for (rank, recon) in prepared.fresh_reconnaissance.iter().cloned().enumerate() {
-                        allocation.offer(
-                            super::reconnaissance_investment_proposal(recon)
-                                .with_domain_preference(rank)
-                                .with_personality_preference(u16::from(
-                                    self.context.profile.traits.guile,
-                                ))
-                                .with_minimum_residual_scrap(prepared.prospective_carrier_floor)
-                                .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
-                        );
-                    }
-                    for (rank, repair) in prepared.fresh_support.iter().cloned().enumerate() {
-                        allocation.offer(
-                            super::InvestmentProposal::fresh(
-                                ProposalKey::Support(repair.key),
-                                repair.case,
-                                repair.claims(false),
-                                super::DomainPayload::Support(repair),
-                            )
-                            .with_domain_preference(rank)
-                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
-                        );
-                    }
-                    for (rank, deployment) in prepared
-                        .fresh_support_deployments
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                    {
-                        allocation.offer(
-                            super::InvestmentProposal::fresh(
-                                ProposalKey::SupportDeployment(deployment.key),
-                                deployment.case(),
-                                deployment.claims(),
-                                super::DomainPayload::SupportDeployment(deployment),
-                            )
-                            .with_domain_preference(rank)
-                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
-                        );
-                    }
-                    if let Some(relief) = prepared.fresh_support_relief.clone() {
-                        allocation.offer(
-                            super::InvestmentProposal::fresh(
-                                ProposalKey::SupportRelief(relief.foundry),
-                                super::ProposalCase {
-                                    urgency: super::Urgency::Pressing,
-                                    confidence: super::Confidence::Current,
-                                    value: super::StrategicValue::Decisive,
-                                    time_to_impact: super::TimeToImpact::Near,
-                                    safety: super::ExecutionSafety::Managed,
-                                },
-                                ClaimBundle::new(
-                                    0,
-                                    vec![],
-                                    vec![],
-                                    relief.members.clone(),
-                                    vec![],
-                                    vec![],
-                                )
-                                .expect("frozen relief members are canonical"),
-                                super::DomainPayload::SupportRelief(relief),
-                            )
-                            .with_personality_preference(u16::from(
-                                self.context.profile.traits.support,
-                            )),
-                        );
-                    }
-                    for (rank, bay) in prepared
-                        .fresh_support_construction
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                    {
-                        let claims = economic_investment_claims(&bay)
-                            .expect("a fully funded Bay has one builder and site");
-                        allocation.offer(
-                            super::InvestmentProposal::fresh(
-                                ProposalKey::SupportConstruction(bay.key),
-                                bay.case,
-                                claims,
-                                super::DomainPayload::SupportConstruction(bay),
-                            )
-                            .with_domain_preference(rank)
-                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
-                        );
-                    }
-                    for (rank, proposal) in prepared.fresh_economy.iter().cloned().enumerate() {
-                        match economic_investment_proposal(proposal) {
-                            Ok(proposal) => allocation.offer(
-                                proposal
-                                    .with_domain_preference(rank)
-                                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
-                                    .with_minimum_residual_scrap(
-                                        prepared.prospective_carrier_floor,
-                                    ),
-                            ),
-                            Err(error) => {
-                                retain_first_coordinator_failure(
-                                    &mut prepared.coordinator_failure,
-                                    AllocationCoordinatorStageTrace::EconomyProposalAdaptation,
-                                    Err(error.into()),
-                                );
-                                allocation_ok = false;
-                            }
-                        }
-                    }
-                    if let Some(proposal) = prepared.fresh_foundry.take() {
-                        match foundry_investment_proposal(proposal) {
-                            Ok(proposal) => allocation.offer(
-                                proposal
-                                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
-                                    .with_minimum_residual_scrap(
-                                        prepared.prospective_carrier_floor,
-                                    ),
-                            ),
-                            Err(error) => {
-                                retain_first_coordinator_failure(
-                                    &mut prepared.coordinator_failure,
-                                    AllocationCoordinatorStageTrace::FoundryProposalAdaptation,
-                                    Err(error.into()),
-                                );
-                                allocation_ok = false;
-                            }
-                        }
-                    }
-                    match defense_investment_proposals(core::mem::take(&mut prepared.fresh_defense))
-                    {
-                        Ok(proposals) => {
-                            for proposal in proposals {
-                                allocation.offer(
-                                    proposal
-                                        .with_voluntary_scrap_guard(
-                                            allocatable_voluntary_scrap_guard,
-                                        )
-                                        .with_minimum_residual_scrap(
-                                            prepared.prospective_carrier_floor,
-                                        ),
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            retain_first_coordinator_failure(
-                                &mut prepared.coordinator_failure,
-                                AllocationCoordinatorStageTrace::DefenseProposalAdaptation,
-                                Err(error.into()),
-                            );
-                            allocation_ok = false;
-                        }
-                    }
-                    if let Some(proposal) = prepared.fresh_connected.take() {
-                        if proposal.revises_active_operation() {
-                            allocation.offer(
-                                active_connected_revision_investment_proposal(proposal)
-                                    .with_voluntary_scrap_guard(
-                                        active_revision_voluntary_scrap_guard,
-                                    )
-                                    .with_minimum_residual_scrap(
-                                        prepared.prospective_carrier_floor,
-                                    ),
-                            );
-                        } else {
-                            match connected_investment_proposal(proposal) {
-                                Ok(proposal) => allocation.offer(
-                                    proposal
-                                        .with_voluntary_scrap_guard(
-                                            allocatable_voluntary_scrap_guard,
-                                        )
-                                        .with_minimum_residual_scrap(
-                                            prepared.prospective_carrier_floor,
-                                        ),
-                                ),
-                                Err(error) => {
-                                    retain_first_coordinator_failure(
-                                        &mut prepared.coordinator_failure,
-                                        AllocationCoordinatorStageTrace::ConnectedProposalAdaptation,
-                                        Err(error.into()),
-                                    );
-                                    allocation_ok = false;
-                                }
-                            }
-                        }
-                    }
-                    match core::mem::take(&mut prepared.standing_force) {
-                        StandingForcePreparation::Unconditional(standing_force) => {
-                            match standing_force_investment_proposals(standing_force) {
-                                Ok(proposals) => {
-                                    for proposal in proposals {
-                                        allocation.offer(
-                                            standing_force_with_voluntary_guard(
-                                                proposal,
-                                                allocatable_voluntary_scrap_guard,
-                                            )
-                                            .with_minimum_residual_scrap(
-                                                prepared.prospective_carrier_floor,
-                                            ),
-                                        );
-                                    }
-                                }
-                                Err(error) => {
-                                    retain_first_coordinator_failure(
-                                        &mut prepared.coordinator_failure,
-                                        AllocationCoordinatorStageTrace::StandingForceProposalAdaptation,
-                                        Err(error.into()),
-                                    );
-                                    allocation_ok = false;
-                                }
-                            }
-                        }
-                        StandingForcePreparation::ConnectedContexts(contexts) => {
-                            for context in contexts {
-                                match standing_force_investment_proposals(context.proposals) {
-                                    Ok(proposals) => allocation.offer_context(
-                                        context.context,
-                                        proposals
-                                            .into_iter()
-                                            .map(|proposal| {
-                                                standing_force_with_voluntary_guard(
-                                                    proposal,
-                                                    allocatable_voluntary_scrap_guard,
-                                                )
-                                                .with_minimum_residual_scrap(
-                                                    prepared.prospective_carrier_floor,
-                                                )
-                                            })
-                                            .collect(),
-                                    ),
-                                    Err(error) => {
-                                        retain_first_coordinator_failure(
-                                            &mut prepared.coordinator_failure,
-                                            AllocationCoordinatorStageTrace::StandingForceProposalAdaptation,
-                                            Err(error.into()),
-                                        );
-                                        allocation_ok = false;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if allocation_ok {
-                        allocation.apply_experience(
-                            &self.participants.policy.experience,
-                            self.context.observation.tick,
-                        );
-                        let mut checked = std::collections::BTreeMap::new();
-                        let policy = &*self.participants.policy;
-                        let context = &self.context;
-                        let observer = self.observer;
-                        let mut validate_layout = |selected: &[ProposalKey]| {
-                            let selected_layouts = layouts
-                                .iter()
-                                .filter(|(key, _)| selected.contains(key))
-                                .collect::<Vec<_>>();
-                            if selected_layouts.len() < 2 {
-                                return None;
-                            }
-                            let keys = selected_layouts
-                                .iter()
-                                .map(|(key, _)| *key)
-                                .collect::<Vec<_>>();
-                            let safe = *checked.entry(keys.clone()).or_insert_with(|| {
-                                let _scope = crate::bot::observer::PhaseScope::new(
-                                    observer,
-                                    crate::bot::observer::BotPhase::Layouts,
-                                );
-                                policy.combined_build_layout_with_builders_is_safe(
-                                    context.observation,
-                                    context.public_map,
-                                    context.intelligence.units(),
-                                    context.intelligence.buildings(),
-                                    context.orientation,
-                                    &selected_layouts
-                                        .iter()
-                                        .map(|(_, build)| *build)
-                                        .collect::<Vec<_>>(),
-                                )
-                            });
-                            if safe {
-                                None
-                            } else {
-                                super::IncompatibleLayoutSet::from_keys(keys)
-                            }
-                        };
-                        match allocation.resolve_validated(
-                            AllocationPersonality::from_profile(self.context.profile),
-                            self.trace.as_deref_mut(),
-                            &mut validate_layout,
-                            &policy.planning,
-                        ) {
-                            Ok(resolved) => settlement = Some(resolved),
-                            Err(AllocationError::Deferred) => {
-                                match self.resolve_committed(&mut prepared, revises_active) {
-                                    Some(resolved) => settlement = Some(resolved),
-                                    None => allocation_ok = false,
-                                }
-                            }
-                            Err(_) => allocation_ok = false,
-                        }
-                    }
-                }
-                Err(error) => {
-                    retain_first_coordinator_failure(
-                        &mut prepared.coordinator_failure,
-                        AllocationCoordinatorStageTrace::CapacityProjection,
-                        Err((&error).into()),
-                    );
-                    allocation_ok = false;
-                }
-            }
-        }
+        let settlement = self.resolve_portfolio(&mut prepared);
         ResolvedAllocation {
             prepared,
             settlement,
             snapshots,
-            allocation_ok,
+        }
+    }
+
+    fn resolve_portfolio(
+        &mut self,
+        prepared: &mut PreparedAllocation,
+    ) -> Result<CrossDomainSettlement, AllocationFailure> {
+        if let Some(failure) = prepared.coordinator_failure.take() {
+            return Err(AllocationFailure::Coordinator(failure));
+        }
+        let revises_active = prepared
+            .fresh_connected
+            .as_ref()
+            .is_some_and(FreshConnectedProposal::revises_active_operation);
+        let mut allocation = CrossDomainAllocation::new(
+            &prepared.resources,
+            prepared.allocation_horizon,
+            self.context.dials.cadence,
+        )
+        .map_err(|error| {
+            AllocationFailure::Coordinator((
+                AllocationCoordinatorStageTrace::CapacityProjection,
+                (&error).into(),
+            ))
+        })?;
+        let layouts = Self::fresh_layouts(prepared);
+        let allocatable_voluntary_scrap_guard = prepared
+            .voluntary_scrap_guard
+            .min(prepared.resources.current_scrap().amount());
+        let active_revision_voluntary_scrap_guard = prepared
+            .fresh_connected
+            .as_ref()
+            .filter(|proposal| proposal.revises_active_operation())
+            .and_then(|_| {
+                residual_current_after_obligations(
+                    &prepared.resources,
+                    &prepared.obligations,
+                    prepared.allocation_horizon,
+                    self.context.dials.cadence,
+                    &self.participants.policy.planning,
+                )
+            })
+            .map_or(allocatable_voluntary_scrap_guard, |residual| {
+                residual.min(allocatable_voluntary_scrap_guard)
+            });
+        for obligation in prepared.obligations.iter().cloned() {
+            allocation.import(obligation);
+        }
+        for (rank, recon) in prepared.fresh_reconnaissance.iter().cloned().enumerate() {
+            allocation.offer(
+                super::reconnaissance_investment_proposal(recon)
+                    .with_domain_preference(rank)
+                    .with_personality_preference(u16::from(self.context.profile.traits.guile))
+                    .with_minimum_residual_scrap(prepared.prospective_carrier_floor)
+                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+            );
+        }
+        for (rank, repair) in prepared.fresh_support.iter().cloned().enumerate() {
+            allocation.offer(
+                super::InvestmentProposal::fresh(
+                    ProposalKey::Support(repair.key),
+                    repair.case,
+                    repair.claims(false),
+                    super::DomainPayload::Support(repair),
+                )
+                .with_domain_preference(rank)
+                .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+            );
+        }
+        for (rank, deployment) in prepared
+            .fresh_support_deployments
+            .iter()
+            .cloned()
+            .enumerate()
+        {
+            allocation.offer(
+                super::InvestmentProposal::fresh(
+                    ProposalKey::SupportDeployment(deployment.key),
+                    deployment.case(),
+                    deployment.claims(),
+                    super::DomainPayload::SupportDeployment(deployment),
+                )
+                .with_domain_preference(rank)
+                .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+            );
+        }
+        if let Some(relief) = prepared.fresh_support_relief.clone() {
+            allocation.offer(
+                super::InvestmentProposal::fresh(
+                    ProposalKey::SupportRelief(relief.foundry),
+                    super::ProposalCase {
+                        urgency: super::Urgency::Pressing,
+                        confidence: super::Confidence::Current,
+                        value: super::StrategicValue::Decisive,
+                        time_to_impact: super::TimeToImpact::Near,
+                        safety: super::ExecutionSafety::Managed,
+                    },
+                    ClaimBundle::new(0, vec![], vec![], relief.members.clone(), vec![], vec![])
+                        .expect("frozen relief members are canonical"),
+                    super::DomainPayload::SupportRelief(relief),
+                )
+                .with_personality_preference(u16::from(self.context.profile.traits.support)),
+            );
+        }
+        for (rank, bay) in prepared
+            .fresh_support_construction
+            .iter()
+            .cloned()
+            .enumerate()
+        {
+            let claims = economic_investment_claims(&bay)
+                .expect("a fully funded Bay has one builder and site");
+            allocation.offer(
+                super::InvestmentProposal::fresh(
+                    ProposalKey::SupportConstruction(bay.key),
+                    bay.case,
+                    claims,
+                    super::DomainPayload::SupportConstruction(bay),
+                )
+                .with_domain_preference(rank)
+                .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard),
+            );
+        }
+        for (rank, proposal) in prepared.fresh_economy.iter().cloned().enumerate() {
+            match economic_investment_proposal(proposal) {
+                Ok(proposal) => allocation.offer(
+                    proposal
+                        .with_domain_preference(rank)
+                        .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                        .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                ),
+                Err(error) => {
+                    return Err(AllocationFailure::Coordinator((
+                        AllocationCoordinatorStageTrace::EconomyProposalAdaptation,
+                        error.into(),
+                    )));
+                }
+            }
+        }
+        if let Some(proposal) = prepared.fresh_foundry.take() {
+            match foundry_investment_proposal(proposal) {
+                Ok(proposal) => allocation.offer(
+                    proposal
+                        .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                        .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                ),
+                Err(error) => {
+                    return Err(AllocationFailure::Coordinator((
+                        AllocationCoordinatorStageTrace::FoundryProposalAdaptation,
+                        error.into(),
+                    )));
+                }
+            }
+        }
+        match defense_investment_proposals(core::mem::take(&mut prepared.fresh_defense)) {
+            Ok(proposals) => {
+                for proposal in proposals {
+                    allocation.offer(
+                        proposal
+                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                            .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                    );
+                }
+            }
+            Err(error) => {
+                return Err(AllocationFailure::Coordinator((
+                    AllocationCoordinatorStageTrace::DefenseProposalAdaptation,
+                    error.into(),
+                )));
+            }
+        }
+        if let Some(proposal) = prepared.fresh_connected.take() {
+            if proposal.revises_active_operation() {
+                allocation.offer(
+                    active_connected_revision_investment_proposal(proposal)
+                        .with_voluntary_scrap_guard(active_revision_voluntary_scrap_guard)
+                        .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                );
+            } else {
+                match connected_investment_proposal(proposal) {
+                    Ok(proposal) => allocation.offer(
+                        proposal
+                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                            .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                    ),
+                    Err(error) => {
+                        return Err(AllocationFailure::Coordinator((
+                            AllocationCoordinatorStageTrace::ConnectedProposalAdaptation,
+                            error.into(),
+                        )));
+                    }
+                }
+            }
+        }
+        match core::mem::take(&mut prepared.standing_force) {
+            StandingForcePreparation::Unconditional(standing_force) => {
+                match standing_force_investment_proposals(standing_force) {
+                    Ok(proposals) => {
+                        for proposal in proposals {
+                            allocation.offer(
+                                standing_force_with_voluntary_guard(
+                                    proposal,
+                                    allocatable_voluntary_scrap_guard,
+                                )
+                                .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        return Err(AllocationFailure::Coordinator((
+                            AllocationCoordinatorStageTrace::StandingForceProposalAdaptation,
+                            error.into(),
+                        )));
+                    }
+                }
+            }
+            StandingForcePreparation::ConnectedContexts(contexts) => {
+                for context in contexts {
+                    match standing_force_investment_proposals(context.proposals) {
+                        Ok(proposals) => allocation.offer_context(
+                            context.context,
+                            proposals
+                                .into_iter()
+                                .map(|proposal| {
+                                    standing_force_with_voluntary_guard(
+                                        proposal,
+                                        allocatable_voluntary_scrap_guard,
+                                    )
+                                    .with_minimum_residual_scrap(prepared.prospective_carrier_floor)
+                                })
+                                .collect(),
+                        ),
+                        Err(error) => {
+                            return Err(AllocationFailure::Coordinator((
+                                AllocationCoordinatorStageTrace::StandingForceProposalAdaptation,
+                                error.into(),
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        allocation.apply_experience(
+            &self.participants.policy.experience,
+            self.context.observation.tick,
+        );
+        let mut checked = std::collections::BTreeMap::new();
+        let policy = &*self.participants.policy;
+        let context = &self.context;
+        let observer = self.observer;
+        let mut validate_layout = |selected: &[ProposalKey]| {
+            let selected_layouts = layouts
+                .iter()
+                .filter(|(key, _)| selected.contains(key))
+                .collect::<Vec<_>>();
+            if selected_layouts.len() < 2 {
+                return None;
+            }
+            let keys = selected_layouts
+                .iter()
+                .map(|(key, _)| *key)
+                .collect::<Vec<_>>();
+            let safe = *checked.entry(keys.clone()).or_insert_with(|| {
+                let _scope = crate::bot::observer::PhaseScope::new(
+                    observer,
+                    crate::bot::observer::BotPhase::Layouts,
+                );
+                policy.combined_build_layout_with_builders_is_safe(
+                    context.observation,
+                    context.public_map,
+                    context.intelligence.units(),
+                    context.intelligence.buildings(),
+                    context.orientation,
+                    &selected_layouts
+                        .iter()
+                        .map(|(_, build)| *build)
+                        .collect::<Vec<_>>(),
+                )
+            });
+            if safe {
+                None
+            } else {
+                super::IncompatibleLayoutSet::from_keys(keys)
+            }
+        };
+        match allocation.resolve_validated(
+            AllocationPersonality::from_profile(self.context.profile),
+            self.trace.as_deref_mut(),
+            &mut validate_layout,
+            &policy.planning,
+        ) {
+            Ok(settlement) => Ok(settlement),
+            Err(AllocationError::Deferred) => self
+                .resolve_committed(prepared, revises_active)
+                .ok_or(AllocationFailure::Unsettled),
+            Err(_) => Err(AllocationFailure::Unsettled),
         }
     }
 
@@ -3682,8 +3632,7 @@ impl<'a> AllocationSession<'a> {
         &mut self,
         prepared: &mut PreparedAllocation,
         settlement: CrossDomainSettlement,
-        allocation_ok: &mut bool,
-    ) -> CommitEffects {
+    ) -> Result<CommitEffects, CoordinatorFailure> {
         let mut effects = CommitEffects::frozen(prepared);
         let producer_schedule = settlement.producer_schedule().to_vec();
         let voluntary_scrap_guard = if settlement.voluntary_scrap_guard_satisfied() {
@@ -3754,19 +3703,13 @@ impl<'a> AllocationSession<'a> {
         }
 
         self.commit_emergency_defense(prepared, &mut effects);
-        self.bind_saved_foundry_funding(prepared, &settlement, allocation_ok);
-        self.refresh_and_bind_lift(prepared, &producer_schedule, allocation_ok);
+        self.bind_saved_foundry_funding(prepared, &settlement)?;
+        self.refresh_and_bind_lift(prepared, &producer_schedule)?;
         let mut payloads = settlement.into_payloads();
-        self.dispatch_ready_saved_foundry(prepared, &mut effects, allocation_ok);
-        self.refresh_active_connected(prepared, &producer_schedule, allocation_ok);
-        self.commit_fresh_connected(
-            prepared,
-            &producer_schedule,
-            &mut payloads,
-            &mut effects,
-            allocation_ok,
-        );
-        self.commit_fresh_foundry(prepared, &mut payloads, &mut effects, allocation_ok);
+        self.dispatch_ready_saved_foundry(prepared, &mut effects)?;
+        self.refresh_active_connected(prepared, &producer_schedule)?;
+        self.commit_fresh_connected(&producer_schedule, &mut payloads, &mut effects)?;
+        self.commit_fresh_foundry(prepared, &mut payloads, &mut effects)?;
         for job in &producer_schedule {
             if let ClaimOwner::Obligation {
                 key: ObligationKey::Reconnaissance(key),
@@ -3778,15 +3721,13 @@ impl<'a> AllocationSession<'a> {
                     self.context.observation,
                 )
             {
-                *allocation_ok = false;
-                retain_first_coordinator_failure(
-                    &mut prepared.coordinator_failure,
+                return Err((
                     AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
+                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+                ));
             }
         }
-        if *allocation_ok && let Some(recon) = payloads.take_reconnaissance() {
+        if let Some(recon) = payloads.take_reconnaissance() {
             let funding = producer_schedule
                 .iter()
                 .find(|job| {
@@ -3813,15 +3754,13 @@ impl<'a> AllocationSession<'a> {
                     &mut effects.fresh_economy_intents,
                 )
             {
-                retain_first_coordinator_failure(
-                    &mut prepared.coordinator_failure,
+                return Err((
                     AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
-                *allocation_ok = false;
+                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+                ));
             }
         }
-        if *allocation_ok && let Some(economy) = payloads.take_economy() {
+        if let Some(economy) = payloads.take_economy() {
             let current = economy.current_capital;
             self.participants.policy.commit_economic_investment(
                 economy,
@@ -3829,44 +3768,37 @@ impl<'a> AllocationSession<'a> {
                 &mut effects.fresh_economy_intents,
             );
         }
-        if *allocation_ok
-            && let Some(deployment) = payloads.take_support_deployment()
+        if let Some(deployment) = payloads.take_support_deployment()
             && !self.participants.policy.commit_support_deployment(
                 deployment,
                 self.context.observation,
                 &mut effects.fresh_economy_intents,
             )
         {
-            *allocation_ok = false;
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
+            return Err((
                 AllocationCoordinatorStageTrace::ObligationCollection,
-                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-            );
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            ));
         }
-        if *allocation_ok && let Some(defense) = payloads.take_defense() {
+        if let Some(defense) = payloads.take_defense() {
             self.participants
                 .policy
                 .commit_adjudicated_defense(defense, &mut effects.fresh_defense_intents);
         }
-        if *allocation_ok
-            && let Some(repair) = payloads.take_support()
+        if let Some(repair) = payloads.take_support()
             && !self.participants.policy.commit_repair_assignment(
                 repair,
                 self.context.observation,
                 &mut effects.fresh_economy_intents,
             )
         {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
+            return Err((
                 AllocationCoordinatorStageTrace::ObligationCollection,
-                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-            );
-            *allocation_ok = false;
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            ));
         }
         if let Some(standing_force) = payloads.take_standing_force() {
-            if *allocation_ok
-                && standing_force.accumulation().is_some()
+            if standing_force.accumulation().is_some()
                 && let Some(job) = producer_schedule.iter().find(|job| {
                     job.owner
                         == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
@@ -3892,7 +3824,7 @@ impl<'a> AllocationSession<'a> {
                             .as_ref()
                             .is_none_or(|raid| raid.missing > 0)
             );
-            if *allocation_ok && let Some(request) = standing_force.raid {
+            if let Some(request) = standing_force.raid {
                 let count = producer_schedule
                     .iter()
                     .filter(|job| {
@@ -3917,12 +3849,10 @@ impl<'a> AllocationSession<'a> {
                             )
                     })
                 {
-                    retain_first_coordinator_failure(
-                        &mut prepared.coordinator_failure,
+                    return Err((
                         AllocationCoordinatorStageTrace::ObligationCollection,
-                        Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                    );
-                    *allocation_ok = false;
+                        AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+                    ));
                 }
             }
         }
@@ -3934,10 +3864,10 @@ impl<'a> AllocationSession<'a> {
             });
             debug_assert_eq!(scheduled, support.accumulation().is_none());
         }
-        if *allocation_ok && let Some(bay) = payloads.take_support_construction() {
+        if let Some(bay) = payloads.take_support_construction() {
             effects.fresh_economy_intents.push(bay.intent());
         }
-        if *allocation_ok && let Some(relief) = payloads.take_support_relief() {
+        if let Some(relief) = payloads.take_support_relief() {
             if let Some(decision) = self
                 .participants
                 .team
@@ -3946,33 +3876,25 @@ impl<'a> AllocationSession<'a> {
             {
                 prepared.team_decision = decision;
             } else {
-                retain_first_coordinator_failure(
-                    &mut prepared.coordinator_failure,
+                return Err((
                     AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
-                *allocation_ok = false;
+                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+                ));
             }
         }
-        if *allocation_ok {
-            self.participants
-                .policy
-                .bind_reconnaissance_queue_order(&producer_schedule, self.context.observation);
-        }
-        effects
+        self.participants
+            .policy
+            .bind_reconnaissance_queue_order(&producer_schedule, self.context.observation);
+        Ok(effects)
     }
 
     fn refresh_and_bind_lift(
         &mut self,
-        prepared: &mut PreparedAllocation,
+        prepared: &PreparedAllocation,
         producer_schedule: &[super::ScheduledProducerJob],
-        allocation_ok: &mut bool,
-    ) {
-        if !*allocation_ok {
-            return;
-        }
+    ) -> Result<(), CoordinatorFailure> {
         if prepared.active_lift.is_none() && prepared.fresh_lift_producer_jobs == 0 {
-            return;
+            return Ok(());
         }
         let planner = self
             .participants
@@ -3986,13 +3908,10 @@ impl<'a> AllocationSession<'a> {
                 .refresh_active_production_funding(active, &assignments)
                 .is_err()
             {
-                retain_first_coordinator_failure(
-                    &mut prepared.coordinator_failure,
+                return Err((
                     AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
-                *allocation_ok = false;
-                return;
+                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+                ));
             }
             due_ordinals.extend(assignments.iter().filter_map(|assignment| {
                 (assignment.timing().enqueued_at() == self.context.observation.tick)
@@ -4015,16 +3934,14 @@ impl<'a> AllocationSession<'a> {
                     .bind_producer_assignments(accepted_at, deadline, assignments)
                     .is_err()
             {
-                retain_first_coordinator_failure(
-                    &mut prepared.coordinator_failure,
+                return Err((
                     AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
-                *allocation_ok = false;
-                return;
+                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+                ));
             }
         }
         planner.mark_producers_issued(&due_ordinals);
+        Ok(())
     }
 
     fn commit_emergency_defense(
@@ -4046,10 +3963,9 @@ impl<'a> AllocationSession<'a> {
         &self,
         prepared: &mut PreparedAllocation,
         settlement: &CrossDomainSettlement,
-        allocation_ok: &mut bool,
-    ) {
+    ) -> Result<(), CoordinatorFailure> {
         let Some(saved) = prepared.saved_foundry else {
-            return;
+            return Ok(());
         };
         let owner = ClaimOwner::Obligation {
             class: ObligationClass::PersistentPlan,
@@ -4066,46 +3982,41 @@ impl<'a> AllocationSession<'a> {
             None => None,
         };
         if prepared.saved_foundry.is_none() {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
+            return Err((
                 AllocationCoordinatorStageTrace::SavedFoundryDispatch,
-                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-            );
-            *allocation_ok = false;
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            ));
         }
+        Ok(())
     }
 
     fn dispatch_ready_saved_foundry(
         &mut self,
-        prepared: &mut PreparedAllocation,
+        prepared: &PreparedAllocation,
         effects: &mut CommitEffects,
-        allocation_ok: &mut bool,
-    ) {
-        if *allocation_ok
-            && let Some(saved) = prepared.saved_foundry
+    ) -> Result<(), CoordinatorFailure> {
+        if let Some(saved) = prepared.saved_foundry
             && saved.ready_to_build()
             && !self
                 .participants
                 .policy
                 .dispatch_validated_foundry(saved, &mut effects.fresh_foundry_intents)
         {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
+            return Err((
                 AllocationCoordinatorStageTrace::SavedFoundryDispatch,
-                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-            );
-            *allocation_ok = false;
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            ));
         }
+        Ok(())
     }
 
     fn refresh_active_connected(
         &mut self,
-        prepared: &mut PreparedAllocation,
+        prepared: &PreparedAllocation,
         producer_schedule: &[super::ScheduledProducerJob],
-        allocation_ok: &mut bool,
-    ) {
+    ) -> Result<(), CoordinatorFailure> {
         let Some(active) = prepared.active_connected.as_ref() else {
-            return;
+            return Ok(());
         };
         let planner = self
             .participants
@@ -4113,26 +4024,24 @@ impl<'a> AllocationSession<'a> {
             .as_mut()
             .expect("an active connected obligation can only come from its planner");
         let assignments = active_connected_producer_assignments(active, producer_schedule);
-        if let Err(error) = planner.refresh_active_connected_funding(active, &assignments) {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
-                AllocationCoordinatorStageTrace::ActiveConnectedRefresh,
-                Err(error.into()),
-            );
-            *allocation_ok = false;
-        }
+        planner
+            .refresh_active_connected_funding(active, &assignments)
+            .map_err(|error| {
+                (
+                    AllocationCoordinatorStageTrace::ActiveConnectedRefresh,
+                    error.into(),
+                )
+            })
     }
 
     fn commit_fresh_connected(
         &mut self,
-        prepared: &mut PreparedAllocation,
         producer_schedule: &[super::ScheduledProducerJob],
         payloads: &mut super::AcceptedDomainPayloads,
         effects: &mut CommitEffects,
-        allocation_ok: &mut bool,
-    ) {
+    ) -> Result<(), CoordinatorFailure> {
         let Some(mut connected) = payloads.take_connected() else {
-            return;
+            return Ok(());
         };
         let revises_active = connected.revises_active_operation();
         let assignments = if revises_active {
@@ -4140,44 +4049,39 @@ impl<'a> AllocationSession<'a> {
         } else {
             connected_producer_assignments(&connected, producer_schedule)
         };
-        if let Err(error) = connected.bind_producer_assignments(assignments) {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
-                AllocationCoordinatorStageTrace::ConnectedProposalBinding,
-                Err(error.into()),
-            );
-            *allocation_ok = false;
-            return;
-        }
+        connected
+            .bind_producer_assignments(assignments)
+            .map_err(|error| {
+                (
+                    AllocationCoordinatorStageTrace::ConnectedProposalBinding,
+                    error.into(),
+                )
+            })?;
         let planner = self
             .participants
             .strategy
             .as_mut()
             .expect("a connected proposal can only come from an enabled planner");
-        if let Err(error) = planner.commit_connected_proposal(connected) {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
-                AllocationCoordinatorStageTrace::ConnectedProposalCommit,
-                Err(error.into()),
-            );
-            *allocation_ok = false;
-        } else {
-            effects.accepted_connected = true;
-        }
+        planner
+            .commit_connected_proposal(connected)
+            .map_err(|error| {
+                (
+                    AllocationCoordinatorStageTrace::ConnectedProposalCommit,
+                    error.into(),
+                )
+            })?;
+        effects.accepted_connected = true;
+        Ok(())
     }
 
     fn commit_fresh_foundry(
         &mut self,
-        prepared: &mut PreparedAllocation,
+        prepared: &PreparedAllocation,
         payloads: &mut super::AcceptedDomainPayloads,
         effects: &mut CommitEffects,
-        allocation_ok: &mut bool,
-    ) {
-        if !*allocation_ok {
-            return;
-        }
+    ) -> Result<(), CoordinatorFailure> {
         let Some(foundry) = payloads.take_foundry() else {
-            return;
+            return Ok(());
         };
         if prepared
             .connected_accepted_at
@@ -4204,13 +4108,12 @@ impl<'a> AllocationSession<'a> {
             )
             .is_err()
         {
-            retain_first_coordinator_failure(
-                &mut prepared.coordinator_failure,
+            return Err((
                 AllocationCoordinatorStageTrace::FoundryProposalCommit,
-                Err(AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment),
-            );
-            *allocation_ok = false;
+                AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment,
+            ));
         }
+        Ok(())
     }
 
     /// Applies every exact selected payload, or restores every participant to
@@ -4220,19 +4123,23 @@ impl<'a> AllocationSession<'a> {
             mut prepared,
             settlement,
             snapshots,
-            mut allocation_ok,
         } = resolved;
-        let mut effects = match settlement {
-            Some(settlement) => {
-                self.commit_settlement(&mut prepared, settlement, &mut allocation_ok)
+        let committed = settlement.and_then(|settlement| {
+            self.commit_settlement(&mut prepared, settlement)
+                .map_err(AllocationFailure::Coordinator)
+        });
+        let allocation_ok = committed.is_ok();
+        let effects = match committed {
+            Ok(effects) => effects,
+            Err(failure) => {
+                if let AllocationFailure::Coordinator((stage, reason)) = failure
+                    && let Some(trace) = self.trace.as_deref_mut()
+                {
+                    trace.record_coordinator_failure(stage, reason);
+                }
+                CommitEffects::frozen(&prepared)
             }
-            None => CommitEffects::frozen(&prepared),
         };
-        if let Some((stage, reason)) = prepared.coordinator_failure.clone()
-            && let Some(trace) = self.trace.as_deref_mut()
-        {
-            trace.record_coordinator_failure(stage, reason);
-        }
 
         let mut planner_claims = core::mem::take(&mut prepared.planner_claims);
         let mut strategic_core_exclusions =
@@ -4252,8 +4159,6 @@ impl<'a> AllocationSession<'a> {
             if staged_strategy.is_some() {
                 staged_strategy = Some(StrategicThinkResult::default());
             }
-            effects = CommitEffects::frozen(&prepared);
-
             let restored_claims = PlannerClaims::new(
                 self.context.enlisted,
                 self.participants.strategy,
@@ -4597,11 +4502,17 @@ struct CommitSnapshots {
     policy: UtilityPolicy,
 }
 
+#[derive(Debug)]
+enum AllocationFailure {
+    Coordinator(CoordinatorFailure),
+    // The allocator records conflicts and deferral in its own trace.
+    Unsettled,
+}
+
 struct ResolvedAllocation {
     prepared: PreparedAllocation,
-    settlement: Option<CrossDomainSettlement>,
+    settlement: Result<CrossDomainSettlement, AllocationFailure>,
     snapshots: CommitSnapshots,
-    allocation_ok: bool,
 }
 
 fn push_obligation(
@@ -7539,11 +7450,10 @@ mod tests {
         );
         let outcome = session.commit_or_restore(ResolvedAllocation {
             prepared: prepared(&observation, None),
-            settlement: Some(settlement),
+            settlement: Ok(settlement),
             snapshots: CommitSnapshots {
                 policy: original_policy,
             },
-            allocation_ok: true,
         });
 
         assert!(outcome.allocation_ok);
@@ -7690,11 +7600,10 @@ mod tests {
         );
         let outcome = session.commit_or_restore(ResolvedAllocation {
             prepared: prepared(&observation, None),
-            settlement: Some(settlement),
+            settlement: Ok(settlement),
             snapshots: CommitSnapshots {
                 policy: original_policy,
             },
-            allocation_ok: true,
         });
 
         assert!(outcome.allocation_ok);
@@ -7709,6 +7618,193 @@ mod tests {
             "per-producer prefix bookkeeping intentionally has a different global order"
         );
         assert_eq!(outcome.allocated_producer_intents, accepted);
+    }
+
+    #[test]
+    fn late_foundry_rejection_restores_an_already_committed_connected_operation() {
+        use crate::bot::experience::{
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+        };
+        let mut observation = connected_observation(1_200, 10_000);
+        let builder = UnitId(200);
+        observation.my_units.push(owned_unit(
+            builder.0,
+            UnitKind::Harvester,
+            TilePos::new(12, 15),
+        ));
+        let profile = prime_profile();
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let briefing = connected_briefing(&observation);
+        let intelligence = StrategicIntelligence::new();
+        let connected = current_connected_proposal(&observation);
+        let foundry = FreshFoundryProposal::fixture(
+            TilePos::new(15, 14),
+            builder,
+            BuildingKind::Foundry
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost,
+            0,
+            0,
+            observation.tick + 1_200,
+            foundry_case(),
+        );
+        let maintenance = vec![Intent::StopUnits {
+            units: vec![builder],
+        }];
+
+        // A stale prepared quote can conflict with retained ownership even
+        // though its resource claims settle. Exercise that internal boundary.
+        for restore in [false, true] {
+            let mut policy = UtilityPolicy::new();
+            policy
+                .commit_adjudicated_foundry(foundry.clone(), observation.tick, &mut Vec::new())
+                .unwrap();
+            let checkpoint = policy.speculative_checkpoint();
+            policy.planning = crate::bot::planning::PlanningWork::with_allowance(1);
+            let blocked =
+                crate::bot::navigation::public_fields::BlockedGroundLayout::from_predicate(
+                    &briefing,
+                    |_| false,
+                );
+            assert_eq!(
+                policy.planning.field(
+                    QueryPurpose::NavigationTest,
+                    observation.tick,
+                    &briefing,
+                    &blocked,
+                    [TilePos::new(1, 1)],
+                ),
+                crate::bot::planning::Progress::Deferred
+            );
+            let expected_policy = policy.clone();
+            let original_strategy = Some(StrategicPlanner::new());
+            let mut strategy = original_strategy.clone();
+            let mut team = None;
+            let mut lifts = None;
+            let mut raids = Some(RaidPlanner::new());
+            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+            let journal = &mut raids.as_mut().unwrap().outcomes;
+            journal.watch(
+                &observation,
+                EpisodeId {
+                    owner: EpisodeOwner::Raid,
+                    serial: 1,
+                },
+                ExperienceKey {
+                    doctrine: Doctrine::Pressure,
+                    x: 3,
+                    y: 3,
+                    subject: 4,
+                },
+                &[],
+                1,
+            );
+            journal.finish(
+                &observation,
+                Outcome::Aborted,
+                OutcomeReason::UnsafeApproach,
+                750,
+                false,
+            );
+            let observed_raids = raids.clone();
+            let mut input = prepared(&observation, None);
+            input.maintenance_intents = maintenance.clone();
+            let mut allocation = CrossDomainAllocation::new(
+                &input.resources,
+                observation.tick + 10_000,
+                dials.cadence,
+            )
+            .unwrap();
+            allocation.offer(connected_investment_proposal(connected.clone()).unwrap());
+            allocation.offer(foundry_investment_proposal(foundry.clone()).unwrap());
+            let settlement = allocation
+                .resolve(AllocationPersonality::default(), None)
+                .unwrap();
+            assert!(!settlement.producer_schedule().is_empty());
+            let mut trace = AllocationTrace::default();
+            let mut session = AllocationSession::new(
+                AllocationSessionContext {
+                    dials: &dials,
+                    profile: &profile,
+                    tuning,
+                    observation: &observation,
+                    home: TilePos::new(3, 10),
+                    public_map: &briefing,
+                    orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
+                    intelligence: &intelligence,
+                    enlisted: &[],
+                    lift_support: None,
+                },
+                AllocationParticipants {
+                    policy: &mut policy,
+                    strategy: &mut strategy,
+                    lifts: &mut lifts,
+                    team: &mut team,
+                    raids: &mut raids,
+                },
+                advanced(snapshots),
+                Some(&mut trace),
+            );
+            if restore {
+                let outcome = session.commit_or_restore(ResolvedAllocation {
+                    prepared: input,
+                    settlement: Ok(settlement),
+                    snapshots: CommitSnapshots { policy: checkpoint },
+                });
+                assert!(!outcome.allocation_ok);
+                assert!(!outcome.accepted_connected);
+                assert_eq!(outcome.maintenance_intents, maintenance);
+                assert!(outcome.allocated_producer_intents.is_empty());
+                assert!(outcome.fresh_foundry_intents.is_empty());
+                assert!(outcome.fresh_economy_intents.is_empty());
+                assert!(outcome.fresh_defense_intents.is_empty());
+                assert!(outcome.fresh_emergency_defense_intents.is_empty());
+                assert_eq!(outcome.team_decision, StrategicDecision::default());
+                assert_eq!(outcome.lift_decision, StrategicDecision::default());
+                assert_eq!(outcome.raid_decision, StrategicDecision::default());
+                assert_eq!(
+                    outcome.producer_lane_reservations,
+                    ProducerLaneReservations::default()
+                );
+                assert_eq!(outcome.budget.utility_spendable, 0);
+                assert_eq!(outcome.budget.residual_scrap, 0);
+                assert_eq!(policy, expected_policy);
+                assert_eq!(strategy, original_strategy);
+                assert_eq!(raids, observed_raids);
+                let failure = trace.coordinator_failure.unwrap();
+                assert_eq!(
+                    failure.stage,
+                    AllocationCoordinatorStageTrace::FoundryProposalCommit
+                );
+                assert_eq!(
+                    failure.reason,
+                    AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment
+                );
+            } else {
+                let Err(failure) = session.commit_settlement(&mut input, settlement) else {
+                    panic!("the stale Foundry quote must reject after connected commitment");
+                };
+                assert!(
+                    session
+                        .participants
+                        .strategy
+                        .as_ref()
+                        .unwrap()
+                        .active_connected_obligation(&observation)
+                        .is_some()
+                );
+                assert_eq!(
+                    failure,
+                    (
+                        AllocationCoordinatorStageTrace::FoundryProposalCommit,
+                        AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment,
+                    )
+                );
+            }
+        }
     }
 
     #[test]
@@ -7753,7 +7849,7 @@ mod tests {
         let mut lifts = None;
         let original_raids = Some(RaidPlanner::new());
         let mut raids = None;
-        let session = AllocationSession::new(
+        let mut session = AllocationSession::new(
             AllocationSessionContext {
                 dials: &dials,
                 profile: &profile,
@@ -7814,14 +7910,13 @@ mod tests {
             },
         ];
         prepared.maintenance_intents = maintenance.clone();
-        let outcome = session.commit_or_restore(ResolvedAllocation {
+        let resolved = session.resolve(
             prepared,
-            settlement: None,
-            snapshots: CommitSnapshots {
+            CommitSnapshots {
                 policy: original_policy.clone(),
             },
-            allocation_ok: false,
-        });
+        );
+        let outcome = session.commit_or_restore(resolved);
 
         assert!(!outcome.allocation_ok);
         assert_eq!(outcome.maintenance_intents, maintenance);
@@ -8620,7 +8715,7 @@ mod tests {
                 policy: original_policy,
             },
         );
-        assert!(resolved.allocation_ok);
+        assert!(resolved.settlement.is_ok());
         assert_eq!(resolved.prepared.fresh_lift_producer_jobs, 0);
         let outcome = session.commit_or_restore(resolved);
         assert!(outcome.allocation_ok);
