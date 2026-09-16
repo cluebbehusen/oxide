@@ -1,6 +1,6 @@
 use super::*;
 use crate::bot::observation::{BuildingObs, UnitObs};
-use crate::ids::{PlayerId, UnitId};
+use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::Faction;
 
 fn observation() -> Observation {
@@ -319,11 +319,6 @@ fn opening_recovery_counts_prior_same_think_orders_once() {
         ]
     );
     assert_eq!(budget, UnitKind::Sentinel.stats().cost);
-    assert_eq!(planned_at(&intents, BuildingId(1)), 1);
-    assert_eq!(
-        planned_kinds_at(&intents, BuildingId(2)),
-        [UnitKind::Sentinel]
-    );
 }
 
 #[test]

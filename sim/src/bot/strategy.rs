@@ -5023,63 +5023,36 @@ fn schedule(
 ) {
     let obs = context.obs;
     let mut bank = obs.scrap.saturating_sub(context.protected_current_scrap);
-    let mut staged = vec![Vec::<UnitKind>::new(); obs.my_buildings.len()];
-    for intent in context.production.prior_intents {
-        let Intent::TrainAt { building, kind } = intent else {
-            continue;
-        };
-        if let Some(index) = obs
-            .my_buildings
-            .iter()
-            .position(|candidate| candidate.id == *building)
-        {
-            staged[index].push(*kind);
-        }
-    }
+    let mut production = super::production::ImmediateProduction::new(
+        obs,
+        context.production.lane_reservations,
+        context.production.prior_intents,
+    );
     'demands: for &(kind, count) in demands {
         if !requirements_met(obs, kind) || !has_producer(obs, kind) {
             continue;
         }
         for _ in 0..count {
             let cost = kind.stats().cost;
-            let producer = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(index, building)| {
-                    building.built
-                        && building.kind.base_stats().produces.contains(&kind)
-                        && obs.my_queues.get(*index).is_some_and(|queue| {
-                            let depth = if building.kind == BuildingKind::Airworks {
-                                STRATEGIC_AIR_QUEUE_DEPTH
-                            } else {
-                                QUEUE_CAP
-                            };
-                            queue.len().saturating_add(staged[*index].len()) < depth
-                        })
-                        && context
-                            .production
-                            .lane_reservations
-                            .allows_raw_immediate_append(building.id, &staged[*index], kind)
+            let producer = production
+                .available(kind, |building| {
+                    if building == BuildingKind::Airworks {
+                        STRATEGIC_AIR_QUEUE_DEPTH
+                    } else {
+                        QUEUE_CAP
+                    }
                 })
-                .min_by_key(|(index, building)| {
-                    (
-                        obs.my_queues[*index].len() + staged[*index].len(),
-                        building.id,
-                    )
-                })
-                .map(|(index, building)| (index, building.id));
+                .min_by_key(|producer| (producer.depth, producer.id));
             if bank < cost || producer.is_none() {
                 out.committed_scrap = out.committed_scrap.saturating_add(bank.min(cost));
                 break 'demands;
             }
-            let Some((index, building)) = producer else {
+            let Some(producer) = producer else {
                 break 'demands;
             };
             bank -= cost;
-            staged[index].push(kind);
             out.committed_scrap += cost;
-            out.intents.push(Intent::TrainAt { building, kind });
+            out.intents.push(production.append(producer));
         }
     }
 }
@@ -10517,6 +10490,42 @@ mod tests {
                 .iter()
                 .any(|intent| matches!(intent, Intent::AttackUnits { .. }))
         );
+    }
+
+    #[test]
+    fn immediate_air_scheduling_preserves_staged_order_depth_and_protected_capital() {
+        let mut observation = obs(200);
+        observation.my_buildings = vec![
+            building(7, 0, BuildingKind::Airworks, TilePos::new(2, 2), true),
+            building(3, 0, BuildingKind::Airworks, TilePos::new(8, 2), true),
+        ];
+        observation.my_queues = vec![vec![], vec![]];
+        let kind = UnitKind::Kestrel;
+        let cost = kind.stats().cost;
+        let train = |id| Intent::TrainAt {
+            building: BuildingId(id),
+            kind,
+        };
+        let prior = [train(7)];
+        let identity = profile();
+        let intelligence = knowledge(&observation);
+        for (bank, expected, held) in [
+            (
+                3 * cost + 17,
+                vec![train(3), train(3), train(7)],
+                3 * cost + 17,
+            ),
+            (cost + 17, vec![train(3)], cost + 17),
+        ] {
+            observation.scrap = bank + 53;
+            let mut context = planning_context(&identity, &observation, &intelligence);
+            context.production.prior_intents = &prior;
+            context.protected_current_scrap = 53;
+            let mut out = StrategicDecision::default();
+            schedule(&context, &[(kind, 5)], &mut out);
+            assert_eq!(out.intents, expected);
+            assert_eq!(out.committed_scrap, held);
+        }
     }
 
     #[test]
