@@ -509,7 +509,7 @@ impl<'a> AllocationSession<'a> {
             crate::bot::observer::BotPhase::Snapshot,
         );
         let snapshots = CommitSnapshots {
-            policy: self.participants.policy.clone(),
+            policy: self.participants.policy.speculative_checkpoint(),
         };
         drop(snapshot_scope);
         let prepared = self.prepare();
@@ -7530,6 +7530,12 @@ mod tests {
             crate::bot::planning::Progress::Deferred
         );
         let pending = policy.planning.clone();
+        let checkpoint = policy.speculative_checkpoint();
+        assert_eq!(policy.planning, pending);
+        assert_eq!(
+            checkpoint.planning,
+            crate::bot::planning::PlanningWork::default()
+        );
         policy.record_dispatched_build(&observation, BuildingKind::Turret, TilePos::new(4, 4));
         let original_strategy = Some(StrategicPlanner::new());
         let mut strategy = None;

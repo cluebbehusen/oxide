@@ -1186,6 +1186,14 @@ impl<'a> StrategicUtilityContext<'a> {
 }
 
 impl UtilityPolicy {
+    pub(in crate::bot) fn speculative_checkpoint(&mut self) -> Self {
+        // Continuations survive rollback, so the transaction never needs a copy of them.
+        let planning = std::mem::take(&mut self.planning);
+        let checkpoint = self.clone();
+        self.planning = planning;
+        checkpoint
+    }
+
     /// Fresh policy, no memory.
     pub fn new() -> Self {
         Self::default()
