@@ -1821,15 +1821,18 @@ impl<'a> AllocationSession<'a> {
                 production_deadline: air_lift.lift_deadline,
             },
         );
-        let future_lift_obligation = if provisional_current.is_ok()
-            && obligations.active_lift.is_none()
-        {
-            future_context.map_or(Ok(None), |context| {
-                feasible_active_lift_future_production_obligation(context, &feasibility_obligations)
-            })
-        } else {
-            Ok(None)
-        };
+        let future_lift_obligation =
+            if provisional_current.is_ok() && obligations.active_lift.is_none() {
+                future_context.map_or(Ok(None), |context| {
+                    feasible_active_lift_future_production_obligation(
+                        context,
+                        &feasibility_obligations,
+                        &self.participants.policy.planning,
+                    )
+                })
+            } else {
+                Ok(None)
+            };
         let future_lift_claimed = future_lift_obligation
             .as_ref()
             .is_ok_and(|obligation| obligation.is_some());
@@ -2214,8 +2217,33 @@ impl<'a> AllocationSession<'a> {
         match revision {
             Ok(None) => ActiveRevisionPreparation::default(),
             Ok(Some(proposal)) => {
-                remove_active_connected_obligation(&mut obligations.obligations);
                 let adapted = active_connected_revision_obligation(&proposal);
+                let adapted = match adapted {
+                    Ok(candidate) => {
+                        let horizon = obligation_horizon(&other_obligations, deadline);
+                        let Ok(capacity) = super::AllocationCapacity::from_snapshot(
+                            &obligations.resources,
+                            horizon,
+                            self.context.dials.cadence,
+                        ) else {
+                            return ActiveRevisionPreparation::default();
+                        };
+                        match super::forecast::refine_obligation(
+                            &capacity,
+                            &other_obligations,
+                            candidate,
+                            &self.participants.policy.planning,
+                        ) {
+                            crate::bot::planning::Progress::Ready(refined) => Ok(refined),
+                            crate::bot::planning::Progress::Deferred
+                            | crate::bot::planning::Progress::ProvenInfeasible => {
+                                return ActiveRevisionPreparation::default();
+                            }
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                remove_active_connected_obligation(&mut obligations.obligations);
                 retain_first_coordinator_failure(
                     &mut obligations.coordinator_failure,
                     AllocationCoordinatorStageTrace::ObligationCollection,
@@ -5024,12 +5052,14 @@ fn active_lift_future_production_obligation_with_limit(
 fn feasible_active_lift_future_production_obligation(
     context: ActiveLiftFutureProductionContext<'_>,
     prior_obligations: &[ImportedObligation],
+    planning: &crate::bot::planning::PlanningWork,
 ) -> Result<Option<ImportedObligation>, CoordinatorInputError> {
     let Some(full) = active_lift_future_production_obligation(context)? else {
         return Ok(None);
     };
     let requested = full.claims.producer_jobs().len();
     let mut feasible = 0_usize;
+    let mut best = None;
     let mut infeasible = requested.saturating_add(1);
     while feasible.saturating_add(1) < infeasible {
         let candidate_count = feasible.saturating_add(infeasible).div_ceil(2);
@@ -5039,24 +5069,23 @@ fn feasible_active_lift_future_production_obligation(
         let mut obligations = prior_obligations.to_vec();
         obligations.push(candidate);
         let horizon = obligation_horizon(&obligations, context.operation.deadline);
-        let mut allocation =
-            CrossDomainAllocation::new(context.resources, horizon, context.cadence)?;
-        for obligation in obligations {
-            allocation.import(obligation);
-        }
-        if allocation
-            .resolve(AllocationPersonality::default(), None)
-            .is_ok()
-        {
-            feasible = candidate_count;
-        } else {
-            infeasible = candidate_count;
+        let capacity =
+            super::AllocationCapacity::from_snapshot(context.resources, horizon, context.cadence)?;
+        match super::forecast::refine_obligation(
+            &capacity,
+            prior_obligations,
+            obligations.pop().unwrap(),
+            planning,
+        ) {
+            crate::bot::planning::Progress::Ready(candidate) => {
+                feasible = candidate_count;
+                best = Some(candidate);
+            }
+            crate::bot::planning::Progress::Deferred => return Ok(best),
+            crate::bot::planning::Progress::ProvenInfeasible => infeasible = candidate_count,
         }
     }
-    if feasible == 0 {
-        return Ok(None);
-    }
-    active_lift_future_production_obligation_with_limit(context, feasible)
+    Ok(best)
 }
 
 #[cfg(test)]
@@ -6789,9 +6818,23 @@ mod tests {
             accepted_at: operation.started_at,
         };
 
-        let prefix = feasible_active_lift_future_production_obligation(context, &[])
-            .expect("the exact producer projection is valid")
-            .expect("two future carriers are fundable");
+        assert!(
+            feasible_active_lift_future_production_obligation(
+                context,
+                &[],
+                &crate::bot::planning::PlanningWork::with_allowance(0),
+            )
+            .unwrap()
+            .is_none(),
+            "unrefined carrier demand cannot become a mandatory claim"
+        );
+        let prefix = feasible_active_lift_future_production_obligation(
+            context,
+            &[],
+            &crate::bot::planning::PlanningWork::default(),
+        )
+        .expect("the exact producer projection is valid")
+        .expect("two future carriers are fundable");
         assert_eq!(prefix.claims.producer_jobs().len(), 2);
 
         let mut accepted = CrossDomainAllocation::new(&resources, operation.deadline, 12)

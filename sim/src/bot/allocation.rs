@@ -1810,7 +1810,7 @@ fn allocate_refined<Payload>(
     for obligation in &obligations {
         let owner = obligation.owner();
         mandatory
-            .try_apply_with_priority(
+            .stage(
                 capacity,
                 owner,
                 &obligation.claims,
@@ -1821,6 +1821,34 @@ fn allocate_refined<Payload>(
                 conflict,
             })?;
     }
+
+    let mandatory_resolution = match mandatory.resolve(capacity) {
+        Ok(resolved) => resolved,
+        Err(conflict) => {
+            let mut prefix = ClaimState::default();
+            for obligation in &obligations {
+                let owner = obligation.owner();
+                prefix
+                    .try_apply_with_priority(
+                        capacity,
+                        owner,
+                        &obligation.claims,
+                        FundingPriority::obligation(owner),
+                    )
+                    .map_err(|conflict| AllocationError::ObligationConflict {
+                        obligation: owner,
+                        conflict,
+                    })?;
+            }
+            return Err(AllocationError::ObligationConflict {
+                obligation: obligations
+                    .last()
+                    .expect("an empty obligation set is feasible")
+                    .owner(),
+                conflict,
+            });
+        }
+    };
 
     let individual_checks: Vec<_> = proposals
         .iter()
@@ -1887,9 +1915,9 @@ fn allocate_refined<Payload>(
             }
         }
         let resolution = if selected.is_empty() {
-            state
-                .resolve(capacity)
-                .map(super::planning::Progress::Ready)
+            Ok(super::planning::Progress::Ready(
+                mandatory_resolution.clone(),
+            ))
         } else {
             (refinement.production)(capacity, &state)
         };
@@ -8108,6 +8136,58 @@ mod tests {
             resolved.search_states <= 4,
             "explored {} states",
             resolved.search_states
+        );
+    }
+
+    #[test]
+    fn fixed_obligations_are_validated_as_one_complete_factory_schedule() {
+        let producer = BuildingId(7);
+        let basis = capacity(
+            140,
+            1_000,
+            vec![],
+            vec![producer_fixture(
+                producer,
+                0,
+                vec![UnitKind::Harvester, UnitKind::Sentinel],
+            )],
+        );
+        let obligation = |accepted_at, sequence, kind, starts_at, ready_at| ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at,
+            key: ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence,
+            },
+            claims: bundle(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    producer, kind, 100, starts_at, ready_at, 1_000,
+                )],
+            ),
+        };
+        let later = obligation(0, 2, UnitKind::Sentinel, 200, 349);
+        let earlier = obligation(12, 1, UnitKind::Harvester, 100, 199);
+        let before = production_search::SEARCH_CALLS.get();
+        let result = allocate::<()>(
+            &basis,
+            vec![later.clone(), earlier.clone()],
+            vec![],
+            AllocationPersonality::default(),
+        )
+        .unwrap();
+        assert_eq!(production_search::SEARCH_CALLS.get(), before);
+        assert_eq!(
+            result
+                .producer_schedule
+                .iter()
+                .map(|row| (row.owner, row.starts_at, row.ready_at))
+                .collect::<Vec<_>>(),
+            vec![(earlier.owner(), 100, 199), (later.owner(), 200, 349)]
         );
     }
 

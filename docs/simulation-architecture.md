@@ -770,6 +770,14 @@ search and candidate enumeration can yield deterministic work slices; the
 current synchronous scheduling adapter still drains them to a decision, so this
 alone does not bound a controller tick.
 
+Mandatory claims are staged together before validating their complete producer
+schedule. A fixed job may depend on an earlier job owned by another obligation;
+an isolated prefix is not sufficient evidence that its retained timing fails.
+Future transport demand and active revision additions use bounded production
+preflight before joining allocation. Their unpaid assignments remain flexible
+until the complete portfolio is chosen, so a compatible capital investment may
+still move their payment time. Pending new work does not revoke prior orders.
+
 Fixed jobs on one factory follow their retained enqueue and execution times;
 funding priority does not reorder that lane. Production preflight rejects
 overlapping fixed execution intervals on the same factory before enumerating
