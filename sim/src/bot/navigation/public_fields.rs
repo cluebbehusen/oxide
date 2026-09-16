@@ -51,6 +51,7 @@ impl PublicFieldWork {
         }
         let cells = self.width as usize * self.height as usize;
         if self.traversal.is_none() {
+            let terrain = map.regions();
             while self.open.len() < cells {
                 if !budget.charge(1) {
                     return Progress::Deferred;
@@ -61,7 +62,7 @@ impl PublicFieldWork {
                     (index / self.width as usize) as i32,
                 );
                 self.open
-                    .push(PublicGroundDistances::ground_open(map, tile) && !blocked.contains(tile));
+                    .push(terrain.region_at(tile).is_some() && !blocked.contains(tile));
             }
             self.traversal = Some(super::distance_work::DistanceWork::new(
                 self.width,
@@ -415,13 +416,14 @@ impl PublicGroundDistances {
                     .and_then(|height| width.checked_mul(height))
             })
             .unwrap_or(0);
+        let terrain = public_map.regions();
         let open = (0..cells)
             .map(|index| {
                 let tile = TilePos::new(
                     (index % width as usize) as i32,
                     (index / width as usize) as i32,
                 );
-                Self::ground_open(public_map, tile) && !blocked(tile)
+                terrain.region_at(tile).is_some() && !blocked(tile)
             })
             .collect();
         let mut work =
@@ -437,6 +439,7 @@ impl PublicGroundDistances {
         }
     }
 
+    #[cfg(test)]
     fn ground_open(public_map: &PublicMapBriefing, tile: TilePos) -> bool {
         public_map
             .terrain_at(tile)
@@ -573,6 +576,55 @@ mod tests {
 
     use super::*;
     use core::cmp::Reverse;
+
+    #[test]
+    fn incremental_fields_match_sparse_terrain_oracle_across_slices_and_map_changes() {
+        use crate::bot::planning::{Progress, WorkBudget};
+        let mut map = briefing(12, 8, [TilePos::new(5, 5)], Vec::new());
+        map.prepare_navigation();
+        for changed in [false, true] {
+            if changed {
+                map.non_ground_terrain = (1..8)
+                    .map(|y| (TilePos::new(5, y), crate::map::Terrain::Pit))
+                    .collect();
+            }
+            let blocked =
+                BlockedGroundLayout::from_predicate(&map, |tile| tile.y == 3 && tile.x < 4);
+            let sources = vec![TilePos::new(1, 1), TilePos::new(11, 7)];
+            let expected = reference_ground_distances(&map, sources.iter().copied(), &blocked);
+            let mut full = PublicFieldWork::new(&map, sources.clone());
+            let mut full_budget = WorkBudget::new(10_000);
+            assert_eq!(
+                full.advance(&map, &blocked, &mut full_budget),
+                Progress::Ready(Arc::new(expected.clone()))
+            );
+            for allowance in [1, 7, 97] {
+                let mut work = PublicFieldWork::new(&map, sources.clone());
+                let mut spent = 0;
+                loop {
+                    let mut clone = work.clone();
+                    let mut slice = WorkBudget::new(allowance);
+                    let progress = work.advance(&map, &blocked, &mut slice);
+                    assert_eq!(
+                        progress,
+                        clone.advance(&map, &blocked, &mut WorkBudget::new(allowance))
+                    );
+                    assert_eq!(work, clone);
+                    spent += slice.spent();
+                    match progress {
+                        Progress::Ready(actual) => {
+                            assert_eq!(*actual, expected);
+                            assert_eq!(spent, full_budget.spent());
+                            break;
+                        }
+                        Progress::Deferred => assert!(spent < full_budget.spent()),
+                        Progress::ProvenInfeasible => panic!("fields retain disconnected cells"),
+                    }
+                }
+            }
+        }
+    }
+
     fn briefing(
         width: i32,
         height: i32,
