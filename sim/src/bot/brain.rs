@@ -606,6 +606,7 @@ impl Brain {
             allocation_ok,
             accepted_connected,
             producer_lane_reservations,
+            foundry_handoff,
             budget:
                 AllocationBudgetOutcome {
                     foundry_saving,
@@ -854,6 +855,7 @@ impl Brain {
         )
         .with_combat_core_exclusions(&strategic_core_exclusions)
         .with_prior_scrap_commitment(utility_prior_commitment)
+        .with_foundry_handoff(foundry_handoff)
         .with_voluntary_scrap_guard(voluntary_scrap_guard.saturating_sub(prospective_carrier_hold))
         .with_producer_lane_reservations(&producer_lane_reservations);
         let utility_context = if air_active || lift_active {

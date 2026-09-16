@@ -26,6 +26,8 @@ mod production_bounds;
 mod production_search;
 pub(in crate::bot) mod production_work;
 mod session;
+#[cfg(test)]
+pub(in crate::bot) use session::test_allocate_policy;
 mod witness;
 
 pub(crate) use adapters::*;

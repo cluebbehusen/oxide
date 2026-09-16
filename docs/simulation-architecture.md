@@ -858,20 +858,26 @@ follows reconnaissance and support observation. Restoration retains observed
 outcome journals, unfinished planning, and maintenance commands from that
 observation phase. It does not provide rollback after a panic.
 
-Within the residual utility pass, a fresh `CommitmentLedger` imports upstream
-committed scrap, reserved units, strategic queue appends, persistent saving, and
-retained deferred foundations. It attributes current-bank spending and holds
-plus exact units, builders, footprints, and contiguous producer appends to
-deterministic owners. Failed utility proposals roll back atomically; releasing
-one owner returns only revisable claims and reindexes surviving producer
-appends. Residual production requires this same ledger in live play and focused
-tests. The observation remains immutable: utility passes its fixed admission
-bank separately from the remaining spending allowance, and explicit foundation
-cancellations determine available workers, projected sites, placement, and
-producer exits. Cancellations do not release paid sites or queued programs.
-Same-decision stop commands still reserve their workers against construction.
-Starvation and salvage use the fixed admission bank; retained obligations and
-new spending reduce the later allowance. The shared `Executive` owns
+The Foundry commitment component owns accepted identity, fixed funding premises,
+recovery, and dispatch acknowledgement. Allocation validates and funds its exact
+claims and emits construction only from current capital. Its residual handoff
+protects the saved capital and construction channel without acquiring the
+builder or site again. Late safety evidence may cancel an unpaid plan or retain
+or recover it within bounded recovery, but cannot select another plan, fund a
+purchase, or emit construction. An exact command surviving Executive lowering
+releases the lease; refused or displaced intents keep their identity for the
+next decision. An observed transition into paid construction or founding also
+retires the unpaid saving without canceling that work.
+
+Residual utility consumes explicit upstream funding and the Foundry handoff.
+Starvation and salvage use the fixed admission bank; distinct retained deferred
+foundations and protected Foundry capital reduce the later spending allowance.
+Shared allocation owns exact unit, builder, site, and producer claims. Residual
+channels respect reservations, same-think intents, and accepted producer lanes.
+The observation remains immutable: explicit foundation cancellations determine
+available workers, projected sites, placement, and producer exits. Cancellations
+do not release paid sites or queued programs. Same-decision stop commands still
+reserve their workers against construction. The shared `Executive` owns
 command-lowering bookkeeping and converts the combined intents into ordinary
 candidate commands.
 
@@ -1554,18 +1560,18 @@ and cash together. Foundry capital is reserved after projected protection is
 ready, and a partial or complete fund closes later voluntary production,
 construction, and paid-repair spending until the exact build command is emitted.
 Once saving begins, `UtilityPolicy` preserves the exact site, worker, and
-required total across decisions and imports them into the per-think ledger. The
-worker lease prevents scouting, repair, salvage, queued work, unrelated
-construction, and implicit drafting from stealing it during intent lowering;
-only the matching Foundry build may consume it. Transition, invalidation, or an
-urgent opening-core shortfall releases the claim immediately. A temporarily
-blocked plan gets a bounded recovery window, while a plan that needs new
-protection releases its fund for that preparation before it can be reconsidered.
-A generic frontier nearer to a known enemy Foundry than to any projected own
-Foundry is not eligible, and only one unpaid Foundry claim may exist. This is
-controller discipline, not simulation escrow: automatic Repair Bay pulses
-continue to follow the ordinary bank rules. The simulation's command layer
-remains the final legality authority.
+required total across decisions; allocation imports its exact claims into the
+shared portfolio. The worker lease prevents scouting, repair, salvage, queued
+work, unrelated construction, and implicit drafting from stealing it during
+intent lowering; only the matching Foundry build may consume it. Transition,
+invalidation, or an urgent opening-core shortfall releases the claim
+immediately. A temporarily blocked plan gets a bounded recovery window, while a
+plan that needs new protection releases its fund for that preparation before it
+can be reconsidered. A generic frontier nearer to a known enemy Foundry than to
+any projected own Foundry is not eligible, and only one unpaid Foundry claim may
+exist. This is controller discipline, not simulation escrow: automatic Repair
+Bay pulses continue to follow the ordinary bank rules. The simulation's command
+layer remains the final legality authority.
 
 The current wire format deliberately has one maintained controller, `scripted`;
 only difficulty, stance, and personality seed are stored, not the resolved
@@ -1596,6 +1602,6 @@ map rather than an exhaustive test inventory.
 | Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                                                        | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
 | Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                                   | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/field_kit.rs`                                              |
 | Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                                    | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
-| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                                       | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/site.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`            | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
 | Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                               | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |
 | Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/strategy/force_package.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/navigation/commands.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |

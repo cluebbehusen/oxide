@@ -2,7 +2,8 @@
 
 #[cfg(test)]
 use super::construction::FOUNDRY_RECOVERY_TICKS;
-use super::construction::{FoundryCommitmentOutcome, FoundrySavingCommitment, commit_foundry_plan};
+#[cfg(test)]
+use super::construction::FoundrySavingCommitment;
 use super::*;
 use crate::bot::query_work::QueryPurpose;
 use crate::stats::Role;
@@ -660,35 +661,31 @@ impl UtilityPolicy {
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) -> bool {
-        let mut commitments = PolicyCommitments::new(
+        self.residual_production(
+            dials,
             obs,
-            obs.scrap.saturating_sub(*budget),
-            context.claims.reserved,
-            &strategic_production_claims(intents),
-        );
-        commitments.import_deferred_claims(obs, &Self::deferred_claims(obs));
-        if let Some(saving) = &self.foundry_saving {
-            commitments.import_foundry_saving(saving);
-        }
-        *budget = commitments.available_scrap();
-        self.production_with_commitments(dials, obs, context, budget, &mut commitments, intents)
+            context,
+            budget,
+            FoundryHandoff::default(),
+            intents,
+        )
     }
 
-    pub(super) fn production_with_commitments(
+    pub(super) fn residual_production(
         &mut self,
         dials: &Dials,
         obs: &Observation,
         context: ProductionContext<'_>,
         budget: &mut u32,
-        commitments: &mut PolicyCommitments,
+        foundry: FoundryHandoff,
         intents: &mut Vec<Intent>,
     ) -> bool {
         let ProductionContext {
             home,
-            claims,
-            combat_core_exclusions,
-            unit_contacts,
-            building_contacts,
+            claims: _,
+            combat_core_exclusions: _,
+            unit_contacts: _,
+            building_contacts: _,
             public_map,
             voluntary_scrap_guard,
             producer_lane_reservations,
@@ -700,200 +697,8 @@ impl UtilityPolicy {
         let queued = |kind| Self::queued_count(obs, kind);
         let alive = |kind| Self::alive_count(obs, kind);
         let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
-        // Survival outranks saving: with the home screen thin, the drip
-        // spends freely — a banked Fabricator is worthless underneath a
-        // Sentinel rush.
-        let mut unavailable_builders = Vec::new();
-        for intent in intents.iter() {
-            Self::claim_non_preemptible_intent_units(intent, &mut unavailable_builders);
-        }
-        // Finish capital projects that were already admitted before letting a
-        // new expansion claim the bank. A completed capacity purchase still
-        // owns this think's construction channel, while a partial one retains
-        // its fund. Actionable Extractor restoration keeps the same precedence
-        // it has in construction.
-        if commitments.foundry_saving_blocked() {
-            self.retain_blocked_foundry_saving(obs.tick);
-            if self.foundry_saving.is_none() {
-                self.release_foundry_saving(commitments, budget);
-            }
-            return true;
-        }
-        if self
-            .foundry_saving
-            .as_ref()
-            .is_some_and(|saving| saving.accepted_at == obs.tick)
-        {
-            // Cross-domain allocation already froze this exact plan using its
-            // bounded forecast. Current-only continuation cannot immediately
-            // reprice and release it in the same observation.
-            return true;
-        }
-        if self.foundry_saving.as_ref().is_some_and(|saving| {
-            intents.iter().any(|intent| {
-                matches!(
-                    intent,
-                    Intent::BuildWith {
-                        builder,
-                        kind: BuildingKind::Foundry,
-                        anchor,
-                    } if *builder == saving.plan.builder && *anchor == saving.plan.anchor
-                )
-            })
-        }) {
-            return true;
-        }
-        let saved_foundry = self.foundry_saving.clone();
-
-        let expansion_inputs = if dials.expansion
-            && let Some(saving) = &saved_foundry
-        {
-            let (foundries, pending_foundries) =
-                Self::projected_foundries_after(obs, claims.cancellations);
-            let builders: Vec<_> = obs
-                .my_units
-                .iter()
-                .filter(|builder| builder.id == saving.plan.builder)
-                .filter(|builder| claims.cancellations.builder_is_free(obs, builder))
-                .filter(|builder| !claims.enlisted.contains(&builder.id))
-                .filter(|builder| !claims.reserved.contains(&builder.id))
-                .filter(|builder| !unavailable_builders.contains(&builder.id))
-                .filter(|builder| self.scout != Some(builder.id))
-                .collect();
-            (pending_foundries == 0).then_some((foundries, builders))
-        } else {
-            None
-        };
-        let current_expansion_scrap = commitments.available_for_foundry_saving();
-        let expansion_quote_basis = saved_foundry.as_ref().and_then(|saving| {
-            if saving.forecast_basis.is_none() {
-                return Some((current_expansion_scrap, voluntary_scrap_guard));
-            }
-            let resources = ResourceSnapshot::from_observation(obs);
-            let funding =
-                Self::foundry_funding_revalidation(&resources, saving, current_expansion_scrap);
-            funding.viable.then_some((
-                funding.planning_scrap,
-                Reserve::Exact(funding.protected_reserve),
-            ))
-        });
-        let expansion_context = expansion_inputs
-            .as_ref()
-            .zip(expansion_quote_basis)
-            .and_then(|((foundries, builders), (spendable_scrap, quote_guard))| {
-                public_map.map(|public_map| FoundryAssessmentContext {
-                    claim: FoundryClaimContext {
-                        cancellations: claims.cancellations,
-                        home,
-                        projected_foundries: foundries,
-                        builders,
-                        support_extractors: obs.my_buildings.iter().any(|building| {
-                            building.kind == BuildingKind::Fabricator && building.built
-                        }),
-                        ordinary_frontiers: true,
-                        unit_contacts,
-                        building_contacts,
-                    },
-                    public_map,
-                    combat_core_exclusions,
-                    spendable_scrap,
-                    voluntary_scrap_guard: quote_guard,
-                    required_anchor: saved_foundry.as_ref().map(|saving| saving.plan.anchor),
-                })
-            });
-        let expansion_assessment = expansion_context.and_then(|context| {
-            self.player_facing_foundry_assessment(dials, obs, context, intents)
-        });
-
-        if expansion_assessment.as_ref().is_some_and(|assessment| {
-            matches!(
-                assessment.disposition,
-                expansion::ExpansionDisposition::Prepare { .. }
-            )
-        }) {
-            // Expansion protection belongs to the shared allocation session.
-            // This residual path may release a stale saved plan, but it must
-            // not buy combat units outside that transaction.
-            self.release_foundry_saving(commitments, budget);
-            return true;
-        }
-        if expansion_assessment.is_none() && saved_foundry.is_some() {
-            if self.retain_blocked_foundry_saving(obs.tick) {
-                return true;
-            }
-            self.release_foundry_saving(commitments, budget);
-        }
-        if let Some(assessment) = expansion_assessment
-            && assessment.disposition == expansion::ExpansionDisposition::Build
-        {
-            let foundry_cost = BuildingKind::Foundry
-                .base_stats()
-                .construction
-                .expect("Foundries are constructible")
-                .cost;
-            let guard = saved_foundry
-                .as_ref()
-                .and_then(|saving| saving.forecast_basis)
-                .map_or_else(
-                    || voluntary_scrap_guard.amount(TECH_RESERVE),
-                    |basis| basis.protected_reserve,
-                );
-            let current_required_scrap = foundry_cost.saturating_add(guard);
-            let required_scrap = saved_foundry
-                .as_ref()
-                .map_or(current_required_scrap, |saving| {
-                    saving.required_scrap.max(current_required_scrap)
-                });
-            let guard = required_scrap.saturating_sub(foundry_cost);
-            let outcome = commit_foundry_plan(commitments, budget, assessment.plan, guard, true);
-            match outcome {
-                Some(FoundryCommitmentOutcome::Build(commitment)) => {
-                    let accepted_at = self
-                        .foundry_saving
-                        .as_ref()
-                        .map_or(obs.tick, |saving| saving.accepted_at);
-                    self.foundry_saving = Some(FoundrySavingCommitment {
-                        plan: commitment.plan.clone(),
-                        accepted_at,
-                        required_scrap: commitment.required_scrap,
-                        forecast_basis: saved_foundry
-                            .as_ref()
-                            .and_then(|saving| saving.forecast_basis),
-                        blocked_since: None,
-                    });
-                    Self::insert_build_before_harvest(
-                        intents,
-                        BuildingKind::Foundry,
-                        commitment.plan.anchor,
-                        Intent::BuildWith {
-                            builder: commitment.plan.builder,
-                            kind: BuildingKind::Foundry,
-                            anchor: commitment.plan.anchor,
-                        },
-                    );
-                }
-                Some(FoundryCommitmentOutcome::Save(commitment)) => {
-                    if let Some(saving) = &mut self.foundry_saving {
-                        debug_assert_eq!(saving.plan.anchor, commitment.plan.anchor);
-                        debug_assert_eq!(saving.plan.builder, commitment.plan.builder);
-                        saving.required_scrap = commitment.required_scrap;
-                        saving.blocked_since = None;
-                    } else {
-                        self.foundry_saving = Some(FoundrySavingCommitment {
-                            plan: commitment.plan,
-                            accepted_at: obs.tick,
-                            required_scrap: commitment.required_scrap,
-                            forecast_basis: None,
-                            blocked_since: None,
-                        });
-                    }
-                }
-                None => {
-                    if !self.retain_blocked_foundry_saving(obs.tick) {
-                        self.release_foundry_saving(commitments, budget);
-                    }
-                }
-            }
+        if foundry.committed {
+            self.finish_foundry_safety(dials, obs, context, foundry, intents);
             return true;
         }
         let voluntary_guard = voluntary_scrap_guard.amount(0);
@@ -3004,6 +2809,35 @@ mod tests {
         }
     }
 
+    fn allocate_then_residual(
+        policy: &mut UtilityPolicy,
+        dials: &Dials,
+        obs: &Observation,
+        map: &PublicMapBriefing,
+        enlisted: &[UnitId],
+    ) -> Vec<Intent> {
+        let outcome =
+            crate::bot::allocation::test_allocate_policy(policy, dials, obs, map, enlisted);
+        assert!(
+            outcome.allocation_ok,
+            "fixture allocation must settle at tick {}",
+            obs.tick
+        );
+        let mut intents = outcome.fresh_emergency_defense_intents;
+        intents.extend(outcome.fresh_foundry_intents);
+        intents.extend(outcome.maintenance_intents);
+        intents.extend(outcome.fresh_economy_intents);
+        intents.extend(outcome.fresh_defense_intents);
+        intents.extend(outcome.allocated_producer_intents);
+        let context = StrategicUtilityContext::new(&outcome.planner_claims, &[], &[], map, intents)
+            .with_combat_core_exclusions(&outcome.strategic_core_exclusions)
+            .with_prior_scrap_commitment(obs.scrap.saturating_sub(outcome.budget.utility_spendable))
+            .with_foundry_handoff(outcome.foundry_handoff)
+            .with_voluntary_scrap_guard(outcome.budget.voluntary_scrap_guard)
+            .with_producer_lane_reservations(&outcome.producer_lane_reservations);
+        policy.think_with_intelligence(dials, obs, &[], enlisted, context)
+    }
+
     fn begin_foundry_saving(
         fixture: &SavedFoundryFixture,
     ) -> (UtilityPolicy, FoundrySavingCommitment, Vec<Intent>) {
@@ -3060,7 +2894,8 @@ mod tests {
             &fixture.obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, intents),
+            StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, intents)
+                .with_foundry_handoff(policy.foundry_handoff()),
         );
         let saving = policy
             .foundry_saving
@@ -3293,55 +3128,28 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_foundry_import_reports_exact_blockage_without_a_scalar_fallback() {
+    fn conflicting_saved_foundry_ownership_freezes_allocation_without_partial_dispatch() {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let mut commitments = PolicyCommitments::new(&fixture.obs, 0, &[], &[]);
-        let prior_owner = commitments.next_legacy_owner();
-        commitments
-            .ledger
-            .claim_builder(prior_owner, saving.plan.builder)
-            .expect("the prior channel can claim the otherwise-free builder");
-
-        let outcome = commitments.import_foundry_saving(&saving);
-
-        assert!(matches!(
-            outcome,
-            FoundrySavingImport::Blocked(ClaimConflict::Unit {
-                unit,
-                existing,
-            }) if unit == saving.plan.builder && existing.owner == prior_owner
-        ));
-        assert!(commitments.foundry_saving_owner.is_none());
-        assert!(commitments.foundry_saving_blocked());
-        assert_eq!(commitments.ledger.unit_claims().len(), 1);
-        assert_eq!(commitments.ledger.unit_claims()[0].owner, prior_owner);
-        assert_eq!(
-            commitments.ledger.unit_claims()[0].unit,
-            saving.plan.builder
+        let before = policy.foundry_saving.clone();
+        let outcome = crate::bot::allocation::test_allocate_policy(
+            &mut policy,
+            &fixture.dials,
+            &fixture.obs,
+            &fixture.public_map,
+            &[saving.plan.builder],
         );
-        assert!(commitments.ledger.site_claims().is_empty());
-        assert!(commitments.ledger.holds().is_empty());
-        assert_eq!(commitments.available_scrap(), fixture.obs.scrap);
-
-        let mut budget = commitments.available_scrap();
-        policy.release_foundry_saving(&mut commitments, &mut budget);
-
-        assert!(policy.foundry_saving.is_none());
-        assert!(commitments.foundry_saving_owner.is_none());
-        assert!(!commitments.foundry_saving_blocked());
-        assert!(commitments.ledger.holds().is_empty());
-        assert!(commitments.ledger.site_claims().is_empty());
-        assert_eq!(commitments.ledger.unit_claims().len(), 1);
-        assert_eq!(commitments.ledger.unit_claims()[0].owner, prior_owner);
-        assert_eq!(commitments.available_scrap(), fixture.obs.scrap);
-        assert_eq!(budget, fixture.obs.scrap);
+        assert!(!outcome.allocation_ok);
+        assert!(outcome.fresh_foundry_intents.is_empty());
+        assert!(outcome.allocated_producer_intents.is_empty());
+        assert_eq!(outcome.budget.utility_spendable, 0);
+        assert_eq!(policy.foundry_saving, before);
     }
 
     #[test]
     fn older_deferred_construction_keeps_priority_over_foundry_saving() {
         let fixture = saved_foundry_fixture();
-        let (_, saving, _) = begin_foundry_saving(&fixture);
+        let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut observation = fixture.obs.clone();
         observation.scrap = saving.required_scrap;
         let deferred_anchor = TilePos::new(36, 4);
@@ -3359,61 +3167,29 @@ mod tests {
         deferred_builder.idle = false;
         deferred_builder.founding = Some((BuildingKind::Fabricator, deferred_anchor));
 
-        let fabricator_cost = BuildingKind::Fabricator
-            .base_stats()
-            .construction
-            .expect("Fabricators are constructible")
-            .cost;
-        let mut commitments = PolicyCommitments::new(&observation, 0, &[], &[]);
-        commitments
-            .import_deferred_claims(&observation, &[(BuildingKind::Fabricator, deferred_anchor)]);
-        let deferred_owner = commitments.ledger.holds()[0].owner;
-        assert_eq!(commitments.ledger.holds()[0].amount, fabricator_cost);
-
-        commitments.import_foundry_saving(&saving);
-
-        let saving_owner = commitments
-            .foundry_saving_owner
-            .expect("the later saving retains a claim on only the remaining bank");
-        let deferred_hold = commitments
-            .ledger
-            .holds()
-            .iter()
-            .find(|hold| hold.owner == deferred_owner)
-            .expect("the older deferred build keeps its hold");
-        let saving_hold = commitments
-            .ledger
-            .holds()
-            .iter()
-            .find(|hold| hold.owner == saving_owner)
-            .expect("the Foundry saving holds the remaining bank");
-        assert_eq!(deferred_hold.amount, fabricator_cost);
+        let outcome = crate::bot::allocation::test_allocate_policy(
+            &mut policy,
+            &fixture.dials,
+            &observation,
+            &fixture.public_map,
+            &[],
+        );
+        assert!(outcome.allocation_ok);
+        assert!(outcome.fresh_foundry_intents.is_empty());
         assert_eq!(
-            saving_hold.amount,
-            observation.scrap.saturating_sub(fabricator_cost)
+            policy.foundry_saving.as_ref().map(|saved| &saved.plan),
+            Some(&saving.plan)
         );
-        assert_eq!(commitments.ledger.held_scrap(), observation.scrap);
-
-        let mut budget = commitments.available_scrap();
-        let outcome =
-            commit_foundry_plan(&mut commitments, &mut budget, saving.plan.clone(), 0, true);
-
-        let Some(FoundryCommitmentOutcome::Save(commitment)) = outcome else {
-            panic!("a later Foundry cannot spend capital already owned by deferred construction");
-        };
-        assert_eq!(commitment.plan, saving.plan);
-        assert_eq!(budget, 0);
-        assert_eq!(commitments.ledger.holds().len(), 2);
-        assert!(
-            commitments
-                .ledger
-                .holds()
+        assert_eq!(
+            observation
+                .my_units
                 .iter()
-                .any(|hold| hold.owner == deferred_owner && hold.amount == fabricator_cost)
+                .find(|unit| unit.id == UnitId(100))
+                .unwrap()
+                .founding,
+            Some((BuildingKind::Fabricator, deferred_anchor))
         );
-        assert!(commitments.ledger.spending().is_empty());
     }
-
     #[test]
     fn scouting_cannot_steal_a_saved_foundry_builder() {
         let mut fixture = saved_foundry_fixture();
@@ -3431,9 +3207,14 @@ mod tests {
             .filter(|unit| unit.id != saving.plan.builder)
             .map(|unit| unit.id)
             .collect();
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let scout_intents =
-            policy.think_with_intelligence(dials, &scout_due, &[], &unavailable_scouts, context);
+        let scout_intents = policy.think_with_intelligence(
+            dials,
+            &scout_due,
+            &[],
+            &unavailable_scouts,
+            StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new())
+                .with_foundry_handoff(policy.foundry_handoff()),
+        );
         assert_ne!(policy.scout, Some(saving.plan.builder));
         assert!(
             scout_intents.iter().all(|intent| !matches!(
@@ -3460,9 +3241,13 @@ mod tests {
         let mut funded = fixture.obs.clone();
         funded.tick = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
         funded.scrap = saving.required_scrap;
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let mut funded_intents =
-            policy.think_with_intelligence(&fixture.dials, &funded, &[], &[], context);
+        let mut funded_intents = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &funded,
+            &fixture.public_map,
+            &[],
+        );
         assert!(
             policy.foundry_saving.is_some(),
             "a funded commitment may clear only after its exact build lowers"
@@ -3511,12 +3296,7 @@ mod tests {
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut funded = fixture.obs.clone();
         funded.scrap = saving.required_scrap;
-        let mut commitments = PolicyCommitments::new(&funded, 0, &[], &[]);
-        assert_eq!(
-            commitments.import_foundry_saving(&saving),
-            FoundrySavingImport::Imported
-        );
-        let mut budget = commitments.available_scrap();
+        let mut budget = funded.scrap.saturating_sub(saving.required_scrap);
         let exact = Intent::BuildWith {
             builder: saving.plan.builder,
             kind: BuildingKind::Foundry,
@@ -3524,7 +3304,7 @@ mod tests {
         };
         let mut intents = vec![exact.clone()];
 
-        let promised = policy.production_with_commitments(
+        let promised = policy.residual_production(
             &fixture.dials,
             &funded,
             ProductionContext::new(
@@ -3537,7 +3317,7 @@ mod tests {
             )
             .with_public_map(Some(&fixture.public_map)),
             &mut budget,
-            &mut commitments,
+            policy.foundry_handoff(),
             &mut intents,
         );
 
@@ -3550,6 +3330,41 @@ mod tests {
                 .and_then(|current| current.blocked_since),
             None
         );
+    }
+
+    #[test]
+    fn residual_foundry_safety_resets_recovery_without_dispatching_new_current_capital() {
+        let fixture = saved_foundry_fixture();
+        let (mut policy, saving, _) = begin_foundry_saving(&fixture);
+        let mut funded = fixture.obs.clone();
+        funded.tick = crate::bot::difficulty::next_strategic_admission_tick(funded.tick);
+        funded.scrap = saving.required_scrap;
+        policy.foundry_saving.as_mut().unwrap().blocked_since = Some(fixture.obs.tick);
+        let mut handoff = policy.foundry_handoff();
+        handoff.current_scrap = funded.scrap;
+        let mut budget = handoff.spending_after(funded.scrap);
+        let mut intents = Vec::new();
+        assert!(
+            policy.residual_production(
+                &fixture.dials,
+                &funded,
+                ProductionContext::new(
+                    fixture.home,
+                    ConstructionClaims {
+                        cancellations: FoundationCancellations::default(),
+                        enlisted: &[],
+                        reserved: &[],
+                    }
+                )
+                .with_public_map(Some(&fixture.public_map)),
+                &mut budget,
+                handoff,
+                &mut intents,
+            )
+        );
+        assert!(intents.is_empty());
+        assert_eq!(policy.foundry_saving.as_ref(), Some(&saving));
+        assert_eq!(budget, 0);
     }
 
     #[test]
@@ -3591,14 +3406,9 @@ mod tests {
             .foundry_saving
             .clone()
             .expect("forecast acceptance freezes the exact proposal");
-        let mut commitments = PolicyCommitments::new(&observation, 0, &[], &[]);
-        assert_eq!(
-            commitments.import_foundry_saving(&accepted),
-            FoundrySavingImport::Imported
-        );
-        let mut budget = commitments.available_scrap();
+        let mut budget = observation.scrap.saturating_sub(accepted.required_scrap);
 
-        let promised = policy.production_with_commitments(
+        let promised = policy.residual_production(
             &fixture.dials,
             &observation,
             ProductionContext::new(
@@ -3611,7 +3421,7 @@ mod tests {
             )
             .with_public_map(Some(&fixture.public_map)),
             &mut budget,
-            &mut commitments,
+            policy.foundry_handoff(),
             &mut intents,
         );
 
@@ -3716,34 +3526,14 @@ mod tests {
             required_scrap
         );
 
-        let claims = ConstructionClaims {
-            cancellations: FoundationCancellations::default(),
-            enlisted: &[],
-            reserved: &[],
-        };
         let advance = |policy: &mut UtilityPolicy, observation: &Observation| {
-            let mut commitments = PolicyCommitments::new(observation, 0, &[], &[]);
-            assert_eq!(
-                commitments.import_foundry_saving(
-                    policy
-                        .foundry_saving
-                        .as_ref()
-                        .expect("the exact forecast-backed plan remains present")
-                ),
-                FoundrySavingImport::Imported
-            );
-            let mut budget = commitments.available_scrap();
-            let mut intents = Vec::new();
-            let promised = policy.production_with_commitments(
+            let intents = allocate_then_residual(
+                policy,
                 &fixture.dials,
                 observation,
-                ProductionContext::new(fixture.home, claims)
-                    .with_public_map(Some(&fixture.public_map)),
-                &mut budget,
-                &mut commitments,
-                &mut intents,
+                &fixture.public_map,
+                &[],
             );
-            assert!(promised);
             assert!(intents.iter().all(|intent| !matches!(
                 intent,
                 Intent::BuildWith {
@@ -3754,7 +3544,7 @@ mod tests {
         };
 
         let mut shortly_after_acceptance = accepted_observation.clone();
-        shortly_after_acceptance.tick = 8;
+        shortly_after_acceptance.tick = fixture.dials.cadence;
         advance(&mut policy, &shortly_after_acceptance);
         assert_eq!(
             policy
@@ -3766,7 +3556,7 @@ mod tests {
         );
 
         let mut intact = accepted_observation.clone();
-        intact.tick = FOUNDRY_RECOVERY_TICKS.saturating_add(16);
+        intact.tick = FOUNDRY_RECOVERY_TICKS.saturating_add(fixture.dials.cadence * 2);
         let remaining = ResourceSnapshot::from_observation(&intact)
             .forecast()
             .income_through(deadline)
@@ -3916,9 +3706,13 @@ mod tests {
         let mut funded = fixture.obs.clone();
         funded.tick = crate::bot::difficulty::next_strategic_admission_tick(funded.tick);
         funded.scrap = saving.required_scrap;
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let mut intents =
-            policy.think_with_intelligence(&fixture.dials, &funded, &[], &[], context);
+        let mut intents = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &funded,
+            &fixture.public_map,
+            &[],
+        );
         policy.bind_player_facing_builders(&funded, &[], &[], &[], &[], &mut intents);
         let canonical_lease = policy
             .foundry_builder_lease(&funded)
@@ -3954,7 +3748,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_underfunded_foundry_thinks_keep_the_exact_accepted_plan() {
+    fn retained_foundry_identity_survives_compatible_current_investments() {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut underfunded = fixture.obs.clone();
@@ -3962,19 +3756,24 @@ mod tests {
 
         for tick in [cadence, cadence.saturating_mul(2)] {
             underfunded.tick = tick;
-            let context =
-                StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-            let intents =
-                policy.think_with_intelligence(&fixture.dials, &underfunded, &[], &[], context);
+            let intents = allocate_then_residual(
+                &mut policy,
+                &fixture.dials,
+                &underfunded,
+                &fixture.public_map,
+                &[],
+            );
 
             assert_eq!(policy.foundry_saving.as_ref(), Some(&saving));
-            assert!(intents.iter().all(|intent| !matches!(
+            assert!(!intents.iter().any(|intent| matches!(
                 intent,
-                Intent::TrainAt { .. }
-                    | Intent::Build { .. }
-                    | Intent::BuildWith { .. }
-                    | Intent::Upgrade { .. }
+                Intent::BuildWith {
+                    kind: BuildingKind::Foundry,
+                    ..
+                }
             )));
+            assert!(!intents.iter().any(|intent| matches!(intent,
+                Intent::BuildWith { builder, .. } if *builder == saving.plan.builder)));
         }
     }
 
@@ -3987,34 +3786,18 @@ mod tests {
             .construction
             .expect("Foundries are constructible")
             .cost;
-        let shallow_guard = UnitKind::Sentinel.stats().cost;
         assert_eq!(saving.required_scrap, foundry_cost);
 
         let mut guarded = fixture.obs.clone();
         guarded.tick = crate::bot::difficulty::next_strategic_admission_tick(guarded.tick);
         guarded.scrap = saving.required_scrap;
-        let mut commitments = PolicyCommitments::new(&guarded, 0, &[], &[]);
-        commitments.import_foundry_saving(&saving);
-        let mut budget = commitments.available_scrap();
-        let mut intents = Vec::new();
-        let claims = ConstructionClaims {
-            cancellations: FoundationCancellations::default(),
-            enlisted: &[],
-            reserved: &[],
-        };
-
-        let promised = policy.production_with_commitments(
+        let intents = allocate_then_residual(
+            &mut policy,
             &fixture.dials,
             &guarded,
-            ProductionContext::new(fixture.home, claims)
-                .with_public_map(Some(&fixture.public_map))
-                .with_voluntary_scrap_guard(Reserve::Exact(shallow_guard)),
-            &mut budget,
-            &mut commitments,
-            &mut intents,
+            &fixture.public_map,
+            &[],
         );
-
-        assert!(promised);
         assert!(intents.iter().any(|intent| matches!(
             intent,
             Intent::BuildWith {
@@ -4030,7 +3813,6 @@ mod tests {
         assert_eq!(retained.plan.anchor, saving.plan.anchor);
         assert_eq!(retained.plan.builder, saving.plan.builder);
         assert_eq!(retained.required_scrap, foundry_cost);
-        assert_eq!(budget, 0);
     }
 
     #[test]
@@ -4082,9 +3864,9 @@ mod tests {
             )),
             "removing the screen must make the accepted site require preparation: {assessment:?}"
         );
-        let mut commitments = PolicyCommitments::new(&underprotected, 0, &[], &[]);
-        commitments.import_foundry_saving(&saving);
-        let mut budget = commitments.available_scrap();
+        let mut handoff = policy.foundry_handoff();
+        handoff.current_scrap = underprotected.scrap;
+        let mut budget = handoff.spending_after(underprotected.scrap);
         let mut intents = Vec::new();
         let claims = ConstructionClaims {
             cancellations: FoundationCancellations::default(),
@@ -4092,14 +3874,14 @@ mod tests {
             reserved: &[],
         };
 
-        let promised = policy.production_with_commitments(
+        let promised = policy.residual_production(
             &fixture.dials,
             &underprotected,
             ProductionContext::new(fixture.home, claims)
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
-            &mut commitments,
+            handoff,
             &mut intents,
         );
 
@@ -4116,7 +3898,7 @@ mod tests {
             }
         )));
         assert_eq!(policy.foundry_saving, None);
-        assert_eq!(budget, underprotected.scrap);
+        assert_eq!(policy.foundry_handoff(), FoundryHandoff::default());
     }
 
     #[test]
@@ -4143,8 +3925,13 @@ mod tests {
         let first_blocked = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
 
         blocked.tick = first_blocked;
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &blocked, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &blocked,
+            &fixture.public_map,
+            &[],
+        );
         assert_eq!(
             policy
                 .foundry_saving
@@ -4154,8 +3941,13 @@ mod tests {
         );
 
         blocked.tick = first_blocked.saturating_add(FOUNDRY_RECOVERY_TICKS);
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &blocked, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &blocked,
+            &fixture.public_map,
+            &[],
+        );
         assert!(
             policy.foundry_saving.is_none(),
             "a continuously blocked exact plan must release its bank for replanning"
@@ -4186,8 +3978,13 @@ mod tests {
         let first_blocked = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
 
         blocked.tick = first_blocked;
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &blocked, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &blocked,
+            &fixture.public_map,
+            &[],
+        );
         assert_eq!(
             policy
                 .foundry_saving
@@ -4198,8 +3995,13 @@ mod tests {
 
         let mut recovered = fixture.obs.clone();
         recovered.tick = crate::bot::difficulty::next_strategic_admission_tick(first_blocked);
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &recovered, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &recovered,
+            &fixture.public_map,
+            &[],
+        );
         let refreshed = policy
             .foundry_saving
             .as_ref()
@@ -4211,8 +4013,13 @@ mod tests {
 
         let second_blocked = crate::bot::difficulty::next_strategic_admission_tick(recovered.tick);
         blocked.tick = second_blocked;
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &blocked, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &blocked,
+            &fixture.public_map,
+            &[],
+        );
         assert_eq!(
             policy
                 .foundry_saving
@@ -4222,8 +4029,13 @@ mod tests {
         );
 
         blocked.tick = first_blocked.saturating_add(FOUNDRY_RECOVERY_TICKS);
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &blocked, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &blocked,
+            &fixture.public_map,
+            &[],
+        );
         let retained = policy
             .foundry_saving
             .as_ref()
@@ -4232,8 +4044,13 @@ mod tests {
         assert_eq!(retained.blocked_since, Some(second_blocked));
 
         blocked.tick = second_blocked.saturating_add(FOUNDRY_RECOVERY_TICKS);
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
-        let _ = policy.think_with_intelligence(&fixture.dials, &blocked, &[], &[], context);
+        let _ = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &blocked,
+            &fixture.public_map,
+            &[],
+        );
         assert!(
             policy.foundry_saving.is_none(),
             "the second continuous blockage must expire at its own fresh deadline"
@@ -4241,355 +4058,76 @@ mod tests {
     }
 
     #[test]
-    fn repeated_exact_claim_conflict_reaches_the_foundry_recovery_deadline() {
+    fn occupied_saved_foundry_site_releases_after_continuous_blockage() {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let fabricator_cost = BuildingKind::Fabricator
-            .base_stats()
-            .construction
-            .expect("Fabricators are constructible")
-            .cost;
-        let conflict = (BuildingKind::Fabricator, saving.plan.anchor);
-        let first_blocked = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
         let mut blocked = fixture.obs.clone();
-        blocked.scrap = saving.required_scrap.saturating_add(fabricator_cost);
-        blocked.tick = first_blocked;
-
-        let mut commitments = PolicyCommitments::new(&blocked, 0, &[], &[]);
-        commitments.import_deferred_claims(&blocked, &[conflict]);
-        assert!(matches!(
-            commitments.import_foundry_saving(&saving),
-            FoundrySavingImport::Blocked(ClaimConflict::Site { .. })
-        ));
-        let mut budget = commitments.available_scrap();
-        let mut intents = Vec::new();
-        let claims = ConstructionClaims {
-            cancellations: FoundationCancellations::default(),
-            enlisted: &[],
-            reserved: &[],
-        };
-        policy.production_with_commitments(
+        blocked.tick = crate::bot::difficulty::next_strategic_admission_tick(blocked.tick);
+        blocked.known_scrap.push((saving.plan.anchor, 1));
+        let first = blocked.tick;
+        for tick in [first, first + FOUNDRY_RECOVERY_TICKS - 12] {
+            blocked.tick = tick;
+            let intents = allocate_then_residual(
+                &mut policy,
+                &fixture.dials,
+                &blocked,
+                &fixture.public_map,
+                &[],
+            );
+            let retained = policy.foundry_saving.as_ref().unwrap();
+            assert_eq!(retained.plan, saving.plan);
+            assert_eq!(retained.blocked_since, Some(first));
+            assert!(!intents.iter().any(|intent| matches!(intent, Intent::BuildWith { kind: BuildingKind::Foundry, anchor, .. } if *anchor == saving.plan.anchor)));
+        }
+        blocked.tick = first + FOUNDRY_RECOVERY_TICKS;
+        let _ = allocate_then_residual(
+            &mut policy,
             &fixture.dials,
             &blocked,
-            ProductionContext::new(fixture.home, claims)
-                .with_public_map(Some(&fixture.public_map))
-                .with_voluntary_scrap_guard(Reserve::Exact(0)),
-            &mut budget,
-            &mut commitments,
-            &mut intents,
+            &fixture.public_map,
+            &[],
         );
-
-        assert_eq!(
+        assert!(
             policy
                 .foundry_saving
                 .as_ref()
-                .and_then(|current| current.blocked_since),
-            Some(first_blocked)
-        );
-        assert_eq!(
-            policy.foundry_saving.as_ref().map(|saved| &saved.plan),
-            Some(&saving.plan)
-        );
-        assert!(commitments.foundry_saving_owner.is_none());
-        assert!(commitments.foundry_saving_blocked());
-        assert_eq!(commitments.ledger.holds().len(), 1);
-        assert_eq!(budget, saving.required_scrap);
-        assert!(intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::TrainAt { .. }
-                | Intent::Build { .. }
-                | Intent::BuildWith { .. }
-                | Intent::Upgrade { .. }
-        )));
-
-        blocked.tick = first_blocked.saturating_add(FOUNDRY_RECOVERY_TICKS);
-        let retained = policy
-            .foundry_saving
-            .clone()
-            .expect("the exact plan remains saved before its recovery deadline");
-        let mut commitments = PolicyCommitments::new(&blocked, 0, &[], &[]);
-        commitments.import_deferred_claims(&blocked, &[conflict]);
-        assert!(matches!(
-            commitments.import_foundry_saving(&retained),
-            FoundrySavingImport::Blocked(ClaimConflict::Site { .. })
-        ));
-        let mut budget = commitments.available_scrap();
-        let mut intents = Vec::new();
-        policy.production_with_commitments(
-            &fixture.dials,
-            &blocked,
-            ProductionContext::new(fixture.home, claims)
-                .with_public_map(Some(&fixture.public_map))
-                .with_voluntary_scrap_guard(Reserve::Exact(0)),
-            &mut budget,
-            &mut commitments,
-            &mut intents,
-        );
-
-        assert!(policy.foundry_saving.is_none());
-        assert!(commitments.foundry_saving_owner.is_none());
-        assert!(!commitments.foundry_saving_blocked());
-        assert_eq!(
-            budget, saving.required_scrap,
-            "the expired Foundry hold releases while the older conflicting build keeps its fund"
+                .is_none_or(|current| current.accepted_at != saving.accepted_at)
         );
     }
 
     #[test]
-    fn exact_foundry_claim_recovers_without_changing_its_frozen_plan() {
+    fn cleared_foundry_site_dispatches_the_original_plan() {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let conflict = (BuildingKind::Fabricator, saving.plan.anchor);
-        let first_blocked = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
-        let mut blocked = fixture.obs.clone();
-        blocked.tick = first_blocked;
-        blocked.scrap = saving.required_scrap.saturating_add(
-            BuildingKind::Fabricator
-                .base_stats()
-                .construction
-                .expect("Fabricators are constructible")
-                .cost,
-        );
-        let mut commitments = PolicyCommitments::new(&blocked, 0, &[], &[]);
-        commitments.import_deferred_claims(&blocked, &[conflict]);
-        assert!(matches!(
-            commitments.import_foundry_saving(&saving),
-            FoundrySavingImport::Blocked(ClaimConflict::Site { .. })
-        ));
-        let mut budget = commitments.available_scrap();
-        let claims = ConstructionClaims {
-            cancellations: FoundationCancellations::default(),
-            enlisted: &[],
-            reserved: &[],
-        };
-        policy.production_with_commitments(
+        let mut observation = fixture.obs.clone();
+        observation.tick = crate::bot::difficulty::next_strategic_admission_tick(observation.tick);
+        observation.known_scrap.push((saving.plan.anchor, 1));
+        let _ = allocate_then_residual(
+            &mut policy,
             &fixture.dials,
-            &blocked,
-            ProductionContext::new(fixture.home, claims)
-                .with_public_map(Some(&fixture.public_map))
-                .with_voluntary_scrap_guard(Reserve::Exact(0)),
-            &mut budget,
-            &mut commitments,
-            &mut Vec::new(),
+            &observation,
+            &fixture.public_map,
+            &[],
         );
         assert_eq!(
-            policy
-                .foundry_saving
-                .as_ref()
-                .and_then(|current| current.blocked_since),
-            Some(first_blocked)
+            policy.foundry_saving.as_ref().unwrap().blocked_since,
+            Some(observation.tick)
         );
-
-        let mut recovered = fixture.obs.clone();
-        recovered.tick = crate::bot::difficulty::next_strategic_admission_tick(first_blocked);
-        recovered.scrap = saving.required_scrap.saturating_sub(1);
-        let mut commitments = PolicyCommitments::new(&recovered, 0, &[], &[]);
-        assert_eq!(
-            commitments.import_foundry_saving(
-                policy
-                    .foundry_saving
-                    .as_ref()
-                    .expect("the blocked plan remains frozen")
-            ),
-            FoundrySavingImport::Imported
-        );
-        let mut budget = commitments.available_scrap();
-        let mut intents = Vec::new();
-        policy.production_with_commitments(
+        observation.tick = crate::bot::difficulty::next_strategic_admission_tick(observation.tick);
+        observation
+            .known_scrap
+            .retain(|(tile, _)| *tile != saving.plan.anchor);
+        observation.scrap = saving.required_scrap;
+        let intents = allocate_then_residual(
+            &mut policy,
             &fixture.dials,
-            &recovered,
-            ProductionContext::new(fixture.home, claims)
-                .with_public_map(Some(&fixture.public_map))
-                .with_voluntary_scrap_guard(Reserve::Exact(0)),
-            &mut budget,
-            &mut commitments,
-            &mut intents,
+            &observation,
+            &fixture.public_map,
+            &[],
         );
-
-        let retained = policy
-            .foundry_saving
-            .as_ref()
-            .expect("the underfunded recovered plan remains saved");
-        assert_eq!(retained.plan, saving.plan);
-        assert_eq!(retained.accepted_at, saving.accepted_at);
-        assert_eq!(retained.blocked_since, None);
-        assert!(commitments.foundry_saving_owner.is_some());
-        assert!(!commitments.foundry_saving_blocked());
-        assert!(intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::BuildWith {
-                kind: BuildingKind::Foundry,
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn insufficient_non_saving_foundry_probe_restores_the_imported_commitment() {
-        let fixture = saved_foundry_fixture();
-        let (_, saving, _) = begin_foundry_saving(&fixture);
-        let mut commitments = PolicyCommitments::new(&fixture.obs, 0, &[], &[]);
-        commitments.import_foundry_saving(&saving);
-        let before_ledger = commitments.ledger.clone();
-        let before_owner = commitments.foundry_saving_owner;
-        let mut budget = commitments.available_scrap();
-
-        let outcome = commit_foundry_plan(
-            &mut commitments,
-            &mut budget,
-            saving.plan.clone(),
-            saving.required_scrap.saturating_sub(
-                BuildingKind::Foundry
-                    .base_stats()
-                    .construction
-                    .expect("Foundries are constructible")
-                    .cost,
-            ),
-            false,
-        );
-
-        assert!(outcome.is_none());
-        assert_eq!(commitments.ledger, before_ledger);
-        assert_eq!(commitments.foundry_saving_owner, before_owner);
-        assert_eq!(budget, 0);
-    }
-
-    #[test]
-    fn ratcheted_foundry_reclaim_retains_a_releasable_replacement_owner() {
-        let fixture = saved_foundry_fixture();
-        let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let mut commitments = PolicyCommitments::new(&fixture.obs, 0, &[], &[]);
-        commitments.import_foundry_saving(&saving);
-        let imported_owner = commitments
-            .foundry_saving_owner
-            .expect("the imported saving owns exact revisable claims");
-        let guard = UnitKind::Sentinel.stats().cost;
-        let expected_requirement = BuildingKind::Foundry
-            .base_stats()
-            .construction
-            .expect("Foundries are constructible")
-            .cost
-            .saturating_add(guard);
-        let mut budget = commitments.available_scrap();
-
-        let outcome = commit_foundry_plan(
-            &mut commitments,
-            &mut budget,
-            saving.plan.clone(),
-            guard,
-            true,
-        );
-
-        let Some(FoundryCommitmentOutcome::Save(commitment)) = outcome else {
-            panic!("the underfunded ratchet must replace the imported saving");
-        };
-        assert_eq!(commitment.plan, saving.plan);
-        assert_eq!(commitment.required_scrap, expected_requirement);
-        let replacement_owner = commitments
-            .foundry_saving_owner
-            .expect("the replacement saving retains its release handle");
-        assert_eq!(replacement_owner, imported_owner);
-        assert_eq!(commitments.ledger.holds().len(), 1);
-        assert_eq!(commitments.ledger.unit_claims().len(), 1);
-        assert_eq!(commitments.ledger.site_claims().len(), 1);
-        assert!(
-            commitments
-                .ledger
-                .holds()
-                .iter()
-                .all(|claim| claim.owner == replacement_owner)
-        );
-        assert!(
-            commitments
-                .ledger
-                .unit_claims()
-                .iter()
-                .all(|claim| claim.owner == replacement_owner)
-        );
-        assert!(
-            commitments
-                .ledger
-                .site_claims()
-                .iter()
-                .all(|claim| claim.owner == replacement_owner)
-        );
-
-        policy.release_foundry_saving(&mut commitments, &mut budget);
-
-        assert!(policy.foundry_saving.is_none());
-        assert!(commitments.foundry_saving_owner.is_none());
-        assert_eq!(commitments.ledger.committed_scrap(), 0);
-        assert!(commitments.ledger.unit_claims().is_empty());
-        assert!(commitments.ledger.site_claims().is_empty());
-        assert!(commitments.ledger.producer_claims().is_empty());
-        assert_eq!(commitments.available_scrap(), fixture.obs.scrap);
-        assert_eq!(budget, fixture.obs.scrap);
-    }
-
-    #[test]
-    fn funded_foundry_reclaim_releases_only_its_revisable_claims() {
-        let fixture = saved_foundry_fixture();
-        let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let foundry_cost = BuildingKind::Foundry
-            .base_stats()
-            .construction
-            .expect("Foundries are constructible")
-            .cost;
-        let guard = UnitKind::Sentinel.stats().cost;
-        let required_scrap = foundry_cost.saturating_add(guard);
-        let mut funded = fixture.obs.clone();
-        funded.scrap = required_scrap;
-        let mut commitments = PolicyCommitments::new(&funded, 0, &[], &[]);
-        commitments.import_foundry_saving(&saving);
-        let imported_owner = commitments
-            .foundry_saving_owner
-            .expect("the partial saving owns its revisable claims");
-        assert_eq!(commitments.ledger.held_scrap(), saving.required_scrap);
-        assert_eq!(commitments.ledger.holds().len(), 1);
-        assert_eq!(commitments.ledger.holds()[0].owner, imported_owner);
-        assert_eq!(commitments.ledger.unit_claims().len(), 1);
-        assert_eq!(commitments.ledger.unit_claims()[0].owner, imported_owner);
-        assert_eq!(commitments.ledger.site_claims().len(), 1);
-        assert_eq!(commitments.ledger.site_claims()[0].owner, imported_owner);
-        let mut budget = commitments.available_scrap();
-
-        let outcome = commit_foundry_plan(
-            &mut commitments,
-            &mut budget,
-            saving.plan.clone(),
-            guard,
-            true,
-        );
-
-        let Some(FoundryCommitmentOutcome::Build(commitment)) = outcome else {
-            panic!("the fully funded ratchet must build the imported plan");
-        };
-        assert_eq!(commitment.plan, saving.plan);
-        assert_eq!(commitment.required_scrap, required_scrap);
-        let replacement_owner = commitments
-            .foundry_saving_owner
-            .expect("the funded replacement retains its release handle");
-        assert_eq!(replacement_owner, imported_owner);
-        assert!(commitments.ledger.holds().is_empty());
-        assert_eq!(commitments.ledger.spending().len(), 1);
-        assert_eq!(commitments.ledger.spending()[0].owner, replacement_owner);
-        assert_eq!(commitments.ledger.spending()[0].amount, foundry_cost);
-        assert_eq!(commitments.ledger.unit_claims().len(), 1);
-        assert_eq!(commitments.ledger.unit_claims()[0].owner, replacement_owner);
-        assert_eq!(commitments.ledger.site_claims().len(), 1);
-        assert_eq!(commitments.ledger.site_claims()[0].owner, replacement_owner);
-        assert_eq!(commitments.available_scrap(), guard);
-
-        policy.release_foundry_saving(&mut commitments, &mut budget);
-
-        assert!(policy.foundry_saving.is_none());
-        assert!(commitments.foundry_saving_owner.is_none());
-        assert!(commitments.ledger.holds().is_empty());
-        assert!(commitments.ledger.unit_claims().is_empty());
-        assert!(commitments.ledger.site_claims().is_empty());
-        assert_eq!(commitments.ledger.spent_scrap(), foundry_cost);
-        assert_eq!(commitments.available_scrap(), guard);
-        assert_eq!(budget, guard);
+        assert_eq!(policy.foundry_saving.as_ref().unwrap().plan, saving.plan);
+        assert_eq!(policy.foundry_saving.as_ref().unwrap().blocked_since, None);
+        assert_eq!(intents.iter().filter(|intent| matches!(intent, Intent::BuildWith { kind: BuildingKind::Foundry, builder, anchor } if *builder == saving.plan.builder && *anchor == saving.plan.anchor)).count(), 1);
     }
 
     #[test]
@@ -4652,9 +4190,14 @@ mod tests {
             4,
             "the Standard fixture has fallen below its five-equivalent core"
         );
-        let context = StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new());
 
-        let intents = policy.think_with_intelligence(&fixture.dials, &deficient, &[], &[], context);
+        let intents = allocate_then_residual(
+            &mut policy,
+            &fixture.dials,
+            &deficient,
+            &fixture.public_map,
+            &[],
+        );
 
         assert!(
             policy.foundry_saving.is_none(),

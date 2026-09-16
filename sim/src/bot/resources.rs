@@ -1,8 +1,7 @@
 //! Fog-honest resources and exact, deterministic planning commitments.
 //!
 //! [`ResourceSnapshot`] is immutable evidence from one [`Observation`].
-//! [`CommitmentLedger`] owns only same-think planning claims; it neither mutates
-//! the simulation nor persists across observations.
+//! Allocation owns planning claims separately from this immutable evidence.
 
 use super::observation::{BuildingObs, Observation, UnitObs};
 use crate::ids::{BuildingId, UnitId};
@@ -10,13 +9,15 @@ use crate::stats::{BuildingKind, QUEUE_CAP, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 
-mod ledger;
 mod planning;
 mod production;
+mod site;
+#[cfg(test)]
+mod snapshot_tests;
 
-pub(crate) use ledger::*;
 pub(crate) use planning::*;
 pub(crate) use production::*;
+pub(crate) use site::SiteFootprint;
 
 /// Scrap present in the player's bank at the observation boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +33,7 @@ impl CurrentScrap {
 /// Scrap expected from completed recurring-income sources by a deadline.
 ///
 /// This is deliberately a different type from [`CurrentScrap`], and the
-/// commitment ledger has no API that can add it to the spendable bank.
+/// allocator cannot add it to the spendable bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ForecastScrap(u32);
 

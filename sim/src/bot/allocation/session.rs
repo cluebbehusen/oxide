@@ -380,6 +380,7 @@ pub(crate) struct AllocationSessionOutcome {
     pub(crate) accepted_connected: bool,
     pub(crate) producer_lane_reservations: ProducerLaneReservations,
     pub(crate) budget: AllocationBudgetOutcome,
+    pub(crate) foundry_handoff: crate::bot::utility::FoundryHandoff,
 }
 
 /// One typed allocation transaction over already-advanced legacy planners.
@@ -2169,6 +2170,7 @@ impl<'a> AllocationSession<'a> {
             accepted_connected: effects.accepted_connected,
             producer_lane_reservations: effects.producer_lane_reservations,
             budget: effects.budget,
+            foundry_handoff: self.participants.policy.foundry_handoff(),
         }
     }
 }
@@ -3497,6 +3499,82 @@ fn available_allocation_builders(
         })
         .map(|builder| builder.id)
         .collect()
+}
+
+#[cfg(test)]
+pub(in crate::bot) fn test_allocate_policy(
+    policy: &mut UtilityPolicy,
+    dials: &Dials,
+    observation: &Observation,
+    public_map: &PublicMapBriefing,
+    enlisted: &[UnitId],
+) -> AllocationSessionOutcome {
+    use crate::scenario::{BotConfig, BotDifficulty, BotStance};
+    let profile =
+        BotConfig::scripted(BotDifficulty::Prime, BotStance::Balanced, 7).resolve_profile();
+    let tuning = DifficultyTuning::for_level(profile.difficulty);
+    let home = observation
+        .my_buildings
+        .iter()
+        .find(|building| building.kind == BuildingKind::Foundry)
+        .unwrap()
+        .anchor;
+    let mut intelligence = StrategicIntelligence::new();
+    intelligence.update(observation);
+    let mut strategy = None;
+    let mut lifts = None;
+    let mut team = None;
+    let mut raids = None;
+    let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+    let mut trace = AllocationTrace::default();
+    let outcome = AllocationSession::new(
+        AllocationSessionContext {
+            dials,
+            profile: &profile,
+            tuning,
+            observation,
+            home,
+            public_map,
+            orientation: Orientation::for_home(observation, home),
+            intelligence: &intelligence,
+            enlisted,
+            lift_support: None,
+        },
+        AllocationParticipants {
+            policy,
+            strategy: &mut strategy,
+            lifts: &mut lifts,
+            team: &mut team,
+            raids: &mut raids,
+        },
+        AdvancedPlannerWork {
+            team_decision: StrategicDecision::default(),
+            raid_decision: StrategicDecision::default(),
+            team_started_at: observation.tick,
+            lift_started_at: observation.tick,
+            raid_started_at: observation.tick,
+            lift_was_active: false,
+            initial_lift_support: LiftAirSupport::Independent,
+            lift_unavailable: enlisted.to_vec(),
+            preliminary_core: crate::bot::utility::combat_core_status(
+                observation,
+                enlisted,
+                &[],
+                u64::from(dials.minimum_core_equivalents),
+            ),
+            preliminary_core_exclusions: enlisted.to_vec(),
+            snapshots,
+        },
+        Some(&mut trace),
+    )
+    .run();
+    if !outcome.allocation_ok {
+        eprintln!(
+            "allocation fixture tick={} error={:?} coordinator={:?}",
+            observation.tick, trace.error, trace.coordinator_failure
+        );
+    }
+    outcome
 }
 
 #[cfg(test)]

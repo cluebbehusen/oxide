@@ -175,13 +175,15 @@ funding split must remain possible without moving fixed producer times. If older
 protected current capital truly makes a retained lift unfundable, use bounded
 recovery rather than extending its deadline or starving other domains.
 
-Residual `UtilityPolicy` work uses immutable observations, an explicit fixed
-admission bank, and the mandatory commitment ledger. Keep remaining spending
-allowances separate from the bank used by starvation and salvage. Pass
-same-decision foundation cancellations explicitly to worker and placement
-queries; do not erase observed programs or release paid sites and queued work.
-Same-decision stops still reserve their workers against construction. Focused
-production tests must use the live accounting contract.
+Residual `UtilityPolicy` work uses immutable observations, a fixed admission
+bank, and the allocator's explicit Foundry handoff. Preserve exact ownership at
+shared allocation; residual safety may cancel or recover unpaid Foundry work but
+cannot fund or dispatch it. Keep remaining spending allowances separate from the
+bank used by starvation and salvage. Pass same-decision foundation cancellations
+to worker and placement queries; do not erase observed programs or release paid
+sites and queued work. Stops still reserve their workers against construction.
+Exercise saving, recovery, and dispatch through allocation; focused residual
+tests consume its handoff instead of recreating an alternate executor.
 
 Economic actions must own exact current or forecast capital, worker lanes,
 founders and sites, or upgrade building ids. Do not restore a residual
