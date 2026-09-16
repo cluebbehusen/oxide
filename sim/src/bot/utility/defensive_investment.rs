@@ -1003,7 +1003,7 @@ mod tests {
                 assert_eq!(actual, expected, "bank={} committed={committed}", obs.scrap);
                 assert!(actual.iter().all(|p| p.minimum_residual_scrap() == 0));
                 if spendable == 15 {
-                    assert_eq!(*policy.defense_routing_cache.borrow(), Default::default());
+                    assert_eq!(*policy.knowledge_paths.borrow(), Default::default());
                 }
             }
         }

@@ -433,7 +433,7 @@ impl UtilityPolicy {
         if sites.is_empty() {
             return Vec::new();
         }
-        let mut geometry = super::defense::DefenseThinkContext::new_oriented(
+        let mut geometry = super::construction_checks::ConstructionChecks::new(
             crate::bot::query_work::QueryPurpose::SupportRouting,
             self,
             obs,
@@ -449,8 +449,7 @@ impl UtilityPolicy {
             {
                 continue;
             }
-            let Some(builder) = geometry.safe_implicit_builder(self, kind, anchor, &builders)
-            else {
+            let Some(builder) = geometry.safe_implicit_builder(kind, anchor, &builders) else {
                 continue;
             };
             let worker = builders.iter().find(|worker| worker.id == builder).unwrap();

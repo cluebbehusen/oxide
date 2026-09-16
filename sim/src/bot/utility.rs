@@ -39,6 +39,7 @@ mod combat;
 use combat::ScoutingContext;
 pub(in crate::bot) use combat::{GroundMissionInputs, ground_weapon_reaches_footprint};
 mod construction;
+mod construction_checks;
 mod danger;
 mod defense;
 mod defensive_investment;
@@ -52,6 +53,8 @@ mod experience_work;
 mod extractor_development;
 mod production;
 mod reconnaissance;
+#[cfg(test)]
+mod test_world;
 pub(crate) use reconnaissance::{
     OperationalReconWork, ReconConsumer, ReconObserver, ReconProposal, ReconProposalKey,
     ReconQuestionKey,
@@ -709,8 +712,8 @@ impl Dials {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtilityPolicy {
     pub(in crate::bot) planning: super::planning::PlanningWork,
-    defense_routing_cache: std::cell::RefCell<defense::DefenseRoutingCache>,
-    resource_assets: std::cell::RefCell<Option<defense::ResourceAssets>>,
+    knowledge_paths: std::cell::RefCell<crate::bot::navigation::paths::PathQueries>,
+    resource_assets: std::cell::RefCell<Option<construction_checks::ResourceAssets>>,
     pub(in crate::bot) work_experience: experience_work::WorkExperience,
     pub(in crate::bot) ground_inputs: Option<combat::GroundMissionInputs>,
     pub(in crate::bot) battlefield: std::sync::Arc<super::battlefield::BattlefieldAssessment>,

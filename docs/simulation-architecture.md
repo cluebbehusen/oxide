@@ -1014,8 +1014,15 @@ snapshot, retained obligations, and capability demand. Capacity-Foundry fallback
 and ordinary economic alternatives share its service-route cache and funding
 calendar. Worker quotations, capital preparation, bounded construction-site
 selection, construction valuation, upgrade valuation, and final ranking retain
-their original order. Construction and upgrade quotes share lazily prepared
-defense geometry. Policy planning allowances and site rotation remain serial.
+their original order. Construction quotes and Extractor development share a lazy
+`ConstructionChecks` context. It owns exact builder safety and travel,
+resource-access checks, and future-producer exit certificates over one fixed
+observation, public map, orientation, danger projection, and contested-work
+memory. Eligible builders and projected worker positions remain query inputs.
+Support uses the same feasibility implementation; defensive valuation adds asset
+values, hostile approaches, and weapon coverage separately. Upgrade quotes
+prepare defensive valuation only when needed. Policy planning allowances, site
+rotation, and final combined-layout validation remain serial.
 
 The funding calendar collects retained payments once, then prices each purchase
 against its exact deadline using that immutable schedule. A new observation or

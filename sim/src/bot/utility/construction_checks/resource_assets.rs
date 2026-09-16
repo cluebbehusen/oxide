@@ -2,6 +2,14 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot::utility) struct ResourceRegion {
+    pub(in crate::bot::utility) scrap: u32,
+    pub(in crate::bot::utility) tiles: Vec<TilePos>,
+    pub(in crate::bot::utility) work_tiles: Vec<TilePos>,
+    pub(in crate::bot::utility) access: AccessRoute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ResourceInputs {
     map_size: (i32, i32),
     blocked: Vec<bool>,
@@ -13,14 +21,14 @@ struct ResourceInputs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::bot::utility) struct ResourceAssets {
     inputs: ResourceInputs,
-    assets: Vec<DefendedAsset>,
+    assets: Vec<ResourceRegion>,
 }
 
-pub(super) fn scrap_assets(
+pub(in crate::bot::utility) fn scrap_assets(
     policy: &UtilityPolicy,
     ground: &GroundKnowledge<'_>,
     foundries: &[TilePos],
-) -> Vec<DefendedAsset> {
+) -> Vec<ResourceRegion> {
     let inputs = ResourceInputs {
         map_size: (ground.obs.map_width, ground.obs.map_height),
         blocked: ground.ground_blocked.clone(),
@@ -45,10 +53,7 @@ pub(super) fn scrap_assets(
     {
         let mut assets = cached.assets.clone();
         for asset in &mut assets {
-            let AssetShape::Scrap { tiles, .. } = &asset.shape else {
-                unreachable!()
-            };
-            asset.value = resource_value(ground, tiles);
+            asset.scrap = resource_amount(ground, &asset.tiles);
         }
         return assets;
     }
@@ -64,7 +69,7 @@ fn collect_assets(
     policy: &UtilityPolicy,
     ground: &GroundKnowledge<'_>,
     foundries: &[TilePos],
-) -> Vec<DefendedAsset> {
+) -> Vec<ResourceRegion> {
     let mut remaining: BTreeSet<_> = ground
         .scrap
         .iter()
@@ -111,7 +116,7 @@ fn collect_assets(
                     &building_doorsteps(ground, *foundry, BuildingKind::Foundry.base_stats().size),
                     &work_tiles,
                     None,
-                    DefenseDomain::Ground,
+                    KnowledgeDomain::Ground,
                 )
                 .map(|(_, _goal, path)| AccessRoute {
                     foundry: *foundry,
@@ -128,12 +133,13 @@ fn collect_assets(
                 )
             });
         let Some(access) = support else { continue };
-        let value = resource_value(ground, &tiles);
-        if value > 0 {
-            clusters.push(DefendedAsset {
-                value,
-                shape: AssetShape::Scrap { tiles, work_tiles },
-                access: Some(access),
+        let scrap = resource_amount(ground, &tiles);
+        if scrap > 0 {
+            clusters.push(ResourceRegion {
+                scrap,
+                tiles,
+                work_tiles,
+                access,
             });
         }
     }
@@ -151,12 +157,8 @@ fn resource_region_is_active(obs: &Observation, resource_tiles: &[TilePos]) -> b
     })
 }
 
-fn resource_value(ground: &GroundKnowledge<'_>, tiles: &[TilePos]) -> u32 {
-    tiles
-        .iter()
-        .fold(0u32, |sum, tile| {
-            sum.saturating_add(ground.scrap.get(tile).copied().unwrap_or(0))
-        })
-        .div_ceil(SCRAP_NODE_AMOUNT)
-        .min(8)
+fn resource_amount(ground: &GroundKnowledge<'_>, tiles: &[TilePos]) -> u32 {
+    tiles.iter().fold(0u32, |sum, tile| {
+        sum.saturating_add(ground.scrap.get(tile).copied().unwrap_or(0))
+    })
 }

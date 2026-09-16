@@ -1,4 +1,5 @@
 //! One economic quotation pass with observation-scoped inputs and scratch.
+use super::super::construction_checks::ConstructionChecks;
 use super::super::defense::DefenseThinkContext;
 use super::super::economic_work::HarvestRegion;
 use super::*;
@@ -163,10 +164,11 @@ impl<'a> EconomicQuotes<'a> {
         let possible = self.construction_sites(&capital);
         let mut geometry = None;
         self.quote_construction(&capital, possible, &mut geometry, &mut proposals);
-        self.quote_upgrades(&capital, &mut geometry, &mut proposals);
+        self.quote_upgrades(&capital, &mut proposals);
         if retained.is_none() {
             policy.value_extractor_developments(
                 context,
+                &mut geometry,
                 self.funding
                     .get_or_insert_with(|| FundingCalendar::new(&context)),
                 &mut proposals,
@@ -488,7 +490,7 @@ impl<'a> EconomicQuotes<'a> {
         &mut self,
         capital: &CapitalPreparation<'a>,
         possible: Vec<(BuildingKind, TilePos)>,
-        geometry: &mut Option<DefenseThinkContext<'a>>,
+        geometry: &mut Option<ConstructionChecks<'a>>,
         proposals: &mut Vec<EconomicInvestment>,
     ) {
         let policy = self.policy;
@@ -534,7 +536,7 @@ impl<'a> EconomicQuotes<'a> {
                 continue;
             }
             let geometry = geometry.get_or_insert_with(|| {
-                DefenseThinkContext::new_oriented(
+                ConstructionChecks::new(
                     crate::bot::query_work::QueryPurpose::EconomicInvestment,
                     policy,
                     obs,
@@ -549,8 +551,7 @@ impl<'a> EconomicQuotes<'a> {
             {
                 continue;
             }
-            let Some(builder) = geometry.safe_implicit_builder(policy, kind, anchor, builders)
-            else {
+            let Some(builder) = geometry.safe_implicit_builder(kind, anchor, builders) else {
                 continue;
             };
             let worker = builders
@@ -720,9 +721,9 @@ impl<'a> EconomicQuotes<'a> {
     fn quote_upgrades(
         &mut self,
         capital: &CapitalPreparation<'a>,
-        geometry: &mut Option<DefenseThinkContext<'a>>,
         proposals: &mut Vec<EconomicInvestment>,
     ) {
+        let mut geometry = None;
         let policy = self.policy;
         let context = self.context;
         let obs = context.obs;
