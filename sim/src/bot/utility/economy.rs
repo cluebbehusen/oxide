@@ -4,6 +4,7 @@
 use super::construction::FOUNDRY_RECOVERY_TICKS;
 use super::construction::{FoundryCommitmentOutcome, FoundrySavingCommitment, commit_foundry_plan};
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::Role;
 
 #[derive(Clone, Copy)]
@@ -49,9 +50,11 @@ impl UtilityPolicy {
         let danger = (has_eligible_worker)
             .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
         let mut routes = danger.as_ref().map(|danger| {
-            crate::bot::navigation::commands::RouteProjection::ground_avoiding(obs, |tile| {
-                self.harvest_location_contested(tile) || danger.contains(tile)
-            })
+            crate::bot::navigation::commands::RouteProjection::ground_avoiding(
+                QueryPurpose::HarvestDispatch,
+                obs,
+                |tile| self.harvest_location_contested(tile) || danger.contains(tile),
+            )
         });
         for u in obs.my_units.iter().filter(|u| {
             u.kind.stats().harvest.is_some()
@@ -1052,7 +1055,10 @@ impl UtilityPolicy {
             return true;
         }
 
-        let mut routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
+        let mut routes = crate::bot::navigation::commands::RouteProjection::known_ground(
+            QueryPurpose::HarvestDispatch,
+            obs,
+        );
         if obs
             .enemy_buildings
             .iter()
@@ -1174,8 +1180,10 @@ mod tests {
             })
             .min()
             .map(|(_, y, x)| TilePos::new(x, y));
-        let mut routes =
-            crate::bot::navigation::commands::RouteProjection::ground_avoiding(obs, |tile| {
+        let mut routes = crate::bot::navigation::commands::RouteProjection::ground_avoiding(
+            QueryPurpose::NavigationTest,
+            obs,
+            |tile| {
                 policy.harvest_location_contested(tile)
                     || UtilityPolicy::source_has_known_danger(
                         obs,
@@ -1183,7 +1191,8 @@ mod tests {
                         Some(unit_contacts),
                         Some(building_contacts),
                     )
-            });
+            },
+        );
         let mut intents = Vec::new();
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some()
@@ -5437,7 +5446,13 @@ mod tests {
         let danger = policy.harvest_danger_projection(&obs, None, None);
 
         let goal = policy
-            .worker_evacuation_goal(&obs, &obs.my_units[0], home, &danger)
+            .worker_evacuation_goal(
+                &obs,
+                &obs.my_units[0],
+                home,
+                &danger,
+                &RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground),
+            )
             .expect("the worker can leave its own kill zone on the near side of the barrier");
 
         assert_eq!(goal, TilePos::new(20, 4));
@@ -5474,7 +5489,13 @@ mod tests {
         let danger = policy.harvest_danger_projection(&obs, None, None);
 
         let goal = policy
-            .worker_evacuation_goal(&obs, &obs.my_units[0], home, &danger)
+            .worker_evacuation_goal(
+                &obs,
+                &obs.my_units[0],
+                home,
+                &danger,
+                &RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground),
+            )
             .expect("open ground has a safe exit immediately away from the incident center");
 
         assert_eq!(goal, center.offset(0, -CONTESTED_HARVEST_RADIUS - 2));

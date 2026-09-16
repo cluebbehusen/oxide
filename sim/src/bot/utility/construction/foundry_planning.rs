@@ -1,6 +1,7 @@
 //! Rank resource regions before pricing exact Foundry footprints.
 
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 use std::collections::BTreeSet;
 
 const EXACT_SITES: usize = 2;
@@ -181,10 +182,21 @@ impl UtilityPolicy {
                 crate::bot::planning::Progress::Ready(
                     self.expansion_routing_cache
                         .borrow_mut()
-                        .danger_aware_source_set(public_map, &blocked, sources),
+                        .danger_aware_source_set(
+                            QueryPurpose::FoundryLogistics,
+                            public_map,
+                            &blocked,
+                            sources,
+                        ),
                 )
             } else {
-                planning.field(obs.tick, public_map, &blocked, sources)
+                planning.field(
+                    QueryPurpose::FoundryLogistics,
+                    obs.tick,
+                    public_map,
+                    &blocked,
+                    sources,
+                )
             }
         };
         let previous = if scraps.is_empty() {

@@ -224,6 +224,7 @@ impl UtilityPolicy {
             }
             let (context, eligible_builders) = prepared.get_or_insert_with(|| {
                 let context = DefenseThinkContext::new_oriented(
+                    crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
                     self,
                     obs,
                     briefing,
@@ -1168,7 +1169,14 @@ mod tests {
         ] {
             for anchor in [TilePos::new(9, 10), TilePos::new(30, 12)] {
                 for unavailable in [vec![], vec![UnitId(50), UnitId(51), UnitId(52)]] {
-                    let mut exact = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+                    let mut exact = DefenseThinkContext::new(
+                        crate::bot::query_work::QueryPurpose::NavigationTest,
+                        &policy,
+                        &obs,
+                        &briefing,
+                        &[],
+                        &[],
+                    );
                     let expected = obs
                         .my_units
                         .iter()
@@ -1188,7 +1196,14 @@ mod tests {
                                 .map(|cost| travel_ticks(cost, unit.kind.stats().speed))
                         })
                         .min();
-                    let mut pruned = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+                    let mut pruned = DefenseThinkContext::new(
+                        crate::bot::query_work::QueryPurpose::NavigationTest,
+                        &policy,
+                        &obs,
+                        &briefing,
+                        &[],
+                        &[],
+                    );
                     assert_eq!(
                         mobile_reinforcement_ticks(
                             &obs,
@@ -1223,7 +1238,14 @@ mod tests {
             })
             .collect();
         let policy = UtilityPolicy::new();
-        let mut context = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+        let mut context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+            &[],
+            &[],
+        );
         let (arrival, work) = crate::bot::navigation::work::measure(|| {
             mobile_reinforcement_ticks(&obs, &mut context, BuildingKind::Turret, anchor, &[])
         });
@@ -1253,7 +1275,14 @@ mod tests {
         };
         let policy = UtilityPolicy::new();
 
-        let mut available_context = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+        let mut available_context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+            &[],
+            &[],
+        );
         let available_reinforcement = mobile_reinforcement_ticks(
             &obs,
             &mut available_context,
@@ -1272,7 +1301,14 @@ mod tests {
         )
         .expect("the current threat admits a defense");
 
-        let mut claimed_context = DefenseThinkContext::new(&policy, &obs, &briefing, &[], &[]);
+        let mut claimed_context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+            &[],
+            &[],
+        );
         let claimed_reinforcement = mobile_reinforcement_ticks(
             &obs,
             &mut claimed_context,

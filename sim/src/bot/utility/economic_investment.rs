@@ -11,6 +11,7 @@ use crate::bot::allocation::{
 use crate::bot::intelligence::StrategicIntelligence;
 use crate::bot::navigation::service::ServiceRoutes;
 use crate::bot::orient::Orientation;
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::resources::ProducerEgress;
 use crate::bot::standing_force::CapabilityDemand;
 use serde::Serialize;
@@ -188,7 +189,12 @@ impl UtilityPolicy {
             obs,
             resources: context.resources,
             demands: context.demands,
-            routes: ServiceRoutes::new(obs, Some(context.briefing), Some(context.orientation)),
+            routes: ServiceRoutes::new(
+                QueryPurpose::EconomicInvestment,
+                obs,
+                Some(context.briefing),
+                Some(context.orientation),
+            ),
             briefing: context.briefing,
             orientation: context.orientation,
             air_work: &[],
@@ -534,7 +540,12 @@ impl UtilityPolicy {
             obs,
             resources: context.resources,
             demands: context.demands,
-            routes: ServiceRoutes::new(obs, Some(context.briefing), Some(context.orientation)),
+            routes: ServiceRoutes::new(
+                QueryPurpose::EconomicInvestment,
+                obs,
+                Some(context.briefing),
+                Some(context.orientation),
+            ),
             briefing: context.briefing,
             orientation: context.orientation,
             air_work: context.air_work,
@@ -677,6 +688,7 @@ impl UtilityPolicy {
             }
             let geometry = geometry.get_or_insert_with(|| {
                 DefenseThinkContext::new_oriented(
+                    crate::bot::query_work::QueryPurpose::EconomicInvestment,
                     self,
                     obs,
                     context.briefing,
@@ -899,6 +911,7 @@ impl UtilityPolicy {
                 let (benefit, evidence) = geometry
                     .get_or_insert_with(|| {
                         DefenseThinkContext::new_oriented(
+                            crate::bot::query_work::QueryPurpose::EconomicInvestment,
                             self,
                             obs,
                             context.briefing,
@@ -1408,6 +1421,7 @@ fn infrastructure_benefit(
         seen: true,
     };
     let ground_spawn = routing::production_spawn_doorstep(
+        QueryPurpose::EconomicInvestment,
         obs,
         &candidate,
         Some(context.briefing),
@@ -1505,6 +1519,7 @@ fn infrastructure_benefit(
                         ))
                     } else {
                         routing::production_spawn_doorstep(
+                            QueryPurpose::EconomicInvestment,
                             obs,
                             &pending,
                             Some(context.briefing),
@@ -2455,6 +2470,7 @@ mod tests {
         map.extractor_frames = obs.known_frames.clone();
         let policy = UtilityPolicy::new();
         let mut geometry = DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
             &policy,
             &obs,
             &map,

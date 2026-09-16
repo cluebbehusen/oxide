@@ -1,5 +1,6 @@
 //! Fog-honest valuation and approach-lane scoring for static defenses.
 
+use crate::bot::query_work::QueryPurpose;
 mod barricade;
 mod coverage;
 mod fronts;
@@ -297,21 +298,24 @@ pub(super) struct DefenseThinkCacheStats {
 
 impl<'a> DefenseGrounding<'a> {
     pub(super) fn new(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
     ) -> Self {
-        Self::new_inner(policy, obs, briefing, None)
+        Self::new_inner(query_purpose, policy, obs, briefing, None)
     }
 
     fn new_inner(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         future_egress_orientation: Option<Orientation>,
     ) -> Self {
         let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts).retained(policy, false);
+        let ground = GroundKnowledge::new(query_purpose, obs, briefing, &public_starts)
+            .retained(policy, false);
         let assets = defended_assets(policy, obs, &ground);
         let future_ground_producers =
             future_egress_orientation.map_or_else(Vec::new, |orientation| {
@@ -329,7 +333,7 @@ impl<'a> DefenseGrounding<'a> {
         Self {
             public_starts,
             ground,
-            build_routes: routing::BuildRouteProjection::new(obs, Some(briefing)),
+            build_routes: routing::BuildRouteProjection::new(query_purpose, obs, Some(briefing)),
             placement: super::terrain::PlacementGeometry::new(obs),
             assets,
             future_ground_producers,
@@ -369,6 +373,7 @@ impl<'a> DefenseGrounding<'a> {
 impl<'a> DefenseThinkContext<'a> {
     #[cfg(test)]
     pub(super) fn new(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -376,6 +381,7 @@ impl<'a> DefenseThinkContext<'a> {
         building_contacts: &'a [BuildingContact],
     ) -> Self {
         Self::new_inner(
+            query_purpose,
             policy,
             obs,
             briefing,
@@ -386,6 +392,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     pub(super) fn new_oriented(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -394,6 +401,7 @@ impl<'a> DefenseThinkContext<'a> {
         orientation: Orientation,
     ) -> Self {
         Self::new_inner(
+            query_purpose,
             policy,
             obs,
             briefing,
@@ -404,6 +412,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     fn new_inner(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
@@ -417,6 +426,7 @@ impl<'a> DefenseThinkContext<'a> {
             unit_contacts,
             building_contacts,
             grounding: DefenseGrounding::new_inner(
+                query_purpose,
                 policy,
                 obs,
                 briefing,
@@ -637,6 +647,7 @@ impl<'a> DefenseThinkContext<'a> {
             .borrow_mut()
             .costs
             .between_sets(
+                self.grounding.ground.query_purpose,
                 board.grid,
                 candidate.and_then(|candidate| routing_cache::overlay(candidate, movement_domain)),
                 &[unit.tile],
@@ -698,12 +709,14 @@ pub(super) struct ResourceAccessGuard<'a> {
 #[cfg(test)]
 impl<'a> ResourceAccessGuard<'a> {
     pub(super) fn new(
+        query_purpose: QueryPurpose,
         policy: &'a UtilityPolicy,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
     ) -> Self {
         let public_starts = policy.uncleared_hostile_starts(briefing, obs.me);
-        let ground = GroundKnowledge::new(obs, briefing, &public_starts).retained(policy, false);
+        let ground = GroundKnowledge::new(query_purpose, obs, briefing, &public_starts)
+            .retained(policy, false);
         let assets = defended_assets(policy, obs, &ground);
         Self { ground, assets }
     }
@@ -736,7 +749,12 @@ impl<'a> ResourceAccessGuard<'a> {
             (0..placement.size.0)
                 .any(|dx| !self.ground.obs.visible(placement.anchor.offset(dx, dy)))
         });
-        routing::BuildRouteProjection::new(self.ground.obs, Some(self.ground.briefing)).cost(
+        routing::BuildRouteProjection::new(
+            self.ground.query_purpose,
+            self.ground.obs,
+            Some(self.ground.briefing),
+        )
+        .cost(
             builder,
             routing::BuildCommandTarget {
                 anchor,
@@ -1118,6 +1136,7 @@ struct PlannedDefense {
 }
 
 struct GroundKnowledge<'a> {
+    query_purpose: QueryPurpose,
     obs: &'a Observation,
     briefing: &'a PublicMapBriefing,
     air_blocked: Vec<bool>,
@@ -1147,6 +1166,7 @@ impl<'a> GroundKnowledge<'a> {
     }
 
     fn new(
+        query_purpose: QueryPurpose,
         obs: &'a Observation,
         briefing: &'a PublicMapBriefing,
         public_starts: &[StartingFoundry],
@@ -1223,6 +1243,7 @@ impl<'a> GroundKnowledge<'a> {
             }
         }
         Self {
+            query_purpose,
             obs,
             briefing,
             air_blocked: terrain.iter().map(|terrain| terrain.blocks_air()).collect(),
@@ -1395,6 +1416,7 @@ fn future_ground_producer_keeps_egress(
         return false;
     };
     crate::bot::navigation::search::reachable(
+        QueryPurpose::ConstructionExitSafety,
         combined.obs.map_width,
         combined.obs.map_height,
         spawn,
@@ -1532,11 +1554,21 @@ impl UtilityPolicy {
         }
 
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let baseline_ground =
-            GroundKnowledge::new(obs, briefing, &public_starts).retained(self, false);
+        let baseline_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::ConstructionAccess,
+            obs,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, false);
         let assets = defended_assets(self, obs, &baseline_ground);
-        let mut combined_ground =
-            GroundKnowledge::new(obs, briefing, &public_starts).retained(self, true);
+        let mut combined_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::ConstructionAccess,
+            obs,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, true);
         for site in &sites {
             if !site.blocks_ground {
                 continue;
@@ -1594,16 +1626,30 @@ impl UtilityPolicy {
             let size = kind.base_stats().size;
             let defer =
                 (0..size.1).any(|dy| (0..size.0).any(|dx| !obs.visible(anchor.offset(dx, dy))));
-            routing::build_command_path_avoids_with_public_terrain_and_blockers_and_orientation(
+            let blocked = |tile| {
+                (*kind == BuildingKind::Foundry && !obs.explored(tile))
+                    || self.harvest_location_contested(tile)
+                    || danger.contains(tile)
+            };
+            if blocked(builder.tile) {
+                return false;
+            }
+            routing::BuildRouteProjection::new(
+                QueryPurpose::ConstructionAccess,
                 obs,
-                briefing,
+                Some(briefing),
+            )
+            .avoids_with_blockers(
                 builder,
                 routing::BuildCommandTarget {
                     anchor: *anchor,
                     size,
                     defer,
                 },
-                orientation.expect("exact combined builder checks require a command orientation"),
+                Some(
+                    orientation
+                        .expect("exact combined builder checks require a command orientation"),
+                ),
                 |tile| {
                     sites.iter().any(|site| {
                         site.blocks_ground
@@ -1611,11 +1657,7 @@ impl UtilityPolicy {
                             && site.blocks(tile)
                     })
                 },
-                |tile| {
-                    (*kind == BuildingKind::Foundry && !obs.explored(tile))
-                        || self.harvest_location_contested(tile)
-                        || danger.contains(tile)
-                },
+                blocked,
             )
         })
     }
@@ -1648,8 +1690,13 @@ impl UtilityPolicy {
             unit.founding = None;
         }
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let ground =
-            GroundKnowledge::new(&unclaimed, briefing, &public_starts).retained(self, true);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
+            &unclaimed,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, true);
         let assets = defended_assets(self, &unclaimed, &ground);
         if assets.is_empty() {
             return false;
@@ -1684,8 +1731,13 @@ impl UtilityPolicy {
             return false;
         }
         let public_starts = self.uncleared_hostile_starts(briefing, obs.me);
-        let ground =
-            GroundKnowledge::new(&unclaimed, briefing, &public_starts).retained(self, true);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
+            &unclaimed,
+            briefing,
+            &public_starts,
+        )
+        .retained(self, true);
         let assets = defended_assets(self, &unclaimed, &ground);
         if assets.is_empty() {
             return false;
@@ -1778,7 +1830,14 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::strategic(unit_contacts, building_contacts),
-            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+            grounding.get_or_insert_with(|| {
+                DefenseGrounding::new(
+                    crate::bot::query_work::QueryPurpose::NavigationTest,
+                    self,
+                    obs,
+                    briefing,
+                )
+            }),
         )
         .map(|quote| quote.placement.anchor)
     }
@@ -1806,7 +1865,14 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::strategic_existence(unit_contacts, building_contacts),
-            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+            grounding.get_or_insert_with(|| {
+                DefenseGrounding::new(
+                    crate::bot::query_work::QueryPurpose::NavigationTest,
+                    self,
+                    obs,
+                    briefing,
+                )
+            }),
         )
         .is_some()
     }
@@ -1829,7 +1895,12 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::current_emergency(unit_contacts, building_contacts),
-            &DefenseGrounding::new(self, obs, briefing),
+            &DefenseGrounding::new(
+                crate::bot::query_work::QueryPurpose::DefenseSitePlacement,
+                self,
+                obs,
+                briefing,
+            ),
         )
         .map(|quote| quote.placement)
     }
@@ -1858,7 +1929,14 @@ impl UtilityPolicy {
             briefing,
             builders,
             DefenseEvidence::strategic(unit_contacts, building_contacts),
-            grounding.get_or_insert_with(|| DefenseGrounding::new(self, obs, briefing)),
+            grounding.get_or_insert_with(|| {
+                DefenseGrounding::new(
+                    crate::bot::query_work::QueryPurpose::NavigationTest,
+                    self,
+                    obs,
+                    briefing,
+                )
+            }),
         )
     }
 
@@ -2900,6 +2978,7 @@ fn approach_path(
     let route = match field {
         Some(field) => match field.get_or_init(|| {
             ground.planning().approach_field(
+                QueryPurpose::DefenseApproaches,
                 ground.obs.tick,
                 routing_cache::board(ground, domain).grid,
                 domain == DefenseDomain::Air,
@@ -3949,7 +4028,14 @@ mod tests {
         let turret = building(30, obs.me, BuildingKind::Turret, LEFT_HOME.offset(4, 0));
         obs.my_buildings.push(turret.clone());
         let policy = UtilityPolicy::new();
-        let context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
         let ((benefit, evidence), work) =
             crate::bot::navigation::work::measure(|| context.upgrade_quote(&turret, 6_000));
         assert!(benefit >= u64::from(turret.kind.upgrade_from(0).unwrap().cost));
@@ -3971,7 +4057,14 @@ mod tests {
             UnitKind::Sentinel,
             turret.anchor.offset(3, 0),
         ));
-        let context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
         assert_eq!(
             context.upgrade_quote(&turret, 6_000),
             (0, DefenseOpportunityEvidence::CurrentArmed)
@@ -3997,7 +4090,14 @@ mod tests {
             TilePos::new(30, 10),
         ));
         let policy = UtilityPolicy::new();
-        let context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
         assert_eq!(context.upgrade_quote(&turret, 6_000).0, 0);
     }
 
@@ -4131,7 +4231,12 @@ mod tests {
         planned.built = false;
         obs.my_buildings.push(planned);
         let policy = UtilityPolicy::new();
-        let grounding = DefenseGrounding::new(&policy, &obs, &map);
+        let grounding = DefenseGrounding::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+        );
         for kind in [
             BuildingKind::Turret,
             BuildingKind::Bastion,
@@ -4215,7 +4320,12 @@ mod tests {
                     BuildingKind::Barricade,
                 ] {
                     let policy = UtilityPolicy::new();
-                    let grounding = DefenseGrounding::new(&policy, &obs, &map);
+                    let grounding = DefenseGrounding::new(
+                        crate::bot::query_work::QueryPurpose::NavigationTest,
+                        &policy,
+                        &obs,
+                        &map,
+                    );
                     let profile = DefenseProfile::for_kind(kind).unwrap();
                     let projection =
                         strategic_lane_projection(&obs, &[], &[], &grounding, profile.domain)
@@ -4320,7 +4430,12 @@ mod tests {
             .to_vec();
         obs.visible.fill(true);
         let policy = UtilityPolicy::new();
-        let grounding = DefenseGrounding::new(&policy, &obs, &map);
+        let grounding = DefenseGrounding::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+        );
         let placement = PlacementFootprint {
             anchor: TilePos::new(8, 3),
             size: BuildingKind::Bastion.base_stats().size,
@@ -4539,7 +4654,13 @@ mod tests {
             }
             let policy = UtilityPolicy::new();
             let starts = policy.uncleared_hostile_starts(&map, obs.me);
-            let ground = GroundKnowledge::new(&obs, &map, &starts).retained(&policy, false);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &starts,
+            )
+            .retained(&policy, false);
             let assets = defended_assets(&policy, &obs, &ground);
             let mut origins =
                 threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -4658,7 +4779,12 @@ mod tests {
         let map = briefing();
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let baseline = approaches(
             &ground,
@@ -4697,7 +4823,14 @@ mod tests {
         let map = briefing();
         let builders: Vec<_> = obs.my_units.iter().collect();
         let policy = UtilityPolicy::new();
-        let mut context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let mut context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
 
         for kind in [
             BuildingKind::Turret,
@@ -4706,7 +4839,14 @@ mod tests {
             BuildingKind::ScuttleCharge,
         ] {
             let cold_policy = policy.clone();
-            let mut cold_context = DefenseThinkContext::new(&cold_policy, &obs, &map, &[], &[]);
+            let mut cold_context = DefenseThinkContext::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &cold_policy,
+                &obs,
+                &map,
+                &[],
+                &[],
+            );
             let uncached =
                 cold_policy.strategic_defense_quote_in_context(kind, &builders, &mut cold_context);
             let first = policy.strategic_defense_quote_in_context(kind, &builders, &mut context);
@@ -4946,7 +5086,12 @@ mod tests {
         let scenario = scenario_with(|tile| if tile.x == 18 && tile.y > 0 { '^' } else { '.' });
         let briefing = PublicMapBriefing::from_scenario(&scenario).unwrap();
         let obs = observation(PlayerId(0), LEFT_HOME);
-        let ground = GroundKnowledge::new(&obs, &briefing, &[]);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &briefing,
+            &[],
+        );
         let assets = [
             TilePos::new(13, 10),
             TilePos::new(20, 10),
@@ -5008,8 +5153,15 @@ mod tests {
         obs.my_units[0].founding = Some((BuildingKind::Foundry, foundry_anchor));
         let orientation = Orientation::for_home(&obs, LEFT_HOME);
         let policy = UtilityPolicy::new();
-        let mut context =
-            DefenseThinkContext::new_oriented(&policy, &obs, &map, &[], &[], orientation);
+        let mut context = DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+            orientation,
+        );
 
         let (_, work) = crate::bot::navigation::work::measure(|| {
             assert!(
@@ -5065,7 +5217,14 @@ mod tests {
             ),
             crate::bot::planning::Progress::Ready(())
         ));
-        let mut unguarded = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let mut unguarded = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
         let otherwise_best = policy
             .strategic_defense_quote_in_context_search(
                 BuildingKind::Turret,
@@ -5077,6 +5236,7 @@ mod tests {
         assert_eq!(otherwise_best.placement.anchor, exit);
 
         let mut guarded = DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
             &policy,
             &obs,
             &map,
@@ -5157,7 +5317,12 @@ mod tests {
     fn planned_producer_doorstep_tie_breaks_in_the_authoritative_frame() {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let map = briefing();
-        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         let footprint = PlacementFootprint {
             anchor: TilePos::new(8, 11),
             size: BuildingKind::Foundry.base_stats().size,
@@ -5293,7 +5458,12 @@ mod tests {
             "the southeast hostile prior must not strand the long gun behind home: {selected}",
         );
         let starts = UtilityPolicy::new().uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&UtilityPolicy::new(), &obs, &ground);
         let approaches = approaches(
             &ground,
@@ -5582,7 +5752,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins =
             threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -5623,7 +5798,12 @@ mod tests {
             .collect();
         corridor_obs.known_peaks = corridor_obs.known_rock.clone();
         let corridor_starts = policy.uncleared_hostile_starts(&corridor_map, corridor_obs.me);
-        let corridor_ground = GroundKnowledge::new(&corridor_obs, &corridor_map, &corridor_starts);
+        let corridor_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &corridor_obs,
+            &corridor_map,
+            &corridor_starts,
+        );
         let corridor_assets = defended_assets(&policy, &corridor_obs, &corridor_ground);
         let corridor_baseline = approaches(
             &corridor_ground,
@@ -5687,7 +5867,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins =
             threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -5962,7 +6147,12 @@ mod tests {
         visible.enemy_buildings.push(hostile.clone());
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, visible.me);
-        let ground = GroundKnowledge::new(&visible, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &visible,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &visible, &ground);
         let expansion_asset = assets
             .iter()
@@ -5998,7 +6188,12 @@ mod tests {
         let mut dark = visible.clone();
         dark.enemy_buildings.clear();
         let remembered = remembered_building(&hostile, dark.tick);
-        let remembered_ground = GroundKnowledge::new(&dark, &map, &starts);
+        let remembered_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &dark,
+            &map,
+            &starts,
+        );
         let remembered_origins = threat_origin_tiers(
             &dark,
             &[],
@@ -6042,7 +6237,12 @@ mod tests {
                 .push(building(20, PlayerId(1), kind, anchor));
             let policy = UtilityPolicy::new();
             let starts = policy.uncleared_hostile_starts(&map, obs.me);
-            let ground = GroundKnowledge::new(&obs, &map, &starts);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &starts,
+            );
             let origins = threat_origin_tiers(&obs, &[], &[], &starts, domain)[1].clone();
             let routes = approaches(
                 &ground,
@@ -6198,7 +6398,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let asset = DefendedAsset {
             value: 16,
             shape: AssetShape::Building {
@@ -6357,7 +6562,12 @@ mod tests {
         let obs = Observation::omniscient(&state, PlayerId(0));
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let home_asset = assets
             .iter()
@@ -6435,7 +6645,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(UnitKind::Avalanche), None]
         );
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let asset = DefendedAsset {
             value: 16,
             shape: AssetShape::Building {
@@ -6477,7 +6692,12 @@ mod tests {
             TilePos::new(30, 19),
         ];
         let hostile_starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &hostile_starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &hostile_starts,
+        );
 
         for (candidate, domain) in [
             (None, DefenseDomain::Ground),
@@ -6505,7 +6725,12 @@ mod tests {
             .hostile_starting_foundries(obs.me)
             .copied()
             .collect();
-        let divided = GroundKnowledge::new(&obs, &divided_map, &divided_starts);
+        let divided = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &divided_map,
+            &divided_starts,
+        );
         assert_eq!(
             shortest_path_between(&divided, &starts, &goals, None, DefenseDomain::Ground,),
             shortest_path_between_exhaustive(
@@ -6524,7 +6749,12 @@ mod tests {
         let scenario = scenario_with(|tile| if tile.x == 20 { '#' } else { '.' });
         let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
         let obs = observation(PlayerId(0), LEFT_HOME);
-        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         let candidate = PlacementFootprint {
             anchor: TilePos::new(1, 1),
             size: (1, 1),
@@ -6591,7 +6821,12 @@ mod tests {
         let map = PublicMapBriefing::from_scenario(&scenario).expect("route-cache briefing");
         let obs = observation(PlayerId(0), LEFT_HOME);
         let hostile_starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &hostile_starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &hostile_starts,
+        );
         let starts = [TilePos::new(8, 4), TilePos::new(8, 12), TilePos::new(8, 19)];
         let goals = [
             TilePos::new(30, 4),
@@ -6661,7 +6896,12 @@ mod tests {
             let obs = observation(PlayerId(0), LEFT_HOME);
             let policy = UtilityPolicy::new();
             let starts = policy.uncleared_hostile_starts(&map, obs.me);
-            let ground = GroundKnowledge::new(&obs, &map, &starts);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &starts,
+            );
             let asset = DefendedAsset {
                 value: 16,
                 shape: AssetShape::Building {
@@ -6704,8 +6944,12 @@ mod tests {
             let oriented_obs = orientation.observe(&right);
             let oriented_map = orientation.briefing(&map);
             let oriented_starts = policy.uncleared_hostile_starts(&oriented_map, oriented_obs.me);
-            let oriented_ground =
-                GroundKnowledge::new(&oriented_obs, &oriented_map, &oriented_starts);
+            let oriented_ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &oriented_obs,
+                &oriented_map,
+                &oriented_starts,
+            );
             let oriented_asset = DefendedAsset {
                 shape: AssetShape::Building {
                     anchor: LEFT_HOME,
@@ -6731,7 +6975,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let asset = DefendedAsset {
             value: 16,
             shape: AssetShape::Building {
@@ -6849,7 +7098,12 @@ mod tests {
         };
         let policy = UtilityPolicy::new();
         let first_starts = policy.uncleared_hostile_starts(&map, first_obs.me);
-        let first_ground = GroundKnowledge::new(&first_obs, &map, &first_starts);
+        let first_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &first_obs,
+            &map,
+            &first_starts,
+        );
         let first_route = approaches(
             &first_ground,
             &[origin],
@@ -6859,7 +7113,12 @@ mod tests {
         );
 
         let oriented_starts = policy.uncleared_hostile_starts(&oriented_map, oriented_obs.me);
-        let oriented_ground = GroundKnowledge::new(&oriented_obs, &oriented_map, &oriented_starts);
+        let oriented_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &oriented_obs,
+            &oriented_map,
+            &oriented_starts,
+        );
         let oriented_origin = ThreatOrigin {
             anchor: source,
             ..origin
@@ -6900,7 +7159,12 @@ mod tests {
         ]);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let home_asset = assets
             .iter()
@@ -6942,7 +7206,12 @@ mod tests {
             .collect();
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins = &threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[0];
         let reference = approaches(&ground, origins, &assets, None, DefenseDomain::Ground);
@@ -6985,7 +7254,14 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         policy.planning = PlanningWork::with_allowance(300);
         let started = obs.tick;
-        let mut context = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
+        let mut context = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &map,
+            &[],
+            &[],
+        );
         context.ensure_projection(DefenseDomain::Ground);
         assert!(
             context.ground_projection.is_none(),
@@ -6995,7 +7271,12 @@ mod tests {
         drop(context);
         for tick in (started + 12..started + 120).step_by(12) {
             obs.tick = tick;
-            let grounding = DefenseGrounding::new(&policy, &obs, &map);
+            let grounding = DefenseGrounding::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &policy,
+                &obs,
+                &map,
+            );
             match prepare_strategic_lane_projection(
                 &obs,
                 &[],
@@ -7388,7 +7669,12 @@ mod tests {
         let open_obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&open_map, open_obs.me);
-        let ground = GroundKnowledge::new(&open_obs, &open_map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &open_obs,
+            &open_map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &open_obs, &ground);
         let origins =
             threat_origin_tiers(&open_obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -7431,7 +7717,12 @@ mod tests {
             PublicMapBriefing::from_scenario(&corridor_scenario).expect("corridor briefing");
         let corridor_obs = observation(PlayerId(0), LEFT_HOME);
         let corridor_starts = policy.uncleared_hostile_starts(&corridor_map, corridor_obs.me);
-        let corridor_ground = GroundKnowledge::new(&corridor_obs, &corridor_map, &corridor_starts);
+        let corridor_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &corridor_obs,
+            &corridor_map,
+            &corridor_starts,
+        );
         let corridor_assets = defended_assets(&policy, &corridor_obs, &corridor_ground);
         let corridor_origins = threat_origin_tiers(
             &corridor_obs,
@@ -7476,7 +7767,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let source = ThreatOrigin {
             anchor: TilePos::new(10, 4),
             size: None,
@@ -7541,7 +7837,12 @@ mod tests {
         obs.my_units[0].harvesting = Some(scrap);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let access = assets
             .iter()
@@ -7568,7 +7869,12 @@ mod tests {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let work = TilePos::new(14, 20);
         let foundry_doorsteps =
             building_doorsteps(&ground, LEFT_HOME, BuildingKind::Foundry.base_stats().size);
@@ -7658,7 +7964,12 @@ mod tests {
         obs.my_units[0].carrying = 1;
         let policy = UtilityPolicy::new();
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert!(ground.scrap.contains_key(&frontier));
         let assets = defended_assets(&policy, &obs, &ground);
         assert!(
@@ -7714,7 +8025,12 @@ mod tests {
         );
 
         obs.my_units[0].harvesting = Some(frontier);
-        let worked_ground = GroundKnowledge::new(&obs, &map, &starts);
+        let worked_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let worked_assets = defended_assets(&policy, &obs, &worked_ground);
         let resource_asset = worked_assets
             .iter()
@@ -7782,7 +8098,14 @@ mod tests {
         blocked_obs.known_peaks = (0..HEIGHT).map(|y| TilePos::new(20, y)).collect();
         blocked_obs.known_rock = blocked_obs.known_peaks.clone();
         let policy = UtilityPolicy::new();
-        let mut blocked = DefenseThinkContext::new(&policy, &blocked_obs, &blocked_map, &[], &[]);
+        let mut blocked = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &blocked_obs,
+            &blocked_map,
+            &[],
+            &[],
+        );
         assert_eq!(
             blocked.reinforcement_travel_cost(
                 &blocked_obs.my_units[0],
@@ -7819,7 +8142,14 @@ mod tests {
             .map(|y| TilePos::new(20, y))
             .collect();
         routed_obs.known_rock = routed_obs.known_peaks.clone();
-        let mut routed = DefenseThinkContext::new(&policy, &routed_obs, &routed_map, &[], &[]);
+        let mut routed = DefenseThinkContext::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &routed_obs,
+            &routed_map,
+            &[],
+            &[],
+        );
         assert!(
             routed
                 .reinforcement_travel_cost(
@@ -8347,7 +8677,12 @@ mod tests {
             LEFT_HOME.offset(3, 0),
         ));
         let starts = policy.uncleared_hostile_starts(&map, obs.me);
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&policy, &obs, &ground);
         let origins =
             threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3].clone();
@@ -8599,7 +8934,12 @@ mod tests {
             .extend([vec![UnitKind::Condor], Vec::new(), Vec::new(), Vec::new()]);
         obs.my_units[0].site = Some(BuildingId(4));
         let starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = defended_assets(&UtilityPolicy::new(), &obs, &ground);
         let value_at = |anchor| {
             assets.iter().find_map(|asset| match asset.shape {
@@ -8625,18 +8965,33 @@ mod tests {
         let mut obs = observation(PlayerId(0), LEFT_HOME);
         obs.explored[(scrap.y * WIDTH + scrap.x) as usize] = false;
         let starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let dark = GroundKnowledge::new(&obs, &map, &starts);
+        let dark = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert_eq!(
             dark.scrap.get(&scrap),
             Some(&crate::stats::RICH_SCRAP_NODE_AMOUNT)
         );
 
         obs.explored[(scrap.y * WIDTH + scrap.x) as usize] = true;
-        let depleted = GroundKnowledge::new(&obs, &map, &starts);
+        let depleted = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert!(!depleted.scrap.contains_key(&scrap));
 
         obs.known_scrap.push((scrap, 175));
-        let live = GroundKnowledge::new(&obs, &map, &starts);
+        let live = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         assert_eq!(live.scrap.get(&scrap), Some(&175));
     }
 
@@ -8654,7 +9009,12 @@ mod tests {
         ] {
             let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
             let obs = observation(PlayerId(0), LEFT_HOME);
-            let ground = GroundKnowledge::new(&obs, &map, &[]);
+            let ground = GroundKnowledge::new(
+                crate::bot::query_work::QueryPurpose::NavigationTest,
+                &obs,
+                &map,
+                &[],
+            );
             let assets = vec![DefendedAsset {
                 value: 16,
                 shape: AssetShape::Building {
@@ -8712,7 +9072,12 @@ mod tests {
         obs.explored.fill(false);
         obs.my_units[0].harvesting = Some(node);
         let mut policy = UtilityPolicy::new();
-        let mut ground = GroundKnowledge::new(&obs, &map, &[]);
+        let mut ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         let (baseline, cold) =
             crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
         assert!(!baseline.is_empty());
@@ -8726,7 +9091,12 @@ mod tests {
             ground.ground_blocked[(y * WIDTH + 8) as usize] = true;
         }
         assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
-        let mut ground = GroundKnowledge::new(&obs, &map, &[]);
+        let mut ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
         *ground.scrap.get_mut(&node).unwrap() *= 2;
         let (richer, repriced) =
@@ -8740,7 +9110,12 @@ mod tests {
         ground.scrap.remove(&node);
         assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
 
-        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &[],
+        );
         assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
         assert!(scrap_assets(&policy, &ground, &[]).is_empty());
         assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
@@ -8750,7 +9125,12 @@ mod tests {
         assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
         let mut idle = obs.clone();
         idle.my_units[0].harvesting = None;
-        let idle_ground = GroundKnowledge::new(&idle, &map, &[]);
+        let idle_ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &idle,
+            &map,
+            &[],
+        );
         assert!(scrap_assets(&policy, &idle_ground, &[LEFT_HOME]).is_empty());
     }
 
@@ -8784,7 +9164,12 @@ mod tests {
         }
         obs.explored.fill(false);
         let starts: Vec<_> = map.hostile_starting_foundries(obs.me).copied().collect();
-        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let ground = GroundKnowledge::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            &starts,
+        );
         let assets = scrap_assets(&UtilityPolicy::new(), &ground, &[LEFT_HOME, expansion]);
         let defended: BTreeSet<_> = assets
             .iter()

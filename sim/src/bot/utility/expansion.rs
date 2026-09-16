@@ -1,5 +1,6 @@
 //! Pure economic and security quotes for player-facing Foundry expansion.
 
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::TilePos;
 use core::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -795,7 +796,11 @@ fn ground_threat_distance_fields(
     known: &BTreeMap<UnitId, KnownGroundThreat>,
     routing_cache: &mut PublicRoutes,
 ) -> Vec<RoutedGroundThreat> {
-    let fields = routing_cache.threat_fields(public_map, known.values().map(|threat| threat.tile));
+    let fields = routing_cache.threat_fields(
+        QueryPurpose::FoundrySecurity,
+        public_map,
+        known.values().map(|threat| threat.tile),
+    );
     known
         .values()
         .filter_map(|threat| {
@@ -838,7 +843,7 @@ fn hostile_start_distance_fields(
     starts: &[crate::bot::StartingFoundry],
     routing_cache: &mut PublicRoutes,
 ) -> Vec<Arc<PublicGroundDistances>> {
-    routing_cache.start_fields(public_map, starts)
+    routing_cache.start_fields(QueryPurpose::FoundrySecurity, public_map, starts)
 }
 
 fn candidate_advances_toward_uncleared_start(
@@ -983,7 +988,11 @@ impl ExpansionSecurityWorld {
         let threats = if anchors.len() < sources.len() {
             ThreatRouting::Reverse {
                 threats: known.values().copied().collect(),
-                foundries: routing_cache.foundry_fields(context.public_map, anchors),
+                foundries: routing_cache.foundry_fields(
+                    QueryPurpose::FoundrySecurity,
+                    context.public_map,
+                    anchors,
+                ),
             }
         } else {
             ThreatRouting::Forward(ground_threat_distance_fields(
@@ -1778,15 +1787,22 @@ mod tests {
         let before = cache.build_count().threats;
         let reverse = ThreatRouting::Reverse {
             threats: known.values().copied().collect(),
-            foundries: cache.foundry_fields(&map, foundries.iter().map(|foundry| foundry.anchor)),
+            foundries: cache.foundry_fields(
+                QueryPurpose::NavigationTest,
+                &map,
+                foundries.iter().map(|foundry| foundry.anchor),
+            ),
         };
         assert_eq!(
             reverse.routes(&foundries),
             routed_ground_threats(&forward, &foundries)
         );
         assert_eq!(cache.build_count().threats - before, 2);
-        let again =
-            cache.foundry_fields(&map, foundries.iter().rev().map(|foundry| foundry.anchor));
+        let again = cache.foundry_fields(
+            QueryPurpose::NavigationTest,
+            &map,
+            foundries.iter().rev().map(|foundry| foundry.anchor),
+        );
         assert_eq!(again.len(), 2);
         assert_eq!(cache.build_count().threats - before, 2);
     }

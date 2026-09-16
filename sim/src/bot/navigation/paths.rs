@@ -1,6 +1,7 @@
 //! Retained canonical paths, distance bounds, and complete endpoint-set ranking.
 
 use super::{BlockedRect, KnownGrid, octile, search::Search};
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::TilePos;
 use std::{
     cell::RefCell,
@@ -130,6 +131,7 @@ pub(in crate::bot) enum CacheClass {
 
 #[derive(Clone, Copy)]
 pub(in crate::bot) struct PathBoard<'a> {
+    pub(in crate::bot) query_purpose: QueryPurpose,
     pub grid: KnownGrid<'a>,
     pub class: CacheClass,
     pub cache: &'a RefCell<PathQueries>,
@@ -200,6 +202,11 @@ impl PathBoard<'_> {
         search: &mut Search,
         prepared: Option<&[u32]>,
     ) -> Option<Vec<TilePos>> {
+        crate::bot::query_work::record(
+            self.query_purpose,
+            crate::bot::query_work::QueryOperation::PathRequest,
+            1,
+        );
         let key = (overlay, start, goal);
         if let Some(path) = self
             .cache
@@ -207,6 +214,11 @@ impl PathBoard<'_> {
             .generation(self.grid, self.class)
             .and_then(|g| g.paths.get(&key))
         {
+            crate::bot::query_work::record(
+                self.query_purpose,
+                crate::bot::query_work::QueryOperation::CacheHit,
+                1,
+            );
             #[cfg(test)]
             super::work::record(|work| {
                 work.hits += 1;
@@ -238,7 +250,7 @@ impl PathBoard<'_> {
             }
         }
         let result = if let Some(field) = prepared.filter(|_| eligible) {
-            search.path_with_distances(self.grid, overlay, start, goal, field)
+            search.path_with_distances(self.query_purpose, self.grid, overlay, start, goal, field)
         } else {
             let mut cache = self.cache.borrow_mut();
             let field = eligible
@@ -256,10 +268,13 @@ impl PathBoard<'_> {
                             ) {
                                 return None;
                             }
-                            let field =
-                                distance_field(self.grid.width, self.grid.height, goal, |tile| {
-                                    self.grid.open(tile, Some(overlay))
-                                });
+                            let field = distance_field(
+                                self.query_purpose,
+                                self.grid.width,
+                                self.grid.height,
+                                goal,
+                                |tile| self.grid.open(tile, Some(overlay)),
+                            );
                             generation
                                 .overlay_distances
                                 .insert(key, field.into_boxed_slice());
@@ -272,11 +287,23 @@ impl PathBoard<'_> {
                     }
                 });
             if let Some(field) = field {
-                search.path_with_distances(self.grid, overlay, start, goal, field)
+                search.path_with_distances(
+                    self.query_purpose,
+                    self.grid,
+                    overlay,
+                    start,
+                    goal,
+                    field,
+                )
             } else {
-                search.path(self.grid.width, self.grid.height, start, goal, |tile| {
-                    self.grid.open(tile, overlay)
-                })
+                search.path(
+                    self.query_purpose,
+                    self.grid.width,
+                    self.grid.height,
+                    start,
+                    goal,
+                    |tile| self.grid.open(tile, overlay),
+                )
             }
         };
         if eligible
@@ -363,6 +390,11 @@ impl PathBoard<'_> {
             return fallback;
         };
         if let Some(field) = generation.distances.get(&goal) {
+            crate::bot::query_work::record(
+                self.query_purpose,
+                crate::bot::query_work::QueryOperation::CacheHit,
+                1,
+            );
             #[cfg(test)]
             super::work::record(|work| {
                 work.hits += 1;
@@ -374,9 +406,13 @@ impl PathBoard<'_> {
         {
             return fallback;
         }
-        let field = distance_field(self.grid.width, self.grid.height, goal, |tile| {
-            self.grid.open(tile, None)
-        });
+        let field = distance_field(
+            self.query_purpose,
+            self.grid.width,
+            self.grid.height,
+            goal,
+            |tile| self.grid.open(tile, None),
+        );
         let result = field[index];
         generation.distances.insert(goal, field.into_boxed_slice());
         generation.distance_order.push_back(goal);
@@ -384,6 +420,7 @@ impl PathBoard<'_> {
     }
 }
 fn distance_field(
+    query_purpose: QueryPurpose,
     width: i32,
     height: i32,
     goal: TilePos,
@@ -400,9 +437,10 @@ fn distance_field(
         .flat_map(|y| (0..width).map(move |x| TilePos::new(x, y)))
         .map(open)
         .collect();
-    let mut work = super::distance_work::DistanceWork::new(width, height, surface, [goal]);
+    let mut work =
+        super::distance_work::DistanceWork::new(query_purpose, width, height, surface, [goal]);
     let mut budget = crate::bot::planning::WorkBudget::new(usize::MAX);
-    let result = work.advance(&mut budget);
+    let result = work.advance(query_purpose, &mut budget);
     debug_assert_eq!(result, crate::bot::planning::Progress::Ready(()));
     work.into_distances()
 }
@@ -469,7 +507,13 @@ impl<'a> CandidatePaths<'a> {
         let Some((tick, planning)) = self.planning else {
             return Ok(None);
         };
-        match planning.candidate_route_field(tick, self.board.grid, overlay, &[goal]) {
+        match planning.candidate_route_field(
+            self.board.query_purpose,
+            tick,
+            self.board.grid,
+            overlay,
+            &[goal],
+        ) {
             crate::bot::planning::Progress::Ready(field) => Ok(Some(field)),
             crate::bot::planning::Progress::Deferred => Err(PendingRoute),
             crate::bot::planning::Progress::ProvenInfeasible => {
@@ -495,6 +539,11 @@ impl<'a> CandidatePaths<'a> {
     ) -> Result<Option<Vec<TilePos>>, PendingRoute> {
         let field = self.prepare(goal, self.overlay)?;
         if let Some(path) = self.paths.get(&(start, goal)) {
+            crate::bot::query_work::record(
+                self.board.query_purpose,
+                crate::bot::query_work::QueryOperation::CacheHit,
+                1,
+            );
             #[cfg(test)]
             super::work::record(|work| {
                 work.hits += 1;

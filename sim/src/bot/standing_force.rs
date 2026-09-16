@@ -5,6 +5,7 @@
 //! unit would improve the ordinary force now, without turning an idle factory
 //! into a reason to buy something.
 
+use crate::bot::query_work::QueryPurpose;
 use core::cmp::Reverse;
 use std::collections::BTreeMap;
 
@@ -243,7 +244,12 @@ impl StandingForceCommitment {
         briefing: &PublicMapBriefing,
         orientation: Orientation,
     ) -> bool {
-        let mut routes = ServiceRoutes::new(obs, Some(briefing), Some(orientation));
+        let mut routes = ServiceRoutes::new(
+            QueryPurpose::ForceReadiness,
+            obs,
+            Some(briefing),
+            Some(orientation),
+        );
         if obs.tick > self.job.enqueued_at
             || demands
                 .iter()
@@ -1038,9 +1044,13 @@ pub(crate) fn derive_standing_force_with_demand(
             else {
                 continue;
             };
-            let Some(origin) =
-                production_spawn_doorstep(obs, building, context.public_map, context.orientation)
-            else {
+            let Some(origin) = production_spawn_doorstep(
+                QueryPurpose::ForceReadiness,
+                obs,
+                building,
+                context.public_map,
+                context.orientation,
+            ) else {
                 continue;
             };
             for (kind, ready_at) in lane.queued_readiness() {
@@ -1786,7 +1796,12 @@ impl<'a> StandingServices<'a> {
         orientation: Option<Orientation>,
     ) -> Self {
         Self {
-            navigation: ServiceRoutes::new(obs, public_map, orientation),
+            navigation: ServiceRoutes::new(
+                QueryPurpose::ForceReadiness,
+                obs,
+                public_map,
+                orientation,
+            ),
             capability_demands: Vec::new(),
         }
     }
@@ -3445,10 +3460,11 @@ mod tests {
         let target = TilePos::new(22, 10);
         let producer = &obs.my_buildings[0];
 
-        let spawn = production_spawn_doorstep(&obs, producer, None, None)
-            .expect("the canonical outward doorstep remains open");
+        let spawn =
+            production_spawn_doorstep(QueryPurpose::NavigationTest, &obs, producer, None, None)
+                .expect("the canonical outward doorstep remains open");
         assert_eq!(spawn, TilePos::new(13, 10));
-        let routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
         assert!(
             !routes.reaches(spawn, target),
             "the authoritative spawn is isolated beside the Fabricator"

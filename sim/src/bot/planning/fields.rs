@@ -1,6 +1,7 @@
 //! Controller-owned field preparation. Unfinished work is never a route verdict.
 
 use super::{Progress, WorkBudget};
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::{
     PublicMapBriefing,
     navigation::public_fields::{BlockedGroundLayout, PublicFieldWork, PublicGroundDistances},
@@ -13,6 +14,7 @@ const PENDING_IDLE_LIFETIME: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
+    query_purpose: QueryPurpose,
     used_at: u64,
     work: PublicFieldWork,
 }
@@ -44,7 +46,9 @@ impl FieldPreparation {
         self.next_pending = (first + 1) % pending.len();
         pending.rotate_left(first);
         for job in pending {
-            budget.run_slice(16_000, |slice| job.work.advance(map, blocked, slice));
+            budget.run_slice(16_000, |slice| {
+                job.work.advance(job.query_purpose, map, blocked, slice)
+            });
         }
     }
 
@@ -60,6 +64,7 @@ impl FieldPreparation {
 
     pub(in crate::bot) fn advance(
         &mut self,
+        query_purpose: QueryPurpose,
         tick: u64,
         map: &PublicMapBriefing,
         blocked: &BlockedGroundLayout,
@@ -94,10 +99,11 @@ impl FieldPreparation {
             self.jobs.remove(&victim);
         }
         let job = self.jobs.entry(sources.clone()).or_insert_with(|| Job {
+            query_purpose,
             used_at: tick,
             work: PublicFieldWork::new(map, sources),
         });
         job.used_at = tick;
-        job.work.advance(map, blocked, budget)
+        job.work.advance(query_purpose, map, blocked, budget)
     }
 }

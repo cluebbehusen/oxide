@@ -1,5 +1,6 @@
 //! Deterministic work allowances shared by nested planning services.
 
+use crate::bot::query_work::QueryPurpose;
 mod alternatives;
 mod approaches;
 mod fields;
@@ -357,6 +358,7 @@ impl PlanningWork {
 
     pub(in crate::bot) fn approach_field(
         &self,
+        query_purpose: QueryPurpose,
         tick: u64,
         grid: super::navigation::KnownGrid<'_>,
         air: bool,
@@ -364,12 +366,20 @@ impl PlanningWork {
     ) -> Progress<std::sync::Arc<super::navigation::approaches::ApproachField>> {
         self.begin(tick);
         self.navigation_work(|budget| {
-            self.approaches.borrow_mut()[usize::from(air)].advance(tick, grid, goals, None, budget)
+            self.approaches.borrow_mut()[usize::from(air)].advance(
+                query_purpose,
+                tick,
+                grid,
+                goals,
+                None,
+                budget,
+            )
         })
     }
 
     pub(in crate::bot) fn candidate_route_field(
         &self,
+        query_purpose: QueryPurpose,
         tick: u64,
         grid: super::navigation::KnownGrid<'_>,
         overlay: Option<super::navigation::BlockedRect>,
@@ -377,12 +387,20 @@ impl PlanningWork {
     ) -> Progress<std::sync::Arc<super::navigation::approaches::ApproachField>> {
         self.begin(tick);
         self.navigation_work(|budget| {
-            self.approaches.borrow_mut()[2].advance(tick, grid, goals, overlay, budget)
+            self.approaches.borrow_mut()[2].advance(
+                query_purpose,
+                tick,
+                grid,
+                goals,
+                overlay,
+                budget,
+            )
         })
     }
 
     pub(in crate::bot) fn field(
         &self,
+        query_purpose: QueryPurpose,
         tick: u64,
         map: &crate::bot::PublicMapBriefing,
         blocked: &crate::bot::navigation::public_fields::BlockedGroundLayout,
@@ -393,7 +411,7 @@ impl PlanningWork {
         self.navigation_work(|budget| {
             self.fields
                 .borrow_mut()
-                .advance(tick, map, blocked, sources, budget)
+                .advance(query_purpose, tick, map, blocked, sources, budget)
         })
     }
 }
@@ -567,7 +585,7 @@ mod tests {
         let goals = [TilePos::new(0, 0)];
         for _ in 0..8 {
             assert_eq!(
-                work.approach_field(0, grid, false, &goals),
+                work.approach_field(QueryPurpose::NavigationTest, 0, grid, false, &goals),
                 Progress::Deferred
             );
         }
@@ -591,7 +609,7 @@ mod tests {
         let clone = work.clone();
         for controller in [&work, &clone] {
             assert!(matches!(
-                controller.approach_field(12, grid, false, &goals),
+                controller.approach_field(QueryPurpose::NavigationTest, 12, grid, false, &goals),
                 Progress::Ready(_)
             ));
         }
@@ -626,12 +644,24 @@ mod tests {
             let request = |work: &PlanningWork, tick| {
                 if approach {
                     matches!(
-                        work.approach_field(tick, grid, false, &[TilePos::new(1, 1)]),
+                        work.approach_field(
+                            QueryPurpose::NavigationTest,
+                            tick,
+                            grid,
+                            false,
+                            &[TilePos::new(1, 1)]
+                        ),
                         Progress::Ready(_)
                     )
                 } else {
                     matches!(
-                        work.field(tick, &map, &blocked, [TilePos::new(1, 1)]),
+                        work.field(
+                            QueryPurpose::NavigationTest,
+                            tick,
+                            &map,
+                            &blocked,
+                            [TilePos::new(1, 1)]
+                        ),
                         Progress::Ready(_)
                     )
                 }
@@ -669,7 +699,13 @@ mod tests {
                 |anchor| {
                     visited.push(anchor);
                     assert_eq!(
-                        work.field(24, &map, &blocked, [TilePos::new(1, 1)]),
+                        work.field(
+                            QueryPurpose::NavigationTest,
+                            24,
+                            &map,
+                            &blocked,
+                            [TilePos::new(1, 1)]
+                        ),
                         Progress::Deferred
                     );
                     None::<()>

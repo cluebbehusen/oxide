@@ -36,6 +36,7 @@ pub mod observer;
 pub mod orient;
 mod planning;
 pub mod profile;
+mod query_work;
 pub mod raid;
 mod residual_coordination;
 mod resources;

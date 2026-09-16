@@ -1,4 +1,5 @@
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 
 #[test]
 fn connectivity_matches_bounded_astar_on_every_small_layout() {
@@ -9,7 +10,7 @@ fn connectivity_matches_bounded_astar_on_every_small_layout() {
             .map(|index| TilePos::new(index % 3, index / 3))
             .collect();
         let passable: Vec<_> = tiles.iter().map(|tile| open(*tile)).collect();
-        let components = labels(&passable, (3, 3));
+        let components = labels(QueryPurpose::NavigationTest, &passable, (3, 3));
         for start in &tiles {
             let reachable = component(3, 3, *start, open).unwrap();
             let sparse = component_tiles(3, 3, *start, open);

@@ -8,6 +8,8 @@
 use super::{KnownGrid, distance_work::DistanceWork};
 #[cfg(test)]
 use crate::bot::planning::{Progress, WorkBudget};
+#[cfg(test)]
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,13 +33,17 @@ impl ApproachField {
     #[cfg(test)]
     fn new(grid: KnownGrid<'_>, goals: &[TilePos]) -> Self {
         let mut work = DistanceWork::new(
+            QueryPurpose::NavigationTest,
             grid.width,
             grid.height,
             grid.blocked.iter().map(|blocked| !blocked).collect(),
             goals.iter().copied(),
         );
         assert_eq!(
-            work.advance(&mut WorkBudget::new(usize::MAX)),
+            work.advance(
+                QueryPurpose::NavigationTest,
+                &mut WorkBudget::new(usize::MAX)
+            ),
             Progress::Ready(())
         );
         #[cfg(test)]
@@ -125,10 +131,14 @@ mod tests {
                     .iter()
                     .filter(|goal| grid.open(**goal, None))
                     .filter_map(|goal| {
-                        let mut path =
-                            super::super::search::canonical_path(3, 3, start, *goal, |tile| {
-                                grid.open(tile, None)
-                            })?;
+                        let mut path = super::super::search::canonical_path(
+                            QueryPurpose::NavigationTest,
+                            3,
+                            3,
+                            start,
+                            *goal,
+                            |tile| grid.open(tile, None),
+                        )?;
                         path.insert(0, start);
                         Some(super::super::paths::path_cost(&path))
                     })

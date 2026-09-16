@@ -1,5 +1,6 @@
 use super::*;
 use crate::bot::navigation::octile as octile_cost;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::PATH_EXPANSION_CAP;
 
 #[test]
@@ -22,8 +23,14 @@ fn endpoint_batches_use_refined_distances_before_building_more_paths() {
     let expected = goals
         .iter()
         .filter_map(|&goal| {
-            let mut path =
-                Search::default().path(64, 32, start, goal, |tile| board.grid.open(tile, None))?;
+            let mut path = Search::default().path(
+                QueryPurpose::NavigationTest,
+                64,
+                32,
+                start,
+                goal,
+                |tile| board.grid.open(tile, None),
+            )?;
             path.insert(0, start);
             Some((start, goal, path))
         })
@@ -102,6 +109,7 @@ impl TestBoard<'_> {
             ),
         };
         PathBoard {
+            query_purpose: QueryPurpose::NavigationTest,
             grid: KnownGrid::new(self.grid.width, self.grid.height, blocked).unwrap(),
             class,
             cache: self.cache,
@@ -136,7 +144,7 @@ fn distance_fields_match_astar_costs_and_corner_rules() {
             TilePos::new(0, 0),
             TilePos::new(-1, 0),
         ] {
-            let field = distance_field(width, height, goal, open);
+            let field = distance_field(QueryPurpose::NavigationTest, width, height, goal, open);
             for y in 0..height {
                 for x in 0..width {
                     let start = TilePos::new(x, y);
@@ -465,7 +473,7 @@ fn exact_fields_preserve_canonical_paths_across_blocker_layouts_and_caps() {
             let open = |tile| grid.open(tile, None);
             for goal_index in 0..cells {
                 let goal = TilePos::new(goal_index as i32 % size, goal_index as i32 / size);
-                let field = distance_field(size, size, goal, open);
+                let field = distance_field(QueryPurpose::NavigationTest, size, size, goal, open);
                 for start_index in 0..cells {
                     let start = TilePos::new(start_index as i32 % size, start_index as i32 / size);
                     for cap in [2, cells as u32] {
@@ -511,6 +519,7 @@ fn repeated_long_routes_share_candidate_fields_and_reduce_total_work() {
     let grid = KnownGrid::new(80, 60, &blocked).unwrap();
     let cache = RefCell::new(PathQueries::default());
     let board = PathBoard {
+        query_purpose: QueryPurpose::NavigationTest,
         grid,
         cache: &cache,
         class: CacheClass::Ground,
@@ -525,7 +534,9 @@ fn repeated_long_routes_share_candidate_fields_and_reduce_total_work() {
         starts
             .iter()
             .map(|&start| {
-                Search::default().path(80, 60, start, goal, |tile| grid.open(tile, overlay))
+                Search::default().path(QueryPurpose::NavigationTest, 80, 60, start, goal, |tile| {
+                    grid.open(tile, overlay)
+                })
             })
             .collect::<Vec<_>>()
     });
@@ -566,6 +577,7 @@ fn budgeted_candidates_resume_with_exact_paths_independent_of_observational_cach
     });
     let warm = RefCell::new(PathQueries::default());
     let board = PathBoard {
+        query_purpose: QueryPurpose::NavigationTest,
         grid,
         cache: &warm,
         class: CacheClass::Ground,
@@ -620,6 +632,7 @@ fn candidate_field_eviction_preserves_normal_fields_and_exact_paths() {
     let grid = KnownGrid::new(40, 24, &blocked).unwrap();
     let cache = RefCell::new(PathQueries::default());
     let board = PathBoard {
+        query_purpose: QueryPurpose::NavigationTest,
         grid,
         cache: &cache,
         class: CacheClass::Ground,
@@ -677,6 +690,7 @@ fn candidate_fields_fall_back_when_the_retention_budget_cannot_fit_one() {
         .unwrap()
         .budget = blocked.len();
     let board = PathBoard {
+        query_purpose: QueryPurpose::NavigationTest,
         grid,
         cache: &cache,
         class: CacheClass::Ground,
@@ -713,6 +727,7 @@ fn invalid_long_route_endpoints_do_not_enter_field_arithmetic() {
     let grid = KnownGrid::new(40, 24, &blocked).unwrap();
     let cache = RefCell::new(PathQueries::default());
     let board = PathBoard {
+        query_purpose: QueryPurpose::NavigationTest,
         grid,
         cache: &cache,
         class: CacheClass::Ground,
@@ -755,7 +770,14 @@ fn endpoint_pruning_does_not_build_fields_for_one_off_routes() {
             std::iter::once(starts[0])
                 .chain(
                     Search::default()
-                        .path(80, 60, starts[0], goals[0], |_| true)
+                        .path(
+                            QueryPurpose::NavigationTest,
+                            80,
+                            60,
+                            starts[0],
+                            goals[0],
+                            |_| true
+                        )
                         .unwrap()
                 )
                 .collect()
@@ -783,7 +805,9 @@ fn normal_fields_are_promoted_after_repeated_expensive_routes() {
         starts
             .iter()
             .map(|&start| {
-                Search::default().path(80, 60, start, goal, |tile| board.grid.open(tile, None))
+                Search::default().path(QueryPurpose::NavigationTest, 80, 60, start, goal, |tile| {
+                    board.grid.open(tile, None)
+                })
             })
             .collect::<Vec<_>>()
     });
@@ -830,7 +854,9 @@ fn repeated_doorstep_searches_share_an_earned_origin_field() {
             .iter()
             .filter_map(|&goal| {
                 Search::default()
-                    .path(80, 60, start, goal, |tile| board.grid.open(tile, None))
+                    .path(QueryPurpose::NavigationTest, 80, 60, start, goal, |tile| {
+                        board.grid.open(tile, None)
+                    })
                     .map(|path| {
                         let path = std::iter::once(start).chain(path).collect::<Vec<_>>();
                         (path_cost(&path), path.len(), goal.y, goal.x, path)
@@ -863,7 +889,9 @@ fn cached_paths_do_not_charge_the_previous_search_to_a_new_endpoint_batch() {
     let goal = TilePos::new(70, 20);
     let expected = board.path(start, goal, None, &mut Search::default());
     let mut search = Search::default();
-    search.path(80, 60, start, goal, |tile| tile.x != 40);
+    search.path(QueryPurpose::NavigationTest, 80, 60, start, goal, |tile| {
+        tile.x != 40
+    });
     assert!(search.last_expansions() > 0);
     let (_, work) = crate::bot::navigation::work::measure(|| {
         assert_eq!(board.path(start, goal, None, &mut search), expected);

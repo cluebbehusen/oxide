@@ -1,4 +1,5 @@
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::Target;
 
 const HORIZON: Tick = 1_800;
@@ -192,9 +193,13 @@ pub(crate) fn remaining_work(
         else {
             continue;
         };
-        let Some(origin) =
-            production_spawn_doorstep(obs, building, context.public_map, context.orientation)
-        else {
+        let Some(origin) = production_spawn_doorstep(
+            QueryPurpose::ForceReadiness,
+            obs,
+            building,
+            context.public_map,
+            context.orientation,
+        ) else {
             continue;
         };
         let owned = context
@@ -244,9 +249,13 @@ pub(super) fn unmet_work(
         else {
             continue;
         };
-        let Some(origin) =
-            production_spawn_doorstep(obs, building, context.public_map, context.orientation)
-        else {
+        let Some(origin) = production_spawn_doorstep(
+            QueryPurpose::ForceReadiness,
+            obs,
+            building,
+            context.public_map,
+            context.orientation,
+        ) else {
             continue;
         };
         let mut remaining = patients.clone();

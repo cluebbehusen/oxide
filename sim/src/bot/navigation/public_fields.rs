@@ -1,6 +1,7 @@
 //! Retained public-terrain distances for logistics and threat travel.
 
 use crate::bot::PublicMapBriefing;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
 use std::{collections::BTreeMap, sync::Arc};
@@ -41,6 +42,7 @@ impl PublicFieldWork {
 
     pub(in crate::bot) fn advance(
         &mut self,
+        query_purpose: QueryPurpose,
         map: &PublicMapBriefing,
         blocked: &BlockedGroundLayout,
         budget: &mut crate::bot::planning::WorkBudget,
@@ -65,13 +67,19 @@ impl PublicFieldWork {
                     .push(terrain.region_at(tile).is_some() && !blocked.contains(tile));
             }
             self.traversal = Some(super::distance_work::DistanceWork::new(
+                query_purpose,
                 self.width,
                 self.height,
                 std::mem::take(&mut self.open),
                 self.sources.iter().copied(),
             ));
         }
-        match self.traversal.as_mut().unwrap().advance(budget) {
+        match self
+            .traversal
+            .as_mut()
+            .unwrap()
+            .advance(query_purpose, budget)
+        {
             Progress::Deferred => Progress::Deferred,
             Progress::ProvenInfeasible => unreachable!("a field retains unreachable cells"),
             Progress::Ready(()) => {
@@ -197,6 +205,7 @@ impl PublicRoutes {
     #[cfg(test)]
     pub(in crate::bot) fn danger_aware_fields(
         &mut self,
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         blocked: BlockedGroundLayout,
         sources: impl IntoIterator<Item = TilePos>,
@@ -235,6 +244,7 @@ impl PublicRoutes {
                     self.builds.danger_aware += 1;
                 }
                 Arc::new(PublicGroundDistances::from_sources_avoiding(
+                    query_purpose,
                     public_map,
                     [source],
                     |tile| generation.blocked.contains(tile),
@@ -254,6 +264,7 @@ impl PublicRoutes {
 
     pub(in crate::bot) fn danger_aware_source_set(
         &mut self,
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         blocked: &BlockedGroundLayout,
         sources: impl IntoIterator<Item = TilePos>,
@@ -284,6 +295,7 @@ impl PublicRoutes {
             generation.source_sets.pop_first();
         }
         let field = Arc::new(PublicGroundDistances::from_sources_avoiding(
+            query_purpose,
             public_map,
             sources.iter().copied(),
             |tile| blocked.contains(tile),
@@ -298,6 +310,7 @@ impl PublicRoutes {
 
     pub(in crate::bot) fn threat_fields(
         &mut self,
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         sources: impl IntoIterator<Item = TilePos>,
     ) -> BTreeMap<TilePos, Arc<PublicGroundDistances>> {
@@ -316,7 +329,11 @@ impl PublicRoutes {
                 {
                     self.builds.threats += 1;
                 }
-                Arc::new(PublicGroundDistances::from_sources(public_map, [source]))
+                Arc::new(PublicGroundDistances::from_sources(
+                    query_purpose,
+                    public_map,
+                    [source],
+                ))
             });
         }
         self.threat_fields.clone()
@@ -324,6 +341,7 @@ impl PublicRoutes {
 
     pub(in crate::bot) fn foundry_fields(
         &mut self,
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         anchors: impl IntoIterator<Item = TilePos>,
     ) -> BTreeMap<TilePos, Arc<PublicGroundDistances>> {
@@ -340,6 +358,7 @@ impl PublicRoutes {
                     self.builds.threats += 1;
                 }
                 Arc::new(PublicGroundDistances::from_sources(
+                    query_purpose,
                     public_map,
                     foundry_footprint_tiles(anchor),
                 ))
@@ -350,6 +369,7 @@ impl PublicRoutes {
 
     pub(in crate::bot) fn start_fields(
         &mut self,
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         starts: &[crate::bot::StartingFoundry],
     ) -> Vec<Arc<PublicGroundDistances>> {
@@ -363,6 +383,7 @@ impl PublicRoutes {
                         self.builds.starts += 1;
                     }
                     Arc::new(PublicGroundDistances::from_sources(
+                        query_purpose,
                         public_map,
                         foundry_footprint_tiles(start.anchor),
                     ))
@@ -390,13 +411,15 @@ impl PublicRoutes {
 
 impl PublicGroundDistances {
     pub(in crate::bot) fn from_sources(
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         sources: impl IntoIterator<Item = TilePos>,
     ) -> Self {
-        Self::from_sources_avoiding(public_map, sources, |_| false)
+        Self::from_sources_avoiding(query_purpose, public_map, sources, |_| false)
     }
 
     pub(in crate::bot) fn from_sources_avoiding(
+        query_purpose: QueryPurpose,
         public_map: &PublicMapBriefing,
         sources: impl IntoIterator<Item = TilePos>,
         mut blocked: impl FnMut(TilePos) -> bool,
@@ -426,9 +449,17 @@ impl PublicGroundDistances {
                 terrain.region_at(tile).is_some() && !blocked(tile)
             })
             .collect();
-        let mut work =
-            super::distance_work::DistanceWork::new(width.max(0), height.max(0), open, sources);
-        let result = work.advance(&mut crate::bot::planning::WorkBudget::new(usize::MAX));
+        let mut work = super::distance_work::DistanceWork::new(
+            query_purpose,
+            width.max(0),
+            height.max(0),
+            open,
+            sources,
+        );
+        let result = work.advance(
+            query_purpose,
+            &mut crate::bot::planning::WorkBudget::new(usize::MAX),
+        );
         debug_assert_eq!(result, crate::bot::planning::Progress::Ready(()));
         let distances = work.into_distances();
 
@@ -595,7 +626,12 @@ mod tests {
             let mut full = PublicFieldWork::new(&map, sources.clone());
             let mut full_budget = WorkBudget::new(10_000);
             assert_eq!(
-                full.advance(&map, &blocked, &mut full_budget),
+                full.advance(
+                    QueryPurpose::NavigationTest,
+                    &map,
+                    &blocked,
+                    &mut full_budget
+                ),
                 Progress::Ready(Arc::new(expected.clone()))
             );
             for allowance in [1, 7, 97] {
@@ -604,10 +640,16 @@ mod tests {
                 loop {
                     let mut clone = work.clone();
                     let mut slice = WorkBudget::new(allowance);
-                    let progress = work.advance(&map, &blocked, &mut slice);
+                    let progress =
+                        work.advance(QueryPurpose::NavigationTest, &map, &blocked, &mut slice);
                     assert_eq!(
                         progress,
-                        clone.advance(&map, &blocked, &mut WorkBudget::new(allowance))
+                        clone.advance(
+                            QueryPurpose::NavigationTest,
+                            &map,
+                            &blocked,
+                            &mut WorkBudget::new(allowance)
+                        )
                     );
                     assert_eq!(work, clone);
                     spent += slice.spent();
@@ -741,9 +783,12 @@ mod tests {
             TilePos::new(-1, -1),
         ];
 
-        let actual = PublicGroundDistances::from_sources_avoiding(&public_map, sources, |tile| {
-            blocked.contains(tile)
-        });
+        let actual = PublicGroundDistances::from_sources_avoiding(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            sources,
+            |tile| blocked.contains(tile),
+        );
         let reference = reference_ground_distances(&public_map, sources, &blocked);
 
         assert_eq!(actual, reference);
@@ -753,11 +798,15 @@ mod tests {
     fn distance_expansion_never_requeries_the_passability_predicate() {
         let map = briefing(32, 24, [], Vec::new());
         let mut calls = 0;
-        let field =
-            PublicGroundDistances::from_sources_avoiding(&map, [TilePos::new(0, 0)], |tile| {
+        let field = PublicGroundDistances::from_sources_avoiding(
+            QueryPurpose::NavigationTest,
+            &map,
+            [TilePos::new(0, 0)],
+            |tile| {
                 calls += 1;
                 tile.x == 16 && tile.y != 20
-            });
+            },
+        );
         assert_eq!(calls, 32 * 24);
         assert!(
             field
@@ -766,6 +815,7 @@ mod tests {
         );
         for (width, height) in [(0, 10), (10, 0), (-1, 10)] {
             let empty = PublicGroundDistances::from_sources(
+                QueryPurpose::NavigationTest,
                 &briefing(width, height, [], Vec::new()),
                 [TilePos::new(0, 0)],
             );
@@ -787,6 +837,7 @@ mod tests {
         let anchors = [TilePos::new(1, 1), TilePos::new(13, 9)];
         let mut cache = PublicRoutes::default();
         let reverse = cache.danger_aware_source_set(
+            QueryPurpose::NavigationTest,
             &map,
             &blocked,
             anchors.into_iter().flat_map(foundry_footprint_tiles),
@@ -809,6 +860,7 @@ mod tests {
             }
         }
         let repeated = cache.danger_aware_source_set(
+            QueryPurpose::NavigationTest,
             &map,
             &blocked,
             anchors.into_iter().rev().flat_map(foundry_footprint_tiles),
@@ -818,6 +870,7 @@ mod tests {
         assert_eq!(
             cache
                 .danger_aware_source_set(
+                    QueryPurpose::NavigationTest,
                     &map,
                     &changed,
                     anchors.into_iter().flat_map(foundry_footprint_tiles)
@@ -836,7 +889,7 @@ mod tests {
             let source = TilePos::new(x, 6);
             assert_eq!(
                 cache
-                    .danger_aware_source_set(&map, &blocked, [source])
+                    .danger_aware_source_set(QueryPurpose::NavigationTest, &map, &blocked, [source])
                     .footprint_distance(source, (1, 1)),
                 Some(0)
             );
@@ -850,6 +903,7 @@ mod tests {
         let clear = BlockedGroundLayout::from_predicate(&public_map, |_| false);
         let mut cache = PublicRoutes::default();
         let first = cache.danger_aware_fields(
+            QueryPurpose::NavigationTest,
             &public_map,
             clear.clone(),
             [TilePos::new(3, 3), TilePos::new(14, 7)],
@@ -858,6 +912,7 @@ mod tests {
         assert_eq!(cache.retained_field_counts().0, 2);
 
         let repeated = cache.danger_aware_fields(
+            QueryPurpose::NavigationTest,
             &public_map,
             clear,
             [TilePos::new(14, 7), TilePos::new(3, 3), TilePos::new(3, 3)],
@@ -872,6 +927,7 @@ mod tests {
         );
 
         cache.danger_aware_fields(
+            QueryPurpose::NavigationTest,
             &public_map,
             BlockedGroundLayout::from_predicate(&public_map, |tile| tile == TilePos::new(9, 5)),
             [TilePos::new(14, 7)],
@@ -887,11 +943,25 @@ mod tests {
         let sources = [TilePos::new(14, 2), TilePos::new(3, 7)];
         let mut cache = PublicRoutes::default();
 
-        cache.danger_aware_fields(&public_map, clear.clone(), sources);
-        cache.threat_fields(&public_map, sources);
+        cache.danger_aware_fields(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            clear.clone(),
+            sources,
+        );
+        cache.threat_fields(QueryPurpose::NavigationTest, &public_map, sources);
         let before = cache.build_count();
-        cache.danger_aware_fields(&public_map, clear, sources.into_iter().rev());
-        cache.threat_fields(&public_map, sources.into_iter().rev());
+        cache.danger_aware_fields(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            clear,
+            sources.into_iter().rev(),
+        );
+        cache.threat_fields(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            sources.into_iter().rev(),
+        );
 
         assert_eq!(cache.build_count(), before);
         assert_eq!(cache.retained_field_counts(), (2, 2, 0));
@@ -911,19 +981,28 @@ mod tests {
         ];
         let public_map = briefing(18, 10, [], starts.clone());
         let mut cache = PublicRoutes::default();
-        cache.threat_fields(&public_map, [TilePos::new(4, 4), TilePos::new(12, 4)]);
-        cache.start_fields(&public_map, &starts);
+        cache.threat_fields(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            [TilePos::new(4, 4), TilePos::new(12, 4)],
+        );
+        cache.start_fields(QueryPurpose::NavigationTest, &public_map, &starts);
         let before = cache.build_count();
 
         let (_, work) = crate::bot::navigation::work::measure(|| {
             for blocked in [TilePos::new(7, 4), TilePos::new(8, 4)] {
                 cache.danger_aware_fields(
+                    QueryPurpose::NavigationTest,
                     &public_map,
                     BlockedGroundLayout::from_predicate(&public_map, |tile| tile == blocked),
                     [TilePos::new(5, 4)],
                 );
-                cache.threat_fields(&public_map, [TilePos::new(12, 4), TilePos::new(4, 4)]);
-                cache.start_fields(&public_map, &starts[1..]);
+                cache.threat_fields(
+                    QueryPurpose::NavigationTest,
+                    &public_map,
+                    [TilePos::new(12, 4), TilePos::new(4, 4)],
+                );
+                cache.start_fields(QueryPurpose::NavigationTest, &public_map, &starts[1..]);
             }
         });
         assert_eq!(
@@ -944,13 +1023,25 @@ mod tests {
     fn routing_cache_replaces_departed_threats_and_resets_for_any_map_change() {
         let public_map = briefing(18, 10, [], Vec::new());
         let mut cache = PublicRoutes::default();
-        cache.threat_fields(&public_map, [TilePos::new(3, 3), TilePos::new(9, 3)]);
-        cache.threat_fields(&public_map, [TilePos::new(9, 3), TilePos::new(14, 3)]);
+        cache.threat_fields(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            [TilePos::new(3, 3), TilePos::new(9, 3)],
+        );
+        cache.threat_fields(
+            QueryPurpose::NavigationTest,
+            &public_map,
+            [TilePos::new(9, 3), TilePos::new(14, 3)],
+        );
         assert_eq!(cache.build_count().threats, 3);
         assert_eq!(cache.retained_field_counts().1, 2);
 
         let changed_map = briefing(18, 10, [TilePos::new(8, 5)], Vec::new());
-        cache.threat_fields(&changed_map, [TilePos::new(9, 3)]);
+        cache.threat_fields(
+            QueryPurpose::NavigationTest,
+            &changed_map,
+            [TilePos::new(9, 3)],
+        );
         assert_eq!(cache.build_count().threats, 4);
         assert_eq!(cache.retained_field_counts(), (0, 1, 0));
     }
@@ -961,16 +1052,17 @@ mod tests {
         let map = briefing(20, 12, (1..10).map(|y| TilePos::new(10, y)), Vec::new());
         let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
         let sources = [TilePos::new(2, 2)];
-        let expected = PublicGroundDistances::from_sources(&map, sources);
+        let expected =
+            PublicGroundDistances::from_sources(QueryPurpose::NavigationTest, &map, sources);
         let planning = PlanningWork::with_allowance(80);
         assert_eq!(
-            planning.field(0, &map, &blocked, sources),
+            planning.field(QueryPurpose::NavigationTest, 0, &map, &blocked, sources),
             Progress::Deferred
         );
         assert_eq!(planning.spent(), 60);
         let saved = planning.clone();
         assert_eq!(
-            planning.field(0, &map, &blocked, sources),
+            planning.field(QueryPurpose::NavigationTest, 0, &map, &blocked, sources),
             Progress::Deferred
         );
         assert_eq!(
@@ -980,8 +1072,12 @@ mod tests {
         let cloned = planning.clone();
         let mut complete = false;
         for tick in (12..120).step_by(12) {
-            let actual = planning.field(tick, &map, &blocked, sources);
-            assert_eq!(actual, cloned.field(tick, &map, &blocked, sources));
+            let actual =
+                planning.field(QueryPurpose::NavigationTest, tick, &map, &blocked, sources);
+            assert_eq!(
+                actual,
+                cloned.field(QueryPurpose::NavigationTest, tick, &map, &blocked, sources)
+            );
             assert!(planning.spent() <= 80);
             if let Progress::Ready(field) = actual {
                 assert_eq!(*field, expected);
@@ -995,15 +1091,20 @@ mod tests {
         );
         let changed = BlockedGroundLayout::from_predicate(&map, |tile| tile.x == 10);
         assert_eq!(
-            planning.field(120, &map, &changed, sources),
+            planning.field(QueryPurpose::NavigationTest, 120, &map, &changed, sources),
             Progress::Deferred
         );
-        let expected = PublicGroundDistances::from_sources_avoiding(&map, sources, |tile| {
-            changed.contains(tile)
-        });
+        let expected = PublicGroundDistances::from_sources_avoiding(
+            QueryPurpose::NavigationTest,
+            &map,
+            sources,
+            |tile| changed.contains(tile),
+        );
         let mut complete = false;
         for tick in (132..240).step_by(12) {
-            if let Progress::Ready(field) = planning.field(tick, &map, &changed, sources) {
+            if let Progress::Ready(field) =
+                planning.field(QueryPurpose::NavigationTest, tick, &map, &changed, sources)
+            {
                 assert_eq!(*field, expected);
                 assert_eq!(field.footprint_distance(TilePos::new(17, 2), (1, 1)), None);
                 complete = true;
@@ -1021,7 +1122,13 @@ mod tests {
         let planning = PlanningWork::with_allowance(60);
         for x in [2, 3, 4] {
             assert_eq!(
-                planning.field(24, &map, &blocked, [TilePos::new(x, 2)]),
+                planning.field(
+                    QueryPurpose::NavigationTest,
+                    24,
+                    &map,
+                    &blocked,
+                    [TilePos::new(x, 2)]
+                ),
                 Progress::Deferred
             );
             assert_eq!(planning.spent(), 45);
@@ -1036,7 +1143,13 @@ mod tests {
         let planning = PlanningWork::with_allowance(240);
         for x in [2, 15] {
             assert_eq!(
-                planning.field(0, &map, &blocked, [TilePos::new(x, 2)]),
+                planning.field(
+                    QueryPurpose::NavigationTest,
+                    0,
+                    &map,
+                    &blocked,
+                    [TilePos::new(x, 2)]
+                ),
                 Progress::Deferred
             );
         }
@@ -1054,14 +1167,22 @@ mod tests {
             assert_eq!(planning.spent(), spent);
             if planning.stats().pending_fields == 0 {
                 for x in [2, 15] {
-                    let Progress::Ready(field) =
-                        planning.field(tick, &map, &blocked, [TilePos::new(x, 2)])
-                    else {
+                    let Progress::Ready(field) = planning.field(
+                        QueryPurpose::NavigationTest,
+                        tick,
+                        &map,
+                        &blocked,
+                        [TilePos::new(x, 2)],
+                    ) else {
                         panic!("completed work must survive until its consumer returns");
                     };
                     assert_eq!(
                         *field,
-                        PublicGroundDistances::from_sources(&map, [TilePos::new(x, 2)])
+                        PublicGroundDistances::from_sources(
+                            QueryPurpose::NavigationTest,
+                            &map,
+                            [TilePos::new(x, 2)]
+                        )
                     );
                 }
                 assert_eq!(planning.spent(), spent);

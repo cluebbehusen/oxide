@@ -1,5 +1,6 @@
 //! Canonical bounded paths with thread-local reusable search storage.
 
+use crate::bot::query_work::QueryPurpose;
 use chassis::{grid::TilePos, path::AstarScratch};
 use std::cell::RefCell;
 
@@ -51,6 +52,7 @@ impl Search {
 
     pub(super) fn path_with_distances(
         &mut self,
+        query_purpose: QueryPurpose,
         grid: super::KnownGrid<'_>,
         overlay: Option<super::BlockedRect>,
         start: TilePos,
@@ -67,6 +69,11 @@ impl Search {
             &mut self.scratch,
             distances,
         );
+        crate::bot::query_work::record(
+            query_purpose,
+            crate::bot::query_work::QueryOperation::PathSearch,
+            self.scratch.last_expansions() as usize,
+        );
         #[cfg(test)]
         super::work::record(|work| {
             work.searches += 1;
@@ -78,6 +85,7 @@ impl Search {
 
     pub(in crate::bot) fn path(
         &mut self,
+        query_purpose: QueryPurpose,
         width: i32,
         height: i32,
         start: TilePos,
@@ -94,6 +102,11 @@ impl Search {
             crate::stats::PATH_EXPANSION_CAP,
             &mut self.scratch,
         );
+        crate::bot::query_work::record(
+            query_purpose,
+            crate::bot::query_work::QueryOperation::PathSearch,
+            self.scratch.last_expansions() as usize,
+        );
         #[cfg(test)]
         super::work::record(|work| {
             work.searches += 1;
@@ -105,17 +118,19 @@ impl Search {
 }
 
 pub(in crate::bot) fn canonical_path(
+    query_purpose: QueryPurpose,
     width: i32,
     height: i32,
     start: TilePos,
     goal: TilePos,
     open: impl Fn(TilePos) -> bool,
 ) -> Option<Vec<TilePos>> {
-    Search::default().path(width, height, start, goal, open)
+    Search::default().path(query_purpose, width, height, start, goal, open)
 }
 
 /// Connectivity without route construction, retaining capped-search behavior.
 pub(in crate::bot) fn reachable(
+    query_purpose: QueryPurpose,
     width: i32,
     height: i32,
     start: TilePos,
@@ -135,7 +150,7 @@ pub(in crate::bot) fn reachable(
         return false;
     }
     if cells > crate::stats::PATH_EXPANSION_CAP as usize {
-        return canonical_path(width, height, start, goal, open).is_some();
+        return canonical_path(query_purpose, width, height, start, goal, open).is_some();
     }
     if start == goal {
         return true;
@@ -150,6 +165,7 @@ pub(in crate::bot) fn reachable(
 
 /// First candidate in caller preference order, retaining capped-search behavior.
 pub(in crate::bot) fn first_reachable_goal(
+    query_purpose: QueryPurpose,
     width: i32,
     height: i32,
     start: TilePos,
@@ -158,7 +174,10 @@ pub(in crate::bot) fn first_reachable_goal(
 ) -> Option<TilePos> {
     let mut search = Search::default();
     for (index, goal) in goals.iter().copied().enumerate() {
-        if search.path(width, height, start, goal, &open).is_some() {
+        if search
+            .path(query_purpose, width, height, start, goal, &open)
+            .is_some()
+        {
             return Some(goal);
         }
         if search.last_search_exhausted() {
@@ -196,7 +215,7 @@ mod tests {
                         )
                         .is_some();
                         assert_eq!(
-                            reachable(3, 3, start, goal, open),
+                            reachable(QueryPurpose::NavigationTest, 3, 3, start, goal, open),
                             expected,
                             "mask={mask}, start={start:?}, goal={goal:?}"
                         );
@@ -208,6 +227,7 @@ mod tests {
         assert_eq!(work.paths, 0);
         assert_eq!(work.fields, 0);
         assert!(!reachable(
+            QueryPurpose::NavigationTest,
             3,
             3,
             TilePos::new(-1, 0),
@@ -215,6 +235,7 @@ mod tests {
             |_| true
         ));
         assert!(!reachable(
+            QueryPurpose::NavigationTest,
             3,
             3,
             TilePos::new(0, 0),
@@ -228,12 +249,16 @@ mod tests {
         let start = TilePos::new(0, 0);
         let goal = TilePos::new(250, 250);
         let open = |tile: TilePos| tile.x != 249 || tile.y == 0;
-        let expected = canonical_path(256, 256, start, goal, open).is_some();
+        let expected =
+            canonical_path(QueryPurpose::NavigationTest, 256, 256, start, goal, open).is_some();
         assert!(
             !expected,
             "the long detour must exhaust the canonical allowance"
         );
-        assert_eq!(reachable(256, 256, start, goal, open), expected);
+        assert_eq!(
+            reachable(QueryPurpose::NavigationTest, 256, 256, start, goal, open),
+            expected
+        );
         assert!(super::super::flood::reaches_any(
             256,
             256,
@@ -256,7 +281,10 @@ mod tests {
                     chassis::path::astar(3, 3, start, *goal, open, crate::stats::PATH_EXPANSION_CAP)
                         .is_some()
                 });
-                assert_eq!(first_reachable_goal(3, 3, start, &goals, open), expected);
+                assert_eq!(
+                    first_reachable_goal(QueryPurpose::NavigationTest, 3, 3, start, &goals, open),
+                    expected
+                );
             }
         }
     }
@@ -265,7 +293,13 @@ mod tests {
         let start = TilePos::new(0, 0);
         let goal = TilePos::new(4, 0);
         let mut outer = Search::default();
-        assert!(outer.path(5, 1, start, goal, |tile| tile.x != 2).is_none());
+        assert!(
+            outer
+                .path(QueryPurpose::NavigationTest, 5, 1, start, goal, |tile| tile
+                    .x
+                    != 2)
+                .is_none()
+        );
         assert!(outer.last_search_exhausted());
         let expected = chassis::path::astar(
             5,
@@ -276,8 +310,11 @@ mod tests {
             crate::stats::PATH_EXPANSION_CAP,
         );
         assert_eq!(
-            canonical_path(5, 1, start, goal, |_| {
-                assert!(canonical_path(1, 1, start, start, |_| true).is_some());
+            canonical_path(QueryPurpose::NavigationTest, 5, 1, start, goal, |_| {
+                assert!(
+                    canonical_path(QueryPurpose::NavigationTest, 1, 1, start, start, |_| true)
+                        .is_some()
+                );
                 true
             }),
             expected
@@ -297,10 +334,21 @@ mod tests {
             !(tile != sealed && (239..=241).contains(&tile.x) && (239..=241).contains(&tile.y))
         };
         let mut search = Search::default();
-        assert!(search.path(256, 256, start, sealed, open).is_none());
+        assert!(
+            search
+                .path(QueryPurpose::NavigationTest, 256, 256, start, sealed, open)
+                .is_none()
+        );
         assert!(!search.last_search_exhausted());
         assert_eq!(
-            first_reachable_goal(256, 256, start, &[sealed, reachable], open),
+            first_reachable_goal(
+                QueryPurpose::NavigationTest,
+                256,
+                256,
+                start,
+                &[sealed, reachable],
+                open
+            ),
             Some(reachable)
         );
     }

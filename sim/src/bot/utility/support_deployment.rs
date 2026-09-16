@@ -2,6 +2,7 @@ use super::*;
 use crate::bot::allocation::{
     ClaimBundle, Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::Target;
 use crate::stats::Role;
 use chassis::Tick;
@@ -216,6 +217,7 @@ pub(super) fn protection_requests(
     let mut regions: Vec<ProtectionRequest> = Vec::new();
     let mut credited = std::collections::BTreeSet::new();
     let routes = RouteProjection::with_public_terrain_and_orientation(
+        QueryPurpose::SupportRouting,
         obs,
         Domain::Ground,
         context.briefing,
@@ -323,6 +325,7 @@ impl UtilityPolicy {
         }
         let mut intents = Vec::new();
         let routes = RouteProjection::with_public_terrain_and_orientation(
+            QueryPurpose::SupportRouting,
             obs,
             Domain::Ground,
             context.briefing,
@@ -449,6 +452,7 @@ impl UtilityPolicy {
                 .saturating_mul(u64::from(minimum_core)),
         );
         let routes = RouteProjection::with_public_terrain_and_orientation(
+            QueryPurpose::SupportRouting,
             obs,
             Domain::Ground,
             context.briefing,

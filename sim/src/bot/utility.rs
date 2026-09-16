@@ -29,6 +29,7 @@ use super::resources::{
     SiteFootprint, UnitClaimRole, builder_is_free,
 };
 use super::{PublicMapBriefing, StartingFoundry};
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, UnitKind};
@@ -1538,7 +1539,8 @@ impl UtilityPolicy {
         let (width, height) = size;
         let defer = (0..height).any(|dy| (0..width).any(|dx| !obs.visible(anchor.offset(dx, dy))));
         candidates.sort_unstable_by_key(|unit| (unit.tile.manhattan(anchor), unit.id));
-        let routes = routing::BuildRouteProjection::new(obs, public_map);
+        let routes =
+            routing::BuildRouteProjection::new(QueryPurpose::BuilderRouting, obs, public_map);
         candidates
             .iter()
             .copied()
@@ -2806,7 +2808,13 @@ impl UtilityPolicy {
                     unit,
                     home,
                     &danger,
-                    ground.get_or_init(|| RouteProjection::new(obs, Domain::Ground)),
+                    ground.get_or_init(|| {
+                        RouteProjection::new(
+                            QueryPurpose::EvacuationDestination,
+                            obs,
+                            Domain::Ground,
+                        )
+                    }),
                 )
             {
                 if let Some((_, workers)) = evacuations
@@ -2855,11 +2863,13 @@ impl UtilityPolicy {
         ground: &RouteProjection<'_>,
     ) -> Option<TilePos> {
         let initial_danger = self.worker_escape_component(obs, worker.tile, danger, ground);
-        let mut known_routes = RouteProjection::known_ground(obs);
-        let mut safe_routes = RouteProjection::ground_avoiding(obs, |tile| {
-            (self.harvest_location_contested(tile) || danger.contains(tile))
-                && !initial_danger.contains(&tile)
-        });
+        let mut known_routes =
+            RouteProjection::known_ground(QueryPurpose::EvacuationDestination, obs);
+        let mut safe_routes =
+            RouteProjection::ground_avoiding(QueryPurpose::EvacuationDestination, obs, |tile| {
+                (self.harvest_location_contested(tile) || danger.contains(tile))
+                    && !initial_danger.contains(&tile)
+            });
         let search_origin = if initial_danger.is_empty() {
             home
         } else {
@@ -2868,6 +2878,11 @@ impl UtilityPolicy {
         let max_radius = obs.map_width.max(obs.map_height).max(0);
         for radius in 0..=max_radius {
             let mut best = None;
+            crate::bot::query_work::record(
+                QueryPurpose::EvacuationDestination,
+                crate::bot::query_work::QueryOperation::EvacuationCandidates,
+                (radius as usize * 8).max(1),
+            );
             for (dx, dy) in super::navigation::areas::square_ring(radius) {
                 let tile = search_origin.offset(dx, dy);
                 if !ground.open(tile)

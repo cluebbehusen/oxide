@@ -4,6 +4,7 @@ use super::{Progress, WorkBudget};
 use crate::bot::navigation::{
     BlockedRect, KnownGrid, approaches::ApproachField, distance_work::DistanceWork,
 };
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::TilePos;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -13,6 +14,7 @@ const IDLE_LIFETIME: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
+    query_purpose: QueryPurpose,
     used: u64,
     open: Vec<bool>,
     traversal: Option<DistanceWork>,
@@ -22,6 +24,7 @@ struct Job {
 impl Job {
     fn advance(
         &mut self,
+        query_purpose: QueryPurpose,
         generation: &Generation,
         goals: &[TilePos],
         overlay: Option<BlockedRect>,
@@ -45,13 +48,20 @@ impl Job {
                 );
             }
             self.traversal = Some(DistanceWork::new(
+                query_purpose,
                 generation.width,
                 generation.height,
                 std::mem::take(&mut self.open),
                 goals.iter().copied(),
             ));
         }
-        if self.traversal.as_mut().unwrap().advance(budget) == Progress::Deferred {
+        if self
+            .traversal
+            .as_mut()
+            .unwrap()
+            .advance(query_purpose, budget)
+            == Progress::Deferred
+        {
             return Progress::Deferred;
         }
         let field = Arc::new(ApproachField::from_distances(
@@ -104,7 +114,7 @@ impl ApproachPreparation {
         pending.rotate_left(first);
         for ((overlay, goals), job) in pending {
             budget.run_slice(16_000, |slice| {
-                job.advance(generation, goals, *overlay, slice)
+                job.advance(job.query_purpose, generation, goals, *overlay, slice)
             });
         }
         self.trim_ready();
@@ -117,6 +127,7 @@ impl ApproachPreparation {
 
     pub(super) fn advance(
         &mut self,
+        query_purpose: QueryPurpose,
         tick: u64,
         grid: KnownGrid<'_>,
         goals: &[TilePos],
@@ -146,13 +157,20 @@ impl ApproachPreparation {
             return Progress::Deferred;
         }
         let job = self.jobs.entry(key.clone()).or_insert_with(|| Job {
+            query_purpose,
             used: tick,
             open: Vec::new(),
             traversal: None,
             ready: None,
         });
         job.used = tick;
-        let result = job.advance(self.generation.as_ref().unwrap(), &key.1, overlay, budget);
+        let result = job.advance(
+            query_purpose,
+            self.generation.as_ref().unwrap(),
+            &key.1,
+            overlay,
+            budget,
+        );
         self.trim_ready();
         result
     }
@@ -208,7 +226,15 @@ mod tests {
         for tick in (0..600).step_by(12) {
             let fields: Vec<_> = walls
                 .into_iter()
-                .map(|wall| work.candidate_route_field(tick, grid, wall, &[goal]))
+                .map(|wall| {
+                    work.candidate_route_field(
+                        QueryPurpose::NavigationTest,
+                        tick,
+                        grid,
+                        wall,
+                        &[goal],
+                    )
+                })
                 .collect();
             assert!(work.spent() <= 91);
             if let [Progress::Ready(closed), Progress::Ready(open)] = fields.as_slice() {
@@ -231,7 +257,13 @@ mod tests {
             let mut completed = 0;
             for x in 0..32 {
                 if matches!(
-                    work.approach_field(tick, grid, false, &[TilePos::new(x, 2)]),
+                    work.approach_field(
+                        QueryPurpose::NavigationTest,
+                        tick,
+                        grid,
+                        false,
+                        &[TilePos::new(x, 2)]
+                    ),
                     Progress::Ready(_)
                 ) {
                     completed += 1;
@@ -254,7 +286,13 @@ mod tests {
             let mut complete = true;
             for x in 0..20 {
                 if !matches!(
-                    work.approach_field(tick, grid, false, &[TilePos::new(x, 2)]),
+                    work.approach_field(
+                        QueryPurpose::NavigationTest,
+                        tick,
+                        grid,
+                        false,
+                        &[TilePos::new(x, 2)]
+                    ),
                     Progress::Ready(_)
                 ) {
                     complete = false;
@@ -282,11 +320,11 @@ mod tests {
         let goals = [TilePos::new(18, 2)];
         let work = PlanningWork::with_allowance(240);
         assert!(matches!(
-            work.approach_field(0, ground, false, &goals),
+            work.approach_field(QueryPurpose::NavigationTest, 0, ground, false, &goals),
             Progress::Deferred
         ));
         assert!(matches!(
-            work.approach_field(0, air, true, &goals),
+            work.approach_field(QueryPurpose::NavigationTest, 0, air, true, &goals),
             Progress::Deferred
         ));
         assert_eq!(work.stats().pending_approach_fields, 2);
@@ -298,11 +336,12 @@ mod tests {
             assert!(work.spent() <= 120);
             if work.stats().pending_approach_fields == 0 {
                 let Progress::Ready(ground_field) =
-                    work.approach_field(tick, ground, false, &goals)
+                    work.approach_field(QueryPurpose::NavigationTest, tick, ground, false, &goals)
                 else {
                     panic!("ground field finished");
                 };
-                let Progress::Ready(air_field) = work.approach_field(tick, air, true, &goals)
+                let Progress::Ready(air_field) =
+                    work.approach_field(QueryPurpose::NavigationTest, tick, air, true, &goals)
                 else {
                     panic!("air field finished");
                 };
@@ -324,15 +363,23 @@ mod tests {
         }
         let goals = [TilePos::new(8, 2)];
         let work = PlanningWork::with_allowance(240);
-        let Progress::Ready(field) =
-            work.approach_field(0, KnownGrid::new(10, 6, &open).unwrap(), false, &goals)
-        else {
+        let Progress::Ready(field) = work.approach_field(
+            QueryPurpose::NavigationTest,
+            0,
+            KnownGrid::new(10, 6, &open).unwrap(),
+            false,
+            &goals,
+        ) else {
             panic!("small field finishes");
         };
         assert!(field.path(&[TilePos::new(2, 2)]).is_some());
-        let Progress::Ready(field) =
-            work.approach_field(12, KnownGrid::new(10, 6, &blocked).unwrap(), false, &goals)
-        else {
+        let Progress::Ready(field) = work.approach_field(
+            QueryPurpose::NavigationTest,
+            12,
+            KnownGrid::new(10, 6, &blocked).unwrap(),
+            false,
+            &goals,
+        ) else {
             panic!("replacement finishes");
         };
         assert!(field.path(&[TilePos::new(2, 2)]).is_none());
@@ -340,6 +387,7 @@ mod tests {
         for x in 0..40 {
             assert!(matches!(
                 empty.approach_field(
+                    QueryPurpose::NavigationTest,
                     0,
                     KnownGrid::new(10, 6, &open).unwrap(),
                     false,

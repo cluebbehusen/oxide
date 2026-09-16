@@ -10,6 +10,7 @@ use super::resources::ProducerLaneReservations;
 use super::resources::ResourceSnapshot;
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
@@ -1121,7 +1122,7 @@ fn select_target(
     pickup: TilePos,
     support: LiftAirSupport,
 ) -> Option<&BuildingObs> {
-    if !routing::ground_open(obs, pickup) {
+    if !routing::ground_open(QueryPurpose::LiftOperation, obs, pickup) {
         return None;
     }
     // One lazily built projection answers every candidate: the known-ground
@@ -1139,7 +1140,9 @@ fn select_target(
                     && building.player == player
                     && building.anchor == target
                     && disconnected_via(
-                        routes.get_or_insert_with(|| RouteProjection::known_ground(obs)),
+                        routes.get_or_insert_with(|| {
+                            RouteProjection::known_ground(QueryPurpose::LiftOperation, obs)
+                        }),
                         pickup,
                         building,
                     )
@@ -1156,7 +1159,9 @@ fn select_target(
             building.built
                 && building.seen
                 && disconnected_via(
-                    routes.get_or_insert_with(|| RouteProjection::known_ground(obs)),
+                    routes.get_or_insert_with(|| {
+                        RouteProjection::known_ground(QueryPurpose::LiftOperation, obs)
+                    }),
                     pickup,
                     building,
                 )
@@ -1199,10 +1204,10 @@ fn target_is_current(obs: &Observation, operation: &LiftOperation) -> bool {
 }
 
 fn disconnected(obs: &Observation, pickup: TilePos, target: &BuildingObs) -> bool {
-    if !routing::ground_open(obs, pickup) {
+    if !routing::ground_open(QueryPurpose::LiftOperation, obs, pickup) {
         return false;
     }
-    let mut routes = RouteProjection::known_ground(obs);
+    let mut routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     disconnected_via(&mut routes, pickup, target)
 }
 
@@ -1224,13 +1229,13 @@ fn ground_disconnection_is_proven(
     pickup: TilePos,
     target: &BuildingContact,
 ) -> bool {
-    if !routing::ground_open(obs, pickup) {
+    if !routing::ground_open(QueryPurpose::LiftOperation, obs, pickup) {
         return false;
     }
-    let routes = RouteProjection::new(obs, Domain::Ground);
+    let routes = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Ground);
     let goals: Vec<_> = footprint_ring(target.anchor, target.kind.base_stats().size)
         .into_iter()
-        .filter(|tile| routing::ground_open(obs, *tile))
+        .filter(|tile| routing::ground_open(QueryPurpose::LiftOperation, obs, *tile))
         .collect();
     !goals.is_empty() && !goals.into_iter().any(|goal| routes.reaches(pickup, goal))
 }
@@ -1305,7 +1310,7 @@ fn payload_plan_for_component(
     core_reservations: &[UnitId],
     minimum_core_equivalents: u64,
 ) -> Option<PickupPlan> {
-    if !routing::ground_open(obs, pickup) {
+    if !routing::ground_open(QueryPurpose::LiftOperation, obs, pickup) {
         return None;
     }
     let candidates = lift_candidates(obs, pickup, unavailable);
@@ -1354,7 +1359,7 @@ fn lift_candidates<'a>(
     pickup: TilePos,
     unavailable: &[UnitId],
 ) -> Vec<&'a UnitObs> {
-    let mut routes = RouteProjection::known_ground(obs);
+    let mut routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     let mut candidates: Vec<_> = obs
         .my_units
         .iter()
@@ -1497,7 +1502,7 @@ fn refresh_provision_payload(
     minimum_core_equivalents: u64,
 ) -> bool {
     let pickup = operation.pickup_component;
-    if !routing::ground_open(obs, pickup) {
+    if !routing::ground_open(QueryPurpose::LiftOperation, obs, pickup) {
         return false;
     }
     let available = lift_candidates(obs, pickup, unavailable);
@@ -1829,13 +1834,13 @@ fn assign_manifests(
         operation.pickup_component,
         operation.desired_carriers,
     );
-    let air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Air);
     let drops: Vec<_> = operation
         .planned_drops
         .iter()
         .copied()
         .filter(|drop| {
-            routing::ground_open(obs, *drop)
+            routing::ground_open(QueryPurpose::LiftOperation, obs, *drop)
                 && air.reaches(pickups.first().copied().unwrap_or(home), *drop)
         })
         .collect();
@@ -2177,7 +2182,7 @@ fn issue_assault(
     if manifest.attack_issued {
         return;
     }
-    let mut routes = RouteProjection::known_ground(obs);
+    let mut routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     let landed: Vec<_> = manifest
         .riders
         .iter()
@@ -2234,7 +2239,7 @@ fn sustain_landed_assault(
 }
 
 fn landed_survivors(operation: &LiftOperation, obs: &Observation) -> Vec<UnitId> {
-    let mut routes = RouteProjection::known_ground(obs);
+    let mut routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     let mut survivors = Vec::new();
     for manifest in operation
         .manifests
@@ -2264,7 +2269,7 @@ fn followup_assault_goal(
     survivors: &[UnitId],
     attempted: &[TilePos],
 ) -> Option<TilePos> {
-    let known_routes = RouteProjection::known_ground(obs);
+    let known_routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     if let Some(building) = obs
         .enemy_buildings
         .iter()
@@ -2289,7 +2294,7 @@ fn followup_assault_goal(
         return Some(building.anchor);
     }
 
-    let projected_routes = RouteProjection::new(obs, Domain::Ground);
+    let projected_routes = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Ground);
     (0..obs.map_height)
         .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
         .filter(|tile| {
@@ -2322,7 +2327,7 @@ fn return_carrier(
         manifest.closed = true;
         return;
     }
-    let air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Air);
     if manifest.recovery_attempts >= DROP_ATTEMPTS || !air.reaches(carrier.tile, manifest.pickup) {
         manifest.closed = true;
         return;
@@ -2425,7 +2430,7 @@ fn alternate_drop(
     target: TilePos,
     claimed: &[TilePos],
 ) -> Option<TilePos> {
-    let air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Air);
     open_slots(obs, target, claimed.len().saturating_add(32))
         .into_iter()
         .find(|tile| !claimed.contains(tile) && air.reaches(from, *tile))
@@ -2443,7 +2448,7 @@ fn unit(obs: &Observation, id: UnitId) -> Option<&UnitObs> {
 }
 
 fn landing_slots(obs: &Observation, from: TilePos, target: TilePos, count: usize) -> Vec<TilePos> {
-    let air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Air);
     open_slots(obs, target, count.saturating_mul(3))
         .into_iter()
         .filter(|tile| air.reaches(from, *tile))
@@ -2466,7 +2471,7 @@ fn pickup_slots(
     component: TilePos,
     count: usize,
 ) -> Vec<TilePos> {
-    if !routing::ground_open(obs, component) {
+    if !routing::ground_open(QueryPurpose::LiftOperation, obs, component) {
         return Vec::new();
     }
     let map_cells = usize::try_from(obs.map_width)
@@ -2478,7 +2483,7 @@ fn pickup_slots(
         })
         .unwrap_or(0);
     let candidates = open_slots(obs, home, map_cells);
-    let routes = RouteProjection::known_ground(obs);
+    let routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     candidates
         .into_iter()
         .filter(|tile| routes.reaches(component, *tile))
@@ -2494,7 +2499,7 @@ fn pickup_component_anchors(obs: &Observation, home: TilePos) -> Vec<TilePos> {
         .unwrap_or(0);
     let candidates = open_slots_within(obs, home, radius, count);
     let mut anchors = Vec::new();
-    let routes = RouteProjection::known_ground(obs);
+    let routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
     for candidate in candidates {
         if anchors
             .iter()
@@ -2526,7 +2531,7 @@ fn open_slots_within(
                     continue;
                 }
                 let tile = center.offset(dx, dy);
-                if routing::ground_open(obs, tile) {
+                if routing::ground_open(QueryPurpose::LiftOperation, obs, tile) {
                     slots.push(tile);
                     if slots.len() == count {
                         return slots;
@@ -2805,7 +2810,7 @@ mod tests {
             "the payload must come from the stronger component: {:?}",
             plan.payload
         );
-        let mut routes = RouteProjection::known_ground(&obs);
+        let mut routes = RouteProjection::known_ground(QueryPurpose::NavigationTest, &obs);
         assert!(!routes.reaches(naive, plan.pickup));
         assert!(
             plan.payload
@@ -2913,7 +2918,7 @@ mod tests {
             "a larger remote roster cannot switch the operation's component"
         );
         assert_eq!(frozen.manifests.len(), frozen.desired_carriers);
-        let mut routes = RouteProjection::known_ground(&obs);
+        let mut routes = RouteProjection::known_ground(QueryPurpose::NavigationTest, &obs);
         for manifest in &frozen.manifests {
             assert!(routes.reaches(frozen.pickup_component, manifest.pickup));
             for rider in &manifest.riders {
@@ -4431,7 +4436,7 @@ mod tests {
 
         let naive = open_slots(&obs, HOME, 3);
         assert_eq!(naive[2], isolated);
-        let routes = RouteProjection::known_ground(&obs);
+        let routes = RouteProjection::known_ground(QueryPurpose::NavigationTest, &obs);
         assert!(!routes.reaches(naive[0], naive[2]));
 
         let mut planner = LiftPlanner::new();
@@ -4450,7 +4455,7 @@ mod tests {
         assert_eq!(pickups.len(), 3);
         assert!(!pickups.contains(&isolated));
 
-        let mut routes = RouteProjection::known_ground(&obs);
+        let mut routes = RouteProjection::known_ground(QueryPurpose::NavigationTest, &obs);
         for manifest in &operation.manifests {
             for rider in &manifest.riders {
                 let rider = unit(&obs, *rider).unwrap();

@@ -1,6 +1,7 @@
 //! Army lifecycle, marching, contact, and strength assessment.
 
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::Domain;
 use chassis::fx::Fx;
 use core::cmp::Reverse;
@@ -920,8 +921,11 @@ fn march_with_roster<'a>(
     {
         let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
         let distance = dx.abs().max(dy.abs());
-        let mut routes =
-            crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
+        let mut routes = crate::bot::navigation::commands::RouteProjection::new(
+            QueryPurpose::ExecutiveOrders,
+            obs,
+            Domain::Ground,
+        );
         let sight = escorts
             .iter()
             .filter_map(|id| roster.get(*id))

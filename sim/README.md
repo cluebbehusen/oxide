@@ -126,7 +126,8 @@ cargo test -p oxide-sim --test state_integrity --locked
 cargo clippy -p oxide-sim --all-targets --locked -- -D warnings
 ```
 
-Bot phase observation is an optional callback surface in `bot::observer`.
-Callbacks carry stable phase identifiers only, with paired scopes around the
-ordinary controller work. They do not introduce clocks, serialized fields, or
-alternative planning paths; the kit layer owns timing and persistence.
+Bot observation is an optional callback surface in `bot::observer`. Callbacks
+report paired phase boundaries, deterministic planning-work counts, and opt-in
+caller-attributed query work around the ordinary controller. They do not
+introduce clocks, serialized fields, or alternative planning paths; callers own
+timing and persistence.

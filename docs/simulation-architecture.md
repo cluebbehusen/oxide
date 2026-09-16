@@ -1433,7 +1433,11 @@ again on every use; cached paths cannot certify safety. Authoritative doorstep
 ranking remains query-local.
 
 Test-only navigation work counters enforce structural regression bounds across
-consumers without using wall-clock timing or affecting controller state.
+consumers without using wall-clock timing or affecting controller state. Query
+entry points require an explicit caller purpose, which follows nested services
+and retained jobs across decisions. Optional observer reports attribute cache
+hits to the requesting caller and report operation-specific work units; these
+counters never influence planning allowances or decisions.
 
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current

@@ -5,6 +5,7 @@ use super::economic_value::{
 };
 use super::*;
 use crate::bot::navigation::public_fields::PublicGroundDistances;
+use crate::bot::query_work::QueryPurpose;
 
 pub(super) struct HarvestRegion {
     pub(super) service: TilePos,
@@ -69,6 +70,7 @@ impl UtilityPolicy {
         let danger = self.harvest_danger_projection(obs, Some(contacts.0), Some(contacts.1));
         let blocked = |tile| danger.contains(tile) || self.harvest_location_contested(tile);
         let commands = RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::ConstructionAccess,
             obs,
             briefing,
             orientation,
@@ -82,12 +84,16 @@ impl UtilityPolicy {
             let (width, height) = site.kind.base_stats().size;
             let doors = (-1..=height)
                 .flat_map(|dy| (-1..=width).map(move |dx| site.anchor.offset(dx, dy)))
-                .filter(|tile| routing::ground_open(obs, *tile) && !blocked(*tile))
+                .filter(|tile| {
+                    routing::ground_open(QueryPurpose::ConstructionAccess, obs, *tile)
+                        && !blocked(*tile)
+                })
                 .collect::<Vec<_>>();
             if doors.is_empty() {
                 continue;
             }
             let distances = PublicGroundDistances::from_sources_avoiding(
+                QueryPurpose::ConstructionAccess,
                 briefing,
                 doors.iter().copied(),
                 |tile| !commands.open(tile),
@@ -124,6 +130,7 @@ impl UtilityPolicy {
                     continue;
                 };
                 let Some(spawn) = routing::production_spawn_doorstep(
+                    QueryPurpose::ConstructionAccess,
                     obs,
                     producer,
                     Some(briefing),
@@ -181,6 +188,7 @@ impl UtilityPolicy {
         }
         let danger = self.harvest_danger_projection(obs, Some(contacts.0), Some(contacts.1));
         let commands = RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::HarvestValuation,
             obs,
             briefing,
             orientation,
@@ -197,7 +205,7 @@ impl UtilityPolicy {
                 || tile.y >= obs.map_height
                 || blocked_cells[(tile.y * obs.map_width + tile.x) as usize]
         };
-        let routes = RouteProjection::ground_avoiding(obs, blocked);
+        let routes = RouteProjection::ground_avoiding(QueryPurpose::HarvestValuation, obs, blocked);
         let mut dropoffs = obs
             .my_buildings
             .iter()
@@ -236,7 +244,12 @@ impl UtilityPolicy {
                 workers: Vec::new(),
                 doors: sources.clone(),
                 producer_access: std::collections::BTreeMap::new(),
-                distances: PublicGroundDistances::from_sources_avoiding(briefing, sources, blocked),
+                distances: PublicGroundDistances::from_sources_avoiding(
+                    QueryPurpose::HarvestValuation,
+                    briefing,
+                    sources,
+                    blocked,
+                ),
             })
             .collect::<Vec<_>>();
         let mut positions = vec![BTreeSet::new(); regions.len()];
@@ -315,6 +328,7 @@ impl UtilityPolicy {
             }) && let Some(distance) = work_distances[index]
                 .get_or_insert_with(|| {
                     PublicGroundDistances::from_sources_avoiding(
+                        QueryPurpose::HarvestValuation,
                         briefing,
                         positions[index].iter().copied(),
                         blocked,
@@ -337,6 +351,7 @@ impl UtilityPolicy {
                 continue;
             };
             let Some(spawn) = routing::production_spawn_doorstep(
+                QueryPurpose::HarvestValuation,
                 obs,
                 building,
                 Some(briefing),

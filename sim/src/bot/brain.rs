@@ -198,6 +198,7 @@ impl Brain {
         if !self.decision_due(state) {
             return Vec::new();
         }
+        let _query_capture = super::query_work::Capture::new(observer);
         let observation_scope = PhaseScope::new(observer, BotPhase::Observation);
         let obs = if self.dials.fog_honest {
             Observation::fog_honest(state, self.player)
@@ -6686,7 +6687,7 @@ mod tests {
             .expect("the oriented observation retains the home Foundry")
             .anchor;
         let expected_returning =
-            super::super::navigation::commands::routable_command_subset_with_public_terrain_and_orientation(
+            super::super::navigation::commands::routable_command_subset_with_public_terrain_and_orientation(crate::bot::query_work::QueryPurpose::NavigationTest,
                 &oriented,
                 brain
                     .mind()

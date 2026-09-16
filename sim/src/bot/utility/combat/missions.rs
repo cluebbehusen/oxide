@@ -1,6 +1,7 @@
 use super::*;
 use crate::bot::executive::{ArmyId, ArmyMission, ArmyObjective, ArmyPurpose};
 use crate::bot::experience::{Doctrine, ExperienceKey};
+use crate::bot::query_work::QueryPurpose;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::bot) struct GroundMissionInputs {
@@ -34,9 +35,15 @@ impl UtilityPolicy {
             .min_by_key(|unit| unit.id)?;
         let destination = *self.ground_attack_goals(obs, goal, 1)?.first()?;
         let routes = mode.public_map.map_or_else(
-            || crate::bot::navigation::commands::RouteProjection::known_ground(obs),
+            || {
+                crate::bot::navigation::commands::RouteProjection::known_ground(
+                    QueryPurpose::GroundTargetSelection,
+                    obs,
+                )
+            },
             |map| {
                 crate::bot::navigation::commands::RouteProjection::with_public_terrain(
+                    QueryPurpose::GroundTargetSelection,
                     obs,
                     Domain::Ground,
                     map,

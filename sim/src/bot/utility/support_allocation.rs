@@ -4,6 +4,7 @@ use super::*;
 use crate::bot::allocation::{
     ClaimBundle, Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::trace::{RepairProgramTrace, SupportLifecycleReason, SupportLifecycleTrace};
 use crate::ids::Target;
 use chassis::Tick;
@@ -404,6 +405,7 @@ impl UtilityPolicy {
                 .with_repair_work(&work)
                 .with_funded_repairers(&funded_repairers);
         let mut service_routes = crate::bot::navigation::service::ServiceRoutes::new(
+            QueryPurpose::SupportRouting,
             obs,
             Some(context.briefing),
             Some(context.orientation),
@@ -432,6 +434,7 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let mut geometry = super::defense::DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::SupportRouting,
             self,
             obs,
             context.briefing,
@@ -567,6 +570,7 @@ impl UtilityPolicy {
         let danger = &snapshot.danger;
         let patients = &snapshot.patients;
         let mut routes = routing::RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::SupportRouting,
             obs,
             context.briefing,
             context.orientation,
@@ -805,6 +809,7 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let mut routes = routing::RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::SupportRouting,
             obs,
             context.briefing,
             context.orientation,
@@ -893,16 +898,19 @@ impl UtilityPolicy {
         worker: &UnitObs,
         patient: &Patient,
     ) -> bool {
-        routing::build_command_path_avoids_with_public_terrain_and_orientation(
+        routing::BuildRouteProjection::new(
+            QueryPurpose::SupportRouting,
             context.obs,
-            context.briefing,
+            Some(context.briefing),
+        )
+        .avoids(
             worker,
             routing::BuildCommandTarget {
                 anchor: patient.tile,
                 size: patient.size,
                 defer: false,
             },
-            context.orientation,
+            Some(context.orientation),
             |tile| snapshot.danger.contains(tile) || self.harvest_location_contested(tile),
         )
     }

@@ -18,6 +18,7 @@ pub(super) fn board<'a>(ground: &'a GroundKnowledge<'_>, domain: DefenseDomain) 
         ),
     };
     PathBoard {
+        query_purpose: ground.query_purpose,
         grid: KnownGrid::new(ground.obs.map_width, ground.obs.map_height, blocked)
             .expect("knowledge covers the map"),
         class,

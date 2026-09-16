@@ -12,6 +12,7 @@ use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::stats::{BuildingKind, Domain};
 use chassis::Tick;
@@ -215,7 +216,7 @@ impl TeamReliefPlanner {
             core_reservations,
             minimum_core_equivalents,
         } = admission;
-        let mut routes = RouteProjection::new(obs, Domain::Ground);
+        let mut routes = RouteProjection::new(QueryPurpose::SupportRouting, obs, Domain::Ground);
         let context = ReliefContext {
             tuning,
             obs,
@@ -525,6 +526,7 @@ impl TeamReliefPlanner {
             minimum_core_equivalents: admission.minimum_core_equivalents,
         };
         let mut routes = RouteProjection::with_public_terrain_and_orientation(
+            QueryPurpose::SupportRouting,
             obs,
             Domain::Ground,
             map,
@@ -1383,7 +1385,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let preferred = [UnitId(3), UnitId(4), UnitId(5)];
-        let routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
         assert!(routes.group_reaches_command_goal(&preferred, ALLY_BASE));
         assert!(
             !combat_core_status(&obs, &preferred, &[], 8).ready,

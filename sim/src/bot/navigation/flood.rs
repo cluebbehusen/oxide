@@ -1,5 +1,6 @@
 //! Cardinal connectivity and placement witnesses, plus bounded eight-way reach.
 
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 use std::{cell::RefCell, collections::VecDeque};
 
@@ -147,7 +148,16 @@ pub(in crate::bot) fn component_tiles(
     component
 }
 
-pub(in crate::bot) fn labels(open: &[bool], map_size: (i32, i32)) -> Vec<u32> {
+pub(in crate::bot) fn labels(
+    query_purpose: QueryPurpose,
+    open: &[bool],
+    map_size: (i32, i32),
+) -> Vec<u32> {
+    crate::bot::query_work::record(
+        query_purpose,
+        crate::bot::query_work::QueryOperation::Components,
+        open.len(),
+    );
     let index = |tile: TilePos| (tile.y * map_size.0 + tile.x) as usize;
     #[cfg(test)]
     super::work::record(|work| {

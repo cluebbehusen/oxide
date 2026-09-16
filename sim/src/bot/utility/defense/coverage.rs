@@ -1,6 +1,7 @@
 //! Shared approach-tile geometry for a batch of candidate defense sites.
 
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 
 struct TileFacts {
     position: TilePos,
@@ -90,6 +91,11 @@ impl<'a> Batch<'a> {
                 );
             }
         }
+        crate::bot::query_work::record(
+            QueryPurpose::DefenseCoverage,
+            crate::bot::query_work::QueryOperation::CoverageSetup,
+            tiles.len(),
+        );
         Self {
             assets_values: context.assets,
             briefing: context.briefing,
@@ -106,10 +112,12 @@ impl<'a> Batch<'a> {
         let profile = self.profile;
         let mut geometry = vec![None; self.tiles.len()];
         let mut coverage = Coverage::empty();
+        let mut samples_scored = 0;
         for (asset_index, asset) in self.assets_values.iter().enumerate() {
             if !enabled(asset_index) {
                 continue;
             }
+            samples_scored += self.assets[asset_index].len();
 
             let mut protects = false;
             let mut adds_new = false;
@@ -205,6 +213,11 @@ impl<'a> Batch<'a> {
                     .saturating_add(asset.value.saturating_mul(best_depth));
             }
         }
+        crate::bot::query_work::record(
+            QueryPurpose::DefenseCoverage,
+            crate::bot::query_work::QueryOperation::CoverageScore,
+            samples_scored,
+        );
         coverage
     }
 }

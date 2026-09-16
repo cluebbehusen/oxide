@@ -5,6 +5,7 @@ use crate::bot::allocation::{
     ClaimBundle, Confidence, ExecutionSafety, ProducerJobClaim, ProposalCase, StrategicValue,
     TimeToImpact, Urgency,
 };
+use crate::bot::query_work::QueryPurpose;
 use chassis::{Tick, fx::Fx};
 use std::collections::BTreeMap;
 
@@ -415,12 +416,14 @@ impl<'a> ReconRoutes<'a> {
         }
         Self {
             ground: RouteProjection::ground_avoiding_with_public_terrain(
+                QueryPurpose::ReconApproach,
                 obs,
                 context.briefing,
                 context.orientation,
                 |tile| danger.contains(tile),
             ),
             air: RouteProjection::avoiding_with_public_terrain(
+                QueryPurpose::ReconApproach,
                 obs,
                 Domain::Air,
                 context.briefing,

@@ -1,6 +1,7 @@
 //! Owned, resumable distance fields over one immutable passability surface.
 
 use crate::bot::planning::{Progress, WorkBudget};
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::TilePos;
 use std::collections::VecDeque;
 
@@ -18,6 +19,7 @@ pub(in crate::bot) struct DistanceWork {
 
 impl DistanceWork {
     pub(in crate::bot) fn new(
+        query_purpose: QueryPurpose,
         width: i32,
         height: i32,
         open: Vec<bool>,
@@ -25,6 +27,11 @@ impl DistanceWork {
     ) -> Self {
         assert!(width >= 0 && height >= 0);
         assert_eq!(open.len(), width as usize * height as usize);
+        crate::bot::query_work::record(
+            query_purpose,
+            crate::bot::query_work::QueryOperation::FieldSetup,
+            open.len(),
+        );
         let mut result = Self {
             width: width as usize,
             distances: vec![u32::MAX; open.len()],
@@ -47,9 +54,19 @@ impl DistanceWork {
         result
     }
 
-    pub(in crate::bot) fn advance(&mut self, budget: &mut WorkBudget) -> Progress<()> {
+    pub(in crate::bot) fn advance(
+        &mut self,
+        query_purpose: QueryPurpose,
+        budget: &mut WorkBudget,
+    ) -> Progress<()> {
+        let before = budget.spent();
         while self.queued > 0 {
             if !budget.charge(1) {
+                crate::bot::query_work::record(
+                    query_purpose,
+                    crate::bot::query_work::QueryOperation::FieldAdvance,
+                    budget.spent() - before,
+                );
                 return Progress::Deferred;
             }
             while self.frontier[self.current as usize % BUCKETS]
@@ -94,6 +111,11 @@ impl DistanceWork {
                 }
             }
         }
+        crate::bot::query_work::record(
+            query_purpose,
+            crate::bot::query_work::QueryOperation::FieldAdvance,
+            budget.spent() - before,
+        );
         Progress::Ready(())
     }
 
@@ -116,10 +138,16 @@ mod tests {
         for y in 0..9 {
             open[y * 12 + 5] = false;
         }
-        let initial = DistanceWork::new(12, 10, open, [TilePos::new(0, 0)]);
+        let initial = DistanceWork::new(
+            QueryPurpose::NavigationTest,
+            12,
+            10,
+            open,
+            [TilePos::new(0, 0)],
+        );
         let mut complete = initial.clone();
         assert_eq!(
-            complete.advance(&mut WorkBudget::new(1000)),
+            complete.advance(QueryPurpose::NavigationTest, &mut WorkBudget::new(1000)),
             Progress::Ready(())
         );
         let expected = complete.into_distances();
@@ -129,11 +157,20 @@ mod tests {
             let mut work = initial.clone();
             let mut clone = initial.clone();
             loop {
-                assert_eq!(work.advance(&mut WorkBudget::new(0)), Progress::Deferred);
+                assert_eq!(
+                    work.advance(QueryPurpose::NavigationTest, &mut WorkBudget::new(0)),
+                    Progress::Deferred
+                );
                 let mut budget = WorkBudget::new(allowance);
-                let progress = work.advance(&mut budget);
+                let progress = work.advance(QueryPurpose::NavigationTest, &mut budget);
                 assert!(budget.spent() <= allowance);
-                assert_eq!(progress, clone.advance(&mut WorkBudget::new(allowance)));
+                assert_eq!(
+                    progress,
+                    clone.advance(
+                        QueryPurpose::NavigationTest,
+                        &mut WorkBudget::new(allowance)
+                    )
+                );
                 assert_eq!(work, clone);
                 if progress == Progress::Ready(()) {
                     break;
@@ -146,12 +183,16 @@ mod tests {
     #[test]
     fn blocked_sources_and_diagonal_corners_do_not_leak_reachability() {
         let mut work = DistanceWork::new(
+            QueryPurpose::NavigationTest,
             2,
             2,
             vec![true, false, false, true],
             [TilePos::new(0, 0), TilePos::new(1, 0)],
         );
-        assert_eq!(work.advance(&mut WorkBudget::new(1)), Progress::Ready(()));
+        assert_eq!(
+            work.advance(QueryPurpose::NavigationTest, &mut WorkBudget::new(1)),
+            Progress::Ready(())
+        );
         assert_eq!(work.into_distances(), [0, u32::MAX, u32::MAX, u32::MAX]);
     }
 }

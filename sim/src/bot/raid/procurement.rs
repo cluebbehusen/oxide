@@ -5,6 +5,7 @@ use crate::bot::PublicMapBriefing;
 use crate::bot::allocation::{ClaimOwner, PaidQueueClaim, ProposalKey, ScheduledProducerJob};
 use crate::bot::navigation::commands::production_spawn_doorstep;
 use crate::bot::orient::Orientation;
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::resources::{ProducerEgress, ResourceSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -135,13 +136,18 @@ impl RaidPlanner {
                 .chain(self.paid_work.claims.iter().map(|claim| claim.producer))
                 .filter_map(|id| obs.my_buildings.iter().find(|building| building.id == id))
                 .any(|building| {
-                    production_spawn_doorstep(obs, building, briefing, orientation).is_some_and(
-                        |origin| {
-                            routes
-                                .prospective_group_route_cost(origin, target, RAID_GROUP_SIZE)
-                                .is_some()
-                        },
+                    production_spawn_doorstep(
+                        QueryPurpose::RaidOperation,
+                        obs,
+                        building,
+                        briefing,
+                        orientation,
                     )
+                    .is_some_and(|origin| {
+                        routes
+                            .prospective_group_route_cost(origin, target, RAID_GROUP_SIZE)
+                            .is_some()
+                    })
                 });
             !live && !producer
         });
@@ -224,10 +230,16 @@ impl RaidPlanner {
                                         .contains(&UnitKind::Scuttler)
                             })
                             .all(|building| {
-                                production_spawn_doorstep(obs, building, briefing, orientation)
-                                    .is_none_or(|other| {
-                                        unit.tile.chebyshev(other) > unit.tile.chebyshev(origin)
-                                    })
+                                production_spawn_doorstep(
+                                    QueryPurpose::RaidOperation,
+                                    obs,
+                                    building,
+                                    briefing,
+                                    orientation,
+                                )
+                                .is_none_or(|other| {
+                                    unit.tile.chebyshev(other) > unit.tile.chebyshev(origin)
+                                })
                             })
                 })
                 .map(|unit| unit.id)
@@ -279,7 +291,13 @@ impl RaidPlanner {
                     .count()
             });
             self.paid_work.counts.insert(building.id, count);
-            if let Some(origin) = production_spawn_doorstep(obs, building, briefing, orientation) {
+            if let Some(origin) = production_spawn_doorstep(
+                QueryPurpose::RaidOperation,
+                obs,
+                building,
+                briefing,
+                orientation,
+            ) {
                 self.paid_work.origins.insert(building.id, origin);
             }
         }
@@ -413,8 +431,13 @@ impl RaidPlanner {
                 let Some(building) = obs.my_buildings.iter().find(|b| b.id == lane.producer) else {
                     continue;
                 };
-                let Some(origin) = production_spawn_doorstep(obs, building, briefing, orientation)
-                else {
+                let Some(origin) = production_spawn_doorstep(
+                    QueryPurpose::RaidOperation,
+                    obs,
+                    building,
+                    briefing,
+                    orientation,
+                ) else {
                     continue;
                 };
                 let Some(cost) = routes.prospective_group_route_cost(origin, tile, RAID_GROUP_SIZE)
@@ -510,16 +533,25 @@ fn procurement_routes<'a>(
 ) -> RouteProjection<'a> {
     match (briefing, orientation) {
         (Some(map), Some(orientation)) => RouteProjection::with_public_terrain_and_orientation(
+            QueryPurpose::RaidOperation,
             obs,
             Domain::Ground,
             map,
             orientation,
         ),
-        (Some(map), None) => RouteProjection::with_public_terrain(obs, Domain::Ground, map),
-        (None, Some(orientation)) => {
-            RouteProjection::with_orientation(obs, Domain::Ground, orientation)
-        }
-        _ => RouteProjection::new(obs, Domain::Ground),
+        (Some(map), None) => RouteProjection::with_public_terrain(
+            QueryPurpose::RaidOperation,
+            obs,
+            Domain::Ground,
+            map,
+        ),
+        (None, Some(orientation)) => RouteProjection::with_orientation(
+            QueryPurpose::RaidOperation,
+            obs,
+            Domain::Ground,
+            orientation,
+        ),
+        _ => RouteProjection::new(QueryPurpose::RaidOperation, obs, Domain::Ground),
     }
 }
 

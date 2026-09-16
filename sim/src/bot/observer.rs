@@ -1,5 +1,7 @@
 //! Optional phase boundaries. Timing and persistence belong to the caller.
 
+pub use super::query_work::{QueryOperation, QueryPurpose, QueryWork};
+
 /// Coarse controller operations exposed solely for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -71,6 +73,12 @@ pub trait PhaseObserver {
     fn exit(&self, phase: BotPhase);
     /// Publish completed-decision work counters without influencing scheduling.
     fn planning_work(&self, _work: PlanningWorkStats) {}
+    /// Enable purpose-attributed query-work counters for this observer.
+    fn collect_query_work(&self) -> bool {
+        false
+    }
+    /// Publish caller-attributed work for one completed decision.
+    fn query_work(&self, _rows: &[QueryWork]) {}
 }
 
 pub(crate) struct PhaseScope<'a> {

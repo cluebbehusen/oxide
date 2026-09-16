@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::bot::navigation::egress::GroundEgressCache;
+use crate::bot::query_work::QueryPurpose;
 
 type PlannedFootprint = (BuildingKind, TilePos);
 
@@ -206,7 +207,7 @@ impl UtilityPolicy {
         goal: TilePos,
         count: usize,
     ) -> Option<Vec<TilePos>> {
-        routing::ground_command_goals(obs, goal, count)
+        routing::ground_command_goals(QueryPurpose::ConstructionAccess, obs, goal, count)
     }
 
     /// First anchor for `kind` ring-scanned outward from `near` whose
@@ -372,7 +373,11 @@ impl UtilityPolicy {
     }
 
     pub(super) fn prepare_ground_producer_egress(&self, obs: &Observation) {
-        GroundEgressCache::prepare(&mut self.ground_egress_cache.borrow_mut(), obs);
+        GroundEgressCache::prepare(
+            QueryPurpose::ConstructionAccess,
+            &mut self.ground_egress_cache.borrow_mut(),
+            obs,
+        );
     }
     pub(super) fn preserves_ground_producer_egress_prepared(
         &self,
@@ -388,7 +393,7 @@ impl UtilityPolicy {
 
     #[cfg(test)]
     fn planned_ground_open(obs: &Observation, tile: TilePos, planned: &[PlannedFootprint]) -> bool {
-        crate::bot::navigation::commands::ground_open(obs, tile)
+        crate::bot::navigation::commands::ground_open(QueryPurpose::NavigationTest, obs, tile)
             && !obs.my_units.iter().any(|unit| {
                 unit.founding.is_some_and(|(kind, anchor)| {
                     GroundEgressCache::candidate_blocks(kind, anchor, tile)

@@ -2,6 +2,7 @@
 
 use super::ServiceTarget;
 use super::commands::{RouteProjection, air_production_spawn_tile, production_spawn_doorstep};
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::{Orientation, PublicMapBriefing, observation::Observation};
 use crate::ids::BuildingId;
 use crate::stats::{Domain, UnitKind};
@@ -37,6 +38,7 @@ impl RouteComponentIndex {
 }
 
 pub(crate) struct ServiceRoutes<'a> {
+    pub(in crate::bot) query_purpose: QueryPurpose,
     obs: &'a Observation,
     public_map: Option<&'a PublicMapBriefing>,
     orientation: Option<Orientation>,
@@ -53,15 +55,23 @@ pub(crate) struct ServiceRoutes<'a> {
 
 impl<'a> ServiceRoutes<'a> {
     pub(crate) fn new(
+        query_purpose: QueryPurpose,
         obs: &'a Observation,
         public_map: Option<&'a PublicMapBriefing>,
         orientation: Option<Orientation>,
     ) -> Self {
         Self {
+            query_purpose,
             obs,
             public_map,
             orientation,
-            ground_routes: service_route_projection(obs, Domain::Ground, public_map, orientation),
+            ground_routes: service_route_projection(
+                query_purpose,
+                obs,
+                Domain::Ground,
+                public_map,
+                orientation,
+            ),
             air_routes: None,
             ground_components: RouteComponentIndex::default(),
             air_components: RouteComponentIndex::default(),
@@ -146,9 +156,13 @@ impl<'a> ServiceRoutes<'a> {
             .iter()
             .find(|building| building.id == producer && building.built && building.hp > 0)?;
         let origin = match domain {
-            Domain::Ground => {
-                production_spawn_doorstep(self.obs, building, self.public_map, self.orientation)?
-            }
+            Domain::Ground => production_spawn_doorstep(
+                self.query_purpose,
+                self.obs,
+                building,
+                self.public_map,
+                self.orientation,
+            )?,
             Domain::Air => air_production_spawn_tile(building, self.orientation),
         };
         let component = self.component(domain, origin);
@@ -242,6 +256,7 @@ impl<'a> ServiceRoutes<'a> {
             Domain::Air => {
                 if self.air_routes.is_none() {
                     self.air_routes = Some(service_route_projection(
+                        self.query_purpose,
                         self.obs,
                         Domain::Air,
                         self.public_map,
@@ -260,6 +275,7 @@ impl<'a> ServiceRoutes<'a> {
 }
 
 fn service_route_projection<'a>(
+    query_purpose: QueryPurpose,
     obs: &'a Observation,
     domain: Domain,
     public_map: Option<&'a PublicMapBriefing>,
@@ -267,10 +283,20 @@ fn service_route_projection<'a>(
 ) -> RouteProjection<'a> {
     match (public_map, orientation) {
         (Some(briefing), Some(orientation)) => {
-            RouteProjection::with_public_terrain_and_orientation(obs, domain, briefing, orientation)
+            RouteProjection::with_public_terrain_and_orientation(
+                query_purpose,
+                obs,
+                domain,
+                briefing,
+                orientation,
+            )
         }
-        (Some(briefing), None) => RouteProjection::with_public_terrain(obs, domain, briefing),
-        (None, Some(orientation)) => RouteProjection::with_orientation(obs, domain, orientation),
-        (None, None) => RouteProjection::new(obs, domain),
+        (Some(briefing), None) => {
+            RouteProjection::with_public_terrain(query_purpose, obs, domain, briefing)
+        }
+        (None, Some(orientation)) => {
+            RouteProjection::with_orientation(query_purpose, obs, domain, orientation)
+        }
+        (None, None) => RouteProjection::new(query_purpose, obs, domain),
     }
 }

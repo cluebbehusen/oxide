@@ -1,5 +1,6 @@
 use super::*;
 use crate::bot::navigation::{BlockedRect, KnownGrid, paths::PendingRoute};
+use crate::bot::query_work::QueryPurpose;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ApproachCost {
@@ -120,6 +121,7 @@ fn costs_with_candidate(
                     .borrow_mut()
                     .costs
                     .between_sets(
+                        QueryPurpose::BarricadeDetour,
                         grid,
                         overlay,
                         &approach.source.approach_tiles(ground, domain),

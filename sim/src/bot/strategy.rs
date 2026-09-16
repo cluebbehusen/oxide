@@ -24,6 +24,7 @@ use super::resources::{
     paid_queued_ready_occurrences_with_access, plan_production_with_access,
     production_demands_fit_horizon_with_access,
 };
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
 use crate::stats::{BuildingKind, Domain, QUEUE_CAP, Role, UnitKind, WeaponStats};
@@ -4175,6 +4176,7 @@ fn reconcile_recovery_return(
         connected_public_map(plan, public_map).map_or_else(
             || {
                 routing::routable_command_subset_with_orientation(
+                    crate::bot::query_work::QueryPurpose::AirOperation,
                     obs,
                     &survivors,
                     home,
@@ -4183,6 +4185,7 @@ fn reconcile_recovery_return(
             },
             |map| {
                 routing::routable_command_subset_with_public_terrain_and_orientation(
+                    crate::bot::query_work::QueryPurpose::AirOperation,
                     obs,
                     map,
                     &survivors,
@@ -4192,7 +4195,12 @@ fn reconcile_recovery_return(
             },
         )
     } else {
-        routing::routable_command_subset(obs, &survivors, home)
+        routing::routable_command_subset(
+            crate::bot::query_work::QueryPurpose::AirOperation,
+            obs,
+            &survivors,
+            home,
+        )
     };
     release_unroutable(op, plan, &survivors, &returning);
     if issue_order && !returning.is_empty() {
@@ -6010,6 +6018,7 @@ fn connected_production_access<'a>(
                 let accessible = match kind.stats().domain {
                     Domain::Ground if is_artillery(kind) => staging.is_some_and(|staging| {
                         production_spawn_doorstep(
+                            QueryPurpose::AirOperation,
                             obs,
                             producer,
                             route.public_map,
@@ -6209,7 +6218,13 @@ fn connected_suppression_origins<'a>(
         })
         .collect();
     origins.extend(obs.my_buildings.iter().flat_map(|producer| {
-        let spawn = production_spawn_doorstep(obs, producer, public_map, Some(orientation));
+        let spawn = production_spawn_doorstep(
+            QueryPurpose::AirOperation,
+            obs,
+            producer,
+            public_map,
+            Some(orientation),
+        );
         completed_producer_trainable_kinds(obs, producer)
             .into_iter()
             .filter(|kind| is_artillery(*kind))
@@ -7594,7 +7609,7 @@ fn known_ground_connection(
             building.kind.base_stats().size
         });
     let starts: Vec<_> = crate::tick::rect_adjacent_tiles(home, home_size)
-        .filter(|tile| routing::ground_open(obs, *tile))
+        .filter(|tile| routing::ground_open(QueryPurpose::AirOperation, obs, *tile))
         .filter(|tile| {
             public_map.is_none_or(|map| {
                 map.terrain_at(*tile)
@@ -7603,7 +7618,7 @@ fn known_ground_connection(
         })
         .collect();
     let goals: Vec<_> = crate::tick::rect_adjacent_tiles(target, target_size)
-        .filter(|tile| routing::ground_open(obs, *tile))
+        .filter(|tile| routing::ground_open(QueryPurpose::AirOperation, obs, *tile))
         .filter(|tile| {
             public_map.is_none_or(|map| {
                 map.terrain_at(*tile)
@@ -7622,7 +7637,7 @@ fn known_ground_connection(
         return Some(public_ground_connected(public_map, &starts, &goals));
     }
 
-    let optimistic = RouteProjection::new(obs, Domain::Ground);
+    let optimistic = RouteProjection::new(QueryPurpose::AirOperation, obs, Domain::Ground);
     if !starts
         .iter()
         .any(|start| goals.iter().any(|goal| optimistic.reaches(*start, *goal)))
@@ -7630,7 +7645,7 @@ fn known_ground_connection(
         return Some(false);
     }
 
-    let routes = RouteProjection::known_ground(obs);
+    let routes = RouteProjection::known_ground(QueryPurpose::AirOperation, obs);
     starts
         .iter()
         .any(|start| goals.iter().any(|goal| routes.reaches(*start, *goal)))
@@ -7906,8 +7921,8 @@ fn route_projection<'a>(
     public_map: Option<&'a PublicMapBriefing>,
 ) -> RouteProjection<'a> {
     public_map.map_or_else(
-        || RouteProjection::new(obs, domain),
-        |map| RouteProjection::with_public_terrain(obs, domain, map),
+        || RouteProjection::new(QueryPurpose::AirOperation, obs, domain),
+        |map| RouteProjection::with_public_terrain(QueryPurpose::AirOperation, obs, domain, map),
     )
 }
 
@@ -7918,8 +7933,16 @@ fn route_projection_with_orientation<'a>(
     orientation: Orientation,
 ) -> RouteProjection<'a> {
     public_map.map_or_else(
-        || RouteProjection::with_orientation(obs, domain, orientation),
-        |map| RouteProjection::with_public_terrain_and_orientation(obs, domain, map, orientation),
+        || RouteProjection::with_orientation(QueryPurpose::AirOperation, obs, domain, orientation),
+        |map| {
+            RouteProjection::with_public_terrain_and_orientation(
+                QueryPurpose::AirOperation,
+                obs,
+                domain,
+                map,
+                orientation,
+            )
+        },
     )
 }
 
@@ -7942,7 +7965,7 @@ fn public_ground_open(
     tile: TilePos,
     public_map: Option<&PublicMapBriefing>,
 ) -> bool {
-    routing::ground_open(obs, tile)
+    routing::ground_open(QueryPurpose::AirOperation, obs, tile)
         && public_map.is_none_or(|map| {
             map.terrain_at(tile)
                 .is_some_and(|terrain| !terrain.blocks_ground())
@@ -13725,9 +13748,14 @@ mod tests {
         };
         let resources = ResourceSnapshot::from_observation(&observation);
         let producer = &observation.my_buildings[0];
-        let spawn =
-            production_spawn_doorstep(&observation, producer, Some(&public_map), Some(orientation))
-                .expect("the Fabricator has an open south-east doorstep");
+        let spawn = production_spawn_doorstep(
+            QueryPurpose::NavigationTest,
+            &observation,
+            producer,
+            Some(&public_map),
+            Some(orientation),
+        )
+        .expect("the Fabricator has an open south-east doorstep");
         let staging =
             connected_artillery_staging_goal(&observation, home, target, Some(&public_map))
                 .expect("the Foundry-side staging tile is in the same component");
@@ -15134,9 +15162,14 @@ mod tests {
             .iter()
             .find(|building| building.id == BuildingId(10))
             .expect("orientation preserves the producer");
-        let actual =
-            production_spawn_doorstep(&oriented, oriented_producer, None, Some(orientation))
-                .expect("the oriented producer has an open doorstep");
+        let actual = production_spawn_doorstep(
+            QueryPurpose::NavigationTest,
+            &oriented,
+            oriented_producer,
+            None,
+            Some(orientation),
+        )
+        .expect("the oriented producer has an open doorstep");
 
         assert_eq!(orientation.tile(actual), expected);
     }
@@ -15190,9 +15223,14 @@ mod tests {
             .iter()
             .find(|building| building.id == BuildingId(10))
             .expect("orientation preserves the producer");
-        let actual =
-            production_spawn_doorstep(&oriented, oriented_producer, None, Some(orientation))
-                .expect("the oriented producer has an open doorstep");
+        let actual = production_spawn_doorstep(
+            QueryPurpose::NavigationTest,
+            &oriented,
+            oriented_producer,
+            None,
+            Some(orientation),
+        )
+        .expect("the oriented producer has an open doorstep");
 
         assert_eq!(
             orientation.tile(actual),

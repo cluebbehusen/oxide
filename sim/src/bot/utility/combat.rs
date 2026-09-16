@@ -1,6 +1,7 @@
 //! Air raids, scouting, and ground-army strategy.
 
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 mod missions;
 use crate::bot::intelligence::MAX_CONFIDENCE;
 use crate::bot::observation::BuildingObs;
@@ -111,7 +112,7 @@ impl UtilityPolicy {
             && public_map
                 .terrain_at(tile)
                 .is_some_and(|terrain| !terrain.blocks_ground())
-            && routing::ground_open(obs, tile)
+            && routing::ground_open(QueryPurpose::ArmyMovement, obs, tile)
     }
 
     fn tile_sees_footprint(tile: TilePos, anchor: TilePos, size: (i32, i32), vision: i32) -> bool {
@@ -132,6 +133,7 @@ impl UtilityPolicy {
         to: TilePos,
     ) -> bool {
         crate::bot::navigation::search::canonical_path(
+            QueryPurpose::ArmyMovement,
             obs.map_width,
             obs.map_height,
             from,
@@ -227,6 +229,7 @@ impl UtilityPolicy {
         });
 
         crate::bot::navigation::search::first_reachable_goal(
+            QueryPurpose::ArmyMovement,
             obs.map_width,
             obs.map_height,
             route_start,
@@ -988,8 +991,15 @@ impl UtilityPolicy {
         (0..target_size.1)
             .flat_map(|dy| (0..target_size.0).map(move |dx| target.offset(dx, dy)))
             .any(|goal| {
-                crate::bot::navigation::search::canonical_path(width, height, home, goal, ground)
-                    .is_some()
+                crate::bot::navigation::search::canonical_path(
+                    QueryPurpose::NavigationTest,
+                    width,
+                    height,
+                    home,
+                    goal,
+                    ground,
+                )
+                .is_some()
             })
     }
 
@@ -1280,9 +1290,15 @@ impl UtilityPolicy {
         };
         let routes = routes.get_or_insert_with(|| {
             public_map.map_or_else(
-                || crate::bot::navigation::commands::RouteProjection::known_ground(obs),
+                || {
+                    crate::bot::navigation::commands::RouteProjection::known_ground(
+                        QueryPurpose::ArmyMovement,
+                        obs,
+                    )
+                },
                 |map| {
                     crate::bot::navigation::commands::RouteProjection::with_public_terrain(
+                        QueryPurpose::ArmyMovement,
                         obs,
                         Domain::Ground,
                         map,
@@ -1337,7 +1353,7 @@ impl UtilityPolicy {
         let desired = staging_army.map(|army| army.staging).unwrap_or_else(|| {
             let toward = enemy_site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
             if let Some(frontline) = enemy_site.and_then(|enemy| {
-                let routes = RouteProjection::known_ground(obs);
+                let routes = RouteProjection::known_ground(QueryPurpose::ArmyMovement, obs);
                 obs.my_buildings
                     .iter()
                     .filter(|building| {

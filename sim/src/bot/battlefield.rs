@@ -3,6 +3,7 @@
 use super::difficulty::DifficultyTuning;
 use super::executive::{Army, ground_strength, weapon_burst_dps100};
 use super::observation::{BuildingObs, Observation, UnitObs};
+use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::stats::Domain;
 use chassis::Tick;
@@ -407,10 +408,19 @@ impl Battlefield {
                 if !projection
                     .get_or_insert_with(|| {
                         public_map.map_or_else(
-                            || super::navigation::commands::RouteProjection::new(obs, domain),
+                            || {
+                                super::navigation::commands::RouteProjection::new(
+                                    QueryPurpose::ObservationProjection,
+                                    obs,
+                                    domain,
+                                )
+                            },
                             |map| {
                                 super::navigation::commands::RouteProjection::with_public_terrain(
-                                    obs, domain, map,
+                                    QueryPurpose::ObservationProjection,
+                                    obs,
+                                    domain,
+                                    map,
                                 )
                             },
                         )

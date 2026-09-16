@@ -196,11 +196,17 @@ thread_local! {
 impl CostQueries {
     pub fn between_sets(
         &mut self,
+        query_purpose: super::query_work::QueryPurpose,
         grid: KnownGrid<'_>,
         overlay: Option<BlockedRect>,
         starts: &[TilePos],
         goals: &[TilePos],
     ) -> CostResult {
+        super::query_work::record(
+            query_purpose,
+            super::query_work::QueryOperation::CostRequest,
+            1,
+        );
         let query = Query::new(grid, overlay, starts, goals);
         self.prepare(grid);
         if let Some(answer) = self
@@ -208,6 +214,11 @@ impl CostQueries {
             .as_ref()
             .and_then(|generation| generation.answers.get(&query))
         {
+            super::query_work::record(
+                query_purpose,
+                super::query_work::QueryOperation::CacheHit,
+                1,
+            );
             #[cfg(test)]
             {
                 self.work.hits += 1;
@@ -217,6 +228,7 @@ impl CostQueries {
         }
         let answer = SCRATCH.with(|scratch| {
             self.search(
+                query_purpose,
                 grid,
                 &query,
                 crate::stats::PATH_EXPANSION_CAP,
@@ -265,6 +277,7 @@ impl CostQueries {
 
     fn search(
         &mut self,
+        query_purpose: super::query_work::QueryPurpose,
         grid: KnownGrid<'_>,
         query: &Query,
         limit: u32,
@@ -276,7 +289,7 @@ impl CostQueries {
         // A set flood may exhaust a budget that a goal-directed pair would meet.
         // Use it only when the entire graph fits the per-pair expansion limit.
         if grid.blocked.len() > limit as usize {
-            return self.pair_cost(grid, query, limit, &mut scratch.astar);
+            return self.pair_cost(query_purpose, grid, query, limit, &mut scratch.astar);
         }
         #[cfg(test)]
         {
@@ -296,13 +309,20 @@ impl CostQueries {
             scratch.distance[index] = 0;
             scratch.frontier.push(Reverse((0, index)));
         }
+        let mut expanded = 0;
         while let Some(Reverse((cost, index))) = scratch.frontier.pop() {
             if scratch.distance[index] != cost {
                 continue;
             }
             if scratch.targets[index] {
+                super::query_work::record(
+                    query_purpose,
+                    super::query_work::QueryOperation::CostSearch,
+                    expanded,
+                );
                 return CostResult::Exact(cost);
             }
+            expanded += 1;
             #[cfg(test)]
             {
                 self.work.expanded += 1;
@@ -327,11 +347,17 @@ impl CostQueries {
                 }
             }
         }
+        super::query_work::record(
+            query_purpose,
+            super::query_work::QueryOperation::CostSearch,
+            expanded,
+        );
         CostResult::Unreachable
     }
 
     fn pair_cost(
         &mut self,
+        query_purpose: super::query_work::QueryPurpose,
         grid: KnownGrid<'_>,
         query: &Query,
         limit: u32,
@@ -366,6 +392,11 @@ impl CostQueries {
                 |tile| grid.open(tile, query.overlay),
                 limit,
                 scratch,
+            );
+            super::query_work::record(
+                query_purpose,
+                super::query_work::QueryOperation::PathSearch,
+                scratch.last_expansions() as usize,
             );
             #[cfg(test)]
             work::record(|work| {

@@ -1,5 +1,6 @@
 //! Construction, repair, upgrade, and salvage decisions.
 
+use crate::bot::query_work::QueryPurpose;
 mod foundry_planning;
 
 use super::*;
@@ -1318,6 +1319,7 @@ impl UtilityPolicy {
             .expansion_routing_cache
             .borrow_mut()
             .danger_aware_fields(
+                QueryPurpose::NavigationTest,
                 public_map,
                 blocked,
                 eligible_visible_scrap.iter().map(|(tile, _)| *tile),
@@ -1397,7 +1399,7 @@ impl UtilityPolicy {
             return Vec::new();
         }
         self.prepare_ground_producer_egress(obs);
-        let routes = BuildRouteProjection::new(obs, Some(public_map));
+        let routes = BuildRouteProjection::new(QueryPurpose::NavigationTest, obs, Some(public_map));
         opportunities
             .into_iter()
             .filter_map(|opportunity| {
@@ -1491,7 +1493,11 @@ impl UtilityPolicy {
             return None;
         }
         self.prepare_ground_producer_egress(obs);
-        let routes = BuildRouteProjection::new(obs, Some(context.public_map));
+        let routes = BuildRouteProjection::new(
+            QueryPurpose::FoundryLogistics,
+            obs,
+            Some(context.public_map),
+        );
         quotes.into_iter().find_map(|quote| {
             self.legal_foundry_builder_prepared(
                 obs,
@@ -1695,7 +1701,11 @@ impl UtilityPolicy {
         self.prepare_ground_producer_egress(obs);
         if self.legal_foundry_builder_prepared(
             obs,
-            &BuildRouteProjection::new(obs, Some(context.public_map)),
+            &BuildRouteProjection::new(
+                QueryPurpose::FoundryLogistics,
+                obs,
+                Some(context.public_map),
+            ),
             saving.plan.anchor,
             &builders,
             &danger,
@@ -1856,7 +1866,11 @@ impl UtilityPolicy {
             return Some(Intent::CancelSite { building: site.id });
         }
 
-        let routes = crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
+        let routes = crate::bot::navigation::commands::RouteProjection::new(
+            QueryPurpose::ConstructionAccess,
+            obs,
+            Domain::Ground,
+        );
         obs.my_buildings
             .iter()
             .filter(|building| {
@@ -2621,7 +2635,12 @@ mod tests {
         obs.my_units[1].harvesting = Some(scrap);
         let builders = [&obs.my_units[0]];
         let policy = UtilityPolicy::new();
-        let guard = ResourceAccessGuard::new(&policy, &obs, &briefing);
+        let guard = ResourceAccessGuard::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            &policy,
+            &obs,
+            &briefing,
+        );
 
         assert!(
             !guard.survives(BuildingKind::Array, choke),
@@ -4323,7 +4342,7 @@ mod tests {
         assert_eq!(
             policy.legal_foundry_builder_prepared(
                 &obs,
-                &BuildRouteProjection::new(&obs, Some(&public_map)),
+                &BuildRouteProjection::new(QueryPurpose::NavigationTest, &obs, Some(&public_map)),
                 top,
                 &builders,
                 &danger
@@ -4338,7 +4357,11 @@ mod tests {
                 policy
                     .legal_foundry_builder_prepared(
                         &obs,
-                        &BuildRouteProjection::new(&obs, Some(&public_map)),
+                        &BuildRouteProjection::new(
+                            QueryPurpose::NavigationTest,
+                            &obs,
+                            Some(&public_map),
+                        ),
                         quote.anchor(),
                         &builders,
                         &danger,

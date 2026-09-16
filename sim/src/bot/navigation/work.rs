@@ -1,5 +1,6 @@
 //! Deterministic, thread-local work accounting for navigation regression tests.
 
+use crate::bot::query_work::QueryPurpose;
 use std::cell::Cell;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -66,6 +67,7 @@ mod tests {
         let grid = KnownGrid::new(12, 10, &blocked).unwrap();
         let cache = RefCell::new(PathQueries::default());
         let board = PathBoard {
+            query_purpose: QueryPurpose::NavigationTest,
             grid,
             class: CacheClass::Ground,
             cache: &cache,
@@ -95,6 +97,7 @@ mod tests {
         let changed_grid = KnownGrid::new(12, 10, &changed).unwrap();
         let (_, hypothetical) = measure(|| {
             query(PathBoard {
+                query_purpose: QueryPurpose::NavigationTest,
                 grid: changed_grid,
                 class: CacheClass::Hypothetical,
                 cache: &cache,
@@ -130,7 +133,9 @@ mod tests {
             size: (2, 3),
         });
         let mut queries = CostQueries::default();
-        let (expected, cold) = measure(|| queries.between_sets(grid, overlay, &starts, &goals));
+        let (expected, cold) = measure(|| {
+            queries.between_sets(QueryPurpose::NavigationTest, grid, overlay, &starts, &goals)
+        });
         assert!(expected.available_cost().is_some());
         assert_eq!(
             cold.searches, 1,
@@ -141,7 +146,13 @@ mod tests {
         let (_, warm) = measure(|| {
             for _ in 0..100 {
                 assert_eq!(
-                    queries.between_sets(grid, overlay, &starts, &goals),
+                    queries.between_sets(
+                        QueryPurpose::NavigationTest,
+                        grid,
+                        overlay,
+                        &starts,
+                        &goals
+                    ),
                     expected
                 );
             }

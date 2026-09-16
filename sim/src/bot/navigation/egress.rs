@@ -1,5 +1,6 @@
 //! Retained producer-exit certificates for hypothetical construction layouts.
 use crate::bot::observation::Observation;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::{BuildingKind, Domain};
 use chassis::grid::TilePos;
 type PlannedFootprint = (BuildingKind, TilePos);
@@ -170,7 +171,11 @@ impl GroundEgressCache {
             })
     }
 
-    pub(in crate::bot) fn prepare(slot: &mut Option<Self>, obs: &Observation) {
+    pub(in crate::bot) fn prepare(
+        query_purpose: QueryPurpose,
+        slot: &mut Option<Self>,
+        obs: &Observation,
+    ) {
         let layout = GroundEgressLayout::from_observation(obs);
         let layout_changed = slot.as_ref().is_none_or(|cache| cache.layout != layout);
         if layout_changed {
@@ -180,7 +185,7 @@ impl GroundEgressCache {
             });
 
             let base_open = Self::ground_egress_base_open(obs);
-            let producers = Self::ground_producer_egress(obs, &base_open);
+            let producers = Self::ground_producer_egress(query_purpose, obs, &base_open);
             let certificate =
                 Self::ground_egress_certificate(&base_open, layout.map_size, &producers)
                     .map(std::sync::Arc::new);
@@ -491,9 +496,13 @@ impl GroundEgressCache {
         open
     }
 
-    fn ground_producer_egress(obs: &Observation, base_open: &[bool]) -> Vec<GroundProducerEgress> {
+    fn ground_producer_egress(
+        query_purpose: QueryPurpose,
+        obs: &Observation,
+        base_open: &[bool],
+    ) -> Vec<GroundProducerEgress> {
         let map_size = (obs.map_width, obs.map_height);
-        let labels = crate::bot::navigation::flood::labels(base_open, map_size);
+        let labels = crate::bot::navigation::flood::labels(query_purpose, base_open, map_size);
         let mut components = std::collections::BTreeMap::new();
         let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
         obs.my_buildings
@@ -612,7 +621,7 @@ mod tests {
             ..Observation::default()
         };
         let mut cache = None;
-        GroundEgressCache::prepare(&mut cache, &obs);
+        GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
         let prior = cache.as_ref().unwrap().clone();
         assert_eq!(prior.producers.len(), 8);
         for producer in &cache.as_ref().unwrap().producers {
@@ -622,7 +631,7 @@ mod tests {
             ));
         }
         obs.known_rock = (0..128).map(|y| TilePos::new(64, y)).collect();
-        GroundEgressCache::prepare(&mut cache, &obs);
+        GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
         let next = cache.unwrap();
         for (index, producer) in next.producers.iter().enumerate() {
             let representative = if index < 4 { 0 } else { 4 };

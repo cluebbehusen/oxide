@@ -4,6 +4,7 @@ use super::defense::DefenseThinkContext;
 use super::economic_investment::{economic_case, funding_delay};
 use super::economic_value::travel_ticks;
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 use std::collections::BTreeMap;
 
 impl UtilityPolicy {
@@ -97,6 +98,7 @@ impl UtilityPolicy {
             return;
         }
         let mut geometry = DefenseThinkContext::new_oriented(
+            crate::bot::query_work::QueryPurpose::ExtractorCluster,
             self,
             obs,
             context.briefing,
@@ -104,9 +106,13 @@ impl UtilityPolicy {
             context.building_contacts,
             context.orientation,
         );
-        let base_routes =
-            RouteProjection::with_public_terrain(obs, Domain::Ground, context.briefing);
-        let open_origin = routing::ground_open(obs, worker.tile);
+        let base_routes = RouteProjection::with_public_terrain(
+            QueryPurpose::ExtractorCluster,
+            obs,
+            Domain::Ground,
+            context.briefing,
+        );
+        let open_origin = routing::ground_open(QueryPurpose::ExtractorCluster, obs, worker.tile);
         let dials = Dials::scripted(
             context.profile,
             DifficultyTuning::for_level(context.profile.difficulty),

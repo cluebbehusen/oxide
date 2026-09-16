@@ -2,6 +2,7 @@
 
 use super::{distance_work::DistanceWork, flood::tile_index};
 use crate::bot::planning::{Progress, WorkBudget};
+use crate::bot::query_work::QueryPurpose;
 use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -31,6 +32,7 @@ impl SafetyQueries {
     /// `None` means the canonical route still needs inspection, not unsafe.
     pub(super) fn prove(
         &mut self,
+        query_purpose: QueryPurpose,
         dimensions: (i32, i32),
         from: TilePos,
         to: TilePos,
@@ -67,7 +69,7 @@ impl SafetyQueries {
                 self.fields.remove(&self.order.pop_front().unwrap());
             }
             self.fields
-                .insert(source, field(dimensions, source, open, safe));
+                .insert(source, field(query_purpose, dimensions, source, open, safe));
             self.order.push_back(source);
         }
         match self.fields[&source][destination] {
@@ -79,6 +81,7 @@ impl SafetyQueries {
 }
 
 fn field(
+    query_purpose: QueryPurpose,
     (width, height): (i32, i32),
     source: TilePos,
     open: impl Fn(TilePos) -> bool,
@@ -87,13 +90,14 @@ fn field(
     let cells = width as usize * height as usize;
     let tile = |index: usize| TilePos::new(index as i32 % width, index as i32 / width);
     let mut distances = DistanceWork::new(
+        query_purpose,
         width,
         height,
         (0..cells).map(|index| open(tile(index))).collect(),
         [source],
     );
     assert_eq!(
-        distances.advance(&mut WorkBudget::new(usize::MAX)),
+        distances.advance(query_purpose, &mut WorkBudget::new(usize::MAX)),
         Progress::Ready(())
     );
     let distances = distances.into_distances();
@@ -156,7 +160,14 @@ mod tests {
                         let from = TilePos::new(start % 3, start / 3);
                         let expected = chassis::path::astar(3, 3, from, to, open, 20_000)
                             .is_some_and(|path| path.into_iter().all(safe));
-                        match queries.prove((3, 3), from, to, open, safe) {
+                        match queries.prove(
+                            QueryPurpose::NavigationTest,
+                            (3, 3),
+                            from,
+                            to,
+                            open,
+                            safe,
+                        ) {
                             Some(actual) => {
                                 assert_eq!(actual, expected, "{terrain} {hazard} {start} {goal}");
                                 proven += 1;
@@ -176,7 +187,14 @@ mod tests {
         let goal = TilePos::new(39, 0);
         let source = TilePos::new(0, 0);
         assert_eq!(
-            queries.prove((40, 1), source, goal, |_| true, |_| true),
+            queries.prove(
+                QueryPurpose::NavigationTest,
+                (40, 1),
+                source,
+                goal,
+                |_| true,
+                |_| true
+            ),
             None
         );
         queries.record(source, goal, 40);
@@ -184,11 +202,25 @@ mod tests {
             for x in 0..39 {
                 let from = TilePos::new(x, 0);
                 assert_eq!(
-                    queries.prove((40, 1), from, goal, |_| true, |_| true),
+                    queries.prove(
+                        QueryPurpose::NavigationTest,
+                        (40, 1),
+                        from,
+                        goal,
+                        |_| true,
+                        |_| true
+                    ),
                     Some(true)
                 );
                 assert_eq!(
-                    queries.prove((40, 1), goal, from, |_| true, |_| true),
+                    queries.prove(
+                        QueryPurpose::NavigationTest,
+                        (40, 1),
+                        goal,
+                        from,
+                        |_| true,
+                        |_| true
+                    ),
                     Some(true)
                 );
             }
@@ -199,12 +231,26 @@ mod tests {
         for x in 0..300 {
             let point = TilePos::new(x, 0);
             queries.record(point, point, 300);
-            queries.prove((300, 1), point, point, |_| true, |_| true);
+            queries.prove(
+                QueryPurpose::NavigationTest,
+                (300, 1),
+                point,
+                point,
+                |_| true,
+                |_| true,
+            );
         }
         assert_eq!(queries.fields.len(), RETAINED_FIELDS);
         assert_eq!(queries.work.len(), TRACKED_ENDPOINTS);
         assert_eq!(
-            queries.prove((256, 256), source, goal, |_| true, |_| true),
+            queries.prove(
+                QueryPurpose::NavigationTest,
+                (256, 256),
+                source,
+                goal,
+                |_| true,
+                |_| true
+            ),
             None
         );
     }
@@ -217,6 +263,7 @@ mod tests {
         queries.record(from, to, 6);
         assert_eq!(
             queries.prove(
+                QueryPurpose::NavigationTest,
                 (3, 2),
                 from,
                 to,
@@ -242,6 +289,16 @@ mod tests {
             |tile| tile == to
         ));
         queries.record(from, to, 15);
-        assert_eq!(queries.prove((5, 3), from, to, |_| true, safe), Some(false));
+        assert_eq!(
+            queries.prove(
+                QueryPurpose::NavigationTest,
+                (5, 3),
+                from,
+                to,
+                |_| true,
+                safe
+            ),
+            Some(false)
+        );
     }
 }

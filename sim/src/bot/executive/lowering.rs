@@ -2,6 +2,7 @@
 
 use super::armies::{is_artillery, march, vanguard_centroid};
 use super::*;
+use crate::bot::query_work::QueryPurpose;
 
 impl Executive {
     /// Reserves a stranded economy's bank and queues its replacement
@@ -806,7 +807,7 @@ impl Executive {
                     || match proposed_footprint {
                         None => routes
                             .get_or_insert_with(|| {
-                                crate::bot::navigation::commands::RouteProjection::new(
+                                crate::bot::navigation::commands::RouteProjection::new(QueryPurpose::ExecutiveOrders,
                                     obs,
                                     crate::stats::Domain::Ground,
                                 )
@@ -814,7 +815,7 @@ impl Executive {
                             .group_reaches_command_goal(&[unit.id], anchor),
                         Some(size) => crate::bot::navigation::commands::unit_reaches_build_site_via(
                             routes.get_or_insert_with(|| {
-                                crate::bot::navigation::commands::RouteProjection::ground_excluding_footprint(
+                                crate::bot::navigation::commands::RouteProjection::ground_excluding_footprint(QueryPurpose::ExecutiveOrders,
                                     obs, anchor, size,
                                 )
                             }),
@@ -863,7 +864,10 @@ impl Executive {
             .collect();
         candidates.sort_unstable();
 
-        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
+        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(
+            QueryPurpose::ExecutiveOrders,
+            obs,
+        );
         let mut draft = Vec::with_capacity((size as usize).min(candidates.len()));
         for (_, id) in candidates {
             if draft.len() == size as usize {
@@ -880,7 +884,10 @@ impl Executive {
     }
 
     fn consolidate_staging_armies(&mut self, obs: &Observation, staging: TilePos) -> Option<usize> {
-        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
+        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(
+            QueryPurpose::ExecutiveOrders,
+            obs,
+        );
         let candidates: Vec<ArmyId> = self
             .armies
             .iter()

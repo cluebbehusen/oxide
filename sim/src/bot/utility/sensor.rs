@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
+use crate::bot::query_work::QueryPurpose;
 use crate::stats::RADAR_DETECT_RADIUS;
 use std::cmp::Reverse;
 
@@ -88,7 +89,12 @@ impl UtilityPolicy {
         }
 
         let kind = BuildingKind::Array;
-        let resource_access = ResourceAccessGuard::new(self, obs, briefing);
+        let resource_access = ResourceAccessGuard::new(
+            crate::bot::query_work::QueryPurpose::NavigationTest,
+            self,
+            obs,
+            briefing,
+        );
         let danger =
             self.harvest_danger_projection(obs, Some(unit_contacts), Some(building_contacts));
         self.strategic_array_quote_with_candidate(
@@ -203,13 +209,14 @@ impl UtilityPolicy {
         let mut candidates = Vec::new();
         let danger =
             self.harvest_danger_projection(obs, Some(unit_contacts), Some(building_contacts));
-        let builder_regions = routing::RouteProjection::ground_avoiding(obs, |tile| {
-            briefing
-                .terrain_at(tile)
-                .is_none_or(|terrain| terrain.blocks_ground())
-                || danger.contains(tile)
-                || self.harvest_location_contested(tile)
-        });
+        let builder_regions =
+            routing::RouteProjection::ground_avoiding(QueryPurpose::ArrayPlacement, obs, |tile| {
+                briefing
+                    .terrain_at(tile)
+                    .is_none_or(|terrain| terrain.blocks_ground())
+                    || danger.contains(tile)
+                    || self.harvest_location_contested(tile)
+            });
         let mut centers = std::collections::BTreeSet::from([(home_center.y, home_center.x)]);
         for question in &self.battlefield.coverage {
             if let Some(asset) = obs

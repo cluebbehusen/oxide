@@ -32,6 +32,8 @@ use crate::bot::lift::{
 use crate::bot::observation::Observation;
 use crate::bot::orient::Orientation;
 use crate::bot::profile::ResolvedProfile;
+#[cfg(test)]
+use crate::bot::query_work::QueryPurpose;
 use crate::bot::raid::RaidPlanner;
 use crate::bot::resources::{ProducerLaneReservations, ReservedProducerJob, ResourceSnapshot};
 use crate::bot::standing_force::{
@@ -7693,9 +7695,13 @@ mod tests {
             |_| false,
         );
         assert_eq!(
-            policy
-                .planning
-                .field(observation.tick, &briefing, &blocked, [TilePos::new(1, 1)]),
+            policy.planning.field(
+                QueryPurpose::NavigationTest,
+                observation.tick,
+                &briefing,
+                &blocked,
+                [TilePos::new(1, 1)]
+            ),
             crate::bot::planning::Progress::Deferred
         );
         let pending = policy.planning.clone();
