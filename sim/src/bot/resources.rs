@@ -178,6 +178,23 @@ pub(crate) struct BuilderResource {
     pub(crate) obligation: Option<BuilderObligation>,
 }
 
+/// Deferred foundations released by this decision. Paid sites and queued work
+/// remain observed obligations even when a deferred claim is canceled.
+#[derive(Clone, Copy, Default)]
+pub(in crate::bot) struct FoundationCancellations<'a>(
+    pub(in crate::bot) &'a [(BuildingKind, TilePos)],
+);
+
+impl FoundationCancellations<'_> {
+    pub(in crate::bot) fn retained(self, unit: &UnitObs) -> Option<(BuildingKind, TilePos)> {
+        unit.founding.filter(|claim| !self.0.contains(claim))
+    }
+
+    pub(in crate::bot) fn builder_is_free(self, obs: &Observation, unit: &UnitObs) -> bool {
+        unit.kind.stats().harvest.is_some() && builder_obligation_after(obs, unit, self).is_none()
+    }
+}
+
 /// Whether a construction-capable unit is free of every observed program that
 /// a newly admitted exact plan must not preempt.
 pub(crate) fn builder_is_free(obs: &Observation, unit: &UnitObs) -> bool {
@@ -185,10 +202,19 @@ pub(crate) fn builder_is_free(obs: &Observation, unit: &UnitObs) -> bool {
 }
 
 fn builder_obligation(obs: &Observation, unit: &UnitObs) -> Option<BuilderObligation> {
+    builder_obligation_after(obs, unit, FoundationCancellations::default())
+}
+
+fn builder_obligation_after(
+    obs: &Observation,
+    unit: &UnitObs,
+    cancellations: FoundationCancellations<'_>,
+) -> Option<BuilderObligation> {
     unit.site
         .map(BuilderObligation::Build)
         .or_else(|| {
-            unit.founding
+            cancellations
+                .retained(unit)
                 .map(|(kind, anchor)| BuilderObligation::Found { kind, anchor })
         })
         .or_else(|| unit.salvaging.map(BuilderObligation::Salvage))

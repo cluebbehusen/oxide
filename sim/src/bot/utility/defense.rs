@@ -1522,7 +1522,12 @@ impl UtilityPolicy {
         self.prepare_ground_producer_egress(obs);
         if builds.iter().any(|(kind, anchor)| {
             kind.base_stats().construction.is_none()
-                || !self.placement_valid_prepared(obs, *kind, *anchor)
+                || !self.placement_valid_prepared(
+                    obs,
+                    *kind,
+                    *anchor,
+                    FoundationCancellations::default(),
+                )
         }) {
             return false;
         }
@@ -4355,7 +4360,12 @@ mod tests {
                     for y in (0..obs.map_height).step_by(4) {
                         for x in (0..obs.map_width).step_by(4) {
                             let anchor = TilePos::new(x, y);
-                            if !policy.placement_valid_prepared(&obs, kind, anchor) {
+                            if !policy.placement_valid_prepared(
+                                &obs,
+                                kind,
+                                anchor,
+                                FoundationCancellations::default(),
+                            ) {
                                 continue;
                             }
                             let Some(approaches) = operationally_supported_approaches(

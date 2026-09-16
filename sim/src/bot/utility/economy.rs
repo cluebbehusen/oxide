@@ -660,7 +660,18 @@ impl UtilityPolicy {
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) -> bool {
-        self.production_with_commitments(dials, obs, context, budget, None, intents)
+        let mut commitments = PolicyCommitments::new(
+            obs,
+            obs.scrap.saturating_sub(*budget),
+            context.claims.reserved,
+            &strategic_production_claims(intents),
+        );
+        commitments.import_deferred_claims(obs, &Self::deferred_claims(obs));
+        if let Some(saving) = &self.foundry_saving {
+            commitments.import_foundry_saving(saving);
+        }
+        *budget = commitments.available_scrap();
+        self.production_with_commitments(dials, obs, context, budget, &mut commitments, intents)
     }
 
     pub(super) fn production_with_commitments(
@@ -669,7 +680,7 @@ impl UtilityPolicy {
         obs: &Observation,
         context: ProductionContext<'_>,
         budget: &mut u32,
-        mut commitments: Option<&mut PolicyCommitments>,
+        commitments: &mut PolicyCommitments,
         intents: &mut Vec<Intent>,
     ) -> bool {
         let ProductionContext {
@@ -682,7 +693,6 @@ impl UtilityPolicy {
             voluntary_scrap_guard,
             producer_lane_reservations,
         } = context;
-        let ConstructionClaims { .. } = claims;
         let producer_context = ProducerSelectionContext {
             reservations: producer_lane_reservations,
             account_same_think_intents: true,
@@ -702,13 +712,10 @@ impl UtilityPolicy {
         // owns this think's construction channel, while a partial one retains
         // its fund. Actionable Extractor restoration keeps the same precedence
         // it has in construction.
-        if commitments
-            .as_ref()
-            .is_some_and(|commitments| commitments.foundry_saving_blocked())
-        {
+        if commitments.foundry_saving_blocked() {
             self.retain_blocked_foundry_saving(obs.tick);
             if self.foundry_saving.is_none() {
-                self.release_foundry_saving(commitments.as_deref_mut(), budget);
+                self.release_foundry_saving(commitments, budget);
             }
             return true;
         }
@@ -741,12 +748,13 @@ impl UtilityPolicy {
         let expansion_inputs = if dials.expansion
             && let Some(saving) = &saved_foundry
         {
-            let (foundries, pending_foundries) = Self::projected_foundries(obs);
+            let (foundries, pending_foundries) =
+                Self::projected_foundries_after(obs, claims.cancellations);
             let builders: Vec<_> = obs
                 .my_units
                 .iter()
                 .filter(|builder| builder.id == saving.plan.builder)
-                .filter(|builder| builder_is_free(obs, builder))
+                .filter(|builder| claims.cancellations.builder_is_free(obs, builder))
                 .filter(|builder| !claims.enlisted.contains(&builder.id))
                 .filter(|builder| !claims.reserved.contains(&builder.id))
                 .filter(|builder| !unavailable_builders.contains(&builder.id))
@@ -756,19 +764,14 @@ impl UtilityPolicy {
         } else {
             None
         };
-        let current_expansion_scrap = commitments.as_ref().map_or(*budget, |commitments| {
-            commitments.available_for_foundry_saving()
-        });
-        let expansion_resources = ResourceSnapshot::from_observation(obs);
+        let current_expansion_scrap = commitments.available_for_foundry_saving();
         let expansion_quote_basis = saved_foundry.as_ref().and_then(|saving| {
             if saving.forecast_basis.is_none() {
                 return Some((current_expansion_scrap, voluntary_scrap_guard));
             }
-            let funding = Self::foundry_funding_revalidation(
-                &expansion_resources,
-                saving,
-                current_expansion_scrap,
-            );
+            let resources = ResourceSnapshot::from_observation(obs);
+            let funding =
+                Self::foundry_funding_revalidation(&resources, saving, current_expansion_scrap);
             funding.viable.then_some((
                 funding.planning_scrap,
                 Reserve::Exact(funding.protected_reserve),
@@ -780,6 +783,7 @@ impl UtilityPolicy {
             .and_then(|((foundries, builders), (spendable_scrap, quote_guard))| {
                 public_map.map(|public_map| FoundryAssessmentContext {
                     claim: FoundryClaimContext {
+                        cancellations: claims.cancellations,
                         home,
                         projected_foundries: foundries,
                         builders,
@@ -810,14 +814,14 @@ impl UtilityPolicy {
             // Expansion protection belongs to the shared allocation session.
             // This residual path may release a stale saved plan, but it must
             // not buy combat units outside that transaction.
-            self.release_foundry_saving(commitments.as_deref_mut(), budget);
+            self.release_foundry_saving(commitments, budget);
             return true;
         }
         if expansion_assessment.is_none() && saved_foundry.is_some() {
             if self.retain_blocked_foundry_saving(obs.tick) {
                 return true;
             }
-            self.release_foundry_saving(commitments.as_deref_mut(), budget);
+            self.release_foundry_saving(commitments, budget);
         }
         if let Some(assessment) = expansion_assessment
             && assessment.disposition == expansion::ExpansionDisposition::Build
@@ -834,81 +838,61 @@ impl UtilityPolicy {
                     || voluntary_scrap_guard.amount(TECH_RESERVE),
                     |basis| basis.protected_reserve,
                 );
-            if let Some(commitments) = commitments {
-                let current_required_scrap = foundry_cost.saturating_add(guard);
-                let required_scrap = saved_foundry
-                    .as_ref()
-                    .map_or(current_required_scrap, |saving| {
-                        saving.required_scrap.max(current_required_scrap)
-                    });
-                let guard = required_scrap.saturating_sub(foundry_cost);
-                let outcome =
-                    commit_foundry_plan(commitments, budget, assessment.plan, guard, true);
-                match outcome {
-                    Some(FoundryCommitmentOutcome::Build(commitment)) => {
-                        let accepted_at = self
-                            .foundry_saving
+            let current_required_scrap = foundry_cost.saturating_add(guard);
+            let required_scrap = saved_foundry
+                .as_ref()
+                .map_or(current_required_scrap, |saving| {
+                    saving.required_scrap.max(current_required_scrap)
+                });
+            let guard = required_scrap.saturating_sub(foundry_cost);
+            let outcome = commit_foundry_plan(commitments, budget, assessment.plan, guard, true);
+            match outcome {
+                Some(FoundryCommitmentOutcome::Build(commitment)) => {
+                    let accepted_at = self
+                        .foundry_saving
+                        .as_ref()
+                        .map_or(obs.tick, |saving| saving.accepted_at);
+                    self.foundry_saving = Some(FoundrySavingCommitment {
+                        plan: commitment.plan.clone(),
+                        accepted_at,
+                        required_scrap: commitment.required_scrap,
+                        forecast_basis: saved_foundry
                             .as_ref()
-                            .map_or(obs.tick, |saving| saving.accepted_at);
+                            .and_then(|saving| saving.forecast_basis),
+                        blocked_since: None,
+                    });
+                    Self::insert_build_before_harvest(
+                        intents,
+                        BuildingKind::Foundry,
+                        commitment.plan.anchor,
+                        Intent::BuildWith {
+                            builder: commitment.plan.builder,
+                            kind: BuildingKind::Foundry,
+                            anchor: commitment.plan.anchor,
+                        },
+                    );
+                }
+                Some(FoundryCommitmentOutcome::Save(commitment)) => {
+                    if let Some(saving) = &mut self.foundry_saving {
+                        debug_assert_eq!(saving.plan.anchor, commitment.plan.anchor);
+                        debug_assert_eq!(saving.plan.builder, commitment.plan.builder);
+                        saving.required_scrap = commitment.required_scrap;
+                        saving.blocked_since = None;
+                    } else {
                         self.foundry_saving = Some(FoundrySavingCommitment {
-                            plan: commitment.plan.clone(),
-                            accepted_at,
+                            plan: commitment.plan,
+                            accepted_at: obs.tick,
                             required_scrap: commitment.required_scrap,
-                            forecast_basis: saved_foundry
-                                .as_ref()
-                                .and_then(|saving| saving.forecast_basis),
+                            forecast_basis: None,
                             blocked_since: None,
                         });
-                        Self::insert_build_before_harvest(
-                            intents,
-                            BuildingKind::Foundry,
-                            commitment.plan.anchor,
-                            Intent::BuildWith {
-                                builder: commitment.plan.builder,
-                                kind: BuildingKind::Foundry,
-                                anchor: commitment.plan.anchor,
-                            },
-                        );
-                    }
-                    Some(FoundryCommitmentOutcome::Save(commitment)) => {
-                        if let Some(saving) = &mut self.foundry_saving {
-                            debug_assert_eq!(saving.plan.anchor, commitment.plan.anchor);
-                            debug_assert_eq!(saving.plan.builder, commitment.plan.builder);
-                            saving.required_scrap = commitment.required_scrap;
-                            saving.blocked_since = None;
-                        } else {
-                            self.foundry_saving = Some(FoundrySavingCommitment {
-                                plan: commitment.plan,
-                                accepted_at: obs.tick,
-                                required_scrap: commitment.required_scrap,
-                                forecast_basis: None,
-                                blocked_since: None,
-                            });
-                        }
-                    }
-                    None => {
-                        if !self.retain_blocked_foundry_saving(obs.tick) {
-                            self.release_foundry_saving(Some(commitments), budget);
-                        }
                     }
                 }
-            } else if *budget >= foundry_cost.saturating_add(guard) {
-                *budget -= foundry_cost;
-                Self::insert_build_before_harvest(
-                    intents,
-                    BuildingKind::Foundry,
-                    assessment.plan.anchor,
-                    Intent::BuildWith {
-                        builder: assessment.plan.builder,
-                        kind: BuildingKind::Foundry,
-                        anchor: assessment.plan.anchor,
-                    },
-                );
-            } else {
-                // A safe, worthwhile project owns the partial fund. Mask the
-                // planning budget so no later channel can turn accumulation
-                // into a permanently receding target.
-                *budget = 0;
+                None => {
+                    if !self.retain_blocked_foundry_saving(obs.tick) {
+                        self.release_foundry_saving(commitments, budget);
+                    }
+                }
             }
             return true;
         }
@@ -1542,6 +1526,7 @@ mod tests {
             obs,
             FoundryAssessmentContext {
                 claim: FoundryClaimContext {
+                    cancellations: FoundationCancellations::default(),
                     home,
                     projected_foundries: &foundries,
                     builders: &builders,
@@ -1730,6 +1715,7 @@ mod tests {
             &obs,
             TilePos::new(1, 1),
             ConstructionClaims {
+                cancellations: FoundationCancellations::default(),
                 enlisted: &[],
                 reserved: &[],
             },
@@ -1750,6 +1736,7 @@ mod tests {
     #[test]
     fn residual_production_leaves_worker_growth_to_economic_allocation() {
         let mut obs = observation();
+        obs.scrap = UnitKind::Harvester.stats().cost;
         for id in 4..=6 {
             add_unit(
                 &mut obs,
@@ -1772,6 +1759,7 @@ mod tests {
                 current,
                 TilePos::new(1, 1),
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -1829,6 +1817,7 @@ mod tests {
             ProductionContext::new(
                 TilePos::new(1, 1),
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -1886,6 +1875,7 @@ mod tests {
                 ProductionContext::new(
                     TilePos::new(1, 1),
                     ConstructionClaims {
+                        cancellations: FoundationCancellations::default(),
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -1951,6 +1941,7 @@ mod tests {
                 ProductionContext::new(
                     TilePos::new(1, 1),
                     ConstructionClaims {
+                        cancellations: FoundationCancellations::default(),
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -2006,6 +1997,7 @@ mod tests {
                 ProductionContext::new(
                     home,
                     ConstructionClaims {
+                        cancellations: FoundationCancellations::default(),
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -2197,6 +2189,7 @@ mod tests {
         obs.known_frames = vec![frame];
         dials.extractors = true;
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -2331,6 +2324,7 @@ mod tests {
         obs.scrap = foundry_fund + sentinel_cost;
         let public_map = expansion_briefing(&obs, home, TilePos::new(36, 20));
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -2580,6 +2574,7 @@ mod tests {
         assert_eq!(dials.expansion_greed, profile.traits.greed);
 
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -2705,6 +2700,7 @@ mod tests {
         dials.expansion = false;
         dials.upgrades = false;
         let open_claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -2749,6 +2745,7 @@ mod tests {
             .map(|unit| unit.id)
             .collect();
         let claimed_builders = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &harvesters,
             reserved: &[],
         };
@@ -2869,6 +2866,7 @@ mod tests {
         obs.scrap = fund;
         let public_map = expansion_briefing(&obs, home, TilePos::new(44, 20));
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -3327,7 +3325,7 @@ mod tests {
         assert_eq!(commitments.available_scrap(), fixture.obs.scrap);
 
         let mut budget = commitments.available_scrap();
-        policy.release_foundry_saving(Some(&mut commitments), &mut budget);
+        policy.release_foundry_saving(&mut commitments, &mut budget);
 
         assert!(policy.foundry_saving.is_none());
         assert!(commitments.foundry_saving_owner.is_none());
@@ -3532,13 +3530,14 @@ mod tests {
             ProductionContext::new(
                 fixture.home,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
             )
             .with_public_map(Some(&fixture.public_map)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -3605,13 +3604,14 @@ mod tests {
             ProductionContext::new(
                 fixture.home,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
             )
             .with_public_map(Some(&fixture.public_map)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -3717,6 +3717,7 @@ mod tests {
         );
 
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -3739,7 +3740,7 @@ mod tests {
                 ProductionContext::new(fixture.home, claims)
                     .with_public_map(Some(&fixture.public_map)),
                 &mut budget,
-                Some(&mut commitments),
+                &mut commitments,
                 &mut intents,
             );
             assert!(promised);
@@ -3997,6 +3998,7 @@ mod tests {
         let mut budget = commitments.available_scrap();
         let mut intents = Vec::new();
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -4008,7 +4010,7 @@ mod tests {
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(shallow_guard)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -4056,6 +4058,7 @@ mod tests {
             &underprotected,
             FoundryAssessmentContext {
                 claim: FoundryClaimContext {
+                    cancellations: FoundationCancellations::default(),
                     home: fixture.home,
                     projected_foundries: &foundries,
                     builders: &builders,
@@ -4084,6 +4087,7 @@ mod tests {
         let mut budget = commitments.available_scrap();
         let mut intents = Vec::new();
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -4095,7 +4099,7 @@ mod tests {
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -4260,6 +4264,7 @@ mod tests {
         let mut budget = commitments.available_scrap();
         let mut intents = Vec::new();
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -4270,7 +4275,7 @@ mod tests {
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -4317,7 +4322,7 @@ mod tests {
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -4353,6 +4358,7 @@ mod tests {
         ));
         let mut budget = commitments.available_scrap();
         let claims = ConstructionClaims {
+            cancellations: FoundationCancellations::default(),
             enlisted: &[],
             reserved: &[],
         };
@@ -4363,7 +4369,7 @@ mod tests {
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut Vec::new(),
         );
         assert_eq!(
@@ -4396,7 +4402,7 @@ mod tests {
                 .with_public_map(Some(&fixture.public_map))
                 .with_voluntary_scrap_guard(Reserve::Exact(0)),
             &mut budget,
-            Some(&mut commitments),
+            &mut commitments,
             &mut intents,
         );
 
@@ -4508,7 +4514,7 @@ mod tests {
                 .all(|claim| claim.owner == replacement_owner)
         );
 
-        policy.release_foundry_saving(Some(&mut commitments), &mut budget);
+        policy.release_foundry_saving(&mut commitments, &mut budget);
 
         assert!(policy.foundry_saving.is_none());
         assert!(commitments.foundry_saving_owner.is_none());
@@ -4574,7 +4580,7 @@ mod tests {
         assert_eq!(commitments.ledger.site_claims()[0].owner, replacement_owner);
         assert_eq!(commitments.available_scrap(), guard);
 
-        policy.release_foundry_saving(Some(&mut commitments), &mut budget);
+        policy.release_foundry_saving(&mut commitments, &mut budget);
 
         assert!(policy.foundry_saving.is_none());
         assert!(commitments.foundry_saving_owner.is_none());

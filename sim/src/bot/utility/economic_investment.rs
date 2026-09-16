@@ -210,6 +210,7 @@ impl UtilityPolicy {
                         kind,
                         anchor,
                         Some((kind, anchor)),
+                        FoundationCancellations::default(),
                     )
                     && self.deferred_claim_has_safe_founder(
                         context.obs,
@@ -2223,10 +2224,13 @@ mod tests {
                     policy
                         .post_floor_deferred_claims(
                             &obs,
-                            TilePos::new(3, 12),
-                            Some(&[]),
-                            Some(&[]),
-                            Some(&map),
+                            obs.scrap,
+                            DeferredClaimContext {
+                                home: TilePos::new(3, 12),
+                                unit_contacts: Some(&[]),
+                                building_contacts: Some(&[]),
+                                public_map: Some(&map)
+                            },
                             &mut intents,
                         )
                         .contains(&(kind, anchor))

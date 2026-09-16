@@ -1,6 +1,7 @@
 //! Retained producer-exit certificates for hypothetical construction layouts.
 use crate::bot::observation::Observation;
 use crate::bot::query_work::QueryPurpose;
+use crate::bot::resources::FoundationCancellations;
 use crate::stats::{BuildingKind, Domain};
 use chassis::grid::TilePos;
 type PlannedFootprint = (BuildingKind, TilePos);
@@ -95,7 +96,7 @@ pub(in crate::bot) struct GroundEgressCache {
 }
 
 impl GroundEgressLayout {
-    fn from_observation(obs: &Observation) -> Self {
+    fn from_observation(obs: &Observation, cancellations: FoundationCancellations<'_>) -> Self {
         let known_scrap = obs.known_scrap.iter().map(|(tile, _)| *tile).collect();
         let mut blocking_buildings: Vec<_> = obs
             .my_buildings
@@ -111,7 +112,7 @@ impl GroundEgressLayout {
         let mut founding: Vec<_> = obs
             .my_units
             .iter()
-            .filter_map(|unit| unit.founding)
+            .filter_map(|unit| cancellations.retained(unit))
             .filter(|(kind, _)| !kind.is_stealthy())
             .collect();
         founding.sort_unstable();
@@ -176,7 +177,16 @@ impl GroundEgressCache {
         slot: &mut Option<Self>,
         obs: &Observation,
     ) {
-        let layout = GroundEgressLayout::from_observation(obs);
+        Self::prepare_after(query_purpose, slot, obs, FoundationCancellations::default());
+    }
+
+    pub(in crate::bot) fn prepare_after(
+        query_purpose: QueryPurpose,
+        slot: &mut Option<Self>,
+        obs: &Observation,
+        cancellations: FoundationCancellations<'_>,
+    ) {
+        let layout = GroundEgressLayout::from_observation(obs, cancellations);
         let layout_changed = slot.as_ref().is_none_or(|cache| cache.layout != layout);
         if layout_changed {
             #[cfg(test)]
@@ -184,7 +194,7 @@ impl GroundEgressCache {
                 work.generations += 1;
             });
 
-            let base_open = Self::ground_egress_base_open(obs);
+            let base_open = Self::ground_egress_base_open(obs, cancellations);
             let producers = Self::ground_producer_egress(query_purpose, obs, &base_open);
             let certificate =
                 Self::ground_egress_certificate(&base_open, layout.map_size, &producers)
@@ -424,7 +434,10 @@ impl GroundEgressCache {
             .any(|(kind, anchor)| Self::candidate_blocks(*kind, *anchor, tile))
     }
 
-    pub(in crate::bot) fn ground_egress_base_open(obs: &Observation) -> Vec<bool> {
+    pub(in crate::bot) fn ground_egress_base_open(
+        obs: &Observation,
+        cancellations: FoundationCancellations<'_>,
+    ) -> Vec<bool> {
         let cells = usize::try_from(obs.map_width)
             .ok()
             .and_then(|width| {
@@ -459,7 +472,11 @@ impl GroundEgressCache {
                 }
             }
         }
-        for (kind, anchor) in obs.my_units.iter().filter_map(|unit| unit.founding) {
+        for (kind, anchor) in obs
+            .my_units
+            .iter()
+            .filter_map(|unit| cancellations.retained(unit))
+        {
             if kind.is_stealthy() {
                 continue;
             }
@@ -565,7 +582,8 @@ impl GroundEgressCache {
 
     #[cfg(test)]
     pub(in crate::bot) fn same_layout(a: &Observation, b: &Observation) -> bool {
-        GroundEgressLayout::from_observation(a) == GroundEgressLayout::from_observation(b)
+        GroundEgressLayout::from_observation(a, FoundationCancellations::default())
+            == GroundEgressLayout::from_observation(b, FoundationCancellations::default())
     }
     #[cfg(test)]
     pub(in crate::bot) fn base_open(&self) -> &[bool] {
@@ -649,7 +667,10 @@ mod tests {
             let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
             assert!(routes.open(TilePos::new(8, 8)));
             assert_eq!(
-                GroundEgressCache::ground_egress_base_open(&obs),
+                GroundEgressCache::ground_egress_base_open(
+                    &obs,
+                    FoundationCancellations::default()
+                ),
                 before.base_open
             );
             assert_eq!(work.generations, 0);

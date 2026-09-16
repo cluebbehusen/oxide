@@ -54,7 +54,7 @@ impl UtilityPolicy {
             return Vec::new();
         }
         let size = BuildingKind::Foundry.base_stats().size;
-        self.prepare_ground_producer_egress(obs);
+        self.prepare_ground_producer_egress_after(obs, context.cancellations);
         let supported = |anchor| {
             unsupported
                 .iter()
@@ -95,7 +95,10 @@ impl UtilityPolicy {
                 })
                 .collect::<Vec<_>>();
             let mut selected = Vec::new();
-            let geometry = super::super::terrain::PlacementGeometry::new(obs);
+            let geometry = super::super::terrain::PlacementGeometry::after_cancellations(
+                obs,
+                context.cancellations,
+            );
             for cluster in clusters {
                 let count = i64::try_from(cluster.len()).unwrap_or(i64::MAX).max(1);
                 let center = TilePos::new(
