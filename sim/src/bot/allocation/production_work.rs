@@ -206,121 +206,14 @@ impl Task {
         claims: &ClaimState,
         solution: &production_search::Solution,
     ) -> Option<ResolvedClaimState> {
-        if solution.schedule.len() != claims.producer_jobs.len() {
-            return None;
-        }
-        let mut producers = capacity.resources.producers().to_vec();
-        let mut schedule = Vec::with_capacity(solution.schedule.len());
         let elapsed = capacity
             .resources
             .observed_at()
             .checked_sub(self.started_at)?;
-        for row in &solution.schedule {
-            let job = claims
-                .producer_jobs
-                .iter()
-                .find(|job| job.owner == row.owner && job.ordinal == row.request_ordinal)?;
-            if job.claim.kind != row.kind {
-                return None;
-            }
-            if job
-                .claim
-                .access
-                .producers()
-                .binary_search(&row.producer)
-                .is_err()
-            {
-                return None;
-            }
-            let lane = producers
-                .iter_mut()
-                .find(|lane| lane.producer() == row.producer)?;
-            let earliest = lane
-                .earliest_enqueue_tick(job.claim.kind)?
-                .max(job.claim.enqueue_not_before)
-                .max(
-                    schedule
-                        .iter()
-                        .filter(|prior: &&ScheduledProducerJob| {
-                            prior.owner == row.owner && prior.request_ordinal < row.request_ordinal
-                        })
-                        .map(|prior| prior.enqueued_at)
-                        .max()
-                        .unwrap_or(0),
-                );
-            let enqueue = match job.claim.fixed_assignment() {
-                Some(fixed) => fixed.enqueued_at,
-                None => capacity
-                    .resources
-                    .decision_at_or_after(row.enqueued_at.checked_add(elapsed)?.max(earliest))?,
-            };
-            if enqueue < earliest
-                || enqueue > job.claim.enqueue_not_after
-                || enqueue > capacity.resources.horizon()
-            {
-                return None;
-            }
-            let projected = lane.append(job.claim.kind, enqueue)?;
-            if projected.ready_at >= job.claim.ready_before
-                || job.claim.fixed_assignment().is_some_and(|fixed| {
-                    fixed.starts_at != projected.starts_at || fixed.ready_at != projected.ready_at
-                })
-            {
-                return None;
-            }
-            schedule.push(ScheduledProducerJob {
-                enqueued_at: enqueue,
-                starts_at: projected.starts_at,
-                ready_at: projected.ready_at,
-                ready_before: job.claim.ready_before,
-                current_scrap: 0,
-                forecast_scrap: 0,
-                ..*row
-            });
-        }
-        let satisfied = claims.voluntary_scrap_guard_satisfied(capacity, &schedule);
-        let minimum_residual_scrap = if satisfied {
-            claims.effective_minimum_residual_scrap()
-        } else {
-            claims
-                .minimum_residual_scrap
-                .max(claims.voluntary_scrap_guard.amount)
-        };
-        let basis = JointFundingBasis {
-            capacity,
-            current_capital: claims.current_scrap,
-            minimum_residual_scrap,
-            forecast_capital: &claims.forecast_scrap,
-            deferrable_capital: &claims.deferrable_capital,
-            jobs: &claims.producer_jobs,
-        };
-        let mut capital_assignments =
-            assign_joint_funding(basis, &mut schedule, JointFundingMode::PreferPriority).or_else(
-                || {
-                    assign_joint_funding(
-                        basis,
-                        &mut schedule,
-                        JointFundingMode::PreserveCompatiblePortfolio,
-                    )
-                },
-            )?;
-        schedule.sort_unstable_by_key(|job| {
-            (
-                job.enqueued_at,
-                job.starts_at,
-                job.owner,
-                job.request_ordinal,
-                job.producer,
-            )
-        });
-        capital_assignments.sort_unstable();
-        Some(ResolvedClaimState {
-            producer_schedule: schedule,
-            capital_assignments,
-            voluntary_scrap_guard_satisfied: satisfied,
-            search_states: self.explored,
-            memo_hits: self.memo_hits,
-        })
+        let mut witness = witness::validate(capacity, claims, &solution.schedule, elapsed)?;
+        witness.search_states = self.explored;
+        witness.memo_hits = self.memo_hits;
+        Some(witness)
     }
 }
 
@@ -473,6 +366,39 @@ mod tests {
             ..ClaimState::default()
         };
         (capacity, claims)
+    }
+
+    #[test]
+    fn fixed_witnesses_preserve_exact_timing_without_searching_again() {
+        for jobs in 0..12 {
+            let (capacity, mut claims) = fixture(0, jobs);
+            let expected = claims.resolve(&capacity).unwrap();
+            for job in &mut claims.producer_jobs {
+                let row = expected
+                    .producer_schedule
+                    .iter()
+                    .find(|row| row.request_ordinal == job.ordinal)
+                    .unwrap();
+                job.claim = ProducerJobClaim::fixed(
+                    row.producer,
+                    row.kind,
+                    row.enqueued_at,
+                    row.starts_at,
+                    row.ready_at,
+                    row.ready_before,
+                );
+            }
+            let before = production_search::SEARCH_CALLS.get();
+            let actual = claims.resolve(&capacity).unwrap();
+            assert_eq!(production_search::SEARCH_CALLS.get(), before);
+            assert_eq!(actual.producer_schedule, expected.producer_schedule);
+            assert_eq!(actual.capital_assignments, expected.capital_assignments);
+            if jobs >= 2 {
+                let mut repeated = actual.producer_schedule.clone();
+                repeated[1] = repeated[0];
+                assert!(witness::validate(&capacity, &claims, &repeated, 0).is_none());
+            }
+        }
     }
 
     #[test]

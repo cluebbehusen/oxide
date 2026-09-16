@@ -1308,7 +1308,10 @@ unrefined, not infeasible. Claim identities include capital reservations and
 funding priorities; a retained schedule must pass current queue, deadline, and
 funding checks before acceptance. Portfolio selection, standing-force wait
 binding, connected growth, and prospective Airworks allocation use this service.
-Mandatory obligation validation remains synchronous.
+Fixed obligations reuse the same witness validator directly; they do not search
+for an alternative schedule. It checks current queue state, request identity,
+owner order, exact timing, and rebased funding. Obligations with unassigned
+producer jobs still use synchronous scheduling.
 
 Site refinement and prospective Airworks targets use the same bounded candidate
 cursor. Airworks valuation admits two candidate factory sites and examines two

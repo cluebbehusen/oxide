@@ -25,6 +25,7 @@ mod production_bounds;
 mod production_search;
 pub(in crate::bot) mod production_work;
 mod session;
+mod witness;
 
 pub(crate) use adapters::*;
 pub(crate) use coordinator::*;
@@ -2816,6 +2817,38 @@ impl ClaimState {
         capacity: &AllocationCapacity,
     ) -> Result<ResolvedClaimState, AllocationConflict> {
         self.validate_production_bounds(capacity)?;
+        if let Some(mut rows) = self
+            .producer_jobs
+            .iter()
+            .map(|job| {
+                let fixed = job.claim.fixed_assignment()?;
+                Some(ScheduledProducerJob {
+                    owner: job.owner,
+                    producer: fixed.producer,
+                    kind: job.claim.kind,
+                    request_ordinal: job.ordinal,
+                    enqueued_at: fixed.enqueued_at,
+                    starts_at: fixed.starts_at,
+                    ready_at: fixed.ready_at,
+                    ready_before: job.claim.ready_before,
+                    current_scrap: 0,
+                    forecast_scrap: 0,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+        {
+            rows.sort_unstable_by_key(|job| {
+                (
+                    job.enqueued_at,
+                    job.starts_at,
+                    job.owner,
+                    job.request_ordinal,
+                    job.producer,
+                )
+            });
+            return witness::validate(capacity, self, &rows, 0)
+                .ok_or_else(|| producer_schedule_conflict(&self.producer_jobs));
+        }
         self.resolve_with_funding_mode(capacity, JointFundingMode::PreferPriority)
             .or_else(|| {
                 self.resolve_with_funding_mode(
