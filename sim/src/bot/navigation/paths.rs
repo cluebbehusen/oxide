@@ -176,6 +176,17 @@ impl PathBoard<'_> {
         overlay: Option<BlockedRect>,
         search: &mut Search,
     ) -> Option<Vec<TilePos>> {
+        self.path_prepared(start, goal, overlay, search, None)
+    }
+
+    fn path_prepared(
+        self,
+        start: TilePos,
+        goal: TilePos,
+        overlay: Option<BlockedRect>,
+        search: &mut Search,
+        prepared: Option<&[u32]>,
+    ) -> Option<Vec<TilePos>> {
         let key = (overlay, start, goal);
         if let Some(path) = self
             .cache
@@ -193,7 +204,7 @@ impl PathBoard<'_> {
         let eligible = self.grid.open(start, overlay)
             && self.grid.index(goal).is_some()
             && self.grid.blocked.len() <= crate::stats::PATH_EXPANSION_CAP as usize;
-        if eligible && overlay.is_none() {
+        if eligible && overlay.is_none() && prepared.is_none() {
             for (source, destination) in [(start, goal), (goal, start)] {
                 let promote = self
                     .cache
@@ -213,7 +224,9 @@ impl PathBoard<'_> {
                 }
             }
         }
-        let result = {
+        let result = if let Some(field) = prepared.filter(|_| eligible) {
+            search.path_with_distances(self.grid, overlay, start, goal, field)
+        } else {
             let mut cache = self.cache.borrow_mut();
             let field = eligible
                 .then(|| cache.generation(self.grid, self.class))
@@ -254,6 +267,7 @@ impl PathBoard<'_> {
             }
         };
         if eligible
+            && prepared.is_none()
             && overlay.is_none()
             && let Some(generation) = self.cache.borrow_mut().generation(self.grid, self.class)
         {
@@ -389,10 +403,14 @@ pub(in crate::bot) struct BaselineEndpointRoute {
 pub(in crate::bot) type EndpointRoutes =
     BTreeMap<(CacheClass, TilePos, TilePos), BaselineEndpointRoute>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct PendingRoute;
+
 pub(in crate::bot) struct CandidatePaths<'a> {
     board: PathBoard<'a>,
     overlay: Option<BlockedRect>,
     paths: BTreeMap<(TilePos, TilePos), Vec<TilePos>>,
+    planning: Option<(u64, &'a crate::bot::planning::PlanningWork)>,
 }
 
 impl<'a> CandidatePaths<'a> {
@@ -401,35 +419,87 @@ impl<'a> CandidatePaths<'a> {
             board,
             overlay,
             paths: BTreeMap::new(),
+            planning: None,
         }
     }
+    pub fn with_planning(
+        mut self,
+        tick: u64,
+        planning: &'a crate::bot::planning::PlanningWork,
+    ) -> Self {
+        self.planning = Some((tick, planning));
+        self
+    }
+    #[cfg(test)]
     pub fn shortest(
         &mut self,
         starts: &[TilePos],
         goals: &[TilePos],
         baseline: &mut EndpointRoutes,
     ) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
+        self.refine_shortest(starts, goals, baseline)
+            .expect("immediate route query cannot defer")
+    }
+    pub fn refine_shortest(
+        &mut self,
+        starts: &[TilePos],
+        goals: &[TilePos],
+        baseline: &mut EndpointRoutes,
+    ) -> Result<Option<(TilePos, TilePos, Vec<TilePos>)>, PendingRoute> {
         shortest_path_between_cached(self, starts, goals, baseline)
     }
+    fn prepare(
+        &self,
+        goal: TilePos,
+        overlay: Option<BlockedRect>,
+    ) -> Result<Option<std::sync::Arc<super::approaches::ApproachField>>, PendingRoute> {
+        let Some((tick, planning)) = self.planning else {
+            return Ok(None);
+        };
+        match planning.candidate_route_field(tick, self.board.grid, overlay, &[goal]) {
+            crate::bot::planning::Progress::Ready(field) => Ok(Some(field)),
+            crate::bot::planning::Progress::Deferred => Err(PendingRoute),
+            crate::bot::planning::Progress::ProvenInfeasible => {
+                unreachable!("fields retain unreachable cells")
+            }
+        }
+    }
+    #[cfg(test)]
     pub fn path(
         &mut self,
         start: TilePos,
         goal: TilePos,
         search: &mut Search,
     ) -> Option<Vec<TilePos>> {
+        self.refine_path(start, goal, search)
+            .expect("immediate route query cannot defer")
+    }
+    fn refine_path(
+        &mut self,
+        start: TilePos,
+        goal: TilePos,
+        search: &mut Search,
+    ) -> Result<Option<Vec<TilePos>>, PendingRoute> {
+        let field = self.prepare(goal, self.overlay)?;
         if let Some(path) = self.paths.get(&(start, goal)) {
             #[cfg(test)]
             super::work::record(|work| {
                 work.hits += 1;
             });
             search.clear_search_evidence();
-            return Some(path.clone());
+            return Ok(Some(path.clone()));
         }
-        let path = self.board.path(start, goal, self.overlay, search);
+        let path = self.board.path_prepared(
+            start,
+            goal,
+            self.overlay,
+            search,
+            field.as_ref().map(|field| field.distances()),
+        );
         if let Some(path) = &path {
             self.paths.insert((start, goal), path.clone());
         }
-        path
+        Ok(path)
     }
 }
 
@@ -446,17 +516,29 @@ pub(in crate::bot) fn path_cost(path: &[TilePos]) -> u32 {
 }
 type EndpointPriority = (u32, i32, i32, i32, i32);
 
-struct EndpointQueue(BinaryHeap<Reverse<EndpointPriority>>);
+struct EndpointQueue(BinaryHeap<Reverse<EndpointPriority>>, bool);
 
 impl EndpointQueue {
     fn new(board: PathBoard<'_>, starts: &[TilePos], goals: &[TilePos]) -> Self {
+        Self::with_fields(board, starts, goals, true)
+    }
+    fn with_fields(
+        board: PathBoard<'_>,
+        starts: &[TilePos],
+        goals: &[TilePos],
+        fields: bool,
+    ) -> Self {
         Self(
             starts
                 .iter()
                 .flat_map(|start| {
                     goals.iter().map(move |goal| {
                         Reverse((
-                            board.pruning_bound(*start, *goal),
+                            if fields {
+                                board.pruning_bound(*start, *goal)
+                            } else {
+                                octile(*start, *goal)
+                            },
                             start.y,
                             start.x,
                             goal.y,
@@ -465,6 +547,7 @@ impl EndpointQueue {
                     })
                 })
                 .collect(),
+            fields,
         )
     }
 
@@ -475,7 +558,11 @@ impl EndpointQueue {
             }
             let start = TilePos::new(sx, sy);
             let goal = TilePos::new(gx, gy);
-            let refined = board.pruning_bound(start, goal);
+            let refined = if self.1 {
+                board.pruning_bound(start, goal)
+            } else {
+                bound
+            };
             if refined > bound {
                 // A field prepared by an earlier pair can reorder the rest of
                 // the batch without constructing their more expensive paths.
@@ -562,10 +649,10 @@ fn shortest_path_between_cached(
     starts: &[TilePos],
     goals: &[TilePos],
     baseline_endpoint_routes: &mut EndpointRoutes,
-) -> Option<(TilePos, TilePos, Vec<TilePos>)> {
+) -> Result<Option<(TilePos, TilePos, Vec<TilePos>)>, PendingRoute> {
     let board = routes.board;
     let candidate = routes.overlay;
-    let mut pairs = EndpointQueue::new(board, starts, goals);
+    let mut pairs = EndpointQueue::with_fields(board, starts, goals, routes.planning.is_none());
 
     let mut best: Option<(TilePos, TilePos, Vec<TilePos>)> = None;
     let mut scratch = Search::default();
@@ -576,12 +663,21 @@ fn shortest_path_between_cached(
         if proven_unreachable.contains(&(start, goal)) {
             continue;
         }
+        let field = routes.prepare(goal, None)?;
         let key = (board.class, start, goal);
         let baseline = match baseline_endpoint_routes.entry(key) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                let mut path = board.path(start, goal, None, &mut scratch);
-                board.prepare_endpoint_batch(start, goal, goals.len(), &scratch);
+                let mut path = board.path_prepared(
+                    start,
+                    goal,
+                    None,
+                    &mut scratch,
+                    field.as_ref().map(|field| field.distances()),
+                );
+                if routes.planning.is_none() {
+                    board.prepare_endpoint_batch(start, goal, goals.len(), &scratch);
+                }
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -608,7 +704,7 @@ fn shortest_path_between_cached(
                 Some(path.clone())
             }
             Some(_) => {
-                let mut path = routes.path(start, goal, &mut scratch);
+                let mut path = routes.refine_path(start, goal, &mut scratch)?;
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -616,7 +712,7 @@ fn shortest_path_between_cached(
             }
             None if baseline.exhausted => None,
             None => {
-                let mut path = routes.path(start, goal, &mut scratch);
+                let mut path = routes.refine_path(start, goal, &mut scratch)?;
                 if let Some(path) = path.as_mut() {
                     path.insert(0, start);
                 }
@@ -668,7 +764,7 @@ fn shortest_path_between_cached(
             best = Some((start, goal, path));
         }
     }
-    best
+    Ok(best)
 }
 
 #[cfg(test)]

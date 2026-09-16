@@ -554,6 +554,67 @@ fn repeated_long_routes_share_candidate_fields_and_reduce_total_work() {
 }
 
 #[test]
+fn budgeted_candidates_resume_with_exact_paths_independent_of_observational_cache() {
+    use crate::bot::planning::PlanningWork;
+    let blocked: Vec<_> = (0..20 * 14).map(|i| i % 20 == 10 && i / 20 > 2).collect();
+    let grid = KnownGrid::new(20, 14, &blocked).unwrap();
+    let starts = [TilePos::new(1, 10), TilePos::new(2, 11)];
+    let goals = [TilePos::new(18, 10), TilePos::new(17, 11)];
+    let overlay = Some(BlockedRect {
+        anchor: TilePos::new(9, 1),
+        size: (1, 1),
+    });
+    let warm = RefCell::new(PathQueries::default());
+    let board = PathBoard {
+        grid,
+        cache: &warm,
+        class: CacheClass::Ground,
+    };
+    let expected =
+        CandidatePaths::new(board, overlay).shortest(&starts, &goals, &mut EndpointRoutes::new());
+    assert!(expected.is_some());
+    for &goal in &goals {
+        board.bound(starts[0], goal);
+    }
+    let left = PlanningWork::with_allowance(73);
+    let right = left.clone();
+    for tick in (0..1_200).step_by(12) {
+        let cold = RefCell::new(PathQueries::default());
+        let mut cold_routes = CandidatePaths::new(
+            PathBoard {
+                cache: &cold,
+                ..board
+            },
+            overlay,
+        )
+        .with_planning(tick, &left);
+        let mut warm_routes = CandidatePaths::new(board, overlay).with_planning(tick, &right);
+        let (actual, work) = crate::bot::navigation::work::measure(|| {
+            cold_routes.refine_shortest(&starts, &goals, &mut EndpointRoutes::new())
+        });
+        assert_eq!(
+            actual,
+            warm_routes.refine_shortest(&starts, &goals, &mut EndpointRoutes::new())
+        );
+        assert_eq!(left, right);
+        assert!(left.spent() <= 73);
+        if tick == 0 {
+            assert_eq!(actual, Err(PendingRoute));
+            assert_eq!(
+                work.searches, 0,
+                "pending field must not fall back to synchronous routing"
+            );
+            assert_eq!(work.expanded, 0);
+        }
+        if let Ok(actual) = actual {
+            assert_eq!(actual, expected);
+            return;
+        }
+    }
+    panic!("active candidate work must eventually complete");
+}
+
+#[test]
 fn candidate_field_eviction_preserves_normal_fields_and_exact_paths() {
     let blocked = vec![false; 40 * 24];
     let grid = KnownGrid::new(40, 24, &blocked).unwrap();

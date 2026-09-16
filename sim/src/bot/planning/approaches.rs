@@ -1,7 +1,9 @@
 //! Owned, budgeted coverage fields independent of observational route caches.
 
 use super::{Progress, WorkBudget};
-use crate::bot::navigation::{KnownGrid, approaches::ApproachField, distance_work::DistanceWork};
+use crate::bot::navigation::{
+    BlockedRect, KnownGrid, approaches::ApproachField, distance_work::DistanceWork,
+};
 use chassis::grid::TilePos;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -22,6 +24,7 @@ impl Job {
         &mut self,
         generation: &Generation,
         goals: &[TilePos],
+        overlay: Option<BlockedRect>,
         budget: &mut WorkBudget,
     ) -> Progress<Arc<ApproachField>> {
         if let Some(field) = &self.ready {
@@ -32,7 +35,14 @@ impl Job {
                 if !budget.charge(1) {
                     return Progress::Deferred;
                 }
-                self.open.push(!generation.blocked[self.open.len()]);
+                let index = self.open.len();
+                let tile = TilePos::new(
+                    (index % generation.width as usize) as i32,
+                    (index / generation.width as usize) as i32,
+                );
+                self.open.push(
+                    !generation.blocked[index] && !overlay.is_some_and(|rect| rect.contains(tile)),
+                );
             }
             self.traversal = Some(DistanceWork::new(
                 generation.width,
@@ -64,7 +74,7 @@ struct Generation {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ApproachPreparation {
     generation: Option<Generation>,
-    jobs: BTreeMap<Vec<TilePos>, Job>,
+    jobs: BTreeMap<(Option<BlockedRect>, Vec<TilePos>), Job>,
     next_pending: usize,
 }
 
@@ -92,8 +102,10 @@ impl ApproachPreparation {
         let first = self.next_pending % pending.len();
         self.next_pending = (first + 1) % pending.len();
         pending.rotate_left(first);
-        for (goals, job) in pending {
-            budget.run_slice(16_000, |slice| job.advance(generation, goals, slice));
+        for ((overlay, goals), job) in pending {
+            budget.run_slice(16_000, |slice| {
+                job.advance(generation, goals, *overlay, slice)
+            });
         }
         self.trim_ready();
     }
@@ -108,6 +120,7 @@ impl ApproachPreparation {
         tick: u64,
         grid: KnownGrid<'_>,
         goals: &[TilePos],
+        overlay: Option<BlockedRect>,
         budget: &mut WorkBudget,
     ) -> Progress<Arc<ApproachField>> {
         let (width, height) = grid.dimensions();
@@ -128,17 +141,18 @@ impl ApproachPreparation {
         let mut goals = goals.to_vec();
         goals.sort_unstable_by_key(|tile| (tile.y, tile.x));
         goals.dedup();
-        if !self.jobs.contains_key(&goals) && self.counts().0 == RETAINED_FIELDS {
+        let key = (overlay, goals);
+        if !self.jobs.contains_key(&key) && self.counts().0 == RETAINED_FIELDS {
             return Progress::Deferred;
         }
-        let job = self.jobs.entry(goals.clone()).or_insert_with(|| Job {
+        let job = self.jobs.entry(key.clone()).or_insert_with(|| Job {
             used: tick,
             open: Vec::new(),
             traversal: None,
             ready: None,
         });
         job.used = tick;
-        let result = job.advance(self.generation.as_ref().unwrap(), &goals, budget);
+        let result = job.advance(self.generation.as_ref().unwrap(), &key.1, overlay, budget);
         self.trim_ready();
         result
     }
@@ -153,7 +167,7 @@ impl ApproachPreparation {
             .jobs
             .iter()
             .filter(|(_, job)| job.ready.is_some())
-            .map(|(goals, _)| bytes(goals))
+            .map(|((_, goals), _)| bytes(goals))
             .sum();
         while retained > READY_BYTES {
             let victim = self
@@ -164,7 +178,7 @@ impl ApproachPreparation {
                 .unwrap()
                 .0
                 .clone();
-            retained -= bytes(&victim);
+            retained -= bytes(&victim.1);
             self.jobs.remove(&victim);
         }
     }
@@ -174,6 +188,39 @@ impl ApproachPreparation {
 mod tests {
     use super::*;
     use crate::bot::planning::PlanningWork;
+
+    #[test]
+    fn candidate_overlays_do_not_replace_each_others_pending_work() {
+        let blocked = vec![false; 12 * 8];
+        let grid = KnownGrid::new(12, 8, &blocked).unwrap();
+        let work = PlanningWork::with_allowance(91);
+        let goal = TilePos::new(10, 4);
+        let walls = [
+            Some(BlockedRect {
+                anchor: TilePos::new(6, 0),
+                size: (1, 8),
+            }),
+            Some(BlockedRect {
+                anchor: TilePos::new(6, 0),
+                size: (1, 7),
+            }),
+        ];
+        for tick in (0..600).step_by(12) {
+            let fields: Vec<_> = walls
+                .into_iter()
+                .map(|wall| work.candidate_route_field(tick, grid, wall, &[goal]))
+                .collect();
+            assert!(work.spent() <= 91);
+            if let [Progress::Ready(closed), Progress::Ready(open)] = fields.as_slice() {
+                assert!(closed.path(&[TilePos::new(1, 4)]).is_none());
+                let (_, path) = open.path(&[TilePos::new(1, 4)]).unwrap();
+                assert!(path.contains(&TilePos::new(6, 7)));
+                assert_eq!(work.stats().retained_approach_fields, 2);
+                return;
+            }
+        }
+        panic!("alternating overlays must retain their progress");
+    }
 
     #[test]
     fn excess_admissions_preserve_pending_fields_until_they_complete() {

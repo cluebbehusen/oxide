@@ -14,13 +14,13 @@ impl SiteWork {
         tick: u64,
         profile: DefenseProfile,
         anchors: &[TilePos],
-        evaluate: impl FnMut(TilePos) -> Option<(Candidate, UnitId)>,
+        mut evaluate: impl FnMut(TilePos) -> Option<(Candidate, UnitId)>,
     ) -> Progress<(Candidate, UnitId)> {
         self.advance_ranked(
             tick,
             profile.kind,
             anchors,
-            evaluate,
+            |anchor| evaluate(anchor).map_or(Progress::ProvenInfeasible, Progress::Ready),
             |candidate, prior| candidate.0.key(profile) > prior.0.key(profile),
             || true,
         )

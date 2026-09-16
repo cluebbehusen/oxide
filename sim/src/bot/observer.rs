@@ -48,9 +48,9 @@ pub struct PlanningWorkStats {
     pub pending_fields: usize,
     /// Completed and unfinished fields retained by this controller.
     pub retained_fields: usize,
-    /// Coverage fields still being prepared across ground and air.
+    /// Coverage and candidate-route fields still being prepared.
     pub pending_approach_fields: usize,
-    /// Completed and unfinished coverage fields retained by this controller.
+    /// Completed and unfinished coverage and candidate-route fields retained by this controller.
     pub retained_approach_fields: usize,
     /// Production refinements waiting for more deterministic work.
     pub pending_production: usize,

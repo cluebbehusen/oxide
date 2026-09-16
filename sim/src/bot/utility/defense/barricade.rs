@@ -1,5 +1,5 @@
 use super::*;
-use crate::bot::navigation::{BlockedRect, KnownGrid};
+use crate::bot::navigation::{BlockedRect, KnownGrid, paths::PendingRoute};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ApproachCost {
@@ -39,33 +39,50 @@ pub(super) fn supported_costs(
     candidate: PlacementFootprint,
     cache: &mut DefenseEvaluationCache,
 ) -> Option<Vec<ApproachCost>> {
+    refine_supported_costs(ground, assets, baseline, candidate, cache, false)
+        .expect("immediate barricade evaluation cannot defer")
+}
+
+pub(super) fn refine_supported_costs(
+    ground: &GroundKnowledge<'_>,
+    assets: &[DefendedAsset],
+    baseline: &[Approach],
+    candidate: PlacementFootprint,
+    cache: &mut DefenseEvaluationCache,
+    refine: bool,
+) -> Result<Option<Vec<ApproachCost>>, PendingRoute> {
     cache_supported_assets(ground, assets, candidate, cache);
-    let costs = match cache.barricade_approaches.entry(candidate) {
-        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-        std::collections::btree_map::Entry::Vacant(entry) => entry.insert(costs_with_candidate(
+    if !cache.barricade_approaches.contains_key(&candidate) {
+        let costs = costs_with_candidate(
             ground,
             assets,
             baseline,
             candidate,
             &mut cache.baseline_endpoint_routes,
-        )),
+            refine,
+        )?;
+        cache.barricade_approaches.insert(candidate, costs);
     }
-    .as_ref()?;
+    let Some(costs) = cache.barricade_approaches[&candidate].as_ref() else {
+        return Ok(None);
+    };
     // The detour limit also protects approaches to assets outside local support.
     if costs
         .iter()
         .any(|approach| approach.detour() > MAX_BARRICADE_DETOUR_COST)
     {
-        return None;
+        return Ok(None);
     }
-    let supported = cache.supported_assets.get(&candidate)?;
-    Some(
+    let Some(supported) = cache.supported_assets.get(&candidate) else {
+        return Ok(None);
+    };
+    Ok(Some(
         costs
             .iter()
             .copied()
             .filter(|approach| supported.contains(&approach.asset))
             .collect(),
-    )
+    ))
 }
 
 fn costs_with_candidate(
@@ -74,7 +91,8 @@ fn costs_with_candidate(
     baseline: &[Approach],
     candidate: PlacementFootprint,
     endpoint_routes: &mut EndpointRoutes,
-) -> Option<Vec<ApproachCost>> {
+    refine: bool,
+) -> Result<Option<Vec<ApproachCost>>, PendingRoute> {
     let domain = DefenseDomain::Ground;
     let grid = KnownGrid::new(
         ground.obs.map_width,
@@ -87,16 +105,16 @@ fn costs_with_candidate(
         size: candidate.size,
     });
     let mut routes = CandidateRoutes::new(ground, candidate, domain);
-    baseline
-        .iter()
-        .map(|approach| {
-            let mut result = ApproachCost::from(approach);
-            if !candidate_affects_path(&approach.path, candidate, domain) {
-                return Some(result);
-            }
+    if refine {
+        routes = routes.with_planning();
+    }
+    let mut costs = Vec::with_capacity(baseline.len());
+    for approach in baseline {
+        let mut result = ApproachCost::from(approach);
+        if candidate_affects_path(&approach.path, candidate, domain) {
             let asset = &assets[approach.asset].shape;
             let goals = asset.approach_tiles(ground, domain);
-            result.cost = if approach.source.capability == ThreatCapability::Foothold {
+            let cost = if approach.source.capability == ThreatCapability::Foothold && !refine {
                 ground
                     .routing()
                     .borrow_mut()
@@ -107,21 +125,21 @@ fn costs_with_candidate(
                         &approach.source.approach_tiles(ground, domain),
                         &goals,
                     )
-                    .available_cost()?
+                    .available_cost()
             } else {
-                let (_, path) = approach_path_cached(
-                    &mut routes,
-                    approach.source,
-                    asset,
-                    &goals,
-                    endpoint_routes,
-                )?;
-                path_cost(&path)
+                approach_path_refined(&mut routes, approach.source, asset, &goals, endpoint_routes)?
+                    .map(|(_, path)| path_cost(&path))
             };
+            let Some(cost) = cost else { return Ok(None) };
+            result.cost = cost;
             result.disrupted = true;
-            Some(result)
-        })
-        .collect()
+        }
+        if result.detour() > MAX_BARRICADE_DETOUR_COST {
+            return Ok(None);
+        }
+        costs.push(result);
+    }
+    Ok(Some(costs))
 }
 
 pub(super) fn coverage(

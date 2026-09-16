@@ -1330,20 +1330,30 @@ traversal that can yield after a deterministic number of queue entries. Fresh
 Foundry logistics, voluntary coverage, and production refinement share a
 controller-owned work allowance. Passability preparation and traversal consume
 work; unfinished fields resume on later decisions and never mean unreachable.
-Foundry retains four jobs. Ground and air coverage each retain at most sixteen
-pending jobs and 32 MiB of completed field payloads. Exact terrain and blocking
-changes invalidate affected work; unfinished field jobs expire after 120 ticks
-without a request. Active requests retain their progress even when small work
-slices need longer to finish. Pending Foundry, ground, air, and production work
-divide half of each decision's allowance, leaving half for current requests.
-Navigation and speculative production forecasts leave one quarter of the shared
-allowance for final production admission. Field requests can register without
-work and receive their share on the next decision; production admission cannot
-be starved by repeated navigation calls. Allocation rollback preserves this work
-and the Foundry and defensive-site cursors. Weapon and Array refinement share
-the allowance and retain their four-new-site limit; incumbent validation is
-separate. Diagnostic counters cover these services, not synchronous planner
-preparation or mandatory validation. Saved Foundry validation remains immediate.
+Foundry retains four jobs. Ground coverage, air coverage, and candidate routing
+each retain at most sixteen pending jobs and 32 MiB of completed field payloads.
+Candidate fields include the hypothetical footprint in their key without
+replacing other candidates' progress. Exact terrain and blocking changes
+invalidate affected work; unfinished field jobs expire after 120 ticks without a
+request. Active requests retain their progress even when small work slices need
+longer to finish. Pending Foundry, ground, air, candidate-route, and production
+work divide half of each decision's allowance, leaving half for current
+requests. Navigation and speculative production forecasts leave one quarter of
+the shared allowance for final production admission. Field requests can register
+without work and receive their share on the next decision; production admission
+cannot be starved by repeated navigation calls. Allocation rollback preserves
+this work and the Foundry and defensive-site cursors. Weapon and Array
+refinement share the allowance and retain their four-new-site limit; incumbent
+validation is separate. Diagnostic counters cover these services, not
+synchronous planner preparation or mandatory validation. Saved Foundry
+validation remains immediate.
+
+Voluntary Barricade routes request incremental fields before constructing their
+canonical paths. A pending query preserves its site for later refinement and
+never enters the route cache as an unreachable result. Endpoint evaluation order
+does not depend on observational cache warmth. Completed fields prune ordinary
+A* while retaining its route choices and mobile firing positions; path
+reconstruction and immediate placement validation remain synchronous.
 
 Production refinement first constructs an earliest-funded schedule, then resumes
 repair if that attempt fails. Income probes seek the funding boundary inside

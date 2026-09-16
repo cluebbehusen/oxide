@@ -2097,102 +2097,128 @@ fn strategic_defense_quote_from_projection(
         )
     });
     policy.prepare_ground_producer_egress(obs);
+    use crate::bot::planning::Progress;
     let mut evaluate = |anchor| {
-        if !grounding.placement.valid(policy, kind, anchor) {
-            return None;
-        }
-        let placement = profile.footprint(anchor);
-        let prepared_coverage = if let Some(batch) = &coverage {
-            cache_supported_assets(ground, assets, placement, cache);
-            #[cfg(test)]
+        let mut pending = false;
+        let candidate = (|| {
+            if !grounding.placement.valid(policy, kind, anchor) {
+                return None;
+            }
+            let placement = profile.footprint(anchor);
+            let prepared_coverage = if let Some(batch) = &coverage {
+                cache_supported_assets(ground, assets, placement, cache);
+                #[cfg(test)]
+                {
+                    cache.stats.coverage_scores += 1;
+                }
+                let supported = &cache.supported_assets[&placement];
+                let score = batch.score(anchor, |asset| supported.contains(&asset));
+                if score.new == 0 && score.reinforced == 0 {
+                    return None;
+                }
+                Some(score)
+            } else {
+                None
+            };
+            if !policy.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
+                || future_egress_orientation.is_some_and(|orientation| {
+                    !cached_future_ground_producer_egress_survives(
+                        grounding,
+                        orientation,
+                        cache,
+                        placement,
+                    )
+                })
             {
-                cache.stats.coverage_scores += 1;
-            }
-            let supported = &cache.supported_assets[&placement];
-            let score = batch.score(anchor, |asset| supported.contains(&asset));
-            if score.new == 0 && score.reinforced == 0 {
                 return None;
             }
-            Some(score)
-        } else {
-            None
-        };
-        if !policy.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
-            || future_egress_orientation.is_some_and(|orientation| {
-                !cached_future_ground_producer_egress_survives(
+            let mut ordered_builders = builders.to_vec();
+            ordered_builders
+                .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
+            let (builder, builder_travel) = ordered_builders.into_iter().find_map(|builder| {
+                let builder_travel = cached_builder_travel_cost(
                     grounding,
-                    orientation,
                     cache,
+                    builder,
                     placement,
-                )
-            })
-        {
-            return None;
-        }
-        let mut ordered_builders = builders.to_vec();
-        ordered_builders
-            .sort_unstable_by_key(|builder| (builder.tile.manhattan(anchor), builder.id));
-        let (builder, builder_travel) = ordered_builders.into_iter().find_map(|builder| {
-            let builder_travel = cached_builder_travel_cost(
-                grounding,
-                cache,
-                builder,
-                placement,
-                future_egress_orientation,
-            )?;
-            let safe = cached_safe_implicit_builder(
-                policy,
-                BuilderSafetyContext {
-                    obs,
-                    routes: &grounding.build_routes,
-                    danger,
-                    orientation: future_egress_orientation,
-                },
-                cache,
-                kind,
-                anchor,
-                &[builder],
-            ) == Some(builder.id);
-            safe.then_some((builder.id, builder_travel))
-        })?;
-        let resource_detour_limit =
-            (profile.kind == BuildingKind::Barricade).then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
-        if !cached_resource_access_survives(grounding, cache, placement, resource_detour_limit) {
-            return None;
-        }
-        let coverage = if let Some(coverage) = prepared_coverage {
-            coverage
-        } else {
-            let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
-            let coverage =
-                barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied());
-            if coverage.new == 0 && coverage.reinforced == 0 {
+                    future_egress_orientation,
+                )?;
+                let safe = cached_safe_implicit_builder(
+                    policy,
+                    BuilderSafetyContext {
+                        obs,
+                        routes: &grounding.build_routes,
+                        danger,
+                        orientation: future_egress_orientation,
+                    },
+                    cache,
+                    kind,
+                    anchor,
+                    &[builder],
+                ) == Some(builder.id);
+                safe.then_some((builder.id, builder_travel))
+            })?;
+            let resource_detour_limit = (profile.kind == BuildingKind::Barricade)
+                .then_some(MAX_BARRICADE_RESOURCE_DETOUR_COST);
+            if !cached_resource_access_survives(grounding, cache, placement, resource_detour_limit)
+            {
                 return None;
             }
-            coverage
-        };
-        let threat_distance = origins
-            .iter()
-            .map(|origin| origin.anchor.manhattan(anchor))
-            .min()
-            .unwrap_or(i32::MAX);
-        Some((
-            Candidate {
-                anchor,
-                builder_travel,
-                coverage,
-                threat_distance,
-            },
-            builder,
-        ))
+            let coverage = if let Some(coverage) = prepared_coverage {
+                coverage
+            } else {
+                let costs = match barricade::refine_supported_costs(
+                    ground,
+                    assets,
+                    approaches,
+                    placement,
+                    cache,
+                    matches!(search, DefenseSiteSearch::Progressive),
+                ) {
+                    Ok(costs) => costs?,
+                    Err(_) => {
+                        pending = true;
+                        return None;
+                    }
+                };
+                let coverage =
+                    barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied());
+                if coverage.new == 0 && coverage.reinforced == 0 {
+                    return None;
+                }
+                coverage
+            };
+            let threat_distance = origins
+                .iter()
+                .map(|origin| origin.anchor.manhattan(anchor))
+                .min()
+                .unwrap_or(i32::MAX);
+            Some((
+                Candidate {
+                    anchor,
+                    builder_travel,
+                    coverage,
+                    threat_distance,
+                },
+                builder,
+            ))
+        })();
+        if pending {
+            Progress::Deferred
+        } else {
+            candidate.map_or(Progress::ProvenInfeasible, Progress::Ready)
+        }
     };
     let selected = match search {
         DefenseSiteSearch::Progressive => {
             let retained = policy.planning.site_incumbent(obs.tick, kind);
-            if let Some(candidate) = retained.and_then(&mut evaluate) {
+            let incumbent = retained.map(&mut evaluate);
+            if let Some(Progress::Ready(candidate)) = incumbent {
                 Some(candidate)
             } else {
-                policy.planning.clear_site(kind);
+                if !matches!(incumbent, Some(Progress::Deferred)) {
+                    policy.planning.clear_site(kind);
+                }
                 let mut candidate_tiles = defense_candidate_tiles(
                     policy,
                     obs,
@@ -2205,7 +2231,7 @@ fn strategic_defense_quote_from_projection(
                 if let Some(egress) = policy.ground_egress_cache.borrow().as_ref() {
                     candidate_tiles.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
                 }
-                match policy.planning.site(
+                match policy.planning.site_progress(
                     obs.tick,
                     profile.kind,
                     &candidate_tiles,
@@ -2237,7 +2263,10 @@ fn strategic_defense_quote_from_projection(
             },
             profile,
             origins,
-            evaluate,
+            |anchor| match evaluate(anchor) {
+                Progress::Ready(value) => Some(value),
+                _ => None,
+            },
         ),
         #[cfg(test)]
         DefenseSiteSearch::Any => defense_candidate_tiles(
@@ -2249,7 +2278,10 @@ fn strategic_defense_quote_from_projection(
             &grounding.placement,
         )
         .into_iter()
-        .find_map(evaluate),
+        .find_map(|anchor| match evaluate(anchor) {
+            Progress::Ready(value) => Some(value),
+            _ => None,
+        }),
         #[cfg(test)]
         DefenseSiteSearch::Exhaustive => defense_candidate_tiles(
             policy,
@@ -2260,7 +2292,10 @@ fn strategic_defense_quote_from_projection(
             &grounding.placement,
         )
         .into_iter()
-        .filter_map(evaluate)
+        .filter_map(|anchor| match evaluate(anchor) {
+            Progress::Ready(value) => Some(value),
+            _ => None,
+        })
         .max_by_key(|(candidate, _)| candidate.key(profile)),
     };
     let (candidate, builder) = selected?;
@@ -2883,17 +2918,19 @@ fn approach_path(
     })
 }
 
-fn approach_path_cached(
+fn approach_path_refined(
     routes: &mut CandidateRoutes<'_, '_>,
     source: ThreatOrigin,
     asset: &AssetShape,
     goals: &[TilePos],
     baseline_endpoint_routes: &mut EndpointRoutes,
-) -> Option<(TilePos, Vec<TilePos>)> {
+) -> Result<Option<(TilePos, Vec<TilePos>)>, crate::bot::navigation::paths::PendingRoute> {
     let (ground, candidate, domain) = routes.context();
     if let ThreatCapability::StaticDefense { kind, tier } = source.capability {
-        return static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
-            .map(|(goal, source_tile)| (goal, vec![source_tile]));
+        return Ok(
+            static_defense_attack(kind, tier, source.anchor, asset, ground.briefing, goals)
+                .map(|(goal, source_tile)| (goal, vec![source_tile])),
+        );
     }
 
     if let ThreatCapability::Mobile(kind) = source.capability
@@ -2907,7 +2944,7 @@ fn approach_path_cached(
             })
             .min_by_key(|goal| (goal.y, goal.x))
         {
-            return Some((goal, vec![source.anchor]));
+            return Ok(Some((goal, vec![source.anchor])));
         }
 
         let retreat_goal = goals
@@ -2919,21 +2956,28 @@ fn approach_path_cached(
                 (source.anchor.center().dist_sq(aim), goal.y, goal.x)
             });
         if let Some(goal) = retreat_goal {
-            return retreat_to_mobile_firing_stand(ground, source, asset, goal, Some(candidate))
-                .map(|path| (goal, path));
+            return Ok(retreat_to_mobile_firing_stand(
+                ground,
+                source,
+                asset,
+                goal,
+                Some(candidate),
+            )
+            .map(|path| (goal, path)));
         }
     }
 
-    shortest_path_between_cached(
-        routes,
-        &source.approach_tiles(ground, domain),
-        goals,
-        baseline_endpoint_routes,
-    )
-    .map(|(_, goal, path)| {
-        let path = mobile_ground_standoff(source, asset, ground.briefing, goal, path, domain);
-        (goal, path)
-    })
+    Ok(routes
+        .paths
+        .refine_shortest(
+            &source.approach_tiles(ground, domain),
+            goals,
+            baseline_endpoint_routes,
+        )?
+        .map(|(_, goal, path)| {
+            let path = mobile_ground_standoff(source, asset, ground.briefing, goal, path, domain);
+            (goal, path)
+        }))
 }
 
 fn static_defense_attack(
@@ -3220,6 +3264,7 @@ fn shortest_path_between(
     )
 }
 
+#[cfg(test)]
 fn shortest_path_between_cached(
     routes: &mut CandidateRoutes<'_, '_>,
     starts: &[TilePos],

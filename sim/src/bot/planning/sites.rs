@@ -26,17 +26,13 @@ impl SiteWork {
         tick: u64,
         kind: BuildingKind,
         anchors: &[TilePos],
-        mut evaluate: impl FnMut(TilePos) -> Option<T>,
+        evaluate: impl FnMut(TilePos) -> Progress<T>,
         better: impl Fn(&T, &T) -> bool,
         try_claim: impl FnMut() -> bool,
     ) -> Progress<T> {
-        self.roles.entry(kind).or_default().advance(
-            tick,
-            anchors,
-            4,
-            |anchor| evaluate(anchor).map_or(Progress::ProvenInfeasible, Progress::Ready),
-            better,
-            try_claim,
-        )
+        self.roles
+            .entry(kind)
+            .or_default()
+            .advance(tick, anchors, 4, evaluate, better, try_claim)
     }
 }

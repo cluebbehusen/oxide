@@ -27,7 +27,7 @@ pub(in crate::bot) struct PlanningWork {
     budget: RefCell<WorkBudget>,
     navigation_spent: Cell<usize>,
     fields: RefCell<fields::FieldPreparation>,
-    approaches: RefCell<[approaches::ApproachPreparation; 2]>,
+    approaches: RefCell<[approaches::ApproachPreparation; 3]>,
     production: RefCell<crate::bot::allocation::production_work::ProductionWork>,
     sites: RefCell<sites::SiteWork>,
     foundry: RefCell<RankedRotation>,
@@ -264,7 +264,24 @@ impl PlanningWork {
         tick: u64,
         kind: crate::stats::BuildingKind,
         anchors: &[chassis::grid::TilePos],
-        evaluate: impl FnMut(chassis::grid::TilePos) -> Option<T>,
+        mut evaluate: impl FnMut(chassis::grid::TilePos) -> Option<T>,
+        better: impl Fn(&T, &T) -> bool,
+    ) -> Progress<T> {
+        self.site_progress(
+            tick,
+            kind,
+            anchors,
+            |anchor| evaluate(anchor).map_or(Progress::ProvenInfeasible, Progress::Ready),
+            better,
+        )
+    }
+
+    pub(in crate::bot) fn site_progress<T>(
+        &self,
+        tick: u64,
+        kind: crate::stats::BuildingKind,
+        anchors: &[chassis::grid::TilePos],
+        evaluate: impl FnMut(chassis::grid::TilePos) -> Progress<T>,
         better: impl Fn(&T, &T) -> bool,
     ) -> Progress<T> {
         self.begin(tick);
@@ -319,7 +336,20 @@ impl PlanningWork {
     ) -> Progress<std::sync::Arc<super::navigation::approaches::ApproachField>> {
         self.begin(tick);
         self.navigation_work(|budget| {
-            self.approaches.borrow_mut()[usize::from(air)].advance(tick, grid, goals, budget)
+            self.approaches.borrow_mut()[usize::from(air)].advance(tick, grid, goals, None, budget)
+        })
+    }
+
+    pub(in crate::bot) fn candidate_route_field(
+        &self,
+        tick: u64,
+        grid: super::navigation::KnownGrid<'_>,
+        overlay: Option<super::navigation::BlockedRect>,
+        goals: &[chassis::grid::TilePos],
+    ) -> Progress<std::sync::Arc<super::navigation::approaches::ApproachField>> {
+        self.begin(tick);
+        self.navigation_work(|budget| {
+            self.approaches.borrow_mut()[2].advance(tick, grid, goals, overlay, budget)
         })
     }
 

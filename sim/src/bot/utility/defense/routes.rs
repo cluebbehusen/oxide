@@ -29,6 +29,13 @@ impl<'a, 'b> CandidateRoutes<'a, 'b> {
         }
     }
 
+    pub(super) fn with_planning(mut self) -> Self {
+        self.paths = self
+            .paths
+            .with_planning(self.ground.obs.tick, self.ground.planning());
+        self
+    }
+
     pub(super) fn context(&self) -> (&'a GroundKnowledge<'b>, PlacementFootprint, DefenseDomain) {
         (self.ground, self.candidate, self.domain)
     }

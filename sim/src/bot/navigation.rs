@@ -40,7 +40,7 @@ pub(super) struct BlockedRect {
 }
 
 impl BlockedRect {
-    fn contains(self, tile: TilePos) -> bool {
+    pub(in crate::bot) fn contains(self, tile: TilePos) -> bool {
         (0..i64::from(self.size.0)).contains(&(i64::from(tile.x) - i64::from(self.anchor.x)))
             && (0..i64::from(self.size.1)).contains(&(i64::from(tile.y) - i64::from(self.anchor.y)))
     }

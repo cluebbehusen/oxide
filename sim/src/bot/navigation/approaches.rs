@@ -49,6 +49,10 @@ impl ApproachField {
         }
     }
 
+    pub(in crate::bot) fn distances(&self) -> &[u32] {
+        &self.distances
+    }
+
     fn distance(&self, tile: TilePos) -> Option<u32> {
         if tile.x < 0 || tile.y < 0 || tile.x >= self.width || tile.y >= self.height {
             return None;
