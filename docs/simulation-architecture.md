@@ -1416,10 +1416,10 @@ candidate construction safety retain their exact route checks.
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.
 Lazy component labels reject builder/site pairs with no connected base doorstep
-before searching candidate routes. Candidate footprints and additional blockers
-can only remove connections, so this rejection preserves exact paths, doorstep
-preference, and bounded-search behavior for eligible pairs. Proposed footprints,
-extra blockers, danger checks, and authoritative doorstep ranking remain
+before searching candidate routes. A second connectivity surface includes the
+candidate footprint and additional blockers, rejecting disconnected preferred
+doorsteps before A*. Both checks preserve exact paths, doorstep preference, and
+bounded-search behavior. Danger checks and authoritative doorstep ranking remain
 query-local, so cached terrain cannot change the selected route. Travel-cost and
 safety checks share only their most recent exact route; danger is checked again
 on every use, and a changed builder, target, or orientation requires a new

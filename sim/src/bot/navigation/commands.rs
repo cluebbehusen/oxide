@@ -790,12 +790,28 @@ impl<'a> BuildRouteProjection<'a> {
         {
             return None;
         }
-        selected_build_command_path_with_open(
+        let dimensions = (routes.obs.map_width, routes.obs.map_height);
+        let open = (0..dimensions.1)
+            .flat_map(|y| (0..dimensions.0).map(move |x| TilePos::new(x, y)))
+            .map(|tile| {
+                routes.open(tile)
+                    && !additional_blocked(tile)
+                    && (target.defer
+                        || !(0..target.size.0).contains(&(tile.x - target.anchor.x))
+                        || !(0..target.size.1).contains(&(tile.y - target.anchor.y)))
+            })
+            .collect();
+        let labels = super::components::labels(dimensions, open);
+        selected_build_command_path_with_reach(
             routes.obs,
             unit,
             target,
             orientation,
-            |tile| routes.open(tile) && !additional_blocked(tile),
+            |tile| {
+                super::flood::tile_index(dimensions.0, dimensions.1, tile)
+                    .is_some_and(|index| labels[index] != 0)
+            },
+            |goal| super::components::connects(dimensions, &labels, unit.tile, goal),
             &mut self.scratch.borrow_mut(),
         )
     }
@@ -863,12 +879,33 @@ fn selected_build_command_path(
     BuildRouteProjection::new(obs, briefing).path(unit, target, orientation, additional_blocked)
 }
 
+#[cfg(test)]
 fn selected_build_command_path_with_open(
     obs: &Observation,
     unit: &UnitObs,
     target: BuildCommandTarget,
     orientation: Option<Orientation>,
     base_open: impl Fn(TilePos) -> bool,
+    scratch: &mut crate::bot::navigation::search::Search,
+) -> Option<Vec<TilePos>> {
+    selected_build_command_path_with_reach(
+        obs,
+        unit,
+        target,
+        orientation,
+        base_open,
+        |_| true,
+        scratch,
+    )
+}
+
+fn selected_build_command_path_with_reach(
+    obs: &Observation,
+    unit: &UnitObs,
+    target: BuildCommandTarget,
+    orientation: Option<Orientation>,
+    base_open: impl Fn(TilePos) -> bool,
+    reaches: impl Fn(TilePos) -> bool,
     scratch: &mut crate::bot::navigation::search::Search,
 ) -> Option<Vec<TilePos>> {
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
@@ -934,6 +971,9 @@ fn selected_build_command_path_with_open(
         candidates[..near].rotate_left(rank % near);
     }
     for goal in candidates {
+        if !reaches(goal) {
+            continue;
+        }
         let Some(path) = scratch.path(obs.map_width, obs.map_height, unit.tile, goal, open) else {
             continue;
         };
@@ -1518,6 +1558,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn build_doorstep_preflight_skips_disconnected_preferences_without_changing_routes() {
+        let mut obs = observation();
+        obs.map_width = 80;
+        obs.map_height = 60;
+        obs.known_rock = (0..60)
+            .filter(|y| *y != 30)
+            .map(|y| TilePos::new(40, y))
+            .collect();
+        obs.my_units = (1..=16)
+            .map(|id| {
+                let mut builder = unit(id, Domain::Ground);
+                builder.tile = TilePos::new(2, 30);
+                builder
+            })
+            .collect();
+        let target = BuildCommandTarget {
+            anchor: TilePos::new(40, 30),
+            size: (1, 1),
+            defer: false,
+        };
+        let (expected, reference) = super::super::work::measure(|| {
+            obs.my_units
+                .iter()
+                .map(|builder| {
+                    selected_build_command_path_with_open(
+                        &obs,
+                        builder,
+                        target,
+                        None,
+                        |tile| ground_open(&obs, tile),
+                        &mut crate::bot::navigation::search::Search::default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        assert!(expected.iter().all(Option::is_some));
+        assert!(
+            reference.searches > reference.paths,
+            "fixture must try disconnected preferred doors: {reference:?}"
+        );
+        super::super::components::clear();
+        let routes = BuildRouteProjection::new(&obs, None);
+        let (actual, optimized) = super::super::work::measure(|| {
+            obs.my_units
+                .iter()
+                .map(|builder| routes.path(builder, target, None, |_| false))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(actual, expected);
+        assert_eq!(optimized.paths, obs.my_units.len());
+        assert_eq!(
+            optimized.searches,
+            optimized.paths + optimized.components,
+            "no A* search should exhaust a disconnected component: {optimized:?}"
+        );
     }
 
     #[test]

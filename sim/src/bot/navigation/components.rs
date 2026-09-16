@@ -1,5 +1,6 @@
 //! Exact connectivity over immutable passability snapshots.
 
+use chassis::grid::TilePos;
 use std::{cell::RefCell, collections::VecDeque, sync::Arc};
 
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
@@ -59,6 +60,21 @@ thread_local! {
 
 pub(super) fn labels(dimensions: (i32, i32), open: Vec<bool>) -> Arc<[u32]> {
     CACHE.with_borrow_mut(|cache| cache.labels(dimensions, open))
+}
+
+pub(super) fn connects(dimensions: (i32, i32), labels: &[u32], from: TilePos, to: TilePos) -> bool {
+    let (width, height) = dimensions;
+    let label = |tile| super::flood::tile_index(width, height, tile).map(|index| labels[index]);
+    let Some(target) = label(to).filter(|label| *label != 0) else {
+        return false;
+    };
+    match label(from) {
+        None => false,
+        Some(0) => [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            .into_iter()
+            .any(|(x, y)| label(from.offset(x, y)) == Some(target)),
+        Some(source) => source == target,
+    }
 }
 
 #[cfg(test)]
