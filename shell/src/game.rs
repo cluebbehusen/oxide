@@ -191,6 +191,7 @@ pub struct Game {
     /// only, lazily created by the first minimap draw (headless sessions
     /// never touch the GPU). A `RefCell` because drawing holds `&Game`.
     pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
+    pub boundary_fog: crate::boundary_fog::BoundaryFog,
     /// The chrome geometry the renderer computed last frame — the one
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
@@ -289,6 +290,7 @@ impl Game {
                 )
             });
         let camera = Camera::new(focus, state.map().width(), state.map().height(), viewport);
+        let boundary_fog = crate::boundary_fog::BoundaryFog::new(&state, human);
         Ok(Self {
             scenario,
             state: ReadOnlyState(state),
@@ -325,6 +327,7 @@ impl Game {
             diagnostics: None,
             last_seen: std::cell::RefCell::new(HashMap::new()),
             minimap_layer: std::cell::RefCell::new(None),
+            boundary_fog,
             toasts: Vec::new(),
             scorches: Vec::new(),
             alerts: Vec::new(),
@@ -388,6 +391,8 @@ impl Game {
         let mut cursor = replay.cursor();
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let mut projectile_releases = projectiles::ProjectileReleases::default();
+        let mut game = Self::new(scenario)?;
+        let mut boundary_fog = game.boundary_fog.clone();
         for _ in 0..total {
             if let Some(recorder) = diagnostics {
                 recorder.replay_progress(state.current_tick());
@@ -399,6 +404,7 @@ impl Game {
                 .map(|t| t.command.clone())
                 .collect();
             let report = state.tick(&commands);
+            boundary_fog.observe(&state, game.human);
             projectile_releases.observe(&state, &report.events);
             live_stats.observe(&state, &report.events);
         }
@@ -406,8 +412,8 @@ impl Game {
             cursor.is_finished(),
             "replay duration metadata does not cover its own commands"
         );
-        let mut game = Self::new(scenario)?;
         game.replace_state_after_jump(&state);
+        game.boundary_fog = boundary_fog;
         game.projectile_releases = projectile_releases;
         game.bots = bots;
         game.recorder = replay;
@@ -538,6 +544,7 @@ impl Game {
             recovery.completed(self.state.current_tick());
         }
         let _presentation_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Presentation);
+        self.boundary_fog.observe(&self.state, self.human);
         self.projectile_releases
             .observe(&self.state, &report.events);
         self.live_stats.observe(&self.state, &report.events);
@@ -713,6 +720,7 @@ impl Game {
     /// aim, reports, and effects cannot survive across the jump.
     pub fn replace_state_after_jump(&mut self, state: &State) {
         self.state.0 = state.clone();
+        self.boundary_fog = crate::boundary_fog::BoundaryFog::new(state, self.human);
         self.projectile_releases = projectiles::ProjectileReleases::default();
         self.drop_presentation();
         self.remember_previous_tick();
