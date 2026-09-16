@@ -7,11 +7,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const RETAINED_FIELDS: usize = 16;
 const READY_BYTES: usize = 32 * 1024 * 1024;
-const LIFETIME: u64 = 120;
+const IDLE_LIFETIME: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
-    started: u64,
     used: u64,
     open: Vec<bool>,
     traversal: Option<DistanceWork>,
@@ -101,7 +100,7 @@ impl ApproachPreparation {
 
     fn expire(&mut self, tick: u64) {
         self.jobs
-            .retain(|_, job| job.ready.is_some() || tick.saturating_sub(job.started) < LIFETIME);
+            .retain(|_, job| job.ready.is_some() || tick.saturating_sub(job.used) < IDLE_LIFETIME);
     }
 
     pub(super) fn advance(
@@ -133,7 +132,6 @@ impl ApproachPreparation {
             return Progress::Deferred;
         }
         let job = self.jobs.entry(goals.clone()).or_insert_with(|| Job {
-            started: tick,
             used: tick,
             open: Vec::new(),
             traversal: None,

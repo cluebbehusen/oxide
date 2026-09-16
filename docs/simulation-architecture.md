@@ -1268,10 +1268,13 @@ searches, including their scratch storage, cache invalidation, and retention.
 Command projection preserves orientation, goal spreading, and Build doorstep
 selection. Service connectivity, safe travel costs, work-distance queries, and
 producer-exit certificates retain answers within their navigation contexts.
-Planners supply player knowledge, safety predicates, and candidate preferences;
-investment scores and service eligibility remain planner-owned. Barricade
-footholds consume scalar costs, while coverage, mobile standoff, and retreat
-retain canonical paths. Costs distinguish exact and bounded success from
+Emergency detection first excludes threat/asset pairs beyond its local radius,
+including weapon standoff range, and stops after its first qualifying approach.
+Distant threats do not require full routes to prove they are not local
+emergencies. Planners supply player knowledge, safety predicates, and candidate
+preferences; investment scores and service eligibility remain planner-owned.
+Barricade footholds consume scalar costs, while coverage, mobile standoff, and
+retreat retain canonical paths. Costs distinguish exact and bounded success from
 disconnection and search limits. Detour limits still precede local-support
 filtering; construction and layout checks retain their existing route contracts.
 Local defensive support uses one bounded eight-step flood for every asset around
@@ -1323,17 +1326,18 @@ preparation and traversal consume work; unfinished fields resume on later
 decisions and never mean unreachable. Foundry retains four jobs. Ground and air
 coverage each retain at most sixteen pending jobs and 32 MiB of completed field
 payloads. Exact terrain and blocking changes invalidate affected work;
-unfinished jobs expire after 120 ticks. Pending Foundry, ground, air, and
-production work divide half of each decision's allowance, leaving half for
-current requests. Navigation and speculative production forecasts leave one
-quarter of the shared allowance for final production admission. Field requests
-can register without work and receive their share on the next decision;
-production admission cannot be starved by repeated navigation calls. Allocation
-rollback preserves this work and the Foundry and defensive-site cursors. Weapon
-and Array refinement share the allowance and retain their four-new-site limit;
-incumbent validation is separate. Diagnostic counters cover these services, not
-synchronous planner preparation or mandatory validation. Saved Foundry
-validation remains immediate.
+unfinished field jobs expire after 120 ticks without a request. Active requests
+retain their progress even when small work slices need longer to finish. Pending
+Foundry, ground, air, and production work divide half of each decision's
+allowance, leaving half for current requests. Navigation and speculative
+production forecasts leave one quarter of the shared allowance for final
+production admission. Field requests can register without work and receive their
+share on the next decision; production admission cannot be starved by repeated
+navigation calls. Allocation rollback preserves this work and the Foundry and
+defensive-site cursors. Weapon and Array refinement share the allowance and
+retain their four-new-site limit; incumbent validation is separate. Diagnostic
+counters cover these services, not synchronous planner preparation or mandatory
+validation. Saved Foundry validation remains immediate.
 
 Production refinement first constructs an earliest-funded schedule, then resumes
 repair if that attempt fails. Income probes seek the funding boundary inside

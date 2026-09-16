@@ -554,6 +554,45 @@ mod tests {
     }
 
     #[test]
+    fn active_field_preparation_outlives_idle_expiry_with_small_slices() {
+        use crate::bot::{
+            PublicMapBriefing,
+            navigation::{KnownGrid, public_fields::BlockedGroundLayout},
+        };
+        use chassis::grid::TilePos;
+        let map = PublicMapBriefing::from_scenario(&crate::Scenario::skirmish()).unwrap();
+        let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
+        let open = vec![false; 64 * 64];
+        let grid = KnownGrid::new(64, 64, &open).unwrap();
+        for approach in [false, true] {
+            let request = |work: &PlanningWork, tick| {
+                if approach {
+                    matches!(
+                        work.approach_field(tick, grid, false, &[TilePos::new(1, 1)]),
+                        Progress::Ready(_)
+                    )
+                } else {
+                    matches!(
+                        work.field(tick, &map, &blocked, [TilePos::new(1, 1)]),
+                        Progress::Ready(_)
+                    )
+                }
+            };
+            let work = PlanningWork::with_allowance(64);
+            let completed = (0..4_800).step_by(12).find(|tick| request(&work, *tick));
+            assert!(
+                completed.is_some_and(|tick| tick > 120),
+                "{approach}: {completed:?}"
+            );
+            let abandoned = PlanningWork::with_allowance(64);
+            assert!(!request(&abandoned, 0));
+            abandoned.begin(120);
+            assert_eq!(abandoned.stats().pending_fields, 0);
+            assert_eq!(abandoned.stats().pending_approach_fields, 0);
+        }
+    }
+
+    #[test]
     fn field_preparation_and_site_refinement_share_one_allowance() {
         use crate::bot::{PublicMapBriefing, navigation::public_fields::BlockedGroundLayout};
         use crate::stats::BuildingKind;

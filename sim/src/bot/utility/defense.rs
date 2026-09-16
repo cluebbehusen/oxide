@@ -1656,9 +1656,9 @@ impl UtilityPolicy {
         if assets.is_empty() {
             return false;
         }
-        approaches(&ground, &origins, &assets, None, profile.domain)
-            .into_iter()
-            .any(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+        emergency_approaches(&ground, &origins, &assets, profile.domain)
+            .next()
+            .is_some()
     }
 
     pub(super) fn current_emergency_defense_claim_is_useful(
@@ -1693,10 +1693,8 @@ impl UtilityPolicy {
             return false;
         }
         let origins = emergency_threat_origins(&unclaimed, profile.domain);
-        let approaches = approaches(&ground, &origins, &assets, None, profile.domain)
-            .into_iter()
-            .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
-            .collect::<Vec<_>>();
+        let approaches =
+            emergency_approaches(&ground, &origins, &assets, profile.domain).collect::<Vec<_>>();
         if origins.is_empty() || approaches.is_empty() {
             return false;
         }
@@ -2044,9 +2042,7 @@ fn emergency_lane_projection<'a>(
         return None;
     }
     let origins = emergency_threat_origins(obs, domain);
-    let approaches = approaches(&grounding.ground, &origins, &grounding.assets, None, domain)
-        .into_iter()
-        .filter(|approach| approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize)
+    let approaches = emergency_approaches(&grounding.ground, &origins, &grounding.assets, domain)
         .collect::<Vec<_>>();
     if origins.is_empty() || approaches.is_empty() {
         return None;
@@ -2704,6 +2700,58 @@ fn building_threat_capability(
     }
 }
 
+fn emergency_approaches<'a>(
+    ground: &'a GroundKnowledge<'_>,
+    origins: &'a [ThreatOrigin],
+    assets: &'a [DefendedAsset],
+    domain: DefenseDomain,
+) -> impl Iterator<Item = Approach> + 'a {
+    approach_candidates(
+        ground,
+        origins,
+        assets,
+        None,
+        domain,
+        Some(DEFENSE_RADIUS as usize),
+    )
+}
+
+fn threat_can_approach_within(
+    ground: &GroundKnowledge<'_>,
+    source: ThreatOrigin,
+    asset: &AssetShape,
+    goals: &[TilePos],
+    domain: DefenseDomain,
+    steps: usize,
+) -> bool {
+    match source.capability {
+        ThreatCapability::StaticDefense { .. } => true,
+        ThreatCapability::Mobile(kind) if domain == DefenseDomain::Ground => {
+            let range = if kind == UnitKind::Sapper {
+                SAPPER_CONTACT_RANGE
+            } else {
+                kind.stats()
+                    .weapons
+                    .iter()
+                    .find(|weapon| weapon.targets.ground)
+                    .map_or(Fx::ZERO, |weapon| weapon.range)
+            };
+            let reach = Fx::from_num(steps as i32) + range;
+            goals.iter().any(|goal| {
+                let offset =
+                    source.anchor.center() - asset.aim_point(source.anchor.center(), *goal);
+                offset.x.abs().max(offset.y.abs()) <= reach
+            })
+        }
+        _ => source.approach_tiles(ground, domain).iter().any(|start| {
+            goals
+                .iter()
+                .any(|goal| start.chebyshev(*goal) <= steps as i32)
+        }),
+    }
+}
+
+#[cfg(test)]
 fn approaches(
     ground: &GroundKnowledge<'_>,
     origins: &[ThreatOrigin],
@@ -2711,12 +2759,35 @@ fn approaches(
     candidate: Option<PlacementFootprint>,
     domain: DefenseDomain,
 ) -> Vec<Approach> {
+    approach_candidates(ground, origins, assets, candidate, domain, None).collect()
+}
+
+fn approach_candidates<'a>(
+    ground: &'a GroundKnowledge<'_>,
+    origins: &'a [ThreatOrigin],
+    assets: &'a [DefendedAsset],
+    candidate: Option<PlacementFootprint>,
+    domain: DefenseDomain,
+    maximum_steps: Option<usize>,
+) -> impl Iterator<Item = Approach> + 'a {
     assets
         .iter()
         .enumerate()
-        .flat_map(|(asset, defended)| {
+        .flat_map(move |(asset, defended)| {
             let goals = defended.shape.approach_tiles(ground, domain);
             origins.iter().filter_map(move |source| {
+                if maximum_steps.is_some_and(|steps| {
+                    !threat_can_approach_within(
+                        ground,
+                        *source,
+                        &defended.shape,
+                        &goals,
+                        domain,
+                        steps,
+                    )
+                }) {
+                    return None;
+                }
                 approach_path(
                     ground,
                     *source,
@@ -2726,6 +2797,9 @@ fn approaches(
                     domain,
                     None,
                 )
+                .filter(|(_, path)| {
+                    maximum_steps.is_none_or(|steps| path.len().saturating_sub(1) <= steps)
+                })
                 .map(|(goal, path)| Approach {
                     asset,
                     source: *source,
@@ -2736,7 +2810,6 @@ fn approaches(
                 })
             })
         })
-        .collect()
 }
 
 fn approach_path(
@@ -8519,6 +8592,69 @@ mod tests {
         obs.known_scrap.push((scrap, 175));
         let live = GroundKnowledge::new(&obs, &map, &starts);
         assert_eq!(live.scrap.get(&scrap), Some(&175));
+    }
+
+    #[test]
+    fn emergency_range_pruning_preserves_artillery_and_exact_nearby_routes() {
+        for scenario in [
+            scenario_with(|_| '.'),
+            scenario_with(|tile| {
+                if tile.x == 18 && tile.y != 3 {
+                    '^'
+                } else {
+                    '.'
+                }
+            }),
+        ] {
+            let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+            let obs = observation(PlayerId(0), LEFT_HOME);
+            let ground = GroundKnowledge::new(&obs, &map, &[]);
+            let assets = vec![DefendedAsset {
+                value: 16,
+                shape: AssetShape::Building {
+                    anchor: LEFT_HOME,
+                    size: BuildingKind::Foundry.base_stats().size,
+                },
+                access: None,
+            }];
+            for kind in UnitKind::ALL {
+                let domain = if kind.stats().domain == Domain::Air {
+                    DefenseDomain::Air
+                } else {
+                    DefenseDomain::Ground
+                };
+                for y in (0..HEIGHT).step_by(6) {
+                    for x in (0..WIDTH).step_by(6) {
+                        let origins = [ThreatOrigin {
+                            anchor: TilePos::new(x, y),
+                            size: None,
+                            capability: ThreatCapability::Mobile(kind),
+                            tie: 0,
+                        }];
+                        let expected: Vec<_> = approaches(&ground, &origins, &assets, None, domain)
+                            .into_iter()
+                            .filter(|approach| {
+                                approach.path.len().saturating_sub(1) <= DEFENSE_RADIUS as usize
+                            })
+                            .collect();
+                        let actual: Vec<_> =
+                            emergency_approaches(&ground, &origins, &assets, domain).collect();
+                        assert_eq!(actual, expected, "{kind:?} at {x},{y}");
+                    }
+                }
+            }
+            let distant = [ThreatOrigin {
+                anchor: TilePos::new(WIDTH - 1, HEIGHT - 1),
+                size: None,
+                capability: ThreatCapability::Mobile(UnitKind::Sentinel),
+                tie: 0,
+            }];
+            let (result, work) = crate::bot::navigation::work::measure(|| {
+                emergency_approaches(&ground, &distant, &assets, DefenseDomain::Ground).next()
+            });
+            assert!(result.is_none());
+            assert_eq!(work.searches, 0, "{work:?}");
+        }
     }
 
     #[test]

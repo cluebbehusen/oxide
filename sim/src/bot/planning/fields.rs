@@ -9,11 +9,10 @@ use chassis::grid::TilePos;
 use std::{collections::BTreeMap, sync::Arc};
 
 const RETAINED_JOBS: usize = 4;
-const PENDING_LIFETIME: u64 = 120;
+const PENDING_IDLE_LIFETIME: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
-    started_at: u64,
     used_at: u64,
     work: PublicFieldWork,
 }
@@ -28,7 +27,7 @@ pub(in crate::bot) struct FieldPreparation {
 impl FieldPreparation {
     pub(super) fn resume_pending(&mut self, tick: u64, budget: &mut WorkBudget) {
         self.jobs.retain(|_, job| {
-            job.work.is_ready() || tick.saturating_sub(job.started_at) < PENDING_LIFETIME
+            job.work.is_ready() || tick.saturating_sub(job.used_at) < PENDING_IDLE_LIFETIME
         });
         let Some((map, blocked)) = &self.generation else {
             return;
@@ -77,7 +76,7 @@ impl FieldPreparation {
             self.next_pending = 0;
         }
         self.jobs.retain(|_, job| {
-            job.work.is_ready() || tick.saturating_sub(job.started_at) < PENDING_LIFETIME
+            job.work.is_ready() || tick.saturating_sub(job.used_at) < PENDING_IDLE_LIFETIME
         });
         let mut sources: Vec<_> = sources.into_iter().collect();
         sources.sort_unstable_by_key(|tile| (tile.y, tile.x));
@@ -95,7 +94,6 @@ impl FieldPreparation {
             self.jobs.remove(&victim);
         }
         let job = self.jobs.entry(sources.clone()).or_insert_with(|| Job {
-            started_at: tick,
             used_at: tick,
             work: PublicFieldWork::new(map, sources),
         });
