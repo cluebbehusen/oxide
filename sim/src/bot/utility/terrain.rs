@@ -73,6 +73,8 @@ impl<'a> PlacementGeometry<'a> {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> bool {
+        #[cfg(test)]
+        crate::bot::navigation::work::record(|work| work.placement_checks += 1);
         let index = |tile: TilePos| (tile.y * self.obs.map_width + tile.x) as usize;
         policy.placement_geometry_valid_with(
             self.obs,

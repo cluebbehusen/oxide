@@ -1388,7 +1388,10 @@ cannot earn the same preference as an extended unprotected approach. Barricade
 valuation retains candidate detour costs because obstruction is its benefit.
 Candidate neighborhoods use a grid union and geometry checks; existing exit
 certificates provide a cheap positive ranking preference. Exact producer exits,
-resource access, and builder safety are checked during site refinement.
+resource access, and builder safety are checked during site refinement. Array
+candidates use the same split: indexed geometry and coverage rank the scan, with
+exact exit checks confined to the four-site refinement slice and retained-site
+validation. A still-valid retained Array avoids scanning alternatives.
 
 A deferred field stops the evidence ladder; it cannot turn a current threat into
 a weaker public-prior case. Direct attacks, minimum-range retreat, and firing

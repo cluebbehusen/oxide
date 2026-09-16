@@ -9,6 +9,8 @@ pub(in crate::bot) struct Counts {
     pub paths: usize,
     pub fields: usize,
     pub components: usize,
+    pub egress_checks: usize,
+    pub placement_checks: usize,
     pub generations: usize,
     pub hits: usize,
 }
@@ -17,7 +19,7 @@ thread_local! {
     static COUNTS: Cell<Counts> = Cell::default();
 }
 
-pub(super) fn record(update: impl FnOnce(&mut Counts)) {
+pub(in crate::bot) fn record(update: impl FnOnce(&mut Counts)) {
     COUNTS.with(|cell| {
         let mut counts = cell.get();
         update(&mut counts);
@@ -37,6 +39,8 @@ pub(in crate::bot) fn measure<T>(run: impl FnOnce() -> T) -> (T, Counts) {
             paths: after.paths - before.paths,
             fields: after.fields - before.fields,
             components: after.components - before.components,
+            egress_checks: after.egress_checks - before.egress_checks,
+            placement_checks: after.placement_checks - before.placement_checks,
             generations: after.generations - before.generations,
             hits: after.hits - before.hits,
         },

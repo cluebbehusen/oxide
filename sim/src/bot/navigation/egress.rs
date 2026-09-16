@@ -198,6 +198,8 @@ impl GroundEgressCache {
         accepted: &[PlannedFootprint],
         candidate: PlannedFootprint,
     ) -> bool {
+        #[cfg(test)]
+        super::work::record(|work| work.egress_checks += 1);
         if candidate.0.is_stealthy() {
             return true;
         }

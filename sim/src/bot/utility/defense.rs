@@ -3774,7 +3774,7 @@ fn weapon_covers_point(
 }
 
 fn closest_point_to_footprint(anchor: TilePos, size: (i32, i32), from: Vec2Fx) -> Vec2Fx {
-    let half = Fx::lit("0.5");
+    let half = chassis::fx::HALF;
     let min = anchor.center() - Vec2Fx::new(half, half);
     let max = min + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1));
     Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
