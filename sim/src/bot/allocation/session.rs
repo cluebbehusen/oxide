@@ -3218,6 +3218,10 @@ impl<'a> AllocationSession<'a> {
             crate::bot::observer::BotPhase::Portfolio,
         );
         let mut allocation_ok = prepared.coordinator_failure.is_none();
+        let revises_active = prepared
+            .fresh_connected
+            .as_ref()
+            .is_some_and(FreshConnectedProposal::revises_active_operation);
         let mut settlement = None;
         if allocation_ok {
             match CrossDomainAllocation::new(
@@ -3540,7 +3544,7 @@ impl<'a> AllocationSession<'a> {
                         ) {
                             Ok(resolved) => settlement = Some(resolved),
                             Err(AllocationError::Deferred) => {
-                                match self.resolve_committed(&mut prepared) {
+                                match self.resolve_committed(&mut prepared, revises_active) {
                                     Some(resolved) => settlement = Some(resolved),
                                     None => allocation_ok = false,
                                 }
@@ -3570,12 +3574,9 @@ impl<'a> AllocationSession<'a> {
     fn resolve_committed(
         &mut self,
         prepared: &mut PreparedAllocation,
+        revises_active: bool,
     ) -> Option<CrossDomainSettlement> {
-        if prepared
-            .fresh_connected
-            .as_ref()
-            .is_some_and(FreshConnectedProposal::revises_active_operation)
-        {
+        if revises_active {
             remove_active_connected_obligation(&mut prepared.obligations);
             prepared.active_connected =
                 self.participants.strategy.as_ref().and_then(|planner| {
@@ -8457,8 +8458,18 @@ mod tests {
 
     #[test]
     fn deferred_mandatory_purchase_still_dispatches_accepted_production() {
+        assert_deferred_portfolio_preserves_accepted_production(false);
+    }
+
+    #[test]
+    fn deferred_portfolio_restores_the_operation_replaced_by_a_staged_revision() {
+        assert_deferred_portfolio_preserves_accepted_production(true);
+    }
+
+    fn assert_deferred_portfolio_preserves_accepted_production(revising: bool) {
         let observation = connected_observation(1_200, 10_000);
         let mut proposal = current_connected_proposal(&observation);
+        let revision = revising.then(|| proposal.clone().into_active_revision_fixture());
         proposal
             .bind_producer_assignments(connected_assignments(&proposal, false))
             .unwrap();
@@ -8493,10 +8504,17 @@ mod tests {
         input.allocation_horizon = active.deadline();
         input.connected_reserve_deadline = active.deadline();
         input.connected_accepted_at = Some(active.accepted_at());
-        input
-            .obligations
-            .push(active_connected_obligation(&active).unwrap());
-        input.active_connected = Some(active.clone());
+        if let Some(revision) = revision {
+            input
+                .obligations
+                .push(active_connected_revision_obligation(&revision).unwrap());
+            input.fresh_connected = Some(revision);
+        } else {
+            input
+                .obligations
+                .push(active_connected_obligation(&active).unwrap());
+            input.active_connected = Some(active.clone());
+        }
         input.obligations.push(imported_obligation(
             ObligationClass::PersistentPlan,
             observation.tick,
@@ -8555,6 +8573,10 @@ mod tests {
         let outcome = session.commit_or_restore(resolved);
         assert!(outcome.allocation_ok);
         assert!(!outcome.accepted_connected);
+        assert!(
+            outcome.connected_continues,
+            "the allocator owns due purchases even when their proposed revision yields"
+        );
         assert_eq!(outcome.allocated_producer_intents.len(), expected.len());
         for intent in expected {
             assert!(outcome.allocated_producer_intents.contains(&intent));
