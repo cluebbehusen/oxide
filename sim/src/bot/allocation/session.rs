@@ -54,7 +54,8 @@ use crate::bot::utility::{
     AirCapacityDemand, CombatCoreStatus, Dials, EconomicInvestment, EconomicInvestmentContext,
     FreshDefenseProposal, FreshEmergencyDefense, FreshEmergencyDefenseContext,
     FreshFoundryInvestment, FreshFoundryProposal, FreshFoundryProposalContext, SHALLOW_QUEUE_DEPTH,
-    SavedFoundryReadiness, UtilityPolicy, ValidatedFoundryObligation, combat_core_status,
+    SavedFoundryReadiness, SupportWorkSnapshot, UtilityPolicy, ValidatedFoundryObligation,
+    combat_core_status,
 };
 use crate::ids::UnitId;
 use crate::stats::{BuildingKind, Domain, UnitKind};
@@ -405,6 +406,8 @@ pub(crate) struct AllocationSessionOutcome {
     pub(crate) fresh_emergency_defense_intents: Vec<Intent>,
     pub(crate) fresh_foundry_intents: Vec<Intent>,
     pub(crate) fresh_defense_intents: Vec<Intent>,
+    /// Commands maintaining observed work survive allocation failure.
+    pub(crate) maintenance_intents: Vec<Intent>,
     pub(crate) fresh_economy_intents: Vec<Intent>,
     pub(crate) allocated_producer_intents: Vec<Intent>,
     pub(crate) allocation_ok: bool,
@@ -421,10 +424,8 @@ pub(crate) struct AllocationSession<'a> {
     advanced: AdvancedPlannerWork,
     trace: Option<&'a mut AllocationTrace>,
     repair_work: Vec<crate::bot::standing_force::RepairWork>,
-    support_snapshot: Option<crate::bot::utility::SupportWorkSnapshot>,
     protection_work: Vec<crate::bot::utility::ProtectionRequest>,
     raid_work: Option<crate::bot::raid::RaidProcurementRequest>,
-    recon_paid_exclusions: Vec<(crate::ids::BuildingId, UnitKind, usize)>,
 }
 
 impl<'a> AllocationSession<'a> {
@@ -441,10 +442,8 @@ impl<'a> AllocationSession<'a> {
             advanced,
             trace,
             repair_work: Vec::new(),
-            support_snapshot: None,
             protection_work: Vec::new(),
             raid_work: None,
-            recon_paid_exclusions: Vec::new(),
         }
     }
 
@@ -456,13 +455,28 @@ impl<'a> AllocationSession<'a> {
         self
     }
 
-    /// Runs the named prepare, resolve, and commit-or-restore phases exactly
+    /// Observes retained work, then prepares, resolves, and commits or restores
     /// once. No domain is asked to rerank a payload after preparation.
     pub(crate) fn run(mut self) -> AllocationSessionOutcome {
         let _scope = crate::bot::observer::PhaseScope::new(
             self.observer,
             crate::bot::observer::BotPhase::Allocation,
         );
+        let observed = self.observe_retained_work();
+        let snapshot_scope = crate::bot::observer::PhaseScope::new(
+            self.observer,
+            crate::bot::observer::BotPhase::Snapshot,
+        );
+        let snapshots = CommitSnapshots {
+            policy: self.participants.policy.speculative_checkpoint(),
+        };
+        drop(snapshot_scope);
+        let prepared = self.prepare(observed);
+        let resolved = self.resolve(prepared, snapshots);
+        self.commit_or_restore(resolved)
+    }
+
+    fn observe_retained_work(&mut self) -> ObservedAllocation {
         let initial_claims = self.snapshot_claims();
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let observed_context = EconomicInvestmentContext {
@@ -488,7 +502,7 @@ impl<'a> AllocationSession<'a> {
             .participants
             .policy
             .observe_reconnaissance(observed_context, self.context.home);
-        self.recon_paid_exclusions = self.participants.policy.reconnaissance.paid_exclusions();
+        let recon_paid_exclusions = self.participants.policy.reconnaissance.paid_exclusions();
         drop(recon_scope);
         let support_scope = crate::bot::observer::PhaseScope::new(
             self.observer,
@@ -505,44 +519,43 @@ impl<'a> AllocationSession<'a> {
             .participants
             .policy
             .observe_support_deployments(observed_context, &support_snapshot.protection);
-        self.support_snapshot = Some(support_snapshot);
         drop(support_scope);
-        let snapshot_scope = crate::bot::observer::PhaseScope::new(
-            self.observer,
-            crate::bot::observer::BotPhase::Snapshot,
-        );
-        let snapshots = CommitSnapshots {
-            policy: self.participants.policy.speculative_checkpoint(),
-        };
-        drop(snapshot_scope);
-        let prepared = self.prepare();
-        let resolved = self.resolve(prepared, snapshots);
-        let mut outcome = self.commit_or_restore(resolved);
-        outcome.fresh_economy_intents.splice(0..0, recon_intents);
-        outcome.fresh_economy_intents.splice(0..0, support_intents);
-        outcome
+        let mut maintenance_intents = support_intents;
+        maintenance_intents.extend(recon_intents);
+        ObservedAllocation {
+            resources,
+            support_snapshot,
+            recon_paid_exclusions,
+            maintenance_intents,
+        }
     }
 
-    /// Assembles one immutable resource picture, imports exact prior work, and
-    /// asks each migrated domain for at most one already-ranked proposal.
-    fn prepare(&mut self) -> PreparedAllocation {
+    /// Imports exact prior work against the observed resource picture and asks
+    /// each migrated domain for at most one already-ranked proposal.
+    fn prepare(&mut self, observed: ObservedAllocation) -> PreparedAllocation {
+        let ObservedAllocation {
+            resources,
+            support_snapshot,
+            mut recon_paid_exclusions,
+            maintenance_intents,
+        } = observed;
         if let Some(planner) = self.participants.raids.as_mut() {
             planner.reconcile_procurement_routes(
                 self.context.observation,
                 Some(self.context.public_map),
                 Some(self.context.orientation),
             );
-            self.recon_paid_exclusions.extend(
+            recon_paid_exclusions.extend(
                 planner
                     .paid_claims()
                     .iter()
                     .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
             );
-            self.recon_paid_exclusions.sort_unstable();
-            self.recon_paid_exclusions.dedup();
+            recon_paid_exclusions.sort_unstable();
+            recon_paid_exclusions.dedup();
         }
         let mut claims = self.snapshot_claims();
-        let mut obligations = self.collect_legacy_obligations(&claims);
+        let mut obligations = self.collect_legacy_obligations(&claims, resources);
         self.prepare_standing_saving(&claims, &mut obligations);
         if obligations.invalid_active_connected {
             self.participants
@@ -635,7 +648,7 @@ impl<'a> AllocationSession<'a> {
             if !island_precedes_foundry {
                 saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
             }
-            self.stage_active_island(&mut claims, &mut obligations);
+            self.stage_active_island(&mut claims, &mut obligations, &recon_paid_exclusions);
             if let Some(staged) = obligations.staged_strategy.as_ref() {
                 earlier_producer_intents.extend(staged.decision.intents.iter().cloned());
                 self.advanced
@@ -678,7 +691,7 @@ impl<'a> AllocationSession<'a> {
             if saved.is_none() && !island_precedes_foundry {
                 saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
             }
-            self.stage_active_island(&mut claims, &mut obligations);
+            self.stage_active_island(&mut claims, &mut obligations, &recon_paid_exclusions);
         }
         self.refresh_planner_claims(&mut claims);
         self.prepare_standing_army(&claims, &mut obligations);
@@ -689,7 +702,11 @@ impl<'a> AllocationSession<'a> {
             // revise, so settle completed queue ownership before deriving one.
             let _ = planner.issued_connected_production_assignments(self.context.observation);
         }
-        let active_revision = self.prepare_active_connected_revision(&claims, &mut obligations);
+        let active_revision = self.prepare_active_connected_revision(
+            &claims,
+            &mut obligations,
+            &recon_paid_exclusions,
+        );
         if active_revision.proposal.is_none() {
             self.downgrade_unfundable_active_connected(&mut saved, &air_lift, &mut obligations);
         }
@@ -698,7 +715,7 @@ impl<'a> AllocationSession<'a> {
         self.reconcile_unfundable_reconnaissance(&claims, &mut obligations);
         self.reconcile_standing_saving(&mut obligations);
         let (fresh_support, fresh_support_construction) =
-            self.prepare_support(&claims, &mut obligations);
+            self.prepare_support(&claims, &mut obligations, &support_snapshot);
         let fresh_support_relief = self.prepare_support_relief(&claims);
         let fresh_support_deployments =
             if claims.opening_core.ready && self.participants.policy.economic_saving().is_none() {
@@ -733,7 +750,7 @@ impl<'a> AllocationSession<'a> {
                     planner.reconnaissance_paid_claims(
                         self.context.observation,
                         &obligations.resources,
-                        &self.recon_paid_exclusions,
+                        &recon_paid_exclusions,
                     )
                 });
         self.raid_work =
@@ -813,6 +830,7 @@ impl<'a> AllocationSession<'a> {
             &mut obligations,
             active_revision,
             defense_admission_reserve,
+            &recon_paid_exclusions,
         );
         self.downgrade_unfundable_active_revision(
             &claims,
@@ -826,6 +844,7 @@ impl<'a> AllocationSession<'a> {
 
         PreparedAllocation {
             resources: obligations.resources,
+            maintenance_intents,
             obligations: obligations.obligations,
             coordinator_failure: obligations.coordinator_failure,
             opening_core: claims.opening_core,
@@ -916,6 +935,7 @@ impl<'a> AllocationSession<'a> {
         &mut self,
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
+        support_snapshot: &SupportWorkSnapshot,
     ) -> (
         Vec<crate::bot::utility::RepairAssignment>,
         Vec<EconomicInvestment>,
@@ -957,10 +977,6 @@ impl<'a> AllocationSession<'a> {
             air_work: &[],
         };
         let allow_repair = claims.opening_core.ready && self.context.dials.repair;
-        let support_snapshot = self
-            .support_snapshot
-            .clone()
-            .unwrap_or_else(|| self.participants.policy.support_work_snapshot(context));
         let renewal_unavailable: Vec<_> = claims
             .planner_claims
             .iter()
@@ -980,7 +996,7 @@ impl<'a> AllocationSession<'a> {
                 unavailable: &renewal_unavailable,
                 ..context
             },
-            &support_snapshot,
+            support_snapshot,
             available,
             allow_repair,
         ) {
@@ -1000,7 +1016,7 @@ impl<'a> AllocationSession<'a> {
             && self.participants.policy.economic_saving().is_none()
         {
             let fresh = self.participants.policy.discretionary_support_work(
-                &support_snapshot,
+                support_snapshot,
                 self.context.observation.tick,
                 self.context.tuning,
             );
@@ -1077,8 +1093,11 @@ impl<'a> AllocationSession<'a> {
         claims.dedup();
     }
 
-    fn collect_legacy_obligations(&mut self, claims: &ClaimSnapshot) -> ObligationPreparation {
-        let resources = ResourceSnapshot::from_observation(self.context.observation);
+    fn collect_legacy_obligations(
+        &mut self,
+        claims: &ClaimSnapshot,
+        resources: ResourceSnapshot,
+    ) -> ObligationPreparation {
         let air_work = self.economic_air_work();
         let mut obligations = Vec::new();
         if let Some(planner) = self.participants.raids.as_ref()
@@ -2075,6 +2094,7 @@ impl<'a> AllocationSession<'a> {
         &mut self,
         claims: &mut ClaimSnapshot,
         obligations: &mut ObligationPreparation,
+        recon_paid_exclusions: &[(crate::ids::BuildingId, UnitKind, usize)],
     ) {
         if obligations.coordinator_failure.is_some() {
             return;
@@ -2135,7 +2155,7 @@ impl<'a> AllocationSession<'a> {
                     },
                 )
                 .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations)
-                .with_paid_exclusions(&self.recon_paid_exclusions),
+                .with_paid_exclusions(recon_paid_exclusions),
             )
         }) else {
             return;
@@ -2170,6 +2190,7 @@ impl<'a> AllocationSession<'a> {
         &mut self,
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
+        recon_paid_exclusions: &[(crate::ids::BuildingId, UnitKind, usize)],
     ) -> ActiveRevisionPreparation {
         let deadline = self
             .participants
@@ -2224,7 +2245,7 @@ impl<'a> AllocationSession<'a> {
                 orientation: self.context.orientation,
             },
         );
-        let request = request.with_paid_exclusions(&self.recon_paid_exclusions);
+        let request = request.with_paid_exclusions(recon_paid_exclusions);
         let revision = self
             .participants
             .strategy
@@ -2322,6 +2343,7 @@ impl<'a> AllocationSession<'a> {
         obligations: &mut ObligationPreparation,
         active_revision: ActiveRevisionPreparation,
         defense_admission_reserve: u32,
+        recon_paid_exclusions: &[(crate::ids::BuildingId, UnitKind, usize)],
     ) -> FreshInvestmentPreparation {
         let admission_tick = strategic_admission_tick(self.context.observation.tick)
             && claims.opening_core.ready
@@ -2410,7 +2432,7 @@ impl<'a> AllocationSession<'a> {
                             orientation: self.context.orientation,
                         },
                     )
-                    .with_paid_exclusions(&self.recon_paid_exclusions),
+                    .with_paid_exclusions(recon_paid_exclusions),
                 ) {
                     Ok(proposal) => proposal,
                     Err(rejected) => {
@@ -4282,6 +4304,7 @@ impl<'a> AllocationSession<'a> {
             fresh_emergency_defense_intents: effects.fresh_emergency_defense_intents,
             fresh_foundry_intents: effects.fresh_foundry_intents,
             fresh_defense_intents: effects.fresh_defense_intents,
+            maintenance_intents: prepared.maintenance_intents,
             fresh_economy_intents: effects.fresh_economy_intents,
             allocated_producer_intents: effects.allocated_producer_intents,
             allocation_ok,
@@ -4522,8 +4545,16 @@ impl CommitEffects {
     }
 }
 
+struct ObservedAllocation {
+    resources: ResourceSnapshot,
+    support_snapshot: SupportWorkSnapshot,
+    recon_paid_exclusions: Vec<(crate::ids::BuildingId, UnitKind, usize)>,
+    maintenance_intents: Vec<Intent>,
+}
+
 struct PreparedAllocation {
     resources: ResourceSnapshot,
+    maintenance_intents: Vec<Intent>,
     obligations: Vec<ImportedObligation>,
     coordinator_failure: Option<CoordinatorFailure>,
     opening_core: CombatCoreStatus,
@@ -5926,6 +5957,7 @@ mod tests {
     ) -> PreparedAllocation {
         PreparedAllocation {
             resources: ResourceSnapshot::from_observation(observation),
+            maintenance_intents: Vec::new(),
             obligations: Vec::new(),
             coordinator_failure,
             opening_core: CombatCoreStatus {
@@ -6441,7 +6473,8 @@ mod tests {
                 advanced(snapshots),
                 None,
             );
-            let prepared = session.prepare();
+            let observed = session.observe_retained_work();
+            let prepared = session.prepare(observed);
             assert!(prepared.coordinator_failure.is_none());
             let claim = prepared
                 .obligations
@@ -7679,7 +7712,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_commit_restores_every_participant_and_freezes_the_outcome() {
+    fn rejected_allocation_restores_participants_and_preserves_maintenance() {
         let observation = observation();
         let briefing = briefing();
         let profile =
@@ -7771,6 +7804,16 @@ mod tests {
             TilePos::new(4, 4),
             UnitId(7),
         ));
+        let maintenance = vec![
+            Intent::StopUnits {
+                units: vec![UnitId(8)],
+            },
+            Intent::MoveUnits {
+                units: vec![UnitId(9)],
+                goal: TilePos::new(3, 3),
+            },
+        ];
+        prepared.maintenance_intents = maintenance.clone();
         let outcome = session.commit_or_restore(ResolvedAllocation {
             prepared,
             settlement: None,
@@ -7781,6 +7824,7 @@ mod tests {
         });
 
         assert!(!outcome.allocation_ok);
+        assert_eq!(outcome.maintenance_intents, maintenance);
         assert_eq!(outcome.team_decision, StrategicDecision::default());
         assert_eq!(outcome.lift_decision, StrategicDecision::default());
         assert_eq!(outcome.raid_decision, StrategicDecision::default());
@@ -7792,6 +7836,8 @@ mod tests {
         assert!(outcome.strategic_core_exclusions.is_empty());
         assert!(outcome.fresh_emergency_defense_intents.is_empty());
         assert!(outcome.fresh_foundry_intents.is_empty());
+        assert!(outcome.fresh_defense_intents.is_empty());
+        assert!(outcome.fresh_economy_intents.is_empty());
         assert!(outcome.allocated_producer_intents.is_empty());
         assert_eq!(
             outcome.producer_lane_reservations,

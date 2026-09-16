@@ -603,6 +603,7 @@ impl Brain {
             fresh_emergency_defense_intents,
             fresh_foundry_intents,
             fresh_defense_intents,
+            maintenance_intents,
             fresh_economy_intents,
             allocated_producer_intents,
             allocation_ok,
@@ -634,6 +635,7 @@ impl Brain {
         let strategic_was_staged = staged_strategy.is_some();
         let fresh_defense_builders = fresh_defense_intents
             .iter()
+            .chain(&maintenance_intents)
             .chain(&fresh_economy_intents)
             .filter_map(|intent| match intent {
                 Intent::BuildWith { builder, .. } => Some(*builder),
@@ -690,6 +692,7 @@ impl Brain {
         }
         strategic.intents.splice(0..0, fresh_defense_intents);
         strategic.intents.splice(0..0, fresh_economy_intents);
+        strategic.intents.splice(0..0, maintenance_intents);
         strategic.intents.splice(0..0, fresh_foundry_intents);
         strategic
             .intents
