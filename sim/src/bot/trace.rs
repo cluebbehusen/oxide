@@ -2224,7 +2224,6 @@ impl From<LegacyChannel> for LegacyChannelTrace {
             LegacyChannel::Lift => Self::Lift,
             LegacyChannel::Raid => Self::Raid,
             LegacyChannel::StrategicAir => Self::StrategicAir,
-            LegacyChannel::AirworksCapacity => Self::AirworksCapacity,
         }
     }
 }

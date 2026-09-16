@@ -8,14 +8,11 @@
 //! units and lower intents to commands.
 
 use super::PublicMapBriefing;
+#[cfg(test)]
+use super::allocation::prior_planner_claims;
 use super::allocation::{
     AdvancedPlannerWork, AllocationBudgetOutcome, AllocationParticipants, AllocationSession,
     AllocationSessionContext, AllocationSessionOutcome, PlannerClaims, PlannerSnapshots,
-};
-#[cfg(test)]
-use super::allocation::{
-    AllocationPersonality, BoundedCapitalReserve, CrossDomainAllocation, LegacyChannel,
-    ObligationKey, prior_planner_claims, push_bounded_capital_reserve,
 };
 use super::difficulty::DifficultyTuning;
 #[cfg(test)]
@@ -37,12 +34,12 @@ use super::residual_coordination::{
 use super::resources::BuilderLease;
 #[cfg(test)]
 use super::resources::{ProducerLaneReservations, ReservedProducerJob, ResourceSnapshot};
+#[cfg(test)]
+use super::strategy::AirRecoveryReason;
 use super::strategy::{
     AirOperationOutcome, AirOperationPhase, LiftSupportRequest, StrategicCoordination,
     StrategicDecision, StrategicPlanner, StrategicThinkContext, StrategicThinkResult,
 };
-#[cfg(test)]
-use super::strategy::{AirRecoveryReason, connected_preparation_horizon};
 use super::team::{TeamReliefAdmission, TeamReliefPlanner};
 use super::trace::{
     ChannelPhase, ChannelState, ChannelTrace, CoreGateTrace, DecisionControlFlow,
@@ -1437,57 +1434,6 @@ mod tests {
         assert_eq!(after.policy, before.policy);
         assert_eq!(after.exec, before.exec);
         assert_eq!(after.orientation, before.orientation);
-    }
-
-    #[test]
-    fn lift_capacity_owns_current_bank_and_completed_source_income() {
-        let mut scenario = foundry_saving_air_competition_scenario(10);
-        scenario.name = "lift capacity forecast ownership".into();
-        let state = scenario
-            .build()
-            .expect("the capacity forecast scenario builds");
-        let obs = Observation::fog_honest(&state, PlayerId(0));
-        let resources = ResourceSnapshot::from_observation(&obs);
-        let deadline = obs.tick.saturating_add(connected_preparation_horizon());
-        let forecast = resources.forecast().income_through(deadline).amount();
-        assert!(
-            forecast >= 50,
-            "the completed Extractor supplies bounded income"
-        );
-
-        let mut obligations = Vec::new();
-        push_bounded_capital_reserve(
-            &mut obligations,
-            &resources,
-            BoundedCapitalReserve {
-                cadence: 12,
-                bank: obs.scrap,
-                accepted_at: obs.tick,
-                decision_tick: obs.tick,
-                key: ObligationKey::Legacy {
-                    channel: LegacyChannel::AirworksCapacity,
-                    sequence: 1,
-                },
-                desired: obs.scrap + 50,
-                forecast_deadline: deadline,
-                older_capital_reserve: 0,
-            },
-        )
-        .expect("the lift capacity claim is well formed");
-        let mut allocation = CrossDomainAllocation::new(&resources, deadline, 12)
-            .expect("the completed-source forecast is projectable");
-        allocation.import(obligations.pop().expect("one capacity obligation exists"));
-        let settlement = allocation
-            .resolve(AllocationPersonality::default(), None)
-            .expect("current bank plus completed-source income fund the retained capacity");
-
-        assert_eq!(settlement.connected_current_scrap(), 0);
-        assert_eq!(settlement.connected_forecast_reserve_through(deadline), 50);
-        assert_eq!(
-            settlement.utility_current_scrap(),
-            obs.scrap,
-            "Utility remains the execution path that may spend the owned Airworks fund"
-        );
     }
 
     #[test]

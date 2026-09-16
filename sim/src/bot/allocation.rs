@@ -1196,8 +1196,6 @@ pub(crate) enum LegacyChannel {
     Raid,
     /// Already-admitted air operation without a connected force package.
     StrategicAir,
-    /// Operation-driven Airworks construction.
-    AirworksCapacity,
 }
 
 impl LegacyChannel {
@@ -1208,7 +1206,6 @@ impl LegacyChannel {
             Self::Lift => 2,
             Self::Raid => 3,
             Self::StrategicAir => 4,
-            Self::AirworksCapacity => 5,
         }
     }
 }

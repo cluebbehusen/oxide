@@ -9,17 +9,16 @@ use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
     CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
-    ForecastClaim, ImportedObligation, LegacyChannel, LegacyDecisionRequest, ObligationClass,
-    ObligationKey, ProducerJobClaim, ProposalKey, StandingForceKey, Urgency,
-    active_connected_obligation, active_connected_producer_assignments,
-    active_connected_revision_investment_proposal, active_connected_revision_obligation,
-    active_connected_revision_producer_assignments, clamped_current_reserve_obligation,
-    connected_investment_proposal, connected_producer_assignments, current_reserve_at,
-    defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
-    fixed_production_current_reserve, forecast_reserve_through, foundry_investment_proposal,
-    fresh_emergency_defense_obligation, imported_obligation, legacy_decision_obligation,
-    legacy_unit_obligation, observed_builder_obligations, saved_foundry_obligation,
-    standing_force_investment_proposals,
+    ImportedObligation, LegacyChannel, LegacyDecisionRequest, ObligationClass, ObligationKey,
+    ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
+    active_connected_producer_assignments, active_connected_revision_investment_proposal,
+    active_connected_revision_obligation, active_connected_revision_producer_assignments,
+    clamped_current_reserve_obligation, connected_investment_proposal,
+    connected_producer_assignments, current_reserve_at, defense_investment_proposals,
+    economic_investment_claims, economic_investment_proposal, fixed_production_current_reserve,
+    forecast_reserve_through, foundry_investment_proposal, fresh_emergency_defense_obligation,
+    imported_obligation, legacy_decision_obligation, legacy_unit_obligation,
+    observed_builder_obligations, saved_foundry_obligation, standing_force_investment_proposals,
 };
 use crate::bot::PublicMapBriefing;
 use crate::bot::difficulty::{DifficultyTuning, strategic_admission_tick};
@@ -62,7 +61,9 @@ use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
 
+mod retained;
 mod standing;
+use retained::{RetainedPreparation, RetainedWork};
 use standing::{
     StandingForceDerivation, StandingForceInputs, StandingForcePreparation, StandingForceWork,
 };
@@ -306,18 +307,6 @@ pub(crate) struct AllocationSessionContext<'a> {
     pub(crate) lift_support: Option<&'a LiftSupportRequest>,
 }
 
-/// Exact bounded capital request retained for one prior legacy operation.
-pub(crate) struct BoundedCapitalReserve {
-    pub(crate) cadence: Tick,
-    pub(crate) bank: u32,
-    pub(crate) accepted_at: Tick,
-    pub(crate) decision_tick: Tick,
-    pub(crate) key: ObligationKey,
-    pub(crate) desired: u32,
-    pub(crate) forecast_deadline: Tick,
-    pub(crate) older_capital_reserve: u32,
-}
-
 struct LegacyPlannerClaim<'a> {
     cadence: Tick,
     accepted_at: Tick,
@@ -356,15 +345,9 @@ pub(crate) struct AllocationBudgetOutcome {
 }
 
 impl AllocationBudgetOutcome {
-    fn frozen(
-        foundry_saving: u32,
-        airworks_capacity: u32,
-        opening_bootstrap: u32,
-        voluntary_scrap_guard: u32,
-    ) -> Self {
+    fn frozen(foundry_saving: u32, opening_bootstrap: u32, voluntary_scrap_guard: u32) -> Self {
         Self {
             foundry_saving,
-            airworks_capacity,
             opening_bootstrap,
             voluntary_scrap_guard,
             connected_forecast_hold: u32::MAX,
@@ -453,8 +436,12 @@ impl<'a> AllocationSession<'a> {
         self.commit_or_restore(resolved)
     }
 
+    fn retained_work(&mut self) -> RetainedWork<'_, 'a> {
+        RetainedWork::new(&self.context, &mut self.participants, &mut self.advanced)
+    }
+
     fn observe_retained_work(&mut self) -> ObservedAllocation {
-        let initial_claims = self.snapshot_claims();
+        let initial_claims = snapshot_claims(&self.context, &self.participants);
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let observed_context = EconomicInvestmentContext {
             obligations: &[],
@@ -516,182 +503,18 @@ impl<'a> AllocationSession<'a> {
             mut recon_paid_exclusions,
             maintenance_intents,
         } = observed;
-        if let Some(planner) = self.participants.raids.as_mut() {
-            planner.reconcile_procurement_routes(
-                self.context.observation,
-                Some(self.context.public_map),
-                Some(self.context.orientation),
-            );
-            recon_paid_exclusions.extend(
-                planner
-                    .paid_claims()
-                    .iter()
-                    .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
-            );
-            recon_paid_exclusions.sort_unstable();
-            recon_paid_exclusions.dedup();
-        }
-        let mut claims = self.snapshot_claims();
-        let mut obligations = self.collect_legacy_obligations(&claims, resources);
-        self.prepare_standing_saving(&claims, &mut obligations);
-        if obligations.invalid_active_connected {
-            self.participants
-                .strategy
-                .as_mut()
-                .expect("an invalid active connected obligation belongs to its planner")
-                .recover_unfundable_active_connected(self.context.observation.tick);
-            obligations.active_connected = None;
-        }
-        if obligations.invalid_active_lift {
-            self.participants
-                .lifts
-                .as_mut()
-                .expect("an invalid active Lift obligation belongs to its planner")
-                .recover_invalid_production(self.context.observation.tick);
-            obligations.active_lift = None;
-        }
-        let emergency_defense = self.prepare_emergency_defense(&claims, &mut obligations);
-        if let Some(plan) = self.participants.policy.economic_foundation() {
-            let guard = self.participants.policy.shallow_sentinel_capital_reserve(
-                self.context.dials,
-                self.context.observation,
-                self.context.home,
-                self.context.public_map,
-                &[],
-            );
-            let available = residual_current_after_obligations(
-                &obligations.resources,
-                &obligations.obligations,
-                obligation_horizon(&obligations.obligations, plan.deadline),
-                self.context.dials.cadence,
-                &self.participants.policy.planning,
-            )
-            .unwrap_or(0);
-            if guard > 0 {
-                obligations.obligations.push(super::imported_obligation(
-                    ObligationClass::PersistentPlan,
-                    plan.observed_at,
-                    ObligationKey::SavedEconomy(plan.key),
-                    ClaimBundle::new(
-                        guard.min(available),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        Vec::new(),
-                    )
-                    .expect("a current-only construction escrow has no conflicting members"),
-                ));
-            }
-        }
-        let mut air_lift = self.prepare_air_commitments(&claims, &mut obligations);
-        if let Some(saving) = self.participants.policy.economic_saving() {
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                economic_investment_claims(saving)
-                    .map(|claims| {
-                        obligations.obligations.push(super::imported_obligation(
-                            ObligationClass::PersistentPlan,
-                            saving.observed_at,
-                            ObligationKey::SavedEconomy(saving.key),
-                            claims,
-                        ))
-                    })
-                    .map_err(Into::into),
-            );
-        }
-        let island_admitted_at = self
-            .participants
-            .strategy
-            .as_ref()
-            .filter(|planner| {
-                planner
-                    .air_operation()
-                    .is_some_and(|operation| operation.assault_admitted)
-            })
-            .and_then(StrategicPlanner::air_admitted_at);
-        let island_precedes_foundry = island_admitted_at.is_some_and(|accepted_at| {
-            self.participants
-                .policy
-                .operation_precedes_foundry_saving(accepted_at)
-        });
-        let island_precedes_lift = island_admitted_at.is_some_and(|accepted_at| {
-            !self.advanced.lift_was_active || accepted_at <= self.advanced.lift_started_at
-        });
-        let mut saved = None;
-        let mut earlier_producer_intents = Vec::new();
-        if island_precedes_lift {
-            if !island_precedes_foundry {
-                saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
-            }
-            self.stage_active_island(&mut claims, &mut obligations, &recon_paid_exclusions);
-            if let Some(staged) = obligations.staged_strategy.as_ref() {
-                earlier_producer_intents.extend(staged.decision.intents.iter().cloned());
-                self.advanced
-                    .lift_unavailable
-                    .extend(staged.decision.reservations.iter().copied());
-                self.advanced.lift_unavailable.sort_unstable();
-                self.advanced.lift_unavailable.dedup();
-                self.advanced.initial_lift_support = lift_air_support(
-                    self.participants
-                        .strategy
-                        .as_ref()
-                        .and_then(StrategicPlanner::air_operation),
-                    self.participants
-                        .strategy
-                        .as_ref()
-                        .and_then(StrategicPlanner::terminal_outcome),
-                );
-            }
-            if saved.is_none() && !air_lift.active_lift_precedes_foundry {
-                saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
-            }
-            self.advance_active_lift(
-                &mut obligations,
-                &mut air_lift,
-                &earlier_producer_intents,
-                true,
-            );
-        } else {
-            if !air_lift.active_lift_precedes_foundry {
-                saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
-            }
-            self.advance_active_lift(
-                &mut obligations,
-                &mut air_lift,
-                &earlier_producer_intents,
-                false,
-            );
-            earlier_producer_intents.extend(air_lift.lift_decision.intents.iter().cloned());
-            self.refresh_planner_claims(&mut claims);
-            if saved.is_none() && !island_precedes_foundry {
-                saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
-            }
-            self.stage_active_island(&mut claims, &mut obligations, &recon_paid_exclusions);
-        }
-        self.refresh_planner_claims(&mut claims);
-        self.prepare_standing_army(&claims, &mut obligations);
-        let mut saved = saved
-            .unwrap_or_else(|| self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
-        if let Some(planner) = self.participants.strategy.as_mut() {
-            // Active revision proposals carry the exact planner snapshot they
-            // revise, so settle completed queue ownership before deriving one.
-            let _ = planner.issued_connected_production_assignments(self.context.observation);
-        }
-        let active_revision = self.prepare_active_connected_revision(
-            &claims,
-            &mut obligations,
-            &recon_paid_exclusions,
-        );
-        if active_revision.proposal.is_none() {
-            self.downgrade_unfundable_active_connected(&mut saved, &air_lift, &mut obligations);
-        }
-        let prospective_carrier_floor =
-            self.prospective_carrier_floor(&claims, obligations.coordinator_failure.is_none());
-        self.reconcile_unfundable_reconnaissance(&claims, &mut obligations);
-        self.reconcile_standing_saving(&mut obligations);
-        let support = self.prepare_support(&claims, &mut obligations, &support_snapshot);
+        let RetainedPreparation {
+            claims,
+            mut obligations,
+            mut saved,
+            air_lift,
+            active_revision,
+            prospective_carrier_floor,
+            emergency_defense,
+        } = self
+            .retained_work()
+            .prepare(resources, &mut recon_paid_exclusions, &support_snapshot);
+        let support = self.prepare_support(&claims, &obligations, &support_snapshot);
         let fresh_support_relief = self.prepare_support_relief(&claims);
         let fresh_support_deployments =
             if claims.opening_core.ready && self.participants.policy.economic_saving().is_none() {
@@ -819,15 +642,37 @@ impl<'a> AllocationSession<'a> {
                 },
             },
         );
-        self.downgrade_unfundable_active_revision(
-            &claims,
-            &mut saved,
-            &air_lift,
-            &mut obligations,
-            &mut fresh,
+        if self
+            .retained_work()
+            .reconcile_revision(&mut saved, &air_lift, &mut obligations, &fresh)
+        {
+            fresh.connected = None;
+            fresh.connected_accepted_at = None;
+            fresh.connected_reserve_deadline = self
+                .context
+                .observation
+                .tick
+                .saturating_add(connected_preparation_horizon());
+            let committed_production = self.committed_standing_production();
+            let standing_force = self
+                .standing_force_inputs(
+                    &claims,
+                    &obligations,
+                    &fresh.standing_force_derivation,
+                    &committed_production,
+                )
+                .derive(&claims.strategic_core_exclusions, &[]);
+            fresh.standing_force = StandingForcePreparation::Unconditional(standing_force.0);
+            fresh.economy.clear();
+        }
+
+        let allocation_horizon = allocation_horizon(
+            &self.context,
+            &self.participants,
+            &saved,
+            &fresh,
+            obligations.active_connected.as_ref(),
         );
-        let allocation_horizon =
-            self.allocation_horizon(&saved, &fresh, obligations.active_connected.as_ref());
 
         PreparedAllocation {
             resources: obligations.resources,
@@ -859,7 +704,6 @@ impl<'a> AllocationSession<'a> {
             active_lift_precedes_foundry: air_lift.active_lift_precedes_foundry,
             active_lift_spendable: air_lift.active_lift_spendable,
             foundry_saving: saved.saving,
-            airworks_capacity: air_lift.airworks_capacity,
             opening_bootstrap: air_lift.opening_bootstrap,
             voluntary_scrap_guard: air_lift.voluntary_scrap_guard,
             prospective_carrier_floor,
@@ -872,129 +716,14 @@ impl<'a> AllocationSession<'a> {
         }
     }
 
-    fn reconcile_unfundable_reconnaissance(
-        &mut self,
-        claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-    ) {
-        let mut unpaid: Vec<_> = self
-            .participants
-            .policy
-            .reconnaissance
-            .assignments
-            .iter()
-            .filter(|(_, work)| work.unpaid)
-            .map(|(key, work)| (work.proposal.observed_at, *key))
-            .collect();
-        unpaid.sort_unstable();
-        for (_, key) in unpaid.into_iter().rev() {
-            let reason = if !claims.opening_core.ready {
-                crate::bot::trace::ReconReleaseReason::CoreRecovery
-            } else if matches!(
-                obligations_resolve(
-                    &obligations.resources,
-                    &obligations.obligations,
-                    obligation_horizon(
-                        &obligations.obligations,
-                        self.context.observation.tick + self.context.dials.cadence,
-                    ),
-                    self.context.dials.cadence,
-                    &self.participants.policy.planning,
-                ),
-                Ok(crate::bot::planning::Progress::ProvenInfeasible) | Err(_)
-            ) {
-                crate::bot::trace::ReconReleaseReason::Unfundable
-            } else {
-                break;
-            };
-            self.participants.policy.reconnaissance.release_unpaid(
-                key,
-                self.context.observation.tick,
-                reason,
-            );
-            obligations
-                .obligations
-                .retain(|obligation| obligation.key != ObligationKey::Reconnaissance(key));
-        }
-    }
-
     fn prepare_support(
         &mut self,
         claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
+        obligations: &ObligationPreparation,
         support_snapshot: &SupportWorkSnapshot,
     ) -> SupportPreparation {
-        let available = residual_current_after_obligations(
-            &obligations.resources,
-            &obligations.obligations,
-            obligation_horizon(
-                &obligations.obligations,
-                self.context
-                    .observation
-                    .tick
-                    .saturating_add(self.context.dials.cadence),
-            ),
-            self.context.dials.cadence,
-            &self.participants.policy.planning,
-        )
-        .unwrap_or(0)
-        .saturating_sub(self.participants.policy.shallow_sentinel_capital_reserve(
-            self.context.dials,
-            self.context.observation,
-            self.context.home,
-            self.context.public_map,
-            &[],
-        ));
-        let context = EconomicInvestmentContext {
-            obligations: &[],
-            obs: self.context.observation,
-            resources: &obligations.resources,
-            profile: self.context.profile,
-            briefing: self.context.public_map,
-            orientation: self.context.orientation,
-            unavailable: &claims.planner_claims,
-            demands: &[],
-            cadence: self.context.dials.cadence,
-            unit_contacts: self.context.intelligence.units(),
-            building_contacts: self.context.intelligence.buildings(),
-            protected_scrap: 0,
-            air_work: &[],
-        };
+        let context = support_context(&self.context, claims, &obligations.resources);
         let allow_repair = claims.opening_core.ready && self.context.dials.repair;
-        let renewal_unavailable: Vec<_> = claims
-            .planner_claims
-            .iter()
-            .copied()
-            .filter(|unit| {
-                !self
-                    .participants
-                    .policy
-                    .support_work
-                    .repairs
-                    .iter()
-                    .any(|repair| repair.key.worker == *unit)
-            })
-            .collect();
-        for repair in self.participants.policy.renew_prepared_repairs(
-            EconomicInvestmentContext {
-                unavailable: &renewal_unavailable,
-                ..context
-            },
-            support_snapshot,
-            available,
-            allow_repair,
-        ) {
-            let observed_builder =
-                self.context.observation.my_units.iter().any(|unit| {
-                    unit.id == repair.key.worker && unit.kind.stats().harvest.is_some()
-                });
-            obligations.obligations.push(imported_obligation(
-                ObligationClass::PersistentPlan,
-                repair.accepted_at,
-                ObligationKey::Support(repair.key),
-                repair.claims(observed_builder),
-            ));
-        }
         if allow_repair
             && strategic_admission_tick(self.context.observation.tick)
             && self.participants.policy.economic_saving().is_none()
@@ -1040,1286 +769,6 @@ impl<'a> AllocationSession<'a> {
             map: self.context.public_map,
             orientation: self.context.orientation,
         })
-    }
-
-    fn snapshot_claims(&self) -> ClaimSnapshot {
-        let claims = PlannerClaims::new(
-            self.context.enlisted,
-            self.participants.strategy,
-            self.participants.raids,
-            self.participants.lifts,
-        );
-        let team_core_claims = self
-            .participants
-            .team
-            .as_ref()
-            .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
-        let mut planner_claims = claims.all(&team_core_claims);
-        let mut strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
-        self.append_utility_assignments(&mut planner_claims);
-        self.append_utility_assignments(&mut strategic_core_exclusions);
-        let opening_core = combat_core_status(
-            self.context.observation,
-            &strategic_core_exclusions,
-            &[],
-            u64::from(self.context.dials.minimum_core_equivalents),
-        );
-        ClaimSnapshot {
-            team_core_claims,
-            planner_claims,
-            strategic_core_exclusions,
-            opening_core,
-        }
-    }
-
-    fn append_utility_assignments(&self, claims: &mut Vec<UnitId>) {
-        claims.extend(self.participants.policy.reconnaissance.reservations());
-        claims.extend(self.participants.policy.support_reservations());
-        claims.sort_unstable();
-        claims.dedup();
-    }
-
-    fn collect_legacy_obligations(
-        &mut self,
-        claims: &ClaimSnapshot,
-        resources: ResourceSnapshot,
-    ) -> ObligationPreparation {
-        let air_work = self.economic_air_work();
-        let mut obligations = Vec::new();
-        if let Some(planner) = self.participants.raids.as_ref()
-            && !planner.paid_claims().is_empty()
-        {
-            obligations.push(imported_obligation(
-                ObligationClass::PersistentPlan,
-                planner
-                    .preparation_started_at()
-                    .unwrap_or(self.context.observation.tick),
-                ObligationKey::Legacy {
-                    channel: LegacyChannel::Raid,
-                    sequence: 2,
-                },
-                ClaimBundle::default().with_paid_queue(planner.paid_claims().to_vec()),
-            ));
-        }
-        for deployment in &self.participants.policy.support_deployments.active {
-            obligations.push(imported_obligation(
-                ObligationClass::PersistentPlan,
-                deployment.accepted_at,
-                ObligationKey::SupportDeployment(deployment.key),
-                deployment.claims(),
-            ));
-        }
-        for (key, work) in &self.participants.policy.reconnaissance.assignments {
-            if work.unit.is_some() || work.paid_claim.is_some() || work.unpaid {
-                obligations.push(imported_obligation(
-                    ObligationClass::PersistentPlan,
-                    work.proposal.observed_at,
-                    ObligationKey::Reconnaissance(*key),
-                    work.retained_claims(self.context.observation.tick),
-                ));
-            }
-        }
-        let mut coordinator_failure = None;
-        let mut observed_capital = self.context.observation.scrap;
-        if self.participants.policy.economic_saving().is_some()
-            || self.participants.policy.has_economic_foundation()
-        {
-            let demand = if self.participants.policy.economic_saving().is_some() {
-                let targets = self.standing_force_projection_targets();
-                derive_standing_force_with_demand(
-                    self.context.observation,
-                    self.context.intelligence,
-                    self.context.profile,
-                    self.context.tuning,
-                    &resources,
-                    StandingForceContext::new(&claims.strategic_core_exclusions, &[])
-                        .with_ground_routing(
-                            StandingGroundTarget::footprint(
-                                self.context.home,
-                                BuildingKind::Foundry.base_stats().size,
-                            ),
-                            Some(self.context.public_map),
-                            &targets,
-                            Some(self.context.orientation),
-                        ),
-                )
-                .1
-            } else {
-                Vec::new()
-            };
-            self.participants.policy.refresh_economic_saving(
-                EconomicInvestmentContext {
-                    obligations: &[],
-                    obs: self.context.observation,
-                    resources: &resources,
-                    profile: self.context.profile,
-                    briefing: self.context.public_map,
-                    orientation: self.context.orientation,
-                    unavailable: &claims.planner_claims,
-                    demands: &demand,
-                    cadence: self.context.dials.cadence,
-                    unit_contacts: self.context.intelligence.units(),
-                    building_contacts: self.context.intelligence.buildings(),
-                    protected_scrap: 0,
-                    air_work: &air_work,
-                },
-                claims.opening_core.ready,
-            );
-        }
-        match observed_builder_obligations(
-            &resources,
-            self.context.observation,
-            &mut observed_capital,
-            self.context
-                .observation
-                .tick
-                .saturating_add(connected_preparation_horizon()),
-            self.context.dials.cadence,
-        ) {
-            Ok(mut observed) => obligations.append(&mut observed),
-            Err(error) => retain_first_coordinator_failure(
-                &mut coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                Err((&error).into()),
-            ),
-        }
-
-        retain_first_coordinator_failure(
-            &mut coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_legacy_planner_claim(
-                &mut obligations,
-                &resources,
-                LegacyPlannerClaim {
-                    cadence: self.context.dials.cadence,
-                    accepted_at: self.context.observation.tick,
-                    decision_at: self.context.observation.tick,
-                    retained_at: self.advanced.team_started_at,
-                    channel: LegacyChannel::TeamRelief,
-                    decision: &self.advanced.team_decision,
-                    protect_unspent_current_scrap: true,
-                    prior_producer_intents: &[],
-                    retained_units: self
-                        .participants
-                        .team
-                        .as_ref()
-                        .map_or_else(Vec::new, TeamReliefPlanner::core_reservations),
-                    production_deadline: connected_preparation_horizon()
-                        .saturating_add(self.context.observation.tick),
-                },
-            ),
-        );
-        retain_first_coordinator_failure(
-            &mut coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_legacy_planner_claim(
-                &mut obligations,
-                &resources,
-                LegacyPlannerClaim {
-                    cadence: self.context.dials.cadence,
-                    accepted_at: self.context.observation.tick,
-                    decision_at: self.context.observation.tick,
-                    retained_at: self.advanced.raid_started_at,
-                    channel: LegacyChannel::Raid,
-                    decision: &self.advanced.raid_decision,
-                    protect_unspent_current_scrap: true,
-                    prior_producer_intents: &self.advanced.team_decision.intents,
-                    retained_units: self
-                        .participants
-                        .raids
-                        .as_ref()
-                        .map_or_else(Vec::new, |planner| planner.reservations().to_vec()),
-                    production_deadline: connected_preparation_horizon()
-                        .saturating_add(self.context.observation.tick),
-                },
-            ),
-        );
-
-        let mut active_connected = self
-            .participants
-            .strategy
-            .as_ref()
-            .and_then(|planner| planner.active_connected_obligation(self.context.observation));
-        let mut active_lift = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::active_production_obligation);
-        let mut invalid_active_connected = false;
-        let mut invalid_active_lift = false;
-        let mut connected_import = match active_connected
-            .as_ref()
-            .map(active_connected_obligation)
-            .transpose()
-        {
-            Ok(obligation) => obligation,
-            Err(error) => {
-                invalid_active_connected = true;
-                retain_first_coordinator_failure(
-                    &mut coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(error.into()),
-                );
-                None
-            }
-        };
-        let mut lift_import = match active_lift
-            .as_ref()
-            .map(active_lift_production_obligation)
-            .transpose()
-        {
-            Ok(obligation) => obligation,
-            Err(error) => {
-                invalid_active_lift = true;
-                retain_first_coordinator_failure(
-                    &mut coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(error.into()),
-                );
-                None
-            }
-        };
-
-        if (active_connected.is_some() || active_lift.is_some())
-            && lift_preceding_production_context(
-                &resources,
-                active_lift.as_ref(),
-                active_connected.as_ref(),
-                self.context.dials.cadence,
-                self.context.observation.tick,
-            )
-            .is_none()
-        {
-            let connected_valid = active_connected.as_ref().is_none_or(|active| {
-                lift_preceding_production_context(
-                    &resources,
-                    None,
-                    Some(active),
-                    self.context.dials.cadence,
-                    self.context.observation.tick,
-                )
-                .is_some()
-            });
-            let lift_valid = active_lift.as_ref().is_none_or(|active| {
-                lift_preceding_production_context(
-                    &resources,
-                    Some(active),
-                    None,
-                    self.context.dials.cadence,
-                    self.context.observation.tick,
-                )
-                .is_some()
-            });
-            match (connected_valid, lift_valid) {
-                (false, false) => {
-                    invalid_active_connected = connected_import.is_some();
-                    invalid_active_lift = lift_import.is_some();
-                }
-                (false, true) => invalid_active_connected = connected_import.is_some(),
-                (true, false) => invalid_active_lift = lift_import.is_some(),
-                (true, true) => match (connected_import.as_ref(), lift_import.as_ref()) {
-                    (Some(connected), Some(lift)) if connected.owner() < lift.owner() => {
-                        invalid_active_lift = true;
-                    }
-                    (Some(_), Some(_)) => invalid_active_connected = true,
-                    _ => {}
-                },
-            }
-        }
-        if invalid_active_connected {
-            active_connected = None;
-            connected_import = None;
-        }
-        if invalid_active_lift {
-            active_lift = None;
-            lift_import = None;
-        }
-
-        let legacy_air_claims = if active_connected.is_some() {
-            obligations.push(
-                connected_import
-                    .take()
-                    .expect("a retained connected operation has an adapted obligation"),
-            );
-            None
-        } else {
-            self.participants
-                .strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation)
-                .map(|operation| {
-                    (
-                        self.participants
-                            .strategy
-                            .as_ref()
-                            .and_then(StrategicPlanner::air_admitted_at)
-                            .unwrap_or(self.context.observation.tick),
-                        prior_planner_claims(&[], Some(operation), &[], &[], None),
-                    )
-                })
-        };
-
-        if active_lift.is_some() {
-            obligations.push(
-                lift_import
-                    .take()
-                    .expect("a retained Lift operation has an adapted obligation"),
-            );
-        }
-
-        ObligationPreparation {
-            resources,
-            obligations,
-            coordinator_failure,
-            active_connected,
-            active_lift,
-            invalid_active_connected,
-            invalid_active_lift,
-            legacy_air_claims,
-            staged_strategy: None,
-        }
-    }
-
-    fn refresh_planner_claims(&self, claims: &mut ClaimSnapshot) {
-        let refreshed = PlannerClaims::new(
-            self.context.enlisted,
-            self.participants.strategy,
-            self.participants.raids,
-            self.participants.lifts,
-        );
-        claims.planner_claims = refreshed.all(&claims.team_core_claims);
-        self.append_utility_assignments(&mut claims.planner_claims);
-        claims.strategic_core_exclusions = refreshed.core_exclusions(&claims.team_core_claims);
-        self.append_utility_assignments(&mut claims.strategic_core_exclusions);
-    }
-
-    fn prepare_standing_army(
-        &self,
-        claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-    ) {
-        let mut planner_owned = PlannerClaims::new(
-            self.context.enlisted,
-            self.participants.strategy,
-            self.participants.raids,
-            self.participants.lifts,
-        )
-        .without_executive(&claims.team_core_claims);
-        self.append_utility_assignments(&mut planner_owned);
-        let standing_army = self
-            .context
-            .enlisted
-            .iter()
-            .copied()
-            .filter(|unit| planner_owned.binary_search(unit).is_err())
-            .collect();
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_obligation(
-                &mut obligations.obligations,
-                legacy_unit_obligation(
-                    self.context.observation.tick,
-                    LegacyChannel::StandingArmy,
-                    0,
-                    standing_army,
-                ),
-            ),
-        );
-    }
-
-    fn prepare_standing_saving(
-        &mut self,
-        claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-    ) {
-        let Some(saving) = self.participants.policy.standing_saving.as_ref() else {
-            return;
-        };
-        if !claims.opening_core.ready {
-            self.participants.policy.standing_saving = None;
-            return;
-        }
-        let targets = self.standing_force_projection_targets();
-        let (_, demands) = derive_standing_force_with_demand(
-            self.context.observation,
-            self.context.intelligence,
-            self.context.profile,
-            self.context.tuning,
-            &obligations.resources,
-            StandingForceContext::new(&claims.strategic_core_exclusions, &[]).with_ground_routing(
-                StandingGroundTarget::footprint(
-                    self.context.home,
-                    BuildingKind::Foundry.base_stats().size,
-                ),
-                Some(self.context.public_map),
-                &targets,
-                Some(self.context.orientation),
-            ),
-        );
-        if !saving.still_useful(
-            self.context.observation,
-            &demands,
-            self.context.public_map,
-            self.context.orientation,
-        ) {
-            self.participants.policy.standing_saving = None;
-            return;
-        }
-        obligations.obligations.push(saving.obligation());
-        self.reconcile_standing_saving(obligations);
-    }
-
-    fn reconcile_standing_saving(&mut self, obligations: &mut ObligationPreparation) {
-        let Some(saving) = self.participants.policy.standing_saving.as_ref() else {
-            return;
-        };
-        let deadline = obligation_horizon(&obligations.obligations, saving.job.ready_before);
-        let feasible = CrossDomainAllocation::new(
-            &obligations.resources,
-            deadline,
-            self.context.dials.cadence,
-        )
-        .ok()
-        .is_some_and(|mut allocation| {
-            for obligation in obligations.obligations.iter().cloned() {
-                allocation.import(obligation);
-            }
-            matches!(
-                allocation.resolve_planned(
-                    AllocationPersonality::default(),
-                    None,
-                    &self.participants.policy.planning
-                ),
-                Ok(_) | Err(AllocationError::Deferred)
-            )
-        });
-        if !feasible {
-            let key = saving.proposal.key();
-            obligations.obligations.retain(|obligation| !matches!(obligation.owner(),
-                ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(found), .. } if found == key));
-            self.participants.policy.standing_saving = None;
-        }
-    }
-
-    fn prepare_emergency_defense(
-        &mut self,
-        claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-    ) -> Option<FreshEmergencyDefense> {
-        if claims.opening_core.ready || obligations.coordinator_failure.is_some() {
-            return None;
-        }
-        let available_builders =
-            available_allocation_builders(&obligations.resources, &obligations.obligations);
-        let current_scrap = self
-            .context
-            .observation
-            .scrap
-            .saturating_sub(current_reserve_at(
-                &obligations.obligations,
-                self.context.observation.tick,
-            ));
-        let defense = self.participants.policy.fresh_emergency_defense(
-            self.context.dials,
-            self.context.observation,
-            FreshEmergencyDefenseContext {
-                home: self.context.home,
-                available_builders: &available_builders,
-                unit_contacts: self.context.intelligence.units(),
-                building_contacts: self.context.intelligence.buildings(),
-                public_map: self.context.public_map,
-                same_think_intents: &self.advanced.team_decision.intents,
-                current_scrap,
-            },
-        )?;
-        let imported = push_obligation(
-            &mut obligations.obligations,
-            fresh_emergency_defense_obligation(self.context.observation.tick, defense),
-        );
-        let accepted = imported.is_ok();
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            imported,
-        );
-        accepted.then_some(defense)
-    }
-
-    fn prepare_air_commitments(
-        &mut self,
-        claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-    ) -> AirLiftPreparation {
-        let mut opening_bootstrap = 0;
-        if !claims.opening_core.ready {
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                push_clamped_current_reserve(
-                    &mut obligations.obligations,
-                    self.context.observation.scrap,
-                    self.context.observation.tick,
-                    self.context.observation.tick,
-                    ObligationKey::OpeningCore { sequence: 0 },
-                    claims.opening_core.missing_scrap,
-                ),
-            );
-        } else {
-            opening_bootstrap = self
-                .participants
-                .policy
-                .strategic_opening_bootstrap_reserve(
-                    self.context.dials,
-                    self.context.observation,
-                    self.context.home,
-                    self.context.public_map,
-                );
-            for (sequence, amount) in [(1, opening_bootstrap)] {
-                if amount > 0 {
-                    retain_first_coordinator_failure(
-                        &mut obligations.coordinator_failure,
-                        AllocationCoordinatorStageTrace::ObligationCollection,
-                        push_clamped_current_reserve(
-                            &mut obligations.obligations,
-                            self.context.observation.scrap,
-                            self.context.observation.tick,
-                            self.context.observation.tick,
-                            ObligationKey::OpeningCore { sequence },
-                            amount,
-                        ),
-                    );
-                }
-            }
-        }
-        let voluntary_scrap_guard = if claims.opening_core.ready {
-            self.participants.policy.shallow_sentinel_capital_reserve(
-                self.context.dials,
-                self.context.observation,
-                self.context.home,
-                self.context.public_map,
-                &self.advanced.team_decision.intents,
-            )
-        } else {
-            0
-        };
-
-        let airworks_capacity = 0;
-        let active_lift_precedes_foundry = self.advanced.lift_was_active
-            && self
-                .participants
-                .policy
-                .operation_precedes_foundry_saving(self.advanced.lift_started_at);
-        let lift_airworks_capacity = 0;
-        let lift_deadline = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-            .map_or_else(
-                || {
-                    self.context
-                        .observation
-                        .tick
-                        .saturating_add(connected_preparation_horizon())
-                },
-                |operation| operation.deadline,
-            );
-
-        let saved_plan_reserve_already_imported = if claims.opening_core.ready {
-            opening_bootstrap
-        } else {
-            claims
-                .opening_core
-                .missing_scrap
-                .min(self.context.observation.scrap)
-        };
-        AirLiftPreparation {
-            lift_decision: StrategicDecision::default(),
-            opening_bootstrap,
-            airworks_capacity,
-            active_lift_precedes_foundry,
-            active_lift_spendable: 0,
-            saved_plan_reserve_already_imported,
-            lift_airworks_capacity,
-            lift_deadline,
-            fresh_lift_producer_jobs: 0,
-            voluntary_scrap_guard,
-        }
-    }
-
-    fn prospective_carrier_floor(&self, claims: &ClaimSnapshot, allocation_possible: bool) -> u32 {
-        if !allocation_possible || !claims.opening_core.ready {
-            return 0;
-        }
-        let Some(target) = self.participants.strategy.as_ref().and_then(|planner| {
-            planner.prospective_recon_target(StrategicThinkContext::new(
-                self.context.profile,
-                self.context.tuning,
-                self.context.observation,
-                self.context.intelligence,
-                self.context.home,
-                StrategicCoordination {
-                    planning: Some(&self.participants.policy.planning),
-                    enlisted: &claims.planner_claims,
-                    lift_support: self.context.lift_support,
-                    allow_new_operation: true,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
-                    public_map: Some(self.context.public_map),
-                    orientation: self.context.orientation,
-                },
-            ))
-        }) else {
-            return 0;
-        };
-        self.participants.lifts.as_ref().map_or(0, |planner| {
-            planner.prospective_first_carrier_commitment(
-                self.context.observation,
-                self.context.home,
-                &self.advanced.lift_unavailable,
-                &claims.strategic_core_exclusions,
-                u64::from(self.context.dials.minimum_core_equivalents),
-                target,
-            )
-        })
-    }
-
-    fn advance_active_lift(
-        &mut self,
-        obligations: &mut ObligationPreparation,
-        air_lift: &mut AirLiftPreparation,
-        prior_producer_intents: &[Intent],
-        protect_active_connected: bool,
-    ) {
-        if !self.advanced.lift_was_active {
-            return;
-        }
-        if air_lift.lift_airworks_capacity > 0 {
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                push_bounded_capital_reserve(
-                    &mut obligations.obligations,
-                    &obligations.resources,
-                    BoundedCapitalReserve {
-                        cadence: self.context.dials.cadence,
-                        bank: self.context.observation.scrap,
-                        accepted_at: self.advanced.lift_started_at,
-                        decision_tick: self.context.observation.tick,
-                        key: ObligationKey::Legacy {
-                            channel: LegacyChannel::AirworksCapacity,
-                            sequence: 1,
-                        },
-                        desired: air_lift.lift_airworks_capacity,
-                        forecast_deadline: air_lift.lift_deadline,
-                        older_capital_reserve: 0,
-                    },
-                ),
-            );
-        }
-        let older_saved_foundry_capital = older_saved_foundry_deferrable_capital(
-            &obligations.obligations,
-            air_lift.active_lift_precedes_foundry,
-        );
-        air_lift.active_lift_spendable = self
-            .context
-            .observation
-            .scrap
-            .saturating_sub(current_reserve_at(
-                &obligations.obligations,
-                self.context.observation.tick,
-            ))
-            .saturating_sub(older_saved_foundry_capital);
-        let projected_observation =
-            project_producer_intents(self.context.observation, prior_producer_intents);
-        let mut preceding_producer_intents = prior_producer_intents.to_vec();
-        let retained_production = lift_preceding_production_context(
-            &obligations.resources,
-            obligations.active_lift.as_ref(),
-            protect_active_connected
-                .then_some(obligations.active_connected.as_ref())
-                .flatten(),
-            self.context.dials.cadence,
-            self.context.observation.tick,
-        );
-        let (producer_lane_reservations, due_intents) = match retained_production {
-            Some(context) => context,
-            None => {
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
-                (ProducerLaneReservations::default(), Vec::new())
-            }
-        };
-        preceding_producer_intents.extend(due_intents);
-        air_lift.lift_decision = self
-            .participants
-            .lifts
-            .as_mut()
-            .expect("an active lift planner exists")
-            .think_with_admission_and_producer_lanes(
-                &projected_observation,
-                self.context.home,
-                &self.advanced.lift_unavailable,
-                self.advanced.initial_lift_support,
-                LiftAdmission {
-                    allow_new_commitments: self.advanced.preliminary_core.ready,
-                    spendable_scrap: air_lift.active_lift_spendable,
-                    core_reservations: &self.advanced.preliminary_core_exclusions,
-                    minimum_core_equivalents: u64::from(
-                        self.context.dials.minimum_core_equivalents,
-                    ),
-                },
-                &producer_lane_reservations,
-            );
-        let retained_lift_units = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-            .map_or_else(Vec::new, |operation| {
-                observable_lift_operation_reservations(operation, self.context.observation)
-            });
-        match feasible_active_lift_current_production_prefix(
-            ActiveLiftCurrentProductionContext {
-                resources: &obligations.resources,
-                cadence: self.context.dials.cadence,
-                decision_tick: self.context.observation.tick,
-                retained_at: self.advanced.lift_started_at,
-                decision: &air_lift.lift_decision,
-                prior_producer_intents: &preceding_producer_intents,
-                production_deadline: air_lift.lift_deadline,
-            },
-            &obligations.obligations,
-            &self.participants.policy.planning,
-        ) {
-            Ok(decision) => air_lift.lift_decision = decision,
-            Err(error) => retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                Err(error),
-            ),
-        }
-        let future_context = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-            .map(|operation| ActiveLiftFutureProductionContext {
-                resources: &obligations.resources,
-                observation: self.context.observation,
-                operation,
-                unavailable: &self.advanced.lift_unavailable,
-                prior_producer_intents: &preceding_producer_intents,
-                lift_decision: &air_lift.lift_decision,
-                cadence: self.context.dials.cadence,
-                accepted_at: self.advanced.lift_started_at,
-            });
-        // The operation's desired carrier count remains a tactical target, not
-        // debt the economy has already incurred. Preserve only the unpaid
-        // prefix that the shared allocator can actually fund and schedule
-        // beside every older obligation through the immutable Lift deadline.
-        let mut feasibility_obligations = obligations.obligations.clone();
-        let provisional_current = push_legacy_planner_claim(
-            &mut feasibility_obligations,
-            &obligations.resources,
-            LegacyPlannerClaim {
-                cadence: self.context.dials.cadence,
-                accepted_at: self.context.observation.tick,
-                decision_at: self.context.observation.tick,
-                retained_at: self.advanced.lift_started_at,
-                channel: LegacyChannel::Lift,
-                decision: &air_lift.lift_decision,
-                protect_unspent_current_scrap: false,
-                prior_producer_intents: &preceding_producer_intents,
-                retained_units: retained_lift_units.clone(),
-                production_deadline: air_lift.lift_deadline,
-            },
-        );
-        let future_lift_obligation =
-            if provisional_current.is_ok() && obligations.active_lift.is_none() {
-                future_context.map_or(Ok(None), |context| {
-                    feasible_active_lift_future_production_obligation(
-                        context,
-                        &feasibility_obligations,
-                        &self.participants.policy.planning,
-                    )
-                })
-            } else {
-                Ok(None)
-            };
-        let future_lift_claimed = future_lift_obligation
-            .as_ref()
-            .is_ok_and(|obligation| obligation.is_some());
-        air_lift.fresh_lift_producer_jobs = future_lift_obligation
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .map_or(0, |obligation| obligation.claims.producer_jobs().len());
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_legacy_planner_claim(
-                &mut obligations.obligations,
-                &obligations.resources,
-                LegacyPlannerClaim {
-                    cadence: self.context.dials.cadence,
-                    accepted_at: self.context.observation.tick,
-                    decision_at: self.context.observation.tick,
-                    retained_at: self.advanced.lift_started_at,
-                    channel: LegacyChannel::Lift,
-                    decision: &air_lift.lift_decision,
-                    protect_unspent_current_scrap: !future_lift_claimed,
-                    prior_producer_intents: &preceding_producer_intents,
-                    retained_units: retained_lift_units,
-                    production_deadline: self
-                        .participants
-                        .lifts
-                        .as_ref()
-                        .and_then(LiftPlanner::operation)
-                        .map_or_else(
-                            || {
-                                connected_preparation_horizon()
-                                    .saturating_add(self.context.observation.tick)
-                            },
-                            |operation| operation.deadline,
-                        ),
-                },
-            ),
-        );
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            match future_lift_obligation {
-                Ok(Some(obligation)) => {
-                    obligations.obligations.push(obligation);
-                    Ok(())
-                }
-                Ok(None) => Ok(()),
-                Err(error) => Err((&error).into()),
-            },
-        );
-    }
-
-    fn prepare_saved_foundry(
-        &mut self,
-        claims: &ClaimSnapshot,
-        air_lift: &AirLiftPreparation,
-        obligations: &mut ObligationPreparation,
-    ) -> SavedFoundryPreparation {
-        let current_before_saved = self
-            .context
-            .observation
-            .scrap
-            .saturating_sub(current_reserve_at(
-                &obligations.obligations,
-                self.context.observation.tick,
-            ))
-            .saturating_add(air_lift.saved_plan_reserve_already_imported)
-            .min(self.context.observation.scrap);
-        let mut obligation = self.participants.policy.validated_foundry_obligation(
-            self.context.observation,
-            &obligations.resources,
-            claims.opening_core.ready,
-            current_before_saved,
-        );
-        let mut preparation_need = None;
-        if let Some(saved) = obligation.filter(|saved| !saved.blocked()) {
-            let available_builders =
-                available_allocation_builders(&obligations.resources, &obligations.obligations);
-            match self.participants.policy.saved_foundry_readiness(
-                self.context.dials,
-                self.context.observation,
-                saved,
-                FreshFoundryProposalContext {
-                    home: self.context.home,
-                    available_builders: &available_builders,
-                    combat_core_exclusions: &claims.strategic_core_exclusions,
-                    unit_contacts: self.context.intelligence.units(),
-                    building_contacts: self.context.intelligence.buildings(),
-                    public_map: self.context.public_map,
-                    same_think_intents: &self.advanced.team_decision.intents,
-                    current_scrap: saved.planning_scrap(),
-                    protected_reserve: saved.protected_reserve(),
-                },
-            ) {
-                SavedFoundryReadiness::Ready => {
-                    self.participants.policy.recover_ready_foundry_saving();
-                }
-                SavedFoundryReadiness::NeedsProtection {
-                    anchor,
-                    target_strength,
-                } => {
-                    self.participants
-                        .policy
-                        .release_saved_foundry_for_preparation();
-                    obligation = None;
-                    preparation_need = Some((anchor, target_strength));
-                }
-                SavedFoundryReadiness::Blocked => {
-                    if self
-                        .participants
-                        .policy
-                        .retain_blocked_foundry_saving(self.context.observation.tick)
-                    {
-                        obligation = Some(saved.blocked_by_execution());
-                    } else {
-                        obligation = None;
-                    }
-                }
-            }
-        }
-        let mut saving = 0;
-        let blocked = obligation.is_some_and(ValidatedFoundryObligation::blocked);
-        if let Some(saved) = obligation {
-            saving = saved
-                .current_construction_capital()
-                .saturating_add(saved.forecast_construction_capital())
-                .saturating_add(saved.protected_reserve());
-            let unrepresented_protected_reserve = saved
-                .protected_reserve()
-                .saturating_sub(air_lift.saved_plan_reserve_already_imported);
-            if unrepresented_protected_reserve > 0 {
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    push_clamped_current_reserve(
-                        &mut obligations.obligations,
-                        self.context.observation.scrap,
-                        saved.accepted_at(),
-                        self.context.observation.tick,
-                        ObligationKey::OpeningCore { sequence: 3 },
-                        unrepresented_protected_reserve,
-                    ),
-                );
-            }
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                push_obligation(
-                    &mut obligations.obligations,
-                    saved_foundry_obligation(saved),
-                ),
-            );
-        }
-        let mut saved = SavedFoundryPreparation {
-            obligation,
-            saving,
-            blocked,
-            preparation_need,
-        };
-        self.reconcile_lift_funding_after_saved_capital(&mut saved, obligations);
-        saved
-    }
-
-    fn reconcile_lift_funding_after_saved_capital(
-        &mut self,
-        saved: &mut SavedFoundryPreparation,
-        obligations: &mut ObligationPreparation,
-    ) {
-        let Some(active) = obligations.active_lift.as_ref() else {
-            return;
-        };
-        let accepted_at = active.accepted_at();
-        let owner = ClaimOwner::Obligation {
-            class: ObligationClass::PersistentPlan,
-            accepted_at,
-            key: ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 2,
-            },
-        };
-        let horizon = obligation_horizon(
-            &obligations.obligations,
-            self.context
-                .observation
-                .tick
-                .saturating_add(self.context.dials.cadence),
-        );
-        let Ok(mut allocation) =
-            CrossDomainAllocation::new(&obligations.resources, horizon, self.context.dials.cadence)
-        else {
-            return;
-        };
-        for obligation in obligations.obligations.iter().cloned() {
-            allocation.import(obligation);
-        }
-        let Err(AllocationError::ObligationConflict {
-            obligation,
-            conflict,
-        }) = allocation.resolve_planned(
-            AllocationPersonality::default(),
-            None,
-            &self.participants.policy.planning,
-        )
-        else {
-            return;
-        };
-        if obligation != owner || !connected_production_conflict(&conflict) {
-            return;
-        }
-        if self.defer_younger_saved_foundry(saved, obligations, accepted_at) {
-            self.reconcile_lift_funding_after_saved_capital(saved, obligations);
-            return;
-        }
-        self.participants
-            .lifts
-            .as_mut()
-            .expect("retained Lift production has a planner")
-            .recover_invalid_production(self.context.observation.tick);
-        obligations
-            .obligations
-            .retain(|obligation| obligation.owner() != owner);
-        obligations.active_lift = None;
-    }
-
-    fn stage_active_island(
-        &mut self,
-        claims: &mut ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-        recon_paid_exclusions: &[(crate::ids::BuildingId, UnitKind, usize)],
-    ) {
-        if obligations.coordinator_failure.is_some() {
-            return;
-        }
-        if !self
-            .participants
-            .strategy
-            .as_ref()
-            .is_some_and(|planner| planner.has_active_island_operation())
-        {
-            return;
-        }
-        let accepted_at = self
-            .participants
-            .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_admitted_at);
-        let protected_current_scrap =
-            current_reserve_at(&obligations.obligations, self.context.observation.tick);
-        let production_deadline = self
-            .context
-            .observation
-            .tick
-            .saturating_add(connected_preparation_horizon());
-        let protected_forecast_scrap =
-            forecast_reserve_through(&obligations.obligations, production_deadline);
-        let Some((producer_lane_reservations, prior_producer_intents)) = retained_producer_context(
-            &obligations.resources,
-            &obligations.obligations,
-            self.context.dials.cadence,
-            self.context.observation.tick,
-            &self.participants.policy.planning,
-        ) else {
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-            );
-            return;
-        };
-        let Some(result) = self.participants.strategy.as_mut().and_then(|planner| {
-            planner.stage_active_island(
-                StrategicThinkContext::new(
-                    self.context.profile,
-                    self.context.tuning,
-                    self.context.observation,
-                    self.context.intelligence,
-                    self.context.home,
-                    StrategicCoordination {
-                        planning: Some(&self.participants.policy.planning),
-                        enlisted: &claims.planner_claims,
-                        lift_support: self.context.lift_support,
-                        allow_new_operation: claims.opening_core.ready,
-                        protected_current_scrap,
-                        protected_forecast_scrap,
-                        public_map: Some(self.context.public_map),
-                        orientation: self.context.orientation,
-                    },
-                )
-                .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations)
-                .with_paid_exclusions(recon_paid_exclusions),
-            )
-        }) else {
-            return;
-        };
-        let accepted_at = accepted_at.expect("a staged island operation has an admission tick");
-        let retained_units = result.decision.reservations.clone();
-        obligations.legacy_air_claims = None;
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_legacy_planner_claim(
-                &mut obligations.obligations,
-                &obligations.resources,
-                LegacyPlannerClaim {
-                    cadence: self.context.dials.cadence,
-                    accepted_at,
-                    decision_at: self.context.observation.tick,
-                    retained_at: accepted_at,
-                    channel: LegacyChannel::StrategicAir,
-                    decision: &result.decision,
-                    protect_unspent_current_scrap: true,
-                    prior_producer_intents: &prior_producer_intents,
-                    retained_units,
-                    production_deadline,
-                },
-            ),
-        );
-        obligations.staged_strategy = Some(result);
-    }
-
-    fn prepare_active_connected_revision(
-        &mut self,
-        claims: &ClaimSnapshot,
-        obligations: &mut ObligationPreparation,
-        recon_paid_exclusions: &[(crate::ids::BuildingId, UnitKind, usize)],
-    ) -> ActiveRevisionPreparation {
-        let deadline = self
-            .participants
-            .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::connected_package_diagnostics)
-            .map(|diagnostics| diagnostics.preparation_deadline)
-            .unwrap_or_else(|| {
-                self.context
-                    .observation
-                    .tick
-                    .saturating_add(connected_preparation_horizon())
-            });
-        let connected_precedes_foundry = self
-            .participants
-            .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_admitted_at)
-            .is_some_and(|accepted_at| {
-                self.participants
-                    .policy
-                    .operation_precedes_foundry_saving(accepted_at)
-            });
-        let other_obligations = obligations
-            .obligations
-            .iter()
-            .filter(|obligation| {
-                !matches!(obligation.key, ObligationKey::ConnectedOffense { .. })
-                    && !(connected_precedes_foundry
-                        && matches!(obligation.key, ObligationKey::SavedFoundry { .. }))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let protected_current_scrap =
-            current_reserve_at(&other_obligations, self.context.observation.tick);
-        let protected_forecast_scrap = forecast_reserve_through(&other_obligations, deadline);
-        let request = FreshConnectedProposalRequest::new(
-            self.context.profile,
-            self.context.tuning,
-            self.context.observation,
-            &obligations.resources,
-            self.context.intelligence,
-            self.context.home,
-            StrategicCoordination {
-                planning: Some(&self.participants.policy.planning),
-                enlisted: &claims.planner_claims,
-                lift_support: None,
-                allow_new_operation: true,
-                protected_current_scrap,
-                protected_forecast_scrap,
-                public_map: Some(self.context.public_map),
-                orientation: self.context.orientation,
-            },
-        );
-        let request = request.with_paid_exclusions(recon_paid_exclusions);
-        let revision = self
-            .participants
-            .strategy
-            .as_ref()
-            .map_or(Ok(None), |planner| {
-                planner.active_connected_revision_proposal(request)
-            });
-        match revision {
-            Ok(None) => ActiveRevisionPreparation::default(),
-            Ok(Some(proposal)) => {
-                let adapted = active_connected_revision_obligation(&proposal);
-                let adapted = match adapted {
-                    Ok(candidate) => {
-                        let horizon = obligation_horizon(&other_obligations, deadline);
-                        let Ok(capacity) = super::AllocationCapacity::from_snapshot(
-                            &obligations.resources,
-                            horizon,
-                            self.context.dials.cadence,
-                        ) else {
-                            return ActiveRevisionPreparation::default();
-                        };
-                        match super::forecast::refine_obligation(
-                            &capacity,
-                            &other_obligations,
-                            candidate,
-                            &self.participants.policy.planning,
-                        ) {
-                            crate::bot::planning::Progress::Ready(refined) => Ok(refined),
-                            crate::bot::planning::Progress::Deferred
-                            | crate::bot::planning::Progress::ProvenInfeasible => {
-                                return ActiveRevisionPreparation::default();
-                            }
-                        }
-                    }
-                    Err(error) => Err(error),
-                };
-                remove_active_connected_obligation(&mut obligations.obligations);
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    push_obligation(&mut obligations.obligations, adapted),
-                );
-                obligations.active_connected = None;
-                obligations.legacy_air_claims = None;
-                ActiveRevisionPreparation {
-                    proposal: Some(proposal),
-                    rejected: None,
-                }
-            }
-            Err(rejected) if rejected.reason.is_deferred() => ActiveRevisionPreparation {
-                proposal: None,
-                rejected: Some(rejected),
-            },
-            Err(rejected) => {
-                let retained_units = active_air_units(
-                    self.participants.strategy.as_ref(),
-                    self.context.observation,
-                );
-                remove_active_connected_obligation(&mut obligations.obligations);
-                self.participants
-                    .strategy
-                    .as_mut()
-                    .expect("a rejected active revision belongs to its planner")
-                    .reject_active_connected_revision(
-                        rejected.reason,
-                        self.context.observation.tick,
-                    );
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    push_obligation(
-                        &mut obligations.obligations,
-                        legacy_unit_obligation(
-                            self.context.observation.tick,
-                            LegacyChannel::StrategicAir,
-                            0,
-                            retained_units,
-                        ),
-                    ),
-                );
-                obligations.active_connected = None;
-                obligations.legacy_air_claims = None;
-                ActiveRevisionPreparation {
-                    proposal: None,
-                    rejected: Some(rejected),
-                }
-            }
-        }
     }
 
     fn prepare_fresh_investments(
@@ -2442,18 +891,8 @@ impl<'a> AllocationSession<'a> {
             .as_ref()
             .map(ActiveConnectedObligation::accepted_at)
             .or_else(|| connected.as_ref().map(FreshConnectedProposal::accepted_at));
-        if connected.is_none()
-            && let Some((accepted_at, mut air_claims)) = obligations.legacy_air_claims.take()
-        {
-            retain_observed_units(&obligations.resources, &mut air_claims);
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                push_obligation(
-                    &mut obligations.obligations,
-                    legacy_unit_obligation(accepted_at, LegacyChannel::StrategicAir, 0, air_claims),
-                ),
-            );
+        if connected.is_none() {
+            self.retained_work().retain_legacy_air(obligations);
         }
         let connected_reserve_deadline = connected
             .as_ref()
@@ -2523,7 +962,10 @@ impl<'a> AllocationSession<'a> {
         }
         drop(defense_scope);
         let standing_force_derivation = StandingForceDerivation {
-            projection_targets: self.standing_force_projection_targets(),
+            projection_targets: standing_force_projection_targets(
+                &self.context,
+                &self.participants,
+            ),
             expansion_security_need,
             work,
         };
@@ -2543,7 +985,11 @@ impl<'a> AllocationSession<'a> {
             .filter(|unit| !available_builders.contains(&unit.id))
             .map(|unit| unit.id)
             .collect::<Vec<_>>();
-        let air_work = self.economic_air_work();
+        let air_work = economic_air_work(
+            &self.context,
+            &self.participants,
+            &self.advanced.lift_unavailable,
+        );
         let economy_scope = crate::bot::observer::PhaseScope::new(
             self.observer,
             crate::bot::observer::BotPhase::Economy,
@@ -2617,39 +1063,6 @@ impl<'a> AllocationSession<'a> {
             connected_reserve_deadline,
             rejected_connected_candidate,
         }
-    }
-
-    fn economic_air_work(&self) -> Vec<AirCapacityDemand> {
-        let mut demands = Vec::new();
-        if let Some(planner) = self.participants.strategy.as_ref()
-            && let Some(operation) = planner.air_operation()
-            && let Some(deadline) = planner.air_capacity_deadline()
-        {
-            let work_ticks = planner.remaining_airwork_ticks(self.context.observation);
-            if work_ticks > 0 {
-                demands.push(AirCapacityDemand {
-                    work_ticks,
-                    deadline,
-                    kind: crate::stats::Role::Bomber.unit_for(self.context.observation.faction),
-                    service: StandingGroundTarget::point(operation.target),
-                });
-            }
-        }
-        if let Some(planner) = self.participants.lifts.as_ref()
-            && let Some(operation) = planner.operation()
-        {
-            let work_ticks = planner
-                .remaining_airwork_ticks(self.context.observation, &self.advanced.lift_unavailable);
-            if work_ticks > 0 {
-                demands.push(AirCapacityDemand {
-                    work_ticks,
-                    deadline: operation.deadline,
-                    kind: UnitKind::Skyhook,
-                    service: StandingGroundTarget::point(operation.target),
-                });
-            }
-        }
-        demands
     }
 
     fn committed_standing_production(&mut self) -> Vec<StandingProductionCommitment> {
@@ -2770,310 +1183,6 @@ impl<'a> AllocationSession<'a> {
             Some(self.context.public_map),
             Some(self.context.orientation),
         )
-    }
-
-    fn standing_force_projection_targets(&self) -> Vec<StandingGroundTarget> {
-        let mut targets = self
-            .participants
-            .policy
-            .uncleared_hostile_starts(self.context.public_map, self.context.observation.me)
-            .into_iter()
-            .map(|start| {
-                StandingGroundTarget::footprint(
-                    start.anchor,
-                    BuildingKind::Foundry.base_stats().size,
-                )
-            })
-            .collect::<Vec<_>>();
-        targets.extend(
-            self.context
-                .intelligence
-                .buildings()
-                .iter()
-                .filter(|contact| {
-                    contact.hp > 0 && contact.confidence_at(self.context.observation.tick) > 0
-                })
-                .map(|contact| {
-                    StandingGroundTarget::footprint(
-                        contact.anchor,
-                        contact.kind.tier_stats(contact.tier).size,
-                    )
-                }),
-        );
-        targets.extend(
-            self.context
-                .intelligence
-                .units()
-                .iter()
-                .filter(|contact| {
-                    contact.hp > 0
-                        && contact.confidence_at(self.context.observation.tick) > 0
-                        && contact.body_domain() == Domain::Ground
-                })
-                .map(|contact| StandingGroundTarget::point(contact.tile)),
-        );
-        targets
-    }
-
-    fn downgrade_unfundable_active_revision(
-        &mut self,
-        claims: &ClaimSnapshot,
-        saved: &mut SavedFoundryPreparation,
-        air_lift: &AirLiftPreparation,
-        obligations: &mut ObligationPreparation,
-        fresh: &mut FreshInvestmentPreparation,
-    ) {
-        let Some(revision) = fresh
-            .connected
-            .as_ref()
-            .filter(|proposal| proposal.revises_active_operation())
-        else {
-            return;
-        };
-        let identity = revision.identity();
-        let owner = ClaimOwner::Obligation {
-            class: ObligationClass::PersistentPlan,
-            accepted_at: revision.accepted_at(),
-            key: ObligationKey::ConnectedOffense {
-                objective: identity.objective(),
-                anchor: identity.anchor(),
-            },
-        };
-        let horizon = self
-            .allocation_horizon(saved, fresh, None)
-            .max(air_lift.lift_deadline);
-        let Ok(mut allocation) =
-            CrossDomainAllocation::new(&obligations.resources, horizon, self.context.dials.cadence)
-        else {
-            return;
-        };
-        for obligation in obligations.obligations.iter().cloned() {
-            allocation.import(obligation);
-        }
-        let Err(AllocationError::ObligationConflict {
-            obligation,
-            conflict,
-        }) = allocation.resolve_planned(
-            AllocationPersonality::default(),
-            None,
-            &self.participants.policy.planning,
-        )
-        else {
-            return;
-        };
-        if obligation != owner || !connected_production_conflict(&conflict) {
-            return;
-        }
-        if self.defer_younger_saved_foundry(saved, obligations, revision.accepted_at()) {
-            self.downgrade_unfundable_active_revision(claims, saved, air_lift, obligations, fresh);
-            return;
-        }
-
-        let retained_units = active_air_units(
-            self.participants.strategy.as_ref(),
-            self.context.observation,
-        );
-        obligations
-            .obligations
-            .retain(|obligation| obligation.owner() != owner);
-        self.participants
-            .strategy
-            .as_mut()
-            .expect("an active revision belongs to its planner")
-            .recover_unfundable_active_connected(self.context.observation.tick);
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_obligation(
-                &mut obligations.obligations,
-                legacy_unit_obligation(
-                    self.context.observation.tick,
-                    LegacyChannel::StrategicAir,
-                    0,
-                    retained_units,
-                ),
-            ),
-        );
-        fresh.connected = None;
-        fresh.connected_accepted_at = None;
-        fresh.connected_reserve_deadline = self
-            .context
-            .observation
-            .tick
-            .saturating_add(connected_preparation_horizon());
-        let committed_production = self.committed_standing_production();
-        let standing_force = self
-            .standing_force_inputs(
-                claims,
-                obligations,
-                &fresh.standing_force_derivation,
-                &committed_production,
-            )
-            .derive(&claims.strategic_core_exclusions, &[]);
-        fresh.standing_force = StandingForcePreparation::Unconditional(standing_force.0);
-        fresh.economy.clear();
-    }
-
-    fn downgrade_unfundable_active_connected(
-        &mut self,
-        saved: &mut SavedFoundryPreparation,
-        air_lift: &AirLiftPreparation,
-        obligations: &mut ObligationPreparation,
-    ) {
-        let Some(active) = obligations.active_connected.clone() else {
-            return;
-        };
-        let identity = active.identity();
-        let owner = ClaimOwner::Obligation {
-            class: ObligationClass::PersistentPlan,
-            accepted_at: active.accepted_at(),
-            key: ObligationKey::ConnectedOffense {
-                objective: identity.objective(),
-                anchor: identity.anchor(),
-            },
-        };
-        let horizon = self
-            .context
-            .observation
-            .tick
-            .saturating_add(connected_preparation_horizon())
-            .max(
-                self.context
-                    .observation
-                    .tick
-                    .saturating_add(self.context.dials.cadence),
-            )
-            .max(active.deadline())
-            .max(air_lift.lift_deadline);
-        let horizon = saved
-            .obligation
-            .map_or(horizon, |foundry| horizon.max(foundry.forecast_deadline()));
-        let Ok(mut allocation) =
-            CrossDomainAllocation::new(&obligations.resources, horizon, self.context.dials.cadence)
-        else {
-            return;
-        };
-        for obligation in obligations.obligations.iter().cloned() {
-            allocation.import(obligation);
-        }
-        let Err(AllocationError::ObligationConflict {
-            obligation,
-            conflict,
-        }) = allocation.resolve_planned(
-            AllocationPersonality::default(),
-            None,
-            &self.participants.policy.planning,
-        )
-        else {
-            return;
-        };
-        if obligation != owner || !connected_production_conflict(&conflict) {
-            return;
-        }
-        if self.defer_younger_saved_foundry(saved, obligations, active.accepted_at()) {
-            self.downgrade_unfundable_active_connected(saved, air_lift, obligations);
-            return;
-        }
-
-        let mut retained_units = active.units().to_vec();
-        retain_observed_units(&obligations.resources, &mut retained_units);
-        obligations
-            .obligations
-            .retain(|obligation| obligation.owner() != owner);
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            push_obligation(
-                &mut obligations.obligations,
-                legacy_unit_obligation(
-                    active.accepted_at(),
-                    LegacyChannel::StrategicAir,
-                    0,
-                    retained_units,
-                ),
-            ),
-        );
-        self.participants
-            .strategy
-            .as_mut()
-            .expect("an active connected obligation can only come from its planner")
-            .recover_unfundable_active_connected(self.context.observation.tick);
-        obligations.active_connected = None;
-    }
-
-    fn defer_younger_saved_foundry(
-        &self,
-        saved: &mut SavedFoundryPreparation,
-        obligations: &mut ObligationPreparation,
-        connected_accepted_at: Tick,
-    ) -> bool {
-        let Some(foundry) = saved.obligation else {
-            return false;
-        };
-        if connected_accepted_at > foundry.accepted_at()
-            || !self
-                .participants
-                .policy
-                .operation_precedes_foundry_saving(connected_accepted_at)
-        {
-            return false;
-        }
-        let owner = ClaimOwner::Obligation {
-            class: ObligationClass::PersistentPlan,
-            accepted_at: foundry.accepted_at(),
-            key: ObligationKey::SavedFoundry {
-                anchor: foundry.anchor(),
-            },
-        };
-        let before = obligations.obligations.len();
-        obligations
-            .obligations
-            .retain(|obligation| obligation.owner() != owner);
-        if obligations.obligations.len() == before {
-            return false;
-        }
-        saved.obligation = None;
-        true
-    }
-
-    fn allocation_horizon(
-        &self,
-        saved: &SavedFoundryPreparation,
-        fresh: &FreshInvestmentPreparation,
-        active_connected: Option<&ActiveConnectedObligation>,
-    ) -> Tick {
-        let mut horizon = self
-            .context
-            .observation
-            .tick
-            .saturating_add(connected_preparation_horizon())
-            .max(
-                self.context
-                    .observation
-                    .tick
-                    .saturating_add(self.context.dials.cadence),
-            );
-        if let Some(obligation) = saved.obligation {
-            horizon = horizon.max(obligation.forecast_deadline());
-        }
-        if let Some(saving) = self.participants.policy.economic_saving() {
-            horizon = horizon.max(saving.deadline);
-        }
-        if let Some(saving) = &self.participants.policy.standing_saving {
-            horizon = horizon.max(saving.job.ready_before);
-        }
-        if let Some(active) = active_connected {
-            horizon = horizon.max(active.deadline());
-        }
-        if let Some(operation) = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-        {
-            horizon = horizon.max(operation.deadline);
-        }
-        fresh.funding_horizon(horizon)
     }
 
     /// Resolves the complete prepared portfolio once. Domain payloads stay
@@ -4066,6 +2175,178 @@ impl<'a> AllocationSession<'a> {
     }
 }
 
+fn snapshot_claims(
+    context: &AllocationSessionContext<'_>,
+    participants: &AllocationParticipants<'_>,
+) -> ClaimSnapshot {
+    let claims = PlannerClaims::new(
+        context.enlisted,
+        participants.strategy,
+        participants.raids,
+        participants.lifts,
+    );
+    let team_core_claims = participants
+        .team
+        .as_ref()
+        .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
+    let mut planner_claims = claims.all(&team_core_claims);
+    let mut strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
+    append_utility_assignments(participants, &mut planner_claims);
+    append_utility_assignments(participants, &mut strategic_core_exclusions);
+    let opening_core = combat_core_status(
+        context.observation,
+        &strategic_core_exclusions,
+        &[],
+        u64::from(context.dials.minimum_core_equivalents),
+    );
+    ClaimSnapshot {
+        team_core_claims,
+        planner_claims,
+        strategic_core_exclusions,
+        opening_core,
+    }
+}
+
+fn append_utility_assignments(participants: &AllocationParticipants<'_>, claims: &mut Vec<UnitId>) {
+    claims.extend(participants.policy.reconnaissance.reservations());
+    claims.extend(participants.policy.support_reservations());
+    claims.sort_unstable();
+    claims.dedup();
+}
+
+fn economic_air_work(
+    context: &AllocationSessionContext<'_>,
+    participants: &AllocationParticipants<'_>,
+    lift_unavailable: &[UnitId],
+) -> Vec<AirCapacityDemand> {
+    let mut demands = Vec::new();
+    if let Some(planner) = participants.strategy.as_ref()
+        && let Some(operation) = planner.air_operation()
+        && let Some(deadline) = planner.air_capacity_deadline()
+    {
+        let work_ticks = planner.remaining_airwork_ticks(context.observation);
+        if work_ticks > 0 {
+            demands.push(AirCapacityDemand {
+                work_ticks,
+                deadline,
+                kind: crate::stats::Role::Bomber.unit_for(context.observation.faction),
+                service: StandingGroundTarget::point(operation.target),
+            });
+        }
+    }
+    if let Some(planner) = participants.lifts.as_ref()
+        && let Some(operation) = planner.operation()
+    {
+        let work_ticks = planner.remaining_airwork_ticks(context.observation, lift_unavailable);
+        if work_ticks > 0 {
+            demands.push(AirCapacityDemand {
+                work_ticks,
+                deadline: operation.deadline,
+                kind: UnitKind::Skyhook,
+                service: StandingGroundTarget::point(operation.target),
+            });
+        }
+    }
+    demands
+}
+
+fn standing_force_projection_targets(
+    context: &AllocationSessionContext<'_>,
+    participants: &AllocationParticipants<'_>,
+) -> Vec<StandingGroundTarget> {
+    let mut targets = participants
+        .policy
+        .uncleared_hostile_starts(context.public_map, context.observation.me)
+        .into_iter()
+        .map(|start| {
+            StandingGroundTarget::footprint(start.anchor, BuildingKind::Foundry.base_stats().size)
+        })
+        .collect::<Vec<_>>();
+    targets.extend(
+        context
+            .intelligence
+            .buildings()
+            .iter()
+            .filter(|contact| contact.hp > 0 && contact.confidence_at(context.observation.tick) > 0)
+            .map(|contact| {
+                StandingGroundTarget::footprint(
+                    contact.anchor,
+                    contact.kind.tier_stats(contact.tier).size,
+                )
+            }),
+    );
+    targets.extend(
+        context
+            .intelligence
+            .units()
+            .iter()
+            .filter(|contact| {
+                contact.hp > 0
+                    && contact.confidence_at(context.observation.tick) > 0
+                    && contact.body_domain() == Domain::Ground
+            })
+            .map(|contact| StandingGroundTarget::point(contact.tile)),
+    );
+    targets
+}
+
+fn allocation_horizon(
+    context: &AllocationSessionContext<'_>,
+    participants: &AllocationParticipants<'_>,
+    saved: &SavedFoundryPreparation,
+    fresh: &FreshInvestmentPreparation,
+    active_connected: Option<&ActiveConnectedObligation>,
+) -> Tick {
+    let mut horizon = context
+        .observation
+        .tick
+        .saturating_add(connected_preparation_horizon())
+        .max(
+            context
+                .observation
+                .tick
+                .saturating_add(context.dials.cadence),
+        );
+    if let Some(obligation) = saved.obligation {
+        horizon = horizon.max(obligation.forecast_deadline());
+    }
+    if let Some(saving) = participants.policy.economic_saving() {
+        horizon = horizon.max(saving.deadline);
+    }
+    if let Some(saving) = &participants.policy.standing_saving {
+        horizon = horizon.max(saving.job.ready_before);
+    }
+    if let Some(active) = active_connected {
+        horizon = horizon.max(active.deadline());
+    }
+    if let Some(operation) = participants.lifts.as_ref().and_then(LiftPlanner::operation) {
+        horizon = horizon.max(operation.deadline);
+    }
+    fresh.funding_horizon(horizon)
+}
+
+fn support_context<'a>(
+    context: &'a AllocationSessionContext<'_>,
+    claims: &'a ClaimSnapshot,
+    resources: &'a ResourceSnapshot,
+) -> EconomicInvestmentContext<'a> {
+    EconomicInvestmentContext {
+        obligations: &[],
+        obs: context.observation,
+        resources,
+        profile: context.profile,
+        briefing: context.public_map,
+        orientation: context.orientation,
+        unavailable: &claims.planner_claims,
+        demands: &[],
+        cadence: context.dials.cadence,
+        unit_contacts: context.intelligence.units(),
+        building_contacts: context.intelligence.buildings(),
+        protected_scrap: 0,
+        air_work: &[],
+    }
+}
+
 /// Protects the shallow line-unit fund without making it delay a current counter.
 fn standing_force_with_voluntary_guard(
     proposal: DomainInvestmentProposal,
@@ -4164,11 +2445,9 @@ struct ObligationPreparation {
 struct AirLiftPreparation {
     lift_decision: StrategicDecision,
     opening_bootstrap: u32,
-    airworks_capacity: u32,
     active_lift_precedes_foundry: bool,
     active_lift_spendable: u32,
     saved_plan_reserve_already_imported: u32,
-    lift_airworks_capacity: u32,
     lift_deadline: Tick,
     fresh_lift_producer_jobs: usize,
     voluntary_scrap_guard: u32,
@@ -4253,7 +2532,6 @@ impl CommitEffects {
             allocated_producer_intents: Vec::new(),
             budget: AllocationBudgetOutcome::frozen(
                 prepared.foundry_saving,
-                prepared.airworks_capacity,
                 prepared.opening_bootstrap,
                 prepared.voluntary_scrap_guard,
             ),
@@ -4297,7 +2575,6 @@ struct PreparedAllocation {
     active_lift_precedes_foundry: bool,
     active_lift_spendable: u32,
     foundry_saving: u32,
-    airworks_capacity: u32,
     opening_bootstrap: u32,
     voluntary_scrap_guard: u32,
     prospective_carrier_floor: u32,
@@ -4374,89 +2651,6 @@ fn push_clamped_current_reserve(
         Ok(None) => Ok(()),
         Err(error) => Err(error.into()),
     }
-}
-
-pub(crate) fn push_bounded_capital_reserve(
-    obligations: &mut Vec<ImportedObligation>,
-    resources: &ResourceSnapshot,
-    reserve: BoundedCapitalReserve,
-) -> Result<(), AllocationCoordinatorFailureReasonTrace> {
-    let BoundedCapitalReserve {
-        cadence,
-        bank,
-        accepted_at,
-        decision_tick,
-        key,
-        desired,
-        forecast_deadline,
-        older_capital_reserve,
-    } = reserve;
-    if desired == 0 {
-        return Ok(());
-    }
-    let available_current = bank.saturating_sub(current_reserve_at(obligations, decision_tick));
-    let projection = resources
-        .planning_projection(forecast_deadline, cadence)
-        .map_err(|error| {
-            AllocationCoordinatorFailureReasonTrace::from(&CoordinatorInputError::Projection(error))
-        })?;
-    let fixed_forecast = forecast_reserve_through(obligations, forecast_deadline);
-    let future_production = obligations
-        .iter()
-        .flat_map(|obligation| obligation.claims.producer_jobs())
-        .filter(|job| {
-            job.fixed_timing().is_some_and(|(_, enqueued_at, _, _)| {
-                enqueued_at > decision_tick && enqueued_at <= forecast_deadline
-            })
-        })
-        .map(|job| job.kind().stats().cost)
-        .fold(0, u32::saturating_add);
-    let flexible_capital = obligations
-        .iter()
-        .filter_map(|obligation| obligation.claims.deferrable_capital())
-        .filter(|claim| claim.through <= forecast_deadline)
-        .map(|claim| claim.amount)
-        .fold(0, u32::saturating_add);
-    // Future producer jobs do not enter `current_reserve_at` until their
-    // enqueue tick. Give every prior flexible claim first use of the observed
-    // bank so this fixed legacy prefix cannot make mandatory work infeasible.
-    let flexible_prior_capital = future_production
-        .saturating_add(flexible_capital)
-        .saturating_add(older_capital_reserve);
-    let prior_current = flexible_prior_capital.min(available_current);
-    let prior_forecast = flexible_prior_capital.saturating_sub(prior_current);
-    let available_current = available_current.saturating_sub(prior_current);
-    let available_forecast = u32::try_from(projection.forecast_through(forecast_deadline))
-        .unwrap_or(u32::MAX)
-        .saturating_sub(fixed_forecast)
-        .saturating_sub(prior_forecast);
-    let current = desired.min(available_current);
-    let forecast = desired.saturating_sub(current).min(available_forecast);
-    if current == 0 && forecast == 0 {
-        return Ok(());
-    }
-    let claims = ClaimBundle::new(
-        current,
-        (forecast > 0)
-            .then_some(ForecastClaim {
-                through: forecast_deadline,
-                amount: forecast,
-            })
-            .into_iter()
-            .collect(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    )
-    .map_err(AllocationCoordinatorFailureReasonTrace::from)?;
-    obligations.push(imported_obligation(
-        ObligationClass::Legacy,
-        accepted_at,
-        key,
-        claims,
-    ));
-    Ok(())
 }
 
 fn push_legacy_planner_claim(
@@ -5309,6 +3503,7 @@ fn available_allocation_builders(
 
 #[cfg(test)]
 mod tests {
+    mod retained;
     use super::super::{
         Confidence, DeferrableCapitalClaim, ExecutionSafety, ProposalCase, StrategicValue,
         TimeToImpact, Urgency,
@@ -5499,120 +3694,6 @@ mod tests {
         (observation, lift, remaining)
     }
 
-    #[test]
-    fn unfundable_retained_lift_recovers_without_releasing_members() {
-        let (mut observation, mut lift, _) = active_lift_fixture();
-        observation.tick = 12;
-        observation.scrap = 300;
-        let operation = lift.operation().unwrap().clone();
-        let enqueued_at = 24;
-        lift.bind_producer_assignments(
-            operation.started_at,
-            operation.deadline,
-            vec![LiftProducerAssignment::new(
-                0,
-                BuildingId(2),
-                UnitKind::Skyhook,
-                LiftProducerTiming::new(
-                    enqueued_at,
-                    enqueued_at,
-                    enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                    operation.deadline,
-                ),
-                LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-            )],
-        )
-        .unwrap();
-        let members = lift.operation().unwrap().payload.clone();
-        let active = lift.active_production_obligation().unwrap();
-        let production = active_lift_production_obligation(&active).unwrap();
-        let protected = imported_obligation(
-            ObligationClass::PersistentPlan,
-            0,
-            ObligationKey::SavedFoundry {
-                anchor: TilePos::new(10, 22),
-            },
-            ClaimBundle::new(300, vec![], vec![], vec![], vec![], vec![]).unwrap(),
-        );
-        let resources = ResourceSnapshot::from_observation(&observation);
-        let mut proof = CrossDomainAllocation::new(&resources, operation.deadline, 12).unwrap();
-        proof.import(protected.clone());
-        proof.import(production.clone());
-        assert!(
-            matches!(proof.resolve(AllocationPersonality::default(), None),
-            Err(AllocationError::ObligationConflict { obligation, .. }) if obligation == production.owner())
-        );
-        let mut obligations = ObligationPreparation {
-            resources,
-            obligations: vec![protected.clone(), production],
-            coordinator_failure: None,
-            active_connected: None,
-            active_lift: Some(active),
-            invalid_active_connected: false,
-            invalid_active_lift: false,
-            legacy_air_claims: None,
-            staged_strategy: None,
-        };
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
-        let briefing = connected_briefing(&observation);
-        let mut intelligence = StrategicIntelligence::new();
-        intelligence.update(&observation);
-        let mut policy = UtilityPolicy::new();
-        let mut strategy = None;
-        let mut lifts = Some(lift);
-        let mut team = None;
-        let mut raids = None;
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(5, 15),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(5, 15)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
-            AllocationParticipants {
-                policy: &mut policy,
-                strategy: &mut strategy,
-                lifts: &mut lifts,
-                team: &mut team,
-                raids: &mut raids,
-            },
-            advanced(snapshots),
-            None,
-        );
-        session.reconcile_lift_funding_after_saved_capital(
-            &mut SavedFoundryPreparation {
-                obligation: None,
-                saving: 0,
-                blocked: false,
-                preparation_need: None,
-            },
-            &mut obligations,
-        );
-        assert!(obligations.active_lift.is_none());
-        assert_eq!(obligations.obligations.len(), 1);
-        assert_eq!(obligations.obligations[0].owner(), protected.owner());
-        let lift = session.participants.lifts.as_ref().unwrap();
-        assert_eq!(lift.operation().unwrap().phase, LiftPhase::Recover);
-        assert_eq!(lift.operation().unwrap().payload, members);
-        let mut allocation =
-            CrossDomainAllocation::new(&obligations.resources, operation.deadline, 12).unwrap();
-        allocation.import(protected);
-        assert!(
-            allocation
-                .resolve(AllocationPersonality::default(), None)
-                .is_ok()
-        );
-    }
-
     fn allocation_run_for(
         observation: &Observation,
         mut strategy: Option<StrategicPlanner>,
@@ -5715,7 +3796,7 @@ mod tests {
             active_lift_precedes_foundry: false,
             active_lift_spendable: 0,
             foundry_saving: 11,
-            airworks_capacity: 12,
+
             opening_bootstrap: 13,
             voluntary_scrap_guard: 0,
             prospective_carrier_floor: 0,
@@ -6398,171 +4479,6 @@ mod tests {
     }
 
     #[test]
-    fn bounded_capacity_leaves_current_funding_for_older_future_production() {
-        let mut observation = observation();
-        observation.tick = 120;
-        observation.scrap = 100;
-        observation.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(3, 3),
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
-        observation.my_queues.push(Vec::new());
-        let resources = ResourceSnapshot::from_observation(&observation);
-        let kind = UnitKind::Harvester;
-        let enqueued_at = observation.tick + 12;
-        let ready_at = enqueued_at + Tick::from(kind.stats().train_ticks) - 1;
-        let deadline = ready_at + 1;
-        let older = imported_obligation(
-            ObligationClass::PersistentPlan,
-            observation.tick - 1,
-            ObligationKey::ConnectedOffense {
-                objective: BuildingId(90),
-                anchor: TilePos::new(12, 12),
-            },
-            ClaimBundle::new(
-                0,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                vec![super::super::ProducerJobClaim::fixed(
-                    BuildingId(9),
-                    kind,
-                    enqueued_at,
-                    enqueued_at,
-                    ready_at,
-                    deadline,
-                )],
-            )
-            .expect("the older fixed production claim is valid"),
-        );
-        let mut obligations = vec![older];
-
-        push_bounded_capital_reserve(
-            &mut obligations,
-            &resources,
-            BoundedCapitalReserve {
-                cadence: 12,
-                bank: observation.scrap,
-                accepted_at: observation.tick,
-                decision_tick: observation.tick,
-                key: ObligationKey::Legacy {
-                    channel: LegacyChannel::AirworksCapacity,
-                    sequence: 1,
-                },
-                desired: observation.scrap,
-                forecast_deadline: deadline,
-                older_capital_reserve: 0,
-            },
-        )
-        .expect("the capacity prefix is representable");
-
-        assert_eq!(obligations.len(), 2);
-        assert_eq!(
-            obligations[1].claims.current_scrap(),
-            observation.scrap - kind.stats().cost
-        );
-        assert!(obligations[1].claims.forecast_scrap().is_empty());
-        let mut allocation = CrossDomainAllocation::new(&resources, deadline, 12)
-            .expect("the no-income projection is valid");
-        for obligation in obligations {
-            allocation.import(obligation);
-        }
-        allocation
-            .resolve(AllocationPersonality::default(), None)
-            .expect("the older job and bounded capacity fit exactly once");
-    }
-
-    #[test]
-    fn active_island_producer_context_honors_an_older_saved_foundry_deadline() {
-        let observation = connected_observation(120, 1_000);
-        let resources = ResourceSnapshot::from_observation(&observation);
-        let cadence = 12;
-        let producer = BuildingId(12);
-        let kind = UnitKind::Kestrel;
-        let mut lane = resources
-            .planning_projection(observation.tick.saturating_add(1_000), cadence)
-            .expect("the test horizon is bounded")
-            .producer(producer)
-            .expect("the fixture has one Airworks")
-            .clone();
-        let timing = lane
-            .append(kind, observation.tick)
-            .expect("the Airworks can accept the island scout immediately");
-        let producer_deadline = timing.ready_at.saturating_add(1);
-        let foundry_deadline = producer_deadline.saturating_add(600);
-        let saved_foundry = imported_obligation(
-            ObligationClass::PersistentPlan,
-            observation.tick.saturating_sub(2),
-            ObligationKey::SavedFoundry {
-                anchor: TilePos::new(14, 14),
-            },
-            ClaimBundle::new(
-                0,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            )
-            .expect("the saved Foundry claims are valid")
-            .with_deferrable_capital(DeferrableCapitalClaim {
-                through: foundry_deadline,
-                amount: 100,
-            })
-            .expect("the saved Foundry has one bounded capital claim"),
-        );
-        let active_island = imported_obligation(
-            ObligationClass::PersistentPlan,
-            observation.tick.saturating_sub(1),
-            ObligationKey::Legacy {
-                channel: LegacyChannel::StrategicAir,
-                sequence: 1,
-            },
-            ClaimBundle::new(
-                0,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                vec![ProducerJobClaim::fixed(
-                    producer,
-                    kind,
-                    observation.tick,
-                    timing.starts_at,
-                    timing.ready_at,
-                    producer_deadline,
-                )],
-            )
-            .expect("the active island producer claim is valid"),
-        );
-
-        let (_, due) = retained_producer_context(
-            &resources,
-            &[saved_foundry, active_island],
-            cadence,
-            observation.tick,
-            &crate::bot::planning::PlanningWork::default(),
-        )
-        .expect("the island lane and older Foundry horizon must settle together");
-
-        assert_eq!(
-            due,
-            vec![Intent::TrainAt {
-                building: producer,
-                kind,
-            }]
-        );
-    }
-
-    #[test]
     fn active_lift_future_demand_counts_live_queued_and_same_think_carriers_once() {
         let (mut observation, lift, _) = active_lift_fixture();
         let operation = lift
@@ -6852,11 +4768,11 @@ mod tests {
         let mut air_lift = AirLiftPreparation {
             lift_decision: StrategicDecision::default(),
             opening_bootstrap: 0,
-            airworks_capacity: 0,
+
             active_lift_precedes_foundry: false,
             active_lift_spendable: 0,
             saved_plan_reserve_already_imported: 0,
-            lift_airworks_capacity: 0,
+
             lift_deadline: operation.deadline,
             fresh_lift_producer_jobs: 0,
             voluntary_scrap_guard: 0,
@@ -6897,7 +4813,7 @@ mod tests {
             None,
         );
 
-        session.advance_active_lift(
+        session.retained_work().advance_active_lift(
             &mut obligations,
             &mut air_lift,
             &active_connected_due_intents,
@@ -8182,85 +6098,6 @@ mod tests {
     }
 
     #[test]
-    fn connected_enqueue_missed_after_rollback_enters_bounded_recovery() {
-        let mut observation = connected_observation(120, 10_000);
-        let mut proposal = current_connected_proposal(&observation);
-        let identity = proposal.identity();
-        let assignments = connected_assignments(&proposal, false)
-            .into_iter()
-            .map(|assignment| {
-                let timing = assignment.timing();
-                let shift = 24;
-                ConnectedProducerAssignment::new(
-                    identity,
-                    assignment.request_ordinal(),
-                    assignment.producer(),
-                    assignment.kind(),
-                    ConnectedProducerTiming::new(
-                        timing.enqueued_at().saturating_add(shift),
-                        timing.starts_at().saturating_add(shift),
-                        timing.ready_at().saturating_add(shift),
-                        timing.ready_before(),
-                    ),
-                    ConnectedProducerFunding::new(assignment.kind().stats().cost, 0),
-                )
-            })
-            .collect::<Vec<_>>();
-        proposal
-            .bind_producer_assignments(assignments.clone())
-            .expect("the future exact minimum schedule binds");
-        let mut planner = StrategicPlanner::new();
-        planner
-            .commit_connected_proposal(proposal)
-            .expect("the bound connected package commits");
-        let first_enqueue = assignments
-            .iter()
-            .map(|assignment| assignment.timing().enqueued_at())
-            .min()
-            .expect("the connected minimum retains provider work");
-        observation.tick = first_enqueue;
-        let invalid_team_decision = StrategicDecision {
-            intents: vec![Intent::TrainAt {
-                building: BuildingId(999),
-                kind: UnitKind::Sentinel,
-            }],
-            reservations: Vec::new(),
-            committed_scrap: UnitKind::Sentinel.stats().cost,
-        };
-        let mut policy = UtilityPolicy::new();
-        let mut strategy = Some(planner);
-        let failed = run_connected_session_with_team_decision(
-            &observation,
-            &mut policy,
-            &mut strategy,
-            invalid_team_decision,
-        );
-        assert!(
-            !failed.allocation_ok,
-            "the unrelated invalid producer must roll the whole allocation pass back"
-        );
-        let retained = strategy
-            .as_ref()
-            .and_then(|planner| planner.active_connected_obligation(&observation))
-            .expect("rollback must preserve the previously admitted operation");
-        assert!(
-            retained
-                .provider_jobs()
-                .iter()
-                .any(|assignment| assignment.timing().enqueued_at() == first_enqueue),
-            "rollback must leave the due append unpaid until a later pass diagnoses it"
-        );
-
-        observation.tick = first_enqueue.saturating_add(12);
-        assert_connected_enters_bounded_recovery(
-            &observation,
-            &mut policy,
-            &mut strategy,
-            "missed accepted enqueue after rollback",
-        );
-    }
-
-    #[test]
     fn lost_forecast_source_recovers_instead_of_spending_unbacked_credit() {
         let mut observation = connected_observation(1_200, 10_000);
         let mut proposal = current_connected_proposal(&observation);
@@ -8604,129 +6441,6 @@ mod tests {
         assert_eq!(after.provider_jobs(), before.provider_jobs());
         assert_eq!(after.deadline(), before.deadline());
         assert_eq!(policy.planning.spent(), 0);
-    }
-
-    #[test]
-    fn active_connected_revision_and_saved_foundry_commit_together() {
-        let mut observation = connected_observation(1_200, 10_000);
-        let builder = UnitId(200);
-        observation.my_units.push(owned_unit(
-            builder.0,
-            UnitKind::Harvester,
-            TilePos::new(12, 15),
-        ));
-        observation.my_units.sort_unstable_by_key(|unit| unit.id);
-        observation.my_buildings.push(observed_building(
-            14,
-            0,
-            BuildingKind::Extractor,
-            TilePos::new(20, 14),
-        ));
-        observation.my_queues.push(Vec::new());
-        observation.my_queue_progress.push(0);
-        let mut proposal = current_connected_proposal(&observation);
-        let identity = proposal.identity();
-        let assignments = connected_assignments(&proposal, false)
-            .into_iter()
-            .map(|assignment| {
-                let timing = assignment.timing();
-                let shift = 24;
-                ConnectedProducerAssignment::new(
-                    identity,
-                    assignment.request_ordinal(),
-                    assignment.producer(),
-                    assignment.kind(),
-                    ConnectedProducerTiming::new(
-                        timing.enqueued_at().saturating_add(shift),
-                        timing.starts_at().saturating_add(shift),
-                        timing.ready_at().saturating_add(shift),
-                        timing.ready_before(),
-                    ),
-                    ConnectedProducerFunding::new(assignment.kind().stats().cost, 0),
-                )
-            })
-            .collect::<Vec<_>>();
-        proposal
-            .bind_producer_assignments(assignments.clone())
-            .expect("the future exact minimum schedule binds");
-        let mut planner = StrategicPlanner::new();
-        planner
-            .commit_connected_proposal(proposal)
-            .expect("the bound connected package commits");
-        let fixed_deadline = assignments[0].timing().ready_before();
-        let foundry_cost = BuildingKind::Foundry
-            .base_stats()
-            .construction
-            .expect("Foundries are constructible")
-            .cost;
-        let foundry_anchor = TilePos::new(15, 14);
-        let mut policy = UtilityPolicy::new();
-        policy
-            .commit_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    foundry_anchor,
-                    builder,
-                    foundry_cost,
-                    0,
-                    0,
-                    fixed_deadline,
-                    foundry_case(),
-                ),
-                observation.tick,
-                &mut Vec::new(),
-            )
-            .expect("the fixture installs one exact saved Foundry");
-
-        observation.tick = observation.tick.saturating_add(12);
-        let mut strategy = Some(planner);
-        let outcome = run_connected_session(&observation, &mut policy, &mut strategy);
-
-        assert!(outcome.allocation_ok);
-        assert!(
-            outcome.accepted_connected,
-            "the revisable operation must re-enter the typed allocation"
-        );
-        assert!(outcome.fresh_foundry_intents.contains(&Intent::BuildWith {
-            builder,
-            kind: BuildingKind::Foundry,
-            anchor: foundry_anchor,
-        }));
-        assert!(
-            !outcome.allocated_producer_intents.is_empty(),
-            "ample residual capital should still admit fresh standing-force production"
-        );
-        let retained = strategy
-            .as_ref()
-            .and_then(|planner| planner.active_connected_obligation(&observation))
-            .expect("the revised connected operation remains active");
-        assert_eq!(retained.deadline(), fixed_deadline);
-        assert_eq!(
-            retained
-                .provider_jobs()
-                .iter()
-                .take(assignments.len())
-                .map(|assignment| {
-                    (
-                        assignment.request_ordinal(),
-                        assignment.producer(),
-                        assignment.kind(),
-                        assignment.timing(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            assignments
-                .iter()
-                .map(|assignment| {
-                    (
-                        assignment.request_ordinal(),
-                        assignment.producer(),
-                        assignment.kind(),
-                        assignment.timing(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            "a compatible Foundry cannot shift accepted connected jobs while the revision adds new marginal work"
-        );
     }
 
     #[test]
@@ -9431,168 +7145,6 @@ mod tests {
     }
 
     #[test]
-    fn fresh_standing_force_cannot_defer_a_payable_saved_foundry() {
-        payable_saved_foundry_with_planning_allowance(128_000);
-    }
-
-    #[test]
-    fn exhausted_optional_planning_does_not_delay_a_payable_saved_foundry() {
-        payable_saved_foundry_with_planning_allowance(0);
-    }
-
-    fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
-        let mut observation = connected_observation(1_200, 0);
-        let builder = UnitId(200);
-        let foundry_anchor = TilePos::new(15, 14);
-        observation.my_units.push(owned_unit(
-            builder.0,
-            UnitKind::Harvester,
-            TilePos::new(12, 15),
-        ));
-        observation.my_units.sort_unstable_by_key(|unit| unit.id);
-        for (id, kind, anchor) in [
-            (14, BuildingKind::Extractor, TilePos::new(20, 14)),
-            (15, BuildingKind::Reclaimer, TilePos::new(12, 17)),
-        ] {
-            observation
-                .my_buildings
-                .push(observed_building(id, 0, kind, anchor));
-            observation.my_queues.push(Vec::new());
-            observation.my_queue_progress.push(0);
-        }
-        let foundry_cost = BuildingKind::Foundry
-            .base_stats()
-            .construction
-            .expect("Foundries are constructible")
-            .cost;
-        let forecast_deadline = observation
-            .tick
-            .saturating_add(Tick::from(foundry_cost).saturating_mul(crate::stats::RECLAIMER_PERIOD))
-            .saturating_add(crate::stats::RECLAIMER_PERIOD);
-        let mut policy = UtilityPolicy::new();
-        policy.planning = crate::bot::planning::PlanningWork::with_allowance(allowance);
-        let mut initial_intents = Vec::new();
-        policy
-            .commit_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    foundry_anchor,
-                    builder,
-                    0,
-                    foundry_cost,
-                    0,
-                    forecast_deadline,
-                    foundry_case(),
-                ),
-                observation.tick,
-                &mut initial_intents,
-            )
-            .expect("the forecast-backed fixture installs one exact saved Foundry");
-        assert!(
-            initial_intents.is_empty(),
-            "forecast capital cannot dispatch the Foundry at admission"
-        );
-
-        observation.tick = observation.tick.saturating_add(12);
-        observation.scrap = foundry_cost;
-        let resources = ResourceSnapshot::from_observation(&observation);
-        let saved = policy
-            .validated_foundry_obligation(&observation, &resources, true, observation.scrap)
-            .expect("the accepted Foundry remains valid after its bank accrues");
-        assert!(
-            saved.ready_to_build(),
-            "the full current construction cost makes the retained plan payable"
-        );
-
-        let standing_ready_before = observation
-            .tick
-            .saturating_add(Tick::from(UnitKind::Lancer.stats().train_ticks))
-            .saturating_add(1);
-        let standing = StandingForceProposal::fixture(StandingForceFixture {
-            observed_at: observation.tick,
-            ready_before: standing_ready_before,
-            kind: UnitKind::Lancer,
-            reason: StandingForceReason::ForceProjection,
-            specialty: Specialty::Siege,
-            personality_emphasis: 100,
-            case: ProposalCase {
-                urgency: Urgency::Pressing,
-                confidence: Confidence::Current,
-                value: StrategicValue::Decisive,
-                time_to_impact: TimeToImpact::Immediate,
-                safety: ExecutionSafety::Secure,
-            },
-            eligible_producers: vec![BuildingId(11)],
-        });
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
-        let briefing = connected_briefing(&observation);
-        let mut intelligence = StrategicIntelligence::new();
-        intelligence.update(&observation);
-        let original_policy = policy.clone();
-        let mut strategy = None;
-        let mut lifts = None;
-        let mut team = None;
-        let mut raids = None;
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut prepared = prepared(&observation, None);
-        prepared.resources = resources;
-        prepared.obligations = vec![
-            saved_foundry_obligation(saved)
-                .expect("the ready saved Foundry has exact mandatory claims"),
-        ];
-        prepared.saved_foundry = Some(saved);
-        prepared.standing_force = StandingForcePreparation::Unconditional(vec![standing]);
-        prepared.allocation_horizon = forecast_deadline.max(standing_ready_before);
-        prepared.foundry_saving = foundry_cost;
-        let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(3, 10),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
-            AllocationParticipants {
-                policy: &mut policy,
-                strategy: &mut strategy,
-                lifts: &mut lifts,
-                team: &mut team,
-                raids: &mut raids,
-            },
-            advanced(snapshots),
-            None,
-        );
-        let resolved = session.resolve(
-            prepared,
-            CommitSnapshots {
-                policy: original_policy,
-            },
-        );
-        let outcome = session.commit_or_restore(resolved);
-
-        assert!(outcome.allocation_ok);
-        assert_eq!(
-            outcome.fresh_foundry_intents,
-            vec![Intent::BuildWith {
-                builder,
-                kind: BuildingKind::Foundry,
-                anchor: foundry_anchor,
-            }],
-            "fresh optional production cannot move a payable persistent plan back onto forecast"
-        );
-        assert!(
-            outcome.allocated_producer_intents.is_empty(),
-            "the Standing Lancer must wait when the older Foundry consumes the current bank"
-        );
-    }
-
-    #[test]
     fn connected_and_lift_keep_one_shared_future_lane_across_the_next_think() {
         const HOME: TilePos = TilePos::new(3, 10);
         let mut observation = connected_observation(0, 10_000);
@@ -9748,139 +7300,6 @@ mod tests {
             lifts.as_ref().unwrap().operation().unwrap().phase,
             LiftPhase::Provision,
             "accepted unpaid carrier work keeps the Lift in Provision"
-        );
-    }
-
-    #[test]
-    fn newer_conflict_does_not_discard_an_older_connected_obligation() {
-        let observation = connected_observation(120, 10_000);
-        let (planner, assignments) = current_connected_planner(&observation, false);
-        let active = planner
-            .active_connected_obligation(&observation)
-            .expect("the committed operation exposes its exact obligation");
-        let first = assignments[0];
-        let resources = ResourceSnapshot::from_observation(&observation);
-        let newer_accepted_at = active.accepted_at().saturating_add(1);
-        let newer_key = ObligationKey::Legacy {
-            channel: LegacyChannel::TeamRelief,
-            sequence: 99,
-        };
-        let decision = StrategicDecision {
-            intents: vec![Intent::TrainAt {
-                building: first.producer(),
-                kind: first.kind(),
-            }],
-            reservations: Vec::new(),
-            committed_scrap: first.kind().stats().cost,
-        };
-        let newer = legacy_decision_obligation(
-            &resources,
-            LegacyDecisionRequest {
-                cadence: 12,
-                accepted_at: newer_accepted_at,
-                decision_tick: first.timing().enqueued_at(),
-                channel: LegacyChannel::TeamRelief,
-                sequence: 99,
-                decision: &decision,
-                prior_producer_intents: &[],
-                production_deadline: active.deadline(),
-            },
-        )
-        .expect("the newer producer claim is independently legal");
-        let active_import = active_connected_obligation(&active)
-            .expect("the older connected obligation adapts exactly");
-        let active_owner = active_import.owner();
-        let mut proof = CrossDomainAllocation::new(&resources, active.deadline(), 12)
-            .expect("the fixture horizon is valid");
-        proof.import(active_import.clone());
-        proof.import(newer.clone());
-        assert!(matches!(
-            proof.resolve(AllocationPersonality::default(), None),
-            Err(AllocationError::ObligationConflict {
-                obligation: ClaimOwner::Obligation {
-                    class: ObligationClass::Legacy,
-                    accepted_at,
-                    key,
-                },
-                conflict: AllocationConflict::ProducerSchedule { .. },
-            }) if accepted_at == newer_accepted_at && key == newer_key
-        ));
-
-        let mut obligations = ObligationPreparation {
-            resources,
-            obligations: vec![active_import, newer],
-            coordinator_failure: None,
-            active_connected: Some(active.clone()),
-            active_lift: None,
-            invalid_active_connected: false,
-            invalid_active_lift: false,
-            legacy_air_claims: None,
-            staged_strategy: None,
-        };
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
-        let briefing = connected_briefing(&observation);
-        let mut intelligence = StrategicIntelligence::new();
-        intelligence.update(&observation);
-        let mut policy = UtilityPolicy::new();
-        let mut strategy = Some(planner);
-        let mut lifts = None;
-        let mut team = None;
-        let mut raids = None;
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(3, 10),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
-            AllocationParticipants {
-                policy: &mut policy,
-                strategy: &mut strategy,
-                lifts: &mut lifts,
-                team: &mut team,
-                raids: &mut raids,
-            },
-            advanced(snapshots),
-            None,
-        );
-        session.downgrade_unfundable_active_connected(
-            &mut SavedFoundryPreparation {
-                obligation: None,
-                saving: 0,
-                blocked: false,
-                preparation_need: None,
-            },
-            &AirLiftPreparation {
-                lift_decision: StrategicDecision::default(),
-                opening_bootstrap: 0,
-                airworks_capacity: 0,
-                active_lift_precedes_foundry: false,
-                active_lift_spendable: 0,
-                saved_plan_reserve_already_imported: 0,
-                lift_airworks_capacity: 0,
-                lift_deadline: observation.tick.saturating_add(12),
-                fresh_lift_producer_jobs: 0,
-                voluntary_scrap_guard: 0,
-            },
-            &mut obligations,
-        );
-
-        assert_eq!(obligations.active_connected, Some(active));
-        assert!(
-            obligations
-                .obligations
-                .iter()
-                .any(|obligation| obligation.owner() == active_owner),
-            "a later planner's conflict cannot demote the older connected commitment"
         );
     }
 
