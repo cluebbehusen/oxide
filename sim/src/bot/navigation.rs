@@ -3,6 +3,7 @@
 //! Costs do not certify a command's snapped goal, safety, or canonical path.
 
 pub(super) mod approaches;
+pub(super) mod areas;
 pub(super) mod commands;
 pub(super) mod distance_work;
 pub(super) mod egress;

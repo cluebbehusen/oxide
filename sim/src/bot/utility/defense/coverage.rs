@@ -121,6 +121,7 @@ impl<'a> Batch<'a> {
             let mut blind_exposure = false;
             let mut uses_spotter = false;
             let mut best_depth = 0;
+            let mut novel_tiles = 0_u32;
             for sample in &self.assets[asset_index] {
                 let facts = &self.tiles[sample.tile];
                 let tile = facts.position;
@@ -150,6 +151,7 @@ impl<'a> Batch<'a> {
                     0 => {
                         adds_new = true;
                         adds_unplanned_new |= !facts.planned;
+                        novel_tiles += u32::from(!facts.planned);
                     }
                     1 => {
                         reinforces = true;
@@ -161,6 +163,11 @@ impl<'a> Batch<'a> {
                 best_depth = best_depth.max(sample.depth);
             }
             if protects {
+                coverage.novel_span = coverage.novel_span.saturating_add(
+                    asset
+                        .value
+                        .saturating_mul(novel_tiles.min(INTERCEPTION_DEPTH as u32)),
+                );
                 coverage.protected_value = coverage.protected_value.saturating_add(asset.value);
                 if adds_new {
                     coverage.new = coverage.new.saturating_add(asset.value);

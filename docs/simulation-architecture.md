@@ -1322,11 +1322,22 @@ Diagnostics count target evaluations separately from field and production work.
 
 Voluntary coverage uses one reverse field per asset's destination set to serve
 all threat origins. Its representative routes have exact shortest costs and
-legal edges, but need not share the command router's tied-path shape. A deferred
-field stops the evidence ladder; it cannot turn a current threat into a weaker
-public-prior case. Direct attacks, minimum-range retreat, and firing standoff
-retain their weapon rules. Emergency response, Build commands, and candidate
-construction safety retain their original exact route checks.
+legal edges, but need not share the command router's tied-path shape. Weapon
+sites score these prepared corridors, filtered to locally supported assets,
+without predicting a new enemy route around each hypothetical weapon. One
+coverage batch shares existing-defense and spotter geometry across candidate
+sites. New coverage ranks by asset-weighted corridor span, capped at eight
+unique tiles per asset, before whole-asset coverage; a newly covered edge tile
+cannot earn the same preference as an extended unprotected approach. Barricade
+valuation retains candidate detour costs because obstruction is its benefit.
+Candidate neighborhoods use a grid union and geometry checks; existing exit
+certificates provide a cheap positive ranking preference. Exact producer exits,
+resource access, and builder safety are checked during site refinement.
+
+A deferred field stops the evidence ladder; it cannot turn a current threat into
+a weaker public-prior case. Direct attacks, minimum-range retreat, and firing
+standoff retain their weapon rules. Emergency response, Build commands, and
+candidate construction safety retain their exact route checks.
 
 Exact Build-route checks index observed and public ground passability once per
 defensive grounding and reuse A* storage across builders and candidate sites.

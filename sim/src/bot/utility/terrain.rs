@@ -846,6 +846,7 @@ mod tests {
                     .is_empty()
                 })
                 .expect("some tile lies outside the canonical route");
+            assert!(cache.certifies(candidate));
             (baseline, candidate)
         };
 
@@ -885,6 +886,7 @@ mod tests {
                 ),
                 vec![0]
             );
+            assert!(!cache.certifies(candidate));
             (baseline, candidate)
         };
 

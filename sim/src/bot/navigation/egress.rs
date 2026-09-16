@@ -88,6 +88,32 @@ impl GroundEgressLayout {
 }
 
 impl GroundEgressCache {
+    /// A positive answer reuses a route proof; a negative answer needs refinement.
+    pub(in crate::bot) fn certifies(&self, candidate: PlannedFootprint) -> bool {
+        if candidate.0.is_stealthy() {
+            return true;
+        }
+        self.decisions
+            .get(&Vec::new())
+            .and_then(Option::as_ref)
+            .is_some_and(|certificate| {
+                let (width, height) = candidate.0.base_stats().size;
+                (0..height).all(|dy| {
+                    (0..width).all(|dx| {
+                        let tile = candidate.1.offset(dx, dy);
+                        super::flood::tile_index(
+                            self.layout.map_size.0,
+                            self.layout.map_size.1,
+                            tile,
+                        )
+                        .is_none_or(|index| {
+                            certificate.route_tiles[index / 64] & (1 << (index % 64)) == 0
+                        })
+                    })
+                })
+            })
+    }
+
     pub(in crate::bot) fn prepare(slot: &mut Option<Self>, obs: &Observation) {
         let layout = GroundEgressLayout::from_observation(obs);
         let layout_changed = slot.as_ref().is_none_or(|cache| cache.layout != layout);

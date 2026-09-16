@@ -125,6 +125,9 @@ impl<'a> Bounds<'a> {
                 coverage.unplanned_reinforced.saturating_add(asset.value);
             coverage.protected_value = coverage.protected_value.saturating_add(asset.value);
             coverage.spotted_reach = coverage.spotted_reach.saturating_add(asset.value);
+            coverage.novel_span = coverage
+                .novel_span
+                .saturating_add(asset.value.saturating_mul(INTERCEPTION_DEPTH as u32));
             coverage.interception = coverage
                 .interception
                 .saturating_add(asset.value.saturating_mul(INTERCEPTION_DEPTH as u32));

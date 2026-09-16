@@ -231,7 +231,6 @@ struct DefenseEvaluationCache {
     resource_access: BTreeMap<ResourceAccessKey, bool>,
     reinforcement_travel: BTreeMap<ReinforcementRouteKey, Option<u32>>,
     supported_assets: BTreeMap<PlacementFootprint, BTreeSet<usize>>,
-    rerouted_approaches: BTreeMap<(DefenseDomain, PlacementFootprint), Option<Vec<Approach>>>,
     barricade_approaches: BTreeMap<PlacementFootprint, Option<Vec<barricade::ApproachCost>>>,
     baseline_endpoint_routes: EndpointRoutes,
     #[cfg(test)]
@@ -288,8 +287,8 @@ pub(super) struct DefenseThinkCacheStats {
     pub(super) reinforcement_route_hits: usize,
     pub(super) supported_assets_builds: usize,
     pub(super) supported_assets_hits: usize,
-    pub(super) rerouted_approach_builds: usize,
-    pub(super) rerouted_approach_hits: usize,
+    pub(super) coverage_batches: usize,
+    pub(super) coverage_scores: usize,
 }
 
 impl<'a> DefenseGrounding<'a> {
@@ -1001,6 +1000,7 @@ struct Coverage {
     reinforced: u32,
     unplanned_new: u32,
     unplanned_reinforced: u32,
+    novel_span: u32,
     interception: u32,
     protected_value: u32,
     planned_overlap: u32,
@@ -1017,6 +1017,7 @@ impl Coverage {
             reinforced: 0,
             unplanned_new: 0,
             unplanned_reinforced: 0,
+            novel_span: 0,
             interception: 0,
             protected_value: 0,
             planned_overlap: 0,
@@ -1071,6 +1072,7 @@ impl Candidate {
         };
         (
             (
+                self.coverage.novel_span,
                 self.coverage.unplanned_new,
                 self.coverage.unplanned_reinforced,
             ),
@@ -2072,6 +2074,23 @@ fn strategic_defense_quote_from_projection(
     let origins = &projection.origins;
     let approaches = &projection.approaches;
 
+    let coverage = (kind != BuildingKind::Barricade).then(|| {
+        #[cfg(test)]
+        {
+            cache.stats.coverage_batches += 1;
+        }
+        coverage::Batch::new(
+            &CoverageContext {
+                obs,
+                briefing,
+                assets,
+                approaches,
+                existing: &projection.existing,
+                planned: &projection.planned,
+            },
+            profile,
+        )
+    });
     policy.prepare_ground_producer_egress(obs);
     let mut evaluate = |anchor| {
         if !policy.placement_valid_prepared(obs, kind, anchor) {
@@ -2118,26 +2137,15 @@ fn strategic_defense_quote_from_projection(
             let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
             barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied())
         } else {
-            let candidate_approaches = cached_operationally_supported_approaches(
-                ground,
-                assets,
-                approaches,
-                placement,
-                profile.domain,
-                cache,
-            )?;
-            score_coverage(
-                &CoverageContext {
-                    obs,
-                    briefing,
-                    assets,
-                    approaches: &candidate_approaches,
-                    existing: &projection.existing,
-                    planned: &projection.planned,
-                },
-                profile,
-                anchor,
-            )
+            cache_supported_assets(ground, assets, placement, cache);
+            #[cfg(test)]
+            {
+                cache.stats.coverage_scores += 1;
+            }
+            let supported = &cache.supported_assets[&placement];
+            coverage
+                .as_ref()?
+                .score(anchor, |asset| supported.contains(&asset))
         };
         if coverage.new == 0 && coverage.reinforced == 0 {
             return None;
@@ -2167,6 +2175,9 @@ fn strategic_defense_quote_from_projection(
                 let mut candidate_tiles =
                     defense_candidate_tiles(policy, obs, assets, approaches, profile);
                 progressive::rank(&mut candidate_tiles, assets, approaches, profile);
+                if let Some(egress) = policy.ground_egress_cache.borrow().as_ref() {
+                    candidate_tiles.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
+                }
                 match policy.planning.site(
                     obs.tick,
                     profile.kind,
@@ -2212,14 +2223,8 @@ fn strategic_defense_quote_from_projection(
         let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
         barricade::threat_summary(&costs, projection.evidence)?
     } else {
-        let candidate_approaches = cached_operationally_supported_approaches(
-            ground,
-            assets,
-            approaches,
-            placement,
-            profile.domain,
-            cache,
-        )?;
+        cache_supported_assets(ground, assets, placement, cache);
+        let supported = &cache.supported_assets[&placement];
         candidate_threat_summary(
             obs,
             briefing,
@@ -2227,7 +2232,9 @@ fn strategic_defense_quote_from_projection(
             &projection.planned,
             profile,
             candidate.anchor,
-            &candidate_approaches,
+            approaches
+                .iter()
+                .filter(|approach| supported.contains(&approach.asset)),
             projection.evidence,
         )?
     };
@@ -2250,19 +2257,19 @@ fn strategic_defense_quote_from_projection(
     clippy::too_many_arguments,
     reason = "summarizes one frozen defense candidate against its scoring context"
 )]
-fn candidate_threat_summary(
+fn candidate_threat_summary<'a>(
     obs: &Observation,
     briefing: &PublicMapBriefing,
     existing: &[&BuildingObs],
     planned: &[PlannedDefense],
     profile: DefenseProfile,
     candidate: TilePos,
-    approaches: &[Approach],
+    approaches: impl IntoIterator<Item = &'a Approach>,
     projection_evidence: DefenseOpportunityEvidence,
 ) -> Option<CandidateThreatSummary> {
     threat_summary_from_sources(
         approaches
-            .iter()
+            .into_iter()
             .filter(|approach| {
                 approach_contributes_marginal_protection(
                     obs, briefing, existing, planned, profile, candidate, approach,
@@ -2939,41 +2946,6 @@ fn approaches_with_candidate(
     domain: DefenseDomain,
     max_detour: Option<u32>,
 ) -> Option<Vec<Approach>> {
-    approaches_with_candidate_inner(
-        ground, assets, baseline, candidate, domain, max_detour, None,
-    )
-}
-
-fn approaches_with_candidate_cached(
-    ground: &GroundKnowledge<'_>,
-    assets: &[DefendedAsset],
-    baseline: &[Approach],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    max_detour: Option<u32>,
-    baseline_endpoint_routes: &mut EndpointRoutes,
-) -> Option<Vec<Approach>> {
-    approaches_with_candidate_inner(
-        ground,
-        assets,
-        baseline,
-        candidate,
-        domain,
-        max_detour,
-        Some(baseline_endpoint_routes),
-    )
-}
-
-fn approaches_with_candidate_inner(
-    ground: &GroundKnowledge<'_>,
-    assets: &[DefendedAsset],
-    baseline: &[Approach],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    max_detour: Option<u32>,
-    mut baseline_endpoint_routes: Option<&mut EndpointRoutes>,
-) -> Option<Vec<Approach>> {
-    let mut routes = CandidateRoutes::new(ground, candidate, domain);
     let mut rerouted = Vec::with_capacity(baseline.len());
     for approach in baseline {
         if !candidate_affects_path(&approach.path, candidate, domain) {
@@ -2981,24 +2953,15 @@ fn approaches_with_candidate_inner(
             continue;
         }
         let goals = assets[approach.asset].shape.approach_tiles(ground, domain);
-        let (goal, path) = match baseline_endpoint_routes.as_deref_mut() {
-            Some(endpoint_routes) => approach_path_cached(
-                &mut routes,
-                approach.source,
-                &assets[approach.asset].shape,
-                &goals,
-                endpoint_routes,
-            ),
-            None => approach_path(
-                ground,
-                approach.source,
-                &assets[approach.asset].shape,
-                &goals,
-                Some(candidate),
-                domain,
-                None,
-            ),
-        }?;
+        let (goal, path) = approach_path(
+            ground,
+            approach.source,
+            &assets[approach.asset].shape,
+            &goals,
+            Some(candidate),
+            domain,
+            None,
+        )?;
         let detour = path_cost(&path).saturating_sub(approach.baseline_cost);
         if max_detour.is_some_and(|limit| detour > limit) {
             return None;
@@ -3195,50 +3158,6 @@ fn cache_supported_assets(
             }
         }
     }
-}
-
-fn cached_operationally_supported_approaches(
-    ground: &GroundKnowledge<'_>,
-    assets: &[DefendedAsset],
-    baseline: &[Approach],
-    candidate: PlacementFootprint,
-    domain: DefenseDomain,
-    cache: &mut DefenseEvaluationCache,
-) -> Option<Vec<Approach>> {
-    cache_supported_assets(ground, assets, candidate, cache);
-    let reroute_key = (domain, candidate);
-    match cache.rerouted_approaches.entry(reroute_key) {
-        std::collections::btree_map::Entry::Occupied(_) => {
-            #[cfg(test)]
-            {
-                cache.stats.rerouted_approach_hits += 1;
-            }
-        }
-        std::collections::btree_map::Entry::Vacant(entry) => {
-            entry.insert(approaches_with_candidate_cached(
-                ground,
-                assets,
-                baseline,
-                candidate,
-                domain,
-                None,
-                &mut cache.baseline_endpoint_routes,
-            ));
-            #[cfg(test)]
-            {
-                cache.stats.rerouted_approach_builds += 1;
-            }
-        }
-    }
-    let rerouted = cache.rerouted_approaches.get(&reroute_key)?.as_ref()?;
-    let supported_assets = cache.supported_assets.get(&candidate)?;
-    Some(
-        rerouted
-            .iter()
-            .filter(|approach| supported_assets.contains(&approach.asset))
-            .cloned()
-            .collect(),
-    )
 }
 
 /// Support is local walking reach, independent of global shortest-path ties.
@@ -3455,29 +3374,22 @@ fn defense_candidate_tiles(
     approaches: &[Approach],
     profile: DefenseProfile,
 ) -> Vec<TilePos> {
-    let mut candidate_tiles = BTreeSet::new();
-    for approach in approaches {
-        for seed in approach
+    let seeds = approaches.iter().flat_map(|approach| {
+        approach
             .path
             .iter()
             .rev()
             .take(INTERCEPTION_DEPTH + 1)
             .copied()
             .chain(assets[approach.asset].shape.candidate_seeds())
-        {
-            for dy in -profile.candidate_reach..=profile.candidate_reach {
-                for dx in -profile.candidate_reach..=profile.candidate_reach {
-                    if dx.abs().max(dy.abs()) <= profile.candidate_reach {
-                        candidate_tiles.insert(seed.offset(dx, dy));
-                    }
-                }
-            }
-        }
-    }
-    let mut candidate_tiles: Vec<_> = candidate_tiles.into_iter().collect();
-    candidate_tiles.sort_by_key(|tile| (tile.y, tile.x));
-
-    candidate_tiles.retain(|&anchor| policy.placement_valid_prepared(obs, profile.kind, anchor));
+    });
+    let mut candidate_tiles = crate::bot::navigation::areas::square_neighborhoods(
+        obs.map_width,
+        obs.map_height,
+        seeds,
+        profile.candidate_reach,
+    );
+    candidate_tiles.retain(|&anchor| policy.placement_geometry_valid(obs, profile.kind, anchor));
     candidate_tiles
 }
 
@@ -3544,6 +3456,7 @@ fn reference_score_coverage(
         let mut blind_exposure = false;
         let mut uses_spotter = false;
         let mut best_depth = 0;
+        let mut novel_tiles = BTreeSet::new();
         for approach in asset_approaches {
             for (index, tile) in approach.path.iter().copied().enumerate() {
                 if profile.kind == BuildingKind::Bastion
@@ -3580,6 +3493,9 @@ fn reference_score_coverage(
                     0 => {
                         adds_new = true;
                         adds_unplanned_new |= !planned_coverage;
+                        if !planned_coverage {
+                            novel_tiles.insert(tile);
+                        }
                     }
                     1 => {
                         reinforces = true;
@@ -3598,6 +3514,11 @@ fn reference_score_coverage(
             }
         }
         if protects {
+            coverage.novel_span = coverage.novel_span.saturating_add(
+                asset
+                    .value
+                    .saturating_mul(novel_tiles.len().min(INTERCEPTION_DEPTH) as u32),
+            );
             coverage.protected_value = coverage.protected_value.saturating_add(asset.value);
             if adds_new {
                 coverage.new = coverage.new.saturating_add(asset.value);
@@ -4656,6 +4577,38 @@ mod tests {
     }
 
     #[test]
+    fn candidate_enumeration_does_not_run_route_or_egress_proofs() {
+        let obs = observation(PlayerId(0), LEFT_HOME);
+        let map = briefing();
+        let policy = UtilityPolicy::new();
+        let starts = policy.uncleared_hostile_starts(&map, obs.me);
+        let ground = GroundKnowledge::new(&obs, &map, &starts);
+        let assets = defended_assets(&policy, &obs, &ground);
+        let baseline = approaches(
+            &ground,
+            &threat_origin_tiers(&obs, &[], &[], &starts, DefenseDomain::Ground)[3],
+            &assets,
+            None,
+            DefenseDomain::Ground,
+        );
+        assert!(!baseline.is_empty());
+        policy.prepare_ground_producer_egress(&obs);
+        let profile = DefenseProfile::for_kind(BuildingKind::Turret).unwrap();
+        let (candidates, work) = crate::bot::navigation::work::measure(|| {
+            defense_candidate_tiles(&policy, &obs, &assets, &baseline, profile)
+        });
+        assert!(!candidates.is_empty());
+        assert_eq!(work.searches, 0, "{work:?}");
+        assert_eq!(work.fields, 0, "{work:?}");
+        assert_eq!(work.paths, 0, "{work:?}");
+        assert!(
+            candidates
+                .windows(2)
+                .all(|pair| (pair[0].y, pair[0].x) < (pair[1].y, pair[1].x))
+        );
+    }
+
+    #[test]
     fn one_think_context_reuses_exact_projection_and_route_answers() {
         let obs = observation(PlayerId(0), LEFT_HOME);
         let map = briefing();
@@ -4696,7 +4649,8 @@ mod tests {
         assert!(stats.builder_travel_hits > 0);
         assert!(stats.resource_access_hits > 0);
         assert!(stats.supported_assets_hits > 0);
-        assert!(stats.rerouted_approach_hits > 0);
+        assert!(stats.coverage_batches > 0);
+        assert!(stats.coverage_scores > stats.coverage_batches);
         assert_eq!(policy.harvest_danger_build_count(), 1);
     }
 
@@ -5018,13 +4972,23 @@ mod tests {
         );
         let policy = UtilityPolicy::new();
         let builders = vec![&obs.my_units[0]];
+        assert!(matches!(
+            policy.planning.site(
+                obs.tick,
+                BuildingKind::Turret,
+                &[exit],
+                |_| Some(()),
+                |_, _| false,
+            ),
+            crate::bot::planning::Progress::Ready(())
+        ));
         let mut unguarded = DefenseThinkContext::new(&policy, &obs, &map, &[], &[]);
         let otherwise_best = policy
             .strategic_defense_quote_in_context_search(
                 BuildingKind::Turret,
                 &builders,
                 &mut unguarded,
-                DefenseSiteSearch::Best,
+                DefenseSiteSearch::Progressive,
             )
             .expect("the public approach has an otherwise-useful Turret site");
         assert_eq!(otherwise_best.placement.anchor, exit);
@@ -7094,6 +7058,7 @@ mod tests {
             reinforced: 0,
             unplanned_new: 16,
             unplanned_reinforced: 0,
+            novel_span: 0,
             interception: 64,
             protected_value: 16,
             planned_overlap: 0,
@@ -8247,6 +8212,7 @@ mod tests {
             reinforced: 0,
             unplanned_new,
             unplanned_reinforced: 0,
+            novel_span: 0,
             interception: 32,
             protected_value: new,
             planned_overlap,
