@@ -3,7 +3,8 @@
 use super::{distance_work::DistanceWork, flood::tile_index};
 use crate::bot::planning::{Progress, WorkBudget};
 use crate::bot::query_work::QueryPurpose;
-use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
+use chassis::grid::TilePos;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 
 const RETAINED_FIELDS: usize = 16;
@@ -89,48 +90,30 @@ fn field(
 ) -> Vec<u8> {
     let cells = width as usize * height as usize;
     let tile = |index: usize| TilePos::new(index as i32 % width, index as i32 / width);
-    let mut distances = DistanceWork::new(
-        query_purpose,
-        width,
-        height,
-        (0..cells).map(|index| open(tile(index))).collect(),
-        [source],
-    );
+    let open = (0..cells)
+        .map(|index| open(tile(index)))
+        .collect::<Vec<_>>();
+    let mut proof = vec![0; cells];
+    if let Some(index) = tile_index(width, height, source).filter(|&index| open[index]) {
+        proof[index] = if safe(source) { SAFE } else { UNSAFE };
+    }
+    let mut distances = DistanceWork::new(query_purpose, width, height, open, [source]);
     assert_eq!(
-        distances.advance(query_purpose, &mut WorkBudget::new(usize::MAX)),
+        distances.advance_with_predecessors(
+            query_purpose,
+            &mut WorkBudget::new(usize::MAX),
+            |from, to, ordering| {
+                let arrival = if safe(tile(to)) { proof[from] } else { UNSAFE };
+                // Both bits mean tied shortest paths disagree about danger exposure.
+                if ordering == Ordering::Less {
+                    proof[to] = arrival;
+                } else {
+                    proof[to] |= arrival;
+                }
+            },
+        ),
         Progress::Ready(())
     );
-    let distances = distances.into_distances();
-    let mut order = (0..cells)
-        .filter(|&index| distances[index] != u32::MAX)
-        .collect::<Vec<_>>();
-    order.sort_unstable_by_key(|&index| (distances[index], index));
-    let mut proof = vec![0; cells];
-    for index in order {
-        let current = tile(index);
-        // Both bits mean tied shortest paths disagree about danger exposure.
-        proof[index] = if !safe(current) {
-            UNSAFE
-        } else if distances[index] == 0 {
-            SAFE
-        } else {
-            CARDINALS
-                .iter()
-                .chain(DIAGONALS.iter())
-                .filter_map(|&(dx, dy)| {
-                    let next = current.offset(dx, dy);
-                    let neighbor = tile_index(width, height, next)?;
-                    let diagonal = dx != 0 && dy != 0;
-                    if diagonal && (!open(current.offset(dx, 0)) || !open(current.offset(0, dy))) {
-                        return None;
-                    }
-                    (distances[neighbor].checked_add(if diagonal { 14 } else { 10 })
-                        == Some(distances[index]))
-                    .then_some(proof[neighbor])
-                })
-                .fold(0, |alternatives, predecessor| alternatives | predecessor)
-        };
-    }
     #[cfg(test)]
     super::work::record(|work| {
         work.searches += 1;
@@ -142,6 +125,79 @@ fn field(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fields_distinguish_all_safe_all_unsafe_and_mixed_shortest_routes() {
+        fn shortest(mut costs: [[u32; 9]; 9]) -> [[u32; 9]; 9] {
+            for via in 0..9 {
+                for from in 0..9 {
+                    for to in 0..9 {
+                        costs[from][to] =
+                            costs[from][to].min(costs[from][via].saturating_add(costs[via][to]));
+                    }
+                }
+            }
+            costs
+        }
+
+        let tiles: [_; 9] = std::array::from_fn(|i| TilePos::new(i as i32 % 3, i as i32 / 3));
+        for terrain in 0..512 {
+            let open =
+                |tile| tile_index(3, 3, tile).is_some_and(|index| terrain & (1 << index) == 0);
+            let edges: [[u32; 9]; 9] = std::array::from_fn(|from| {
+                std::array::from_fn(|to| {
+                    let a = tiles[from];
+                    let b = tiles[to];
+                    if !open(a) || !open(b) || a.chebyshev(b) > 1 {
+                        u32::MAX
+                    } else if a == b {
+                        0
+                    } else if a.x == b.x || a.y == b.y {
+                        10
+                    } else if open(TilePos::new(a.x, b.y)) && open(TilePos::new(b.x, a.y)) {
+                        14
+                    } else {
+                        u32::MAX
+                    }
+                })
+            });
+            let ordinary = shortest(edges);
+            for hazard in 0..9 {
+                let mut safe_edges = edges;
+                safe_edges[hazard].fill(u32::MAX);
+                for row in &mut safe_edges {
+                    row[hazard] = u32::MAX;
+                }
+                // Danger excludes visits, while diagonal corner rules still use terrain.
+                let avoiding = shortest(safe_edges);
+                for source in 0..9 {
+                    let proof = field(
+                        QueryPurpose::NavigationTest,
+                        (3, 3),
+                        tiles[source],
+                        open,
+                        |tile| tile != tiles[hazard],
+                    );
+                    for (destination, &actual) in proof.iter().enumerate() {
+                        let distance = ordinary[source][destination];
+                        let expected = if distance == u32::MAX {
+                            0
+                        } else {
+                            let safe = avoiding[source][destination] == distance;
+                            let unsafe_route = ordinary[source][hazard]
+                                .saturating_add(ordinary[hazard][destination])
+                                == distance;
+                            (u8::from(safe) * SAFE) | (u8::from(unsafe_route) * UNSAFE)
+                        };
+                        assert_eq!(
+                            actual, expected,
+                            "terrain={terrain}, hazard={hazard}, source={source}, destination={destination}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_batch_proof_agrees_with_the_canonical_route() {
