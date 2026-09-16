@@ -1047,13 +1047,15 @@ and uses personality to weight how otherwise competitive marginal capability is
 divided between air, siege, direct strike, and attack-run bombing. Personality
 never gates a provider or family. One beam slot preserves the cheapest
 alternative; existing useful providers remain eligible at minimum strength, and
-every extension revalidates its canonical funding order. The offered growth
+every extension recomputes its canonical funding order. Speculative compositions
+use necessary throughput bounds; complete minima and the selected growth ladder
+receive funded FIFO refinement before they are offered. The offered growth
 ladder is rebuilt in that final order, so enlarging or revising a package keeps
 earlier job identities and payment times intact. Fully refined comparisons
 preserve the monotonic opportunity checks for more scrap, time, or completed
-production capability. A decision that exhausts its refinement allowance reports
-pending work rather than a smaller feasible set; an unfinished revision
-preserves the accepted operation and its exact orders.
+production capability. Fresh admission may offer a verified prefix while larger
+variants remain pending. Pending refinement cannot prune an active roster: an
+unfinished revision preserves the accepted operation and its exact orders.
 
 Current connected targets are ranked canonically and admitted only with a
 complete package. A route-feasible optional member of its bounded current
@@ -1313,13 +1315,13 @@ coverage each retain at most sixteen pending jobs and 32 MiB of completed field
 payloads. Exact terrain and blocking changes invalidate affected work;
 unfinished jobs expire after 120 ticks. Pending Foundry, ground, air, and
 production work divide half of each decision's allowance, leaving half for
-current requests. Navigation consumes at most three quarters of the shared
-allowance, reserving work to admit production tasks. Field requests can register
-without work and receive their share on the next decision; production admission
-cannot be starved by repeated navigation calls. Allocation rollback preserves
-this work and the Foundry and defensive-site cursors. Weapon and Array
-refinement share the allowance and retain their four-new-site limit; incumbent
-validation is separate. Diagnostic counters cover these services, not
+current requests. Navigation and speculative production forecasts leave one
+quarter of the shared allowance for final production admission. Field requests
+can register without work and receive their share on the next decision;
+production admission cannot be starved by repeated navigation calls. Allocation
+rollback preserves this work and the Foundry and defensive-site cursors. Weapon
+and Array refinement share the allowance and retain their four-new-site limit;
+incumbent validation is separate. Diagnostic counters cover these services, not
 synchronous planner preparation or mandatory validation. Saved Foundry
 validation remains immediate.
 
@@ -1332,20 +1334,22 @@ unrefined, not infeasible. Claim identities include capital reservations and
 funding priorities; a retained schedule must pass current queue, deadline, and
 funding checks before acceptance. Portfolio selection, standing-force wait
 binding, connected growth, and prospective Airworks allocation use this service.
-Campaign composition and active provider forecasts use this same production
-service, including queue slots, timing, current funding, and shared work limits.
-The separate recursive funded-lane scheduler is a test-only oracle. A pending
-minimum remains a deferred target; a pending active revision preserves its
-accepted assignments and deadline. Forecasts never reserve resources themselves.
-Fixed obligations reuse the same witness validator directly; they do not search
-for an alternative schedule. It checks current queue state, request identity,
-owner order, exact timing, and rebased funding. Unassigned mandatory purchases
-use the same bounded service. If they remain pending, the session settles only
-committed claims, restores the prior connected operation instead of accepting
-its replacement, and leaves new transport requests unbound. Due accepted jobs,
-paid work, and emergency commitments continue. Read-only funding checks preserve
-existing plans on deferred results. The exhaustive production solver is compiled
-only as a test oracle.
+Complete campaign candidates and active provider forecasts use this same
+production service, including queue slots, timing, current funding, and shared
+work limits. Composition exploration uses shared necessary capacity bounds
+instead of scheduling every intermediate roster. The separate recursive
+funded-lane scheduler is a test-only oracle. A pending minimum remains a
+deferred target; a pending active revision preserves its accepted assignments
+and deadline. Forecasts never reserve resources themselves. Fixed obligations
+reuse the same witness validator directly; they do not search for an alternative
+schedule. It checks current queue state, request identity, owner order, exact
+timing, and rebased funding. Unassigned mandatory purchases use the same bounded
+service. If they remain pending, the session settles only committed claims,
+restores the prior connected operation instead of accepting its replacement, and
+leaves new transport requests unbound. Due accepted jobs, paid work, and
+emergency commitments continue. Read-only funding checks preserve existing plans
+on deferred results. The exhaustive production solver is compiled only as a test
+oracle.
 
 Site refinement and prospective Airworks targets use the same bounded candidate
 cursor. Airworks valuation admits two candidate factory sites and examines two

@@ -698,6 +698,22 @@ fn production_schedule(
     }
 }
 
+/// Necessary throughput bounds for ranking speculative rosters. A positive
+/// result still requires a funded FIFO schedule before admission.
+pub(crate) fn production_may_fit_horizon(
+    resources: &ResourceSnapshot,
+    requested: &[UnitKind],
+    deadline: Tick,
+    access: &ProductionAccess,
+) -> bool {
+    let problem = HorizonProblem::new(resources, requested, deadline, access);
+    remaining_work_fits_canonical_capacity(
+        &problem.kinds,
+        &problem.request_counts(requested),
+        &problem.canonical_lane_classes(&problem.initial_capacities),
+    )
+}
+
 /// Whether every requested append can finish through the allowed completed
 /// producer lanes before `deadline`, independent of when forecast income
 /// becomes spendable.
@@ -1162,6 +1178,54 @@ mod tests {
             trainable,
             ProducerEgress::NotRequired,
         )
+    }
+
+    #[test]
+    fn speculative_capacity_bounds_never_exclude_a_feasible_mixed_roster() {
+        for queued in [0, 2, 4] {
+            let resources = snapshot(
+                10_000,
+                vec![
+                    lane(
+                        1,
+                        BuildingKind::Airworks,
+                        vec![UnitKind::Buzzard; queued],
+                        vec![UnitKind::Buzzard, UnitKind::Condor],
+                        ProducerEgress::NotRequired,
+                    ),
+                    lane(
+                        2,
+                        BuildingKind::Airworks,
+                        vec![],
+                        vec![UnitKind::Buzzard],
+                        ProducerEgress::NotRequired,
+                    ),
+                ],
+            );
+            for duration in [180, 360, 600, 1200] {
+                for buzzards in 0..5 {
+                    for condors in 0..4 {
+                        let requested = core::iter::repeat_n(UnitKind::Buzzard, buzzards)
+                            .chain(core::iter::repeat_n(UnitKind::Condor, condors))
+                            .collect::<Vec<_>>();
+                        let deadline = OBSERVED_AT + duration;
+                        let possible = production_may_fit_horizon(
+                            &resources,
+                            &requested,
+                            deadline,
+                            &ProductionAccess::Unrestricted,
+                        );
+                        let exact = complete_horizon_assignment(
+                            &resources,
+                            &requested,
+                            deadline,
+                            &ProductionAccess::Unrestricted,
+                        );
+                        assert!(possible || !matches!(exact, HorizonAssignmentResult::Found(_)));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -196,6 +196,7 @@ impl PlanningWork {
             .saturating_sub(self.navigation_spent.get());
         let mut budget = self.budget.borrow_mut();
         let before = budget.spent();
+        let limit = limit.min(budget.remaining.saturating_sub(reserve));
         let result = budget.run_slice(limit, run);
         self.navigation_spent
             .set(self.navigation_spent.get() + budget.spent() - before);
@@ -215,6 +216,26 @@ impl PlanningWork {
         self.production
             .borrow_mut()
             .resolve(capacity, claims, &mut self.budget.borrow_mut())
+    }
+
+    pub(in crate::bot) fn production_forecast(
+        &self,
+        tick: u64,
+        capacity: &crate::bot::allocation::AllocationCapacity,
+        claims: &crate::bot::allocation::ClaimState,
+    ) -> Result<
+        Progress<crate::bot::allocation::ResolvedClaimState>,
+        crate::bot::allocation::AllocationConflict,
+    > {
+        self.begin(tick);
+        let mut budget = self.budget.borrow_mut();
+        let reserve = (self.allowance / 4).min(PRODUCTION_RESERVE);
+        let limit = budget.remaining.saturating_sub(reserve);
+        budget.run_slice(limit, |slice| {
+            self.production
+                .borrow_mut()
+                .resolve(capacity, claims, slice)
+        })
     }
 
     pub(in crate::bot) fn site_incumbent(
@@ -499,6 +520,11 @@ mod tests {
             1,
         )
         .unwrap();
+        assert!(matches!(
+            work.production_forecast(0, &capacity, &ClaimState::default()),
+            Ok(Progress::Deferred)
+        ));
+        assert_eq!(work.spent(), DECISION_WORK - PRODUCTION_RESERVE);
         assert!(matches!(
             work.production(0, &capacity, &ClaimState::default()),
             Ok(Progress::Ready(_))

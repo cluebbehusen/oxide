@@ -842,6 +842,7 @@ pub(super) fn derive_connected_force_package_for_cluster(
 /// variants on the same evidence, target cluster, and preparation deadline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConnectedForcePackageOptions {
+    pub(super) refinement_pending: bool,
     pub(super) minimum: ConnectedForcePackage,
     pub(super) marginal: Vec<ConnectedForcePackage>,
 }
@@ -1128,6 +1129,22 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
             minimum_capability,
         )?);
     }
+    minimum_candidates.sort_by_key(|candidate| {
+        Reverse(package_candidate_score(
+            profile,
+            minimum_capability,
+            0,
+            candidate,
+        ))
+    });
+    minimum_candidates.retain(|candidate| candidate.refine_providers(&candidate.funded_providers));
+    if minimum_candidates.is_empty() {
+        return Err(ForcePackageRejection::PreparationWindowTooShort {
+            family: ForceFamily::Strike,
+            observed_at: observation.tick,
+            deadline: preparation_deadline,
+        });
+    }
     let builders = if MINIMUM_ONLY {
         let mut candidates = minimum_candidates;
         candidates.sort_by_key(|candidate| {
@@ -1177,6 +1194,7 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
         .next()
         .expect("the common minimum produced one complete package");
     Ok(ConnectedForcePackageOptions {
+        refinement_pending: deferred.get(),
         minimum,
         marginal: packages.collect(),
     })
@@ -1348,7 +1366,16 @@ fn best_complete_portfolio_path<'a>(
         rank(&mut next);
         frontier = next;
     }
-    canonical_growth_path(profile, minimums[best.0].clone(), best.1)
+    let mut path = canonical_growth_path(profile, minimums[best.0].clone(), best.1);
+    while path.len() > 1
+        && !path
+            .last()
+            .unwrap()
+            .refine_providers(&path.last().unwrap().funded_providers)
+    {
+        path.pop();
+    }
+    path
 }
 
 fn canonical_growth_path<'a>(
@@ -1560,6 +1587,22 @@ impl PackageBuilder<'_> {
     }
 
     fn providers_fit(&self, providers: &[FundedProvider]) -> bool {
+        if self.refinement.is_some() {
+            crate::bot::resources::production_may_fit_horizon(
+                self.resources,
+                &providers
+                    .iter()
+                    .map(|provider| provider.kind)
+                    .collect::<Vec<_>>(),
+                self.deadline,
+                self.production_access,
+            )
+        } else {
+            self.refine_providers(providers)
+        }
+    }
+
+    fn refine_providers(&self, providers: &[FundedProvider]) -> bool {
         if let Some(refinement) = self.refinement {
             match refinement.refine(
                 self.resources,
@@ -2543,6 +2586,48 @@ mod tests {
             ready.preparation_deadline,
             &ProductionAccess::Unrestricted
         ));
+    }
+
+    #[test]
+    fn runtime_composition_leaves_admission_work_and_only_offers_funded_rosters() {
+        let mut offered_growth = false;
+        for scrap in [700, 1600, 10000] {
+            let mut obs = observation(scrap);
+            obs.tick = 0;
+            add_complete_tech(&mut obs);
+            add_valuable_cluster(&mut obs);
+            let (intel, target) = intelligence_with_target(&mut obs, 4);
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let work = PlanningWork::default();
+            let options = derive_connected_force_package_options_for_cluster(
+                &profile(50, 50),
+                &obs,
+                &intel,
+                ConnectedTargetEvidence {
+                    primary: &target,
+                    cluster: &intel.buildings().iter().collect::<Vec<_>>(),
+                },
+                ProductionEvidence::with_planning(
+                    &resources,
+                    &ProductionAccess::Unrestricted,
+                    Some(&work),
+                ),
+                &[],
+                constraints(2500, 0),
+            )
+            .expect("the completed production base admits a funded package");
+            offered_growth |= !options.marginal.is_empty();
+            assert!(work.spent() <= 96_000);
+            for package in std::iter::once(options.minimum).chain(options.marginal) {
+                assert!(funded_providers_fit(
+                    &resources,
+                    &package.funded_providers,
+                    package.preparation_deadline,
+                    &ProductionAccess::Unrestricted
+                ));
+            }
+        }
+        assert!(offered_growth);
     }
 
     #[test]

@@ -2280,15 +2280,46 @@ fn active_connected_paid_queue_work_leaves_only_independent_standing_capacity() 
             .count(),
         1
     );
-    assert!(continued.commands.iter().all(|command| {
-        !connected_jobs.iter().any(|job| {
-            matches!(
-                command.command,
-                Command::Train { building, kind }
-                    if building == job.producer && kind == job.kind
-            )
-        })
-    }));
+    let before = &admission_trace
+        .connected_force
+        .package
+        .as_ref()
+        .unwrap()
+        .demands;
+    let after = &continued_trace
+        .connected_force
+        .package
+        .as_ref()
+        .unwrap()
+        .demands;
+    let count = |demands: &oxide_sim::bot::ForceDemandsTrace, kind| {
+        demands
+            .recon
+            .iter()
+            .chain(&demands.suppression)
+            .chain(&demands.strike)
+            .filter(|demand| demand.kind == kind)
+            .map(|demand| demand.count as usize)
+            .sum::<usize>()
+    };
+    for &(_, kind) in connected_lane_counts.keys() {
+        let purchased = continued
+            .commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command.command,
+                    Command::Train { building, kind: trained }
+                        if trained == kind && operation_producers.contains(&building)
+                )
+            })
+            .count();
+        assert_eq!(
+            purchased,
+            count(after, kind).saturating_sub(count(before, kind)),
+            "purchases may grow the roster but cannot buy its paid members again"
+        );
+    }
 
     let report = state.tick(&continued.commands);
     assert!(report.events.iter().all(|event| !matches!(

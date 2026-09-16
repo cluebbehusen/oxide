@@ -540,13 +540,16 @@ fn connected_plan_options(
     target: &BuildingContact,
     unavailable: &[UnitId],
     context: ConnectedPlanningContext<'_>,
-) -> Result<Vec<AirPlan>, ConnectedPlanRejection> {
+) -> Result<(Vec<AirPlan>, bool), ConnectedPlanRejection> {
     let packages =
         derive_connected_package_options(profile, obs, intel, home, target, unavailable, context)?;
-    Ok(std::iter::once(packages.minimum)
-        .chain(packages.marginal)
-        .map(|package| AirPlan::connected(package, obs.tick, target.anchor))
-        .collect())
+    Ok((
+        std::iter::once(packages.minimum)
+            .chain(packages.marginal)
+            .map(|package| AirPlan::connected(package, obs.tick, target.anchor))
+            .collect(),
+        packages.refinement_pending,
+    ))
 }
 
 #[cfg(test)]
@@ -2661,7 +2664,7 @@ fn derive_connected_proposal_with_resources(
         public_map: coordination.public_map,
         orientation: coordination.orientation,
     };
-    let mut plans = connected_plan_options(
+    let (mut plans, refinement_pending) = connected_plan_options(
         profile,
         obs,
         intel,
@@ -2684,6 +2687,13 @@ fn derive_connected_proposal_with_resources(
             },
         },
     )?;
+    if refinement_pending && matches!(origin, ConnectedProposalOrigin::Active { .. }) {
+        return Err(ConnectedPlanRejection::Package {
+            reason: ForcePackageRejection::Deferred,
+            protected_current_scrap: coordination.protected_current_scrap,
+            protected_forecast_scrap: coordination.protected_forecast_scrap,
+        });
+    }
     let minimum_package = plans[0]
         .connected_package
         .as_ref()

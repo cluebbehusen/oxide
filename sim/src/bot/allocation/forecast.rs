@@ -26,7 +26,7 @@ pub(in crate::bot) fn refine(
             .collect(),
         ..ClaimState::default()
     };
-    match planning.production(capacity.resources.observed_at(), capacity, &claims) {
+    match planning.production_forecast(capacity.resources.observed_at(), capacity, &claims) {
         Ok(Progress::Ready(_)) => Progress::Ready(()),
         Ok(Progress::Deferred) => Progress::Deferred,
         Ok(Progress::ProvenInfeasible) | Err(_) => Progress::ProvenInfeasible,
