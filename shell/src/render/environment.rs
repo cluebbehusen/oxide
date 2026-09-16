@@ -315,8 +315,8 @@ fn cell_color(material: Material, ix: i32, iy: i32) -> Option<Color> {
         }
         Material::Vignette(step) => Some(mixed(
             LAYERS.last().expect("terrace layers").top,
-            BLACK,
-            (0.25 + f32::from(step) / 4.0 * 0.72).min(0.97),
+            super::FOG_UNEXPLORED,
+            (0.25 + f32::from(step) / 4.0 * 0.75).min(1.0),
         )),
         Material::Void => None,
     }
@@ -535,7 +535,14 @@ pub(super) fn hash(x: i32, y: i32, salt: u32) -> u32 {
 }
 
 pub(super) fn draw_backdrop(_game: &Game) {
-    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), rgba(8, 9, 12));
+    // Boundary sight extends off-map, so the void must match opaque fog.
+    draw_rectangle(
+        0.0,
+        0.0,
+        screen_width(),
+        screen_height(),
+        super::FOG_UNEXPLORED,
+    );
 }
 
 pub(super) fn draw_boundary(game: &Game, fractured: bool) {
