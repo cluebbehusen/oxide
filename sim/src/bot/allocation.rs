@@ -20,6 +20,7 @@ use chassis::grid::TilePos;
 
 mod adapters;
 mod coordinator;
+pub(in crate::bot) mod forecast;
 mod portfolio_search;
 mod production_bounds;
 mod production_search;

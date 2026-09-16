@@ -478,6 +478,8 @@ pub enum ForceFamilyTrace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum ConnectedRejectionReasonTrace {
+    /// Production refinement has not finished within the shared allowance.
+    Deferred,
     /// The standing army has not reached the protected commitment floor.
     InsufficientStandingForce {
         /// Current eligible combat roster.
@@ -3409,6 +3411,7 @@ fn package_rejection_trace(
     protected_forecast_scrap: u32,
 ) -> ConnectedRejectionReasonTrace {
     match rejection {
+        ForcePackageRejection::Deferred => ConnectedRejectionReasonTrace::Deferred,
         ForcePackageRejection::InvalidDecisionCadence => {
             ConnectedRejectionReasonTrace::InvalidDecisionCadence
         }

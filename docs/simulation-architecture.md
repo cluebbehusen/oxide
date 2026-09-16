@@ -1041,19 +1041,20 @@ never gates a provider or family. One beam slot preserves the cheapest
 alternative; existing useful providers remain eligible at minimum strength, and
 every extension revalidates its canonical funding order. The offered growth
 ladder is rebuilt in that final order, so enlarging or revising a package keeps
-earlier job identities and payment times intact. For otherwise identical
-evidence, more current scrap, more available preparation time at derivation, or
-additional completed usable production capability cannot revoke admission or
-reduce capped total useful capability.
+earlier job identities and payment times intact. Fully refined comparisons
+preserve the monotonic opportunity checks for more scrap, time, or completed
+production capability. A decision that exhausts its refinement allowance reports
+pending work rather than a smaller feasible set; an unfinished revision
+preserves the accepted operation and its exact orders.
 
-Current connected targets are ranked canonically and tried in order until one
-admits a complete package. A route-feasible optional member of its bounded
-current cluster is retained only when the complete revised package still fits
-the same producer access, queues, funds, and fixed preparation deadline. The
-package stores and traces the canonical anchors it actually admitted. During
-Recon and Verify, negative anti-air evidence requires current visibility over
-every footprint tile of every surviving admitted target; the scout focuses the
-first unknown tile before the operation may commit.
+Current connected targets are ranked canonically and admitted only with a
+complete package. A route-feasible optional member of its bounded current
+cluster is retained only when the complete revised package still fits the same
+producer access, queues, funds, and fixed preparation deadline. The package
+stores and traces the canonical anchors it actually admitted. During Recon and
+Verify, negative anti-air evidence requires current visibility over every
+footprint tile of every surviving admitted target; the scout focuses the first
+unknown tile before the operation may commit.
 
 Forecast income is proposal evidence, not command credit. Providers, producer
 exits, artillery staging, reconnaissance, and strike routes must remain viable
@@ -1308,6 +1309,11 @@ unrefined, not infeasible. Claim identities include capital reservations and
 funding priorities; a retained schedule must pass current queue, deadline, and
 funding checks before acceptance. Portfolio selection, standing-force wait
 binding, connected growth, and prospective Airworks allocation use this service.
+Campaign composition and active provider forecasts use this same production
+service, including queue slots, timing, current funding, and shared work limits.
+The separate recursive funded-lane scheduler is a test-only oracle. A pending
+minimum remains a deferred target; a pending active revision preserves its
+accepted assignments and deadline. Forecasts never reserve resources themselves.
 Fixed obligations reuse the same witness validator directly; they do not search
 for an alternative schedule. It checks current queue state, request identity,
 owner order, exact timing, and rebased funding. Obligations with unassigned

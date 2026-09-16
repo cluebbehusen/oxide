@@ -16,11 +16,14 @@ use super::super::resources::{
     ProducerEgress, ProductionAccess, ResourceForecast, ResourceSnapshot,
     count_paid_queued_ready_with_access,
 };
+use crate::bot::allocation::{AllocationCapacity, ConnectedOffenseKey, ProducerJobClaim};
+use crate::bot::planning::{PlanningWork, Progress};
 use crate::ids::{PlayerId, UnitId};
 use crate::stats::{BOMB_SALVO_SPACING, BuildingKind, Domain, Role, UnitKind, WeaponStats};
 use chassis::Tick;
 use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::TilePos;
+use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -77,11 +80,28 @@ pub(super) struct PreparationConstraints {
 pub(super) struct ProductionEvidence<'a> {
     resources: &'a ResourceSnapshot,
     access: &'a ProductionAccess,
+    planning: Option<&'a PlanningWork>,
 }
 
 impl<'a> ProductionEvidence<'a> {
+    #[cfg(test)]
     pub(super) const fn new(resources: &'a ResourceSnapshot, access: &'a ProductionAccess) -> Self {
-        Self { resources, access }
+        Self {
+            resources,
+            access,
+            planning: None,
+        }
+    }
+    pub(super) const fn with_planning(
+        resources: &'a ResourceSnapshot,
+        access: &'a ProductionAccess,
+        planning: Option<&'a PlanningWork>,
+    ) -> Self {
+        Self {
+            resources,
+            access,
+            planning,
+        }
     }
 }
 
@@ -100,6 +120,8 @@ pub(super) struct ConnectedTargetEvidence<'a> {
 /// marginal provider simply ends opportunity scaling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::bot) enum ForcePackageRejection {
+    /// The shared work allowance has not yet produced a current production witness.
+    Deferred,
     /// A zero cadence cannot produce a deterministic future command boundary.
     InvalidDecisionCadence,
     /// The fixed preparation deadline is before the current observation.
@@ -264,12 +286,14 @@ impl ProviderFundingEvidence<'_> {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 struct FundedLane {
     eligible_kinds: Vec<UnitKind>,
     available_tick: Tick,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg(test)]
 struct FundedLaneClass {
     eligible_kinds: Vec<UnitKind>,
     available_ticks: Vec<Tick>,
@@ -280,6 +304,45 @@ struct PreservedProvider {
     family: ForceFamily,
     kind: UnitKind,
     remaining: usize,
+}
+
+#[derive(Debug)]
+struct PackageRefinement<'a> {
+    planning: &'a PlanningWork,
+    capacity: &'a AllocationCapacity,
+    key: ConnectedOffenseKey,
+}
+
+impl PackageRefinement<'_> {
+    fn refine(
+        &self,
+        resources: &ResourceSnapshot,
+        access: &ProductionAccess,
+        providers: &[FundedProvider],
+        deadline: Tick,
+    ) -> Progress<()> {
+        let jobs = providers
+            .iter()
+            .map(|provider| {
+                let eligible = resources
+                    .producers()
+                    .iter()
+                    .filter(|lane| {
+                        access.allows(lane.producer, provider.kind)
+                            && lane.horizon_timing(&[provider.kind]).is_some_and(|timing| {
+                                matches!(
+                                    timing.current_egress,
+                                    ProducerEgress::NotRequired | ProducerEgress::Open
+                                )
+                            })
+                    })
+                    .map(|lane| lane.producer)
+                    .collect();
+                ProducerJobClaim::flexible(provider.kind, provider.command_tick, deadline, eligible)
+            })
+            .collect();
+        crate::bot::allocation::forecast::refine(self.capacity, self.key, jobs, self.planning)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +357,8 @@ struct PackageBuilder<'a> {
     resources: &'a ResourceSnapshot,
     committed_scrap: u32,
     production_access: &'a ProductionAccess,
+    refinement: Option<&'a PackageRefinement<'a>>,
+    deferred: &'a Cell<bool>,
     pub(super) funded_providers: Vec<FundedProvider>,
     preserved: Vec<PreservedProvider>,
     provider_priority: Vec<ProviderDemandTranche>,
@@ -314,6 +379,7 @@ struct PackageSearchKey {
     funded_providers: Vec<FundedProvider>,
 }
 
+#[cfg(test)]
 fn funded_providers_fit(
     resources: &ResourceSnapshot,
     providers: &[FundedProvider],
@@ -327,20 +393,80 @@ fn funded_providers_fit(
     funded_lane_schedule_fits(lanes, providers, deadline)
 }
 
-/// Whether the current bank and completed-source forecast can fund every
-/// requested provider early enough for the completed production base to expose
-/// it before the fixed preparation deadline.
-pub(super) fn provider_demands_fit_funded_horizon(
+pub(super) fn refine_provider_demands(
+    production: ProductionEvidence<'_>,
+    demands: &[ProviderDemandTranche],
+    observed_at: Tick,
+    constraints: PreparationConstraints,
+    key: ConnectedOffenseKey,
+) -> Progress<()> {
+    let Some(providers) =
+        funded_demand_releases(production.resources, demands, observed_at, constraints)
+    else {
+        return Progress::ProvenInfeasible;
+    };
+    if let Some(planning) = production.planning {
+        let Ok(capacity) = AllocationCapacity::from_snapshot(
+            production.resources,
+            constraints.deadline,
+            constraints.decision_cadence,
+        ) else {
+            return Progress::ProvenInfeasible;
+        };
+        PackageRefinement {
+            planning,
+            capacity: &capacity,
+            key,
+        }
+        .refine(
+            production.resources,
+            production.access,
+            &providers,
+            constraints.deadline,
+        )
+    } else {
+        #[cfg(test)]
+        {
+            if funded_providers_fit(
+                production.resources,
+                &providers,
+                constraints.deadline,
+                production.access,
+            ) {
+                Progress::Ready(())
+            } else {
+                Progress::ProvenInfeasible
+            }
+        }
+        #[cfg(not(test))]
+        {
+            Progress::Deferred
+        }
+    }
+}
+
+#[cfg(test)]
+fn provider_demands_fit_funded_horizon(
     resources: &ResourceSnapshot,
     demands: &[ProviderDemandTranche],
     observed_at: Tick,
     constraints: PreparationConstraints,
     access: &ProductionAccess,
 ) -> bool {
-    if constraints.decision_cadence == 0 || constraints.deadline < observed_at {
-        return false;
-    }
+    funded_demand_releases(resources, demands, observed_at, constraints).is_some_and(|providers| {
+        funded_providers_fit(resources, &providers, constraints.deadline, access)
+    })
+}
 
+fn funded_demand_releases(
+    resources: &ResourceSnapshot,
+    demands: &[ProviderDemandTranche],
+    observed_at: Tick,
+    constraints: PreparationConstraints,
+) -> Option<Vec<FundedProvider>> {
+    if constraints.decision_cadence == 0 || constraints.deadline < observed_at {
+        return None;
+    }
     let funding = ProviderFundingEvidence {
         observed_at,
         current_scrap: resources.current_scrap().amount(),
@@ -351,26 +477,19 @@ pub(super) fn provider_demands_fit_funded_horizon(
     let mut providers = Vec::new();
     for demand in demands {
         for _ in 0..demand.count {
-            let Some(command_tick) =
-                funding.earliest_command_tick(committed_scrap, demand.kind.stats().cost)
-            else {
-                return false;
-            };
-            let Some(next_committed_scrap) = committed_scrap.checked_add(demand.kind.stats().cost)
-            else {
-                return false;
-            };
-            committed_scrap = next_committed_scrap;
+            let command_tick =
+                funding.earliest_command_tick(committed_scrap, demand.kind.stats().cost)?;
+            committed_scrap = committed_scrap.checked_add(demand.kind.stats().cost)?;
             providers.push(FundedProvider {
                 kind: demand.kind,
                 command_tick,
             });
         }
     }
-
-    funded_providers_fit(resources, &providers, constraints.deadline, access)
+    Some(providers)
 }
 
+#[cfg(test)]
 fn funded_lane_schedule_fits(
     lanes: Vec<FundedLane>,
     providers: &[FundedProvider],
@@ -393,6 +512,7 @@ fn funded_lane_schedule_fits(
     .fits(0, classes)
 }
 
+#[cfg(test)]
 fn funded_lane_evidence(
     resources: &ResourceSnapshot,
     access: &ProductionAccess,
@@ -441,6 +561,7 @@ fn funded_lane_evidence(
         .collect()
 }
 
+#[cfg(test)]
 fn canonical_funded_lane_classes(lanes: Vec<FundedLane>) -> Vec<FundedLaneClass> {
     let mut classes = BTreeMap::<Vec<UnitKind>, Vec<Tick>>::new();
     for lane in lanes {
@@ -467,12 +588,14 @@ fn canonical_funded_lane_classes(lanes: Vec<FundedLane>) -> Vec<FundedLaneClass>
 /// order is the canonical funding order, so a state needs only each lane's
 /// next available tick. Equal-eligibility lanes are interchangeable and a
 /// state with every lane available no later dominates a later state.
+#[cfg(test)]
 struct FundedHorizonSearch<'a> {
     providers: &'a [FundedProvider],
     deadline: Tick,
     failed: BTreeMap<usize, Vec<Vec<FundedLaneClass>>>,
 }
 
+#[cfg(test)]
 impl FundedHorizonSearch<'_> {
     fn fits(&mut self, provider_index: usize, lanes: Vec<FundedLaneClass>) -> bool {
         if provider_index == self.providers.len() {
@@ -555,6 +678,7 @@ impl FundedHorizonSearch<'_> {
     }
 }
 
+#[cfg(test)]
 fn funded_lanes_dominate(left: &[FundedLaneClass], right: &[FundedLaneClass]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -568,6 +692,7 @@ fn funded_lanes_dominate(left: &[FundedLaneClass], right: &[FundedLaneClass]) ->
         })
 }
 
+#[cfg(test)]
 fn remaining_funded_work_can_fit(
     providers: &[FundedProvider],
     lanes: &[FundedLaneClass],
@@ -645,6 +770,7 @@ fn remaining_funded_work_can_fit(
     true
 }
 
+#[cfg(test)]
 fn greatest_common_divisor(mut left: Tick, mut right: Tick) -> Tick {
     while right != 0 {
         (left, right) = (right, left % right);
@@ -778,6 +904,38 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
+    let deferred = Cell::new(false);
+    let result = derive_package_options_inner::<MINIMUM_ONLY>(
+        profile,
+        observation,
+        intelligence,
+        targets,
+        production,
+        unavailable,
+        constraints,
+        &deferred,
+    );
+    if result.is_err() && deferred.get() {
+        Err(ForcePackageRejection::Deferred)
+    } else {
+        result
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one derivation shares a deferred verdict across composition alternatives"
+)]
+fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
+    profile: &ResolvedProfile,
+    observation: &Observation,
+    intelligence: &StrategicIntelligence,
+    targets: ConnectedTargetEvidence<'_>,
+    production: ProductionEvidence<'_>,
+    unavailable: &[UnitId],
+    constraints: PreparationConstraints,
+    deferred: &Cell<bool>,
+) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
     let ConnectedTargetEvidence {
         primary: target,
         cluster,
@@ -785,6 +943,7 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
     let ProductionEvidence {
         resources,
         access: production_access,
+        planning,
     } = production;
     let PreparationConstraints {
         deadline: preparation_deadline,
@@ -888,6 +1047,23 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
         .forecast()
         .income_through(preparation_deadline)
         .amount();
+    let capacity = planning.and_then(|_| {
+        AllocationCapacity::from_snapshot(resources, preparation_deadline, decision_cadence).ok()
+    });
+    if planning.is_some() && capacity.is_none() {
+        return Err(ForcePackageRejection::Deferred);
+    }
+    let refinement =
+        planning
+            .zip(capacity.as_ref())
+            .map(|(planning, capacity)| PackageRefinement {
+                planning,
+                capacity,
+                key: ConnectedOffenseKey {
+                    objective: target.id.expect("current target checked"),
+                    anchor: target.anchor,
+                },
+            });
     let mut builder = PackageBuilder {
         faction: observation.faction,
         observed_at: observation.tick,
@@ -899,6 +1075,8 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
         resources,
         committed_scrap: 0,
         production_access,
+        refinement: refinement.as_ref(),
+        deferred,
         funded_providers: Vec::new(),
         preserved: Vec::new(),
         provider_priority: Vec::new(),
@@ -1381,6 +1559,39 @@ impl PackageBuilder<'_> {
         }
     }
 
+    fn providers_fit(&self, providers: &[FundedProvider]) -> bool {
+        if let Some(refinement) = self.refinement {
+            match refinement.refine(
+                self.resources,
+                self.production_access,
+                providers,
+                self.deadline,
+            ) {
+                Progress::Ready(()) => true,
+                Progress::ProvenInfeasible => false,
+                Progress::Deferred => {
+                    self.deferred.set(true);
+                    false
+                }
+            }
+        } else {
+            #[cfg(test)]
+            {
+                funded_providers_fit(
+                    self.resources,
+                    providers,
+                    self.deadline,
+                    self.production_access,
+                )
+            }
+            #[cfg(not(test))]
+            {
+                self.deferred.set(true);
+                false
+            }
+        }
+    }
+
     fn add_new_kind_variants(
         &self,
         family: ForceFamily,
@@ -1396,12 +1607,7 @@ impl PackageBuilder<'_> {
                 .last()
                 .map_or(self.observed_at, |provider| provider.command_tick),
         });
-        if !funded_providers_fit(
-            self.resources,
-            &structurally_funded,
-            self.deadline,
-            self.production_access,
-        ) {
+        if !self.providers_fit(&structurally_funded) {
             return Err(AddProviderFailure::PreparationWindowTooShort);
         }
         let required_scrap = self.committed_scrap.saturating_add(cost);
@@ -1421,12 +1627,7 @@ impl PackageBuilder<'_> {
             .push(FundedProvider { kind, command_tick });
         successor.committed_scrap = successor.committed_scrap.saturating_add(cost);
         successor.accept_provider(family, kind, priority);
-        if !funded_providers_fit(
-            successor.resources,
-            &successor.funded_providers,
-            successor.deadline,
-            successor.production_access,
-        ) {
+        if !successor.providers_fit(&successor.funded_providers) {
             return Err(AddProviderFailure::PreparationWindowTooShort);
         }
         Ok(vec![successor])
@@ -1504,12 +1705,7 @@ impl PackageBuilder<'_> {
                 committed = committed.saturating_add(cost);
             }
         }
-        if !funded_providers_fit(
-            self.resources,
-            &providers,
-            self.deadline,
-            self.production_access,
-        ) {
+        if !self.providers_fit(&providers) {
             return false;
         }
         self.funded_providers = providers;
@@ -2282,6 +2478,71 @@ mod tests {
             TilePos::new(11, 2),
             Vec::new(),
         );
+    }
+
+    #[test]
+    fn shared_forecast_defers_without_rejecting_and_resumes_the_minimum() {
+        let mut obs = observation(10_000);
+        obs.tick = 0;
+        add_complete_tech(&mut obs);
+        let (mut intelligence, _) = intelligence_with_target(&mut obs, 4);
+        let zero = PlanningWork::with_allowance(0);
+        let work = PlanningWork::with_allowance(4_096);
+        let mut cloned = work.clone();
+        let derive = |obs: &Observation, intel: &StrategicIntelligence, planning: &PlanningWork| {
+            let target = intel
+                .buildings()
+                .iter()
+                .find(|contact| contact.kind == BuildingKind::Crucible)
+                .unwrap();
+            derive_connected_minimum_for_cluster(
+                &profile(50, 50),
+                obs,
+                intel,
+                ConnectedTargetEvidence {
+                    primary: target,
+                    cluster: &[target],
+                },
+                ProductionEvidence::with_planning(
+                    &ResourceSnapshot::from_observation(obs),
+                    &ProductionAccess::Unrestricted,
+                    Some(planning),
+                ),
+                &[],
+                constraints(2_500, 0),
+            )
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                derive(&obs, &intelligence, &zero),
+                Err(ForcePackageRejection::Deferred)
+            );
+            assert_eq!(zero.spent(), 0);
+        }
+        let mut ready = None;
+        for tick in (0..120).step_by(12) {
+            obs.tick = tick;
+            intelligence.update(&obs);
+            let result = derive(&obs, &intelligence, &work);
+            assert_eq!(result, derive(&obs, &intelligence, &cloned));
+            assert!(work.spent() <= 4_096);
+            match result {
+                Ok(package) => {
+                    ready = Some(package.minimum);
+                    break;
+                }
+                Err(ForcePackageRejection::Deferred) => {}
+                Err(reason) => panic!("a pending funded minimum was rejected: {reason:?}"),
+            }
+            cloned = work.clone();
+        }
+        let ready = ready.expect("the minimum finishes before its pending work expires");
+        assert!(funded_providers_fit(
+            &ResourceSnapshot::from_observation(&obs),
+            &ready.funded_providers,
+            ready.preparation_deadline,
+            &ProductionAccess::Unrestricted
+        ));
     }
 
     #[test]

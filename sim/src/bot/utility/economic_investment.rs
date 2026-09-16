@@ -730,6 +730,7 @@ impl UtilityPolicy {
                             &intelligence,
                             home,
                             crate::bot::strategy::StrategicCoordination {
+                                planning: Some(&self.planning),
                                 enlisted: context.unavailable,
                                 lift_support: None,
                                 allow_new_operation: true,

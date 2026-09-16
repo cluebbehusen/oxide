@@ -658,6 +658,7 @@ impl Brain {
                     intelligence,
                     oriented_home,
                     StrategicCoordination {
+                        planning: Some(&self.policy.planning),
                         enlisted: &planner_claims,
                         lift_support: lift_support_request.as_ref(),
                         allow_new_operation: continue_connected || allow_new_voluntary_operations,
@@ -6997,6 +6998,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -7097,6 +7099,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -7187,6 +7190,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -7376,6 +7380,7 @@ mod tests {
             &intelligence,
             home,
             StrategicCoordination {
+                planning: None,
                 enlisted: &[],
                 lift_support: None,
                 allow_new_operation: true,

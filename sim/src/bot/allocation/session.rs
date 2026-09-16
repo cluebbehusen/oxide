@@ -1643,6 +1643,7 @@ impl<'a> AllocationSession<'a> {
                 self.context.intelligence,
                 self.context.home,
                 StrategicCoordination {
+                    planning: Some(&self.participants.policy.planning),
                     enlisted: &claims.planner_claims,
                     lift_support: self.context.lift_support,
                     allow_new_operation: true,
@@ -2102,6 +2103,7 @@ impl<'a> AllocationSession<'a> {
                     self.context.intelligence,
                     self.context.home,
                     StrategicCoordination {
+                        planning: Some(&self.participants.policy.planning),
                         enlisted: &claims.planner_claims,
                         lift_support: self.context.lift_support,
                         allow_new_operation: claims.opening_core.ready,
@@ -2191,6 +2193,7 @@ impl<'a> AllocationSession<'a> {
             self.context.intelligence,
             self.context.home,
             StrategicCoordination {
+                planning: Some(&self.participants.policy.planning),
                 enlisted: &claims.planner_claims,
                 lift_support: None,
                 allow_new_operation: true,
@@ -2225,6 +2228,10 @@ impl<'a> AllocationSession<'a> {
                     rejected: None,
                 }
             }
+            Err(rejected) if rejected.reason.is_deferred() => ActiveRevisionPreparation {
+                proposal: None,
+                rejected: Some(rejected),
+            },
             Err(rejected) => {
                 let retained_units = active_air_units(
                     self.participants.strategy.as_ref(),
@@ -2338,6 +2345,7 @@ impl<'a> AllocationSession<'a> {
                         self.context.intelligence,
                         self.context.home,
                         StrategicCoordination {
+                            planning: Some(&self.participants.policy.planning),
                             enlisted: &claims.planner_claims,
                             lift_support: None,
                             allow_new_operation: true,
@@ -6008,6 +6016,7 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -6420,6 +6429,7 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &outcome.planner_claims,
                     lift_support: None,
                     allow_new_operation: outcome.connected_continues
@@ -8285,6 +8295,58 @@ mod tests {
             &mut strategy,
             "lost accepted forecast funding",
         );
+    }
+
+    #[test]
+    fn deferred_revision_keeps_accepted_factory_assignments_and_operation() {
+        let mut obs = connected_observation(1_200, 10_000);
+        let mut proposal = current_connected_proposal(&obs);
+        let assignments: Vec<_> = connected_assignments(&proposal, false)
+            .into_iter()
+            .map(|job| {
+                let timing = job.timing();
+                ConnectedProducerAssignment::new(
+                    proposal.identity(),
+                    job.request_ordinal(),
+                    job.producer(),
+                    job.kind(),
+                    ConnectedProducerTiming::new(
+                        timing.enqueued_at() + 24,
+                        timing.starts_at() + 24,
+                        timing.ready_at() + 24,
+                        timing.ready_before(),
+                    ),
+                    ConnectedProducerFunding::new(job.kind().stats().cost, 0),
+                )
+            })
+            .collect();
+        proposal
+            .bind_producer_assignments(assignments.clone())
+            .unwrap();
+        let mut planner = StrategicPlanner::new();
+        planner.commit_connected_proposal(proposal).unwrap();
+        obs.tick += 12;
+        let before = planner.active_connected_obligation(&obs).unwrap();
+        let mut strategy = Some(planner);
+        let mut policy = UtilityPolicy::new();
+        policy.planning = crate::bot::planning::PlanningWork::with_allowance(0);
+        let outcome = run_connected_session(&obs, &mut policy, &mut strategy);
+        assert!(outcome.allocation_ok);
+        assert!(!outcome.accepted_connected);
+        assert!(
+            outcome
+                .rejected_connected_candidate
+                .as_ref()
+                .is_some_and(|rejected| rejected.reason.is_deferred())
+        );
+        let after = strategy
+            .as_ref()
+            .unwrap()
+            .active_connected_obligation(&obs)
+            .expect("pending refinement cannot revoke an accepted operation");
+        assert_eq!(after.provider_jobs(), before.provider_jobs());
+        assert_eq!(after.deadline(), before.deadline());
+        assert_eq!(policy.planning.spent(), 0);
     }
 
     #[test]

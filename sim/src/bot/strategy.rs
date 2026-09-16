@@ -41,8 +41,8 @@ use force_package::{
     ConnectedForcePackage, ConnectedForcePackageOptions, ConnectedTargetEvidence, ForceFamily,
     ForcePackageRejection, NormalizedCapability, PreparationConstraints, ProductionEvidence,
     ProviderDemand, ProviderDemandTranche, building_value, current_target_cluster,
-    derive_connected_force_package_options_for_cluster, provider_demands_fit_funded_horizon,
-    strike_capability, suppression_capability, target_cluster_air_defense,
+    derive_connected_force_package_options_for_cluster, refine_provider_demands, strike_capability,
+    suppression_capability, target_cluster_air_defense,
 };
 
 /// A connected-map combined-arms operation is an expensive second front, not
@@ -103,6 +103,7 @@ struct ClusterAirDefense {
 
 #[derive(Debug, Clone, Copy)]
 struct ConnectedPlanningContext<'a> {
+    planning: Option<&'a crate::bot::planning::PlanningWork>,
     minimum_only: bool,
     campaign_routes: Option<&'a CampaignRoutes<'a>>,
     orientation: Orientation,
@@ -657,7 +658,7 @@ fn derive_connected_package_options_for_targets(
             primary: target,
             cluster: &cluster,
         },
-        ProductionEvidence::new(&context.resources.snapshot, &access),
+        ProductionEvidence::with_planning(&context.resources.snapshot, &access, context.planning),
         &unavailable,
         preparation,
     )
@@ -960,6 +961,18 @@ pub(super) enum ConnectedPlanRejection {
     },
 }
 
+impl ConnectedPlanRejection {
+    pub(in crate::bot) fn is_deferred(self) -> bool {
+        matches!(
+            self,
+            Self::Package {
+                reason: ForcePackageRejection::Deferred,
+                ..
+            }
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RejectedConnectedCandidate {
     pub(super) target: BuildingContact,
@@ -1105,6 +1118,7 @@ pub struct StrategicDecision {
 }
 
 struct AirPlanningContext<'a> {
+    planning: Option<&'a crate::bot::planning::PlanningWork>,
     profile: &'a ResolvedProfile,
     tuning: DifficultyTuning,
     obs: &'a Observation,
@@ -1147,6 +1161,7 @@ pub(super) struct LiftSupportRequest {
 
 #[derive(Clone, Copy)]
 pub(super) struct StrategicCoordination<'a> {
+    pub planning: Option<&'a crate::bot::planning::PlanningWork>,
     pub enlisted: &'a [UnitId],
     pub lift_support: Option<&'a LiftSupportRequest>,
     pub allow_new_operation: bool,
@@ -2504,7 +2519,7 @@ pub(in crate::bot) fn prospective_airworks_package_value(
             &resources,
             0,
         );
-        let Ok(proposal) = derive_connected_proposal_with_resources(
+        let derived = derive_connected_proposal_with_resources(
             context,
             target,
             ConnectedProposalOrigin::Idle {
@@ -2513,8 +2528,14 @@ pub(in crate::bot) fn prospective_airworks_package_value(
             },
             initial,
             deadline,
-        ) else {
-            return Progress::ProvenInfeasible;
+        );
+        let proposal = match derived {
+            Ok(proposal) => proposal,
+            Err(ConnectedPlanRejection::Package {
+                reason: ForcePackageRejection::Deferred,
+                ..
+            }) => return Progress::Deferred,
+            Err(_) => return Progress::ProvenInfeasible,
         };
         let Ok(investment) = connected_investment_proposal(proposal.clone()) else {
             return Progress::ProvenInfeasible;
@@ -2646,6 +2667,7 @@ fn derive_connected_proposal_with_resources(
         target,
         unavailable,
         ConnectedPlanningContext {
+            planning: coordination.planning,
             minimum_only,
             campaign_routes,
             orientation: coordination.orientation,
@@ -3203,6 +3225,9 @@ impl StrategicPlanner {
         rejection: ConnectedPlanRejection,
         observed_at: Tick,
     ) {
+        if rejection.is_deferred() {
+            return;
+        }
         let active = self
             .air
             .as_mut()
@@ -3800,6 +3825,7 @@ impl StrategicPlanner {
             production,
         } = context;
         let StrategicCoordination {
+            planning,
             enlisted,
             lift_support,
             allow_new_operation,
@@ -3975,6 +4001,7 @@ impl StrategicPlanner {
             });
         }
         let context = AirPlanningContext {
+            planning,
             profile,
             tuning,
             obs,
@@ -6892,16 +6919,28 @@ fn connected_package_is_feasible(
         &production_demands,
         package.preparation_deadline,
         &resources.access,
-    ) && provider_demands_fit_funded_horizon(
-        &resources.snapshot,
-        &outstanding,
-        context.obs.tick,
-        PreparationConstraints {
-            deadline: package.preparation_deadline,
-            decision_cadence: context.tuning.cadence,
-            protected_forecast_scrap: context.protected_forecast_scrap,
-        },
-        &resources.access,
+    ) && !matches!(
+        refine_provider_demands(
+            ProductionEvidence::with_planning(
+                &resources.snapshot,
+                &resources.access,
+                context.planning
+            ),
+            &outstanding,
+            context.obs.tick,
+            PreparationConstraints {
+                deadline: package.preparation_deadline,
+                decision_cadence: context.tuning.cadence,
+                protected_forecast_scrap: context.protected_forecast_scrap,
+            },
+            crate::bot::allocation::ConnectedOffenseKey {
+                objective: op
+                    .target_id
+                    .expect("a connected package retains its objective"),
+                anchor: op.target,
+            },
+        ),
+        crate::bot::planning::Progress::ProvenInfeasible
     )
 }
 
@@ -7979,6 +8018,7 @@ mod tests {
                 intel,
                 home,
                 StrategicCoordination {
+                    planning: None,
                     enlisted,
                     lift_support: None,
                     allow_new_operation: true,
@@ -8105,6 +8145,7 @@ mod tests {
             .find(|contact| contact.anchor == TARGET)
             .expect("the fixture has a current strategic target");
         AirPlanningContext {
+            planning: None,
             profile: identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: observation,
@@ -8329,6 +8370,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -8585,6 +8627,7 @@ mod tests {
 
     fn coordination(lift_support: Option<&LiftSupportRequest>) -> StrategicCoordination<'_> {
         StrategicCoordination {
+            planning: None,
             enlisted: &[],
             lift_support,
             allow_new_operation: true,
@@ -9314,6 +9357,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 enlisted: &owned,
                 ..coordination(None)
             },
@@ -9463,6 +9507,7 @@ mod tests {
                 &eligible_intelligence,
                 HOME,
                 StrategicCoordination {
+                    planning: None,
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: false,
@@ -9488,6 +9533,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 enlisted: &[],
                 lift_support: None,
                 allow_new_operation: false,
@@ -9532,6 +9578,7 @@ mod tests {
             &incomplete_intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 enlisted: &[],
                 lift_support: None,
                 allow_new_operation: false,
@@ -9563,6 +9610,7 @@ mod tests {
             &damaged_intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 enlisted: &[],
                 lift_support: None,
                 allow_new_operation: false,
@@ -10005,6 +10053,7 @@ mod tests {
         let identity = profile();
         let mut plan = connected_test_plan(&suppression_observation);
         let context = AirPlanningContext {
+            planning: None,
             profile: &identity,
             tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
             obs: &suppression_observation,
@@ -10674,6 +10723,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -11788,6 +11838,7 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
+                    planning: None,
                     public_map: Some(&public_map),
                     ..coordination(None)
                 },
@@ -12019,6 +12070,7 @@ mod tests {
             &intel,
             HOME,
             StrategicCoordination {
+                planning: None,
                 public_map: Some(&public_map),
                 ..coordination(None)
             },
@@ -12254,6 +12306,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 public_map: Some(&public_map),
                 ..coordination(None)
             },
@@ -12325,6 +12378,7 @@ mod tests {
                 orientation: test_orientation(),
             },
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -12475,6 +12529,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 allow_new_operation: false,
                 ..coordination(None)
             },
@@ -12503,6 +12558,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 allow_new_operation: false,
                 ..coordination(None)
             },
@@ -12830,6 +12886,7 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
+                    planning: None,
                     public_map: Some(&public_map),
                     ..coordination(None)
                 },
@@ -13008,6 +13065,7 @@ mod tests {
                     &intelligence,
                     HOME,
                     StrategicCoordination {
+                        planning: None,
                         protected_current_scrap: reserve,
                         ..coordination(None)
                     },
@@ -13237,6 +13295,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 allow_new_operation: false,
                 ..coordination(None)
             },
@@ -13429,6 +13488,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 public_map: Some(&public_map),
                 ..coordination(None)
             },
@@ -13558,6 +13618,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
+                planning: None,
                 enlisted: &enlisted,
                 ..coordination(None)
             },
@@ -13972,6 +14033,7 @@ mod tests {
             &target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -14209,6 +14271,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -14496,6 +14559,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -14527,6 +14591,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -14624,6 +14689,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
+                planning: None,
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -14796,6 +14862,7 @@ mod tests {
             &mut operation,
             &mut plan,
             &AirPlanningContext {
+                planning: None,
                 profile: &identity,
                 tuning: DifficultyTuning::for_level(identity.difficulty),
                 obs: &hidden,
@@ -14837,6 +14904,7 @@ mod tests {
             &mut operation,
             &mut plan,
             &AirPlanningContext {
+                planning: None,
                 profile: &identity,
                 tuning: DifficultyTuning::for_level(identity.difficulty),
                 obs: &cleared,
@@ -14880,6 +14948,7 @@ mod tests {
             .target_anchors = vec![TARGET, secondary];
         let identity = profile();
         let context = AirPlanningContext {
+            planning: None,
             profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &observation,
@@ -14919,6 +14988,7 @@ mod tests {
         observation.visible[far_index] = true;
         intelligence.update(&observation);
         let context = AirPlanningContext {
+            planning: None,
             profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &observation,
@@ -14967,6 +15037,7 @@ mod tests {
             .expect("connected package")
             .target_anchors = vec![TARGET, secondary];
         let context = AirPlanningContext {
+            planning: None,
             profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &observation,
@@ -16182,6 +16253,7 @@ mod tests {
             &intel,
             HOME,
             StrategicCoordination {
+                planning: None,
                 public_map: Some(&public_map),
                 ..coordination(None)
             },
@@ -16671,6 +16743,7 @@ mod tests {
             &intel,
             HOME,
             StrategicCoordination {
+                planning: None,
                 public_map: Some(&public_map),
                 ..coordination(None)
             },
