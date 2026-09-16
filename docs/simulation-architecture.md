@@ -1283,15 +1283,22 @@ whether all shortest routes avoid danger. Ambiguous routes still use canonical
 A*, and maps above its expansion cap bypass the proof. Each immutable route
 projection retains at most sixteen safety fields, independently of the directed
 route-answer cache. Producer-exit certificates first repair an intersected route
-inside a small rectangle around the candidate footprint. Blocked endpoints or
-failed local repairs use the full connectivity check; a failed local detour
-never proves that a producer is trapped.
+inside a small rectangle around the candidate footprint, including nearby
+replacement doors or destinations when an endpoint is blocked. Destination
+ordering is prepared once per layout. Failed local repairs use the full
+connectivity check; a failed local detour never proves that a producer is
+trapped. Long cardinal proofs first try a bounded monotone search. A successful
+probe retains the canonical shortest path; detours fall back to the complete
+search.
 
 Reinforcement valuation requests scalar travel costs and visits units in
 optimistic arrival order, stopping when no remaining unit can arrive sooner.
 Candidate placement scans share indexed obstacle, frame, foundation, and enemy
 occupancy masks for their immutable observation. Current policy reservations,
-exploration, worker access, and producer exits remain separate checks.
+exploration, worker access, and producer exits remain separate checks. Defense
+and support share resource-access evidence while blocking geometry, eligible
+resource tiles, active harvest targets, and supporting Foundries are unchanged.
+Scrap amounts reprice those assets without rebuilding their routes.
 
 Each immutable campaign comparison shares ground and air connectivity, staging
 choices, and artillery firing stands across target selection, producer access,

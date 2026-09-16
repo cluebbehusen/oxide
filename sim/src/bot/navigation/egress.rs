@@ -6,9 +6,25 @@ type PlannedFootprint = (BuildingKind, TilePos);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GroundProducerEgress {
-    anchor: TilePos,
     ring: Vec<TilePos>,
     witnesses: Vec<TilePos>,
+}
+
+impl GroundProducerEgress {
+    fn new(anchor: TilePos, ring: Vec<TilePos>, mut witnesses: Vec<TilePos>) -> Self {
+        witnesses
+            .sort_by_cached_key(|tile| (std::cmp::Reverse(tile.chebyshev(anchor)), tile.y, tile.x));
+        Self { ring, witnesses }
+    }
+
+    fn endpoints(&self, open: &[bool], map_size: (i32, i32)) -> Option<(TilePos, TilePos)> {
+        let passable = |tile: &TilePos| {
+            super::flood::tile_index(map_size.0, map_size.1, *tile).is_some_and(|index| open[index])
+        };
+        let spawn = self.ring.iter().copied().find(passable)?;
+        let witness = self.witnesses.iter().copied().find(passable)?;
+        Some((spawn, witness))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +223,7 @@ impl GroundEgressCache {
                     cache.layout.map_size,
                     &routes[producer_index],
                     candidate,
+                    &cache.producers[producer_index],
                 )
                 .or_else(|| {
                     Self::ground_producer_route(
@@ -237,15 +254,16 @@ impl GroundEgressCache {
         map_size: (i32, i32),
         route: &[TilePos],
         candidate: PlannedFootprint,
+        producer: &GroundProducerEgress,
     ) -> Option<Vec<TilePos>> {
         let blocked = |tile: &TilePos| Self::candidate_blocks(candidate.0, candidate.1, *tile);
         let first = route.iter().position(blocked)?;
         let last = route.iter().rposition(blocked)?;
-        // A blocked endpoint requires choosing the producer's next canonical door or witness.
-        let before = first.checked_sub(1)?;
-        let after = last + 1;
-        let goal = *route.get(after)?;
-        let start = route[before];
+        let before = first.saturating_sub(1);
+        let after = (last + 2).min(route.len());
+        let (spawn, witness) = producer.endpoints(open, map_size)?;
+        let start = if first == 0 { spawn } else { route[before] };
+        let goal = route.get(last + 1).copied().unwrap_or(witness);
         let size = candidate.0.base_stats().size;
         let left = (candidate.1.x - 2).max(0);
         let top = (candidate.1.y - 2).max(0);
@@ -266,7 +284,7 @@ impl GroundEgressCache {
                 .iter()
                 .copied()
                 .chain(repair.into_iter().map(|tile| tile.offset(left, top)))
-                .chain(route[after + 1..].iter().copied())
+                .chain(route[after..].iter().copied())
                 .collect(),
         )
     }
@@ -346,27 +364,7 @@ impl GroundEgressCache {
         map_size: (i32, i32),
         producer: &GroundProducerEgress,
     ) -> Option<Vec<TilePos>> {
-        let index = |tile: TilePos| (tile.y * map_size.0 + tile.x) as usize;
-        let in_bounds = |tile: TilePos| {
-            tile.x >= 0 && tile.y >= 0 && tile.x < map_size.0 && tile.y < map_size.1
-        };
-        let witness = producer
-            .witnesses
-            .iter()
-            .copied()
-            .filter(|tile| open[index(*tile)])
-            .min_by_key(|tile| {
-                (
-                    std::cmp::Reverse(tile.chebyshev(producer.anchor)),
-                    tile.y,
-                    tile.x,
-                )
-            })?;
-        let spawn = producer
-            .ring
-            .iter()
-            .copied()
-            .find(|tile| in_bounds(*tile) && open[index(*tile)])?;
+        let (spawn, witness) = producer.endpoints(open, map_size)?;
         crate::bot::navigation::flood::cardinal_path(open, map_size, spawn, witness)
     }
 
@@ -489,11 +487,7 @@ impl GroundEgressCache {
                         TilePos::new(index as i32 % obs.map_width, index as i32 / obs.map_width)
                     })
                     .collect();
-                Some(GroundProducerEgress {
-                    anchor: producer.anchor,
-                    ring,
-                    witnesses,
-                })
+                Some(GroundProducerEgress::new(producer.anchor, ring, witnesses))
             })
             .collect()
     }
@@ -553,10 +547,11 @@ mod tests {
         let map_size = (160, 160);
         let mut open = vec![true; 160 * 160];
         let route: Vec<_> = (0..160).map(|x| TilePos::new(x, 80)).collect();
+        let producer = GroundProducerEgress::new(route[0], vec![route[0]], vec![route[159]]);
         let candidate = (BuildingKind::Barricade, TilePos::new(80, 80));
         open[80 * 160 + 80] = false;
         let (repaired, work) = crate::bot::navigation::work::measure(|| {
-            GroundEgressCache::repair_route(&open, map_size, &route, candidate).unwrap()
+            GroundEgressCache::repair_route(&open, map_size, &route, candidate, &producer).unwrap()
         });
         assert_eq!(work.searches, 1);
         assert!(work.expanded <= 25, "{work:?}");
@@ -575,15 +570,52 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_repairs_reuse_the_long_route_when_the_next_exit_is_nearby() {
+        let map_size = (160, 160);
+        let route: Vec<_> = (0..160).map(|x| TilePos::new(x, 80)).collect();
+        let producer = GroundProducerEgress::new(
+            TilePos::new(0, 0),
+            vec![route[0], TilePos::new(0, 81)],
+            vec![route[159], TilePos::new(159, 81)],
+        );
+        for endpoint in [route[0], route[159]] {
+            let mut open = vec![true; 160 * 160];
+            open[(endpoint.y * 160 + endpoint.x) as usize] = false;
+            let (repaired, work) = crate::bot::navigation::work::measure(|| {
+                GroundEgressCache::repair_route(
+                    &open,
+                    map_size,
+                    &route,
+                    (BuildingKind::Barricade, endpoint),
+                    &producer,
+                )
+                .unwrap()
+            });
+            let (spawn, witness) = producer.endpoints(&open, map_size).unwrap();
+            assert_eq!(repaired.first(), Some(&spawn));
+            assert_eq!(repaired.last(), Some(&witness));
+            assert!(
+                repaired
+                    .iter()
+                    .all(|tile| open[(tile.y * 160 + tile.x) as usize])
+            );
+            assert!(
+                repaired
+                    .windows(2)
+                    .all(|pair| pair[0].manhattan(pair[1]) == 1)
+            );
+            assert_eq!(work.searches, 1);
+            assert!(work.expanded <= 25, "{work:?}");
+        }
+    }
+
+    #[test]
     fn witness_selection_matches_the_sorted_reference_after_blocking_candidates() {
         let map_size = (8, 8);
         let witnesses: Vec<_> = (0..64).rev().map(|i| TilePos::new(i % 8, i / 8)).collect();
         for anchor in [TilePos::new(0, 0), TilePos::new(4, 4), TilePos::new(7, 7)] {
-            let producer = GroundProducerEgress {
-                anchor,
-                ring: vec![TilePos::new(3, 3)],
-                witnesses: witnesses.clone(),
-            };
+            let producer =
+                GroundProducerEgress::new(anchor, vec![TilePos::new(3, 3)], witnesses.clone());
             let mut sorted = witnesses.clone();
             sorted.sort_unstable_by_key(|tile| {
                 (std::cmp::Reverse(tile.chebyshev(anchor)), tile.y, tile.x)
@@ -615,11 +647,11 @@ mod tests {
         let map_size = (12, 12);
         let mut open = vec![true; 144];
         let route: Vec<_> = (0..12).map(|x| TilePos::new(x, 6)).collect();
-        let producer = GroundProducerEgress {
-            anchor: TilePos::new(11, 0),
-            ring: vec![route[0], TilePos::new(0, 5)],
-            witnesses: vec![route[11], TilePos::new(11, 5)],
-        };
+        let producer = GroundProducerEgress::new(
+            TilePos::new(11, 0),
+            vec![route[0], TilePos::new(0, 5)],
+            vec![route[11], TilePos::new(11, 5)],
+        );
         for y in 2..11 {
             open[y * 12 + 6] = y == 6;
         }
@@ -629,7 +661,8 @@ mod tests {
                 &open,
                 map_size,
                 &route,
-                (BuildingKind::Barricade, route[6])
+                (BuildingKind::Barricade, route[6]),
+                &producer,
             )
             .is_none()
         );
@@ -638,18 +671,14 @@ mod tests {
         for endpoint in [route[0], route[11]] {
             let mut blocked_endpoint = vec![true; 144];
             blocked_endpoint[(endpoint.y * 12 + endpoint.x) as usize] = false;
-            assert!(
-                GroundEgressCache::repair_route(
-                    &blocked_endpoint,
-                    map_size,
-                    &route,
-                    (BuildingKind::Barricade, endpoint)
-                )
-                .is_none()
-            );
-            let alternate =
-                GroundEgressCache::ground_producer_route(&blocked_endpoint, map_size, &producer)
-                    .unwrap();
+            let alternate = GroundEgressCache::repair_route(
+                &blocked_endpoint,
+                map_size,
+                &route,
+                (BuildingKind::Barricade, endpoint),
+                &producer,
+            )
+            .unwrap();
             assert_eq!(
                 alternate.first(),
                 Some(&if endpoint == route[0] {
@@ -672,11 +701,11 @@ mod tests {
     #[test]
     fn repaired_certificates_match_full_connectivity_across_obstacles_and_placements() {
         let map_size = (6, 6);
-        let producer = GroundProducerEgress {
-            anchor: TilePos::new(0, 2),
-            ring: vec![TilePos::new(0, 2), TilePos::new(0, 3)],
-            witnesses: vec![TilePos::new(5, 2), TilePos::new(5, 3)],
-        };
+        let producer = GroundProducerEgress::new(
+            TilePos::new(0, 2),
+            vec![TilePos::new(0, 2), TilePos::new(0, 3)],
+            vec![TilePos::new(5, 2), TilePos::new(5, 3)],
+        );
         for mask in 0..512 {
             let mut base = vec![true; 36];
             for bit in 0..9 {
@@ -691,7 +720,8 @@ mod tests {
                 let mut open = base.clone();
                 open[index as usize] = false;
                 let expected = GroundEgressCache::ground_producer_route(&open, map_size, &producer);
-                let repair = GroundEgressCache::repair_route(&open, map_size, &route, candidate);
+                let repair =
+                    GroundEgressCache::repair_route(&open, map_size, &route, candidate, &producer);
                 if let Some(repair) = &repair {
                     assert!(expected.is_some());
                     assert_eq!(repair.first(), expected.as_ref().unwrap().first());

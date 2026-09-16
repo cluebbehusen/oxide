@@ -5,10 +5,13 @@ mod coverage;
 mod fronts;
 pub(super) mod progressive;
 mod pruning;
+mod resource_assets;
 mod routes;
 mod routing_cache;
 mod upgrades;
 
+pub(super) use resource_assets::ResourceAssets;
+use resource_assets::scrap_assets;
 pub(super) use routing_cache::DefenseRoutingCache;
 
 use super::*;
@@ -2099,9 +2102,7 @@ fn strategic_defense_quote_from_projection(
     });
     policy.prepare_ground_producer_egress(obs);
     let mut evaluate = |anchor| {
-        if !grounding.placement.valid(policy, kind, anchor)
-            || !policy.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
-        {
+        if !grounding.placement.valid(policy, kind, anchor) {
             return None;
         }
         let placement = profile.footprint(anchor);
@@ -2120,9 +2121,16 @@ fn strategic_defense_quote_from_projection(
         } else {
             None
         };
-        if future_egress_orientation.is_some_and(|orientation| {
-            !cached_future_ground_producer_egress_survives(grounding, orientation, cache, placement)
-        }) {
+        if !policy.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
+            || future_egress_orientation.is_some_and(|orientation| {
+                !cached_future_ground_producer_egress_survives(
+                    grounding,
+                    orientation,
+                    cache,
+                    placement,
+                )
+            })
+        {
             return None;
         }
         let mut ordered_builders = builders.to_vec();
@@ -2499,100 +2507,6 @@ fn asset_sort_key(asset: &DefendedAsset) -> (i32, i32, u8) {
             (first.y, first.x, 1)
         }
     }
-}
-
-fn scrap_assets(
-    policy: &UtilityPolicy,
-    ground: &GroundKnowledge<'_>,
-    foundries: &[TilePos],
-) -> Vec<DefendedAsset> {
-    let mut remaining: BTreeSet<_> = ground
-        .scrap
-        .iter()
-        .filter(|(tile, amount)| **amount > 0 && !policy.dead_nodes.contains(tile))
-        .map(|(tile, _)| *tile)
-        .collect();
-    let mut clusters = Vec::new();
-    while let Some(seed) = remaining
-        .iter()
-        .min_by_key(|tile| (tile.y, tile.x))
-        .copied()
-    {
-        remaining.remove(&seed);
-        let mut open = VecDeque::from([seed]);
-        let mut tiles = Vec::new();
-        while let Some(tile) = open.pop_front() {
-            tiles.push(tile);
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    if (dx != 0 || dy != 0) && remaining.remove(&tile.offset(dx, dy)) {
-                        open.push_back(tile.offset(dx, dy));
-                    }
-                }
-            }
-        }
-        tiles.sort_by_key(|tile| (tile.y, tile.x));
-        let work_tiles = scrap_work_tiles(ground, &tiles, None);
-        if !resource_region_is_active(ground.obs, &tiles) {
-            continue;
-        }
-        let support = foundries
-            .iter()
-            .filter(|foundry| {
-                let own_distance = tiles
-                    .iter()
-                    .map(|tile| tile.chebyshev(**foundry))
-                    .min()
-                    .unwrap_or(i32::MAX);
-                own_distance <= HOME_SALVAGE_RADIUS
-            })
-            .filter_map(|foundry| {
-                shortest_path_between(
-                    ground,
-                    &building_doorsteps(ground, *foundry, BuildingKind::Foundry.base_stats().size),
-                    &work_tiles,
-                    None,
-                    DefenseDomain::Ground,
-                )
-                .map(|(_, _goal, path)| AccessRoute {
-                    foundry: *foundry,
-                    work_tiles: work_tiles.clone(),
-                    path,
-                })
-            })
-            .min_by_key(|route| {
-                (
-                    route.path.len(),
-                    route.foundry.y,
-                    route.foundry.x,
-                    route.path.clone(),
-                )
-            });
-        let Some(access) = support else { continue };
-        let total = tiles.iter().fold(0u32, |sum, tile| {
-            sum.saturating_add(ground.scrap.get(tile).copied().unwrap_or(0))
-        });
-        let value = total.div_ceil(SCRAP_NODE_AMOUNT).min(8);
-        if value > 0 {
-            clusters.push(DefendedAsset {
-                value,
-                shape: AssetShape::Scrap { tiles, work_tiles },
-                access: Some(access),
-            });
-        }
-    }
-    clusters
-}
-
-fn resource_region_is_active(obs: &Observation, resource_tiles: &[TilePos]) -> bool {
-    obs.my_units.iter().any(|unit| {
-        unit.kind.stats().harvest.is_some()
-            && unit.harvesting.is_some_and(|target| {
-                resource_tiles
-                    .binary_search_by_key(&(target.y, target.x), |tile| (tile.y, tile.x))
-                    .is_ok()
-            })
-    })
 }
 
 fn emergency_threat_origins(obs: &Observation, domain: DefenseDomain) -> Vec<ThreatOrigin> {
@@ -8605,6 +8519,57 @@ mod tests {
         obs.known_scrap.push((scrap, 175));
         let live = GroundKnowledge::new(&obs, &map, &starts);
         assert_eq!(live.scrap.get(&scrap), Some(&175));
+    }
+
+    #[test]
+    fn resource_access_evidence_is_shared_and_invalidates_on_effective_inputs() {
+        let node = TilePos::new(12, 10);
+        let scenario = scenario_with(|tile| if tile == node { 's' } else { '.' });
+        let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let mut obs = observation(PlayerId(0), LEFT_HOME);
+        obs.explored.fill(false);
+        obs.my_units[0].harvesting = Some(node);
+        let mut policy = UtilityPolicy::new();
+        let mut ground = GroundKnowledge::new(&obs, &map, &[]);
+        let (baseline, cold) =
+            crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
+        assert!(!baseline.is_empty());
+        assert!(cold.searches > 0);
+        let (reused, warm) =
+            crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
+        assert_eq!(reused, baseline);
+        assert_eq!(warm.searches, 0);
+
+        for y in 0..HEIGHT {
+            ground.ground_blocked[(y * WIDTH + 8) as usize] = true;
+        }
+        assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
+        let mut ground = GroundKnowledge::new(&obs, &map, &[]);
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        *ground.scrap.get_mut(&node).unwrap() *= 2;
+        let (richer, repriced) =
+            crate::bot::navigation::work::measure(|| scrap_assets(&policy, &ground, &[LEFT_HOME]));
+        assert_eq!(repriced.searches, 0);
+        assert!(richer[0].value > baseline[0].value);
+        assert_eq!(
+            richer,
+            scrap_assets(&UtilityPolicy::new(), &ground, &[LEFT_HOME])
+        );
+        ground.scrap.remove(&node);
+        assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
+
+        let ground = GroundKnowledge::new(&obs, &map, &[]);
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        assert!(scrap_assets(&policy, &ground, &[]).is_empty());
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        policy.dead_nodes.push(node);
+        assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
+        policy.dead_nodes.clear();
+        assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
+        let mut idle = obs.clone();
+        idle.my_units[0].harvesting = None;
+        let idle_ground = GroundKnowledge::new(&idle, &map, &[]);
+        assert!(scrap_assets(&policy, &idle_ground, &[LEFT_HOME]).is_empty());
     }
 
     #[test]

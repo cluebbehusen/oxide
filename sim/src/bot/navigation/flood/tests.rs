@@ -119,3 +119,66 @@ fn pooled_floods_isolate_nested_queries_and_changed_knowledge() {
     );
     assert_eq!(cardinal_path(&[false; 4], (4, 1), start, goal), None);
 }
+
+#[test]
+fn monotone_witness_matches_canonical_breadth_first_paths() {
+    fn reference(open: &[bool], width: i32, start: TilePos, goal: TilePos) -> Option<Vec<TilePos>> {
+        let index = |tile: TilePos| (tile.y * width + tile.x) as usize;
+        let mut parent = vec![None; open.len()];
+        let mut queue = VecDeque::from([start]);
+        parent[index(start)] = Some(start);
+        while let Some(tile) = queue.pop_front() {
+            if tile == goal {
+                break;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let next = tile.offset(dx, dy);
+                let Some(i) = tile_index(width, open.len() as i32 / width, next) else {
+                    continue;
+                };
+                if open[i] && parent[i].is_none() {
+                    parent[i] = Some(tile);
+                    queue.push_back(next);
+                }
+            }
+        }
+        parent[index(goal)]?;
+        let mut route = vec![goal];
+        while *route.last().unwrap() != start {
+            route.push(parent[index(*route.last().unwrap())].unwrap());
+        }
+        route.reverse();
+        Some(route)
+    }
+    for mask in 0..512 {
+        let open: Vec<_> = (0..9).map(|i| mask & (1 << i) == 0).collect();
+        for start in 0..9 {
+            for goal in 0..9 {
+                if !open[start] || !open[goal] {
+                    continue;
+                }
+                let start = TilePos::new(start as i32 % 3, start as i32 / 3);
+                let goal = TilePos::new(goal as i32 % 3, goal as i32 / 3);
+                if let Some(route) = monotone_cardinal_path(&open, 3, start, goal) {
+                    assert_eq!(Some(route), reference(&open, 3, start, goal));
+                }
+            }
+        }
+    }
+    let start = TilePos::new(0, 0);
+    let goal = TilePos::new(159, 159);
+    let mut open = vec![true; 160 * 160];
+    let (path, work) =
+        super::super::work::measure(|| cardinal_path(&open, (160, 160), start, goal));
+    assert_eq!(path, reference(&open, 160, start, goal));
+    assert!(work.expanded <= 320, "{work:?}");
+    for y in 0..159 {
+        open[y * 160 + 80] = false;
+    }
+    assert_eq!(
+        cardinal_path(&open, (160, 160), start, goal),
+        reference(&open, 160, start, goal)
+    );
+    open[159 * 160 + 80] = false;
+    assert_eq!(cardinal_path(&open, (160, 160), start, goal), None);
+}

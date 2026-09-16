@@ -428,6 +428,9 @@ impl UtilityPolicy {
         }
         sites.sort_by_key(|tile| (tile.y, tile.x));
         sites.dedup();
+        if sites.is_empty() {
+            return Vec::new();
+        }
         let mut geometry = super::defense::DefenseThinkContext::new_oriented(
             self,
             obs,

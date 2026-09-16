@@ -191,6 +191,42 @@ pub(in crate::bot) fn labels(open: &[bool], map_size: (i32, i32)) -> Vec<u32> {
     labels
 }
 
+fn monotone_cardinal_path(
+    open: &[bool],
+    width: i32,
+    start: TilePos,
+    goal: TilePos,
+) -> Option<Vec<TilePos>> {
+    let index = |tile: TilePos| (tile.y * width + tile.x) as usize;
+    let mut visited = vec![false; open.len()];
+    let mut route = vec![start];
+    visited[index(start)] = true;
+    // A successful probe follows the BFS tie order at the Manhattan lower bound.
+    // Bound failed probes so walls add little work before the complete search.
+    for _ in 0..512 {
+        let current = *route.last()?;
+        #[cfg(test)]
+        super::work::record(|work| work.expanded += 1);
+        if current == goal {
+            return Some(route);
+        }
+        let next = [
+            (current.x != goal.x).then(|| current.offset((goal.x - current.x).signum(), 0)),
+            (current.y != goal.y).then(|| current.offset(0, (goal.y - current.y).signum())),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|tile| open[index(*tile)] && !visited[index(*tile)]);
+        if let Some(next) = next {
+            visited[index(next)] = true;
+            route.push(next);
+        } else {
+            route.pop();
+        }
+    }
+    None
+}
+
 pub(in crate::bot) fn cardinal_path(
     open_tiles: &[bool],
     map_size: (i32, i32),
@@ -213,6 +249,13 @@ pub(in crate::bot) fn cardinal_path(
     super::work::record(|work| {
         work.searches += 1;
     });
+    if start.manhattan(goal) >= 16
+        && let Some(route) = monotone_cardinal_path(open_tiles, map_size.0, start, goal)
+    {
+        #[cfg(test)]
+        super::work::record(|work| work.paths += 1);
+        return Some(route);
+    }
     let mut parent = vec![usize::MAX; open_tiles.len()];
     let mut open = std::collections::VecDeque::from([start]);
     parent[start_index] = start_index;
