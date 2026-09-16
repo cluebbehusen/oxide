@@ -215,7 +215,7 @@ pub(super) fn protection_requests(
     });
     let mut regions: Vec<ProtectionRequest> = Vec::new();
     let mut credited = std::collections::BTreeSet::new();
-    let mut routes = RouteProjection::with_public_terrain_and_orientation(
+    let routes = RouteProjection::with_public_terrain_and_orientation(
         obs,
         Domain::Ground,
         context.briefing,
@@ -322,7 +322,7 @@ impl UtilityPolicy {
                 .or_insert(obs.tick);
         }
         let mut intents = Vec::new();
-        let mut routes = RouteProjection::with_public_terrain_and_orientation(
+        let routes = RouteProjection::with_public_terrain_and_orientation(
             obs,
             Domain::Ground,
             context.briefing,
@@ -448,7 +448,7 @@ impl UtilityPolicy {
             super::super::executive::full_ground_strength(UnitKind::Sentinel)
                 .saturating_mul(u64::from(minimum_core)),
         );
-        let mut routes = RouteProjection::with_public_terrain_and_orientation(
+        let routes = RouteProjection::with_public_terrain_and_orientation(
             obs,
             Domain::Ground,
             context.briefing,
@@ -593,6 +593,7 @@ mod tests {
             unit(201, 1, UnitKind::Sentinel, TilePos::new(33, 25)),
         ];
         let map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: 48,
             map_height: 32,
             starting_foundries: vec![],
@@ -615,6 +616,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources,
             profile,

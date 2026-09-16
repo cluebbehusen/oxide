@@ -5,13 +5,14 @@
 //! mandatory claims and summarizes the selected portfolio without teaching the
 //! frame loop the allocator's internal accounting.
 
+#[cfg(test)]
+use super::allocate_requiring;
 use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
     DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
-    IncompatibleLayoutSet, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim,
-    ProposalKey, ScheduledProducerJob, accepted_portfolio_rank, allocate_requiring,
-    allocate_with_incompatible_layouts, future_producer_lane_reservations,
+    LayoutValidator, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
+    ScheduledProducerJob, accepted_portfolio_rank, future_producer_lane_reservations,
 };
 use crate::bot::observation::Observation;
 use crate::bot::resources::ProducerLaneReservations;
@@ -52,6 +53,69 @@ impl From<crate::bot::resources::PlanningProjectionError> for CoordinatorInputEr
     }
 }
 
+#[cfg(test)]
+fn pin_standing_waits(
+    capacity: &AllocationCapacity,
+    obligations: &[ImportedObligation],
+    proposals: &mut Vec<DomainInvestmentProposal>,
+) {
+    refine_standing_waits(
+        capacity,
+        obligations,
+        proposals,
+        &mut super::Refinement {
+            layout: &mut |_| None,
+            production: &mut |capacity, claims| {
+                claims
+                    .resolve(capacity)
+                    .map(crate::bot::planning::Progress::Ready)
+            },
+        },
+    );
+}
+
+fn refine_standing_waits(
+    capacity: &AllocationCapacity,
+    obligations: &[ImportedObligation],
+    proposals: &mut Vec<DomainInvestmentProposal>,
+    refinement: &mut super::Refinement<'_>,
+) {
+    proposals.retain_mut(|proposal| {
+        if !matches!(proposal.payload(), super::DomainPayload::StandingForce(standing)
+            if standing.accumulation().is_some())
+        {
+            return true;
+        }
+        let Ok(Some(result)) = super::allocate_refined(
+            capacity,
+            obligations.to_vec(),
+            vec![proposal.clone()],
+            AllocationPersonality::default(),
+            Some(proposal.key()),
+            &[],
+            refinement,
+        ) else {
+            return false;
+        };
+        if let Some(job) = result
+            .final_producer_schedule()
+            .iter()
+            .find(|job| job.owner == ClaimOwner::Proposal(proposal.key()))
+        {
+            // Choose timing once; portfolio enumeration only checks this exact alternative.
+            proposal.claims.producer_jobs = vec![ProducerJobClaim::fixed(
+                job.producer,
+                job.kind,
+                job.enqueued_at,
+                job.starts_at,
+                job.ready_at,
+                job.ready_before,
+            )];
+        }
+        true
+    });
+}
+
 /// One bounded cross-domain allocation pass before portfolio selection.
 pub(crate) struct CrossDomainAllocation {
     capacity: AllocationCapacity,
@@ -59,7 +123,6 @@ pub(crate) struct CrossDomainAllocation {
     obligations: Vec<ImportedObligation>,
     proposals: Vec<DomainInvestmentProposal>,
     contextual_proposals: Vec<ContextualProposalSet>,
-    incompatible_layouts: Vec<IncompatibleLayoutSet>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +144,6 @@ impl CrossDomainAllocation {
             obligations: Vec::new(),
             proposals: Vec::new(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         })
     }
 
@@ -117,16 +179,6 @@ impl CrossDomainAllocation {
         }
     }
 
-    /// Rejects a set of individually legal builds when their combined layout
-    /// fails a domain-owned route, egress, or resource-access preflight.
-    pub(crate) fn reject_incompatible_layout_set(&mut self, keys: Vec<ProposalKey>) {
-        if let Some(layout) = IncompatibleLayoutSet::from_keys(keys) {
-            self.incompatible_layouts.push(layout);
-            self.incompatible_layouts.sort_unstable();
-            self.incompatible_layouts.dedup();
-        }
-    }
-
     /// Registers every proposal derived against one exact connected state.
     ///
     /// Register empty proposal sets too: the absence of standing-force demand
@@ -147,25 +199,69 @@ impl CrossDomainAllocation {
         personality: AllocationPersonality,
         trace: Option<&mut AllocationTrace>,
     ) -> Result<CrossDomainSettlement, AllocationError> {
+        self.resolve_refined(
+            personality,
+            trace,
+            &mut super::Refinement {
+                layout: &mut |_| None,
+                production: &mut |capacity, claims| {
+                    claims
+                        .resolve(capacity)
+                        .map(crate::bot::planning::Progress::Ready)
+                },
+            },
+        )
+    }
+
+    pub(crate) fn resolve_validated(
+        self,
+        personality: AllocationPersonality,
+        trace: Option<&mut AllocationTrace>,
+        validate_layout: &mut LayoutValidator<'_>,
+        planning: &crate::bot::planning::PlanningWork,
+    ) -> Result<CrossDomainSettlement, AllocationError> {
+        self.resolve_refined(
+            personality,
+            trace,
+            &mut super::Refinement {
+                layout: validate_layout,
+                production: &mut |capacity, claims| {
+                    planning.production(capacity.resources.observed_at(), capacity, claims)
+                },
+            },
+        )
+    }
+
+    fn resolve_refined(
+        self,
+        personality: AllocationPersonality,
+        trace: Option<&mut AllocationTrace>,
+        refinement: &mut super::Refinement<'_>,
+    ) -> Result<CrossDomainSettlement, AllocationError> {
         let Self {
             capacity,
             current_scrap,
             obligations,
-            proposals,
-            contextual_proposals,
-            incompatible_layouts,
+            mut proposals,
+            mut contextual_proposals,
         } = self;
+        refine_standing_waits(&capacity, &obligations, &mut proposals, refinement);
+        for context in &mut contextual_proposals {
+            refine_standing_waits(&capacity, &obligations, &mut context.proposals, refinement);
+        }
         let mut trace = trace;
         let (mut result, considered_proposals, selected_context, considered_contexts) =
             if contextual_proposals.is_empty() {
-                let result = match allocate_with_incompatible_layouts(
+                let result = match super::allocate_refined(
                     &capacity,
                     obligations.clone(),
                     proposals.clone(),
                     personality,
-                    &incompatible_layouts,
+                    None,
+                    &[],
+                    refinement,
                 ) {
-                    Ok(result) => result,
+                    Ok(result) => result.expect("the empty portfolio preserves valid obligations"),
                     Err(error) => {
                         if let Some(trace) = trace.as_deref_mut() {
                             *trace = AllocationTrace::from_inputs(&obligations, &proposals);
@@ -182,7 +278,7 @@ impl CrossDomainAllocation {
                     &proposals,
                     contextual_proposals,
                     personality,
-                    &incompatible_layouts,
+                    refinement,
                 )?
             };
         if let Some(trace) = trace.as_deref_mut() {
@@ -192,7 +288,12 @@ impl CrossDomainAllocation {
             }
         }
         if selected_context.is_none() {
-            extend_connected_greedily(&capacity, &mut result, trace.as_deref_mut());
+            extend_connected_greedily(
+                &capacity,
+                &mut result,
+                trace.as_deref_mut(),
+                refinement.production,
+            );
         } else if let Some(ConnectedPortfolioContext::Selected {
             key,
             marginal_depth,
@@ -243,7 +344,7 @@ fn select_contextual_portfolio(
     base_proposals: &[DomainInvestmentProposal],
     mut contextual: Vec<ContextualProposalSet>,
     personality: AllocationPersonality,
-    incompatible_layouts: &[IncompatibleLayoutSet],
+    refinement: &mut super::Refinement<'_>,
 ) -> Result<
     (
         DomainAllocationResult,
@@ -285,23 +386,15 @@ fn select_contextual_portfolio(
                 Some(ProposalKey::ConnectedOffenseMinimum(key))
             }
         };
-        let result = match required {
-            Some(required) => allocate_requiring(
-                capacity,
-                obligations.to_vec(),
-                proposals.clone(),
-                personality,
-                required,
-                incompatible_layouts,
-            )?,
-            None => Some(allocate_with_incompatible_layouts(
-                capacity,
-                obligations.to_vec(),
-                proposals.clone(),
-                personality,
-                incompatible_layouts,
-            )?),
-        };
+        let result = super::allocate_refined(
+            capacity,
+            obligations.to_vec(),
+            proposals.clone(),
+            personality,
+            required,
+            &[],
+            refinement,
+        )?;
         let Some(mut result) = result else {
             continue;
         };
@@ -324,8 +417,13 @@ fn select_contextual_portfolio(
                     else {
                         continue;
                     };
-                    match result.try_accept_connected_marginal(capacity, &marginal) {
-                        Ok(_) => {}
+                    match result.refine_connected_marginal(
+                        capacity,
+                        &marginal,
+                        refinement.production,
+                    ) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => continue,
                         Err(ConnectedMarginalError::Conflict(_)) => continue,
                         Err(
                             ConnectedMarginalError::NoAcceptedConnectedProposal
@@ -350,8 +448,29 @@ fn select_contextual_portfolio(
             best = Some((rank, scale, result, proposals, set.context));
         }
     }
-    let (_, _, result, proposals, context) =
-        best.expect("registered contexts include one exact feasible portfolio state");
+    let Some((_, _, result, proposals, context)) = best else {
+        let proposals = base_proposals
+            .iter()
+            .filter(|proposal| !matches!(proposal.key(), ProposalKey::ConnectedOffenseMinimum(_)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let result = super::allocate_refined(
+            capacity,
+            obligations.to_vec(),
+            proposals.clone(),
+            personality,
+            None,
+            &[],
+            refinement,
+        )?
+        .expect("the unconstrained empty portfolio preserves valid obligations");
+        return Ok((
+            result,
+            proposals,
+            Some(ConnectedPortfolioContext::Absent),
+            considered_contexts.saturating_add(1),
+        ));
+    };
     Ok((result, proposals, Some(context), considered_contexts))
 }
 
@@ -359,6 +478,7 @@ fn extend_connected_greedily(
     capacity: &AllocationCapacity,
     result: &mut DomainAllocationResult,
     mut trace: Option<&mut AllocationTrace>,
+    refine: &mut super::ProductionResolver<'_>,
 ) {
     let connected_key = result.accepted_connected_key();
     let marginal_variants = result
@@ -368,8 +488,8 @@ fn extend_connected_greedily(
     let mut largest_rejection = None;
     let mut accepted_marginal = false;
     for marginal in marginal_variants.iter().rev() {
-        match result.try_accept_connected_marginal(capacity, marginal) {
-            Ok(claims) => {
+        match result.refine_connected_marginal(capacity, marginal, refine) {
+            Ok(Some(claims)) => {
                 accepted_marginal = true;
                 if let (Some(trace), Some(key)) = (trace.as_deref_mut(), connected_key) {
                     trace.record_connected_marginal_accepted(
@@ -380,6 +500,7 @@ fn extend_connected_greedily(
                 }
                 break;
             }
+            Ok(None) => break,
             Err(ConnectedMarginalError::Conflict(conflict)) => {
                 if largest_rejection.is_none() {
                     largest_rejection = Some((marginal, conflict));
@@ -625,6 +746,40 @@ pub(crate) fn current_reserve_at(obligations: &[ImportedObligation], decision_ti
             )
         })
         .fold(0, u32::saturating_add)
+}
+
+/// Lower bound on current capital needed by imported fixed producer payments.
+/// Other future claims are omitted, so this can only overestimate discretionary
+/// spending capacity before the exact portfolio funding check.
+pub(crate) fn fixed_production_current_reserve(
+    resources: &ResourceSnapshot,
+    obligations: &[ImportedObligation],
+) -> u32 {
+    let now = resources.forecast().observed_at();
+    let mut payments: Vec<_> = obligations
+        .iter()
+        .flat_map(|obligation| obligation.claims.producer_jobs())
+        .filter_map(|job| {
+            job.fixed_assignment()
+                .map(|fixed| (fixed.enqueued_at, job.kind().stats().cost))
+        })
+        .collect();
+    payments.sort_unstable();
+    let mut required = obligations
+        .iter()
+        .map(|obligation| u64::from(obligation.claims.current_scrap()))
+        .fold(0_u64, u64::saturating_add);
+    let mut reserve = required;
+    for (through, cost) in payments {
+        required = required.saturating_add(u64::from(cost));
+        let income = if through <= now {
+            0
+        } else {
+            resources.forecast().income_through(through).amount()
+        };
+        reserve = reserve.max(required.saturating_sub(u64::from(income)));
+    }
+    u32::try_from(reserve).unwrap_or(u32::MAX)
 }
 
 /// Exact non-production forecast capital promised no later than one deadline.
@@ -1265,6 +1420,81 @@ mod tests {
     use crate::stats::UnitKind;
     use chassis::grid::TilePos;
 
+    #[test]
+    fn deferred_contexts_preserve_obligations_without_requiring_a_finished_candidate() {
+        let key = ConnectedOffenseKey {
+            objective: BuildingId(90),
+            anchor: TilePos::new(12, 8),
+        };
+        let airworks = BuildingId(2);
+        let connected = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective: key.objective,
+            anchor: key.anchor,
+            deadline: 1_200,
+            case: connected_case(),
+            minimum_claims: ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![ConnectedProviderJob::fixture(
+                    UnitKind::Buzzard,
+                    120,
+                    1_200,
+                    vec![airworks],
+                )],
+            ),
+            marginal_additions: Vec::new(),
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+        let mut allocation = CrossDomainAllocation {
+            capacity: contextual_capacity(
+                900,
+                Vec::new(),
+                Vec::new(),
+                vec![(airworks, vec![UnitKind::Buzzard])],
+            ),
+            current_scrap: 900,
+            obligations: vec![ImportedObligation {
+                class: ObligationClass::Survival,
+                accepted_at: 120,
+                key: ObligationKey::OpeningCore { sequence: 0 },
+                claims: ClaimBundle::new(
+                    100,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap(),
+            }],
+            proposals: vec![connected_investment_proposal(connected).unwrap()],
+            contextual_proposals: Vec::new(),
+        };
+        allocation.offer_context(
+            ConnectedPortfolioContext::Selected {
+                key,
+                marginal_depth: 0,
+            },
+            Vec::new(),
+        );
+        let mut trace = AllocationTrace::default();
+        let result = allocation
+            .resolve_validated(
+                AllocationPersonality::default(),
+                Some(&mut trace),
+                &mut |_| None,
+                &crate::bot::planning::PlanningWork::with_allowance(0),
+            )
+            .unwrap();
+        assert_eq!(result.residual_current_scrap(), 800);
+        assert!(result.producer_schedule().is_empty());
+        assert!(result.into_payloads().take_connected().is_none());
+        assert!(matches!(
+            trace.connected_context.unwrap().selected,
+            ConnectedPortfolioSelectionTrace::Absent
+        ));
+    }
+
     fn observation() -> Observation {
         Observation {
             version: crate::bot::observation::OBSERVATION_VERSION,
@@ -1453,7 +1683,6 @@ mod tests {
                     .expect("the Foundry proposal has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1853,7 +2082,6 @@ mod tests {
                     .expect("the connected proposal has valid claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
 
@@ -1919,7 +2147,6 @@ mod tests {
                     .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         allocation.offer_context(
             ConnectedPortfolioContext::Absent,
@@ -2045,7 +2272,6 @@ mod tests {
                     .expect("the connected ladder has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let standing = || standing_proposal(UnitKind::Lancer, crucible, common_case);
         allocation.offer_context(ConnectedPortfolioContext::Absent, vec![standing()]);
@@ -2183,7 +2409,6 @@ mod tests {
             obligations: Vec::new(),
             proposals: proposals(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("the ordinary portfolio resolves");
@@ -2193,7 +2418,6 @@ mod tests {
             obligations: Vec::new(),
             proposals: proposals(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         contextual.offer_context(ConnectedPortfolioContext::Absent, Vec::new());
         contextual.offer_context(
@@ -2225,6 +2449,63 @@ mod tests {
             accepted_keys(&control),
             vec![ProposalKey::ConnectedOffenseMinimum(connected_key)],
             "the fixture must exercise the existing Foundry-versus-offense ordering"
+        );
+    }
+
+    #[test]
+    fn fixed_production_reserve_preserves_each_payment_deadline() {
+        let mut obs = observation();
+        obs.tick = 120;
+        obs.my_buildings.push(crate::bot::observation::BuildingObs {
+            id: BuildingId(1),
+            player: obs.me,
+            kind: BuildingKind::Reclaimer,
+            anchor: TilePos::new(2, 2),
+            hp: BuildingKind::Reclaimer.base_stats().max_hp,
+            built: true,
+            provisional: false,
+            seen: true,
+            tier: 0,
+        });
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let kind = UnitKind::Sentinel;
+        let cost = kind.stats().cost;
+        let later = obs.tick + 10_000;
+        assert!(resources.forecast().income_through(later).amount() > cost * 2);
+        let job = |due| {
+            let ready = due + Tick::from(kind.stats().train_ticks) - 1;
+            ProducerJobClaim::fixed(BuildingId(9), kind, due, due, ready, ready + 2)
+        };
+        let obligation = |jobs| {
+            imported_obligation(
+                ObligationClass::PersistentPlan,
+                90,
+                ObligationKey::OpeningCore { sequence: 3 },
+                ClaimBundle::new(25, Vec::new(), Vec::new(), Vec::new(), Vec::new(), jobs).unwrap(),
+            )
+        };
+        assert_eq!(
+            fixed_production_current_reserve(
+                &resources,
+                &[obligation(vec![job(later), job(obs.tick)])],
+            ),
+            25 + cost,
+            "later income cannot release the money needed for a command now"
+        );
+        assert_eq!(
+            fixed_production_current_reserve(&resources, &[obligation(vec![job(later)])]),
+            25,
+            "income before the retained purchase leaves current discretionary cash available"
+        );
+        obs.my_buildings.clear();
+        let resources = ResourceSnapshot::from_observation(&obs);
+        assert_eq!(
+            fixed_production_current_reserve(
+                &resources,
+                &[obligation(vec![job(later), job(obs.tick + 1)])],
+            ),
+            25 + cost * 2,
+            "all fixed purchases share the same bank when recurring income is absent"
         );
     }
 
@@ -2365,7 +2646,6 @@ mod tests {
                     .expect("the connected proposal has valid exact claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
 
         let settlement = allocation
@@ -2450,7 +2730,6 @@ mod tests {
                     .expect("the connected package has valid claims"),
             ],
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         };
         let settlement = allocation
             .resolve(AllocationPersonality::default(), None)
@@ -2554,7 +2833,6 @@ mod tests {
             obligations,
             proposals: Vec::new(),
             contextual_proposals: Vec::new(),
-            incompatible_layouts: Vec::new(),
         }
         .resolve(AllocationPersonality::default(), None)
         .expect("current survival and forecast-funded future production are jointly feasible");
@@ -2564,6 +2842,150 @@ mod tests {
         assert_eq!(
             settlement.producer_schedule()[0].forecast_scrap,
             kind.stats().cost
+        );
+    }
+    #[test]
+    fn standing_wait_shares_forecast_with_a_retained_job_on_another_factory() {
+        let capacity_with_income = |income| {
+            AllocationCapacity::fixture(
+                ResourcePlanningProjection::fixture(ResourcePlanningFixture {
+                    current_scrap: 0,
+                    observed_at: 120,
+                    horizon: 1200,
+                    cadence: 12,
+                    forecast_income: vec![crate::bot::resources::ForecastAvailability {
+                        available_at: 240,
+                        amount: income,
+                    }],
+                    units: vec![],
+                    builders: vec![],
+                    producers: vec![
+                        (BuildingId(1), UnitKind::Buzzard),
+                        (BuildingId(2), UnitKind::Warden),
+                    ]
+                    .into_iter()
+                    .map(|(id, kind)| {
+                        ProducerPlanningProjection::fixture(
+                            id,
+                            120,
+                            12,
+                            120,
+                            vec![120; crate::stats::QUEUE_CAP],
+                            vec![kind],
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+                })
+                .unwrap(),
+            )
+        };
+        let capacity = capacity_with_income(1000);
+        let retained = imported_obligation(
+            ObligationClass::PersistentPlan,
+            120,
+            ObligationKey::OpeningCore { sequence: 0 },
+            ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    BuildingId(1),
+                    UnitKind::Buzzard,
+                    240,
+                    240,
+                    240 + u64::from(UnitKind::Buzzard.stats().train_ticks) - 1,
+                    1200,
+                )],
+            )
+            .unwrap(),
+        );
+        let standing = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: 120,
+            ready_before: 1200,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::SiegePressure,
+            specialty: Specialty::Siege,
+            personality_emphasis: 100,
+            case: ProposalCase::from(connected_case()),
+            eligible_producers: vec![BuildingId(2)],
+        })
+        .with_accumulation(240, 0);
+        let mut proposals = standing_force_investment_proposals(vec![standing.clone()]).unwrap();
+        let admitted = allocate_requiring(
+            &capacity,
+            vec![retained.clone()],
+            proposals.clone(),
+            AllocationPersonality::default(),
+            proposals[0].key(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            admitted.is_some(),
+            "the exact shared allocator can fund and schedule both jobs"
+        );
+        pin_standing_waits(&capacity, std::slice::from_ref(&retained), &mut proposals);
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].claims.producer_jobs()[0].committed_producer(),
+            Some(BuildingId(2))
+        );
+        let mut unfunded = standing_force_investment_proposals(vec![standing.clone()]).unwrap();
+        pin_standing_waits(
+            &capacity_with_income(UnitKind::Buzzard.stats().cost),
+            &[retained],
+            &mut unfunded,
+        );
+        assert!(unfunded.is_empty());
+
+        let training = u64::from(UnitKind::Warden.stats().train_ticks);
+        let occupied = imported_obligation(
+            ObligationClass::PersistentPlan,
+            120,
+            ObligationKey::OpeningCore { sequence: 1 },
+            ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::fixed(
+                    BuildingId(2),
+                    UnitKind::Warden,
+                    240,
+                    240,
+                    240 + training - 1,
+                    1200,
+                )],
+            )
+            .unwrap(),
+        );
+        let mut later = standing_force_investment_proposals(vec![standing]).unwrap();
+        pin_standing_waits(&capacity, std::slice::from_ref(&occupied), &mut later);
+        assert_eq!(
+            later.len(),
+            1,
+            "a compatible later slot on the same factory remains eligible"
+        );
+        let urgent = StandingForceProposal::fixture(StandingForceFixture {
+            observed_at: 120,
+            ready_before: 120 + training,
+            kind: UnitKind::Warden,
+            reason: StandingForceReason::SiegePressure,
+            specialty: Specialty::Siege,
+            personality_emphasis: 100,
+            case: ProposalCase::from(connected_case()),
+            eligible_producers: vec![BuildingId(2)],
+        })
+        .with_accumulation(240, 0);
+        let mut blocked = standing_force_investment_proposals(vec![urgent]).unwrap();
+        pin_standing_waits(&capacity, &[occupied], &mut blocked);
+        assert!(
+            blocked.is_empty(),
+            "a retained job cannot be displaced to meet an incompatible deadline"
         );
     }
 }

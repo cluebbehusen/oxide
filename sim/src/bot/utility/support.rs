@@ -19,6 +19,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
         let context = EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources: &resources,
             profile: &profile,

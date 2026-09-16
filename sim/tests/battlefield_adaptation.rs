@@ -70,6 +70,125 @@ fn brain(scenario: &Scenario, difficulty: BotDifficulty) -> Brain {
 }
 
 #[test]
+fn accepted_extractor_defense_intercepts_a_lone_raider() {
+    use oxide_sim::bot::executive::{ArmyMission, ArmyPurpose, ArmyState};
+    use oxide_sim::bot::{Executive, Intent};
+    use oxide_sim::scenario::BuildingSpec;
+    use oxide_sim::{BuildingKind, Target};
+
+    let mut scenario = arena();
+    scenario.map[10].replace_range(18..19, "E");
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Extractor,
+        x: 18,
+        y: 10,
+    });
+    scenario.units = (0..8)
+        .map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 25 + index % 2,
+            y: 12 + index / 2,
+        })
+        .chain([UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 19,
+            y: 12,
+        }])
+        .collect();
+    let mut state = scenario.build().unwrap();
+    let obs = Observation::fog_honest(&state, PlayerId(0));
+    let raider = obs.enemy_units[0].clone();
+    let extractor = obs
+        .my_buildings
+        .iter()
+        .find(|building| building.kind == BuildingKind::Extractor)
+        .unwrap();
+    let asset = extractor.id;
+    let initial_hp = extractor.hp;
+    let members: Vec<_> = obs.my_units.iter().map(|unit| unit.id).collect();
+    assert!(obs.my_units.iter().all(|unit| unit.idle));
+    let staging = TilePos::new(25, 13);
+    let mut executive = Executive::new();
+    executive.apply(
+        obs.me,
+        &obs,
+        &[Intent::FormArmyWith {
+            army: None,
+            members: members.clone(),
+            staging,
+            minimum: 8,
+            mission: ArmyMission {
+                purpose: ArmyPurpose::Reserve,
+                goal: staging,
+                accepted_at: 0,
+                deadline: 1800,
+                score: 0,
+            },
+        }],
+    );
+    executive.maintain_player_facing(obs.me, &obs, staging);
+    let body = &executive.armies()[0];
+    assert_eq!(body.state, ArmyState::Engaging);
+    let mut commands = executive.apply(
+        obs.me,
+        &obs,
+        &[Intent::AssignArmyMission {
+            army: body.id,
+            members,
+            mission: ArmyMission {
+                purpose: ArmyPurpose::Defend(asset),
+                goal: raider.tile,
+                accepted_at: 0,
+                deadline: 1800,
+                score: 100,
+            },
+        }],
+    );
+    commands.push(PlayerCommand {
+        player: PlayerId(1),
+        command: Command::Attack {
+            units: vec![raider.id],
+            target: Target::Building(asset).into(),
+            queue: false,
+        },
+    });
+    for tick in 0..200 {
+        let report = state.tick(&commands);
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::CommandRejected { .. }))
+        );
+        commands.clear();
+        if tick % 12 == 11 {
+            commands = executive.maintain_player_facing(
+                obs.me,
+                &Observation::fog_honest(&state, obs.me),
+                staging,
+            );
+        }
+    }
+    assert!(
+        state.units().iter().all(|unit| unit.id != raider.id),
+        "defenders must intercept, not merely own a mission"
+    );
+    let remaining = state
+        .buildings()
+        .iter()
+        .find(|building| building.id == asset)
+        .unwrap()
+        .hp;
+    assert!(
+        remaining >= initial_hp * 3 / 4,
+        "the interception must preserve the asset: {remaining}/{initial_hp}"
+    );
+}
+
+#[test]
 fn complete_hidden_state_histories_and_tracing_produce_identical_commands() {
     for difficulty in [
         BotDifficulty::Scrapheap,

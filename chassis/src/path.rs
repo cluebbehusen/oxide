@@ -144,6 +144,7 @@ pub struct AstarScratch {
     last_width: i32,
     last_height: i32,
     last_exhausted: bool,
+    last_expansions: u32,
 }
 
 /// A Dial (bucket) priority queue specialized to this A*'s keys, popping
@@ -222,6 +223,12 @@ impl DialQueue {
 }
 
 impl AstarScratch {
+    /// Nodes expanded by the last query, including the node that exceeded its cap.
+    /// Invalid endpoints, blocked goals, and trivial paths expand no nodes.
+    pub fn last_expansions(&self) -> u32 {
+        self.last_expansions
+    }
+
     /// Hide reachability evidence without releasing retained search buffers.
     /// Use when changing passability contexts or supplying a cached success
     /// without running another search.
@@ -327,13 +334,81 @@ pub fn astar_with_scratch(
     height: i32,
     start: TilePos,
     goal: TilePos,
+    passable: impl FnMut(TilePos) -> bool,
+    max_expansions: u32,
+    scratch: &mut AstarScratch,
+) -> Option<Vec<TilePos>> {
+    astar_inner::<false>(
+        (width, height),
+        start,
+        goal,
+        passable,
+        max_expansions,
+        scratch,
+        &[],
+    )
+}
+
+/// Finds the canonical path while pruning detours with exact reverse distances.
+///
+/// `distances` must contain row-major shortest costs to `goal` for this exact
+/// passability graph, using the same 10/14 costs and no corner cutting as [`astar`].
+/// Unreachable cells have cost `u32::MAX`. Queue ordering is unchanged, so tied
+/// paths retain their canonical shape. Pruning is disabled when the expansion
+/// cap could affect the result, the field dimensions differ, or the start is blocked.
+pub fn astar_with_distances(
+    dimensions: (i32, i32),
+    start: TilePos,
+    goal: TilePos,
     mut passable: impl FnMut(TilePos) -> bool,
     max_expansions: u32,
     scratch: &mut AstarScratch,
+    distances: &[u32],
+) -> Option<Vec<TilePos>> {
+    let (width, height) = dimensions;
+    let cells = usize::try_from(width)
+        .ok()
+        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)));
+    let bounded = start.x >= 0 && start.y >= 0 && start.x < width && start.y < height;
+    if cells.is_some_and(|n| n == distances.len() && n <= max_expansions as usize)
+        && bounded
+        && passable(start)
+    {
+        astar_inner::<true>(
+            dimensions,
+            start,
+            goal,
+            passable,
+            max_expansions,
+            scratch,
+            distances,
+        )
+    } else {
+        astar_inner::<false>(
+            dimensions,
+            start,
+            goal,
+            passable,
+            max_expansions,
+            scratch,
+            &[],
+        )
+    }
+}
+
+fn astar_inner<const PRUNE: bool>(
+    (width, height): (i32, i32),
+    start: TilePos,
+    goal: TilePos,
+    mut passable: impl FnMut(TilePos) -> bool,
+    max_expansions: u32,
+    scratch: &mut AstarScratch,
+    distances: &[u32],
 ) -> Option<Vec<TilePos>> {
     scratch.last_width = width.max(0);
     scratch.last_height = height.max(0);
     scratch.last_exhausted = false;
+    scratch.last_expansions = 0;
     let in_bounds = |p: TilePos| p.x >= 0 && p.y >= 0 && p.x < width && p.y < height;
     if !in_bounds(start) || !in_bounds(goal) {
         return None;
@@ -374,6 +449,7 @@ pub fn astar_with_scratch(
         generation,
         open,
         last_exhausted,
+        last_expansions,
         ..
     } = scratch;
     let generation = *generation;
@@ -388,7 +464,6 @@ pub fn astar_with_scratch(
         index(start),
     );
 
-    let mut expansions = 0;
     while let Some((f, _h, current_idx)) = open.pop() {
         let current = TilePos::new(
             (current_idx % (width as usize)) as i32,
@@ -412,14 +487,17 @@ pub fn astar_with_scratch(
             path.reverse();
             return Some(path);
         }
-        expansions += 1;
-        if expansions > max_expansions {
+        *last_expansions += 1;
+        if *last_expansions > max_expansions {
             return None;
         }
 
         let mut visit = |next: TilePos, step_cost: u32, open: &mut DialQueue| {
             let next_idx = index(next);
             let tentative = g + step_cost;
+            if PRUNE && tentative.saturating_add(distances[next_idx]) > distances[index(start)] {
+                return;
+            }
             let known = if stamp[next_idx] == generation {
                 best_g[next_idx]
             } else {
@@ -473,6 +551,29 @@ pub fn astar_with_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expansion_count_tracks_success_exhaustion_caps_and_early_exits() {
+        let mut scratch = AstarScratch::default();
+        let start = TilePos::new(0, 0);
+        let goal = TilePos::new(4, 0);
+        assert!(astar_with_scratch(5, 1, start, goal, |_| true, 10, &mut scratch).is_some());
+        assert_eq!(scratch.last_expansions(), 4);
+        assert!(astar_with_scratch(5, 1, start, goal, |_| true, 1, &mut scratch).is_none());
+        assert_eq!(scratch.last_expansions(), 2);
+        assert!(!scratch.last_search_exhausted());
+        assert!(
+            astar_with_scratch(5, 1, start, goal, |tile| tile.x != 2, 10, &mut scratch).is_none()
+        );
+        assert_eq!(scratch.last_expansions(), 2);
+        assert!(scratch.last_search_exhausted());
+        assert!(astar_with_scratch(5, 1, start, goal, |_| false, 10, &mut scratch).is_none());
+        assert_eq!(scratch.last_expansions(), 0);
+        assert!(astar_with_scratch(5, 1, start, start, |_| false, 10, &mut scratch).is_some());
+        assert_eq!(scratch.last_expansions(), 0);
+        assert!(astar_with_scratch(0, 0, start, goal, |_| true, 10, &mut scratch).is_none());
+        assert_eq!(scratch.last_expansions(), 0);
+    }
 
     /// The tuple-heap A* the dial replaced, kept verbatim as the
     /// oracle: identical expansion body, global

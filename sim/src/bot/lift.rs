@@ -3,11 +3,11 @@
 use super::difficulty::strategic_admission_tick;
 use super::executive::{Intent, unit_strength};
 use super::intelligence::{BuildingContact, ContactEvidence};
+use super::navigation::commands::{self as routing, RouteProjection};
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::resources::ProducerLaneReservations;
 #[cfg(test)]
 use super::resources::ResourceSnapshot;
-use super::routing::{self, RouteProjection};
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
 use crate::ids::{BuildingId, PlayerId, UnitId};
@@ -1227,7 +1227,7 @@ fn ground_disconnection_is_proven(
     if !routing::ground_open(obs, pickup) {
         return false;
     }
-    let mut routes = RouteProjection::new(obs, Domain::Ground);
+    let routes = RouteProjection::new(obs, Domain::Ground);
     let goals: Vec<_> = footprint_ring(target.anchor, target.kind.base_stats().size)
         .into_iter()
         .filter(|tile| routing::ground_open(obs, *tile))
@@ -1829,7 +1829,7 @@ fn assign_manifests(
         operation.pickup_component,
         operation.desired_carriers,
     );
-    let mut air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(obs, Domain::Air);
     let drops: Vec<_> = operation
         .planned_drops
         .iter()
@@ -2264,7 +2264,7 @@ fn followup_assault_goal(
     survivors: &[UnitId],
     attempted: &[TilePos],
 ) -> Option<TilePos> {
-    let mut known_routes = RouteProjection::known_ground(obs);
+    let known_routes = RouteProjection::known_ground(obs);
     if let Some(building) = obs
         .enemy_buildings
         .iter()
@@ -2289,7 +2289,7 @@ fn followup_assault_goal(
         return Some(building.anchor);
     }
 
-    let mut projected_routes = RouteProjection::new(obs, Domain::Ground);
+    let projected_routes = RouteProjection::new(obs, Domain::Ground);
     (0..obs.map_height)
         .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
         .filter(|tile| {
@@ -2322,7 +2322,7 @@ fn return_carrier(
         manifest.closed = true;
         return;
     }
-    let mut air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(obs, Domain::Air);
     if manifest.recovery_attempts >= DROP_ATTEMPTS || !air.reaches(carrier.tile, manifest.pickup) {
         manifest.closed = true;
         return;
@@ -2425,7 +2425,7 @@ fn alternate_drop(
     target: TilePos,
     claimed: &[TilePos],
 ) -> Option<TilePos> {
-    let mut air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(obs, Domain::Air);
     open_slots(obs, target, claimed.len().saturating_add(32))
         .into_iter()
         .find(|tile| !claimed.contains(tile) && air.reaches(from, *tile))
@@ -2443,7 +2443,7 @@ fn unit(obs: &Observation, id: UnitId) -> Option<&UnitObs> {
 }
 
 fn landing_slots(obs: &Observation, from: TilePos, target: TilePos, count: usize) -> Vec<TilePos> {
-    let mut air = RouteProjection::new(obs, Domain::Air);
+    let air = RouteProjection::new(obs, Domain::Air);
     open_slots(obs, target, count.saturating_mul(3))
         .into_iter()
         .filter(|tile| air.reaches(from, *tile))
@@ -2478,7 +2478,7 @@ fn pickup_slots(
         })
         .unwrap_or(0);
     let candidates = open_slots(obs, home, map_cells);
-    let mut routes = RouteProjection::known_ground(obs);
+    let routes = RouteProjection::known_ground(obs);
     candidates
         .into_iter()
         .filter(|tile| routes.reaches(component, *tile))
@@ -2494,7 +2494,7 @@ fn pickup_component_anchors(obs: &Observation, home: TilePos) -> Vec<TilePos> {
         .unwrap_or(0);
     let candidates = open_slots_within(obs, home, radius, count);
     let mut anchors = Vec::new();
-    let mut routes = RouteProjection::known_ground(obs);
+    let routes = RouteProjection::known_ground(obs);
     for candidate in candidates {
         if anchors
             .iter()
@@ -4431,7 +4431,7 @@ mod tests {
 
         let naive = open_slots(&obs, HOME, 3);
         assert_eq!(naive[2], isolated);
-        let mut routes = RouteProjection::known_ground(&obs);
+        let routes = RouteProjection::known_ground(&obs);
         assert!(!routes.reaches(naive[0], naive[2]));
 
         let mut planner = LiftPlanner::new();

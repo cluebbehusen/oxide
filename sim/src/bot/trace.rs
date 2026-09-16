@@ -33,7 +33,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// Schema version for serialized decision traces.
-pub const DECISION_TRACE_VERSION: u32 = 11;
+pub const DECISION_TRACE_VERSION: u32 = 12;
 
 const RESOURCE_FORECAST_TICKS: Tick = crate::TICKS_PER_SECOND as Tick * 60;
 const ALLOCATION_TRACE_ENTRY_LIMIT: usize = 32;
@@ -2097,6 +2097,13 @@ pub enum ObligationKeyTrace {
         /// Frozen action identity.
         action: crate::bot::utility::EconomicInvestmentKey,
     },
+    /// One exact military purchase awaiting its accepted production slot.
+    StandingForceSaving {
+        /// Frozen unit kind.
+        unit: UnitKind,
+        /// Frozen service identity.
+        service: StandingForceServiceKeyTrace,
+    },
     /// One exact opening defense admitted before ordinary core recovery.
     EmergencyDefense {
         /// Defensive structure selected by the utility scorer.
@@ -2174,6 +2181,10 @@ impl From<ObligationKey> for ObligationKeyTrace {
             }
             ObligationKey::SavedFoundry { anchor } => Self::SavedFoundry { anchor },
             ObligationKey::SavedEconomy(action) => Self::SavedEconomy { action },
+            ObligationKey::StandingForceSaving(key) => Self::StandingForceSaving {
+                unit: key.kind,
+                service: key.service.into(),
+            },
             ObligationKey::ConnectedOffense { objective, anchor } => {
                 Self::ConnectedOffense { objective, anchor }
             }
@@ -2257,6 +2268,8 @@ impl From<ClaimOwner> for ClaimOwnerTrace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ProposalDispositionTrace {
+    /// A feasible incumbent was retained before this alternative was refined.
+    NotRefined,
     /// Allocation did not run because its input set was invalid.
     NotEvaluated,
     /// The exact proposal won selection.
@@ -2286,6 +2299,7 @@ impl From<ProposalDisposition> for ProposalDispositionTrace {
     fn from(value: ProposalDisposition) -> Self {
         match value {
             ProposalDisposition::Accepted => Self::Accepted,
+            ProposalDisposition::Rejected(ProposalRejection::NotRefined) => Self::NotRefined,
             ProposalDisposition::Rejected(ProposalRejection::Infeasible(conflict)) => {
                 Self::Infeasible {
                     conflict: conflict.into(),
@@ -4739,7 +4753,7 @@ mod tests {
 
     #[test]
     fn serialized_trace_has_a_fixed_schema() {
-        assert_eq!(DECISION_TRACE_VERSION, 11);
+        assert_eq!(DECISION_TRACE_VERSION, 12);
         let mut trace = DecisionTrace::from_observation(&Observation::default());
         trace.gates.opening_core = Some(CoreGateTrace {
             projected_strength: 1,

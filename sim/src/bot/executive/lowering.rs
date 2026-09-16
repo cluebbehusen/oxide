@@ -316,17 +316,12 @@ impl Executive {
                         && vanguard_centroid(&body.members, obs, centroid_frame)
                             .chebyshev(mission.goal)
                             <= 2;
-                    if body.state == ArmyState::Engaging && !recover {
+                    if body.state == ArmyState::Engaging
+                        && !recover
+                        && (!matches!(mission.purpose, ArmyPurpose::Defend(_))
+                            || body.members != *members)
+                    {
                         self.mission_decisions[receipt].disposition = MissionDisposition::Engaged;
-                        if matches!(mission.purpose, ArmyPurpose::Defend(_))
-                            && body.members == *members
-                        {
-                            self.mission_decisions[receipt].disposition =
-                                MissionDisposition::Accepted;
-                            self.missions.insert(*army, mission.clone());
-                            claimed.extend(body.members.iter().copied());
-                            self.watch_ground_mission(obs, *army, mission);
-                        }
                         continue;
                     }
                     self.mission_decisions[receipt].disposition = MissionDisposition::Accepted;
@@ -811,15 +806,15 @@ impl Executive {
                     || match proposed_footprint {
                         None => routes
                             .get_or_insert_with(|| {
-                                crate::bot::routing::RouteProjection::new(
+                                crate::bot::navigation::commands::RouteProjection::new(
                                     obs,
                                     crate::stats::Domain::Ground,
                                 )
                             })
                             .group_reaches_command_goal(&[unit.id], anchor),
-                        Some(size) => crate::bot::routing::unit_reaches_build_site_via(
+                        Some(size) => crate::bot::navigation::commands::unit_reaches_build_site_via(
                             routes.get_or_insert_with(|| {
-                                crate::bot::routing::RouteProjection::ground_excluding_footprint(
+                                crate::bot::navigation::commands::RouteProjection::ground_excluding_footprint(
                                     obs, anchor, size,
                                 )
                             }),
@@ -868,7 +863,7 @@ impl Executive {
             .collect();
         candidates.sort_unstable();
 
-        let mut routes = crate::bot::routing::RouteProjection::known_ground(obs);
+        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
         let mut draft = Vec::with_capacity((size as usize).min(candidates.len()));
         for (_, id) in candidates {
             if draft.len() == size as usize {
@@ -885,7 +880,7 @@ impl Executive {
     }
 
     fn consolidate_staging_armies(&mut self, obs: &Observation, staging: TilePos) -> Option<usize> {
-        let mut routes = crate::bot::routing::RouteProjection::known_ground(obs);
+        let routes = crate::bot::navigation::commands::RouteProjection::known_ground(obs);
         let candidates: Vec<ArmyId> = self
             .armies
             .iter()
@@ -1033,6 +1028,7 @@ mod tests {
             explored: vec![true; 40 * 24],
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_pits: Vec::new(),
             known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
@@ -1059,6 +1055,104 @@ mod tests {
             ..Executive::default()
         };
         (observation, executive)
+    }
+
+    #[test]
+    fn nearby_contact_does_not_suppress_an_accepted_defense_order() {
+        let (mut obs, mut executive) = target_holding_position();
+        let staging = TilePos::new(19, 9);
+        let goal = TilePos::new(25, 9);
+        executive.armies[0].target = None;
+        for unit in &mut obs.my_units {
+            unit.idle = true;
+        }
+        let mut intruder = fighter(900, goal, false);
+        intruder.player = PlayerId(1);
+        intruder.kind = UnitKind::Sentinel;
+        obs.enemy_units.push(intruder);
+        executive.maintain_player_facing(obs.me, &obs, staging);
+        assert_eq!(executive.armies[0].state, ArmyState::Engaging);
+        assert_eq!(executive.armies[0].target, None);
+        let members = executive.armies[0].members.clone();
+        let intent = Intent::AssignArmyMission {
+            army: ArmyId(7),
+            members: members.clone(),
+            mission: ArmyMission {
+                purpose: ArmyPurpose::Defend(BuildingId(900)),
+                goal,
+                accepted_at: obs.tick,
+                deadline: obs.tick + 1800,
+                score: 100,
+            },
+        };
+        let commands = executive.apply(obs.me, &obs, std::slice::from_ref(&intent));
+        assert!(commands.iter().any(|command| matches!(&command.command,
+            Command::AttackMove { units, goal: destination, queue: false }
+                if units == &members && *destination == goal)));
+        assert_eq!(executive.armies[0].target, Some(goal));
+        assert_eq!(
+            executive.mission_decisions[0].disposition,
+            MissionDisposition::Accepted
+        );
+        assert!(executive.apply(obs.me, &obs, &[intent]).is_empty());
+    }
+
+    #[test]
+    fn defense_reassignment_does_not_split_an_engaged_body() {
+        let (obs, mut executive) = target_holding_position();
+        executive.armies[0].state = ArmyState::Engaging;
+        let body = executive.armies[0].clone();
+        let reserved = body.members[0];
+        let commands = executive.apply_with_reservations(
+            obs.me,
+            &obs,
+            &[Intent::AssignArmyMission {
+                army: body.id,
+                members: body.members[1..].to_vec(),
+                mission: ArmyMission {
+                    purpose: ArmyPurpose::Defend(BuildingId(900)),
+                    goal: TilePos::new(25, 9),
+                    accepted_at: obs.tick,
+                    deadline: obs.tick + 1800,
+                    score: 100,
+                },
+            }],
+            &[reserved],
+        );
+        assert!(commands.is_empty());
+        assert_eq!(executive.armies[0], body);
+        assert_eq!(
+            executive.mission_decisions[0].disposition,
+            MissionDisposition::Engaged
+        );
+    }
+
+    #[test]
+    fn defense_reassignment_preserves_an_emergency_withdrawal() {
+        let (obs, mut executive) = target_holding_position();
+        executive.armies[0].state = ArmyState::Withdrawing;
+        let body = executive.armies[0].clone();
+        let commands = executive.apply(
+            obs.me,
+            &obs,
+            &[Intent::AssignArmyMission {
+                army: body.id,
+                members: body.members.clone(),
+                mission: ArmyMission {
+                    purpose: ArmyPurpose::Defend(BuildingId(900)),
+                    goal: TilePos::new(25, 9),
+                    accepted_at: obs.tick,
+                    deadline: obs.tick + 1800,
+                    score: 100,
+                },
+            }],
+        );
+        assert!(commands.is_empty());
+        assert_eq!(executive.armies[0], body);
+        assert_eq!(
+            executive.mission_decisions[0].disposition,
+            MissionDisposition::EmergencyWithdrawal
+        );
     }
 
     #[test]
@@ -1497,6 +1591,7 @@ mod tests {
             explored: vec![true; 40 * 24],
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_pits: Vec::new(),
             known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),

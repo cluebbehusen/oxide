@@ -20,12 +20,49 @@ pub struct StartingFoundry {
     pub anchor: TilePos,
 }
 
+#[derive(Clone, Default)]
+pub(super) struct RegionCache {
+    generations: std::sync::Arc<[std::sync::OnceLock<RegionGeneration>; 4]>,
+    orientation: usize,
+}
+
+impl RegionCache {
+    pub(super) fn oriented(&self, flip_x: bool, flip_y: bool) -> Self {
+        Self {
+            generations: std::sync::Arc::clone(&self.generations),
+            orientation: self.orientation ^ (usize::from(flip_x) | (usize::from(flip_y) << 1)),
+        }
+    }
+}
+
+struct RegionGeneration {
+    width: i32,
+    height: i32,
+    terrain: Vec<(TilePos, Terrain)>,
+    regions: std::sync::Arc<super::navigation::regions::StaticRegions>,
+}
+
+impl core::fmt::Debug for RegionCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RegionCache").finish_non_exhaustive()
+    }
+}
+
+// Derived memoization does not change the identity of public map knowledge.
+impl PartialEq for RegionCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl Eq for RegionCache {}
+
 /// Canonical pre-match map knowledge shared by player-facing bots.
 ///
 /// Dynamic facts never enter this type. In particular, `initial_scrap` is not
 /// a live amount and `starting_foundries` is not a list of current targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicMapBriefing {
+    pub(super) regions: RegionCache,
     pub(super) map_width: i32,
     pub(super) map_height: i32,
     pub(super) starting_foundries: Vec<StartingFoundry>,
@@ -58,6 +95,7 @@ impl PublicMapBriefing {
             }
         }
         Self {
+            regions: RegionCache::default(),
             map_width: map.width(),
             map_height: map.height(),
             starting_foundries: anchors
@@ -68,6 +106,39 @@ impl PublicMapBriefing {
             non_ground_terrain,
             extractor_frames: map.extractor_frames().to_vec(),
             initial_scrap,
+        }
+    }
+
+    pub(super) fn prepare_navigation(&self) {
+        for home in [
+            TilePos::new(0, 0),
+            TilePos::new(self.map_width - 1, 0),
+            TilePos::new(0, self.map_height - 1),
+            TilePos::new(self.map_width - 1, self.map_height - 1),
+        ] {
+            let orientation =
+                super::orient::Orientation::for_map(self.map_width, self.map_height, home);
+            orientation.briefing(self).regions();
+        }
+    }
+
+    pub(super) fn regions(&self) -> std::sync::Arc<super::navigation::regions::StaticRegions> {
+        let cached =
+            self.regions.generations[self.regions.orientation].get_or_init(|| RegionGeneration {
+                width: self.map_width,
+                height: self.map_height,
+                terrain: self.non_ground_terrain.clone(),
+                regions: std::sync::Arc::new(super::navigation::regions::StaticRegions::build(
+                    self,
+                )),
+            });
+        if cached.width == self.map_width
+            && cached.height == self.map_height
+            && cached.terrain == self.non_ground_terrain
+        {
+            std::sync::Arc::clone(&cached.regions)
+        } else {
+            std::sync::Arc::new(super::navigation::regions::StaticRegions::build(self))
         }
     }
 
@@ -347,5 +418,32 @@ mod tests {
                 .enumerate()
                 .all(|(seat, start)| start.player == PlayerId(seat as u8))
         );
+    }
+
+    #[test]
+    fn setup_prepares_and_shares_each_oriented_region_index() {
+        let map = PublicMapBriefing::from_scenario(&briefing_scenario()).unwrap();
+        map.prepare_navigation();
+        assert!(
+            map.regions
+                .generations
+                .iter()
+                .all(|entry| entry.get().is_some())
+        );
+        for home in [
+            TilePos::new(0, 0),
+            TilePos::new(map.map_width - 1, 0),
+            TilePos::new(0, map.map_height - 1),
+            TilePos::new(map.map_width - 1, map.map_height - 1),
+        ] {
+            let orientation =
+                super::super::orient::Orientation::for_map(map.map_width, map.map_height, home);
+            let first = orientation.briefing(&map);
+            let second = orientation.briefing(&map);
+            assert!(std::sync::Arc::ptr_eq(&first.regions(), &second.regions()));
+            let restored = orientation.briefing(&first);
+            assert_eq!(restored, map);
+            assert!(std::sync::Arc::ptr_eq(&restored.regions(), &map.regions()));
+        }
     }
 }

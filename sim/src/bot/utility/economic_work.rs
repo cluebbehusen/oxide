@@ -3,8 +3,8 @@
 use super::economic_value::{
     HarvestWork, WorkerService, harvest_output, marginal_worker_return, travel_ticks,
 };
-use super::expansion::PublicGroundDistances;
 use super::*;
+use crate::bot::navigation::public_fields::PublicGroundDistances;
 
 pub(super) struct HarvestRegion {
     pub(super) service: TilePos,
@@ -94,18 +94,9 @@ impl UtilityPolicy {
                 doors.iter().copied(),
                 |tile| blocked(tile) || !routing::ground_open(obs, tile),
             );
-            let mut route_cache = std::collections::BTreeMap::new();
-            let mut distance_from = |origin: TilePos| {
-                *route_cache.entry(origin).or_insert_with(|| {
-                    let door = doors
-                        .iter()
-                        .min_by_key(|door| (door.chebyshev(origin), door.y, door.x))?;
-                    (commands.direct_line_avoids_blocked(origin, *door)
-                        && commands.command_path_avoids_blocked(origin, *door))
-                    .then(|| distances.footprint_distance(origin, (1, 1)))
-                    .flatten()
-                })
-            };
+            let mut routes = crate::bot::navigation::public_fields::WorkRoutes::new(
+                &commands, &distances, &doors,
+            );
             let mut baseline = u64::MAX;
             for unit in &obs.my_units {
                 if unit.kind.stats().harvest.is_none()
@@ -116,7 +107,7 @@ impl UtilityPolicy {
                 {
                     continue;
                 }
-                if let Some(distance) = distance_from(unit.tile) {
+                if let Some(distance) = routes.distance(unit.tile) {
                     baseline = baseline.min(
                         travel_ticks(unit.kind, distance).saturating_add(
                             u64::from(construction.build_ticks)
@@ -142,7 +133,7 @@ impl UtilityPolicy {
                 ) else {
                     continue;
                 };
-                let Some(distance) = distance_from(spawn) else {
+                let Some(distance) = routes.distance(spawn) else {
                     continue;
                 };
                 producer_distances.insert(lane.producer, distance);
@@ -205,7 +196,18 @@ impl UtilityPolicy {
                 || danger.contains(tile)
                 || self.harvest_location_contested(tile)
         };
-        let mut routes = RouteProjection::ground_avoiding(obs, blocked);
+        let blocked_cells = (0..obs.map_height)
+            .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
+            .map(blocked)
+            .collect::<Vec<_>>();
+        let blocked = |tile: TilePos| {
+            tile.x < 0
+                || tile.y < 0
+                || tile.x >= obs.map_width
+                || tile.y >= obs.map_height
+                || blocked_cells[(tile.y * obs.map_width + tile.x) as usize]
+        };
+        let routes = RouteProjection::ground_avoiding(obs, blocked);
         let mut dropoffs = obs
             .my_buildings
             .iter()

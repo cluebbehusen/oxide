@@ -279,6 +279,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
         let candidates = self.fresh_repair_assignments(EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources: &resources,
             profile: &profile,
@@ -402,7 +403,7 @@ impl UtilityPolicy {
                 )
                 .with_repair_work(&work)
                 .with_funded_repairers(&funded_repairers);
-        let mut service_routes = crate::bot::standing_force::ServiceRouting::new(
+        let mut service_routes = crate::bot::navigation::service::ServiceRoutes::new(
             obs,
             Some(context.briefing),
             Some(context.orientation),
@@ -500,10 +501,12 @@ impl UtilityPolicy {
                 key: EconomicInvestmentKey::Build { kind, anchor },
                 builder: Some(builder),
                 cost: stats.cost,
+                valuation_cost: stats.cost,
                 current_capital: stats.cost,
                 observed_at: obs.tick,
                 ready_at: obs.tick.saturating_add(delay),
                 deadline: obs.tick.saturating_add(1_800),
+                fund_by: obs.tick,
                 case: ProposalCase {
                     urgency: Urgency::Timely,
                     confidence: Confidence::Current,
@@ -937,6 +940,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            obligations: &[],
             obs,
             resources,
             profile,

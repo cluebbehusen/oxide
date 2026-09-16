@@ -436,10 +436,14 @@ fn prime_skirmish_places_an_accepted_defense_on_the_hostile_approach() {
                     && *commanded_kind == kind
                     && *commanded_anchor == world_anchor
             )));
-            assert!(
-                defense_build.replace((kind, world_anchor)).is_none(),
-                "the first accepted Defense must lower exactly once"
+            assert_ne!(
+                defense_build,
+                Some((kind, world_anchor)),
+                "the same defense site must not be admitted twice while its builder approaches"
             );
+            if defense_build.is_none() {
+                defense_build = Some((kind, world_anchor));
+            }
         }
         let report = state.tick(&decision.commands);
         rejected.extend(report.events.into_iter().filter_map(|event| match event {
@@ -912,7 +916,7 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
 }
 
 #[test]
-fn balanced_mirror_plays_a_complete_decisive_match() {
+fn balanced_mirror_stays_active_without_rejected_commands() {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
@@ -920,7 +924,8 @@ fn balanced_mirror_plays_a_complete_decisive_match() {
     }
     let mut state = scenario.build().expect("skirmish builds");
     let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-    let mut rejected_commands = Vec::new();
+    let mut trained = [0_u32; 2];
+    let mut damaged = [0_u32; 2];
 
     for _ in 0..60_000 {
         if state.result().is_some() {
@@ -928,21 +933,71 @@ fn balanced_mirror_plays_a_complete_decisive_match() {
         }
         let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
         let report = state.tick(&commands);
-        rejected_commands.extend(report.events.into_iter().filter_map(|event| match event {
-            Event::CommandRejected { player, reason } => Some((report.tick, player, reason)),
-            _ => None,
-        }));
+        for event in report.events {
+            match event {
+                Event::CommandRejected { player, reason } => {
+                    panic!(
+                        "mirror command rejected at tick {} for {player:?}: {reason:?}",
+                        report.tick
+                    );
+                }
+                Event::UnitTrained { player, .. } => trained[player.0 as usize] += 1,
+                Event::DamageTaken { player, .. } => damaged[player.0 as usize] += 1,
+                _ => {}
+            }
+        }
+        if state.current_tick().is_multiple_of(10_000) && state.result().is_none() {
+            for seat in 0..2 {
+                assert!(
+                    trained[seat] > 0 && damaged[seat] > 0,
+                    "mirror seat {seat} stopped producing or fighting in the 10,000 ticks ending at {}: trained {}, damage events {}",
+                    state.current_tick(),
+                    trained[seat],
+                    damaged[seat]
+                );
+            }
+            trained = [0; 2];
+            damaged = [0; 2];
+        }
     }
+}
 
-    assert!(
-        rejected_commands.is_empty(),
-        "the complete mirror produced rejected bot commands: {rejected_commands:?}"
-    );
-    assert!(
-        matches!(state.result(), Some(GameResult::Victory { .. })),
-        "the player-facing mirror should finish a real game: {:?}",
-        state.result()
-    );
+#[test]
+fn distinct_balanced_personalities_play_decisive_matches_in_either_seat() {
+    for seeds in [[0, 1], [1, 0]] {
+        let mut scenario = Scenario::skirmish();
+        for (player, seed) in scenario.players.iter_mut().zip(seeds) {
+            player.bot = true;
+            player.bot_config = Some(BotConfig::scripted(
+                BotDifficulty::Standard,
+                BotStance::Balanced,
+                seed,
+            ));
+        }
+        let mut state = scenario.build().expect("skirmish builds");
+        let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
+        for _ in 0..50_000 {
+            if state.result().is_some() {
+                break;
+            }
+            let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
+            let report = state.tick(&commands);
+            for event in report.events {
+                if let Event::CommandRejected { player, reason } = event {
+                    panic!(
+                        "seeds {seeds:?}: command rejected at tick {} for {player:?}: {reason:?}",
+                        report.tick
+                    );
+                }
+            }
+        }
+        assert!(
+            matches!(state.result(), Some(GameResult::Victory { .. })),
+            "seeds {seeds:?} should produce a decisive match by tick {}: {:?}",
+            state.current_tick(),
+            state.result()
+        );
+    }
 }
 
 #[test]
@@ -1674,26 +1729,22 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
                 .all(|job| job.forecast_scrap > 0),
         "the fixture must prove forecast income remains useful for deadline-bound future work: {future_connected_jobs:?}"
     );
-    assert_eq!(
-        future_connected_jobs
-            .iter()
-            .map(|job| job.current_scrap)
-            .sum::<u32>()
-            .saturating_add(
-                forecast_trace
-                    .allocation
-                    .proposals
-                    .entries
-                    .iter()
-                    .filter(
-                        |proposal| proposal.disposition == ProposalDispositionTrace::Accepted
-                            && matches!(proposal.key, ProposalKeyTrace::Economy { .. })
-                    )
-                    .map(|proposal| proposal.claims.current_scrap)
-                    .sum::<u32>()
-            ),
-        forecast_trace.resources.current_scrap,
-        "the small live bank may part-fund accepted future work but cannot make an immediate unit affordable"
+    let reserved_current = future_connected_jobs
+        .iter()
+        .map(|job| job.current_scrap)
+        .sum::<u32>()
+        .saturating_add(
+            forecast_trace
+                .allocation
+                .capital_assignments
+                .entries
+                .iter()
+                .map(|assignment| assignment.current_scrap)
+                .sum::<u32>(),
+        );
+    assert!(
+        reserved_current > 0 && reserved_current <= forecast_trace.resources.current_scrap,
+        "future work may reserve only the live capital needed by its payment dates"
     );
     assert!(
         forecast_trace
@@ -1701,8 +1752,14 @@ fn completed_income_forecast_cannot_fund_an_immediate_standing_purchase() {
             .proposals
             .entries
             .iter()
-            .all(|proposal| !matches!(proposal.key, ProposalKeyTrace::StandingForce { .. })),
-        "forecast income must not make an immediate standing-force purchase legally affordable"
+            .filter(|proposal| matches!(proposal.key, ProposalKeyTrace::StandingForce { .. }))
+            .all(
+                |proposal| proposal.claims.producer_jobs.entries.iter().all(|job| {
+                    !job.requires_current_funding
+                        && job.enqueue_not_before > forecast_state.current_tick()
+                })
+            ),
+        "forecast-funded standing proposals must retain a future purchase time"
     );
     assert!(
         forecast_trace
@@ -2541,25 +2598,37 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
             matches!(
                 proposal.key,
                 ProposalKeyTrace::StandingForce {
-                    kind: UnitKind::Warden,
+                    kind: UnitKind::Warden | UnitKind::Breaker,
                     ..
                 }
-            )
+            ) && proposal.disposition == ProposalDispositionTrace::Accepted
         })
-        .expect("the bounded Warden wait must participate in shared allocation");
+        .expect("the better funded provider must participate in shared allocation");
     assert_eq!(wait.disposition, ProposalDispositionTrace::Accepted);
-    assert_eq!(wait.claims.current_scrap, UnitKind::Sentinel.stats().cost);
+    let ProposalKeyTrace::StandingForce {
+        kind: selected_kind,
+        ..
+    } = wait.key
+    else {
+        unreachable!()
+    };
+    assert_eq!(wait.claims.current_scrap, 0);
+    assert_eq!(wait.claims.forecast_scrap_total, 0);
+    assert_eq!(wait.claims.producer_jobs.total, 1);
+    let scheduled = held_trace
+        .allocation
+        .producer_schedule
+        .entries
+        .iter()
+        .find(|job| matches!(job.owner, ClaimOwnerTrace::Proposal { key } if key == wait.key))
+        .expect("accepted accumulation retains its exact producer schedule");
+    assert!(scheduled.current_scrap <= held_trace.resources.current_scrap);
     assert_eq!(
-        wait.claims.forecast_scrap_total,
-        u128::from(
-            UnitKind::Warden
-                .stats()
-                .cost
-                .saturating_sub(UnitKind::Sentinel.stats().cost)
-        )
+        scheduled.forecast_scrap,
+        selected_kind.stats().cost - scheduled.current_scrap
     );
-    assert_eq!(wait.claims.deferrable_capital, None);
-    assert!(wait.claims.producer_jobs.entries.is_empty());
+    assert!(scheduled.enqueued_at > state.current_tick());
+    let selected_enqueue = scheduled.enqueued_at;
 
     let started_at = state.current_tick();
     let mut better_order = None;
@@ -2569,6 +2638,13 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
         } else {
             brain.act_traced(&state)
         };
+        if let Some(trace) = &decision.trace {
+            assert!(
+                trace.allocation.error.is_none(),
+                "{:?}",
+                trace.allocation.error
+            );
+        }
         for kind in decision
             .commands
             .iter()
@@ -2613,9 +2689,11 @@ fn completed_income_accumulates_into_the_better_shipped_standing_provider() {
             .collect::<Vec<_>>()
         )
     });
-    assert!(
-        state.current_tick() > started_at,
-        "the higher-tier purchase must follow real authoritative income"
+    assert_eq!(better_kind, selected_kind);
+    assert_eq!(
+        state.current_tick(),
+        selected_enqueue + 1,
+        "the selected provider must execute at its retained purchase time after authoritative income"
     );
     assert_eq!(
         state

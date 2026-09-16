@@ -1,10 +1,10 @@
 //! Optional bounded timing and independent progress monitoring. Never replay input.
 
 use crate::recovery::RecoveryWriter;
-use oxide_sim::bot::observer::{BotPhase, PhaseObserver};
+use oxide_sim::bot::observer::{BotPhase, PhaseObserver, PlanningWorkStats};
 use serde::Serialize;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     sync::{
         Arc,
@@ -56,6 +56,8 @@ struct Timing {
     slot: usize,
     phase: u8,
     tick: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planning_work: Option<PlanningWorkStats>,
 }
 #[derive(Clone, Serialize)]
 struct Progress {
@@ -147,7 +149,14 @@ impl Inner {
         slot.progress.store(self.micros(), Ordering::Relaxed);
         slot.depth.store(depth + 1, Ordering::Release);
     }
-    fn end(&self, slot: usize, phase: u8, tick: u64, start: u64) {
+    fn end(
+        &self,
+        slot: usize,
+        phase: u8,
+        tick: u64,
+        start: u64,
+        planning_work: Option<PlanningWorkStats>,
+    ) {
         let Some(state) = self.slots.get(slot) else {
             return;
         };
@@ -173,6 +182,7 @@ impl Inner {
                 slot,
                 phase,
                 tick,
+                planning_work,
             })
             .is_err()
         {
@@ -201,7 +211,7 @@ impl Inner {
             .collect()
     }
     fn context(&self) -> serde_json::Value {
-        serde_json::json!({"format":1,"capture_started_us":self.capture_started.load(Ordering::Relaxed),"build":crate::recovery::BuildIdentity::default(),"diagnostics":self.enabled.load(Ordering::Acquire),"live_tick":self.frame_tick.load(Ordering::Relaxed),"units":self.units.load(Ordering::Relaxed),"buildings":self.buildings.load(Ordering::Relaxed),"screen":self.mode.load(Ordering::Relaxed),"paused":self.paused.load(Ordering::Relaxed),"reported_minimized":match self.minimized.load(Ordering::Relaxed) { 1 => Some(false), 2 => Some(true), _ => None },"speed":f64::from_bits(self.speed_bits.load(Ordering::Relaxed)),"window":[self.width.load(Ordering::Relaxed),self.height.load(Ordering::Relaxed)],"dpi":f64::from_bits(self.dpi.load(Ordering::Relaxed)),"writer":self.recording.status(),"dropped_timing_events":self.dropped.load(Ordering::Relaxed),"phase_names":{"1":"bot observation","2":"bot maintenance","3":"bot strategy","4":"bot allocation","5":"bot defense","6":"bot economy","7":"bot executive","10":"input/debug requests","11":"bot collection wall time","12":"simulation","13":"presentation/statistics","14":"screen/draw/audio","15":"presentation/OS wait","16":"replay reconstruction","17":"save","18":"frame CPU work","19":"frame start interval (not exclusive)","20":"bot seat total"},"screen_names":{"0":"other","1":"playing","2":"paused","3":"playback","4":"home","5":"settings","6":"wizard","7":"codex","8":"replays","9":"results","10":"final_map"}})
+        serde_json::json!({"format":1,"capture_started_us":self.capture_started.load(Ordering::Relaxed),"build":crate::recovery::BuildIdentity::default(),"diagnostics":self.enabled.load(Ordering::Acquire),"live_tick":self.frame_tick.load(Ordering::Relaxed),"units":self.units.load(Ordering::Relaxed),"buildings":self.buildings.load(Ordering::Relaxed),"screen":self.mode.load(Ordering::Relaxed),"paused":self.paused.load(Ordering::Relaxed),"reported_minimized":match self.minimized.load(Ordering::Relaxed) { 1 => Some(false), 2 => Some(true), _ => None },"speed":f64::from_bits(self.speed_bits.load(Ordering::Relaxed)),"window":[self.width.load(Ordering::Relaxed),self.height.load(Ordering::Relaxed)],"dpi":f64::from_bits(self.dpi.load(Ordering::Relaxed)),"writer":self.recording.status(),"dropped_timing_events":self.dropped.load(Ordering::Relaxed),"phase_names":{"1":"bot observation","2":"bot maintenance","3":"bot strategy","4":"bot allocation","5":"bot defense","6":"bot economy","7":"bot executive","10":"input/debug requests","11":"bot collection wall time","12":"simulation","13":"presentation/statistics","14":"screen/draw/audio","15":"presentation/OS wait","16":"replay reconstruction","17":"save","18":"frame CPU work","19":"frame start interval (not exclusive)","20":"bot seat total","21":"bot Foundry assessment","22":"bot standing force","23":"bot portfolio selection","24":"bot combined layouts","25":"bot reconnaissance maintenance","26":"bot support demand","27":"bot rollback snapshot"},"screen_names":{"0":"other","1":"playing","2":"paused","3":"playback","4":"home","5":"settings","6":"wizard","7":"codex","8":"replays","9":"results","10":"final_map"}})
     }
 }
 
@@ -318,6 +328,7 @@ impl Recorder {
                         slot: 0,
                         phase: 19,
                         tick,
+                        planning_work: None,
                     })
                     .is_err()
             {
@@ -375,6 +386,7 @@ impl Recorder {
                 phase: phase as u8,
                 tick,
                 start: self.inner.micros(),
+                planning_work: None,
             }
         })
     }
@@ -392,16 +404,20 @@ impl Recorder {
             slot: usize::from(bot.player().0) + 1,
             tick: state.current_tick(),
             stack: RefCell::new(Vec::with_capacity(8)),
+            planning_work: Cell::new(None),
         };
         self.inner.begin(observer.slot, 20, observer.tick);
-        let _scope = Span {
+        let mut scope = Span {
             inner: self.inner.clone(),
             slot: observer.slot,
             phase: 20,
             tick: observer.tick,
             start: self.inner.micros(),
+            planning_work: None,
         };
-        bot.act_observed(state, &observer)
+        let commands = bot.act_observed(state, &observer);
+        scope.planning_work = observer.planning_work.get();
+        commands
     }
     /// Register this recorder with a single chained, nonblocking panic hook.
     pub fn install_panic_hook(&self) {
@@ -437,10 +453,17 @@ pub struct Span {
     phase: u8,
     tick: u64,
     start: u64,
+    planning_work: Option<PlanningWorkStats>,
 }
 impl Drop for Span {
     fn drop(&mut self) {
-        self.inner.end(self.slot, self.phase, self.tick, self.start);
+        self.inner.end(
+            self.slot,
+            self.phase,
+            self.tick,
+            self.start,
+            self.planning_work,
+        );
     }
 }
 struct BotObserver<'a> {
@@ -448,15 +471,20 @@ struct BotObserver<'a> {
     slot: usize,
     tick: u64,
     stack: RefCell<Vec<u64>>,
+    planning_work: Cell<Option<PlanningWorkStats>>,
 }
 impl PhaseObserver for BotObserver<'_> {
+    fn planning_work(&self, work: PlanningWorkStats) {
+        self.planning_work.set(Some(work));
+    }
     fn enter(&self, phase: BotPhase) {
         self.inner.begin(self.slot, phase as u8, self.tick);
         self.stack.borrow_mut().push(self.inner.micros());
     }
     fn exit(&self, phase: BotPhase) {
         if let Some(start) = self.stack.borrow_mut().pop() {
-            self.inner.end(self.slot, phase as u8, self.tick, start);
+            self.inner
+                .end(self.slot, phase as u8, self.tick, start, None);
         }
     }
 }

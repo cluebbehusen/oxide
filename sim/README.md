@@ -30,56 +30,57 @@ an ordinary command source rather than a separate ruleset.
   same portfolio as sensor proposals whose value comes from novel usable radar
   coverage. Connected minimum and marginal contexts account for their exact live
   and paid queue ownership before ordinary demand is derived. Non-urgent
-  standing demand may offer a capital-only wait for a strictly better unlocked
-  provider beside its affordable fallback. Economic alternatives value finite
-  safe harvest work, orphaned construction, recurring-income payback, capability
-  prerequisites, producer throughput, and self-refits. Live worker output
-  includes initial travel, and concurrent air operations share deadline-bound
-  factory time. They retain exact worker lanes, building identities, or
-  foundation sites and builders. Unpaid saving and deferred travel share one
-  fixed deadline; paid work is not cancelled on loss of the opening core.
-  Support compares exact repair assignments, Tender procurement, and marginal
-  Repair Bay foundations. Reachable workers, paid Tenders, and delayed Bay
-  service reduce the same finite repair demand. Exact protective deployments
-  feed missing screen and anti-air work to the existing Standing Force
-  purchaser. Own repair targets are visible to the controller; allied and
-  hostile programs remain opaque. Busy protectors return to their asset before
-  resuming defense. Raid preparation retains its objective, exact live members,
-  and paid queue occurrences through spawning and launch, excluding them from
-  competing operation inventory. Persistent voluntary repairs renew a
-  current-bank debit through the next decision boundary and stop when unfunded.
-  Reconnaissance retains independent questions, exact live or paid observers,
-  fixed useful deadlines, and question-local loss recovery. Dedicated purchases
-  share the producer scheduler and retain their accepted funding schedule. Exact
-  paid-occurrence ownership is shared with operational scouts. Recent answers
-  and reachable overlapping coverage reduce redundant reconnaissance. A shared
-  battlefield assessment groups current contacts, records directly observed
-  displacement, and supplies consequential approach questions and weighted Array
-  coverage. Executive-owned ground missions retain exact membership and
-  deadlines while tactical combat remains in the Executive. Controller-local
-  outcome journals distinguish service, progress, losses, preemption, and
-  uncertainty; decaying contextual and corroborated doctrine preferences affect
-  future unpaid alternatives, not ordinary rules. Context contributions retain
-  their individual ages, failed approaches retain frozen objective sites through
-  fog, and Array ranking uses exact builder readiness. Observation schema 19
-  marks provisional footprints and paid deferred sites, and includes continuous
-  contact tracks and owner-only carried identities and health separately from
-  available units. Decision trace schema 11 separates raw evidence from adjusted
-  return, mission ownership, and bounded experience. All seven domains compete
-  in shared allocation, and forecast income never funds a command.
-  Current-threat emergency defense remains exact survival work with precedence
-  over voluntary proposals, and admitted island-air work advances through the
-  same transaction. Accepted domain payloads keep their exact choices;
-  compatible work may proceed together, while unmigrated planners and utility
-  use only the residual capacity. Connected air-and-siege operations derive
-  opportunity-scaled reconnaissance, suppression, direct strike, and
-  current-visible non-suppression bombing value, then freeze exact members at
-  commitment. Their route and queue preflight covers the complete admitted
-  target cluster, whose canonical anchors are exposed in optional decision
-  traces without entering controller state. See
-  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
-  [Simulation Architecture](../docs/simulation-architecture.md) for the current
-  implementation contracts.
+  standing demand may offer a future purchase of a strictly better unlocked
+  provider beside its affordable fallback. Accepted purchases retain their exact
+  factory slot and useful deadline across decisions; commands still require
+  current scrap. Economic alternatives value finite safe harvest work, orphaned
+  construction, recurring-income payback, capability prerequisites, producer
+  throughput, and self-refits. Live worker output includes initial travel, and
+  concurrent air operations share deadline-bound factory time. They retain exact
+  worker lanes, building identities, or foundation sites and builders. Unpaid
+  saving and deferred travel share one fixed deadline; paid work is not
+  cancelled on loss of the opening core. Support compares exact repair
+  assignments, Tender procurement, and marginal Repair Bay foundations.
+  Reachable workers, paid Tenders, and delayed Bay service reduce the same
+  finite repair demand. Exact protective deployments feed missing screen and
+  anti-air work to the existing Standing Force purchaser. Own repair targets are
+  visible to the controller; allied and hostile programs remain opaque. Busy
+  protectors return to their asset before resuming defense. Raid preparation
+  retains its objective, exact live members, and paid queue occurrences through
+  spawning and launch, excluding them from competing operation inventory.
+  Persistent voluntary repairs renew a current-bank debit through the next
+  decision boundary and stop when unfunded. Reconnaissance retains independent
+  questions, exact live or paid observers, fixed useful deadlines, and
+  question-local loss recovery. Dedicated purchases share the producer scheduler
+  and retain their accepted funding schedule. Exact paid-occurrence ownership is
+  shared with operational scouts. Recent answers and reachable overlapping
+  coverage reduce redundant reconnaissance. A shared battlefield assessment
+  groups current contacts, records directly observed displacement, and supplies
+  consequential approach questions and weighted Array coverage. Executive-owned
+  ground missions retain exact membership and deadlines while tactical combat
+  remains in the Executive. Controller-local outcome journals distinguish
+  service, progress, losses, preemption, and uncertainty; decaying contextual
+  and corroborated doctrine preferences affect future unpaid alternatives, not
+  ordinary rules. Context contributions retain their individual ages, failed
+  approaches retain frozen objective sites through fog, and Array ranking uses
+  exact builder readiness. Observation schema 19 includes explored pits,
+  provisional footprints, paid deferred sites, continuous contact tracks and
+  owner-only carried identities and health separately from available units.
+  Decision trace schema 12 separates raw evidence from adjusted return, mission
+  ownership, and bounded experience. All seven domains compete in shared
+  allocation, and forecast income never funds a command. Current-threat
+  emergency defense remains exact survival work with precedence over voluntary
+  proposals, and admitted island-air work advances through the same transaction.
+  Accepted domain payloads keep their exact choices; compatible work may proceed
+  together, while unmigrated planners and utility use only the residual
+  capacity. Connected air-and-siege operations derive opportunity-scaled
+  reconnaissance, suppression, direct strike, and current-visible
+  non-suppression bombing value, then freeze exact members at commitment. Their
+  route and queue preflight covers the complete admitted target cluster, whose
+  canonical anchors are exposed in optional decision traces without entering
+  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
+  direction and [Simulation Architecture](../docs/simulation-architecture.md)
+  for the current implementation contracts.
 - `vision` provides visibility and explored-world state.
 
 Queued construction pays for one site immediately. Fogged footprints remain
@@ -94,18 +95,23 @@ with active or queued salvage commitments.
 
 Outcome-relevant geometry is also fair under a map half-turn. Fixed-point vector
 scaling, equal-cost paths, group-goal snapping and spreading, footprint
-doorsteps, ground-production spawns, and perfectly stacked collision separation
-use owner-local ranks and query-, footprint-, or map-relative frames instead of
-global entity ids or an absolute screen corner. Airworks aircraft spawn at the
-authoritative center of the open roof bay, then obey their ordinary orders from
-there.
+doorsteps, ground-production spawns, autonomous harvest replacement, and
+perfectly stacked collision separation use owner-local ranks and query-,
+footprint-, or map-relative frames instead of global entity ids or an absolute
+screen corner. Airworks aircraft spawn at the authoritative center of the open
+roof bay, then obey their ordinary orders from there.
 
-Defensive route evaluation retains A* allocation buffers per thread and bounded
-route answers per bot. Exact known-passability generations share successful
-endpoint paths and lazy distance bounds across defense and economic valuation.
-Temporary build layouts have separate retention from normal boards, and ground
-changes do not invalidate air routes. Actual paths keep the existing A* tie
-rules; failed searches retain their exhaustion or expansion-cap semantics.
+`bot::navigation` owns bot route queries, search storage, and cache lifetimes.
+Its `commands` module projects ordinary movement and Build routes from player
+knowledge; `paths` provides canonical endpoint routes and bounds;
+`public_fields` provides terrain and danger-aware travel distances; `service`
+retains producer and target connectivity; `egress` certifies producer exits; and
+`flood` handles connectivity and placement witnesses. Barricade foothold
+valuation asks for costs instead of full paths. Planners supply knowledge,
+safety rules, and target preferences; navigation preserves command orientation,
+path ties, and search limits. Ground, air, and hypothetical layouts retain
+separate bounded caches.
+
 Voluntary defense rejects construction kinds that cannot meet the current
 allocation reserve before searching for sites. Final allocation still owns the
 exact funding and compatibility decision.

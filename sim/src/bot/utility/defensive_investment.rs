@@ -279,6 +279,8 @@ impl UtilityPolicy {
             };
             if let Some(proposal) = proposal {
                 proposals.push(proposal);
+            } else {
+                self.planning.clear_site(kind);
             }
         }
         proposals.sort_unstable_by_key(proposal_preference_key);

@@ -22,6 +22,7 @@ use chassis::grid::TilePos;
 mod armies;
 mod lowering;
 mod missions;
+pub(super) mod threats;
 pub use missions::{ArmyMission, ArmyObjective, ArmyPurpose, MissionDecision, MissionDisposition};
 
 pub(super) use armies::{catastrophically_outmatched_near, locally_overmatches_near};

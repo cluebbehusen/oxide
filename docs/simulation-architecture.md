@@ -37,7 +37,7 @@ Player-facing bot decision traces have the same one-way boundary. An opt-in
 coordinator while returning the same ordinary commands as `Brain::act`. The
 trace recorder is local to that call; traces are not controller memory,
 authoritative state, replay input, or replay metadata. Ticks on which no
-player-facing decision occurs produce no trace. Trace schema version 11 reports
+player-facing decision occurs produce no trace. Trace schema version 12 reports
 current scrap separately from a bounded forecast based only on completed income
 sources, together with current builder and producer capacity. Proposal and
 allocation evidence records the coordinator's actual inputs and verdicts,
@@ -50,6 +50,23 @@ proposal consequence, urgency, confidence, and safety are not rewritten to
 express historical preferences.
 
 ### Controller-local battlefield loop
+
+Playable army contact includes observed completed defenses with compatible
+weapon range and known fire geometry. Local strength counts nearby participants
+and the defenses actually covering them. An army returns after a newly observed
+casualty if neither the previous nor current observation showed contact. It
+records an inconclusive episode without inventing a hidden attacker. Visible
+objective completion takes precedence; earlier combat casualties do not trigger
+a later return. Withdrawal from static fire also uses ordinary movement to avoid
+reacquiring the position. Pressure admission counts known gun coverage along a
+projected approach as well as defenders near the objective. Against a building,
+an escorted siege body seeks a reachable position inside its guns' range and its
+screen's sight. It prefers positions outside known defensive fire; if the
+defender matches its range, an already-admitted assault accepts exposure instead
+of waiting forever for range superiority. Its faster screen advances at most
+three route steps ahead of the rearmost gun, then waits for it before
+approaching the shared firing position. Artillery with a visible target in range
+remains engaged rather than being discarded as a stalled march.
 
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early
@@ -68,8 +85,11 @@ before modifying either body. Staging splits retain coherent groups and home
 strength. Engaged or withdrawing bodies are not split. Ordinary movement handles
 recovery so tactical reacquisition cannot restart an abandoned chase; observed
 return explicitly reopens reserve reinforcement. Tactical emergency withdrawal
-has precedence over a mission directive. Lowering receipts expose actual
-acceptance and refusal boundaries independently of command counts.
+has precedence over a mission directive and replaces the abandoned mission with
+recovery after recording its outcome. An accepted defense assignment dispatches
+its exact body even when proximity has already marked it engaged. Lowering
+receipts expose actual acceptance and refusal boundaries independently of
+command counts.
 
 Pressure objectives bind the observed owner, kind, and complete footprint, plus
 a live id only when current sight supplied one. Remembered placeholders are not
@@ -85,9 +105,14 @@ units remain present but unavailable. Foundation observation continues after the
 builder leaves; a delivery watch continues without ownership of its landed
 troops. Shared coordination credits prevent these components from teaching the
 same outcome repeatedly. Stronger assault evidence may replace preliminary
-delivery credit. Ambiguous attribution cannot earn broad doctrine credit. Frozen
+delivery credit. Ambiguous attribution cannot earn broad doctrine credit.
+Inconclusive lost-contact or deadline reports with known own casualties retain
+half-strength contextual evidence and can request approach reconnaissance. They
+remain inconclusive about the objective and never contribute to doctrine. Frozen
 objective owner, kind, and footprint anchor link failed approaches to remembered
-buildings without relying on their placeholder ids. Defensive service uses a
+buildings without relying on their placeholder ids. Ground reports entering
+policy memory orient both their context point and frozen objective footprint, so
+later observation matching uses one coordinate frame. Defensive service uses a
 provider's movement domain for routing, including parked aircraft; target
 exposure still uses its current body domain.
 
@@ -108,6 +133,11 @@ without changing ordinary terrain routing. Contested-harvest quarantine retains
 its separate complete-sweep and safe-return requirements. These components are
 reconstructed by replaying the observed command prefix, not serialized into
 authoritative `State`.
+
+An unpaid Foundry's recovery interval spans both funding and execution blockage.
+Restored funding permits another readiness check; only a ready builder and site
+clear the interval. Continuous execution blockage therefore releases the unpaid
+claim after the same bounded recovery period as continuous funding failure.
 
 ## State construction and trust boundary
 
@@ -320,7 +350,9 @@ A path is advisory rather than a reservation. Every ground step rechecks its
 next waypoint because construction can claim ground after the path was made; an
 invalid path is dropped and behavior may route again on the next tick. When a
 site appears under a pathless ground body, the eviction pre-pass gives it a real
-escape path while preserving its order and work progress.
+escape path while preserving its order and work progress. Its scan frame
+reverses under a map half-turn, with body heading breaking an exact map-center
+tie.
 
 If a newly accepted foundation leaves a body without an escape route, make-way
 relocates it to a passable perimeter tile. That ring is ordered in the founder's
@@ -335,6 +367,12 @@ direction, so half-turned producers and workers receive corresponding geometric
 orderings. Airworks aircraft instead spawn at the authoritative center of the
 open roof bay and follow ordinary idle, rally, or player-issued orders from
 there.
+
+Autonomous harvest replacement preserves worker distance, safe route length,
+source amount, anchor distance and source kind as its economic priorities. Exact
+ties use coordinates oriented by the worker's approach to the work-zone anchor.
+A worker standing on that anchor uses its hull bearing instead, so mirrored
+workers choose mirrored sources without depending on seat or unit ids.
 
 Group `Move`, `Advance`, and `AttackMove` commands likewise resolve a blocked
 center and spread per-unit destinations in the approaching body's half-turn
@@ -486,6 +524,12 @@ contact-steering coordinator controls ground travel. Motor speed is serialized
 and validated; observational motion reports split propulsion from collision
 correction without affecting state or hashes.
 
+Collision corrections require every tile touching the proposed position to be
+passable in the body's domain. An exact grid edge touches two tiles and a corner
+touches four; neither face of a blocking tile admits an exact-edge correction.
+This contact rule is separate from ordinary `TilePos::containing` lookup and
+retains the same displacement budget and deterministic pair order.
+
 Ground weapons require alignment within two compass steps before firing.
 Sentinel, Warden, and Lancer have independent serialized `turret_heading`
 bearings, traversing eight, five, and six steps per tick respectively while the
@@ -567,11 +611,12 @@ memory, computed once per team and cloned to later seats.
 The bot `Observation` copies both masks in canonical row-major order. Policies
 therefore distinguish current sight from remembered terrain without consulting
 authoritative state; seat orientation transforms both masks with the rest of the
-observed world. Observation schema 19 marks provisional footprints and paid
-deferred sites, and exposes continuous contact tracks and each own carried
-unit's identity, kind, health, and carrier separately from available units. This
-is presence evidence, not permission to assign or command a passenger. Allied
-and enemy manifests remain opaque.
+observed world. Observation schema 19 distinguishes explored pits from
+fire-blocking rock and peaks, marks provisional footprints and paid deferred
+sites, and exposes continuous contact tracks and each own carried unit's
+identity, kind, health, and carrier separately from available units. This is
+presence evidence, not permission to assign or command a passenger. Allied and
+enemy manifests remain opaque.
 
 The maintained player-facing controller also receives a `PublicMapBriefing`
 derived from the final authored `Scenario`. It contains static terrain,
@@ -704,14 +749,49 @@ raid, and admitted island-air planners into explicit legacy claims. The current
 proposal set contains at most one safe, command-legal Foundry expansion, one
 connected offense package, a best-first group of mutually exclusive exact
 defensive alternatives, mutually exclusive economic actions, and a best-first
-group of mutually exclusive standing-force alternatives. The allocator
-exhaustively evaluates every zero-or-one choice from each domain against current
-and deadline-scoped forecast scrap, builders, sites, units, producer FIFO
-timing, and incompatible construction footprints. This Cartesian search has
-neither a proposal-count cutoff nor a machine-word mask limit. Named urgency,
-confidence, value, time-to-impact, and safety bands decide first; personality
-resolves only a genuine semantic tie and never removes a domain or defensive
-role from consideration.
+group of mutually exclusive standing-force alternatives. The allocator seeds a
+feasible portfolio in global proposal-rank order, then examines up to 64
+best-first zero-or-one domain combinations. Every accepted combination must fit
+current and deadline-scoped forecast scrap, builders, sites, units, producer
+FIFO timing, and incompatible construction footprints. Exhausted refinement
+retains the feasible seed; an unexamined better alternative is traced as
+`NotRefined`, not as an infeasibility proof. Named urgency, confidence, value,
+time-to-impact, and safety bands decide first; personality resolves only a
+genuine semantic tie and never removes a domain or defensive role from
+consideration.
+
+Portfolio evaluation stages all ownership and capital claims before solving the
+combined producer schedule once. Acceptance reuses that validated schedule. Only
+financially feasible portfolios receive exact combined-layout checks. Those
+checks retain full multi-foundation egress and builder safety, remember rejected
+sets, and share results across connected-force contexts in the same decision;
+unused construction combinations are not enumerated in advance. Production
+search and candidate enumeration can yield deterministic work slices; the
+current synchronous scheduling adapter still drains them to a decision, so this
+alone does not bound a controller tick.
+
+Fixed jobs on one factory follow their retained enqueue and execution times;
+funding priority does not reorder that lane. Production preflight rejects
+overlapping fixed execution intervals on the same factory before enumerating
+flexible schedules. A job occupies its completion tick, so the next fixed job
+may start on the following tick. Extra forecast income and alternative
+assignments for other jobs cannot resolve that overlap. Each tentative schedule
+also preserves the payment deadlines and earliest possible execution of every
+remaining fixed job. A flexible append that already makes a fixed job impossible
+is rejected before searching its successors. Flexible jobs also carry optimistic
+payment deadlines tightened by mandatory same-owner FIFO work. Before exploring
+a partial schedule, the allocator checks that its remaining jobs can still start
+and receive funding. This preserves canonical schedule order while pruning
+impossible timing combinations. Capacity bounds count whole jobs in the free
+windows before and after fixed reservations; a job cannot borrow time across a
+reserved production interval. These deadlines and window constraints are
+prepared once per scheduling attempt and reused during search.
+
+Connected campaign assessment shares artillery firing geometry and exact command
+reachability across candidate rosters and target groups within one immutable
+observation. Excluded live providers do not repeat route checks. The batch
+retains positive and negative answers within a bounded cache; reaching the cache
+limit only disables further retention, not evaluation.
 
 Defense derivation skips expensive placement for roles whose real current cost
 cannot fit after imported fixed capital. This prefilter leaves viable quotes
@@ -776,13 +856,27 @@ siege, anti-air, and support units to substitute when their role, route, cost,
 and readiness fit better. Immediate alternatives are current-funded, enqueue-now
 work through one completed producer; forecast income cannot make an unaffordable
 command legal. For a non-urgent need, completed recurring income may add a
-capital-only bounded wait for a strictly better unlocked provider beside the
-affordable immediate fallback. The wait claims its exact current and forecast
-funding in shared allocation, so competing work can displace it without hiding
-the fallback. Core recovery and current threats never wait, and accumulation for
-one need does not suppress an affordable response to another. The shared
-allocator may select at most one such alternative per cadence and preserves an
-immediate purchase's exact producer through lowering.
+bounded future purchase of a strictly better unlocked provider beside the
+immediate fallback. The search can start below the fallback's price and uses the
+bounded strategic preparation window instead of requiring repayment within one
+cheap production cycle. Acceptance retains the exact producer, purchase tick,
+completion, deadline, and originating need. Subsequent allocation imports that
+schedule before fresh spending. Fresh future purchases are scheduled against all
+retained claims, including compatible work on other factories. Nearby motion of
+the same ground threat preserves the purchase, provided the producer can still
+serve it; it cannot transfer the claim to a different kind of need or a distant
+front. Loss of the producer, income, useful need, or opening core releases
+unpaid work. Immediate threats can preempt it. Enemy fortifications motivate
+deliberate siege preparation without making every siege purchase an emergency.
+Economic saving preserves its capital claims while allowing compatible military
+alternatives to compete.
+
+Portfolio ranking compares sorted complete urgency, confidence, consequence,
+impact-time, and safety cases before rewarding additional compatible work.
+Experience, personality, domain preference, and capital resolve subsequent ties.
+Several incremental purchases cannot win merely by outnumbering a material
+investment in the same urgency and confidence bands. Optional connected scale
+retains the production slots already assigned to the stronger portfolio.
 
 When a fresh Connected proposal exists, the session derives separate Standing
 proposal sets for Connected absence, its minimum, and every cumulative marginal.
@@ -816,13 +910,40 @@ harvest workers pay initial travel to visible safe work before contributing
 output. Concurrent air and lift demand share each Airworks lane's time once,
 bounded by readiness, customer deadlines, and route reachability. Local Foundry
 throughput opportunities reuse the expansion admission and security path.
-Recurring-income investments are capped by unfunded useful work; completed
-income alone supplies spendable forecasts. Self-refits own exact building ids
-and withhold their offline source income separately from purchase capital. The
-residual technology scalar and the operational Airworks capital tax are absent.
-Accepted economic plans keep their original identity and deadline while saving.
-Issuing a build pays for its site immediately, including travel through fog.
-Paid foundations and refits follow ordinary simulation rules.
+Additional throughput is capped by current unprotected capital and completed
+income after the candidate and its missing prerequisites are paid. Capacity
+confidence and urgency come from the demand contributing its marginal return; an
+already-covered current need cannot strengthen a speculative capacity case. A
+proposed first Airworks tries current targets by value and regional distance
+until it finds a complete connected scout, suppression, and strike minimum. This
+witness excludes optional force growth and target-cluster expansion. The
+hypothetical factory exists only inside this pure sizing calculation: its
+construction capital and delay are removed before the ordinary package and route
+checks run, and existing live units are excluded from speculative ownership.
+Retained obligations must fit the post-construction capacity before campaign and
+route derivation begins. The complete minimum must fit alongside retained
+capital promises and producer jobs in shared allocation. This supported
+investment value cannot justify duplicate Airworks, issue a production command,
+or admit an operation before its real prerequisites exist. Recurring-income
+investments are capped by unfunded useful work; completed income alone supplies
+spendable forecasts. Self-refits own exact building ids and withhold their
+offline source income separately from purchase capital. Defensive refit
+valuation estimates protection at nearby asset approaches, using actual weapon
+coverage, redundancy, health, and offline time. Public terrain connectivity
+filters ground-threat priors; nearby current attackers prevent refitting. This
+estimate does not reconstruct remote army routes or credit distant choke-point
+protection. The residual technology scalar and the operational Airworks capital
+tax are absent. Economic purchases keep a fixed funding deadline separate from
+their return horizon. Shared allocation rebalances their current and forecast
+capital alongside fixed producer payments; a missed funding deadline releases
+the unpaid plan for reconsideration. Issuing a build pays for its site
+immediately, including travel through fog; paid foundations and refits follow
+ordinary simulation rules. Extractor development compares explored, safe frame
+groups around a common Foundry site by their total return after restoration,
+support, travel, and build costs. The existing expansion security check must
+admit the shared support site. Only the next restoration owns capital and a
+builder; later steps are re-evaluated as construction completes, and their
+projected income never becomes spendable forecast credit.
 
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
@@ -912,14 +1033,18 @@ The target's currently visible, actually splash-vulnerable ground units and
 buried charges create a separate optional bombing opportunity; ordinary
 buildings remain direct-strike value rather than fictional splash victims, and
 operational mobile anti-air already priced as mandatory suppression is not
-counted again as optional bombing collateral. After every family reaches the
-minimum, selection maximizes capped total useful capability first and uses
-personality to weight how otherwise competitive marginal capability is divided
-between air, siege, direct strike, and attack-run bombing. Personality never
-gates a provider or family. For otherwise identical evidence, more current
-scrap, more available preparation time at derivation, or additional completed
-usable production capability cannot revoke admission or reduce capped total
-useful capability.
+counted again as optional bombing collateral. Minimum composition and marginal
+growth each retain a width-eight beam. It ranks capped useful capability first
+and uses personality to weight how otherwise competitive marginal capability is
+divided between air, siege, direct strike, and attack-run bombing. Personality
+never gates a provider or family. One beam slot preserves the cheapest
+alternative; existing useful providers remain eligible at minimum strength, and
+every extension revalidates its canonical funding order. The offered growth
+ladder is rebuilt in that final order, so enlarging or revising a package keeps
+earlier job identities and payment times intact. For otherwise identical
+evidence, more current scrap, more available preparation time at derivation, or
+additional completed usable production capability cannot revoke admission or
+reduce capped total useful capability.
 
 Current connected targets are ranked canonically and tried in order until one
 admits a complete package. A route-feasible optional member of its bounded
@@ -1044,6 +1169,14 @@ then intersects credible hostile approaches with each kind's actual weapon,
 spotting, trigger, or path-disruption geometry. Current contacts, remembered
 enemy sites, and uncleared public starts form descending evidence tiers.
 
+Before site search, fixed producer payments retain the current capital they
+still need after completed-source income at each payment deadline. Defense roles
+whose construction cost exceeds the remaining bank are omitted; joint allocation
+still checks all future claims and exact producer scheduling. Initial approaches
+and candidate evaluations reuse successful canonical endpoint paths within the
+same immutable grounding, separately for ground and air. Failed searches retain
+their exhaustion or expansion-limit evidence.
+
 The investment case prices only marginal protection not already owned by a live
 defense or reserved by a paid unfinished footprint. New protected value counts
 fully and reinforced value has diminishing return. Current or remembered
@@ -1072,13 +1205,16 @@ overlap before quoting defense. Full layout validation uses the same cheap check
 for selected workers covered by any blocking footprint; nonblocking mines do not
 cover starts, and unselected workers do not trigger this rejection.
 
-The site search evaluates candidates in descending order of conservative score
-bounds. Unchanged approach routes retain their coverage score; assets whose
-routes could change receive the maximum positive contribution, and bounds omit
-penalties and builder travel. A site is skipped only when it cannot provide
-coverage or its bound falls below the best exact candidate. Surviving sites
-still undergo every builder, egress, resource-route, and support check. The
-existing score and coordinate tie-breaks determine the selected site.
+Voluntary weapon-bearing site search ranks inexpensive approach-frontage
+estimates. Nearby mobile threats with the same weapon capability, local terrain
+region, and direction toward an asset share one reachable representative route;
+static threats and distinct fronts remain separate. Weapon and Array placement
+share a small per-role refinement slice and continue beyond rejected sites on
+later decisions. A retained candidate avoids rediscovery but must pass current
+builder, egress, resource-route, support, and coverage checks before reuse;
+uncommitted candidates expire. Emergency defense retains exhaustive best-site
+selection with conservative coverage bounds. A candidate rejected by investment
+valuation does not remain the role's incumbent.
 
 Defensive geometry shares a bot-owned route cache across economic and defensive
 valuation. Each retained generation compares map dimensions and the complete
@@ -1086,19 +1222,140 @@ fog-honest passability surface. Directed endpoint paths include the candidate
 footprint in their key; air routes ignore ground-only footprints. Normal ground,
 hypothetical combined-build layouts, and air surfaces have independent bounded
 retention: one normal generation has an 8 MiB budget, two hypothetical
-generations have 1 MiB each, and air has 2 MiB. These bound accounted retained
-payload and entry allowances, not process RSS. Cache eviction or an oversized
-entry falls back to search. Successful hits clear old exhausted-component
-evidence, while failures are not stored as bare unreachable results.
+generations have 1 MiB each, and air has 8 MiB. After the blocking grid,
+endpoint paths own half the payload budget; normal and candidate reverse
+distance fields each own a quarter. Eviction in one class cannot discard
+another. These bound accounted retained payload and entry allowances, not
+process RSS. Cache eviction or an oversized entry falls back to search.
+Successful hits clear old exhausted-component evidence, while failures are not
+stored as bare unreachable results.
 
 Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
-and diagonal corner rules. They only reject endpoint pairs whose no-candidate
-cost exceeds a route already found. Adding a blocking footprint cannot improve
-that lower bound; equal-cost pairs remain eligible for the full route-choice
-key. A blocked start retains the octile bound because A* permits leaving a tile
-it could not enter. A* still constructs every uncached selected path. Investment
-scores, threat evidence, asset values, and budgets are recomputed from the
-current observation rather than retained with passability.
+and diagonal corner rules. Endpoint ranking uses an obstacle-free bound unless
+an exact field is already retained. Repeated uncached routes sharing either
+endpoint earn a normal field after their accumulated expansions reach the map's
+cell count; tracking retains at most 256 endpoints. Large endpoint sets can
+prepare one origin field sooner when the measured first search projects more
+work than the field across the batch. Cache hits contribute no search work.
+Existing fields reject endpoint pairs whose cost exceeds a route already found;
+newly prepared bounds also reorder the remaining endpoint pairs before path
+construction. Adding a blocking footprint cannot improve that bound. For long
+paths, exact fields for the current footprint also prune A* branches that cannot
+belong to a shortest route. Queue ordering remains unchanged to preserve the
+complete route-choice key and mobile firing positions. This pruning is disabled
+when the map exceeds the expansion cap or the start is blocked, preserving
+capped searches and escape from blocked origins. A* still constructs every
+uncached selected path. Investment scores, threat evidence, asset values, and
+budgets are recomputed from the current observation rather than retained with
+passability.
+
+`bot::navigation` owns all bot path, cost, connectivity, and distance-field
+searches, including their scratch storage, cache invalidation, and retention.
+Command projection preserves orientation, goal spreading, and Build doorstep
+selection. Service connectivity, safe travel costs, work-distance queries, and
+producer-exit certificates retain answers within their navigation contexts.
+Planners supply player knowledge, safety predicates, and candidate preferences;
+investment scores and service eligibility remain planner-owned. Barricade
+footholds consume scalar costs, while coverage, mobile standoff, and retreat
+retain canonical paths. Costs distinguish exact and bounded success from
+disconnection and search limits. Detour limits still precede local-support
+filtering; construction and layout checks retain their existing route contracts.
+Local defensive support uses one bounded eight-step flood for every asset around
+a candidate, rather than a shortest-route query per asset. Future-producer exit
+checks request connectivity only; maps above the canonical expansion cap retain
+the capped search contract. Repeated command-safety queries accumulate work by
+endpoint. Once that work exceeds the map area, they share a field proving
+whether all shortest routes avoid danger. Ambiguous routes still use canonical
+A*, and maps above its expansion cap bypass the proof. Each immutable route
+projection retains at most sixteen safety fields, independently of the directed
+route-answer cache. Producer-exit certificates first repair an intersected route
+inside a small rectangle around the candidate footprint. Blocked endpoints or
+failed local repairs use the full connectivity check; a failed local detour
+never proves that a producer is trapped.
+
+Each immutable campaign comparison shares ground and air connectivity, staging
+choices, and artillery firing stands across target selection, producer access,
+and exact group admission. Comparing another target or production mix does not
+rebuild its movement projections. These caches retain the ordinary command
+reachability and firing-position contracts.
+
+Match setup prepares and shares a public terrain index for each seat
+orientation, with connected components inside 16-by-16 regions and deterministic
+boundary links. Regional distances rank strategic targets; they do not certify
+live reachability, route safety, command timing, or placement legality.
+Orientation and terrain changes invalidate the index independently of dynamic
+navigation caches. Public distance fields materialize passability once and use
+an owned traversal that can yield after a deterministic number of queue entries.
+Fresh Foundry logistics, voluntary coverage, and production refinement share a
+controller-owned work allowance. Passability preparation and traversal consume
+work; unfinished fields resume on later decisions and never mean unreachable.
+Foundry retains four jobs. Ground and air coverage each retain at most sixteen
+pending jobs and 32 MiB of completed field payloads. Exact terrain and blocking
+changes invalidate affected work; unfinished jobs expire after 120 ticks.
+Pending Foundry, ground, air, and production work divide half of each decision's
+allowance, leaving half for current requests. Allocation rollback preserves this
+work and the Foundry and defensive-site cursors. Weapon and Array refinement
+share the allowance and retain their four-new-site limit; incumbent validation
+is separate. Diagnostic counters cover these services, not synchronous planner
+preparation or mandatory validation. Saved Foundry validation remains immediate.
+
+Production refinement first constructs an earliest-funded schedule, then resumes
+repair if that attempt fails. Income probes seek the funding boundary inside
+each job's legal enqueue window. Work charges scale with the problem's job and
+producer counts. Sixteen retained tasks share background progress, expire after
+120 ticks, and stop after a bounded total repair allowance. Exhaustion means
+unrefined, not infeasible. Claim identities include capital reservations and
+funding priorities; a retained schedule must pass current queue, deadline, and
+funding checks before acceptance. Portfolio selection, standing-force wait
+binding, connected growth, and prospective Airworks allocation use this service.
+Fixed obligations reuse the same witness validator directly; they do not search
+for an alternative schedule. It checks current queue state, request identity,
+owner order, exact timing, and rebased funding. Obligations with unassigned
+producer jobs still use synchronous scheduling.
+
+Site refinement and prospective Airworks targets use the same bounded candidate
+cursor. Airworks valuation admits two candidate factory sites and examines two
+new targets per site each decision, retaining a pending or successful target for
+current revalidation. Site admission is frozen for the decision and rotates
+through the alternatives; a retained target keeps its site in consideration.
+Pending targets expire after 120 ticks; a rotating tail continues while one
+target awaits production refinement. Each controller retains at most sixteen
+Airworks site comparisons. Unexamined targets provide no feasibility verdict.
+Diagnostics count target evaluations separately from field and production work.
+
+Voluntary coverage uses one reverse field per asset's destination set to serve
+all threat origins. Its representative routes have exact shortest costs and
+legal edges, but need not share the command router's tied-path shape. Weapon
+sites score these prepared corridors, filtered to locally supported assets,
+without predicting a new enemy route around each hypothetical weapon. One
+coverage batch shares existing-defense and spotter geometry across candidate
+sites. New coverage ranks by asset-weighted corridor span, capped at eight
+unique tiles per asset, before whole-asset coverage; a newly covered edge tile
+cannot earn the same preference as an extended unprotected approach. Barricade
+valuation retains candidate detour costs because obstruction is its benefit.
+Candidate neighborhoods use a grid union and geometry checks; existing exit
+certificates provide a cheap positive ranking preference. Exact producer exits,
+resource access, and builder safety are checked during site refinement.
+
+A deferred field stops the evidence ladder; it cannot turn a current threat into
+a weaker public-prior case. Direct attacks, minimum-range retreat, and firing
+standoff retain their weapon rules. Emergency response, Build commands, and
+candidate construction safety retain their exact route checks.
+
+Exact Build-route checks index observed and public ground passability once per
+defensive grounding and reuse A* storage across builders and candidate sites.
+Lazy component labels reject builder/site pairs with no connected base doorstep
+before searching candidate routes. Candidate footprints and additional blockers
+can only remove connections, so this rejection preserves exact paths, doorstep
+preference, and bounded-search behavior for eligible pairs. Proposed footprints,
+extra blockers, danger checks, and authoritative doorstep ranking remain
+query-local, so cached terrain cannot change the selected route. Travel-cost and
+safety checks share only their most recent exact route; danger is checked again
+on every use, and a changed builder, target, or orientation requires a new
+route.
+
+Test-only navigation work counters enforce structural regression bounds across
+consumers without using wall-clock timing or affecting controller state.
 
 The pre-core emergency path is deliberately narrower than voluntary allocation.
 It uses only a current visible armed ground threat for a Turret or a current
@@ -1123,20 +1380,23 @@ contribute nothing because no unit can occupy them. Current contacts, remembered
 contacts, and uncleared public starting priors break otherwise equivalent sites
 toward credible hostile approaches. Sensor cases remain bounded below an
 immediate survival defense regardless of coverage, and compact maps may use a
-partial radar disc. Optimistic readiness bounds order candidates; exact route
-quotes stop once no remaining bound can beat the selected site's completion-time
-coverage.
+partial radar disc. Array refinement mixes coverage-ranked sites with nearby
+sites, rejects disconnected builder doorsteps, and checks exact readiness and
+safety within the shared site allowance.
 
 The player-facing budget observes provisional scaffolds as paid construction
 with an exact site id. Their prices have already left the bank, so retained
 worker obligations do not reserve that money again. Player-facing Foundry
-expansion has no count ceiling. It ranks every exact legal site by bounded
-post-construction payback from newly supported owned Extractors, Foundry drip
-attached to an external objective, and shorter hauling for currently visible
-scrap. Hauling value uses public-ground route distance while avoiding observed
-dynamic danger rather than geometric distance. Public unbuilt Extractor frames
-remain scouting priors rather than live capital value. Greed and genuinely
-uncommitted scrap extend the forecast without changing capability.
+expansion has no count ceiling. It groups known resources by public terrain
+region, ranks potential sites using approximate travel, and prices a bounded
+pair exactly. The strongest regional candidate remains in consideration while
+remaining regions rotate on actual planning requests; skipped admissions and
+repeated same-tick queries cannot skip or refill that rotation. Payback includes
+supported owned Extractors, Foundry drip attached to an external objective, and
+shorter visible-scrap hauls. Reverse fields from shortlisted Foundry footprints
+preserve exact haul costs while avoiding observed danger. Public unbuilt frames
+remain scouting priors. Greed and uncommitted scrap extend the forecast without
+changing capability.
 
 Expansion saving and construction share one exact claim: a legal footprint and a
 specific worker with a known safe route and work area. Admission preserves the
@@ -1179,19 +1439,19 @@ version check. Serialization emits only the current shape.
 This table names the first source and focused suites to inspect. It is a routing
 map rather than an exhaustive test inventory.
 
-| Contract                                           | Primary source                                                                                                                                                                                | Focused evidence                                                                                                                    |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                                       | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
-| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                                                     | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
-| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                                            | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
-| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                                           | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
-| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                                              | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
-| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                                                | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
-| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                                             | `sim/tests/transports.rs`                                                                                                           |
-| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                                 | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
-| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                                            | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
-| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                       | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/field_kit.rs`                                              |
-| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                        | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
-| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                           | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
-| Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                   | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |
-| Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/strategy/force_package.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/routing.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Contract                                           | Primary source                                                                                                                                                                                            | Focused evidence                                                                                                                    |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Scenario build and authored map                    | `sim/src/scenario.rs`, `sim/src/map.rs`                                                                                                                                                                   | inline module tests, `sim/tests/pits.rs`, `sim/tests/extractors.rs`                                                                 |
+| State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                                                                 | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
+| Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                                                        | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
+| Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                                                       | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
+| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                                                          | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
+| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                                                            | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
+| Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                                                         | `sim/tests/transports.rs`                                                                                                           |
+| Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                                                             | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
+| Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                                                        | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |
+| Fog, memory, radar, and stealth                    | `sim/src/vision.rs`, `sim/src/state.rs`                                                                                                                                                                   | `sim/tests/bot_brain.rs`, `sim/tests/bastion_acquisition.rs`, `sim/tests/field_kit.rs`                                              |
+| Bot knowledge, profiles, and fair difficulty       | `sim/src/bot/briefing.rs`, `sim/src/bot/observation.rs`, `sim/src/bot/intelligence.rs`, `sim/src/bot/orient.rs`, `sim/src/bot/profile.rs`, `sim/src/bot/difficulty.rs`                                    | inline module tests, `sim/tests/bot_brain.rs`                                                                                       |
+| Bot resource evidence and planning commitments     | `sim/src/bot/resources.rs`, `sim/src/bot/resources/ledger.rs`, `sim/src/bot/resources/production.rs`, `sim/src/bot/utility.rs`, `sim/src/bot/executive/lowering.rs`                                       | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |
+| Bot cross-domain investment allocation             | `sim/src/bot/resources/planning.rs`, `sim/src/bot/allocation.rs`, `sim/src/bot/allocation/`                                                                                                               | inline allocation, adapter, coordinator, session, and Brain tests                                                                   |
+| Bot playbooks, routing, reservations, and lowering | `sim/src/bot/strategy.rs`, `sim/src/bot/strategy/force_package.rs`, `sim/src/bot/lift.rs`, `sim/src/bot/raid.rs`, `sim/src/bot/team.rs`, `sim/src/bot/navigation/commands.rs`, `sim/src/bot/executive.rs` | inline module tests, `sim/tests/bot_policy.rs`, `sim/tests/scripted_bot.rs`                                                         |

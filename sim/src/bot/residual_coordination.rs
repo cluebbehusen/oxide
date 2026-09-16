@@ -29,6 +29,7 @@ pub(super) struct ResidualCoordinationContext<'a> {
     pub(super) home: TilePos,
     pub(super) armies: &'a [Army],
     pub(super) enlisted: &'a [UnitId],
+    pub(super) utility_reservations: &'a [UnitId],
     pub(super) minimum_core_equivalents: u64,
     pub(super) allocation_ok: bool,
     pub(super) allow_new_voluntary_operations: bool,
@@ -135,7 +136,8 @@ pub(super) fn coordinate_residual_work(
         .as_ref()
         .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
     let core_exclusions_after_team = claims_before_lift.core_exclusions(&team_core_claims);
-    let prior_non_lift = claims_before_lift.without_lift(&team_core_claims);
+    let mut prior_non_lift = claims_before_lift.without_lift(&team_core_claims);
+    prior_non_lift.extend_from_slice(context.utility_reservations);
     let lift_unavailable_after = lift_unavailable(
         context.observation,
         context.armies,
@@ -219,8 +221,11 @@ pub(super) fn coordinate_residual_work(
         && context.allow_new_voluntary_operations
         && can_admit_optional_raid(context.tuning, strategic_load);
     if !raid_was_active && (raid_claimed || can_begin_raid) {
-        let raid_exclusions = PlannerClaims::new(context.enlisted, strategy, raids, lifts)
+        let mut raid_exclusions = PlannerClaims::new(context.enlisted, strategy, raids, lifts)
             .without_raid(&team_core_claims);
+        raid_exclusions.extend_from_slice(context.utility_reservations);
+        raid_exclusions.sort_unstable();
+        raid_exclusions.dedup();
         if let Some(planner) = raids.as_mut() {
             raid_decision = planner.think_with_admission(
                 RaidPlanningContext::new(
@@ -241,7 +246,8 @@ pub(super) fn coordinate_residual_work(
 
     let claims_after_raid = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
     let core_exclusions_after_raid = claims_after_raid.core_exclusions(&team_core_claims);
-    let prior_non_lift_after_raid = claims_after_raid.without_lift(&team_core_claims);
+    let mut prior_non_lift_after_raid = claims_after_raid.without_lift(&team_core_claims);
+    prior_non_lift_after_raid.extend_from_slice(context.utility_reservations);
     let lift_unavailable_after_raid = lift_unavailable(
         context.observation,
         context.armies,
@@ -469,6 +475,7 @@ mod tests {
                 intelligence: &intelligence,
                 home: HOME,
                 armies: &[],
+                utility_reservations: &[],
                 enlisted: &[],
                 minimum_core_equivalents: 0,
                 allocation_ok: false,

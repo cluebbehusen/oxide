@@ -7,9 +7,9 @@
 
 use super::difficulty::{DifficultyTuning, strategic_admission_tick};
 use super::executive::Intent;
+use super::navigation::commands::RouteProjection;
 use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
-use super::routing::RouteProjection;
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
@@ -1073,6 +1073,7 @@ mod tests {
             ],
         );
         let map = super::super::PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: vec![],
@@ -1382,7 +1383,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let preferred = [UnitId(3), UnitId(4), UnitId(5)];
-        let mut routes = RouteProjection::new(&obs, Domain::Ground);
+        let routes = RouteProjection::new(&obs, Domain::Ground);
         assert!(routes.group_reaches_command_goal(&preferred, ALLY_BASE));
         assert!(
             !combat_core_status(&obs, &preferred, &[], 8).ready,

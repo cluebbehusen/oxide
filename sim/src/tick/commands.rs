@@ -1006,7 +1006,7 @@ pub(super) fn finish_site_claim(state: &mut State, site: BuildingId, builder: Un
             continue;
         }
         let (unit_kind, tile) = (u.kind, u.tile());
-        if super::movement::escape_route(state, unit_kind, tile).is_some() {
+        if super::movement::escape_route(state, unit_kind, tile, u.heading).is_some() {
             continue; // it can walk; the eviction pre-pass sees to it
         }
         let Some(&to) = ring.get(dealt % ring.len().max(1)) else {

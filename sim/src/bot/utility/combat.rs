@@ -131,13 +131,12 @@ impl UtilityPolicy {
         from: TilePos,
         to: TilePos,
     ) -> bool {
-        chassis::path::astar(
+        crate::bot::navigation::search::canonical_path(
             obs.map_width,
             obs.map_height,
             from,
             to,
             |tile| Self::public_prior_ground_open(public_map, obs, tile),
-            crate::stats::PATH_EXPANSION_CAP,
         )
         .is_some()
     }
@@ -227,29 +226,13 @@ impl UtilityPolicy {
             (14 * diagonal + 10 * straight, facing, side)
         });
 
-        let mut scratch = chassis::path::AstarScratch::default();
-        for (index, candidate) in candidates.iter().copied().enumerate() {
-            if chassis::path::astar_with_scratch(
-                obs.map_width,
-                obs.map_height,
-                route_start,
-                candidate,
-                open,
-                crate::stats::PATH_EXPANSION_CAP,
-                &mut scratch,
-            )
-            .is_some()
-            {
-                return Some(candidate);
-            }
-            if scratch.last_search_exhausted() {
-                return candidates[index + 1..]
-                    .iter()
-                    .copied()
-                    .find(|tile| scratch.last_search_reached(*tile));
-            }
-        }
-        None
+        crate::bot::navigation::search::first_reachable_goal(
+            obs.map_width,
+            obs.map_height,
+            route_start,
+            &candidates,
+            open,
+        )
     }
 
     fn scouting_objectives(
@@ -1005,15 +988,8 @@ impl UtilityPolicy {
         (0..target_size.1)
             .flat_map(|dy| (0..target_size.0).map(move |dx| target.offset(dx, dy)))
             .any(|goal| {
-                chassis::path::astar(
-                    width,
-                    height,
-                    home,
-                    goal,
-                    ground,
-                    crate::stats::PATH_EXPANSION_CAP,
-                )
-                .is_some()
+                crate::bot::navigation::search::canonical_path(width, height, home, goal, ground)
+                    .is_some()
             })
     }
 
@@ -1288,7 +1264,7 @@ impl UtilityPolicy {
     fn army_reaches<'a>(
         &self,
         obs: &'a Observation,
-        routes: &mut Option<crate::bot::routing::RouteProjection<'a>>,
+        routes: &mut Option<crate::bot::navigation::commands::RouteProjection<'a>>,
         army: &Army,
         target: TilePos,
         public_map: Option<&'a PublicMapBriefing>,
@@ -1304,9 +1280,9 @@ impl UtilityPolicy {
         };
         let routes = routes.get_or_insert_with(|| {
             public_map.map_or_else(
-                || crate::bot::routing::RouteProjection::known_ground(obs),
+                || crate::bot::navigation::commands::RouteProjection::known_ground(obs),
                 |map| {
-                    crate::bot::routing::RouteProjection::with_public_terrain(
+                    crate::bot::navigation::commands::RouteProjection::with_public_terrain(
                         obs,
                         Domain::Ground,
                         map,
@@ -1361,7 +1337,7 @@ impl UtilityPolicy {
         let desired = staging_army.map(|army| army.staging).unwrap_or_else(|| {
             let toward = enemy_site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
             if let Some(frontline) = enemy_site.and_then(|enemy| {
-                let mut routes = RouteProjection::known_ground(obs);
+                let routes = RouteProjection::known_ground(obs);
                 obs.my_buildings
                     .iter()
                     .filter(|building| {
@@ -1457,6 +1433,46 @@ mod tests {
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, Scenario, UnitSpec};
     use crate::state::Faction;
+
+    #[test]
+    fn pressure_counts_a_corridor_gun_outside_the_objective_radius() {
+        let (mut obs, armies, policy, _) = mission_fixture();
+        let goal = TilePos::new(54, 16);
+        obs.enemy_buildings.clear();
+        obs.my_units
+            .iter_mut()
+            .for_each(|unit| unit.tile = TilePos::new(8, 16));
+        let gun = BuildingObs {
+            id: BuildingId(99),
+            player: PlayerId(1),
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(28, 18),
+            hp: BuildingKind::Turret.tier_stats(2).max_hp,
+            built: true,
+            provisional: false,
+            seen: true,
+            tier: 2,
+        };
+        obs.enemy_buildings.push(gun.clone());
+        let risk = policy
+            .approach_defense_strength(&obs, &armies[0], goal, player_mode(None))
+            .unwrap();
+        assert_eq!(
+            risk,
+            objective_building_strength(&gun, player_mode(None), obs.tick)
+        );
+        obs.enemy_buildings[0].anchor = TilePos::new(28, 29);
+        assert_eq!(
+            policy.approach_defense_strength(&obs, &armies[0], goal, player_mode(None)),
+            Some(0)
+        );
+        obs.enemy_buildings[0].anchor = gun.anchor;
+        obs.enemy_buildings[0].kind = BuildingKind::FlakTurret;
+        assert_eq!(
+            policy.approach_defense_strength(&obs, &armies[0], goal, player_mode(None)),
+            Some(0)
+        );
+    }
 
     #[test]
     fn remembered_strength_counts_the_full_salvo() {

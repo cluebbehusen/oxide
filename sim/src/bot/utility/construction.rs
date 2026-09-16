@@ -1,7 +1,10 @@
 //! Construction, repair, upgrade, and salvage decisions.
 
+mod foundry_planning;
+
 use super::*;
 use crate::Tick;
+use crate::bot::navigation::commands::{BuildCommandTarget, BuildRouteProjection};
 
 /// Exact fresh emergency construction selected before shared allocation.
 ///
@@ -807,12 +810,10 @@ impl UtilityPolicy {
             &saving,
             current_before_protected_reserve,
         );
-        if funding.viable {
-            self.foundry_saving
-                .as_mut()
-                .expect("the validated Foundry still exists")
-                .blocked_since = None;
-        } else if saving.forecast_basis.is_some() && !self.retain_blocked_foundry_saving(obs.tick) {
+        if !funding.viable
+            && saving.forecast_basis.is_some()
+            && !self.retain_blocked_foundry_saving(obs.tick)
+        {
             return None;
         }
         let saving = self
@@ -828,7 +829,7 @@ impl UtilityPolicy {
             planning_scrap: funding.planning_scrap,
             protected_reserve: funding.protected_reserve,
             forecast_deadline: funding.deadline,
-            blocked: saving.blocked_since.is_some(),
+            blocked: !funding.viable,
         })
     }
 
@@ -872,6 +873,12 @@ impl UtilityPolicy {
             false
         } else {
             true
+        }
+    }
+
+    pub(in crate::bot) fn recover_ready_foundry_saving(&mut self) {
+        if let Some(saving) = self.foundry_saving.as_mut() {
+            saving.blocked_since = None;
         }
     }
 
@@ -1175,7 +1182,7 @@ impl UtilityPolicy {
     fn safe_foundry_builder(
         &self,
         obs: &Observation,
-        public_map: &PublicMapBriefing,
+        routes: &BuildRouteProjection<'_>,
         anchor: TilePos,
         builders: &[&UnitObs],
         danger: &danger::HarvestDangerProjection,
@@ -1197,13 +1204,14 @@ impl UtilityPolicy {
         candidates
             .into_iter()
             .find(|builder| {
-                crate::bot::routing::build_command_path_avoids_with_public_terrain(
-                    obs,
-                    public_map,
+                routes.avoids(
                     builder,
-                    anchor,
-                    size,
-                    defer,
+                    BuildCommandTarget {
+                        anchor,
+                        size,
+                        defer,
+                    },
+                    None,
                     |tile| {
                         !obs.explored(tile)
                             || self.harvest_location_contested(tile)
@@ -1235,7 +1243,7 @@ impl UtilityPolicy {
     fn legal_foundry_builder_prepared(
         &self,
         obs: &Observation,
-        public_map: &PublicMapBriefing,
+        routes: &BuildRouteProjection<'_>,
         anchor: TilePos,
         builders: &[&UnitObs],
         danger: &danger::HarvestDangerProjection,
@@ -1243,7 +1251,7 @@ impl UtilityPolicy {
         if !self.placement_valid_prepared(obs, BuildingKind::Foundry, anchor) {
             return None;
         }
-        self.safe_foundry_builder(obs, public_map, anchor, builders, danger)
+        self.safe_foundry_builder(obs, routes, anchor, builders, danger)
     }
 
     /// Values every in-bounds anchor that would support a completed Extractor
@@ -1253,12 +1261,14 @@ impl UtilityPolicy {
         &self,
         public_map: &PublicMapBriefing,
         danger: &danger::HarvestDangerProjection,
-    ) -> expansion::BlockedGroundLayout {
-        expansion::BlockedGroundLayout::from_predicate(public_map, |position| {
-            self.harvest_location_contested(position) || danger.contains(position)
-        })
+    ) -> crate::bot::navigation::public_fields::BlockedGroundLayout {
+        crate::bot::navigation::public_fields::BlockedGroundLayout::from_predicate(
+            public_map,
+            |position| self.harvest_location_contested(position) || danger.contains(position),
+        )
     }
 
+    #[cfg(test)]
     fn player_facing_foundry_opportunities(
         &self,
         obs: &Observation,
@@ -1328,32 +1338,36 @@ impl UtilityPolicy {
 
         let max_x = public_map.map_width().saturating_sub(foundry_size.0);
         let max_y = public_map.map_height().saturating_sub(foundry_size.1);
-        let opportunities = (0..=max_y)
+        let anchors = (0..=max_y)
             .flat_map(|y| (0..=max_x).map(move |x| TilePos::new(x, y)))
-            .filter_map(|anchor| {
+            .collect::<Vec<_>>();
+        let mut scrap_by_anchor = vec![expansion::ScrapSummary::default(); anchors.len()];
+        for (_, amount, old_distance, distances) in visible_scrap {
+            distances.visit_footprint_distances(foundry_size, |index, new_distance| {
+                if new_distance < old_distance {
+                    scrap_by_anchor[index].include(expansion::ScrapLogistics {
+                        amount,
+                        old_distance,
+                        new_distance,
+                    });
+                }
+            });
+        }
+        let opportunities = anchors
+            .into_iter()
+            .zip(scrap_by_anchor)
+            .filter_map(|(anchor, scrap)| {
                 let newly_supported_completed_extractors = unsupported_extractors
                     .iter()
                     .filter(|extractor| Self::foundry_supports_extractor(anchor, **extractor))
                     .count()
                     .try_into()
                     .unwrap_or(u32::MAX);
-                let current_visible_scrap =
-                    visible_scrap
-                        .iter()
-                        .filter_map(|(_tile, amount, old_distance, distances)| {
-                            let new_distance =
-                                distances.footprint_distance(anchor, foundry_size)?;
-                            (new_distance < *old_distance).then_some(expansion::ScrapLogistics {
-                                amount: *amount,
-                                old_distance: *old_distance,
-                                new_distance,
-                            })
-                        });
-                expansion::FoundryOpportunity::admitted_objectives(
+                expansion::FoundryOpportunity::admitted_summary(
                     anchor,
                     newly_supported_completed_extractors,
                     ordinary_frontiers,
-                    current_visible_scrap,
+                    scrap,
                     economy,
                 )
             })
@@ -1378,17 +1392,18 @@ impl UtilityPolicy {
         let danger =
             self.harvest_danger_projection(obs, context.unit_contacts, context.building_contacts);
         let opportunities =
-            self.player_facing_foundry_opportunities(obs, context, public_map, economy, &danger);
+            self.regional_foundry_opportunities(obs, context, public_map, economy, &danger, None);
         if opportunities.is_empty() {
             return Vec::new();
         }
         self.prepare_ground_producer_egress(obs);
+        let routes = BuildRouteProjection::new(obs, Some(public_map));
         opportunities
             .into_iter()
             .filter_map(|opportunity| {
                 self.legal_foundry_builder_prepared(
                     obs,
-                    public_map,
+                    &routes,
                     opportunity.anchor,
                     context.builders,
                     &danger,
@@ -1443,12 +1458,13 @@ impl UtilityPolicy {
             context.claim.building_contacts,
         );
         let mut opportunities = opportunities.unwrap_or_else(|| {
-            self.player_facing_foundry_opportunities(
+            self.regional_foundry_opportunities(
                 obs,
                 context.claim,
                 context.public_map,
                 economy,
                 &danger,
+                context.required_anchor,
             )
         });
         if let Some(required_anchor) = context.required_anchor {
@@ -1475,10 +1491,11 @@ impl UtilityPolicy {
             return None;
         }
         self.prepare_ground_producer_egress(obs);
+        let routes = BuildRouteProjection::new(obs, Some(context.public_map));
         quotes.into_iter().find_map(|quote| {
             self.legal_foundry_builder_prepared(
                 obs,
-                context.public_map,
+                &routes,
                 quote.anchor(),
                 context.claim.builders,
                 &danger,
@@ -1678,7 +1695,7 @@ impl UtilityPolicy {
         self.prepare_ground_producer_egress(obs);
         if self.legal_foundry_builder_prepared(
             obs,
-            context.public_map,
+            &BuildRouteProjection::new(obs, Some(context.public_map)),
             saving.plan.anchor,
             &builders,
             &danger,
@@ -1839,7 +1856,7 @@ impl UtilityPolicy {
             return Some(Intent::CancelSite { building: site.id });
         }
 
-        let mut routes = crate::bot::routing::RouteProjection::new(obs, Domain::Ground);
+        let routes = crate::bot::navigation::commands::RouteProjection::new(obs, Domain::Ground);
         obs.my_buildings
             .iter()
             .filter(|building| {
@@ -2669,7 +2686,7 @@ mod tests {
             assert!(
                 obs.my_units[0].tile.manhattan(anchor) < obs.my_units[1].tile.manhattan(anchor)
             );
-            assert!(crate::bot::routing::build_command_path_avoids(
+            assert!(crate::bot::navigation::commands::build_command_path_avoids(
                 &obs,
                 &obs.my_units[0],
                 anchor,
@@ -2678,7 +2695,7 @@ mod tests {
                 |_| false,
             ));
             assert!(
-                !crate::bot::routing::build_command_path_avoids_with_public_terrain(
+                !crate::bot::navigation::commands::build_command_path_avoids_with_public_terrain(
                     &obs,
                     &briefing,
                     &obs.my_units[0],
@@ -2689,7 +2706,7 @@ mod tests {
                 )
             );
             assert!(
-                crate::bot::routing::build_command_path_avoids_with_public_terrain(
+                crate::bot::navigation::commands::build_command_path_avoids_with_public_terrain(
                     &obs,
                     &briefing,
                     &obs.my_units[1],
@@ -3684,7 +3701,60 @@ mod tests {
     }
 
     #[test]
-    fn viable_revalidation_clears_a_transient_foundry_block_immediately() {
+    fn funded_expansion_releases_after_continuous_builder_unavailability() {
+        let mut obs = ready_developed_expansion_observation();
+        let dials = expansion_dials();
+        let public_map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let mut policy = UtilityPolicy::new();
+        let proposal = expect_ready_foundry(
+            fresh_expansion_investment(&policy, &dials, &obs, &public_map, &[UnitId(1)], 0),
+            "funded plan",
+        );
+        policy
+            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
+            .unwrap();
+        let start = obs.tick;
+        for delta in (0..=FOUNDRY_RECOVERY_TICKS).step_by(12) {
+            obs.tick = start + delta;
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let obligation = policy
+                .validated_foundry_obligation(&obs, &resources, true, obs.scrap)
+                .unwrap();
+            assert_eq!(
+                policy.saved_foundry_readiness(
+                    &dials,
+                    &obs,
+                    obligation,
+                    FreshFoundryProposalContext {
+                        home: HOME,
+                        available_builders: &[],
+                        combat_core_exclusions: &[],
+                        unit_contacts: &[],
+                        building_contacts: &[],
+                        public_map: &public_map,
+                        same_think_intents: &[],
+                        current_scrap: obligation.planning_scrap(),
+                        protected_reserve: obligation.protected_reserve()
+                    }
+                ),
+                SavedFoundryReadiness::Blocked
+            );
+            assert_eq!(
+                policy.retain_blocked_foundry_saving(obs.tick),
+                delta < FOUNDRY_RECOVERY_TICKS
+            );
+        }
+        assert!(policy.foundry_saving.is_none());
+    }
+
+    #[test]
+    fn funding_recovery_preserves_execution_recovery_until_ready() {
         let obs = ready_developed_expansion_observation();
         let dials = expansion_dials();
         let public_map = array_briefing(
@@ -3714,6 +3784,11 @@ mod tests {
             .expect("restored exact funding makes the accepted plan viable again");
 
         assert!(!obligation.blocked());
+        assert_eq!(
+            policy.foundry_saving.as_ref().unwrap().blocked_since,
+            Some(obs.tick.saturating_sub(20))
+        );
+        policy.recover_ready_foundry_saving();
         assert_eq!(
             policy
                 .foundry_saving
@@ -4021,6 +4096,113 @@ mod tests {
     }
 
     #[test]
+    fn fresh_foundry_planning_resumes_and_saved_sites_bypass_optional_deferral() {
+        use crate::bot::planning::PlanningWork;
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![(TilePos::new(32, 12), 1_800)];
+        let map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let query = |policy: &UtilityPolicy, obs: &Observation, required| {
+            let (foundries, _) = UtilityPolicy::projected_foundries(obs);
+            let builders = policy.construction_builders(obs, &[], &[]);
+            let claim = FoundryClaimContext {
+                home: HOME,
+                projected_foundries: &foundries,
+                builders: &builders,
+                support_extractors: false,
+                ordinary_frontiers: true,
+                unit_contacts: None,
+                building_contacts: None,
+            };
+            let economy = expansion_economy(&expansion_dials(), obs, obs.scrap, Reserve::Ordinary);
+            let danger = policy.harvest_danger_projection(obs, None, None);
+            policy.regional_foundry_opportunities(obs, claim, &map, economy, &danger, required)
+        };
+        let mut policy = UtilityPolicy::new();
+        policy.planning = PlanningWork::with_allowance(1_200);
+        let initial_tick = obs.tick;
+        assert!(query(&policy, &obs, None).is_empty());
+        assert_eq!(policy.planning.spent(), 1_200);
+        let pending = policy.planning.clone();
+        assert!(query(&policy, &obs, None).is_empty());
+        assert_eq!(policy.planning, pending);
+        let mut completed = None;
+        for delay in (12..120).step_by(12) {
+            obs.tick = initial_tick + delay;
+            let cloned = policy.clone();
+            let quotes = query(&policy, &obs, None);
+            assert_eq!(quotes, query(&cloned, &obs, None));
+            if let Some(quote) = quotes.into_iter().next() {
+                completed = Some(quote);
+                break;
+            }
+        }
+        let completed = completed.expect("fresh logistics must progress across decisions");
+        let exact = query(&UtilityPolicy::new(), &obs, Some(completed.anchor));
+        assert_eq!(exact, [completed]);
+        policy.planning = PlanningWork::with_allowance(0);
+        assert!(query(&policy, &obs, None).is_empty());
+        assert_eq!(query(&policy, &obs, Some(completed.anchor)), exact);
+        assert_eq!(policy.planning.spent(), 0);
+    }
+
+    #[test]
+    fn shortlisted_foundry_quotes_match_exact_all_anchor_logistics_prices() {
+        let mut obs = developed_expansion_observation();
+        obs.known_scrap = vec![
+            (TilePos::new(32, 12), 800),
+            (TilePos::new(34, 16), 600),
+            (TilePos::new(48, 24), 400),
+        ];
+        let map = array_briefing(
+            obs.map_width,
+            obs.map_height,
+            HOME,
+            TilePos::new(obs.map_width - 4, obs.map_height - 4),
+            |_| '.',
+        );
+        let policy = UtilityPolicy::new();
+        let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
+        let builders = policy.construction_builders(&obs, &[], &[]);
+        let claim = FoundryClaimContext {
+            home: HOME,
+            projected_foundries: &foundries,
+            builders: &builders,
+            support_extractors: false,
+            ordinary_frontiers: true,
+            unit_contacts: None,
+            building_contacts: None,
+        };
+        let economy = expansion_economy(&expansion_dials(), &obs, obs.scrap, Reserve::Ordinary);
+        let danger = policy.harvest_danger_projection(&obs, None, None);
+        let selected =
+            policy.regional_foundry_opportunities(&obs, claim, &map, economy, &danger, None);
+        assert!(!selected.is_empty());
+        assert!(selected.len() <= 8);
+        assert!(
+            policy
+                .expansion_routing_cache
+                .borrow()
+                .build_count()
+                .danger_aware
+                <= 9
+        );
+        let reference =
+            policy.player_facing_foundry_opportunities(&obs, claim, &map, economy, &danger);
+        for quote in selected {
+            assert_eq!(
+                reference.iter().find(|other| other.anchor == quote.anchor),
+                Some(&quote)
+            );
+        }
+    }
+
+    #[test]
     fn expansion_plan_does_not_value_remembered_scrap_as_current_logistics() {
         let frontier = TilePos::new(32, 12);
         let mut obs = observation();
@@ -4139,7 +4321,13 @@ mod tests {
         );
         assert!(policy.placement_valid_prepared(&obs, BuildingKind::Foundry, top));
         assert_eq!(
-            policy.legal_foundry_builder_prepared(&obs, &public_map, top, &builders, &danger),
+            policy.legal_foundry_builder_prepared(
+                &obs,
+                &BuildRouteProjection::new(&obs, Some(&public_map)),
+                top,
+                &builders,
+                &danger
+            ),
             None,
             "the top quote is legal but unreachable across the public Peak wall"
         );
@@ -4150,7 +4338,7 @@ mod tests {
                 policy
                     .legal_foundry_builder_prepared(
                         &obs,
-                        &public_map,
+                        &BuildRouteProjection::new(&obs, Some(&public_map)),
                         quote.anchor(),
                         &builders,
                         &danger,
@@ -4170,9 +4358,15 @@ mod tests {
             voluntary_scrap_guard: Reserve::Ordinary,
             required_anchor: None,
         };
-        let first = policy
-            .player_facing_foundry_assessment(&dials, &obs, context, &[])
-            .expect("assessment falls through to the reachable quote");
+        let (first, work) = crate::bot::navigation::work::measure(|| {
+            policy
+                .player_facing_foundry_assessment(&dials, &obs, context, &[])
+                .expect("assessment falls through to the reachable quote")
+        });
+        assert!(
+            work.components <= 3,
+            "one observed-ground flood and two public-ground components must serve every candidate: {work:?}"
+        );
         let second = policy
             .player_facing_foundry_assessment(&dials, &obs, context, &[])
             .expect("repeat assessment remains viable");
@@ -4812,6 +5006,7 @@ mod tests {
             obs.my_queues.push(Vec::new());
         }
         let map = PublicMapBriefing {
+            regions: Default::default(),
             map_width: obs.map_width,
             map_height: obs.map_height,
             starting_foundries: Vec::new(),
@@ -4848,6 +5043,7 @@ mod tests {
                 provider_value: 1,
             }];
             policy.fresh_economic_investments(EconomicInvestmentContext {
+                obligations: &[],
                 obs: current,
                 resources: &resources,
                 profile: &profile,
