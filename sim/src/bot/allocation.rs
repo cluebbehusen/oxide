@@ -2997,16 +2997,14 @@ impl ClaimState {
             });
         }
 
-        let mut deadlines: Vec<_> = self
-            .forecast_scrap
-            .iter()
-            .map(|claim| claim.through)
-            .chain(
-                self.deferrable_capital
-                    .iter()
-                    .map(|capital| capital.claim.through),
-            )
-            .collect();
+        let mut payments = BTreeMap::<Tick, u128>::new();
+        for claim in &self.forecast_scrap {
+            *payments.entry(claim.through).or_default() += u128::from(claim.amount);
+        }
+        for capital in &self.deferrable_capital {
+            *payments.entry(capital.claim.through).or_default() += u128::from(capital.claim.amount);
+        }
+        let mut fixed_windows = Vec::new();
         for job in &self.producer_jobs {
             let duration = Tick::from(job.claim.kind.stats().train_ticks);
             let Some(latest_start) = job.claim.ready_before.checked_sub(duration) else {
@@ -3016,46 +3014,17 @@ impl ClaimState {
             if job.claim.enqueue_not_before > latest_start {
                 return Err(producer_schedule_conflict(&self.producer_jobs));
             }
-            deadlines.push(
-                job.claim
-                    .fixed_assignment()
-                    .map_or(latest_start, |fixed| fixed.enqueued_at),
-            );
+            let deadline = if let Some(fixed) = job.claim.fixed_assignment() {
+                fixed_windows.push((fixed.producer, fixed.starts_at, fixed.ready_at));
+                fixed.enqueued_at
+            } else {
+                latest_start
+            };
+            *payments.entry(deadline).or_default() += u128::from(job.claim.kind.stats().cost);
         }
-        deadlines.sort_unstable();
-        deadlines.dedup();
-        for through in deadlines {
-            let requested = u128::from(self.current_scrap)
-                + u128::from(minimum_residual_scrap)
-                + self
-                    .forecast_scrap
-                    .iter()
-                    .filter(|claim| claim.through <= through)
-                    .map(|claim| u128::from(claim.amount))
-                    .sum::<u128>()
-                + self
-                    .deferrable_capital
-                    .iter()
-                    .filter(|capital| capital.claim.through <= through)
-                    .map(|capital| u128::from(capital.claim.amount))
-                    .sum::<u128>()
-                + self
-                    .producer_jobs
-                    .iter()
-                    .filter(|job| {
-                        let duration = Tick::from(job.claim.kind.stats().train_ticks);
-                        job.claim
-                            .ready_before
-                            .checked_sub(duration)
-                            .is_some_and(|latest_start| {
-                                job.claim.fixed_assignment().map_or(
-                                    latest_start.min(job.claim.enqueue_not_after),
-                                    |fixed| fixed.enqueued_at,
-                                ) <= through
-                            })
-                    })
-                    .map(|job| u128::from(job.claim.kind.stats().cost))
-                    .sum::<u128>();
+        let mut requested = u128::from(self.current_scrap) + u128::from(minimum_residual_scrap);
+        for (through, payment) in payments {
+            requested += payment;
             let available = u128::from(capacity.resources.current_scrap())
                 + u128::from(capacity.forecast_through(through));
             if requested > available {
@@ -3066,21 +3035,12 @@ impl ClaimState {
                 });
             }
         }
-        for (index, job) in self.producer_jobs.iter().enumerate() {
-            let Some(fixed) = job.claim.fixed_assignment() else {
-                continue;
-            };
-            if self.producer_jobs[index + 1..]
-                .iter()
-                .filter_map(|other| other.claim.fixed_assignment())
-                .any(|other| {
-                    fixed.producer == other.producer
-                        && fixed.starts_at <= other.ready_at
-                        && other.starts_at <= fixed.ready_at
-                })
-            {
-                return Err(producer_schedule_conflict(&self.producer_jobs));
-            }
+        fixed_windows.sort_unstable();
+        if fixed_windows
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0 && pair[1].1 <= pair[0].2)
+        {
+            return Err(producer_schedule_conflict(&self.producer_jobs));
         }
         Ok(())
     }
