@@ -32,14 +32,12 @@ impl HarvestRegion {
         self.producer_access.get(&producer).copied()
     }
 
-    fn safe_door(&self, tile: TilePos, commands: &RouteProjection<'_>) -> bool {
+    fn harvest_corridor(&self, tile: TilePos, commands: &RouteProjection<'_>) -> bool {
         self.doors
             .iter()
             .min_by_key(|door| (door.chebyshev(tile), door.y, door.x))
             .is_some_and(|door| {
-                commands.direct_line_avoids_blocked(tile, *door)
-                    && commands.command_path_avoids_blocked(tile, *door)
-                    && commands.command_path_avoids_blocked(*door, tile)
+                self.distance(tile).is_some() && commands.direct_line_avoids_blocked(tile, *door)
             })
     }
 }
@@ -275,7 +273,7 @@ impl UtilityPolicy {
                 .filter_map(|(index, region)| {
                     work_tiles
                         .iter()
-                        .filter(|tile| region.safe_door(**tile, &commands))
+                        .filter(|tile| region.harvest_corridor(**tile, &commands))
                         .filter_map(|tile| region.distance(*tile))
                         .min()
                         .map(|distance| (distance, region.service.y, region.service.x, index))
@@ -289,7 +287,7 @@ impl UtilityPolicy {
             weighted_haul[index] = weighted_haul[index]
                 .saturating_add(u128::from(distance).saturating_mul(u128::from(amount)));
             positions[index].extend(work_tiles.into_iter().filter(|tile| {
-                region.distance(*tile).is_some() && region.safe_door(*tile, &commands)
+                region.distance(*tile).is_some() && region.harvest_corridor(*tile, &commands)
             }));
         }
         for (index, region) in regions.iter_mut().enumerate() {
@@ -312,7 +310,8 @@ impl UtilityPolicy {
                 continue;
             }
             if let Some((index, region)) = regions.iter_mut().enumerate().find(|(_, region)| {
-                region.distance(unit.tile).is_some() && region.safe_door(unit.tile, &commands)
+                region.distance(unit.tile).is_some()
+                    && region.harvest_corridor(unit.tile, &commands)
             }) && let Some(distance) = work_distances[index]
                 .get_or_insert_with(|| {
                     PublicGroundDistances::from_sources_avoiding(
@@ -347,7 +346,7 @@ impl UtilityPolicy {
             };
             for region in &mut regions {
                 if let Some(distance) = region.distance(spawn)
-                    && region.safe_door(spawn, &commands)
+                    && region.harvest_corridor(spawn, &commands)
                 {
                     region.producer_access.insert(
                         lane.producer,

@@ -2636,7 +2636,11 @@ mod tests {
                 (&[], &[]),
             )
         };
-        let far = regions(&obs);
+        let (far, work) = crate::bot::navigation::work::measure(|| regions(&obs));
+        assert_eq!(
+            work.paths, 0,
+            "worker valuation must not enumerate command paths"
+        );
         assert_eq!(far.len(), 1);
         assert!(far[0].workers[0].ready_after > 1_000);
         let local = WorkerService {

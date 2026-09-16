@@ -914,13 +914,16 @@ Worker value is finite harvest output or recovery of orphaned paid construction,
 net of reachable existing and queued workers. Technology and factories serve
 capability demand derived before prerequisite eligibility, with construction and
 production delay, missing-chain costs, and eventual capacity accounted for. Live
-harvest workers pay initial travel to visible safe work before contributing
-output. Concurrent air and lift demand share each Airworks lane's time once,
-bounded by readiness, customer deadlines, and route reachability. Local Foundry
-throughput opportunities reuse the expansion admission and security path.
-Additional throughput is capped by current unprotected capital and completed
-income after the candidate and its missing prerequisites are paid. Capacity
-confidence and urgency come from the demand contributing its marginal return; an
+harvest workers pay initial travel to visible work before contributing output.
+Harvest valuation uses shared danger-avoiding distance fields and clear direct
+corridors; it estimates future output without constructing command paths for
+every work tile. Actual worker assignments retain their command-route checks.
+Concurrent air and lift demand share each Airworks lane's time once, bounded by
+readiness, customer deadlines, and route reachability. Local Foundry throughput
+opportunities reuse the expansion admission and security path. Additional
+throughput is capped by current unprotected capital and completed income after
+the candidate and its missing prerequisites are paid. Capacity confidence and
+urgency come from the demand contributing its marginal return; an
 already-covered current need cannot strengthen a speculative capacity case. A
 proposed first Airworks tries current targets by value and regional distance
 until it finds a complete connected scout, suppression, and strike minimum. This
