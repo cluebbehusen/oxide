@@ -1025,11 +1025,11 @@ impl<'a> AllocationSession<'a> {
                     ),
                 ),
             };
+            let mut economic_quotes = self.participants.policy.economic_quotes(economic_context);
             if foundry.is_none()
-                && let Some(FreshFoundryInvestment::Ready(proposal)) =
-                    self.participants.policy.fresh_capacity_foundry_investment(
+                && let Some(FreshFoundryInvestment::Ready(proposal)) = economic_quotes
+                    .capacity_foundry(
                         self.context.dials,
-                        economic_context,
                         FreshFoundryProposalContext {
                             home: self.context.home,
                             available_builders: &available_builders,
@@ -1045,9 +1045,7 @@ impl<'a> AllocationSession<'a> {
             {
                 foundry = Some(proposal);
             }
-            self.participants
-                .policy
-                .fresh_economic_investments(economic_context)
+            economic_quotes.investments()
         } else {
             Vec::new()
         };

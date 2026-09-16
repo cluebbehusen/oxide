@@ -995,6 +995,19 @@ admit the shared support site. Only the next restoration owns capital and a
 builder; later steps are re-evaluated as construction completes, and their
 projected income never becomes spendable forecast credit.
 
+`EconomicQuotes` owns one quotation pass over an immutable observation, resource
+snapshot, retained obligations, and capability demand. Capacity-Foundry fallback
+and ordinary economic alternatives share its service-route cache and funding
+calendar. Worker quotations, capital preparation, bounded construction-site
+selection, construction valuation, upgrade valuation, and final ranking retain
+their original order. Construction and upgrade quotes share lazily prepared
+defense geometry. Policy planning allowances and site rotation remain serial.
+
+The funding calendar collects retained payments once, then prices each purchase
+against its exact deadline using that immutable schedule. A new observation or
+obligation set requires a new pass. Shared preparation changes derived work, not
+quotation identity, funding semantics, or command dispatch.
+
 Before the difficulty floor is projected, the player-facing policy pauses new
 voluntary construction and upgrades, discretionary production, mobile support,
 and paid repairs. New air, lift, raid, and team-relief operations are not

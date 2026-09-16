@@ -2271,13 +2271,13 @@ mod tests {
         )
         .resolve_profile();
         let mut policy = UtilityPolicy::new();
-        let quote = policy.fresh_economic_investments(EconomicInvestmentContext {
+        let quote = policy.economic_quotes(EconomicInvestmentContext {
             obligations: &[],
             obs: &obs, resources: &resources, profile: &profile, briefing: &public_map,
             orientation: crate::bot::orient::Orientation::for_home(&obs, home),
             unavailable: &[], demands: &[], unit_contacts: &[], building_contacts: &[],
             cadence: 12, protected_scrap: 0, air_work: &[],
-        }).into_iter().find(|proposal| matches!(proposal.key, EconomicInvestmentKey::Build { kind: BuildingKind::Extractor, anchor } if anchor == frame))
+        }).investments().into_iter().find(|proposal| matches!(proposal.key, EconomicInvestmentKey::Build { kind: BuildingKind::Extractor, anchor } if anchor == frame))
             .expect("the same supported frame must offer its own exact economic alternative");
         let expected = quote.intent();
         let mut intents = Vec::new();
