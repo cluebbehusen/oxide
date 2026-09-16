@@ -968,9 +968,18 @@ net of reachable existing and queued workers. Technology and factories serve
 capability demand derived before prerequisite eligibility, with construction and
 production delay, missing-chain costs, and eventual capacity accounted for. Live
 harvest workers pay initial travel to visible work before contributing output.
-Harvest valuation uses shared danger-avoiding distance fields and clear direct
-corridors; it estimates future output without constructing command paths for
-every work tile. Actual worker assignments retain their command-route checks.
+Harvest valuation separates drop-off service geometry from finite resource work
+and live or queued worker returns. One fog-honest navigation projection supplies
+connectivity, danger-avoiding distance fields, and bidirectional canonical
+command-route safety. Each source contributes once to its selected service
+region; overlapping work tiles count once. Live workers pay initial travel, and
+paid worker occurrences retain their producer readiness. One controller-local
+cache retains the latest service geometry and at most 4,096 corridor answers per
+service region. Its exact equality key includes ordinary passability, allowed
+passability, the danger mask, orientation, public map knowledge, and completed
+drop-offs. Changed blockers or danger discard the old service evidence. Resource
+amounts, visibility, work eligibility, live workers, and producer schedules are
+evaluated afresh; cached geometry grants no resource or worker credit.
 Concurrent air and lift demand share each Airworks lane's time once, bounded by
 readiness, customer deadlines, and route reachability. Local Foundry throughput
 opportunities reuse the expansion admission and security path. Additional

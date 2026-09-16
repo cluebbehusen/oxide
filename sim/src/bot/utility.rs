@@ -726,6 +726,7 @@ pub struct UtilityPolicy {
     /// Lazily materialized, immutable worker-danger surface for the latest
     /// effective fog-honest threat layout.
     harvest_danger_cache: std::cell::RefCell<danger::HarvestDangerCache>,
+    harvest_geometry_cache: std::cell::RefCell<economic_work::HarvestGeometryCache>,
     /// Bounded public-terrain route fields shared by expansion economics and
     /// security across repeated assessments and stationary route sources.
     expansion_routing_cache: std::cell::RefCell<super::navigation::public_fields::PublicRoutes>,
