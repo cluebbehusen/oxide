@@ -86,10 +86,12 @@ impl FieldPreparation {
             let victim = self
                 .jobs
                 .iter()
+                .filter(|(_, job)| job.work.is_ready())
                 .min_by_key(|(key, job)| (job.used_at, *key))
-                .unwrap()
-                .0
-                .clone();
+                .map(|(key, _)| key.clone());
+            let Some(victim) = victim else {
+                return Progress::Deferred;
+            };
             self.jobs.remove(&victim);
         }
         let job = self.jobs.entry(sources.clone()).or_insert_with(|| Job {

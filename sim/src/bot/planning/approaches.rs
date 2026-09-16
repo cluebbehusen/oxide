@@ -130,15 +130,7 @@ impl ApproachPreparation {
         goals.sort_unstable_by_key(|tile| (tile.y, tile.x));
         goals.dedup();
         if !self.jobs.contains_key(&goals) && self.counts().0 == RETAINED_FIELDS {
-            let victim = self
-                .jobs
-                .iter()
-                .filter(|(_, job)| job.ready.is_none())
-                .min_by_key(|(key, job)| (job.used, *key))
-                .unwrap()
-                .0
-                .clone();
-            self.jobs.remove(&victim);
+            return Progress::Deferred;
         }
         let job = self.jobs.entry(goals.clone()).or_insert_with(|| Job {
             started: tick,
@@ -186,10 +178,33 @@ mod tests {
     use crate::bot::planning::PlanningWork;
 
     #[test]
+    fn excess_admissions_preserve_pending_fields_until_they_complete() {
+        let blocked = vec![false; 64 * 64];
+        let grid = KnownGrid::new(64, 64, &blocked).unwrap();
+        let work = PlanningWork::default();
+        for tick in (0..120).step_by(12) {
+            let mut completed = 0;
+            for x in 0..32 {
+                if matches!(
+                    work.approach_field(tick, grid, false, &[TilePos::new(x, 2)]),
+                    Progress::Ready(_)
+                ) {
+                    completed += 1;
+                }
+            }
+            assert!(work.stats().pending_approach_fields <= RETAINED_FIELDS);
+            if completed == 32 {
+                return;
+            }
+        }
+        panic!("later requests must not evict unfinished earlier work");
+    }
+
+    #[test]
     fn completed_prefixes_do_not_starve_a_projection_with_many_assets() {
         let blocked = vec![false; 1_600];
         let grid = KnownGrid::new(40, 40, &blocked).unwrap();
-        let work = PlanningWork::with_allowance(8_000);
+        let work = PlanningWork::with_allowance(10_667);
         for tick in (0..120).step_by(12) {
             let mut complete = true;
             for x in 0..20 {
@@ -201,7 +216,7 @@ mod tests {
                     break;
                 }
             }
-            assert!(work.spent() <= 8_000);
+            assert!(work.spent() <= 10_667);
             if complete {
                 assert_eq!(work.stats().retained_approach_fields, 20);
                 return;

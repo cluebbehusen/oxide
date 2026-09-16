@@ -18,12 +18,14 @@ type CampaignAlternatives = std::collections::BTreeMap<
 >;
 
 const DECISION_WORK: usize = 128_000;
+const PRODUCTION_RESERVE: usize = DECISION_WORK / 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::bot) struct PlanningWork {
     tick: Cell<Option<u64>>,
     allowance: usize,
     budget: RefCell<WorkBudget>,
+    navigation_spent: Cell<usize>,
     fields: RefCell<fields::FieldPreparation>,
     approaches: RefCell<[approaches::ApproachPreparation; 2]>,
     production: RefCell<crate::bot::allocation::production_work::ProductionWork>,
@@ -42,6 +44,7 @@ impl Default for PlanningWork {
             tick: Cell::new(None),
             allowance: DECISION_WORK,
             budget: RefCell::new(WorkBudget::new(DECISION_WORK)),
+            navigation_spent: Cell::new(0),
             fields: RefCell::default(),
             approaches: RefCell::default(),
             production: RefCell::default(),
@@ -139,6 +142,7 @@ impl PlanningWork {
             self.tick.set(Some(tick));
             *self.budget.borrow_mut() = WorkBudget::new(self.allowance);
             self.site_checks.set(0);
+            self.navigation_spent.set(0);
             let fields_pending = self.fields.borrow().counts().0 > 0;
             let production_pending = self.production.borrow().counts().0 > 0;
             let approach_pending = self
@@ -155,9 +159,12 @@ impl PlanningWork {
             if let Some(share) = (self.allowance / 2).checked_div(active) {
                 let mut budget = self.budget.borrow_mut();
                 if fields_pending {
+                    let before = budget.spent();
                     budget.run_slice(share, |slice| {
                         self.fields.borrow_mut().resume_pending(tick, slice)
                     });
+                    self.navigation_spent
+                        .set(self.navigation_spent.get() + budget.spent() - before);
                 }
                 if production_pending {
                     budget.run_slice(share, |slice| {
@@ -171,11 +178,28 @@ impl PlanningWork {
                     .zip(approach_pending)
                 {
                     if pending {
+                        let before = budget.spent();
                         budget.run_slice(share, |slice| domain.resume_pending(tick, slice));
+                        self.navigation_spent
+                            .set(self.navigation_spent.get() + budget.spent() - before);
                     }
                 }
             }
         }
+    }
+
+    fn navigation_work<T>(&self, run: impl FnOnce(&mut WorkBudget) -> T) -> T {
+        let reserve = (self.allowance / 4).min(PRODUCTION_RESERVE);
+        let limit = self
+            .allowance
+            .saturating_sub(reserve)
+            .saturating_sub(self.navigation_spent.get());
+        let mut budget = self.budget.borrow_mut();
+        let before = budget.spent();
+        let result = budget.run_slice(limit, run);
+        self.navigation_spent
+            .set(self.navigation_spent.get() + budget.spent() - before);
+        result
     }
 
     pub(in crate::bot) fn production(
@@ -273,12 +297,9 @@ impl PlanningWork {
         goals: &[chassis::grid::TilePos],
     ) -> Progress<std::sync::Arc<super::navigation::approaches::ApproachField>> {
         self.begin(tick);
-        self.approaches.borrow_mut()[usize::from(air)].advance(
-            tick,
-            grid,
-            goals,
-            &mut self.budget.borrow_mut(),
-        )
+        self.navigation_work(|budget| {
+            self.approaches.borrow_mut()[usize::from(air)].advance(tick, grid, goals, budget)
+        })
     }
 
     pub(in crate::bot) fn field(
@@ -290,9 +311,11 @@ impl PlanningWork {
     ) -> Progress<std::sync::Arc<crate::bot::navigation::public_fields::PublicGroundDistances>>
     {
         self.begin(tick);
-        self.fields
-            .borrow_mut()
-            .advance(tick, map, blocked, sources, &mut self.budget.borrow_mut())
+        self.navigation_work(|budget| {
+            self.fields
+                .borrow_mut()
+                .advance(tick, map, blocked, sources, budget)
+        })
     }
 }
 
@@ -448,6 +471,47 @@ mod tests {
             Progress::<()>::Deferred
         });
         assert_eq!(work.stats().retained_campaign_sites, 1);
+    }
+
+    #[test]
+    fn large_navigation_requests_leave_work_for_production() {
+        use crate::bot::{
+            allocation::{AllocationCapacity, ClaimState},
+            navigation::KnownGrid,
+            observation::Observation,
+            resources::ResourceSnapshot,
+        };
+        use chassis::grid::TilePos;
+        let work = PlanningWork::default();
+        let ground = vec![false; 256 * 256];
+        let grid = KnownGrid::new(256, 256, &ground).unwrap();
+        let goals = [TilePos::new(0, 0)];
+        for _ in 0..8 {
+            assert_eq!(
+                work.approach_field(0, grid, false, &goals),
+                Progress::Deferred
+            );
+        }
+        assert_eq!(work.spent(), DECISION_WORK - PRODUCTION_RESERVE);
+        let capacity = AllocationCapacity::from_snapshot(
+            &ResourceSnapshot::from_observation(&Observation::default()),
+            120,
+            1,
+        )
+        .unwrap();
+        assert!(matches!(
+            work.production(0, &capacity, &ClaimState::default()),
+            Ok(Progress::Ready(_))
+        ));
+        assert!(work.spent() > DECISION_WORK - PRODUCTION_RESERVE);
+        let clone = work.clone();
+        for controller in [&work, &clone] {
+            assert!(matches!(
+                controller.approach_field(12, grid, false, &goals),
+                Progress::Ready(_)
+            ));
+        }
+        assert_eq!(work, clone);
     }
 
     #[test]

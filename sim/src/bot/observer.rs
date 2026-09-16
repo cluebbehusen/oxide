@@ -35,7 +35,7 @@ pub enum BotPhase {
 }
 
 /// Deterministic work consumed by the incremental planning services this decision.
-/// This does not include synchronous planner or mandatory-validation work.
+/// This excludes synchronous preparation and fixed-commitment validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct PlanningWorkStats {
     /// Total allowance for field work and opportunity refinement.

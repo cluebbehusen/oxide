@@ -4127,7 +4127,7 @@ mod tests {
         policy.planning = PlanningWork::with_allowance(1_200);
         let initial_tick = obs.tick;
         assert!(query(&policy, &obs, None).is_empty());
-        assert_eq!(policy.planning.spent(), 1_200);
+        assert_eq!(policy.planning.spent(), 900);
         let pending = policy.planning.clone();
         assert!(query(&policy, &obs, None).is_empty());
         assert_eq!(policy.planning, pending);

@@ -910,7 +910,7 @@ mod tests {
         let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
         let sources = [TilePos::new(2, 2)];
         let expected = PublicGroundDistances::from_sources(&map, sources);
-        let planning = PlanningWork::with_allowance(60);
+        let planning = PlanningWork::with_allowance(80);
         assert_eq!(
             planning.field(0, &map, &blocked, sources),
             Progress::Deferred
@@ -930,7 +930,7 @@ mod tests {
         for tick in (12..120).step_by(12) {
             let actual = planning.field(tick, &map, &blocked, sources);
             assert_eq!(actual, cloned.field(tick, &map, &blocked, sources));
-            assert!(planning.spent() <= 60);
+            assert!(planning.spent() <= 80);
             if let Progress::Ready(field) = actual {
                 assert_eq!(*field, expected);
                 complete = true;
@@ -972,7 +972,7 @@ mod tests {
                 planning.field(24, &map, &blocked, [TilePos::new(x, 2)]),
                 Progress::Deferred
             );
-            assert_eq!(planning.spent(), 60);
+            assert_eq!(planning.spent(), 45);
         }
     }
 
