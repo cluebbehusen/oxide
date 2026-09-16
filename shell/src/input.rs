@@ -1350,7 +1350,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             .or_else(|| (!click_on_hud(game, p)).then(|| game.camera.to_world(p)));
         if let Some(world) = world {
             let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-            for building in input.rallying.iter().copied() {
+            for building in
+                crate::building_actions::SelectedBuildings::inspect_ids(game, &input.rallying)
+                    .producers()
+            {
                 game.issue(Command::SetRally {
                     building,
                     rally: Some(rally),
@@ -1648,9 +1651,8 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         crate::panel::CardAction::CancelFound(kind, anchor) => {
             game.issue(Command::CancelFound { kind, anchor });
         }
-        crate::panel::CardAction::Upgrade(building) => {
-            game.issue(Command::UpgradeBuilding { building });
-        }
+        crate::panel::CardAction::Upgrade => crate::building_actions::upgrade(game),
+        crate::panel::CardAction::ScrapSites => crate::building_actions::scrap_sites(game),
         crate::panel::CardAction::UnloadHere(transport) => {
             if let Some(t) = game.state.unit(transport) {
                 let at = t.tile();

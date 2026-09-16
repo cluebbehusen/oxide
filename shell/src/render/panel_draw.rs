@@ -1350,7 +1350,7 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
         lines.push((format!("{cost} scrap"), SCRAP_COLOR));
     }
     let intro_lines = lines.len();
-    let comparison = matches!(card.action, crate::panel::CardAction::Upgrade(_))
+    let comparison = matches!(card.action, crate::panel::CardAction::Upgrade)
         .then_some(panel.info.upgrade.as_ref())
         .flatten();
     let size = 17.0 * s;

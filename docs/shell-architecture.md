@@ -74,6 +74,19 @@ original presses so aliases and modifier changes preserve held actions. Keyboard
 card actions use the same availability checks as clicks. Configuration migration
 preserves explicit remaps and unbindings without displacing custom chords.
 
+Building controls share one capability-based selection model for single and
+grouped selections. Upgrade ladders, weapons, production rosters, and
+construction state determine available actions without a building-kind
+whitelist. Buildings of one kind remain a group across tiers; an action applies
+only to eligible members. Upgrade advances each eligible building one rung,
+skips max-tier or offline members, and allocates available scrap in building-id
+order. The card shows the recipient count, total cost, and per-tier
+destinations. Its activation rechecks pending commands, as do defense orders, so
+an upgrade already staged while paused cannot be bought twice or invalidate
+another selected defense's target command. Stop clears completed defenses first;
+a separate Scrap sites card can abandon fresh sites in the same selection.
+Committed upgrades cannot be cancelled.
+
 Selecting multiple own production buildings of one kind exposes their shared
 roster. Each activation stages one ordinary `Train` per available factory in
 building-id order, skips full or offline factories, and spends only available
@@ -257,8 +270,13 @@ rules.
 sprite key; the renderer does not load individual sprite textures. Optional rigs
 may fall back to composite sprites, but incomplete rig families are rejected.
 Procedural quarry boundaries and pits derive from map geometry with fog-aware
-visibility. Animation, heading, and weapon effects use the relevant simulation
-state rather than inventing movement or firing delays.
+visibility. The shell extends allied unit sight discs and completed-building
+footprint sight into a bounded off-map quarry margin. Its presentation-only
+exploration cache updates on every tick, including bulk advances, and rebuilds
+from the command log when a saved match resumes. Map tiles retain authoritative
+simulation fog; the replay viewer remains fog-free. Animation, heading, and
+weapon effects use the relevant simulation state rather than inventing movement
+or firing delays.
 
 `entity_lod` derives full, half, quarter, and eighth-resolution entity textures
 at startup without changing authored atlas bytes. Regions pack in descending

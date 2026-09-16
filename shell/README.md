@@ -19,6 +19,8 @@ crate-level rustdoc.
   and result report.
 - `game` owns one live session, its recorder, bots, and presentation state.
 - `input` and `action` form the single hardware and injected-input funnel.
+- `building_actions` derives single and grouped building controls from their
+  capabilities, using projected pending orders for eligibility and spending.
 - `production` shares selected-factory purchases and collective queue
   cancellation across panel cards and shortcuts, including commands awaiting the
   next tick.

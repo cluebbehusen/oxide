@@ -5060,6 +5060,13 @@ fn the_upgrade_card_stages_only_the_building() {
         x: 9,
         y: 3,
     });
+    scenario.players[0].scrap = 1000;
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 12,
+        y: 3,
+    });
     let mut game =
         Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("upgrade fixture builds");
     let mut input = InputState::new();
@@ -5071,11 +5078,7 @@ fn the_upgrade_card_stages_only_the_building() {
         .unwrap()
         .id;
     game.selection.buildings = vec![turret];
-    activate_card(
-        &mut game,
-        &mut input,
-        crate::panel::CardAction::Upgrade(turret),
-    );
+    activate_card(&mut game, &mut input, crate::panel::CardAction::Upgrade);
     assert_eq!(game.pending.len(), 1, "one upgrade command staged");
     assert!(matches!(
         game.pending[0].command,
@@ -5848,6 +5851,136 @@ fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
     mouse_game.do_tick();
     key_game.do_tick();
     assert_eq!(mouse_game.state.hash(), key_game.state.hash());
+}
+
+#[test]
+fn grouped_upgrade_mouse_touch_and_remapped_keys_share_pending_eligibility() {
+    use crate::action::Chord;
+    use crate::building_actions::tests::fixture;
+    use crate::panel::CardAction;
+    let mut outcomes = Vec::new();
+    for mode in 0..4 {
+        let mut game = fixture(oxide_sim::BuildingKind::Turret, &[0, 1, 2], 450);
+        let ids = game.selection.buildings.clone();
+        let mut input = InputState::new();
+        input.bindings = BindingMap::classic();
+        if mode == 3 {
+            assert!(input.bindings.rebind(Action::Upgrade, Chord::bare(Key::I)));
+        }
+        let panel = crate::panel::build_for_input(&game, &input).unwrap();
+        let card = panel
+            .cards
+            .iter()
+            .find(|c| c.action == CardAction::Upgrade)
+            .unwrap();
+        assert!(card.enabled);
+        assert_eq!(card.cost, Some(450));
+        assert_eq!(card.title, "Upgrade 2/3");
+        let mut layout = game.layout.get();
+        layout.cards[0] = (mq::Rect::new(240.0, 720.0, 120.0, 48.0), card.action);
+        layout.card_count = 1;
+        game.layout.set(layout);
+        // Deliberately retain the old hit-test card between activations.
+        for _ in 0..2 {
+            match mode {
+                0 => apply_events(&mut game, &mut input, &click(260.0, 740.0)),
+                1 => apply_events(
+                    &mut game,
+                    &mut input,
+                    &[
+                        RawEvent::TouchDown {
+                            id: 1,
+                            x: 260.0,
+                            y: 740.0,
+                        },
+                        RawEvent::TouchUp {
+                            id: 1,
+                            x: 260.0,
+                            y: 740.0,
+                        },
+                    ],
+                ),
+                _ => controls_key(
+                    &mut game,
+                    &mut input,
+                    if mode == 2 { Key::U } else { Key::I },
+                ),
+            }
+        }
+        assert_eq!(game.pending.len(), 2, "mode {mode}");
+        assert_eq!(
+            *game.pending,
+            ids[..2]
+                .iter()
+                .map(|&building| PlayerCommand {
+                    player: game.human,
+                    command: Command::UpgradeBuilding { building },
+                })
+                .collect::<Vec<_>>()
+        );
+        let report = game.do_tick();
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
+        );
+        outcomes.push(game.state.hash());
+    }
+    assert!(outcomes.iter().all(|hash| *hash == outcomes[0]));
+}
+
+#[test]
+fn grouped_focus_and_stop_skip_an_upgrade_staged_before_the_target_click() {
+    use crate::building_actions::tests::fixture;
+    let mut game = fixture(oxide_sim::BuildingKind::Turret, &[0, 1, 2], 1000);
+    let ids = game.selection.buildings.clone();
+    let target = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player != game.human)
+        .unwrap()
+        .id;
+    // Place the enemy Foundry inside the selected defenses' shared sight.
+    let mut json = serde_json::to_value(&*game.state).unwrap();
+    let enemy = json["buildings"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|b| b["id"] == serde_json::json!(target))
+        .unwrap();
+    enemy["anchor"] = serde_json::to_value(TilePos::new(11, 2)).unwrap();
+    *game.state = serde_json::from_value(json).unwrap();
+    game.state.tick(&[]);
+    game.state.validate_invariants().unwrap();
+    let at = game.state.building(target).unwrap().center();
+    let screen = game.camera.to_screen(vec2(at.x.to_num(), at.y.to_num()));
+    game.issue(Command::UpgradeBuilding { building: ids[0] });
+    context_order(&mut game, screen, false);
+    assert!(
+        matches!(&game.pending.last().unwrap().command, Command::FocusFire { buildings, .. } if buildings == &ids[1..])
+    );
+    let mut input = InputState::new();
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::Dispatch(Action::StopOrScrap),
+    );
+    assert!(
+        matches!(&game.pending.last().unwrap().command, Command::ClearFocus { buildings } if buildings == &ids[1..])
+    );
+    assert!(
+        !game
+            .do_tick()
+            .events
+            .iter()
+            .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
+    );
+    assert!(
+        ids.iter()
+            .all(|id| game.state.building(*id).unwrap().focus.is_none())
+    );
 }
 
 #[test]

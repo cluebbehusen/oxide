@@ -7,6 +7,8 @@ mod audio_mix;
 mod audio_timeline;
 mod autosave;
 mod bot_label;
+mod boundary_fog;
+mod building_actions;
 mod camera;
 mod config;
 mod debug_server;
