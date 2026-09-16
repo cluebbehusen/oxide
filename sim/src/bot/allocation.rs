@@ -23,6 +23,7 @@ mod coordinator;
 mod portfolio_search;
 mod production_bounds;
 mod production_search;
+pub(in crate::bot) mod production_work;
 mod session;
 
 pub(crate) use adapters::*;
@@ -1579,12 +1580,30 @@ impl<Payload> AllocationResult<Payload> {
     /// Failure leaves both the accepted claims and returned producer schedule
     /// unchanged. Success keeps request ordinals after every earlier job owned
     /// by the same connected operation.
+    #[cfg(test)]
     pub(crate) fn try_extend_connected_offense(
         &mut self,
         capacity: &AllocationCapacity,
         key: ConnectedOffenseKey,
         claims: &ClaimBundle,
     ) -> Result<&[ScheduledProducerJob], AllocationConflict> {
+        let resolved =
+            self.refine_connected_offense(capacity, key, claims, &mut |capacity, claims| {
+                claims
+                    .resolve(capacity)
+                    .map(super::planning::Progress::Ready)
+            })?;
+        assert!(resolved);
+        Ok(&self.producer_schedule)
+    }
+
+    fn refine_connected_offense(
+        &mut self,
+        capacity: &AllocationCapacity,
+        key: ConnectedOffenseKey,
+        claims: &ClaimBundle,
+        refine: &mut ProductionResolver<'_>,
+    ) -> Result<bool, AllocationConflict> {
         let proposal_key = ProposalKey::ConnectedOffenseMinimum(key);
         if !self
             .accepted
@@ -1612,12 +1631,14 @@ impl<Payload> AllocationResult<Payload> {
                 );
             }
         }
-        let resolved = extended.try_apply_with_priority(
-            capacity,
-            owner,
-            claims,
-            FundingPriority::marginal(owner),
-        )?;
+        extended.stage(capacity, owner, claims, FundingPriority::marginal(owner))?;
+        let resolved = match refine(capacity, &extended)? {
+            super::planning::Progress::Ready(resolved) => resolved,
+            super::planning::Progress::Deferred => return Ok(false),
+            super::planning::Progress::ProvenInfeasible => {
+                unreachable!("infeasible schedules carry their conflict")
+            }
+        };
         self.selected_state = extended;
         self.producer_schedule = resolved.producer_schedule;
         self.capital_assignments = resolved.capital_assignments;
@@ -1630,7 +1651,7 @@ impl<Payload> AllocationResult<Payload> {
         }
         #[cfg(not(test))]
         let _ = (resolved.search_states, resolved.memo_hits);
-        Ok(&self.producer_schedule)
+        Ok(true)
     }
 }
 
@@ -1676,6 +1697,7 @@ pub(super) fn allocate_with_incompatible_layouts<Payload>(
     .expect("the unconstrained empty portfolio always preserves valid obligations"))
 }
 
+#[cfg(test)]
 pub(super) fn allocate_requiring<Payload>(
     capacity: &AllocationCapacity,
     obligations: Vec<ImportedObligation>,
@@ -1695,16 +1717,78 @@ pub(super) fn allocate_requiring<Payload>(
     )
 }
 
+pub(in crate::bot) fn allocate_requiring_planned<Payload>(
+    capacity: &AllocationCapacity,
+    obligations: Vec<ImportedObligation>,
+    proposals: Vec<InvestmentProposal<Payload>>,
+    personality: AllocationPersonality,
+    required: ProposalKey,
+    planning: &super::planning::PlanningWork,
+) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
+    allocate_refined(
+        capacity,
+        obligations,
+        proposals,
+        personality,
+        Some(required),
+        &[],
+        &mut Refinement {
+            layout: &mut |_| None,
+            production: &mut |capacity, claims| {
+                planning.production(capacity.resources.observed_at(), capacity, claims)
+            },
+        },
+    )
+}
+
 type LayoutValidator<'a> = dyn FnMut(&[ProposalKey]) -> Option<IncompatibleLayoutSet> + 'a;
 
+type ProductionResolver<'a> = dyn FnMut(
+        &AllocationCapacity,
+        &ClaimState,
+    ) -> Result<super::planning::Progress<ResolvedClaimState>, AllocationConflict>
+    + 'a;
+
+struct Refinement<'a> {
+    layout: &'a mut LayoutValidator<'a>,
+    production: &'a mut ProductionResolver<'a>,
+}
+
 fn allocate_with_required<Payload>(
+    capacity: &AllocationCapacity,
+    obligations: Vec<ImportedObligation>,
+    proposals: Vec<InvestmentProposal<Payload>>,
+    personality: AllocationPersonality,
+    required: Option<ProposalKey>,
+    incompatible_layouts: &[IncompatibleLayoutSet],
+    validate_layout: &mut LayoutValidator<'_>,
+) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
+    allocate_refined(
+        capacity,
+        obligations,
+        proposals,
+        personality,
+        required,
+        incompatible_layouts,
+        &mut Refinement {
+            layout: validate_layout,
+            production: &mut |capacity, claims| {
+                claims
+                    .resolve(capacity)
+                    .map(super::planning::Progress::Ready)
+            },
+        },
+    )
+}
+
+fn allocate_refined<Payload>(
     capacity: &AllocationCapacity,
     mut obligations: Vec<ImportedObligation>,
     mut proposals: Vec<InvestmentProposal<Payload>>,
     personality: AllocationPersonality,
     required: Option<ProposalKey>,
     incompatible_layouts: &[IncompatibleLayoutSet],
-    validate_layout: &mut LayoutValidator<'_>,
+    refinement: &mut Refinement<'_>,
 ) -> Result<Option<AllocationResult<Payload>>, AllocationError> {
     let mut incompatible_layouts = incompatible_layouts.to_vec();
     proposals.sort_by_key(InvestmentProposal::key);
@@ -1736,20 +1820,25 @@ fn allocate_with_required<Payload>(
             })?;
     }
 
-    let individual_conflicts: Vec<_> = proposals
+    let individual_checks: Vec<_> = proposals
         .iter()
         .enumerate()
         .map(|(index, proposal)| {
             let mut state = mandatory.clone();
             state.voluntary_scrap_guard = portfolio_voluntary_scrap_guard(&[index], &proposals);
             state
-                .try_apply_with_priority(
+                .stage(
                     capacity,
                     ClaimOwner::Proposal(proposal.key()),
                     proposal.claims(),
                     proposal_funding_priority(proposal, 0, capacity.resources.observed_at()),
                 )
-                .err()
+                .and_then(|()| state.validate_production_bounds(capacity))
+                .map(|()| {
+                    state.producer_jobs.is_empty()
+                        && state.deferrable_capital.is_empty()
+                        && state.voluntary_scrap_guard.satisfier.is_none()
+                })
         })
         .collect();
 
@@ -1761,12 +1850,15 @@ fn allocate_with_required<Payload>(
     if required.is_some() && required_index.is_none() {
         return Ok(None);
     }
-    let mut refinements: BTreeMap<Vec<usize>, Result<(), AllocationConflict>> =
-        individual_conflicts
-            .iter()
-            .enumerate()
-            .map(|(index, conflict)| (vec![index], conflict.clone().map_or(Ok(()), Err)))
-            .collect();
+    let mut refinements: BTreeMap<Vec<usize>, Result<(), AllocationConflict>> = individual_checks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| match result {
+            Ok(true) => Some((vec![index], Ok(()))),
+            Err(conflict) => Some((vec![index], Err(conflict.clone()))),
+            Ok(false) => None,
+        })
+        .collect();
     let mut evaluate = |selected: &[usize]| {
         if required_index.is_some_and(|required| !selected.contains(&required))
             || portfolio_layout_conflict(selected, &proposals, &incompatible_layouts).is_some()
@@ -1792,8 +1884,19 @@ fn allocate_with_required<Payload>(
                 return None;
             }
         }
-        let resolved = match state.resolve(capacity) {
-            Ok(resolved) => resolved,
+        let resolution = if selected.is_empty() {
+            state
+                .resolve(capacity)
+                .map(super::planning::Progress::Ready)
+        } else {
+            (refinement.production)(capacity, &state)
+        };
+        let resolved = match resolution {
+            Ok(super::planning::Progress::Ready(resolved)) => resolved,
+            Ok(super::planning::Progress::Deferred) => return None,
+            Ok(super::planning::Progress::ProvenInfeasible) => {
+                unreachable!("infeasible schedules carry their conflict")
+            }
             Err(conflict) => {
                 refinements.insert(selected.to_vec(), Err(conflict));
                 return None;
@@ -1803,7 +1906,7 @@ fn allocate_with_required<Payload>(
             .iter()
             .map(|&index| proposals[index].key())
             .collect::<Vec<_>>();
-        if let Some(conflict) = validate_layout(&keys) {
+        if let Some(conflict) = (refinement.layout)(&keys) {
             incompatible_layouts.push(conflict);
             return None;
         }
@@ -1866,7 +1969,11 @@ fn allocate_with_required<Payload>(
         .map(|(index, proposal)| {
             let disposition = if selected_indices.contains(&index) {
                 ProposalDisposition::Accepted
-            } else if let Some(conflict) = &individual_conflicts[index] {
+            } else if let Some(conflict) = individual_checks[index].as_ref().err().or_else(|| {
+                refinements
+                    .get(&vec![index])
+                    .and_then(|result| result.as_ref().err())
+            }) {
                 ProposalDisposition::Rejected(ProposalRejection::Infeasible(conflict.clone()))
             } else {
                 let mut alternative = selected_indices
@@ -2399,7 +2506,7 @@ struct OwnedDeferrableCapital {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct ClaimState {
+pub(in crate::bot) struct ClaimState {
     current_scrap: u64,
     minimum_residual_scrap: u32,
     voluntary_scrap_guard: PortfolioVoluntaryScrapGuard,
@@ -2412,7 +2519,8 @@ struct ClaimState {
     paid_queue: std::collections::BTreeMap<PaidQueueClaim, ClaimOwner>,
 }
 
-struct ResolvedClaimState {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct ResolvedClaimState {
     producer_schedule: Vec<ScheduledProducerJob>,
     capital_assignments: Vec<CapitalFundingAssignment>,
     voluntary_scrap_guard_satisfied: bool,
@@ -2726,49 +2834,12 @@ impl ClaimState {
         let mut producers = capacity.resources.producers().to_vec();
         let mut schedule = Vec::with_capacity(self.producer_jobs.len());
         let mut capital_assignments = Vec::with_capacity(self.deferrable_capital.len());
-        let minimum_residual_scrap = self.effective_minimum_residual_scrap();
-        let guarded_minimum_residual_scrap = self
-            .minimum_residual_scrap
-            .max(self.voluntary_scrap_guard.amount);
-        let earliest_enqueue_dominates = current_bank_covers_all_claims(
+        let mut search = ProductionPortfolioSearch::for_claims(
             capacity,
-            self.current_scrap,
-            guarded_minimum_residual_scrap,
-            &self.forecast_scrap,
-            &self.deferrable_capital,
-            &self.producer_jobs,
-        );
-        if !earliest_enqueue_dominates && !self.producer_jobs.is_empty() {
-            let mut optimistic_schedule = optimistic_funding_schedule(&self.producer_jobs)?;
-            assign_joint_funding(
-                JointFundingBasis {
-                    capacity,
-                    current_capital: self.current_scrap,
-                    minimum_residual_scrap,
-                    forecast_capital: &self.forecast_scrap,
-                    deferrable_capital: &self.deferrable_capital,
-                    jobs: &self.producer_jobs,
-                },
-                &mut optimistic_schedule,
-                funding_mode,
-            )?;
-        }
-        let mut search = ProductionPortfolioSearch {
-            bounds: production_bounds::ProductionBounds::new(&self.producer_jobs, &producers),
-            capacity,
-            jobs: &self.producer_jobs,
-            current_capital: self.current_scrap,
-            minimum_residual_scrap,
-            guarded_minimum_residual_scrap,
-            voluntary_scrap_guard: self.voluntary_scrap_guard,
-            forecast_capital: &self.forecast_scrap,
-            deferrable_capital: &self.deferrable_capital,
-            earliest_enqueue_dominates,
-            failed: BTreeSet::new(),
-            explored_states: 0,
-            memo_hits: 0,
+            self,
             funding_mode,
-        };
+            production_bounds::ProductionBounds::new(&self.producer_jobs, &producers).into(),
+        );
         if !search.find(
             &mut producers,
             &mut vec![true; self.producer_jobs.len()],
@@ -3013,7 +3084,7 @@ struct ProductionSearchState {
 }
 
 struct ProductionPortfolioSearch<'a> {
-    bounds: production_bounds::ProductionBounds,
+    bounds: std::sync::Arc<production_bounds::ProductionBounds>,
     capacity: &'a AllocationCapacity,
     jobs: &'a [OwnedProducerJob],
     current_capital: u64,
@@ -3029,7 +3100,63 @@ struct ProductionPortfolioSearch<'a> {
     funding_mode: JointFundingMode,
 }
 
-impl ProductionPortfolioSearch<'_> {
+impl<'a> ProductionPortfolioSearch<'a> {
+    fn for_claims(
+        capacity: &'a AllocationCapacity,
+        claims: &'a ClaimState,
+        funding_mode: JointFundingMode,
+        bounds: std::sync::Arc<production_bounds::ProductionBounds>,
+    ) -> Self {
+        let guarded_minimum_residual_scrap = claims
+            .minimum_residual_scrap
+            .max(claims.voluntary_scrap_guard.amount);
+        Self {
+            bounds,
+            capacity,
+            jobs: &claims.producer_jobs,
+            current_capital: claims.current_scrap,
+            minimum_residual_scrap: claims.effective_minimum_residual_scrap(),
+            guarded_minimum_residual_scrap,
+            voluntary_scrap_guard: claims.voluntary_scrap_guard,
+            forecast_capital: &claims.forecast_scrap,
+            deferrable_capital: &claims.deferrable_capital,
+            earliest_enqueue_dominates: current_bank_covers_all_claims(
+                capacity,
+                claims.current_scrap,
+                guarded_minimum_residual_scrap,
+                &claims.forecast_scrap,
+                &claims.deferrable_capital,
+                &claims.producer_jobs,
+            ),
+            failed: BTreeSet::new(),
+            explored_states: 0,
+            memo_hits: 0,
+            funding_mode,
+        }
+    }
+
+    fn optimistic_funding_fits(&self) -> bool {
+        if self.earliest_enqueue_dominates || self.jobs.is_empty() {
+            return true;
+        }
+        let Some(mut schedule) = optimistic_funding_schedule(self.jobs) else {
+            return false;
+        };
+        assign_joint_funding(
+            JointFundingBasis {
+                capacity: self.capacity,
+                current_capital: self.current_capital,
+                minimum_residual_scrap: self.minimum_residual_scrap,
+                forecast_capital: self.forecast_capital,
+                deferrable_capital: self.deferrable_capital,
+                jobs: self.jobs,
+            },
+            &mut schedule,
+            self.funding_mode,
+        )
+        .is_some()
+    }
+
     fn find(
         &mut self,
         producers: &mut [ProducerPlanningProjection],
@@ -3453,7 +3580,7 @@ fn owner_enqueue_floors(schedule: &[ScheduledProducerJob]) -> Vec<(ClaimOwner, T
     result
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ProductionPlacement {
     job_index: usize,
     lane_index: usize,
@@ -8135,7 +8262,8 @@ mod tests {
         mode: JointFundingMode,
     ) -> (bool, Vec<ScheduledProducerJob>, usize) {
         let mut search = ProductionPortfolioSearch {
-            bounds: production_bounds::ProductionBounds::new(jobs, basis.resources.producers()),
+            bounds: production_bounds::ProductionBounds::new(jobs, basis.resources.producers())
+                .into(),
             capacity: basis,
             jobs,
             current_capital: 0,
@@ -8634,7 +8762,8 @@ mod tests {
         let mut producer_state = basis.resources.producers().to_vec();
         let mut remaining = vec![true; jobs.len()];
         let mut search = ProductionPortfolioSearch {
-            bounds: production_bounds::ProductionBounds::new(&jobs, basis.resources.producers()),
+            bounds: production_bounds::ProductionBounds::new(&jobs, basis.resources.producers())
+                .into(),
             capacity: &basis,
             jobs: &jobs,
             current_capital: 0,
@@ -8704,7 +8833,8 @@ mod tests {
         let mut remaining = vec![true; jobs.len()];
         let mut schedule = Vec::new();
         let mut search = ProductionPortfolioSearch {
-            bounds: production_bounds::ProductionBounds::new(&jobs, basis.resources.producers()),
+            bounds: production_bounds::ProductionBounds::new(&jobs, basis.resources.producers())
+                .into(),
             capacity: &basis,
             jobs: &jobs,
             current_capital: 0,

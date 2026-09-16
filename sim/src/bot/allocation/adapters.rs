@@ -693,11 +693,26 @@ impl DomainAllocationResult {
     }
 
     /// Applies one retained additions-only scale step and updates its payload together.
+    #[cfg(test)]
     pub(crate) fn try_accept_connected_marginal(
         &mut self,
         capacity: &super::AllocationCapacity,
         marginal: &ConnectedMarginalVariant,
     ) -> Result<ClaimBundle, ConnectedMarginalError> {
+        self.refine_connected_marginal(capacity, marginal, &mut |capacity, claims| {
+            claims
+                .resolve(capacity)
+                .map(crate::bot::planning::Progress::Ready)
+        })
+        .map(|claims| claims.expect("synchronous refinement never yields"))
+    }
+
+    pub(super) fn refine_connected_marginal(
+        &mut self,
+        capacity: &super::AllocationCapacity,
+        marginal: &ConnectedMarginalVariant,
+        refine: &mut super::ProductionResolver<'_>,
+    ) -> Result<Option<ClaimBundle>, ConnectedMarginalError> {
         let (key, belongs) = self
             .accepted
             .iter()
@@ -721,8 +736,12 @@ impl DomainAllocationResult {
         }
         let claims =
             connected_marginal_claims(marginal).map_err(ConnectedMarginalError::MalformedClaims)?;
-        self.try_extend_connected_offense(capacity, key, &claims)
-            .map_err(ConnectedMarginalError::Conflict)?;
+        if !self
+            .refine_connected_offense(capacity, key, &claims, refine)
+            .map_err(ConnectedMarginalError::Conflict)?
+        {
+            return Ok(None);
+        }
         let selected = self
             .accepted
             .iter_mut()
@@ -743,7 +762,7 @@ impl DomainAllocationResult {
             selected.is_some_and(|payload| payload.select_marginal(marginal)),
             "a validated retained marginal token remains selectable"
         );
-        Ok(claims)
+        Ok(Some(claims))
     }
 
     /// Consumes allocation only after diagnostics and scale selection are complete.

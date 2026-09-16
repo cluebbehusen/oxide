@@ -746,6 +746,7 @@ impl UtilityPolicy {
                                 delay,
                                 deadline,
                                 context.obligations,
+                                &self.planning,
                             )
                             .filter(|benefit| *benefit > value.benefit)
                         {

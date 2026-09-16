@@ -52,6 +52,10 @@ pub struct PlanningWorkStats {
     pub pending_approach_fields: usize,
     /// Completed and unfinished coverage fields retained by this controller.
     pub retained_approach_fields: usize,
+    /// Production refinements waiting for more deterministic work.
+    pub pending_production: usize,
+    /// Completed and unfinished production refinements retained by this controller.
+    pub retained_production: usize,
 }
 
 /// Observational notifications. Implementations must not block or affect game inputs.

@@ -5,13 +5,14 @@
 //! mandatory claims and summarizes the selected portfolio without teaching the
 //! frame loop the allocator's internal accounting.
 
+#[cfg(test)]
+use super::allocate_requiring;
 use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
     DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
     LayoutValidator, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
-    ScheduledProducerJob, accepted_portfolio_rank, allocate_requiring, allocate_with_required,
-    future_producer_lane_reservations,
+    ScheduledProducerJob, accepted_portfolio_rank, future_producer_lane_reservations,
 };
 use crate::bot::observation::Observation;
 use crate::bot::resources::ProducerLaneReservations;
@@ -52,10 +53,32 @@ impl From<crate::bot::resources::PlanningProjectionError> for CoordinatorInputEr
     }
 }
 
+#[cfg(test)]
 fn pin_standing_waits(
     capacity: &AllocationCapacity,
     obligations: &[ImportedObligation],
     proposals: &mut Vec<DomainInvestmentProposal>,
+) {
+    refine_standing_waits(
+        capacity,
+        obligations,
+        proposals,
+        &mut super::Refinement {
+            layout: &mut |_| None,
+            production: &mut |capacity, claims| {
+                claims
+                    .resolve(capacity)
+                    .map(crate::bot::planning::Progress::Ready)
+            },
+        },
+    );
+}
+
+fn refine_standing_waits(
+    capacity: &AllocationCapacity,
+    obligations: &[ImportedObligation],
+    proposals: &mut Vec<DomainInvestmentProposal>,
+    refinement: &mut super::Refinement<'_>,
 ) {
     proposals.retain_mut(|proposal| {
         if !matches!(proposal.payload(), super::DomainPayload::StandingForce(standing)
@@ -63,13 +86,14 @@ fn pin_standing_waits(
         {
             return true;
         }
-        let Ok(Some(result)) = allocate_requiring(
+        let Ok(Some(result)) = super::allocate_refined(
             capacity,
             obligations.to_vec(),
             vec![proposal.clone()],
             AllocationPersonality::default(),
-            proposal.key(),
+            Some(proposal.key()),
             &[],
+            refinement,
         ) else {
             return false;
         };
@@ -175,7 +199,18 @@ impl CrossDomainAllocation {
         personality: AllocationPersonality,
         trace: Option<&mut AllocationTrace>,
     ) -> Result<CrossDomainSettlement, AllocationError> {
-        self.resolve_validated(personality, trace, &mut |_| None)
+        self.resolve_refined(
+            personality,
+            trace,
+            &mut super::Refinement {
+                layout: &mut |_| None,
+                production: &mut |capacity, claims| {
+                    claims
+                        .resolve(capacity)
+                        .map(crate::bot::planning::Progress::Ready)
+                },
+            },
+        )
     }
 
     pub(crate) fn resolve_validated(
@@ -183,6 +218,25 @@ impl CrossDomainAllocation {
         personality: AllocationPersonality,
         trace: Option<&mut AllocationTrace>,
         validate_layout: &mut LayoutValidator<'_>,
+        planning: &crate::bot::planning::PlanningWork,
+    ) -> Result<CrossDomainSettlement, AllocationError> {
+        self.resolve_refined(
+            personality,
+            trace,
+            &mut super::Refinement {
+                layout: validate_layout,
+                production: &mut |capacity, claims| {
+                    planning.production(capacity.resources.observed_at(), capacity, claims)
+                },
+            },
+        )
+    }
+
+    fn resolve_refined(
+        self,
+        personality: AllocationPersonality,
+        trace: Option<&mut AllocationTrace>,
+        refinement: &mut super::Refinement<'_>,
     ) -> Result<CrossDomainSettlement, AllocationError> {
         let Self {
             capacity,
@@ -191,21 +245,21 @@ impl CrossDomainAllocation {
             mut proposals,
             mut contextual_proposals,
         } = self;
-        pin_standing_waits(&capacity, &obligations, &mut proposals);
+        refine_standing_waits(&capacity, &obligations, &mut proposals, refinement);
         for context in &mut contextual_proposals {
-            pin_standing_waits(&capacity, &obligations, &mut context.proposals);
+            refine_standing_waits(&capacity, &obligations, &mut context.proposals, refinement);
         }
         let mut trace = trace;
         let (mut result, considered_proposals, selected_context, considered_contexts) =
             if contextual_proposals.is_empty() {
-                let result = match allocate_with_required(
+                let result = match super::allocate_refined(
                     &capacity,
                     obligations.clone(),
                     proposals.clone(),
                     personality,
                     None,
                     &[],
-                    validate_layout,
+                    refinement,
                 ) {
                     Ok(result) => result.expect("the empty portfolio preserves valid obligations"),
                     Err(error) => {
@@ -224,7 +278,7 @@ impl CrossDomainAllocation {
                     &proposals,
                     contextual_proposals,
                     personality,
-                    validate_layout,
+                    refinement,
                 )?
             };
         if let Some(trace) = trace.as_deref_mut() {
@@ -234,7 +288,12 @@ impl CrossDomainAllocation {
             }
         }
         if selected_context.is_none() {
-            extend_connected_greedily(&capacity, &mut result, trace.as_deref_mut());
+            extend_connected_greedily(
+                &capacity,
+                &mut result,
+                trace.as_deref_mut(),
+                refinement.production,
+            );
         } else if let Some(ConnectedPortfolioContext::Selected {
             key,
             marginal_depth,
@@ -285,7 +344,7 @@ fn select_contextual_portfolio(
     base_proposals: &[DomainInvestmentProposal],
     mut contextual: Vec<ContextualProposalSet>,
     personality: AllocationPersonality,
-    validate_layout: &mut LayoutValidator<'_>,
+    refinement: &mut super::Refinement<'_>,
 ) -> Result<
     (
         DomainAllocationResult,
@@ -327,14 +386,14 @@ fn select_contextual_portfolio(
                 Some(ProposalKey::ConnectedOffenseMinimum(key))
             }
         };
-        let result = allocate_with_required(
+        let result = super::allocate_refined(
             capacity,
             obligations.to_vec(),
             proposals.clone(),
             personality,
             required,
             &[],
-            validate_layout,
+            refinement,
         )?;
         let Some(mut result) = result else {
             continue;
@@ -358,8 +417,13 @@ fn select_contextual_portfolio(
                     else {
                         continue;
                     };
-                    match result.try_accept_connected_marginal(capacity, &marginal) {
-                        Ok(_) => {}
+                    match result.refine_connected_marginal(
+                        capacity,
+                        &marginal,
+                        refinement.production,
+                    ) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => continue,
                         Err(ConnectedMarginalError::Conflict(_)) => continue,
                         Err(
                             ConnectedMarginalError::NoAcceptedConnectedProposal
@@ -393,6 +457,7 @@ fn extend_connected_greedily(
     capacity: &AllocationCapacity,
     result: &mut DomainAllocationResult,
     mut trace: Option<&mut AllocationTrace>,
+    refine: &mut super::ProductionResolver<'_>,
 ) {
     let connected_key = result.accepted_connected_key();
     let marginal_variants = result
@@ -402,8 +467,8 @@ fn extend_connected_greedily(
     let mut largest_rejection = None;
     let mut accepted_marginal = false;
     for marginal in marginal_variants.iter().rev() {
-        match result.try_accept_connected_marginal(capacity, marginal) {
-            Ok(claims) => {
+        match result.refine_connected_marginal(capacity, marginal, refine) {
+            Ok(Some(claims)) => {
                 accepted_marginal = true;
                 if let (Some(trace), Some(key)) = (trace.as_deref_mut(), connected_key) {
                     trace.record_connected_marginal_accepted(
@@ -414,6 +479,7 @@ fn extend_connected_greedily(
                 }
                 break;
             }
+            Ok(None) => break,
             Err(ConnectedMarginalError::Conflict(conflict)) => {
                 if largest_rejection.is_none() {
                     largest_rejection = Some((marginal, conflict));

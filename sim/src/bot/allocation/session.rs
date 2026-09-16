@@ -3475,6 +3475,7 @@ impl<'a> AllocationSession<'a> {
                             AllocationPersonality::from_profile(self.context.profile),
                             self.trace.as_deref_mut(),
                             &mut validate_layout,
+                            &policy.planning,
                         ) {
                             Ok(resolved) => settlement = Some(resolved),
                             Err(_) => allocation_ok = false,

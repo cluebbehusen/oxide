@@ -2356,9 +2356,10 @@ pub(in crate::bot) fn prospective_airworks_package_value(
     ready_after: Tick,
     deadline: Tick,
     obligations: &[crate::bot::allocation::ImportedObligation],
+    planning: &crate::bot::planning::PlanningWork,
 ) -> Option<u64> {
     use crate::bot::allocation::{
-        AllocationCapacity, AllocationPersonality, allocate_requiring,
+        AllocationCapacity, AllocationPersonality, allocate_requiring_planned,
         allocate_with_incompatible_layouts, connected_investment_proposal, current_reserve_at,
     };
     let mut prospective = request.obs.clone();
@@ -2478,13 +2479,13 @@ pub(in crate::bot) fn prospective_airworks_package_value(
         )
         .ok()?;
         let investment = connected_investment_proposal(proposal.clone()).ok()?;
-        allocate_requiring(
+        allocate_requiring_planned(
             &capacity,
             obligations.to_vec(),
             vec![investment.clone()],
             AllocationPersonality::default(),
             investment.key(),
-            &[],
+            planning,
         )
         .ok()??;
         Some(

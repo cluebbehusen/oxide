@@ -1280,18 +1280,29 @@ live reachability, route safety, command timing, or placement legality.
 Orientation and terrain changes invalidate the index independently of dynamic
 navigation caches. Public distance fields materialize passability once and use
 an owned traversal that can yield after a deterministic number of queue entries.
-Fresh Foundry logistics and voluntary coverage share a controller-owned work
-allowance. Passability preparation and traversal consume work; unfinished fields
-resume on later decisions and never mean unreachable. Foundry retains four jobs.
-Ground and air coverage each retain at most sixteen pending jobs and 32 MiB of
-completed field payloads. Exact terrain and blocking changes invalidate affected
-work; unfinished jobs expire after 120 ticks. Pending Foundry, ground, and air
-work divide half of each decision's allowance, leaving half for current
-requests. Allocation rollback preserves this work and the Foundry and
-defensive-site cursors. Weapon and Array refinement share the allowance and
-retain their four-new-site limit; incumbent validation is separate. Diagnostic
-counters cover these services, not synchronous planner preparation or mandatory
-validation. Saved Foundry validation remains immediate.
+Fresh Foundry logistics, voluntary coverage, and production refinement share a
+controller-owned work allowance. Passability preparation and traversal consume
+work; unfinished fields resume on later decisions and never mean unreachable.
+Foundry retains four jobs. Ground and air coverage each retain at most sixteen
+pending jobs and 32 MiB of completed field payloads. Exact terrain and blocking
+changes invalidate affected work; unfinished jobs expire after 120 ticks.
+Pending Foundry, ground, air, and production work divide half of each decision's
+allowance, leaving half for current requests. Allocation rollback preserves this
+work and the Foundry and defensive-site cursors. Weapon and Array refinement
+share the allowance and retain their four-new-site limit; incumbent validation
+is separate. Diagnostic counters cover these services, not synchronous planner
+preparation or mandatory validation. Saved Foundry validation remains immediate.
+
+Production refinement first constructs an earliest-funded schedule, then resumes
+repair if that attempt fails. Income probes seek the funding boundary inside
+each job's legal enqueue window. Work charges scale with the problem's job and
+producer counts. Sixteen retained tasks share background progress, expire after
+120 ticks, and stop after a bounded total repair allowance. Exhaustion means
+unrefined, not infeasible. Claim identities include capital reservations and
+funding priorities; a retained schedule must pass current queue, deadline, and
+funding checks before acceptance. Portfolio selection, standing-force wait
+binding, connected growth, and prospective Airworks allocation use this service.
+Mandatory obligation validation remains synchronous.
 
 Voluntary coverage uses one reverse field per asset's destination set to serve
 all threat origins. Its representative routes have exact shortest costs and

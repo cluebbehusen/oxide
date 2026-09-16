@@ -15,6 +15,7 @@ pub(in crate::bot) struct PlanningWork {
     budget: RefCell<WorkBudget>,
     fields: RefCell<fields::FieldPreparation>,
     approaches: RefCell<[approaches::ApproachPreparation; 2]>,
+    production: RefCell<crate::bot::allocation::production_work::ProductionWork>,
     sites: RefCell<sites::SiteWork>,
     foundry: RefCell<RankedRotation>,
     site_checks: Cell<usize>,
@@ -28,6 +29,7 @@ impl Default for PlanningWork {
             budget: RefCell::new(WorkBudget::new(DECISION_WORK)),
             fields: RefCell::default(),
             approaches: RefCell::default(),
+            production: RefCell::default(),
             sites: RefCell::default(),
             foundry: RefCell::default(),
             site_checks: Cell::new(0),
@@ -56,12 +58,14 @@ impl PlanningWork {
             *self.budget.borrow_mut() = WorkBudget::new(self.allowance);
             self.site_checks.set(0);
             let fields_pending = self.fields.borrow().counts().0 > 0;
+            let production_pending = self.production.borrow().counts().0 > 0;
             let approach_pending = self
                 .approaches
                 .borrow()
                 .each_ref()
                 .map(|domain| domain.counts().0 > 0);
             let active = usize::from(fields_pending)
+                + usize::from(production_pending)
                 + approach_pending
                     .into_iter()
                     .filter(|pending| *pending)
@@ -71,6 +75,11 @@ impl PlanningWork {
                 if fields_pending {
                     budget.run_slice(share, |slice| {
                         self.fields.borrow_mut().resume_pending(tick, slice)
+                    });
+                }
+                if production_pending {
+                    budget.run_slice(share, |slice| {
+                        self.production.borrow_mut().resume_pending(tick, slice)
                     });
                 }
                 for (domain, pending) in self
@@ -85,6 +94,21 @@ impl PlanningWork {
                 }
             }
         }
+    }
+
+    pub(in crate::bot) fn production(
+        &self,
+        tick: u64,
+        capacity: &crate::bot::allocation::AllocationCapacity,
+        claims: &crate::bot::allocation::ClaimState,
+    ) -> Result<
+        Progress<crate::bot::allocation::ResolvedClaimState>,
+        crate::bot::allocation::AllocationConflict,
+    > {
+        self.begin(tick);
+        self.production
+            .borrow_mut()
+            .resolve(capacity, claims, &mut self.budget.borrow_mut())
     }
 
     pub(in crate::bot) fn site_incumbent(
@@ -131,6 +155,7 @@ impl PlanningWork {
 
     pub(in crate::bot) fn stats(&self) -> super::observer::PlanningWorkStats {
         let (pending_fields, retained_fields) = self.fields.borrow().counts();
+        let (pending_production, retained_production) = self.production.borrow().counts();
         let (pending_approach_fields, retained_approach_fields) = self
             .approaches
             .borrow()
@@ -147,6 +172,8 @@ impl PlanningWork {
             retained_fields,
             pending_approach_fields,
             retained_approach_fields,
+            pending_production,
+            retained_production,
         }
     }
 
@@ -249,11 +276,32 @@ impl WorkBudget {
         assert!(self.charge(slice.spent));
         result
     }
+
+    pub(super) fn weighted<T>(&mut self, cost: usize, run: impl FnOnce(&mut Self) -> T) -> T {
+        assert!(cost > 0);
+        let mut units = Self::new(self.remaining / cost);
+        let result = run(&mut units);
+        assert!(self.charge(units.spent * cost));
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weighted_work_cannot_spend_fractional_units_or_refill_its_parent() {
+        let mut budget = WorkBudget::new(10);
+        budget.weighted(3, |units| {
+            assert!(units.charge(3));
+            assert!(!units.charge(1));
+        });
+        assert_eq!(budget.spent(), 9);
+        budget.weighted(3, |units| assert!(!units.charge(1)));
+        assert_eq!(budget.spent(), 9);
+        assert!(budget.charge(1));
+    }
 
     #[test]
     fn field_preparation_and_site_refinement_share_one_allowance() {

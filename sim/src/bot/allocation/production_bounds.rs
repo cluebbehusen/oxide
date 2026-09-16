@@ -6,12 +6,14 @@ use super::{
 use crate::ids::BuildingId;
 use chassis::Tick;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProductionBounds {
     latest: Option<Vec<ScheduledProducerJob>>,
     windows: Vec<WindowBound>,
     fixed: Vec<FixedWindow>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct WindowBound {
     jobs: Vec<(usize, u128)>,
     producers: Vec<usize>,
@@ -20,6 +22,7 @@ struct WindowBound {
     quantum: Tick,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FixedWindow {
     job: usize,
     producer: usize,

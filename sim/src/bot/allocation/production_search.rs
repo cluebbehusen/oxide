@@ -9,12 +9,14 @@ thread_local! {
     pub(super) static SEARCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Solution {
     pub producers: Vec<ProducerPlanningProjection>,
     pub schedule: Vec<ScheduledProducerJob>,
     pub capital: Vec<CapitalFundingAssignment>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Frame {
     producers: Vec<ProducerPlanningProjection>,
     remaining: Vec<bool>,
@@ -24,8 +26,10 @@ struct Frame {
     placements: BTreeMap<PlacementKey, ProductionPlacement>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Continuation {
     frames: Vec<Frame>,
+    constructive: bool,
 }
 
 impl Continuation {
@@ -35,6 +39,7 @@ impl Continuation {
         schedule: &[ScheduledProducerJob],
     ) -> Self {
         Self {
+            constructive: false,
             frames: vec![Frame {
                 producers: producers.to_vec(),
                 remaining: remaining.to_vec(),
@@ -44,6 +49,17 @@ impl Continuation {
                 placements: BTreeMap::new(),
             }],
         }
+    }
+
+    pub fn constructive(producers: &[ProducerPlanningProjection], jobs: usize) -> Self {
+        Self {
+            constructive: true,
+            ..Self::new(producers, &vec![true; jobs], &[])
+        }
+    }
+
+    pub fn discard(&mut self) {
+        self.frames.clear();
     }
 
     pub fn advance(
@@ -59,6 +75,7 @@ impl Continuation {
                     &frame.remaining,
                     &frame.schedule,
                     budget,
+                    self.constructive,
                 ) {
                     Progress::Ready(placements) => {
                         frame.placements = placements;
@@ -74,6 +91,10 @@ impl Continuation {
                 return Progress::Deferred;
             }
             if frame.state.is_none() {
+                if frame.schedule.is_empty() && !search.optimistic_funding_fits() {
+                    self.frames.pop();
+                    continue;
+                }
                 if frame.remaining.iter().all(|remaining| !remaining) {
                     let mut funded = frame.schedule.clone();
                     let minimum_residual_scrap = if search
@@ -154,6 +175,9 @@ impl Continuation {
                 self.frames.pop();
                 continue;
             };
+            if self.constructive {
+                frame.placements.clear();
+            }
             let mut schedule = frame.schedule.clone();
             schedule.push(placement.row);
             if !combined_cash_timeline_fits(
@@ -212,7 +236,7 @@ type PlacementKey = (
     usize,
 );
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PlacementPreparation {
     job: usize,
     producer: usize,
@@ -220,12 +244,14 @@ struct PlacementPreparation {
     placements: BTreeMap<PlacementKey, ProductionPlacement>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LaneCandidates {
     index: usize,
     earliest: Tick,
-    latest: Tick,
     initial: bool,
     income: usize,
+    income_end: usize,
+    best: Option<ProductionPlacement>,
     single: bool,
 }
 
@@ -237,6 +263,7 @@ impl PlacementPreparation {
         remaining: &[bool],
         schedule: &[ScheduledProducerJob],
         budget: &mut WorkBudget,
+        constructive: bool,
     ) -> Progress<BTreeMap<PlacementKey, ProductionPlacement>> {
         while self.job < search.jobs.len() {
             if !budget.charge(1) {
@@ -244,35 +271,43 @@ impl PlacementPreparation {
             }
             let job = &search.jobs[self.job];
             if let Some(lane) = self.lane.as_mut() {
-                let enqueued_at = if lane.initial {
+                let (enqueued_at, probe) = if lane.initial {
                     lane.initial = false;
-                    lane.earliest
+                    (lane.earliest, None)
                 } else if !lane.single {
-                    let Some(income) = search.capacity.resources.forecast_income().get(lane.income)
-                    else {
+                    if lane.income == lane.income_end {
+                        let best = lane.best.take();
                         self.lane = None;
                         self.producer += 1;
-                        continue;
-                    };
-                    lane.income += 1;
-                    if income.available_at <= lane.earliest || income.available_at > lane.latest {
+                        if let Some(best) = best {
+                            self.insert(search, best);
+                        }
                         continue;
                     }
-                    income.available_at
+                    let index = if constructive {
+                        lane.income + (lane.income_end - lane.income) / 2
+                    } else {
+                        let index = lane.income;
+                        lane.income += 1;
+                        index
+                    };
+                    (
+                        search.capacity.resources.forecast_income()[index].available_at,
+                        Some(index),
+                    )
                 } else {
                     self.lane = None;
                     self.producer += 1;
                     continue;
                 };
-                if search
-                    .bounds
-                    .latest()
-                    .is_some_and(|bounds| enqueued_at > bounds[self.job].enqueued_at)
-                {
-                    continue;
-                }
                 let mut lane_after = producers[lane.index].clone();
                 let Some(projected) = lane_after.append(job.claim.kind, enqueued_at) else {
+                    if constructive && let Some(probe) = probe {
+                        lane.income_end = probe;
+                    } else {
+                        self.lane = None;
+                        self.producer += 1;
+                    }
                     continue;
                 };
                 if projected.ready_at >= job.claim.ready_before
@@ -282,6 +317,12 @@ impl PlacementPreparation {
                             || fixed.ready_at != projected.ready_at
                     })
                 {
+                    if constructive && let Some(probe) = probe {
+                        lane.income_end = probe;
+                    } else {
+                        self.lane = None;
+                        self.producer += 1;
+                    }
                     continue;
                 }
                 let producer = lane_after.producer();
@@ -302,18 +343,45 @@ impl PlacementPreparation {
                         forecast_scrap: 0,
                     },
                 };
-                self.placements.insert(
-                    (
-                        enqueued_at,
-                        job.funding_priority,
-                        job.owner,
-                        job.ordinal,
-                        projected.starts_at,
-                        producer,
-                        self.job,
-                    ),
-                    placement,
-                );
+                if constructive {
+                    let mut funded = schedule.to_vec();
+                    funded.push(placement.row);
+                    if !combined_cash_timeline_fits(
+                        search.capacity,
+                        search.current_capital,
+                        search.minimum_residual_scrap,
+                        search.forecast_capital,
+                        search.deferrable_capital,
+                        &funded,
+                    ) || (search.funding_mode == JointFundingMode::PreferPriority
+                        && assign_joint_funding(
+                            JointFundingBasis {
+                                capacity: search.capacity,
+                                current_capital: search.current_capital,
+                                minimum_residual_scrap: search.minimum_residual_scrap,
+                                forecast_capital: search.forecast_capital,
+                                deferrable_capital: search.deferrable_capital,
+                                jobs: search.jobs,
+                            },
+                            &mut funded,
+                            search.funding_mode,
+                        )
+                        .is_none())
+                    {
+                        if let Some(probe) = probe {
+                            lane.income = probe + 1;
+                        }
+                        continue;
+                    }
+                    if let Some(probe) = probe {
+                        lane.best = Some(placement);
+                        lane.income_end = probe;
+                        continue;
+                    }
+                    self.lane = None;
+                    self.producer += 1;
+                }
+                self.insert(search, placement);
                 continue;
             }
             if !remaining[self.job] || !search.is_frontier(self.job, remaining) {
@@ -345,7 +413,13 @@ impl PlacementPreparation {
                 .resources
                 .horizon()
                 .min(job.claim.enqueue_not_after)
-                .min(job.claim.ready_before.saturating_sub(1));
+                .min(job.claim.ready_before.saturating_sub(1))
+                .min(
+                    search
+                        .bounds
+                        .latest()
+                        .map_or(Tick::MAX, |bounds| bounds[self.job].enqueued_at),
+                );
             let fixed = job.claim.fixed_assignment();
             let candidate = fixed
                 .map(|fixed| fixed.enqueued_at)
@@ -355,9 +429,18 @@ impl PlacementPreparation {
                     self.lane = Some(LaneCandidates {
                         index,
                         earliest,
-                        latest,
                         initial: true,
-                        income: 0,
+                        income: search
+                            .capacity
+                            .resources
+                            .forecast_income()
+                            .partition_point(|income| income.available_at <= earliest),
+                        income_end: search
+                            .capacity
+                            .resources
+                            .forecast_income()
+                            .partition_point(|income| income.available_at <= latest),
+                        best: None,
                         single: fixed.is_some() || search.earliest_enqueue_dominates,
                     })
                 }
@@ -365,5 +448,21 @@ impl PlacementPreparation {
             }
         }
         Progress::Ready(core::mem::take(&mut self.placements))
+    }
+
+    fn insert(&mut self, search: &ProductionPortfolioSearch<'_>, placement: ProductionPlacement) {
+        let job = &search.jobs[placement.job_index];
+        self.placements.insert(
+            (
+                placement.row.enqueued_at,
+                job.funding_priority,
+                job.owner,
+                job.ordinal,
+                placement.row.starts_at,
+                placement.row.producer,
+                placement.job_index,
+            ),
+            placement,
+        );
     }
 }
