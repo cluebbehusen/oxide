@@ -31,6 +31,7 @@ pub(in crate::bot) struct PlanningWork {
     production: RefCell<crate::bot::allocation::production_work::ProductionWork>,
     sites: RefCell<sites::SiteWork>,
     foundry: RefCell<RankedRotation>,
+    infrastructure: RefCell<std::collections::BTreeMap<crate::stats::BuildingKind, RankedRotation>>,
     campaigns: RefCell<CampaignAlternatives>,
     campaign_sites: RefCell<RankedRotation>,
     campaign_selection: RefCell<(Option<u64>, Vec<chassis::grid::TilePos>)>,
@@ -50,6 +51,7 @@ impl Default for PlanningWork {
             production: RefCell::default(),
             sites: RefCell::default(),
             foundry: RefCell::default(),
+            infrastructure: RefCell::default(),
             campaigns: RefCell::default(),
             campaign_sites: RefCell::default(),
             campaign_selection: RefCell::default(),
@@ -60,6 +62,32 @@ impl Default for PlanningWork {
 }
 
 impl PlanningWork {
+    pub(in crate::bot) fn infrastructure_sites(
+        &self,
+        tick: u64,
+        kind: crate::stats::BuildingKind,
+        ranked: &[chassis::grid::TilePos],
+    ) -> Vec<chassis::grid::TilePos> {
+        self.begin(tick);
+        let selected = self
+            .infrastructure
+            .borrow_mut()
+            .entry(kind)
+            .or_default()
+            .indices(tick, ranked.len(), 2);
+        selected
+            .into_iter()
+            .filter_map(|index| {
+                if self.budget.borrow_mut().charge(1) {
+                    self.site_checks.set(self.site_checks.get() + 1);
+                    Some(ranked[index])
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub(in crate::bot) fn campaign_site_selected(
         &self,
         tick: u64,

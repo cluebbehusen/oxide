@@ -1348,6 +1348,11 @@ validation is separate. Diagnostic counters cover these services, not
 synchronous planner preparation or mandatory validation. Saved Foundry
 validation remains immediate.
 
+Fresh economic infrastructure refines two sites per building type: the nearest
+builder estimate and a rotating alternative. Saved investments bypass that
+shortlist. Extractor frames remain available together for cluster valuation;
+infrastructure refinement does not reduce a resource group to one frame.
+
 Voluntary Barricade routes request incremental fields before constructing their
 canonical paths. A pending query preserves its site for later refinement and
 never enters the route cache as an unreachable result. Endpoint evaluation order

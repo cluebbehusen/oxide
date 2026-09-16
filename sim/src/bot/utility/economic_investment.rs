@@ -625,6 +625,38 @@ impl UtilityPolicy {
                     .income_through(deadline.saturating_sub(1))
                     .amount(),
             );
+        if retained.is_none() {
+            let mut infrastructure_sites =
+                std::collections::BTreeMap::<BuildingKind, Vec<TilePos>>::new();
+            for &(kind, anchor) in &possible {
+                if kind != BuildingKind::Extractor {
+                    infrastructure_sites.entry(kind).or_default().push(anchor);
+                }
+            }
+            let selected = infrastructure_sites
+                .into_iter()
+                .flat_map(|(kind, mut anchors)| {
+                    anchors.sort_by_cached_key(|anchor| {
+                        (
+                            builders
+                                .iter()
+                                .map(|builder| builder.tile.manhattan(*anchor))
+                                .min()
+                                .unwrap_or(i32::MAX),
+                            anchor.y,
+                            anchor.x,
+                        )
+                    });
+                    self.planning
+                        .infrastructure_sites(obs.tick, kind, &anchors)
+                        .into_iter()
+                        .map(move |anchor| (kind, anchor))
+                })
+                .collect::<BTreeSet<_>>();
+            possible.retain(|&(kind, anchor)| {
+                kind == BuildingKind::Extractor || selected.contains(&(kind, anchor))
+            });
+        }
         let airworks_sites: Vec<_> = possible
             .iter()
             .filter_map(|&(kind, anchor)| (kind == BuildingKind::Airworks).then_some(anchor))
@@ -2030,6 +2062,55 @@ mod tests {
             .expect("funded demand can exhaust existing throughput");
         assert_eq!(quote.case.confidence, Confidence::Prior);
         assert_eq!(quote.case.urgency, Urgency::Developmental);
+    }
+
+    #[test]
+    fn infrastructure_refinement_rotates_across_real_factory_sites() {
+        let (mut obs, map, profile) = fixture();
+        obs.scrap = 10_000;
+        for (id, anchor) in [
+            (2, TilePos::new(15, 4)),
+            (3, TilePos::new(27, 10)),
+            (4, TilePos::new(14, 23)),
+        ] {
+            obs.my_buildings
+                .push(building(id, BuildingKind::Foundry, anchor));
+            obs.my_queues.push(Vec::new());
+            obs.my_queue_progress.push(0);
+        }
+        let policy = UtilityPolicy::new();
+        let demands = [demand(UnitKind::Warden, 100)];
+        let mut visited = BTreeSet::new();
+        for tick in [120, 192, 264, 336] {
+            obs.tick = tick;
+            let candidates = quotes(&policy, &obs, &map, &profile, &demands);
+            let anchors = candidates
+                .iter()
+                .filter_map(|quote| match quote.key {
+                    EconomicInvestmentKey::Build {
+                        kind: BuildingKind::Fabricator,
+                        anchor,
+                    } => Some(anchor),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                anchors.len(),
+                2,
+                "each think must refine a bounded pair of viable sites"
+            );
+            visited.extend(anchors);
+            assert_eq!(
+                quotes(&policy, &obs, &map, &profile, &demands),
+                candidates,
+                "repeated evaluation must not advance the rotation within a decision"
+            );
+        }
+        assert_eq!(
+            visited.len(),
+            4,
+            "skipped ticks must not starve any factory location"
+        );
     }
 
     #[test]
