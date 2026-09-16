@@ -448,6 +448,7 @@ mod tests {
         }
         let old_path = old.directory().to_owned();
         drop(old);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::fs::File::open(old_path.join("lease"))
             .unwrap()
             .try_lock()
@@ -457,6 +458,13 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         for public_path in [true, false] {
+            // Hold startup past the save path's bounded wait for recovery.
+            let budget = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(root.join("budget.lock"))
+                .unwrap();
+            budget.lock().unwrap();
             let mut game = Game::new(oxide_sim::Scenario::skirmish()).unwrap();
             game.recovery_root = Some(root.clone());
             game.configure_diagnostics(true);
@@ -467,6 +475,19 @@ mod tests {
                 write_record(&mut game, &root.join("saves"))
             };
             assert!(matches!(outcome, Ok(SaveOutcome::NothingToSave)));
+            let writer = game.recovery.as_ref().unwrap();
+            assert!(!writer.status().ready);
+            drop(budget);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let status = writer.status();
+                assert!(status.error.is_none(), "{status:?}");
+                if status.clean {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "{status:?}");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             assert!(inspect(&directory).unwrap().clean);
             drop(game);
             assert_eq!(latest_diagnostic_record(&root).unwrap().directory, old_path);
@@ -475,6 +496,7 @@ mod tests {
         for entry in std::fs::read_dir(&root).unwrap().flatten() {
             let lease = entry.path().join("lease");
             if lease.exists() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
                 while std::fs::File::open(&lease).unwrap().try_lock().is_err() {
                     assert!(std::time::Instant::now() < deadline);
                     std::thread::sleep(std::time::Duration::from_millis(10));
