@@ -1,7 +1,7 @@
 //! Receding-horizon quotes for restoring frames around one support site.
 
 use super::defense::DefenseThinkContext;
-use super::economic_investment::{economic_case, funding_delay};
+use super::economic_investment::{FundingCalendar, economic_case};
 use super::economic_value::travel_ticks;
 use super::*;
 use crate::bot::query_work::QueryPurpose;
@@ -11,6 +11,7 @@ impl UtilityPolicy {
     pub(super) fn value_extractor_developments(
         &self,
         context: EconomicInvestmentContext<'_>,
+        funding: &FundingCalendar<'_>,
         proposals: &mut Vec<EconomicInvestment>,
     ) {
         let obs = context.obs;
@@ -214,7 +215,7 @@ impl UtilityPolicy {
                 remaining.retain(|candidate| *candidate != index);
                 cost = cost.saturating_add(original[index].cost);
                 elapsed = elapsed
-                    .max(funding_delay(&context, cost, deadline))
+                    .max(funding.delay(cost, deadline))
                     .saturating_add(travel_ticks(cursor.kind, distance))
                     .saturating_add(
                         u64::from(
@@ -253,7 +254,7 @@ impl UtilityPolicy {
                     continue;
                 };
                 elapsed = elapsed
-                    .max(funding_delay(&context, cost, deadline))
+                    .max(funding.delay(cost, deadline))
                     .saturating_add(travel_ticks(cursor.kind, distance))
                     .saturating_add(
                         u64::from(construction.build_ticks)

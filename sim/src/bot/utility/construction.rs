@@ -5065,21 +5065,23 @@ mod tests {
                 baseline: UnitKind::Sentinel,
                 provider_value: 1,
             }];
-            policy.fresh_economic_investments(EconomicInvestmentContext {
-                obligations: &[],
-                obs: current,
-                resources: &resources,
-                profile: &profile,
-                briefing: &map,
-                orientation: crate::bot::orient::Orientation::for_home(current, HOME),
-                unavailable: &[],
-                demands: &demands,
-                unit_contacts: contacts,
-                building_contacts: &[],
-                cadence: 12,
-                protected_scrap: 0,
-                air_work: &[],
-            })
+            policy
+                .economic_quotes(EconomicInvestmentContext {
+                    obligations: &[],
+                    obs: current,
+                    resources: &resources,
+                    profile: &profile,
+                    briefing: &map,
+                    orientation: crate::bot::orient::Orientation::for_home(current, HOME),
+                    unavailable: &[],
+                    demands: &demands,
+                    unit_contacts: contacts,
+                    building_contacts: &[],
+                    cadence: 12,
+                    protected_scrap: 0,
+                    air_work: &[],
+                })
+                .investments()
         };
         let mut policy = UtilityPolicy::new();
         policy.contested_harvest_regions = vec![ContestedHarvestRegion {

@@ -5517,7 +5517,7 @@ mod tests {
             service: crate::bot::allocation::StandingForceServiceKey::point(home),
         }];
         let quote = policy
-            .fresh_economic_investments(EconomicInvestmentContext {
+            .economic_quotes(EconomicInvestmentContext {
                 obligations: &[],
                 obs: &obs,
                 resources: &resources,
@@ -5532,6 +5532,7 @@ mod tests {
                 protected_scrap: 0,
                 air_work: &work,
             })
+            .investments()
             .into_iter()
             .find(|proposal| {
                 matches!(
