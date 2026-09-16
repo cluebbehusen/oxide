@@ -892,17 +892,15 @@ impl UtilityPolicy {
 
     pub(super) fn release_foundry_saving(
         &mut self,
-        commitments: Option<&mut PolicyCommitments>,
+        commitments: &mut PolicyCommitments,
         budget: &mut u32,
     ) {
         self.foundry_saving = None;
-        if let Some(commitments) = commitments {
-            if let Some(owner) = commitments.foundry_saving_owner.take() {
-                commitments.ledger.release(owner);
-            }
-            commitments.foundry_saving_blocked = false;
-            *budget = commitments.available_scrap();
+        if let Some(owner) = commitments.foundry_saving_owner.take() {
+            commitments.ledger.release(owner);
         }
+        commitments.foundry_saving_blocked = false;
+        *budget = commitments.available_scrap();
     }
 
     fn unfinished_turret_currently_unsafe(obs: &Observation, site: &BuildingObs) -> bool {
@@ -974,6 +972,7 @@ impl UtilityPolicy {
         mut eligible: impl FnMut(TilePos) -> bool,
     ) -> Option<(TilePos, UnitId)> {
         let ExtractorClaimContext {
+            cancellations,
             home,
             builders,
             unit_contacts,
@@ -982,7 +981,10 @@ impl UtilityPolicy {
         if builders.is_empty() {
             return None;
         }
-        let deferred = Self::deferred_claims(obs);
+        let deferred: Vec<_> = Self::deferred_claims(obs)
+            .into_iter()
+            .filter(|claim| !cancellations.0.contains(claim))
+            .collect();
         // One component flood answers every candidate frame; the
         // per-frame flood re-walked the whole component per candidate
         // and dominated think time on frame-dense maps.
@@ -1010,7 +1012,7 @@ impl UtilityPolicy {
         }
 
         let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
-        self.prepare_ground_producer_egress(obs);
+        self.prepare_ground_producer_egress_after(obs, cancellations);
         candidates
             .into_iter()
             .filter_map(|frame| {
@@ -1056,13 +1058,19 @@ impl UtilityPolicy {
             ..
         } = context;
         let builders: Vec<_> = self
-            .construction_builders(obs, claims.enlisted, claims.reserved)
+            .construction_builders_after(
+                obs,
+                claims.enlisted,
+                claims.reserved,
+                claims.cancellations,
+            )
             .into_iter()
             .filter(|builder| !unavailable_builders.contains(&builder.id))
             .collect();
         self.player_facing_extractor_claim(
             obs,
             ExtractorClaimContext {
+                cancellations: claims.cancellations,
                 home,
                 builders: &builders,
                 unit_contacts,
@@ -1104,13 +1112,19 @@ impl UtilityPolicy {
         }
 
         let builders: Vec<_> = self
-            .construction_builders(obs, claims.enlisted, claims.reserved)
+            .construction_builders_after(
+                obs,
+                claims.enlisted,
+                claims.reserved,
+                claims.cancellations,
+            )
             .into_iter()
             .filter(|builder| !unavailable_builders.contains(&builder.id))
             .collect();
         self.player_facing_extractor_claim(
             obs,
             ExtractorClaimContext {
+                cancellations: claims.cancellations,
                 home,
                 builders: &builders,
                 unit_contacts,
@@ -1163,12 +1177,27 @@ impl UtilityPolicy {
         enlisted: &[UnitId],
         reserved: &[UnitId],
     ) -> Vec<&'a UnitObs> {
+        self.construction_builders_after(
+            obs,
+            enlisted,
+            reserved,
+            FoundationCancellations::default(),
+        )
+    }
+
+    fn construction_builders_after<'a>(
+        &self,
+        obs: &'a Observation,
+        enlisted: &[UnitId],
+        reserved: &[UnitId],
+        cancellations: FoundationCancellations<'_>,
+    ) -> Vec<&'a UnitObs> {
         obs.my_units
             .iter()
             .filter(|unit| {
                 unit.kind.stats().harvest.is_some()
                     && unit.site.is_none()
-                    && unit.founding.is_none()
+                    && cancellations.retained(unit).is_none()
                     && !enlisted.contains(&unit.id)
                     && !reserved.contains(&unit.id)
                     && self.scout != Some(unit.id)
@@ -1248,8 +1277,9 @@ impl UtilityPolicy {
         anchor: TilePos,
         builders: &[&UnitObs],
         danger: &danger::HarvestDangerProjection,
+        cancellations: FoundationCancellations<'_>,
     ) -> Option<UnitId> {
-        if !self.placement_valid_prepared(obs, BuildingKind::Foundry, anchor) {
+        if !self.placement_valid_prepared(obs, BuildingKind::Foundry, anchor, cancellations) {
             return None;
         }
         self.safe_foundry_builder(obs, routes, anchor, builders, danger)
@@ -1409,6 +1439,7 @@ impl UtilityPolicy {
                     opportunity.anchor,
                     context.builders,
                     &danger,
+                    FoundationCancellations::default(),
                 )
                 .map(|builder| FoundryExpansionPlan {
                     anchor: opportunity.anchor,
@@ -1492,7 +1523,7 @@ impl UtilityPolicy {
         if quotes.is_empty() {
             return None;
         }
-        self.prepare_ground_producer_egress(obs);
+        self.prepare_ground_producer_egress_after(obs, context.claim.cancellations);
         let routes = BuildRouteProjection::new(
             QueryPurpose::FoundryLogistics,
             obs,
@@ -1505,6 +1536,7 @@ impl UtilityPolicy {
                 quote.anchor(),
                 context.claim.builders,
                 &danger,
+                context.claim.cancellations,
             )
             .map(|builder| quote.bind(builder))
         })
@@ -1599,6 +1631,7 @@ impl UtilityPolicy {
             obs,
             FoundryAssessmentContext {
                 claim: FoundryClaimContext {
+                    cancellations: FoundationCancellations::default(),
                     home: context.home,
                     projected_foundries: &foundries,
                     builders: &builders,
@@ -1709,6 +1742,7 @@ impl UtilityPolicy {
             saving.plan.anchor,
             &builders,
             &danger,
+            FoundationCancellations::default(),
         ) != Some(saving.plan.builder)
         {
             return SavedFoundryReadiness::Blocked;
@@ -1944,6 +1978,7 @@ impl UtilityPolicy {
         let bootstrap_context = ConstructionContext::new(
             home,
             ConstructionClaims {
+                cancellations: FoundationCancellations::default(),
                 enlisted: &[],
                 reserved: &[],
             },
@@ -2026,10 +2061,14 @@ impl UtilityPolicy {
             scope,
             ..
         } = context;
-        let ConstructionClaims { enlisted, reserved } = claims;
+        let ConstructionClaims {
+            enlisted,
+            reserved,
+            cancellations,
+        } = claims;
         // Orphan relief is free (resuming an own site charges nothing).
         let builders: Vec<_> = self
-            .construction_builders(obs, enlisted, reserved)
+            .construction_builders_after(obs, enlisted, reserved, cancellations)
             .into_iter()
             .filter(|builder| !unavailable_builders.contains(&builder.id))
             .collect();
@@ -2068,11 +2107,17 @@ impl UtilityPolicy {
     /// liquidate static defense cheapest-first and spend the ground on
     /// one more wave. Deliberately narrow so the bot does not sell its
     /// defenses during an otherwise sustainable siege.
-    pub(super) fn salvage(&mut self, dials: &Dials, obs: &Observation, intents: &mut Vec<Intent>) {
+    pub(super) fn salvage(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        admission_scrap: u32,
+        intents: &mut Vec<Intent>,
+    ) {
         if !dials.salvage {
             return;
         }
-        if obs.scrap >= UnitKind::Harvester.stats().cost {
+        if admission_scrap >= UnitKind::Harvester.stats().cost {
             return;
         }
         let sources_left = obs.known_scrap.iter().any(|(_, amount)| *amount > 0)
@@ -2302,6 +2347,7 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -2806,6 +2852,7 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -2824,6 +2871,7 @@ mod tests {
                 ConstructionContext::new(
                     home,
                     ConstructionClaims {
+                        cancellations: FoundationCancellations::default(),
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -3543,6 +3591,7 @@ mod tests {
                 &obs,
                 FoundryAssessmentContext {
                     claim: FoundryClaimContext {
+                        cancellations: FoundationCancellations::default(),
                         home: HOME,
                         projected_foundries: &foundries,
                         builders: &builders,
@@ -3977,6 +4026,7 @@ mod tests {
                 ConstructionContext::new(
                     HOME,
                     ConstructionClaims {
+                        cancellations: FoundationCancellations::default(),
                         enlisted: &[],
                         reserved: &[],
                     },
@@ -4041,6 +4091,7 @@ mod tests {
         policy.player_facing_foundry_plans(
             obs,
             FoundryClaimContext {
+                cancellations: FoundationCancellations::default(),
                 home: HOME,
                 projected_foundries: &foundries,
                 builders: &builders,
@@ -4130,6 +4181,7 @@ mod tests {
             let (foundries, _) = UtilityPolicy::projected_foundries(obs);
             let builders = policy.construction_builders(obs, &[], &[]);
             let claim = FoundryClaimContext {
+                cancellations: FoundationCancellations::default(),
                 home: HOME,
                 projected_foundries: &foundries,
                 builders: &builders,
@@ -4189,6 +4241,7 @@ mod tests {
         let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
         let builders = policy.construction_builders(&obs, &[], &[]);
         let claim = FoundryClaimContext {
+            cancellations: FoundationCancellations::default(),
             home: HOME,
             projected_foundries: &foundries,
             builders: &builders,
@@ -4300,6 +4353,7 @@ mod tests {
         let (foundries, _) = UtilityPolicy::projected_foundries(&obs);
         let builders = policy.construction_builders(&obs, &[], &[]);
         let claim = FoundryClaimContext {
+            cancellations: FoundationCancellations::default(),
             home: HOME,
             projected_foundries: &foundries,
             builders: &builders,
@@ -4338,14 +4392,20 @@ mod tests {
                 .into_iter()
                 .all(|extractor| UtilityPolicy::foundry_supports_extractor(top, extractor))
         );
-        assert!(policy.placement_valid_prepared(&obs, BuildingKind::Foundry, top));
+        assert!(policy.placement_valid_prepared(
+            &obs,
+            BuildingKind::Foundry,
+            top,
+            FoundationCancellations::default()
+        ));
         assert_eq!(
             policy.legal_foundry_builder_prepared(
                 &obs,
                 &BuildRouteProjection::new(QueryPurpose::NavigationTest, &obs, Some(&public_map)),
                 top,
                 &builders,
-                &danger
+                &danger,
+                FoundationCancellations::default()
             ),
             None,
             "the top quote is legal but unreachable across the public Peak wall"
@@ -4365,6 +4425,7 @@ mod tests {
                         quote.anchor(),
                         &builders,
                         &danger,
+                        FoundationCancellations::default(),
                     )
                     .map(|builder| (quote.anchor(), builder))
             })
@@ -4674,6 +4735,7 @@ mod tests {
                 .player_facing_foundry_plans(
                     &obs,
                     FoundryClaimContext {
+                        cancellations: FoundationCancellations::default(),
                         home: HOME,
                         projected_foundries: &foundries,
                         builders: &builders,
@@ -4697,6 +4759,7 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -4932,6 +4995,7 @@ mod tests {
                     ConstructionContext::new(
                         HOME,
                         ConstructionClaims {
+                            cancellations: FoundationCancellations::default(),
                             enlisted: &[],
                             reserved: &[],
                         },
@@ -5160,7 +5224,7 @@ mod tests {
 
         let salvage = |obs: &Observation| {
             let mut intents = Vec::new();
-            UtilityPolicy::new().salvage(&Dials::full(), obs, &mut intents);
+            UtilityPolicy::new().salvage(&Dials::full(), obs, obs.scrap, &mut intents);
             intents
         };
         assert_eq!(
@@ -5420,6 +5484,7 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },
@@ -5517,6 +5582,7 @@ mod tests {
             ConstructionContext::new(
                 HOME,
                 ConstructionClaims {
+                    cancellations: FoundationCancellations::default(),
                     enlisted: &[],
                     reserved: &[],
                 },

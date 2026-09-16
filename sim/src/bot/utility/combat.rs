@@ -93,6 +93,14 @@ pub(in crate::bot) fn ground_weapon_reaches_footprint(
     })
 }
 
+pub(super) struct ScoutingContext<'a> {
+    pub(super) home: TilePos,
+    pub(super) contested_recon: Option<ContestedRecon>,
+    pub(super) public_map: Option<&'a PublicMapBriefing>,
+    pub(super) enlisted: &'a [UnitId],
+    pub(super) cancellations: FoundationCancellations<'a>,
+}
+
 impl UtilityPolicy {
     fn public_prior_ground_open(
         public_map: &PublicMapBriefing,
@@ -333,6 +341,7 @@ impl UtilityPolicy {
         home: TilePos,
         public_map: Option<&PublicMapBriefing>,
         prior: PublicScoutPrior,
+        cancellations: FoundationCancellations<'_>,
     ) -> bool {
         let Some(public_map) = public_map else {
             return false;
@@ -352,7 +361,7 @@ impl UtilityPolicy {
                 .my_units
                 .iter()
                 .filter(|unit| unit.kind.stats().domain == Domain::Ground)
-                .filter(|unit| unit.site.is_none() && unit.founding.is_none())
+                .filter(|unit| unit.site.is_none() && cancellations.retained(unit).is_none())
                 .filter_map(|unit| utility_scout_preference(unit, false).map(|key| (key, unit)))
                 .min_by_key(|(key, unit)| (*key, unit.id))
                 .map(|(_, unit)| unit)
@@ -436,6 +445,7 @@ impl UtilityPolicy {
         obs: &Observation,
         home: TilePos,
         public_map: Option<&PublicMapBriefing>,
+        cancellations: FoundationCancellations<'_>,
     ) {
         let (_, known_base, public_start, public_extractor) =
             self.scouting_objectives(obs, home, public_map);
@@ -447,8 +457,9 @@ impl UtilityPolicy {
             public_extractor,
             base_recon_due,
         );
-        self.public_prior_air_scout_needed = public_prior
-            .is_some_and(|prior| self.public_prior_requires_air(obs, home, public_map, prior));
+        self.public_prior_air_scout_needed = public_prior.is_some_and(|prior| {
+            self.public_prior_requires_air(obs, home, public_map, prior, cancellations)
+        });
     }
 
     fn opponent_force_risk(&mut self, dials: &Dials, obs: &Observation) -> u64 {
@@ -572,20 +583,20 @@ impl UtilityPolicy {
         enlisted: &[UnitId],
         intents: &mut Vec<Intent>,
     ) {
-        self.scouting_with_public_map(
+        self.scouting_with_context(
             obs,
-            home,
-            contested_recon.map(ContestedRecon::at),
-            None,
-            enlisted,
+            ScoutingContext {
+                home,
+                contested_recon: contested_recon.map(ContestedRecon::at),
+                public_map: None,
+                enlisted,
+                cancellations: FoundationCancellations::default(),
+            },
             intents,
         );
     }
 
-    /// Player-facing scouting with immutable authored priors. Public starts
-    /// and Extractor frames can only become reconnaissance destinations;
-    /// dynamic observation still owns every combat, construction, and
-    /// current-base decision.
+    #[cfg(test)]
     pub(super) fn scouting_with_public_map(
         &mut self,
         obs: &Observation,
@@ -595,6 +606,36 @@ impl UtilityPolicy {
         enlisted: &[UnitId],
         intents: &mut Vec<Intent>,
     ) {
+        self.scouting_with_context(
+            obs,
+            ScoutingContext {
+                home,
+                contested_recon,
+                public_map,
+                enlisted,
+                cancellations: FoundationCancellations::default(),
+            },
+            intents,
+        );
+    }
+
+    /// Player-facing scouting with immutable authored priors. Public starts
+    /// and Extractor frames can only become reconnaissance destinations;
+    /// dynamic observation still owns every combat, construction, and
+    /// current-base decision.
+    pub(super) fn scouting_with_context(
+        &mut self,
+        obs: &Observation,
+        context: ScoutingContext<'_>,
+        intents: &mut Vec<Intent>,
+    ) {
+        let ScoutingContext {
+            home,
+            contested_recon,
+            public_map,
+            enlisted,
+            cancellations,
+        } = context;
         self.audit_missing_scout(obs);
         self.refresh_solo_air_scout_suspension(obs);
 
@@ -631,8 +672,9 @@ impl UtilityPolicy {
             dispatch.role = ScoutDispatchRole::Ordinary;
         }
         let public_prior_requires_air = contested_recon.is_none()
-            && public_prior
-                .is_some_and(|prior| self.public_prior_requires_air(obs, home, public_map, prior));
+            && public_prior.is_some_and(|prior| {
+                self.public_prior_requires_air(obs, home, public_map, prior, cancellations)
+            });
         self.public_prior_air_scout_needed = public_prior_requires_air;
         self.contested_recon_air_scout_needed = false;
         if public_prior_requires_air
@@ -737,7 +779,7 @@ impl UtilityPolicy {
                 // A walking founder (`founding`) is spoken for like a
                 // builder on site: a scout order would replace the
                 // deferred claim's whole program.
-                .filter(|u| u.site.is_none() && u.founding.is_none())
+                .filter(|u| u.site.is_none() && cancellations.retained(u).is_none())
                 .filter(|u| !enlisted.contains(&u.id))
                 .filter(|u| u.kind.stats().harvest.is_some() || u.idle)
                 .filter_map(|u| {

@@ -14,6 +14,13 @@ pub(super) struct PlacementGeometry<'a> {
 
 impl<'a> PlacementGeometry<'a> {
     pub(super) fn new(obs: &'a Observation) -> Self {
+        Self::after_cancellations(obs, FoundationCancellations::default())
+    }
+
+    pub(super) fn after_cancellations(
+        obs: &'a Observation,
+        cancellations: FoundationCancellations<'_>,
+    ) -> Self {
         let cells = (obs.map_width.max(0) as usize) * (obs.map_height.max(0) as usize);
         let mut open = vec![true; cells];
         let index = |tile: TilePos| {
@@ -51,7 +58,11 @@ impl<'a> PlacementGeometry<'a> {
         for anchor in &obs.known_frames {
             block(&mut unclaimed, *anchor, (2, 2));
         }
-        for (kind, anchor) in obs.my_units.iter().filter_map(|unit| unit.founding) {
+        for (kind, anchor) in obs
+            .my_units
+            .iter()
+            .filter_map(|unit| cancellations.retained(unit))
+        {
             block(&mut unclaimed, anchor, kind.base_stats().size);
         }
         for unit in obs
@@ -276,18 +287,10 @@ impl UtilityPolicy {
         obs: &Observation,
         kind: BuildingKind,
         anchor: TilePos,
+        cancellations: FoundationCancellations<'_>,
     ) -> bool {
-        self.placement_geometry_valid(obs, kind, anchor)
+        self.placement_geometry_valid_except(obs, kind, anchor, None, cancellations)
             && self.preserves_ground_producer_egress_prepared(&[], (kind, anchor))
-    }
-
-    pub(super) fn placement_geometry_valid(
-        &self,
-        obs: &Observation,
-        kind: BuildingKind,
-        anchor: TilePos,
-    ) -> bool {
-        self.placement_geometry_valid_except(obs, kind, anchor, None)
     }
 
     pub(super) fn placement_geometry_valid_except(
@@ -296,6 +299,7 @@ impl UtilityPolicy {
         kind: BuildingKind,
         anchor: TilePos,
         retained: Option<(BuildingKind, TilePos)>,
+        cancellations: FoundationCancellations<'_>,
     ) -> bool {
         self.placement_geometry_valid_with(
             obs,
@@ -303,7 +307,7 @@ impl UtilityPolicy {
             anchor,
             retained,
             |tile| self.tile_open(obs, tile),
-            |tile| self.placement_tile_open_except(obs, tile, retained),
+            |tile| self.placement_tile_open_except(obs, tile, retained, cancellations),
         )
     }
 
@@ -379,6 +383,18 @@ impl UtilityPolicy {
             obs,
         );
     }
+    pub(super) fn prepare_ground_producer_egress_after(
+        &self,
+        obs: &Observation,
+        cancellations: FoundationCancellations<'_>,
+    ) {
+        GroundEgressCache::prepare_after(
+            QueryPurpose::ConstructionAccess,
+            &mut self.ground_egress_cache.borrow_mut(),
+            obs,
+            cancellations,
+        );
+    }
     pub(super) fn preserves_ground_producer_egress_prepared(
         &self,
         accepted: &[PlannedFootprint],
@@ -407,6 +423,7 @@ impl UtilityPolicy {
         obs: &Observation,
         tile: TilePos,
         retained: Option<(BuildingKind, TilePos)>,
+        cancellations: FoundationCancellations<'_>,
     ) -> bool {
         if !self.tile_open(obs, tile) {
             return false;
@@ -425,7 +442,7 @@ impl UtilityPolicy {
             return false;
         }
         let claimed = obs.my_units.iter().any(|unit| {
-            unit.founding.is_some_and(|(kind, anchor)| {
+            cancellations.retained(unit).is_some_and(|(kind, anchor)| {
                 if retained == Some((kind, anchor)) {
                     return false;
                 }
@@ -618,7 +635,13 @@ mod tests {
                     let anchor = TilePos::new(x, y);
                     assert_eq!(
                         geometry.valid(&policy, kind, anchor),
-                        policy.placement_geometry_valid(&obs, kind, anchor),
+                        policy.placement_geometry_valid_except(
+                            &obs,
+                            kind,
+                            anchor,
+                            None,
+                            FoundationCancellations::default()
+                        ),
                         "{kind:?} at {anchor:?}"
                     );
                 }
@@ -665,6 +688,45 @@ mod tests {
             BuildingKind::Fabricator,
             TilePos::new(2, 9)
         ));
+        let canceled = [(BuildingKind::Fabricator, anchor)];
+        let cancellations = FoundationCancellations(&canceled);
+        let founder = &obs.my_units[0];
+        assert!(!builder_is_free(&obs, founder));
+        assert!(cancellations.builder_is_free(&obs, founder));
+        let geometry = PlacementGeometry::after_cancellations(&obs, cancellations);
+        assert!(geometry.valid(&policy, BuildingKind::Fabricator, anchor));
+        assert!(policy.placement_geometry_valid_except(
+            &obs,
+            BuildingKind::Fabricator,
+            anchor,
+            None,
+            cancellations
+        ));
+        let index = (anchor.y * obs.map_width + anchor.x) as usize;
+        assert!(
+            !GroundEgressCache::ground_egress_base_open(&obs, FoundationCancellations::default())
+                [index]
+        );
+        assert!(GroundEgressCache::ground_egress_base_open(&obs, cancellations)[index]);
+        policy.prepare_ground_producer_egress_after(&obs, cancellations);
+        assert!(policy.placement_valid_prepared(
+            &obs,
+            BuildingKind::Fabricator,
+            anchor,
+            cancellations
+        ));
+        assert!(!placement_valid(
+            &policy,
+            &obs,
+            BuildingKind::Fabricator,
+            anchor
+        ));
+        assert_eq!(obs.my_units[0].founding, Some(canceled[0]));
+        obs.my_units[0].site = Some(obs.my_buildings[0].id);
+        assert!(!cancellations.builder_is_free(&obs, &obs.my_units[0]));
+        obs.my_units[0].site = None;
+        obs.my_queued_units.push(obs.my_units[0].id);
+        assert!(!cancellations.builder_is_free(&obs, &obs.my_units[0]));
     }
 
     #[test]
@@ -755,7 +817,14 @@ mod tests {
         let policy = UtilityPolicy::new();
         let tile = (0..obs.map_height)
             .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
-            .find(|t| policy.placement_tile_open_except(&obs, *t, None))
+            .find(|t| {
+                policy.placement_tile_open_except(
+                    &obs,
+                    *t,
+                    None,
+                    FoundationCancellations::default(),
+                )
+            })
             .expect("the fixture has open ground");
         obs.enemy_units.push(UnitObs {
             id: UnitId(90),
@@ -774,12 +843,17 @@ mod tests {
             grounded: true,
         });
         assert!(
-            !policy.placement_tile_open_except(&obs, tile, None),
+            !policy.placement_tile_open_except(
+                &obs,
+                tile,
+                None,
+                FoundationCancellations::default()
+            ),
             "a parked airframe is a ground body the sim would refuse a footprint over"
         );
         obs.enemy_units.last_mut().unwrap().grounded = false;
         assert!(
-            policy.placement_tile_open_except(&obs, tile, None),
+            policy.placement_tile_open_except(&obs, tile, None, FoundationCancellations::default()),
             "the same airframe in the air leaves the tile open"
         );
     }
@@ -1165,7 +1239,8 @@ mod tests {
             repairing: false,
             grounded: false,
         });
-        let open = GroundEgressCache::ground_egress_base_open(&obs);
+        let open =
+            GroundEgressCache::ground_egress_base_open(&obs, FoundationCancellations::default());
 
         for y in 0..obs.map_height {
             for x in 0..obs.map_width {
@@ -1198,7 +1273,13 @@ mod tests {
 
         let last = *ring.last().expect("a producer has a doorstep ring");
         assert!(
-            policy.placement_geometry_valid(&obs, BuildingKind::Reclaimer, last),
+            policy.placement_geometry_valid_except(
+                &obs,
+                BuildingKind::Reclaimer,
+                last,
+                None,
+                FoundationCancellations::default()
+            ),
             "the final footprint remains physically buildable with an outside doorstep"
         );
         assert!(

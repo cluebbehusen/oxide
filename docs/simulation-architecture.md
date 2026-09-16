@@ -864,8 +864,16 @@ retained deferred foundations. It attributes current-bank spending and holds
 plus exact units, builders, footprints, and contiguous producer appends to
 deterministic owners. Failed utility proposals roll back atomically; releasing
 one owner returns only revisable claims and reindexes surviving producer
-appends. The shared `Executive` owns command-lowering bookkeeping and converts
-the combined intents into ordinary candidate commands.
+appends. Residual production requires this same ledger in live play and focused
+tests. The observation remains immutable: utility passes its fixed admission
+bank separately from the remaining spending allowance, and explicit foundation
+cancellations determine available workers, projected sites, placement, and
+producer exits. Cancellations do not release paid sites or queued programs.
+Same-decision stop commands still reserve their workers against construction.
+Starvation and salvage use the fixed admission bank; retained obligations and
+new spending reduce the later allowance. The shared `Executive` owns
+command-lowering bookkeeping and converts the combined intents into ordinary
+candidate commands.
 
 Reusable air-operation survivors keep their roles only through the operation
 cooldown; aborts caused by unreachable routes or newly observed defenses release

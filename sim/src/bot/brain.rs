@@ -701,7 +701,6 @@ impl Brain {
                 .as_ref()
                 .and_then(|planner| planner.active_connected_obligation(&oriented))
                 .is_some();
-        let allocation_observation = oriented.clone();
         let mut utility_reservations = self.policy.reconnaissance.reservations();
         utility_reservations.extend(self.policy.support_reservations());
         utility_reservations.sort_unstable();
@@ -725,7 +724,7 @@ impl Brain {
             ResidualCoordinationContext {
                 profile,
                 tuning,
-                observation: &allocation_observation,
+                observation: &oriented,
                 intelligence,
                 home: oriented_home,
                 armies: &armies,
@@ -834,7 +833,7 @@ impl Brain {
         let mut reservations = residual_strategic_reservations(
             strategic.reservations,
             &strategic_core_exclusions,
-            &allocation_observation,
+            &oriented,
         );
         let mut utility_reservations = reservations.clone();
         utility_reservations.extend(self.policy.reconnaissance.reservations());
@@ -888,7 +887,7 @@ impl Brain {
         });
         let mut intents = self.policy.think_with_intelligence(
             &self.dials,
-            &allocation_observation,
+            &oriented,
             &armies,
             &enlisted,
             utility_context,

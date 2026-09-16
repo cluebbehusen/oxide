@@ -175,9 +175,13 @@ funding split must remain possible without moving fixed producer times. If older
 protected current capital truly makes a retained lift unfundable, use bounded
 recovery rather than extending its deadline or starving other domains.
 
-Unmigrated `UtilityPolicy` channels still consume a reduced-observation budget
-adapter. Treat that as explicit strangler debt: do not extend it, and remove
-each use as the owning domain moves into typed allocation.
+Residual `UtilityPolicy` work uses immutable observations, an explicit fixed
+admission bank, and the mandatory commitment ledger. Keep remaining spending
+allowances separate from the bank used by starvation and salvage. Pass
+same-decision foundation cancellations explicitly to worker and placement
+queries; do not erase observed programs or release paid sites and queued work.
+Same-decision stops still reserve their workers against construction. Focused
+production tests must use the live accounting contract.
 
 Economic actions must own exact current or forecast capital, worker lanes,
 founders and sites, or upgrade building ids. Do not restore a residual
