@@ -3,6 +3,7 @@
 use crate::bot::planning::{Progress, WorkBudget};
 use crate::bot::query_work::QueryPurpose;
 use chassis::grid::TilePos;
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 
 const BUCKETS: usize = 15;
@@ -59,6 +60,18 @@ impl DistanceWork {
         query_purpose: QueryPurpose,
         budget: &mut WorkBudget,
     ) -> Progress<()> {
+        self.advance_with_predecessors(query_purpose, budget, |_, _, _| {})
+    }
+
+    /// Reports shorter and equally short arrivals as `(from, to, ordering)`.
+    /// Positive edge costs settle every predecessor before its destination.
+    /// A shorter arrival replaces accumulated metadata; an equal one combines it.
+    pub(super) fn advance_with_predecessors(
+        &mut self,
+        query_purpose: QueryPurpose,
+        budget: &mut WorkBudget,
+        mut predecessor: impl FnMut(usize, usize, Ordering),
+    ) -> Progress<()> {
         let before = budget.spent();
         while self.queued > 0 {
             if !budget.charge(1) {
@@ -104,10 +117,16 @@ impl DistanceWork {
                 }
                 let next = (index as isize + dx + dy * self.width as isize) as usize;
                 let proposed = distance.saturating_add(cost);
-                if self.open[next] && proposed < self.distances[next] {
-                    self.distances[next] = proposed;
-                    self.frontier[proposed as usize % BUCKETS].push_back((proposed, next));
-                    self.queued += 1;
+                if self.open[next] {
+                    let ordering = proposed.cmp(&self.distances[next]);
+                    if ordering == Ordering::Less {
+                        self.distances[next] = proposed;
+                        self.frontier[proposed as usize % BUCKETS].push_back((proposed, next));
+                        self.queued += 1;
+                    }
+                    if ordering != Ordering::Greater {
+                        predecessor(index, next, ordering);
+                    }
                 }
             }
         }

@@ -1339,18 +1339,20 @@ a candidate, rather than a shortest-route query per asset. Future-producer exit
 checks request connectivity only; maps above the canonical expansion cap retain
 the capped search contract. Repeated command-safety queries accumulate work by
 endpoint. Once that work exceeds the map area, they share a field proving
-whether all shortest routes avoid danger. Ambiguous routes still use canonical
-A*, and maps above its expansion cap bypass the proof. Each immutable route
-projection retains at most sixteen safety fields, independently of the directed
-route-answer cache. Producer-exit certificates first repair an intersected route
-inside a small rectangle around the candidate footprint, including nearby
-replacement doors or destinations when an endpoint is blocked. Producers share
-one row/column index per connected component; its four live coordinate extrema
-select the exact farthest destination without per-producer rankings. Failed
-local repairs use the full connectivity check; a failed local detour never
-proves that a producer is trapped. Long cardinal proofs first try a bounded
-monotone search. A successful probe retains the canonical shortest path; detours
-fall back to the complete search.
+whether all shortest routes avoid danger. The shared distance traversal
+propagates safety along improving and tied predecessor edges, so classification
+uses the same movement rules without a second sorted traversal. Ambiguous routes
+still use canonical A*, and maps above its expansion cap bypass the proof. Each
+immutable route projection retains at most sixteen safety fields, independently
+of the directed route-answer cache. Producer-exit certificates first repair an
+intersected route inside a small rectangle around the candidate footprint,
+including nearby replacement doors or destinations when an endpoint is blocked.
+Producers share one row/column index per connected component; its four live
+coordinate extrema select the exact farthest destination without per-producer
+rankings. Failed local repairs use the full connectivity check; a failed local
+detour never proves that a producer is trapped. Long cardinal proofs first try a
+bounded monotone search. A successful probe retains the canonical shortest path;
+detours fall back to the complete search.
 
 Reinforcement valuation requests scalar travel costs and visits units in
 optimistic arrival order, stopping when no remaining unit can arrive sooner.
