@@ -459,6 +459,12 @@ fn select_contextual_portfolio(
         }
     }
     let Some((_, _, result, proposals, context)) = best else {
+        if base_proposals.iter().any(|proposal| {
+            matches!(proposal.payload(), super::DomainPayload::Connected(connected)
+                if connected.revises_active_operation())
+        }) {
+            return Err(AllocationError::Deferred);
+        }
         let proposals = base_proposals
             .iter()
             .filter(|proposal| !matches!(proposal.key(), ProposalKey::ConnectedOffenseMinimum(_)))
@@ -1432,6 +1438,39 @@ mod tests {
 
     #[test]
     fn deferred_contexts_preserve_obligations_without_requiring_a_finished_candidate() {
+        let allocation = deferred_context_fixture(false);
+        let mut trace = AllocationTrace::default();
+        let result = allocation
+            .resolve_validated(
+                AllocationPersonality::default(),
+                Some(&mut trace),
+                &mut |_| None,
+                &crate::bot::planning::PlanningWork::with_allowance(0),
+            )
+            .unwrap();
+        assert_eq!(result.residual_current_scrap(), 800);
+        assert!(result.producer_schedule().is_empty());
+        assert!(result.into_payloads().take_connected().is_none());
+        assert!(matches!(
+            trace.connected_context.unwrap().selected,
+            ConnectedPortfolioSelectionTrace::Absent
+        ));
+    }
+
+    #[test]
+    fn revision_obligations_cannot_settle_without_their_replacement_payload() {
+        let result = deferred_context_fixture(true).resolve_planned(
+            AllocationPersonality::default(),
+            None,
+            &crate::bot::planning::PlanningWork::with_allowance(0),
+        );
+        assert!(
+            matches!(result, Err(AllocationError::Deferred)),
+            "the session must restore the accepted operation before settling its jobs"
+        );
+    }
+
+    fn deferred_context_fixture(revising: bool) -> CrossDomainAllocation {
         let key = ConnectedOffenseKey {
             objective: BuildingId(90),
             anchor: TilePos::new(12, 8),
@@ -1477,9 +1516,19 @@ mod tests {
                 )
                 .unwrap(),
             }],
-            proposals: vec![connected_investment_proposal(connected).unwrap()],
+            proposals: vec![connected_investment_proposal(connected.clone()).unwrap()],
             contextual_proposals: Vec::new(),
         };
+        if revising {
+            allocation.proposals.clear();
+            let revision = connected.into_active_revision_fixture();
+            allocation
+                .import(super::super::active_connected_revision_obligation(&revision).unwrap());
+            allocation.offer(
+                super::super::active_connected_revision_investment_proposal(revision)
+                    .with_minimum_residual_scrap(901),
+            );
+        }
         allocation.offer_context(
             ConnectedPortfolioContext::Selected {
                 key,
@@ -1487,22 +1536,7 @@ mod tests {
             },
             Vec::new(),
         );
-        let mut trace = AllocationTrace::default();
-        let result = allocation
-            .resolve_validated(
-                AllocationPersonality::default(),
-                Some(&mut trace),
-                &mut |_| None,
-                &crate::bot::planning::PlanningWork::with_allowance(0),
-            )
-            .unwrap();
-        assert_eq!(result.residual_current_scrap(), 800);
-        assert!(result.producer_schedule().is_empty());
-        assert!(result.into_payloads().take_connected().is_none());
-        assert!(matches!(
-            trace.connected_context.unwrap().selected,
-            ConnectedPortfolioSelectionTrace::Absent
-        ));
+        allocation
     }
 
     fn observation() -> Observation {

@@ -1406,7 +1406,7 @@ impl ImportedObligation {
 /// Invalid allocator input that cannot be resolved by portfolio selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AllocationError {
-    /// Mandatory production has not completed its bounded refinement.
+    /// Mandatory production or its replacement plan has not completed refinement.
     Deferred,
     /// The same structural opportunity was submitted more than once.
     DuplicateProposalKey(ProposalKey),
