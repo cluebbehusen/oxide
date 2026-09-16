@@ -1,10 +1,21 @@
 //! Deterministic work allowances shared by nested planning services.
 
+mod alternatives;
 mod approaches;
 mod fields;
 pub(super) mod sites;
 
 use std::cell::{Cell, RefCell};
+
+type CampaignTarget = (
+    crate::ids::PlayerId,
+    chassis::grid::TilePos,
+    Option<crate::ids::BuildingId>,
+);
+type CampaignAlternatives = std::collections::BTreeMap<
+    chassis::grid::TilePos,
+    (u64, alternatives::Alternatives<CampaignTarget>),
+>;
 
 const DECISION_WORK: usize = 128_000;
 
@@ -18,6 +29,10 @@ pub(in crate::bot) struct PlanningWork {
     production: RefCell<crate::bot::allocation::production_work::ProductionWork>,
     sites: RefCell<sites::SiteWork>,
     foundry: RefCell<RankedRotation>,
+    campaigns: RefCell<CampaignAlternatives>,
+    campaign_sites: RefCell<RankedRotation>,
+    campaign_selection: RefCell<(Option<u64>, Vec<chassis::grid::TilePos>)>,
+    campaign_checks: Cell<(u64, usize)>,
     site_checks: Cell<usize>,
 }
 
@@ -32,12 +47,79 @@ impl Default for PlanningWork {
             production: RefCell::default(),
             sites: RefCell::default(),
             foundry: RefCell::default(),
+            campaigns: RefCell::default(),
+            campaign_sites: RefCell::default(),
+            campaign_selection: RefCell::default(),
+            campaign_checks: Cell::default(),
             site_checks: Cell::new(0),
         }
     }
 }
 
 impl PlanningWork {
+    pub(in crate::bot) fn campaign_site_selected(
+        &self,
+        tick: u64,
+        site: chassis::grid::TilePos,
+        sites: &[chassis::grid::TilePos],
+    ) -> bool {
+        let mut selection = self.campaign_selection.borrow_mut();
+        if selection.0 != Some(tick) {
+            let mut indices = self
+                .campaign_sites
+                .borrow_mut()
+                .indices(tick, sites.len(), 2);
+            let campaigns = self.campaigns.borrow();
+            if let Some(incumbent) = sites.iter().position(|site| {
+                campaigns
+                    .get(site)
+                    .is_some_and(|(_, targets)| targets.retained(tick).is_some())
+            }) && let Some(first) = indices.first_mut()
+            {
+                *first = incumbent;
+            }
+            *selection = (
+                Some(tick),
+                indices.into_iter().map(|index| sites[index]).collect(),
+            );
+        }
+        selection.1.contains(&site)
+    }
+
+    pub(in crate::bot) fn campaign_candidate<T>(
+        &self,
+        tick: u64,
+        site: chassis::grid::TilePos,
+        targets: &[CampaignTarget],
+        mut evaluate: impl FnMut(CampaignTarget) -> Progress<T>,
+    ) -> Progress<T> {
+        let mut campaigns = self.campaigns.borrow_mut();
+        campaigns.retain(|_, (used_at, _)| tick.saturating_sub(*used_at) < 120);
+        if !campaigns.contains_key(&site) && campaigns.len() == 16 {
+            let victim = *campaigns
+                .iter()
+                .min_by_key(|(site, (used, _))| (*used, **site))
+                .unwrap()
+                .0;
+            campaigns.remove(&victim);
+        }
+        let (used_at, alternatives) = campaigns.entry(site).or_default();
+        *used_at = tick;
+        alternatives.advance(
+            tick,
+            targets,
+            2,
+            |target| {
+                let (previous, count) = self.campaign_checks.get();
+                self.campaign_checks
+                    .set((tick, if previous == tick { count + 1 } else { 1 }));
+                evaluate(target)
+            },
+            |_, _| false,
+            || true,
+        )
+    }
+
     #[cfg(test)]
     pub(in crate::bot) fn with_allowance(allowance: usize) -> Self {
         Self {
@@ -174,6 +256,12 @@ impl PlanningWork {
             retained_approach_fields,
             pending_production,
             retained_production,
+            campaign_target_checks: if self.tick.get() == Some(self.campaign_checks.get().0) {
+                self.campaign_checks.get().1
+            } else {
+                0
+            },
+            retained_campaign_sites: self.campaigns.borrow().len(),
         }
     }
 
@@ -289,6 +377,78 @@ impl WorkBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn campaign_site_admission_is_shared_across_calls_and_rotates_past_failures() {
+        use chassis::grid::TilePos;
+        let work = PlanningWork::default();
+        let sites: Vec<_> = (0..32).map(|x| TilePos::new(x, 0)).collect();
+        let mut visited = std::collections::BTreeSet::new();
+        for tick in 0..32 {
+            let selected: Vec<_> = sites
+                .iter()
+                .copied()
+                .filter(|site| work.campaign_site_selected(tick, *site, &sites))
+                .collect();
+            assert_eq!(selected.len(), 2);
+            visited.extend(selected);
+        }
+        assert_eq!(visited.len(), sites.len());
+        let selected: Vec<_> = sites
+            .iter()
+            .copied()
+            .filter(|site| work.campaign_site_selected(33, *site, &sites))
+            .collect();
+        for site in &sites {
+            work.campaign_candidate(33, *site, &[(crate::ids::PlayerId(1), *site, None)], |_| {
+                Progress::<()>::Deferred
+            });
+        }
+        assert_eq!(
+            sites
+                .iter()
+                .copied()
+                .filter(|site| work.campaign_site_selected(33, *site, &sites))
+                .collect::<Vec<_>>(),
+            selected,
+            "changing target incumbents cannot open more site admissions in the same decision"
+        );
+    }
+
+    #[test]
+    fn campaign_diagnostics_reset_and_site_retention_is_bounded() {
+        use chassis::grid::TilePos;
+        let work = PlanningWork::default();
+        work.begin(0);
+        let targets = [
+            (crate::ids::PlayerId(1), TilePos::new(10, 10), None),
+            (crate::ids::PlayerId(1), TilePos::new(12, 10), None),
+            (crate::ids::PlayerId(1), TilePos::new(14, 10), None),
+        ];
+        for x in 0..64 {
+            work.campaign_candidate(0, TilePos::new(x, 0), &targets, |_| {
+                Progress::<()>::Deferred
+            });
+        }
+        assert_eq!(work.stats().campaign_target_checks, 128);
+        assert_eq!(work.stats().retained_campaign_sites, 16);
+        work.begin(12);
+        assert_eq!(work.stats().campaign_target_checks, 0);
+        let clone = work.clone();
+        for candidate in [&work, &clone] {
+            assert_eq!(
+                candidate
+                    .campaign_candidate(12, TilePos::new(63, 0), &targets, |_| Progress::Ready(7)),
+                Progress::Ready(7)
+            );
+        }
+        assert_eq!(work, clone);
+        assert_eq!(work.stats().campaign_target_checks, 1);
+        work.campaign_candidate(144, TilePos::new(63, 0), &targets, |_| {
+            Progress::<()>::Deferred
+        });
+        assert_eq!(work.stats().retained_campaign_sites, 1);
+    }
 
     #[test]
     fn weighted_work_cannot_spend_fractional_units_or_refill_its_parent() {

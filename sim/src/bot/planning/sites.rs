@@ -1,38 +1,23 @@
 //! Bounded site refinement with independent role cursors and live revalidation.
 
-use super::Progress;
+use super::{Progress, alternatives::Alternatives};
 use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
 use std::collections::BTreeMap;
 
-const CANDIDATES_PER_DECISION: usize = 4;
-const INCUMBENT_LIFETIME: u64 = 120;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::bot) struct SiteWork {
-    roles: BTreeMap<BuildingKind, RoleWork>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct RoleWork {
-    cursor: usize,
-    incumbent: Option<(u64, TilePos)>,
-    tick: Option<u64>,
-    remaining: usize,
+    roles: BTreeMap<BuildingKind, Alternatives<TilePos>>,
 }
 
 impl SiteWork {
     pub(in crate::bot) fn retained(&self, tick: u64, kind: BuildingKind) -> Option<TilePos> {
-        self.roles
-            .get(&kind)?
-            .incumbent
-            .filter(|(started_at, _)| tick.saturating_sub(*started_at) < INCUMBENT_LIFETIME)
-            .map(|(_, anchor)| anchor)
+        self.roles.get(&kind)?.retained(tick)
     }
 
     pub(in crate::bot) fn clear_incumbent(&mut self, kind: BuildingKind) {
         if let Some(role) = self.roles.get_mut(&kind) {
-            role.incumbent = None;
+            role.clear();
         }
     }
 
@@ -43,46 +28,15 @@ impl SiteWork {
         anchors: &[TilePos],
         mut evaluate: impl FnMut(TilePos) -> Option<T>,
         better: impl Fn(&T, &T) -> bool,
-        mut try_claim: impl FnMut() -> bool,
+        try_claim: impl FnMut() -> bool,
     ) -> Progress<T> {
-        if anchors.is_empty() {
-            return Progress::ProvenInfeasible;
-        }
-        let role = self.roles.entry(kind).or_default();
-        if role.tick != Some(tick) {
-            role.tick = Some(tick);
-            role.remaining = CANDIDATES_PER_DECISION;
-        }
-        if let Some((started_at, anchor)) = role.incumbent
-            && tick.saturating_sub(started_at) < INCUMBENT_LIFETIME
-            && anchors.contains(&anchor)
-            && let Some(candidate) = evaluate(anchor)
-        {
-            return Progress::Ready(candidate);
-        }
-        role.incumbent = None;
-        let mut selected: Option<(TilePos, T)> = None;
-        for _ in 0..anchors.len().min(role.remaining) {
-            if !try_claim() {
-                break;
-            }
-            role.remaining -= 1;
-            let anchor = anchors[role.cursor % anchors.len()];
-            role.cursor = (role.cursor + 1) % anchors.len();
-            if let Some(candidate) = evaluate(anchor)
-                && selected
-                    .as_ref()
-                    .is_none_or(|(_, prior)| better(&candidate, prior))
-            {
-                selected = Some((anchor, candidate));
-            }
-        }
-        match selected {
-            Some((anchor, candidate)) => {
-                role.incumbent = Some((tick, anchor));
-                Progress::Ready(candidate)
-            }
-            None => Progress::Deferred,
-        }
+        self.roles.entry(kind).or_default().advance(
+            tick,
+            anchors,
+            4,
+            |anchor| evaluate(anchor).map_or(Progress::ProvenInfeasible, Progress::Ready),
+            better,
+            try_claim,
+        )
     }
 }

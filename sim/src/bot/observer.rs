@@ -56,6 +56,11 @@ pub struct PlanningWorkStats {
     pub pending_production: usize,
     /// Completed and unfinished production refinements retained by this controller.
     pub retained_production: usize,
+    /// Hypothetical campaign target evaluations, including incumbent revalidation.
+    /// Their nested synchronous preparation is outside the field/production allowance.
+    pub campaign_target_checks: usize,
+    /// Candidate factory sites whose target-refinement cursors are retained.
+    pub retained_campaign_sites: usize,
 }
 
 /// Observational notifications. Implementations must not block or affect game inputs.

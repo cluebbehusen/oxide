@@ -2376,6 +2376,7 @@ fn connected_opportunity_case(
 pub(in crate::bot) fn prospective_airworks_package_value(
     request: FreshConnectedProposalRequest<'_>,
     candidate: crate::bot::observation::BuildingObs,
+    candidate_sites: &[TilePos],
     ready_after: Tick,
     deadline: Tick,
     obligations: &[crate::bot::allocation::ImportedObligation],
@@ -2385,6 +2386,11 @@ pub(in crate::bot) fn prospective_airworks_package_value(
         AllocationCapacity, AllocationPersonality, allocate_requiring_planned,
         allocate_with_incompatible_layouts, connected_investment_proposal, current_reserve_at,
     };
+    use crate::bot::planning::Progress;
+    let site = candidate.anchor;
+    if !planning.campaign_site_selected(request.obs.tick, site, candidate_sites) {
+        return None;
+    }
     let mut prospective = request.obs.clone();
     let cost = BuildingKind::Airworks.base_stats().construction?.cost;
     prospective.scrap = prospective
@@ -2470,7 +2476,15 @@ pub(in crate::bot) fn prospective_airworks_package_value(
             target.id,
         )
     });
-    targets.into_iter().find_map(|target| {
+    let keys: Vec<_> = targets
+        .iter()
+        .map(|target| (target.player, target.anchor, target.id))
+        .collect();
+    let result = planning.campaign_candidate(prospective.tick, site, &keys, |key| {
+        let target = targets
+            .iter()
+            .find(|target| (target.player, target.anchor, target.id) == key)
+            .unwrap();
         #[cfg(test)]
         AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
         let route = ConnectedRouteContext {
@@ -2490,7 +2504,7 @@ pub(in crate::bot) fn prospective_airworks_package_value(
             &resources,
             0,
         );
-        let proposal = derive_connected_proposal_with_resources(
+        let Ok(proposal) = derive_connected_proposal_with_resources(
             context,
             target,
             ConnectedProposalOrigin::Idle {
@@ -2499,19 +2513,25 @@ pub(in crate::bot) fn prospective_airworks_package_value(
             },
             initial,
             deadline,
-        )
-        .ok()?;
-        let investment = connected_investment_proposal(proposal.clone()).ok()?;
-        allocate_requiring_planned(
+        ) else {
+            return Progress::ProvenInfeasible;
+        };
+        let Ok(investment) = connected_investment_proposal(proposal.clone()) else {
+            return Progress::ProvenInfeasible;
+        };
+        match allocate_requiring_planned(
             &capacity,
             obligations.to_vec(),
             vec![investment.clone()],
             AllocationPersonality::default(),
             investment.key(),
             planning,
-        )
-        .ok()??;
-        Some(
+        ) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Progress::Deferred,
+            Err(_) => return Progress::ProvenInfeasible,
+        }
+        Progress::Ready(
             proposal
                 .minimum_claims()
                 .provider_jobs()
@@ -2519,7 +2539,11 @@ pub(in crate::bot) fn prospective_airworks_package_value(
                 .map(|job| u64::from(job.kind().stats().cost))
                 .sum(),
         )
-    })
+    });
+    match result {
+        Progress::Ready(value) => Some(value),
+        Progress::Deferred | Progress::ProvenInfeasible => None,
+    }
 }
 
 fn derive_fresh_connected_proposal(

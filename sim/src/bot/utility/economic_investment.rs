@@ -625,6 +625,10 @@ impl UtilityPolicy {
                     .income_through(deadline.saturating_sub(1))
                     .amount(),
             );
+        let airworks_sites: Vec<_> = possible
+            .iter()
+            .filter_map(|&(kind, anchor)| (kind == BuildingKind::Airworks).then_some(anchor))
+            .collect();
         for (kind, anchor) in possible {
             if !self.placement_geometry_valid(obs, kind, anchor) {
                 continue;
@@ -743,6 +747,7 @@ impl UtilityPolicy {
                             crate::bot::strategy::prospective_airworks_package_value(
                                 request,
                                 candidate,
+                                &airworks_sites,
                                 delay,
                                 deadline,
                                 context.obligations,
@@ -2895,6 +2900,41 @@ mod tests {
             assert!(policy.economic_retry_at > obs.tick);
             assert!(obs.my_buildings.contains(&paid));
         }
+    }
+
+    #[test]
+    fn bootstrap_airworks_bounds_target_derivation_when_every_campaign_is_unfunded() {
+        let (mut obs, map, profile) = fixture();
+        obs.scrap = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost;
+        obs.my_buildings
+            .push(building(2, BuildingKind::Fabricator, TilePos::new(8, 5)));
+        obs.my_queues.push(Vec::new());
+        obs.my_queue_progress.push(0);
+        for (index, anchor) in [
+            TilePos::new(20, 3),
+            TilePos::new(30, 3),
+            TilePos::new(20, 13),
+            TilePos::new(30, 13),
+            TilePos::new(20, 23),
+            TilePos::new(30, 23),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut target = building(90 + index as u32, BuildingKind::Foundry, anchor);
+            target.player = PlayerId(1);
+            obs.enemy_buildings.push(target);
+        }
+        let before = crate::bot::strategy::airworks_package_derivations();
+        assert!(air_quotes(&obs, &map, &profile, &[]).is_empty());
+        assert_eq!(
+            crate::bot::strategy::airworks_package_derivations() - before,
+            2
+        );
     }
 
     #[test]

@@ -1310,6 +1310,16 @@ funding checks before acceptance. Portfolio selection, standing-force wait
 binding, connected growth, and prospective Airworks allocation use this service.
 Mandatory obligation validation remains synchronous.
 
+Site refinement and prospective Airworks targets use the same bounded candidate
+cursor. Airworks valuation admits two candidate factory sites and examines two
+new targets per site each decision, retaining a pending or successful target for
+current revalidation. Site admission is frozen for the decision and rotates
+through the alternatives; a retained target keeps its site in consideration.
+Pending targets expire after 120 ticks; a rotating tail continues while one
+target awaits production refinement. Each controller retains at most sixteen
+Airworks site comparisons. Unexamined targets provide no feasibility verdict.
+Diagnostics count target evaluations separately from field and production work.
+
 Voluntary coverage uses one reverse field per asset's destination set to serve
 all threat origins. Its representative routes have exact shortest costs and
 legal edges, but need not share the command router's tied-path shape. A deferred
