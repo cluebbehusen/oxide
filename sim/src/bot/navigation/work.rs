@@ -11,6 +11,7 @@ pub(in crate::bot) struct Counts {
     pub components: usize,
     pub egress_checks: usize,
     pub placement_checks: usize,
+    pub passability_queries: usize,
     pub generations: usize,
     pub hits: usize,
 }
@@ -41,6 +42,7 @@ pub(in crate::bot) fn measure<T>(run: impl FnOnce() -> T) -> (T, Counts) {
             components: after.components - before.components,
             egress_checks: after.egress_checks - before.egress_checks,
             placement_checks: after.placement_checks - before.placement_checks,
+            passability_queries: after.passability_queries - before.passability_queries,
             generations: after.generations - before.generations,
             hits: after.hits - before.hits,
         },

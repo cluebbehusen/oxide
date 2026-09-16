@@ -524,11 +524,12 @@ impl<'a> RouteProjection<'a> {
             // cardinal companions, so they never join two cardinal components.
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let next = current.offset(dx, dy);
-                if !self.open(next) {
+                let Some(next_index) =
+                    super::flood::tile_index(self.obs.map_width, self.obs.map_height, next)
+                else {
                     continue;
-                }
-                let next_index = self.index(next);
-                if labels[next_index] == 0 {
+                };
+                if labels[next_index] == 0 && self.open(next) {
                     labels[next_index] = label;
                     open.push_back(next);
                 }
@@ -553,6 +554,8 @@ impl<'a> RouteProjection<'a> {
     }
 
     fn domain_open_memo(&self, tile: TilePos) -> bool {
+        #[cfg(test)]
+        super::work::record(|work| work.passability_queries += 1);
         if !in_bounds(self.obs, tile) {
             return false;
         }
@@ -1658,6 +1661,31 @@ mod tests {
                 routes.avoids(builder, target, None, |_| false),
                 routes.path(builder, target, None, |_| false).is_some()
             );
+        }
+    }
+
+    #[test]
+    fn component_flood_does_not_recheck_already_labeled_open_tiles() {
+        let obs = Observation {
+            map_width: 128,
+            map_height: 128,
+            ..Default::default()
+        };
+        for domain in [Domain::Ground, Domain::Air] {
+            let routes = RouteProjection::new(&obs, domain);
+            let (_, work) = super::super::work::measure(|| {
+                assert!(routes.reaches(TilePos::new(0, 0), TilePos::new(127, 127)));
+            });
+            assert_eq!(work.components, 1);
+            assert_eq!(work.expanded, 128 * 128);
+            assert!(work.passability_queries <= 128 * 128 + 4, "{work:?}");
+            let (_, warm) = super::super::work::measure(|| {
+                for y in 0..128 {
+                    assert!(routes.reaches(TilePos::new(0, y), TilePos::new(127, y)));
+                }
+            });
+            assert_eq!(warm.expanded, 0);
+            assert_eq!(warm.components, 0);
         }
     }
 
