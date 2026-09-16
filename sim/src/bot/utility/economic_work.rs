@@ -92,7 +92,7 @@ impl UtilityPolicy {
             let distances = PublicGroundDistances::from_sources_avoiding(
                 briefing,
                 doors.iter().copied(),
-                |tile| blocked(tile) || !routing::ground_open(obs, tile),
+                |tile| !commands.open(tile),
             );
             let mut routes = crate::bot::navigation::public_fields::WorkRoutes::new(
                 &commands, &distances, &doors,
@@ -188,17 +188,9 @@ impl UtilityPolicy {
             orientation,
             |tile| danger.contains(tile) || self.harvest_location_contested(tile),
         );
-        let blocked = |tile| {
-            !routing::ground_open(obs, tile)
-                || briefing
-                    .terrain_at(tile)
-                    .is_none_or(|terrain| terrain.blocks_ground())
-                || danger.contains(tile)
-                || self.harvest_location_contested(tile)
-        };
         let blocked_cells = (0..obs.map_height)
             .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
-            .map(blocked)
+            .map(|tile| !commands.open(tile))
             .collect::<Vec<_>>();
         let blocked = |tile: TilePos| {
             tile.x < 0

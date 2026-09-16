@@ -6,6 +6,7 @@ type PlannedFootprint = (BuildingKind, TilePos);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GroundProducerEgress {
+    anchor: TilePos,
     ring: Vec<TilePos>,
     witnesses: Vec<TilePos>,
 }
@@ -353,7 +354,14 @@ impl GroundEgressCache {
             .witnesses
             .iter()
             .copied()
-            .find(|tile| open[index(*tile)])?;
+            .filter(|tile| open[index(*tile)])
+            .min_by_key(|tile| {
+                (
+                    std::cmp::Reverse(tile.chebyshev(producer.anchor)),
+                    tile.y,
+                    tile.x,
+                )
+            })?;
         let spawn = producer
             .ring
             .iter()
@@ -473,7 +481,7 @@ impl GroundEgressCache {
                         && base_open[index(*tile)]
                 })?;
                 let component = labels[index(current_spawn)];
-                let mut witnesses: Vec<_> = labels
+                let witnesses: Vec<_> = labels
                     .iter()
                     .enumerate()
                     .filter(|(_, label)| **label == component)
@@ -481,14 +489,11 @@ impl GroundEgressCache {
                         TilePos::new(index as i32 % obs.map_width, index as i32 / obs.map_width)
                     })
                     .collect();
-                witnesses.sort_unstable_by_key(|tile| {
-                    (
-                        std::cmp::Reverse(tile.chebyshev(producer.anchor)),
-                        tile.y,
-                        tile.x,
-                    )
-                });
-                Some(GroundProducerEgress { ring, witnesses })
+                Some(GroundProducerEgress {
+                    anchor: producer.anchor,
+                    ring,
+                    witnesses,
+                })
             })
             .collect()
     }
@@ -570,11 +575,48 @@ mod tests {
     }
 
     #[test]
+    fn witness_selection_matches_the_sorted_reference_after_blocking_candidates() {
+        let map_size = (8, 8);
+        let witnesses: Vec<_> = (0..64).rev().map(|i| TilePos::new(i % 8, i / 8)).collect();
+        for anchor in [TilePos::new(0, 0), TilePos::new(4, 4), TilePos::new(7, 7)] {
+            let producer = GroundProducerEgress {
+                anchor,
+                ring: vec![TilePos::new(3, 3)],
+                witnesses: witnesses.clone(),
+            };
+            let mut sorted = witnesses.clone();
+            sorted.sort_unstable_by_key(|tile| {
+                (std::cmp::Reverse(tile.chebyshev(anchor)), tile.y, tile.x)
+            });
+            let mut open = vec![true; 64];
+            for blocked in sorted.iter().take(24) {
+                open[(blocked.y * 8 + blocked.x) as usize] = false;
+                let expected = sorted
+                    .iter()
+                    .copied()
+                    .find(|tile| open[(tile.y * 8 + tile.x) as usize])
+                    .unwrap();
+                let expected_route = crate::bot::navigation::flood::cardinal_path(
+                    &open,
+                    map_size,
+                    producer.ring[0],
+                    expected,
+                );
+                assert_eq!(
+                    GroundEgressCache::ground_producer_route(&open, map_size, &producer),
+                    expected_route
+                );
+            }
+        }
+    }
+
+    #[test]
     fn local_repair_failure_preserves_endpoint_selection_and_global_detours() {
         let map_size = (12, 12);
         let mut open = vec![true; 144];
         let route: Vec<_> = (0..12).map(|x| TilePos::new(x, 6)).collect();
         let producer = GroundProducerEgress {
+            anchor: TilePos::new(11, 0),
             ring: vec![route[0], TilePos::new(0, 5)],
             witnesses: vec![route[11], TilePos::new(11, 5)],
         };
@@ -631,6 +673,7 @@ mod tests {
     fn repaired_certificates_match_full_connectivity_across_obstacles_and_placements() {
         let map_size = (6, 6);
         let producer = GroundProducerEgress {
+            anchor: TilePos::new(0, 2),
             ring: vec![TilePos::new(0, 2), TilePos::new(0, 3)],
             witnesses: vec![TilePos::new(5, 2), TilePos::new(5, 3)],
         };

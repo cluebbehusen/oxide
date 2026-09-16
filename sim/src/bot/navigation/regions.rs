@@ -26,6 +26,7 @@ pub(in crate::bot) struct StaticRegions {
     labels: Vec<usize>,
     anchors: Vec<TilePos>,
     edges: Vec<Vec<(usize, u32)>>,
+    components: Vec<usize>,
 }
 
 impl StaticRegions {
@@ -33,6 +34,18 @@ impl StaticRegions {
         self.index(tile)
             .map(|index| self.labels[index])
             .filter(|region| *region != ABSENT)
+    }
+
+    pub(in crate::bot) fn connects(&self, starts: &[TilePos], goals: &[TilePos]) -> bool {
+        starts
+            .iter()
+            .filter_map(|&tile| self.region_at(tile))
+            .any(|start| {
+                goals
+                    .iter()
+                    .filter_map(|&tile| self.region_at(tile))
+                    .any(|goal| self.components[start] == self.components[goal])
+            })
     }
 
     pub(in crate::bot) fn clusters(
@@ -73,6 +86,7 @@ impl StaticRegions {
             labels: vec![ABSENT; cells],
             anchors: Vec::new(),
             edges: Vec::new(),
+            components: Vec::new(),
         };
         let open: Vec<_> = (0..cells)
             .map(|index| map.terrain_at(result.tile(index)) == Some(crate::map::Terrain::Ground))
@@ -133,6 +147,23 @@ impl StaticRegions {
             .into_iter()
             .map(|edges| edges.into_iter().collect())
             .collect();
+        result.components = vec![ABSENT; result.anchors.len()];
+        let mut pending = Vec::new();
+        for origin in 0..result.anchors.len() {
+            if result.components[origin] != ABSENT {
+                continue;
+            }
+            result.components[origin] = origin;
+            pending.push(origin);
+            while let Some(region) = pending.pop() {
+                for &(neighbor, _) in &result.edges[region] {
+                    if result.components[neighbor] == ABSENT {
+                        result.components[neighbor] = origin;
+                        pending.push(neighbor);
+                    }
+                }
+            }
+        }
         result
     }
 
@@ -213,6 +244,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prepared_connectivity_matches_cardinal_floods_across_terrain_masks() {
+        for mask in 0..512 {
+            let mut briefing =
+                PublicMapBriefing::from_scenario(&crate::Scenario::skirmish()).unwrap();
+            briefing.map_width = 3;
+            briefing.map_height = 3;
+            briefing.non_ground_terrain = (0..9)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| (TilePos::new(i % 3, i / 3), crate::map::Terrain::Rock))
+                .collect();
+            let regions = briefing.regions();
+            for start in (0..9).map(|i| TilePos::new(i % 3, i / 3)) {
+                for goal in (0..9).map(|i| TilePos::new(i % 3, i / 3)) {
+                    let expected = briefing.terrain_at(start) == Some(crate::map::Terrain::Ground)
+                        && super::super::flood::reaches_any(
+                            3,
+                            3,
+                            [start],
+                            |tile| briefing.terrain_at(tile) == Some(crate::map::Terrain::Ground),
+                            |tile| tile == goal,
+                        );
+                    assert_eq!(
+                        regions.connects(&[start], &[goal]),
+                        expected,
+                        "mask={mask}, {start:?} -> {goal:?}"
+                    );
+                }
+            }
+            assert!(!regions.connects(&[], &[TilePos::new(0, 0)]));
+            assert!(!regions.connects(&[TilePos::new(-1, 0)], &[TilePos::new(0, 0)]));
+        }
+    }
+
+    #[test]
     fn regions_preserve_local_separation_and_cross_boundary_connectivity() {
         let mut scenario = crate::Scenario::skirmish();
         scenario.map = (0..24).map(|_| ".".repeat(40)).collect();
@@ -224,6 +289,8 @@ mod tests {
         let briefing = PublicMapBriefing::from_scenario(&scenario).unwrap();
         let regions = briefing.regions();
         assert_ne!(regions.labels[7], regions.labels[9]);
+        assert!(!regions.connects(&[TilePos::new(2, 2)], &[TilePos::new(10, 2)]));
+        assert!(regions.connects(&[TilePos::new(10, 2)], &[TilePos::new(35, 20)]));
         let left = regions.distances(TilePos::new(2, 2));
         assert!(left.estimate(TilePos::new(7, 21)).is_some());
         assert!(left.estimate(TilePos::new(9, 2)).is_none());

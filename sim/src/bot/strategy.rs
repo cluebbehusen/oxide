@@ -7619,17 +7619,7 @@ fn public_ground_connected(
     starts: &[TilePos],
     goals: &[TilePos],
 ) -> bool {
-    super::navigation::flood::reaches_any(
-        public_map.map_width(),
-        public_map.map_height(),
-        starts.iter().copied(),
-        |tile| {
-            public_map
-                .terrain_at(tile)
-                .is_some_and(|terrain| !terrain.blocks_ground())
-        },
-        |tile| goals.contains(&tile),
-    )
+    public_map.regions().connects(starts, goals)
 }
 
 fn operation_timeout(profile: &ResolvedProfile, plan: &AirPlan) -> Tick {

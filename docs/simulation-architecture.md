@@ -1290,23 +1290,29 @@ reachability and firing-position contracts.
 
 Match setup prepares and shares a public terrain index for each seat
 orientation, with connected components inside 16-by-16 regions and deterministic
-boundary links. Regional distances rank strategic targets; they do not certify
-live reachability, route safety, command timing, or placement legality.
-Orientation and terrain changes invalidate the index independently of dynamic
-navigation caches. Public distance fields materialize passability once and use
-an owned traversal that can yield after a deterministic number of queue entries.
-Fresh Foundry logistics, voluntary coverage, and production refinement share a
-controller-owned work allowance. Passability preparation and traversal consume
-work; unfinished fields resume on later decisions and never mean unreachable.
-Foundry retains four jobs. Ground and air coverage each retain at most sixteen
-pending jobs and 32 MiB of completed field payloads. Exact terrain and blocking
-changes invalidate affected work; unfinished jobs expire after 120 ticks.
-Pending Foundry, ground, air, and production work divide half of each decision's
-allowance, leaving half for current requests. Allocation rollback preserves this
-work and the Foundry and defensive-site cursors. Weapon and Array refinement
-share the allowance and retain their four-new-site limit; incumbent validation
-is separate. Diagnostic counters cover these services, not synchronous planner
-preparation or mandatory validation. Saved Foundry validation remains immediate.
+boundary links. Region components also answer exact public-terrain connectivity
+queries without a fresh map traversal. Regional distances rank strategic
+targets; they do not certify live reachability, route safety, command timing, or
+placement legality. Orientation and terrain changes invalidate the index
+independently of dynamic navigation caches. Public distance fields materialize
+passability once and use an owned traversal that can yield after a deterministic
+number of queue entries. Fresh Foundry logistics, voluntary coverage, and
+production refinement share a controller-owned work allowance. Passability
+preparation and traversal consume work; unfinished fields resume on later
+decisions and never mean unreachable. Foundry retains four jobs. Ground and air
+coverage each retain at most sixteen pending jobs and 32 MiB of completed field
+payloads. Exact terrain and blocking changes invalidate affected work;
+unfinished jobs expire after 120 ticks. Pending Foundry, ground, air, and
+production work divide half of each decision's allowance, leaving half for
+current requests. Navigation consumes at most three quarters of the shared
+allowance, reserving work to admit production tasks. Field requests can register
+without work and receive their share on the next decision; production admission
+cannot be starved by repeated navigation calls. Allocation rollback preserves
+this work and the Foundry and defensive-site cursors. Weapon and Array
+refinement share the allowance and retain their four-new-site limit; incumbent
+validation is separate. Diagnostic counters cover these services, not
+synchronous planner preparation or mandatory validation. Saved Foundry
+validation remains immediate.
 
 Production refinement first constructs an earliest-funded schedule, then resumes
 repair if that attempt fails. Income probes seek the funding boundary inside

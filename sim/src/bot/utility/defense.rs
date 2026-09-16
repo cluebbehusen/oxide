@@ -2097,6 +2097,21 @@ fn strategic_defense_quote_from_projection(
             return None;
         }
         let placement = profile.footprint(anchor);
+        let prepared_coverage = if let Some(batch) = &coverage {
+            cache_supported_assets(ground, assets, placement, cache);
+            #[cfg(test)]
+            {
+                cache.stats.coverage_scores += 1;
+            }
+            let supported = &cache.supported_assets[&placement];
+            let score = batch.score(anchor, |asset| supported.contains(&asset));
+            if score.new == 0 && score.reinforced == 0 {
+                return None;
+            }
+            Some(score)
+        } else {
+            None
+        };
         if future_egress_orientation.is_some_and(|orientation| {
             !cached_future_ground_producer_egress_survives(grounding, orientation, cache, placement)
         }) {
@@ -2133,23 +2148,17 @@ fn strategic_defense_quote_from_projection(
         if !cached_resource_access_survives(grounding, cache, placement, resource_detour_limit) {
             return None;
         }
-        let coverage = if profile.kind == BuildingKind::Barricade {
-            let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
-            barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied())
-        } else {
-            cache_supported_assets(ground, assets, placement, cache);
-            #[cfg(test)]
-            {
-                cache.stats.coverage_scores += 1;
-            }
-            let supported = &cache.supported_assets[&placement];
+        let coverage = if let Some(coverage) = prepared_coverage {
             coverage
-                .as_ref()?
-                .score(anchor, |asset| supported.contains(&asset))
+        } else {
+            let costs = barricade::supported_costs(ground, assets, approaches, placement, cache)?;
+            let coverage =
+                barricade::coverage(assets, &projection.planned, anchor, costs.iter().copied());
+            if coverage.new == 0 && coverage.reinforced == 0 {
+                return None;
+            }
+            coverage
         };
-        if coverage.new == 0 && coverage.reinforced == 0 {
-            return None;
-        }
         let threat_distance = origins
             .iter()
             .map(|origin| origin.anchor.manhattan(anchor))

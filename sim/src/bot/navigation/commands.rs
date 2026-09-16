@@ -537,7 +537,7 @@ impl<'a> RouteProjection<'a> {
         Some(label)
     }
 
-    fn open(&self, tile: TilePos) -> bool {
+    pub(in crate::bot) fn open(&self, tile: TilePos) -> bool {
         let blocked_by_candidate = self.domain == Domain::Ground
             && self
                 .blocked_ground_rect
