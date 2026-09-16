@@ -448,8 +448,29 @@ fn select_contextual_portfolio(
             best = Some((rank, scale, result, proposals, set.context));
         }
     }
-    let (_, _, result, proposals, context) =
-        best.expect("registered contexts include one exact feasible portfolio state");
+    let Some((_, _, result, proposals, context)) = best else {
+        let proposals = base_proposals
+            .iter()
+            .filter(|proposal| !matches!(proposal.key(), ProposalKey::ConnectedOffenseMinimum(_)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let result = super::allocate_refined(
+            capacity,
+            obligations.to_vec(),
+            proposals.clone(),
+            personality,
+            None,
+            &[],
+            refinement,
+        )?
+        .expect("the unconstrained empty portfolio preserves valid obligations");
+        return Ok((
+            result,
+            proposals,
+            Some(ConnectedPortfolioContext::Absent),
+            considered_contexts.saturating_add(1),
+        ));
+    };
     Ok((result, proposals, Some(context), considered_contexts))
 }
 
@@ -1398,6 +1419,81 @@ mod tests {
     use crate::ids::PlayerId;
     use crate::stats::UnitKind;
     use chassis::grid::TilePos;
+
+    #[test]
+    fn deferred_contexts_preserve_obligations_without_requiring_a_finished_candidate() {
+        let key = ConnectedOffenseKey {
+            objective: BuildingId(90),
+            anchor: TilePos::new(12, 8),
+        };
+        let airworks = BuildingId(2);
+        let connected = FreshConnectedProposal::fixture(FreshConnectedProposalFixture {
+            objective: key.objective,
+            anchor: key.anchor,
+            deadline: 1_200,
+            case: connected_case(),
+            minimum_claims: ConnectedOffenseClaims::fixture(
+                Vec::new(),
+                vec![ConnectedProviderJob::fixture(
+                    UnitKind::Buzzard,
+                    120,
+                    1_200,
+                    vec![airworks],
+                )],
+            ),
+            marginal_additions: Vec::new(),
+            protected_current_scrap: 0,
+            protected_forecast_scrap: 0,
+        });
+        let mut allocation = CrossDomainAllocation {
+            capacity: contextual_capacity(
+                900,
+                Vec::new(),
+                Vec::new(),
+                vec![(airworks, vec![UnitKind::Buzzard])],
+            ),
+            current_scrap: 900,
+            obligations: vec![ImportedObligation {
+                class: ObligationClass::Survival,
+                accepted_at: 120,
+                key: ObligationKey::OpeningCore { sequence: 0 },
+                claims: ClaimBundle::new(
+                    100,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap(),
+            }],
+            proposals: vec![connected_investment_proposal(connected).unwrap()],
+            contextual_proposals: Vec::new(),
+        };
+        allocation.offer_context(
+            ConnectedPortfolioContext::Selected {
+                key,
+                marginal_depth: 0,
+            },
+            Vec::new(),
+        );
+        let mut trace = AllocationTrace::default();
+        let result = allocation
+            .resolve_validated(
+                AllocationPersonality::default(),
+                Some(&mut trace),
+                &mut |_| None,
+                &crate::bot::planning::PlanningWork::with_allowance(0),
+            )
+            .unwrap();
+        assert_eq!(result.residual_current_scrap(), 800);
+        assert!(result.producer_schedule().is_empty());
+        assert!(result.into_payloads().take_connected().is_none());
+        assert!(matches!(
+            trace.connected_context.unwrap().selected,
+            ConnectedPortfolioSelectionTrace::Absent
+        ));
+    }
 
     fn observation() -> Observation {
         Observation {
