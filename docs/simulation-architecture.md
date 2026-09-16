@@ -1292,7 +1292,10 @@ Each immutable campaign comparison shares ground and air connectivity, staging
 choices, and artillery firing stands across target selection, producer access,
 and exact group admission. Comparing another target or production mix does not
 rebuild its movement projections. These caches retain the ordinary command
-reachability and firing-position contracts.
+reachability and firing-position contracts. Firing geometry is shared by weapon
+type and target; provider origins only filter reachability and order the legal
+stands. Reachability stops at one witness without materializing the complete
+assignment list.
 
 Match setup prepares and shares a public terrain index for each seat
 orientation, with connected components inside 16-by-16 regions and deterministic

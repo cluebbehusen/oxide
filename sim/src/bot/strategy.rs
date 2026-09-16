@@ -6379,8 +6379,23 @@ fn legal_suppression_stands(
     intel: &StrategicIntelligence,
     public_map: Option<&PublicMapBriefing>,
 ) -> Vec<TilePos> {
+    let mut stands = legal_suppression_tiles(obs, origin.kind, target, intel, public_map, |tile| {
+        public_ground_open(obs, tile, public_map)
+    });
+    stands.sort_unstable_by_key(|stand| (stand.chebyshev(origin.tile), stand.y, stand.x));
+    stands
+}
+
+fn legal_suppression_tiles(
+    obs: &Observation,
+    kind: UnitKind,
+    target: Target,
+    intel: &StrategicIntelligence,
+    public_map: Option<&PublicMapBriefing>,
+    open: impl Fn(TilePos) -> bool,
+) -> Vec<TilePos> {
     let mut stands = Vec::new();
-    let Some(weapon) = suppression_weapon(origin.kind) else {
+    let Some(weapon) = suppression_weapon(kind) else {
         return stands;
     };
     let Some(geometry) = suppression_target_geometry(intel, target) else {
@@ -6391,15 +6406,13 @@ fn legal_suppression_stands(
     for y in near.y.saturating_sub(radius)..=far.y.saturating_add(radius) {
         for x in near.x.saturating_sub(radius)..=far.x.saturating_add(radius) {
             let stand = TilePos::new(x, y);
-            if !public_ground_open(obs, stand, public_map)
-                || !suppression_shot_is_legal(obs, public_map, weapon, stand, geometry)
+            if !open(stand) || !suppression_shot_is_legal(obs, public_map, weapon, stand, geometry)
             {
                 continue;
             }
             stands.push(stand);
         }
     }
-    stands.sort_unstable_by_key(|stand| (stand.chebyshev(origin.tile), stand.y, stand.x));
     stands
 }
 
@@ -11357,6 +11370,27 @@ mod tests {
             let map = public_map_with_terrain(&observation, terrain);
             let intel = knowledge(&observation);
             let cached = CampaignRoutes::new(&observation, &intel, Some(&map), test_orientation());
+            for origin in origins {
+                assert_eq!(
+                    cached.reaches(origin, target),
+                    !suppression_firing_stands(
+                        cached.ground(),
+                        &observation,
+                        origin,
+                        target,
+                        &intel,
+                        Some(&map)
+                    )
+                    .collect::<Vec<_>>()
+                    .is_empty()
+                );
+            }
+            assert_eq!(
+                cached.evaluated_queries(),
+                0,
+                "reachability must not materialize provider assignments"
+            );
+            assert_eq!(cached.evaluated_geometry(), 2);
             for roster in [
                 vec![],
                 vec![origins[0]],
@@ -11402,6 +11436,11 @@ mod tests {
                 assert_eq!(warm.searches, 0);
             }
             assert_eq!(cached.evaluated_queries(), origins.len());
+            assert_eq!(
+                cached.evaluated_geometry(),
+                2,
+                "origins sharing a weapon must share target geometry"
+            );
         }
     }
 

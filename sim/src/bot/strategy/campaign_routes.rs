@@ -13,8 +13,12 @@ pub(super) struct CampaignRoutes<'a> {
     air: RouteProjection<'a>,
     staging: RefCell<BTreeMap<(TilePos, TilePos), Option<TilePos>>>,
     options: RefCell<StandOptions>,
+    legal: RefCell<BTreeMap<(UnitKind, Target), Vec<TilePos>>>,
+    reachable: RefCell<BTreeMap<(SuppressionOrigin, Target), bool>>,
     #[cfg(test)]
     queries: std::cell::Cell<usize>,
+    #[cfg(test)]
+    geometry_queries: std::cell::Cell<usize>,
 }
 
 impl core::fmt::Debug for CampaignRoutes<'_> {
@@ -38,8 +42,12 @@ impl<'a> CampaignRoutes<'a> {
             air: route_projection_with_orientation(obs, Domain::Air, public_map, orientation),
             staging: RefCell::new(BTreeMap::new()),
             options: RefCell::new(BTreeMap::new()),
+            legal: RefCell::new(BTreeMap::new()),
+            reachable: RefCell::new(BTreeMap::new()),
             #[cfg(test)]
             queries: std::cell::Cell::new(0),
+            #[cfg(test)]
+            geometry_queries: std::cell::Cell::new(0),
         }
     }
 
@@ -75,19 +83,45 @@ impl<'a> CampaignRoutes<'a> {
         }
         #[cfg(test)]
         self.queries.set(self.queries.get() + 1);
-        let options: Vec<_> = suppression_firing_stands(
-            &self.routes,
-            self.obs,
-            origin,
-            target,
-            self.intel,
-            self.public_map,
-        )
-        .collect();
+        let mut options = self.with_legal(origin.kind, target, |tiles| {
+            tiles
+                .iter()
+                .copied()
+                .filter(|stand| self.routes.ground_command_reaches(origin.tile, *stand))
+                .collect::<Vec<_>>()
+        });
+        options.sort_unstable_by_key(|stand| (stand.chebyshev(origin.tile), stand.y, stand.x));
         let result = visit(&options);
         let mut retained = self.options.borrow_mut();
         if retained.len() < 256 {
             retained.insert((origin, target), options);
+        }
+        result
+    }
+
+    fn with_legal<T>(
+        &self,
+        kind: UnitKind,
+        target: Target,
+        visit: impl FnOnce(&[TilePos]) -> T,
+    ) -> T {
+        if let Some(tiles) = self.legal.borrow().get(&(kind, target)) {
+            return visit(tiles);
+        }
+        #[cfg(test)]
+        self.geometry_queries.set(self.geometry_queries.get() + 1);
+        let tiles = legal_suppression_tiles(
+            self.obs,
+            kind,
+            target,
+            self.intel,
+            self.public_map,
+            |tile| self.routes.open(tile),
+        );
+        let result = visit(&tiles);
+        let mut retained = self.legal.borrow_mut();
+        if retained.len() < 256 {
+            retained.insert((kind, target), tiles);
         }
         result
     }
@@ -97,8 +131,28 @@ impl<'a> CampaignRoutes<'a> {
         self.queries.get()
     }
 
+    #[cfg(test)]
+    pub(super) fn evaluated_geometry(&self) -> usize {
+        self.geometry_queries.get()
+    }
+
     pub(super) fn reaches(&self, origin: SuppressionOrigin, target: Target) -> bool {
-        self.with_stands(origin, target, |stands| !stands.is_empty())
+        if let Some(options) = self.options.borrow().get(&(origin, target)) {
+            return !options.is_empty();
+        }
+        if let Some(reachable) = self.reachable.borrow().get(&(origin, target)) {
+            return *reachable;
+        }
+        let reachable = self.with_legal(origin.kind, target, |tiles| {
+            tiles
+                .iter()
+                .any(|stand| self.routes.ground_command_reaches(origin.tile, *stand))
+        });
+        let mut retained = self.reachable.borrow_mut();
+        if retained.len() < 256 {
+            retained.insert((origin, target), reachable);
+        }
+        reachable
     }
 
     pub(super) fn assignment(
