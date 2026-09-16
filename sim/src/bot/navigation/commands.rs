@@ -742,6 +742,11 @@ struct BuildRouteKey {
     orientation: Option<Orientation>,
 }
 
+struct BuildLayout {
+    labels: std::sync::Arc<[u32]>,
+    blocked: Box<[bool]>,
+}
+
 struct CachedBuildRoute {
     key: BuildRouteKey,
     path: Option<Vec<TilePos>>,
@@ -753,7 +758,7 @@ pub(in crate::bot) struct BuildRouteProjection<'a> {
     routes: RouteProjection<'a>,
     scratch: std::cell::RefCell<crate::bot::navigation::search::Search>,
     last_path: std::cell::RefCell<Option<CachedBuildRoute>>,
-    last_layout: std::cell::RefCell<Option<(BuildCommandTarget, std::sync::Arc<[u32]>)>>,
+    last_layout: std::cell::RefCell<Option<(BuildCommandTarget, std::sync::Arc<BuildLayout>)>>,
     #[cfg(test)]
     searches: std::cell::Cell<usize>,
 }
@@ -804,7 +809,7 @@ impl<'a> BuildRouteProjection<'a> {
         &self,
         target: BuildCommandTarget,
         additional_blocked: impl Fn(TilePos) -> bool,
-    ) -> std::sync::Arc<[u32]> {
+    ) -> std::sync::Arc<BuildLayout> {
         let routes = &self.routes;
         let dimensions = (routes.obs.map_width, routes.obs.map_height);
         let mut open = routes.domain_open.clone();
@@ -821,10 +826,14 @@ impl<'a> BuildRouteProjection<'a> {
                 }
             }
         }
-        super::components::labels(dimensions, open)
+        let blocked = open.iter().map(|open| !open).collect();
+        std::sync::Arc::new(BuildLayout {
+            labels: super::components::labels(dimensions, open),
+            blocked,
+        })
     }
 
-    fn cached_layout(&self, target: BuildCommandTarget) -> std::sync::Arc<[u32]> {
+    fn cached_layout(&self, target: BuildCommandTarget) -> std::sync::Arc<BuildLayout> {
         let mut last = self.last_layout.borrow_mut();
         if let Some((previous, labels)) = last.as_ref()
             && *previous == target
@@ -841,22 +850,31 @@ impl<'a> BuildRouteProjection<'a> {
         unit: &UnitObs,
         target: BuildCommandTarget,
         orientation: Option<Orientation>,
-        labels: &[u32],
+        layout: &BuildLayout,
     ) -> Option<Vec<TilePos>> {
+        let labels = &layout.labels;
         let routes = &self.routes;
         let dimensions = (routes.obs.map_width, routes.obs.map_height);
-        selected_build_command_path_with_reach(
-            routes.obs,
-            unit,
-            target,
-            orientation,
-            |tile| {
-                super::flood::tile_index(dimensions.0, dimensions.1, tile)
-                    .is_some_and(|index| labels[index] != 0)
-            },
-            |goal| super::components::connects(dimensions, labels, unit.tile, goal),
-            &mut self.scratch.borrow_mut(),
-        )
+        super::paths::with_build_routes(|cache| {
+            let board = super::paths::PathBoard {
+                grid: super::KnownGrid::new(dimensions.0, dimensions.1, &layout.blocked)
+                    .expect("build layout covers the observation"),
+                class: super::paths::CacheClass::Ground,
+                cache,
+            };
+            selected_build_command_path_with_reach(
+                routes.obs,
+                unit,
+                target,
+                orientation,
+                |tile| {
+                    super::flood::tile_index(dimensions.0, dimensions.1, tile)
+                        .is_some_and(|index| labels[index] != 0)
+                },
+                |goal| super::components::connects(dimensions, labels, unit.tile, goal),
+                |goal| board.path(unit.tile, goal, None, &mut self.scratch.borrow_mut()),
+            )
+        })
     }
 
     fn cached_path(
@@ -929,9 +947,10 @@ impl<'a> BuildRouteProjection<'a> {
         unit: &UnitObs,
         target: BuildCommandTarget,
         orientation: Option<Orientation>,
-        labels: &[u32],
+        layout: &BuildLayout,
         blocked: &mut impl FnMut(TilePos) -> bool,
     ) -> bool {
+        let labels = &layout.labels;
         // Below the expansion cap, connectivity proves which preferred door
         // the command will reach. A dangerous door cannot have a safe route.
         if labels.len() > crate::stats::PATH_EXPANSION_CAP as usize {
@@ -970,14 +989,23 @@ fn selected_build_command_path_with_open(
     base_open: impl Fn(TilePos) -> bool,
     scratch: &mut crate::bot::navigation::search::Search,
 ) -> Option<Vec<TilePos>> {
+    let open = |tile| {
+        base_open(tile)
+            && (target.defer
+                || !super::BlockedRect {
+                    anchor: target.anchor,
+                    size: target.size,
+                }
+                .contains(tile))
+    };
     selected_build_command_path_with_reach(
         obs,
         unit,
         target,
         orientation,
-        base_open,
+        open,
         |_| true,
-        scratch,
+        |goal| scratch.path(obs.map_width, obs.map_height, unit.tile, goal, open),
     )
 }
 
@@ -988,7 +1016,7 @@ fn selected_build_command_path_with_reach(
     orientation: Option<Orientation>,
     base_open: impl Fn(TilePos) -> bool,
     reaches: impl Fn(TilePos) -> bool,
-    scratch: &mut crate::bot::navigation::search::Search,
+    mut path: impl FnMut(TilePos) -> Option<Vec<TilePos>>,
 ) -> Option<Vec<TilePos>> {
     if unit.kind.stats().domain != Domain::Ground || !in_bounds(obs, unit.tile) {
         return None;
@@ -1007,7 +1035,7 @@ fn selected_build_command_path_with_reach(
         if !reaches(goal) {
             continue;
         }
-        let Some(path) = scratch.path(obs.map_width, obs.map_height, unit.tile, goal, open) else {
+        let Some(path) = path(goal) else {
             continue;
         };
         return Some(path);
@@ -1766,12 +1794,77 @@ mod tests {
                 .collect::<Vec<_>>()
         });
         assert_eq!(actual, expected);
-        assert_eq!(optimized.paths, obs.my_units.len());
+        let distinct_goals = expected
+            .iter()
+            .map(|path| *path.as_ref().unwrap().last().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert_eq!(optimized.paths, distinct_goals);
         assert_eq!(
             optimized.searches,
             optimized.paths + optimized.components,
             "no A* search should exhaust a disconnected component: {optimized:?}"
         );
+    }
+
+    #[test]
+    fn builder_routes_share_adaptive_fields_without_changing_selected_paths() {
+        let mut obs = observation();
+        obs.map_width = 80;
+        obs.map_height = 60;
+        obs.known_rock = (4..60).map(|y| TilePos::new(40, y)).collect();
+        obs.my_units = (20..50)
+            .map(|y| {
+                let mut builder = unit(y as u32, Domain::Ground);
+                builder.tile = TilePos::new(70, y);
+                builder
+            })
+            .collect();
+        let target = BuildCommandTarget {
+            anchor: TilePos::new(4, 40),
+            size: (2, 2),
+            defer: false,
+        };
+        let (expected, reference) = super::super::work::measure(|| {
+            obs.my_units
+                .iter()
+                .map(|builder| {
+                    selected_build_command_path_with_open(
+                        &obs,
+                        builder,
+                        target,
+                        None,
+                        |tile| ground_open(&obs, tile),
+                        &mut crate::bot::navigation::search::Search::default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        assert!(expected.iter().all(Option::is_some));
+        super::super::paths::with_build_routes(|cache| {
+            *cache.borrow_mut() = Default::default();
+        });
+        super::super::components::clear();
+        let routes = BuildRouteProjection::new(&obs, None);
+        let (actual, work) = super::super::work::measure(|| {
+            obs.my_units
+                .iter()
+                .map(|builder| routes.cached_path(builder, target, None))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(actual, expected);
+        assert!(work.fields > 0, "{work:?}");
+        assert!(
+            work.expanded < reference.expanded,
+            "{work:?} vs {reference:?}"
+        );
+        let (_, warm) = super::super::work::measure(|| {
+            for (builder, expected) in obs.my_units.iter().zip(expected) {
+                assert_eq!(routes.cached_path(builder, target, None), expected);
+            }
+        });
+        assert_eq!(warm.expanded, 0);
+        assert_eq!(warm.fields, 0);
     }
 
     #[test]

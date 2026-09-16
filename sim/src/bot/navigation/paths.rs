@@ -18,6 +18,14 @@ type FieldKey = (Option<BlockedRect>, TilePos);
 
 type PathKey = (Option<BlockedRect>, TilePos, TilePos);
 
+thread_local! {
+    static BUILD_ROUTES: RefCell<PathQueries> = RefCell::default();
+}
+
+pub(in crate::bot) fn with_build_routes<T>(run: impl FnOnce(&RefCell<PathQueries>) -> T) -> T {
+    BUILD_ROUTES.with(run)
+}
+
 /// Bot-owned derived routes. Hypothetical layouts cannot evict normal boards;
 /// ground-only edits also leave air routes intact.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

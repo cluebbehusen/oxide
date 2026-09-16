@@ -337,7 +337,7 @@ impl UtilityPolicy {
         }
         candidates.sort_unstable_by_key(|candidate| candidate.key());
         let mut nearby = candidates.iter().collect::<Vec<_>>();
-        nearby.sort_by_key(|candidate| {
+        nearby.sort_by_cached_key(|candidate| {
             let size = kind.base_stats().size;
             let covers_builder = builders.iter().any(|builder| {
                 (0..size.0).contains(&(builder.tile.x - candidate.anchor.x))
