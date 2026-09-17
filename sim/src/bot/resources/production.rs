@@ -136,6 +136,19 @@ impl ProductionAccess {
         }
     }
 
+    /// The already-paid queue occurrences this view refuses, so a plan
+    /// derived against it can pass the same refusals to any sub-derivation
+    /// that rebuilds an access view of its own.
+    pub(crate) fn paid_exclusions(&self) -> &[(BuildingId, UnitKind, usize)] {
+        match self {
+            #[cfg(test)]
+            Self::Unrestricted => &[],
+            Self::RestrictedKinds {
+                paid_exclusions, ..
+            } => paid_exclusions,
+        }
+    }
+
     fn allows_paid(&self, producer: BuildingId, kind: UnitKind) -> bool {
         match self {
             #[cfg(test)]
