@@ -309,6 +309,7 @@ impl Brain {
         }
         if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
             commands.extend(recovery);
+            let recon_paid_exclusions = self.policy.state.reconnaissance.paid_exclusions();
             let strategic_recovery = {
                 let mind = &mut self.mind;
                 let PlayerFacingMind {
@@ -331,12 +332,15 @@ impl Brain {
                     .map(|building| building.anchor)
                     .unwrap_or(TilePos::new(0, 0));
                 strategy.recover_unpaid_connected_for_economy_emergency(
-                    profile,
-                    DifficultyTuning::for_level(profile.difficulty),
-                    &oriented,
-                    home,
-                    Some(oriented_public_map),
-                    orientation,
+                    super::strategy::EconomyEmergencyRecovery {
+                        profile,
+                        tuning: DifficultyTuning::for_level(profile.difficulty),
+                        obs: &oriented,
+                        home,
+                        public_map: Some(oriented_public_map),
+                        orientation,
+                        recon_paid_exclusions: &recon_paid_exclusions,
+                    },
                 )
             };
             if let Some(strategic_recovery) = strategic_recovery {

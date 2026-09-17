@@ -3007,25 +3007,44 @@ impl StrategicPlanner {
     /// and returns every still-routable member immediately.
     pub(in crate::bot) fn recover_unpaid_connected_for_economy_emergency(
         &mut self,
-        profile: &ResolvedProfile,
-        tuning: DifficultyTuning,
-        obs: &Observation,
-        home: TilePos,
-        public_map: Option<&PublicMapBriefing>,
-        orientation: Orientation,
+        context: EconomyEmergencyRecovery<'_>,
     ) -> Option<StrategicDecision> {
-        let paid = self.paid_connected_production(obs);
+        let EconomyEmergencyRecovery {
+            profile,
+            tuning,
+            obs,
+            home,
+            public_map,
+            orientation,
+            recon_paid_exclusions,
+        } = context;
+        // Prunes completed purchases so they cannot claim later ordinary queue
+        // work. This path returns before the normal pass would do it.
+        self.paid_connected_production(obs);
         let has_unpaid_provider = self.air.as_ref().is_some_and(|active| {
             if active.op.phase > AirOperationPhase::Assemble {
                 return false;
             }
-            let mut missing = connected_provider_shortfall(active, obs);
-            for purchase in &paid {
-                if let Some(count) = missing.get_mut(&purchase.kind) {
-                    *count = count.saturating_sub(1);
-                }
-            }
-            missing.values().any(|count| *count > 0)
+            let Some(package) = active.plan.connected_package.as_ref() else {
+                return false;
+            };
+            let snapshot = ResourceSnapshot::from_observation(obs);
+            let access = emergency_paid_queue_access(obs, recon_paid_exclusions);
+            // Demand a paid queue can still deliver costs no further scrap,
+            // whichever program bought it. The obligation path credits the same
+            // occurrences, so recalling the operation over them would abort an
+            // attack that needs no money.
+            connected_provider_shortfall(active, obs)
+                .into_iter()
+                .any(|(kind, count)| {
+                    count
+                        > count_paid_queued_ready_with_access(
+                            &snapshot,
+                            kind,
+                            package.preparation_deadline,
+                            &access,
+                        )
+                })
         });
         if !has_unpaid_provider {
             return None;
@@ -3587,6 +3606,20 @@ struct RecoveryReturnContext<'a> {
     public_map: Option<&'a PublicMapBriefing>,
     orientation: Orientation,
     issue_order: bool,
+}
+
+/// Same-observation inputs for one emergency economy recovery decision.
+pub(in crate::bot) struct EconomyEmergencyRecovery<'a> {
+    pub(in crate::bot) profile: &'a ResolvedProfile,
+    pub(in crate::bot) tuning: DifficultyTuning,
+    pub(in crate::bot) obs: &'a Observation,
+    pub(in crate::bot) home: TilePos,
+    pub(in crate::bot) public_map: Option<&'a PublicMapBriefing>,
+    pub(in crate::bot) orientation: Orientation,
+    /// Queue occurrences the reconnaissance program already holds. This path
+    /// returns before shared allocation runs, so it receives them directly
+    /// instead of reading an obligation view.
+    pub(in crate::bot) recon_paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
 }
 
 fn reconcile_recovery_return(
@@ -6059,6 +6092,25 @@ fn connected_provider_shortfall(
     missing
 }
 
+/// Accepts every observed queue occurrence except those another program holds.
+///
+/// Emergency economy recovery asks only whether remaining demand still needs
+/// scrap, so it does not narrow producers by tactical route the way a package
+/// derivation does. Route eligibility decides whether the operation can
+/// succeed, and the ordinary preparation checks own that question.
+fn emergency_paid_queue_access(
+    obs: &Observation,
+    excluded: &[(BuildingId, UnitKind, usize)],
+) -> ProductionAccess {
+    let paid_allowed = obs
+        .my_buildings
+        .iter()
+        .zip(&obs.my_queues)
+        .flat_map(|(producer, queue)| queue.iter().map(|&kind| (producer.id, kind)))
+        .collect();
+    ProductionAccess::restricted_kinds_with_paid(Vec::new(), paid_allowed).excluding_paid(excluded)
+}
+
 fn observed_queue_multiplicity(obs: &Observation) -> BTreeMap<(BuildingId, UnitKind), usize> {
     let mut queued = BTreeMap::new();
     for (producer, queue) in obs.my_buildings.iter().zip(&obs.my_queues) {
@@ -8334,15 +8386,128 @@ mod tests {
         assert!(planner.paid_connected_production(&obs).is_empty());
         assert!(
             planner
-                .recover_unpaid_connected_for_economy_emergency(
-                    &identity,
+                .recover_unpaid_connected_for_economy_emergency(EconomyEmergencyRecovery {
+                    profile: &identity,
                     tuning,
-                    &obs,
-                    HOME,
-                    None,
-                    test_orientation()
-                )
+                    obs: &obs,
+                    home: HOME,
+                    public_map: None,
+                    orientation: test_orientation(),
+                    recon_paid_exclusions: &[],
+                })
                 .is_none()
+        );
+    }
+
+    /// An admitted connected operation with its whole package still unpaid,
+    /// plus the provider jobs that demand covers.
+    fn unpaid_connected_operation(
+        obs: &Observation,
+    ) -> (StrategicPlanner, Vec<ConnectedProviderJob>) {
+        let mut planner = StrategicPlanner::new();
+        let proposal = planner
+            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                obs,
+                &ResourceSnapshot::from_observation(obs),
+                &knowledge(obs),
+                HOME,
+                coordination(None),
+            ))
+            .unwrap()
+            .unwrap();
+        let jobs = proposal.minimum_claims().provider_jobs().to_vec();
+        planner.commit_connected_proposal(proposal).unwrap();
+        assert!(
+            planner.paid_connected_production(obs).is_empty(),
+            "the fixture buys nothing, so the package is wholly outstanding"
+        );
+        assert!(!jobs.is_empty(), "the fixture must leave unpaid demand");
+        (planner, jobs)
+    }
+
+    /// Queues one already-paid unit per outstanding provider job, so the
+    /// operation needs no further scrap without owning any of that work.
+    fn queue_foreign_paid_providers(
+        obs: &mut Observation,
+        jobs: &[ConnectedProviderJob],
+    ) -> Vec<(BuildingId, UnitKind, usize)> {
+        let mut occurrences = Vec::new();
+        for job in jobs {
+            let producer = job.eligible_producers()[0];
+            let index = obs
+                .my_buildings
+                .iter()
+                .position(|building| building.id == producer)
+                .unwrap();
+            occurrences.push((producer, job.kind(), obs.my_queues[index].len()));
+            obs.my_queues[index].push(job.kind());
+        }
+        occurrences
+    }
+
+    #[test]
+    fn economy_recovery_recalls_an_operation_that_still_needs_scrap() {
+        let obs = production_hungry_connected_obs(120, 10_000);
+        let (mut planner, _) = unpaid_connected_operation(&obs);
+
+        assert!(
+            planner
+                .recover_unpaid_connected_for_economy_emergency(EconomyEmergencyRecovery {
+                    profile: &profile(),
+                    tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
+                    obs: &obs,
+                    home: HOME,
+                    public_map: None,
+                    orientation: test_orientation(),
+                    recon_paid_exclusions: &[],
+                })
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn economy_recovery_keeps_an_operation_a_foreign_paid_queue_already_covers() {
+        let mut obs = production_hungry_connected_obs(120, 10_000);
+        let (mut planner, jobs) = unpaid_connected_operation(&obs);
+        queue_foreign_paid_providers(&mut obs, &jobs);
+
+        assert!(
+            planner
+                .recover_unpaid_connected_for_economy_emergency(EconomyEmergencyRecovery {
+                    profile: &profile(),
+                    tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
+                    obs: &obs,
+                    home: HOME,
+                    public_map: None,
+                    orientation: test_orientation(),
+                    recon_paid_exclusions: &[],
+                })
+                .is_none(),
+            "queue work another program paid for needs no further scrap"
+        );
+    }
+
+    #[test]
+    fn economy_recovery_refuses_paid_queue_work_reconnaissance_holds() {
+        let mut obs = production_hungry_connected_obs(120, 10_000);
+        let (mut planner, jobs) = unpaid_connected_operation(&obs);
+        let held = queue_foreign_paid_providers(&mut obs, &jobs);
+
+        assert!(
+            planner
+                .recover_unpaid_connected_for_economy_emergency(EconomyEmergencyRecovery {
+                    profile: &profile(),
+                    tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
+                    obs: &obs,
+                    home: HOME,
+                    public_map: None,
+                    orientation: test_orientation(),
+                    recon_paid_exclusions: &held,
+                })
+                .is_some(),
+            "an occurrence another claimant owns cannot satisfy this demand"
         );
     }
 
