@@ -2,18 +2,12 @@
 
 use super::*;
 use crate::bot::executive::full_ground_strength;
-use crate::ids::BuildingId;
+use crate::bot::production::ImmediateProduction;
 use crate::stats::Role;
 
 /// Keep opening recovery shallow enough to react when the missing screen has
 /// been restored. Standing-force production owns all later combat demand.
 const PLANNING_DEPTH: usize = 2;
-
-#[derive(Debug, Clone, Copy)]
-struct Producer {
-    id: BuildingId,
-    depth: usize,
-}
 
 /// Exact ordinary-combat strength projected after the intents already emitted
 /// during this think.
@@ -82,50 +76,17 @@ pub(super) fn fill_combat_core_to_strength(
     }
     let mut projected_strength = status.projected_strength;
 
-    let mut foundries: Vec<Producer> = obs
-        .my_buildings
-        .iter()
-        .enumerate()
-        .filter(|(_, building)| building.built && building.kind == BuildingKind::Foundry)
-        .map(|(queue_index, building)| Producer {
-            id: building.id,
-            depth: obs
-                .my_queues
-                .get(queue_index)
-                .map_or(PLANNING_DEPTH, Vec::len)
-                .saturating_add(planned_at(intents, building.id)),
-        })
-        .collect();
-    foundries.sort_by_key(|producer| producer.id);
-    if foundries.is_empty() {
-        return status;
-    }
-
+    let mut production = ImmediateProduction::new(obs, producer_lane_reservations, intents);
     let sentinel_cost = UnitKind::Sentinel.stats().cost;
-    'depths: for target_depth in 1..=PLANNING_DEPTH {
-        for foundry in &mut foundries {
-            if projected_strength >= status.target_strength {
-                break 'depths;
-            }
-            if foundry.depth >= target_depth
-                || *budget < sentinel_cost.saturating_add(capital_reserve)
-            {
-                continue;
-            }
-            let prior_immediate = planned_kinds_at(intents, foundry.id);
-            if !producer_lane_reservations.allows_raw_immediate_append(
-                foundry.id,
-                &prior_immediate,
-                UnitKind::Sentinel,
-            ) {
-                continue;
-            }
+    for target_depth in 1..=PLANNING_DEPTH {
+        while projected_strength < status.target_strength
+            && *budget >= sentinel_cost.saturating_add(capital_reserve)
+        {
+            let Some(foundry) = production.lowest_id(UnitKind::Sentinel, target_depth) else {
+                break;
+            };
             *budget -= sentinel_cost;
-            intents.push(Intent::TrainAt {
-                building: foundry.id,
-                kind: UnitKind::Sentinel,
-            });
-            foundry.depth += 1;
+            intents.push(production.append(foundry));
             projected_strength = projected_strength.saturating_add(sentinel_strength);
         }
     }
@@ -201,28 +162,6 @@ fn missing_core_scrap(missing_strength: u64, sentinel_strength: u64, sentinel_co
 
 fn ordinary_core_unit(kind: UnitKind) -> bool {
     matches!(kind.role(), Role::Sentinel | Role::Warden | Role::Breaker)
-}
-
-pub(super) fn planned_at(intents: &[Intent], building: BuildingId) -> usize {
-    intents
-        .iter()
-        .filter(|intent| {
-            matches!(intent, Intent::TrainAt { building: planned, .. } if *planned == building)
-        })
-        .count()
-}
-
-pub(super) fn planned_kinds_at(intents: &[Intent], building: BuildingId) -> Vec<UnitKind> {
-    intents
-        .iter()
-        .filter_map(|intent| match intent {
-            Intent::TrainAt {
-                building: planned,
-                kind,
-            } if *planned == building => Some(*kind),
-            _ => None,
-        })
-        .collect()
 }
 
 #[cfg(test)]

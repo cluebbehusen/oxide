@@ -5,6 +5,7 @@ use super::construction::FOUNDRY_RECOVERY_TICKS;
 #[cfg(test)]
 use super::construction::FoundrySavingCommitment;
 use super::*;
+use crate::bot::production::ImmediateProduction;
 use crate::bot::query_work::QueryPurpose;
 use crate::stats::Role;
 
@@ -12,12 +13,6 @@ use crate::stats::Role;
 struct ProductionGuards {
     voluntary: u32,
     capital: u32,
-}
-
-#[derive(Clone, Copy)]
-struct ProducerSelectionContext<'a> {
-    reservations: &'a ProducerLaneReservations,
-    account_same_think_intents: bool,
 }
 
 impl UtilityPolicy {
@@ -253,38 +248,12 @@ impl UtilityPolicy {
             .saturating_add(planned_harvesters);
         if harvesters < immediate_harvester_target(dials) as usize {
             let harvester_cost = UnitKind::Harvester.stats().cost;
-            let mut foundries: Vec<_> = obs
-                .my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, building)| {
-                    building.built
-                        && building.kind == BuildingKind::Foundry
-                        && producer_lane_reservations.allows_raw_immediate_append(
-                            building.id,
-                            &super::production::planned_kinds_at(intents, building.id),
-                            UnitKind::Harvester,
-                        )
-                })
-                .map(|(queue_index, building)| {
-                    (
-                        building.id,
-                        obs.my_queues
-                            .get(queue_index)
-                            .map_or(2, Vec::len)
-                            .saturating_add(super::production::planned_at(intents, building.id)),
-                    )
-                })
-                .collect();
-            foundries.sort_unstable_by_key(|(building, _)| *building);
-            if let Some((building, _)) = foundries.into_iter().find(|(_, depth)| *depth < 2)
+            let mut production = ImmediateProduction::new(obs, producer_lane_reservations, intents);
+            if let Some(foundry) = production.lowest_id(UnitKind::Harvester, 2)
                 && *budget >= harvester_cost.saturating_add(home_extractor_reserve)
             {
                 *budget -= harvester_cost;
-                intents.push(Intent::TrainAt {
-                    building,
-                    kind: UnitKind::Harvester,
-                });
+                intents.push(production.append(foundry));
             }
         }
 
@@ -372,55 +341,6 @@ impl UtilityPolicy {
         }
     }
 
-    /// The lowest-id built producer of `kind` with its queue index — the
-    /// canonical choice every purchase stage shares, so no stage can
-    /// restate the id tie-break slightly differently. Reservations and
-    /// purchases already admitted in this think consume queue capacity.
-    fn open_producer<'a>(
-        obs: &'a Observation,
-        producer_kind: BuildingKind,
-        unit_kind: UnitKind,
-        depth_limit: usize,
-        context: ProducerSelectionContext<'_>,
-        intents: &[Intent],
-    ) -> Option<(usize, &'a BuildingObs)> {
-        let built = || {
-            obs.my_buildings
-                .iter()
-                .enumerate()
-                .filter(|(_, building)| building.kind == producer_kind && building.built)
-        };
-        let planned_depth = |building| {
-            if context.account_same_think_intents {
-                super::production::planned_at(intents, building)
-            } else {
-                0
-            }
-        };
-        let planned_kinds = |building| {
-            if context.account_same_think_intents {
-                super::production::planned_kinds_at(intents, building)
-            } else {
-                Vec::new()
-            }
-        };
-        let open = |(index, building): &(usize, &'a BuildingObs)| {
-            obs.my_queues.get(*index).is_some_and(|queue| {
-                queue.len().saturating_add(planned_depth(building.id)) < depth_limit
-            }) && context.reservations.allows_raw_immediate_append(
-                building.id,
-                &planned_kinds(building.id),
-                unit_kind,
-            )
-        };
-
-        if context.account_same_think_intents {
-            built().filter(open).min_by_key(|(_, building)| building.id)
-        } else {
-            built().min_by_key(|(_, building)| building.id).filter(open)
-        }
-    }
-
     fn alive_count(obs: &Observation, kind: UnitKind) -> usize {
         obs.my_units.iter().filter(|u| u.kind == kind).count()
     }
@@ -439,7 +359,7 @@ impl UtilityPolicy {
     fn deep_tech_drip(
         dials: &Dials,
         obs: &Observation,
-        producer_context: ProducerSelectionContext<'_>,
+        production: &mut ImmediateProduction<'_>,
         voluntary_guard: u32,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
@@ -449,15 +369,8 @@ impl UtilityPolicy {
         }
         let alive = |kind| Self::alive_count(obs, kind);
         let queued = |kind| Self::queued_count(obs, kind);
-        let crucible = Self::open_producer(
-            obs,
-            BuildingKind::Crucible,
-            UnitKind::Breaker,
-            1,
-            producer_context,
-            intents,
-        );
-        if let Some((_, crucible)) = crucible
+        let crucible = production.lowest_id(UnitKind::Breaker, 1);
+        if let Some(crucible) = crucible
             && alive(UnitKind::Breaker) + queued(UnitKind::Breaker) < 2
             && *budget
                 >= UnitKind::Breaker
@@ -467,20 +380,10 @@ impl UtilityPolicy {
                     .saturating_add(voluntary_guard)
         {
             *budget -= UnitKind::Breaker.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: crucible.id,
-                kind: UnitKind::Breaker,
-            });
+            intents.push(production.append(crucible));
         }
-        let fabricator = Self::open_producer(
-            obs,
-            BuildingKind::Fabricator,
-            UnitKind::Warden,
-            SHALLOW_QUEUE_DEPTH,
-            producer_context,
-            intents,
-        );
-        if let Some((_, fabricator)) = fabricator
+        let fabricator = production.lowest_id(UnitKind::Warden, SHALLOW_QUEUE_DEPTH);
+        if let Some(fabricator) = fabricator
             && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
             && *budget
                 >= UnitKind::Warden
@@ -490,28 +393,18 @@ impl UtilityPolicy {
                     .saturating_add(voluntary_guard)
         {
             *budget -= UnitKind::Warden.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: fabricator.id,
-                kind: UnitKind::Warden,
-            });
+            intents.push(production.append(fabricator));
         }
         // Once the whole tree stands, a small bomber wing: the payload
         // that decides sieges — and island wars, where no crawler ever
         // crosses.
         let bomber_kind = Role::Bomber.unit_for(obs.faction);
-        let airworks = Self::open_producer(
-            obs,
-            BuildingKind::Airworks,
-            bomber_kind,
-            SHALLOW_QUEUE_DEPTH,
-            producer_context,
-            intents,
-        );
+        let airworks = production.lowest_id(bomber_kind, SHALLOW_QUEUE_DEPTH);
         let crucible_stands = obs
             .my_buildings
             .iter()
             .any(|b| b.kind == BuildingKind::Crucible && b.built);
-        if let Some((_, airworks)) = airworks
+        if let Some(airworks) = airworks
             && crucible_stands
             && alive(bomber_kind) + queued(bomber_kind) < 2
             && *budget
@@ -522,10 +415,7 @@ impl UtilityPolicy {
                     .saturating_add(voluntary_guard)
         {
             *budget -= bomber_kind.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: airworks.id,
-                kind: bomber_kind,
-            });
+            intents.push(production.append(airworks));
         }
     }
 
@@ -536,7 +426,7 @@ impl UtilityPolicy {
         &self,
         dials: &Dials,
         obs: &Observation,
-        producer_context: ProducerSelectionContext<'_>,
+        production: &mut ImmediateProduction<'_>,
         guards: ProductionGuards,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
@@ -545,14 +435,6 @@ impl UtilityPolicy {
             voluntary: voluntary_guard,
             capital,
         } = guards;
-        if !producer_context.account_same_think_intents
-            && !obs
-                .my_buildings
-                .iter()
-                .any(|building| building.kind == BuildingKind::Fabricator && building.built)
-        {
-            return;
-        }
         let alive = |kind| Self::alive_count(obs, kind);
         let queued = |kind| Self::queued_count(obs, kind);
         let enemy_turrets = obs
@@ -567,16 +449,7 @@ impl UtilityPolicy {
             .count();
         let aa_kind = Role::AntiAir.unit_for(obs.faction);
         let wing_kind = Role::AirGround.unit_for(obs.faction);
-        let open = |producer_kind, unit_kind| {
-            Self::open_producer(
-                obs,
-                producer_kind,
-                unit_kind,
-                SHALLOW_QUEUE_DEPTH,
-                producer_context,
-                intents,
-            )
-        };
+        let open = |unit_kind| production.lowest_id(unit_kind, SHALLOW_QUEUE_DEPTH);
         let lancer = UnitKind::Lancer.stats().cost;
         let scuttler = UnitKind::Scuttler.stats().cost;
         let reserve = UnitKind::Sentinel.stats().cost;
@@ -596,59 +469,44 @@ impl UtilityPolicy {
         if dials.aa_response
             && alive(aa_kind) + queued(aa_kind) < want_aa
             && *budget >= aa_kind.stats().cost.saturating_add(voluntary_guard)
-            && let Some((_, fabricator)) = open(BuildingKind::Fabricator, aa_kind)
+            && let Some(fabricator) = open(aa_kind)
         {
             *budget -= aa_kind.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: fabricator.id,
-                kind: aa_kind,
-            });
+            intents.push(production.append(fabricator));
         } else if enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
             && *budget >= lancer.saturating_add(voluntary_guard)
-            && let Some((_, fabricator)) = open(BuildingKind::Fabricator, UnitKind::Lancer)
+            && let Some(fabricator) = open(UnitKind::Lancer)
         {
             *budget -= lancer;
-            intents.push(Intent::TrainAt {
-                building: fabricator.id,
-                kind: UnitKind::Lancer,
-            });
+            intents.push(production.append(fabricator));
         } else if !dials.adaptive_composition
             && alive(UnitKind::Scuttler) < 4
             && enemy_harvesters >= 2
             && *budget >= scuttler + reserve
-            && let Some((_, raid_bay)) = open(BuildingKind::Foundry, UnitKind::Scuttler)
+            && let Some(raid_bay) = open(UnitKind::Scuttler)
         {
             // The Scuttler homes at the Foundry on the closed tree.
             *budget -= scuttler;
-            intents.push(Intent::TrainAt {
-                building: raid_bay.id,
-                kind: UnitKind::Scuttler,
-            });
+            intents.push(production.append(raid_bay));
         } else if !dials.adaptive_composition
             && dials.air_harass
             && alive(wing_kind) + queued(wing_kind) < AIR_WING
             && (enemy_harvesters >= 2 || !obs.enemy_buildings.is_empty())
             && *budget >= wing_kind.stats().cost + reserve
-            && let Some((_, airworks)) = open(BuildingKind::Airworks, wing_kind)
+            && let Some(airworks) = open(wing_kind)
         {
             // A wing for the harvest line — bought once raiding has
             // something to eat OR the enemy base is known at all
             // (on an island map the wing IS the reach), and only
             // from a standing Airworks.
             *budget -= wing_kind.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: airworks.id,
-                kind: wing_kind,
-            });
+            intents.push(production.append(airworks));
         } else if !dials.adaptive_composition
             && *budget >= lancer + reserve + capital
-            && let Some((_, fabricator)) = open(BuildingKind::Fabricator, UnitKind::Lancer)
+            && let Some(fabricator) = open(UnitKind::Lancer)
         {
             *budget -= lancer;
-            intents.push(Intent::TrainAt {
-                building: fabricator.id,
-                kind: UnitKind::Lancer,
-            });
+            intents.push(production.append(fabricator));
         }
     }
 
@@ -690,10 +548,6 @@ impl UtilityPolicy {
             voluntary_scrap_guard,
             producer_lane_reservations,
         } = context;
-        let producer_context = ProducerSelectionContext {
-            reservations: producer_lane_reservations,
-            account_same_think_intents: true,
-        };
         let queued = |kind| Self::queued_count(obs, kind);
         let alive = |kind| Self::alive_count(obs, kind);
         let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
@@ -701,6 +555,7 @@ impl UtilityPolicy {
             self.finish_foundry_safety(dials, obs, context, foundry, intents);
             return true;
         }
+        let mut production = ImmediateProduction::new(obs, producer_lane_reservations, intents);
         let voluntary_guard = voluntary_scrap_guard.amount(0);
         let capital = voluntary_guard;
         let allow_repeatable_ground =
@@ -725,24 +580,14 @@ impl UtilityPolicy {
                 })
                 .count();
             let scout_count = alive(scout_kind) + queued(scout_kind) + planned_scouts;
-            let airworks = Self::open_producer(
-                obs,
-                BuildingKind::Airworks,
-                scout_kind,
-                2,
-                producer_context,
-                intents,
-            );
+            let airworks = production.lowest_id(scout_kind, 2);
             if scout_count == 0
-                && let Some((_, airworks)) = airworks
+                && let Some(airworks) = airworks
             {
                 let price = scout_kind.stats().cost;
                 if *budget >= price.saturating_add(voluntary_guard) {
                     *budget -= price;
-                    intents.push(Intent::TrainAt {
-                        building: airworks.id,
-                        kind: scout_kind,
-                    });
+                    intents.push(production.append(airworks));
                 } else {
                     // Reconnaissance is the prerequisite for every
                     // target-driven island purchase, so cheaper drips
@@ -766,7 +611,7 @@ impl UtilityPolicy {
         Self::deep_tech_drip(
             dials,
             obs,
-            producer_context,
+            &mut production,
             voluntary_guard,
             budget,
             intents,
@@ -775,37 +620,17 @@ impl UtilityPolicy {
         if harvesters < immediate_harvester_target(dials) as usize
             && *budget >= UnitKind::Harvester.stats().cost
         {
-            if let Some((_, foundry)) = Self::open_producer(
-                obs,
-                BuildingKind::Foundry,
-                UnitKind::Harvester,
-                SHALLOW_QUEUE_DEPTH,
-                producer_context,
-                intents,
-            ) {
+            if let Some(foundry) = production.lowest_id(UnitKind::Harvester, SHALLOW_QUEUE_DEPTH) {
                 *budget -= UnitKind::Harvester.stats().cost;
-                intents.push(Intent::TrainAt {
-                    building: foundry.id,
-                    kind: UnitKind::Harvester,
-                });
+                intents.push(production.append(foundry));
             }
         } else if !dials.adaptive_composition
             && allow_repeatable_ground
             && *budget >= UnitKind::Sentinel.stats().cost + capital
-            && let Some((_, foundry)) = Self::open_producer(
-                obs,
-                BuildingKind::Foundry,
-                UnitKind::Sentinel,
-                SHALLOW_QUEUE_DEPTH,
-                producer_context,
-                intents,
-            )
+            && let Some(foundry) = production.lowest_id(UnitKind::Sentinel, SHALLOW_QUEUE_DEPTH)
         {
             *budget -= UnitKind::Sentinel.stats().cost;
-            intents.push(Intent::TrainAt {
-                building: foundry.id,
-                kind: UnitKind::Sentinel,
-            });
+            intents.push(production.append(foundry));
         }
 
         if !dials.tech {
@@ -815,7 +640,7 @@ impl UtilityPolicy {
             self.fabricator_drip(
                 dials,
                 obs,
-                producer_context,
+                &mut production,
                 ProductionGuards {
                     voluntary: voluntary_guard,
                     capital,
@@ -1644,12 +1469,12 @@ mod tests {
             "the strategic replacement scout satisfies utility reconnaissance"
         );
         assert_eq!(
-            super::production::planned_at(&intents, airworks),
+            intents.iter().filter(|intent| matches!(intent, Intent::TrainAt { building, .. } if *building == airworks)).count(),
             2,
             "utility must honor the full strategic Airworks prelude: {intents:?}"
         );
         assert_eq!(
-            super::production::planned_at(&intents, second_airworks),
+            intents.iter().filter(|intent| matches!(intent, Intent::TrainAt { building, .. } if *building == second_airworks)).count(),
             0,
             "an active operation owns every Airworks queue until its cohort is complete: {intents:?}"
         );

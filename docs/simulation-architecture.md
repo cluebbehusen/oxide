@@ -874,12 +874,17 @@ Starvation and salvage use the fixed admission bank; distinct retained deferred
 foundations and protected Foundry capital reduce the later spending allowance.
 Shared allocation owns exact unit, builder, site, and producer claims. Residual
 channels respect reservations, same-think intents, and accepted producer lanes.
-The observation remains immutable: explicit foundation cancellations determine
-available workers, projected sites, placement, and producer exits. Cancellations
-do not release paid sites or queued programs. Same-decision stop commands still
-reserve their workers against construction. The shared `Executive` owns
-command-lowering bookkeeping and converts the combined intents into ordinary
-candidate commands.
+Opening worker and combat-core purchases, residual utility, and strategic air
+scheduling share immediate queue accounting. It combines paid queue depth with
+staged appends and checks accepted future reservations without mutating the
+observation. Domains retain purchase priorities, spending limits, queue-depth
+limits, and producer ordering; immediate accounting does not rerun horizon
+planning or spend forecast income. The observation remains immutable: explicit
+foundation cancellations determine available workers, projected sites,
+placement, and producer exits. Cancellations do not release paid sites or queued
+programs. Same-decision stop commands still reserve their workers against
+construction. The shared `Executive` owns command-lowering bookkeeping and
+converts the combined intents into ordinary candidate commands.
 
 Reusable air-operation survivors keep their roles only through the operation
 cooldown; aborts caused by unreachable routes or newly observed defenses release

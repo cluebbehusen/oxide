@@ -3249,10 +3249,6 @@ mod tests {
                     && *building == BuildingId(10)
                     && *kind == UnitKind::Sentinel
         ));
-        assert_eq!(
-            super::production::planned_kinds_at(&intents, BuildingId(10)),
-            vec![UnitKind::Sentinel]
-        );
     }
 
     #[test]
