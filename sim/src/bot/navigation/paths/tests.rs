@@ -4,6 +4,65 @@ use crate::bot::query_work::QueryPurpose;
 use crate::stats::PATH_EXPANSION_CAP;
 
 #[test]
+fn command_surfaces_share_a_bounded_budget_without_evicting_each_seat() {
+    let cache = RefCell::new(PathQueries::default());
+    let surfaces = (0..9)
+        .map(|blocked_tile| {
+            let mut blocked = vec![false; 120];
+            blocked[blocked_tile] = true;
+            blocked
+        })
+        .collect::<Vec<_>>();
+    let query = |surface: usize| {
+        PathBoard {
+            query_purpose: QueryPurpose::NavigationTest,
+            grid: KnownGrid::new(12, 10, &surfaces[surface]).unwrap(),
+            class: CacheClass::Command,
+            cache: &cache,
+        }
+        .path(
+            TilePos::new(1, 1),
+            TilePos::new(10, 8),
+            None,
+            &mut Search::default(),
+        )
+    };
+    let expected = (0..8).map(query).collect::<Vec<_>>();
+    let (_, warm) = super::super::work::measure(|| {
+        for (surface, expected) in expected.iter().enumerate() {
+            assert_eq!(&query(surface), expected);
+        }
+    });
+    assert_eq!(warm.hits, 8);
+    assert_eq!(warm.expanded, 0);
+    assert_eq!(query(0), expected[0]);
+    assert!(query(8).is_some());
+    let (_, retained) = super::super::work::measure(|| assert_eq!(query(0), expected[0]));
+    assert_eq!(retained.hits, 1);
+    let (_, evicted) = super::super::work::measure(|| assert_eq!(query(1), expected[1]));
+    assert!(evicted.expanded > 0);
+    let retained = cache.borrow();
+    assert_eq!(retained.command.len(), 8);
+    assert_eq!(
+        retained
+            .command
+            .iter()
+            .map(|generation| generation.budget)
+            .sum::<usize>(),
+        8 * MIB
+    );
+    for generation in &retained.command {
+        assert!(
+            generation.blocked.len()
+                + generation.path_bytes
+                + generation.distance_bytes
+                + generation.overlay_distance_bytes
+                <= generation.budget
+        );
+    }
+}
+
+#[test]
 fn endpoint_batches_use_refined_distances_before_building_more_paths() {
     let grid = TestGrid::new(64, 32, |tile| {
         if tile.x == 20 && tile.y < 31 {

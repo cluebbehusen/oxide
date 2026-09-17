@@ -40,6 +40,7 @@ pub(in crate::bot) struct PathQueries {
     ground: Vec<Generation>,
     air: Vec<Generation>,
     hypothetical: Vec<Generation>,
+    command: Vec<Generation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +128,7 @@ pub(in crate::bot) enum CacheClass {
     Ground,
     Air,
     Hypothetical,
+    Command,
 }
 
 #[derive(Clone, Copy)]
@@ -143,11 +145,14 @@ impl PathQueries {
             CacheClass::Air => (&mut self.air, grid.blocked, 8 * MIB, 1),
             CacheClass::Hypothetical => (&mut self.hypothetical, grid.blocked, MIB, 2),
             CacheClass::Ground => (&mut self.ground, grid.blocked, 8 * MIB, 1),
+            // A worker visits several seats with distinct fog-honest surfaces.
+            // Keep their ordinary routes within one shared 8 MiB allowance.
+            CacheClass::Command => (&mut self.command, grid.blocked, MIB, 8),
         };
         if blocked.len() > budget {
             return None;
         }
-        if let Some(index) = entries.iter().position(|entry| {
+        if let Some(index) = entries.iter().rposition(|entry| {
             entry.width == grid.width
                 && entry.height == grid.height
                 && entry.blocked.as_ref() == blocked
