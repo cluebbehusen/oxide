@@ -39,7 +39,6 @@ mod production;
 pub mod profile;
 mod query_work;
 pub mod raid;
-mod residual_coordination;
 mod resources;
 mod standing_force;
 pub mod strategy;

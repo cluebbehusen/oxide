@@ -719,10 +719,27 @@ tactical minimum and no personality eligibility or group-size cap.
 
 The player-facing controller distinguishes current sight from remembered
 evidence in `StrategicIntelligence`. Persistent planners retain phased air,
-lift, raid, and allied-relief operations across decisions. One
-`AllocationSession` coordinates their retained work with current investment
-opportunities before `UtilityPolicy` fills the remaining economy, production,
-defense, support, and combat work.
+lift, raid, and allied-relief operations across decisions. Every maintained
+controller owns all four planners; idle operations are optional, planners are
+not. `allocation::admit_decision` owns their advancement, shared portfolio
+settlement, lower-priority operation admission, and final utility grant. `Brain`
+supplies oriented evidence and lowers the admitted intents without
+reconstructing funding policy.
+
+The portfolio remains one `AllocationSession` transaction. Subsequent lift and
+raid admission preserves the existing priority tiers and uses explicit remaining
+actor, capital, and producer access. Fresh lift work is prepared on a candidate,
+validated as an exact `ClaimBundle`, and committed only after its ownership and
+current-bank bounds hold. No live lift is mutated and then rolled back for a
+fresh-admission failure. Retained paid occurrences and future schedules keep
+their existing owners and deadlines. A `UtilityGrant` carries the final
+protected units, core exclusions, current commitment, future producer lanes, and
+retained construction handoff into `UtilityPolicy`.
+
+Admission remains ordered within a seat: later grants depend on earlier exact
+claims. Independent seats use the existing bounded executor. Shared immutable
+query inputs support parallel evaluation, but same-seat planning allowances and
+ownership cannot depend on worker completion order.
 
 The session constructs one immutable `ResourceSnapshot` from the current
 `Observation`. It keeps current scrap distinct from a conservative forecast

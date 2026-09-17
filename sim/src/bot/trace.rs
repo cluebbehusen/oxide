@@ -3277,16 +3277,10 @@ pub struct LoweringTrace {
 
 /// Captures only planner diagnostics and fog-honest intelligence.
 pub(super) fn connected_force_trace(
-    planner: Option<&StrategicPlanner>,
+    planner: &StrategicPlanner,
     intelligence: &StrategicIntelligence,
     rejected_candidate: Option<&RejectedConnectedCandidate>,
 ) -> ConnectedForceTrace {
-    let Some(planner) = planner else {
-        return ConnectedForceTrace {
-            status: ConnectedForceStatus::Disabled,
-            ..ConnectedForceTrace::default()
-        };
-    };
     let operation = planner.air_operation();
     let package = planner
         .connected_package_diagnostics()

@@ -111,10 +111,10 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let dials = Dials::scripted(&profile, tuning);
         let briefing = connected_briefing(&observation);
         let intelligence = StrategicIntelligence::new();
-        let mut strategy = None;
-        let mut lifts = Some(lift);
-        let mut team = None;
-        let mut raids = None;
+        let mut strategy = StrategicPlanner::new();
+        let mut lifts = lift;
+        let mut team = TeamReliefPlanner::new();
+        let mut raids = RaidPlanner::new();
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let mut session = AllocationSession::new(
             AllocationSessionContext {
@@ -143,7 +143,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         session
             .retained_work()
             .reconcile_lift_funding_after_saved_capital(&mut saved, &mut obligations);
-        let lift = session.participants.lifts.as_ref().unwrap();
+        let lift = &session.participants.lifts;
         assert_eq!(lift.operation().unwrap().payload, operation.payload);
         assert_eq!(lift.operation().unwrap().deadline, operation.deadline);
         if foundry_accepted_at < operation.started_at {
@@ -228,10 +228,10 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
     let mut policy = UtilityPolicy::new();
-    let mut strategy = None;
-    let mut lifts = Some(lift);
-    let mut team = None;
-    let mut raids = None;
+    let mut strategy = StrategicPlanner::new();
+    let mut lifts = lift;
+    let mut team = TeamReliefPlanner::new();
+    let mut raids = RaidPlanner::new();
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut session = AllocationSession::new(
         AllocationSessionContext {
@@ -271,7 +271,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     assert!(obligations.active_lift.is_none());
     assert_eq!(obligations.obligations.len(), 1);
     assert_eq!(obligations.obligations[0].owner(), protected.owner());
-    let lift = session.participants.lifts.as_ref().unwrap();
+    let lift = &session.participants.lifts;
     assert_eq!(lift.operation().unwrap().phase, LiftPhase::Recover);
     assert_eq!(lift.operation().unwrap().payload, members);
     let mut allocation =
@@ -438,7 +438,7 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
         .expect("the fixture installs one exact saved Foundry");
 
     observation.tick = observation.tick.saturating_add(12);
-    let mut strategy = Some(planner);
+    let mut strategy = planner;
     let outcome = run_connected_session(&observation, &mut policy, &mut strategy);
 
     assert!(outcome.allocation_ok);
@@ -456,8 +456,7 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
         "ample residual capital should still admit fresh standing-force production"
     );
     let retained = strategy
-        .as_ref()
-        .and_then(|planner| planner.active_connected_obligation(&observation))
+        .active_connected_obligation(&observation)
         .expect("the revised connected operation remains active");
     assert_eq!(retained.deadline(), fixed_deadline);
     assert_eq!(
@@ -562,10 +561,10 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
     let mut policy = UtilityPolicy::new();
-    let mut strategy = Some(planner);
-    let mut lifts = None;
-    let mut team = None;
-    let mut raids = None;
+    let mut strategy = planner;
+    let mut lifts = LiftPlanner::new();
+    let mut team = TeamReliefPlanner::new();
+    let mut raids = RaidPlanner::new();
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut session = AllocationSession::new(
         AllocationSessionContext {
@@ -725,10 +724,10 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
     let original_policy = policy.clone();
-    let mut strategy = None;
-    let mut lifts = None;
-    let mut team = None;
-    let mut raids = None;
+    let mut strategy = StrategicPlanner::new();
+    let mut lifts = LiftPlanner::new();
+    let mut team = TeamReliefPlanner::new();
+    let mut raids = RaidPlanner::new();
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut prepared = prepared(&observation, None);
     prepared.resources = resources;
@@ -835,7 +834,7 @@ fn connected_enqueue_missed_after_rollback_enters_bounded_recovery() {
         committed_scrap: UnitKind::Sentinel.stats().cost,
     };
     let mut policy = UtilityPolicy::new();
-    let mut strategy = Some(planner);
+    let mut strategy = planner;
     let failed = run_connected_session_with_team_decision(
         &observation,
         &mut policy,
@@ -847,8 +846,7 @@ fn connected_enqueue_missed_after_rollback_enters_bounded_recovery() {
         "the unrelated invalid producer must roll the whole allocation pass back"
     );
     let retained = strategy
-        .as_ref()
-        .and_then(|planner| planner.active_connected_obligation(&observation))
+        .active_connected_obligation(&observation)
         .expect("rollback must preserve the previously admitted operation");
     assert!(
         retained
