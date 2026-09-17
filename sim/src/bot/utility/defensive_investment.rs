@@ -13,6 +13,8 @@ use crate::bot::Orientation;
 use crate::bot::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::resources::{ResourceSnapshot, SiteFootprint};
 use crate::ids::UnitId;
 use crate::stats::{BuildingKind, Domain};
@@ -836,7 +838,7 @@ mod tests {
         let mut fabricator = building(BuildingKind::Fabricator, true);
         fabricator.id = BuildingId(2);
         fabricator.anchor = TilePos::new(7, 6);
-        let observation = Observation {
+        let observation = Observation::from_data(ObservationData {
             tick: 1_000,
             me: PlayerId(0),
             scrap: 1_000,
@@ -859,8 +861,8 @@ mod tests {
             known_rock: known_peaks.clone(),
             known_peaks,
             faction: Faction::Ferrous,
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         (observation, briefing)
     }
 
@@ -1435,10 +1437,10 @@ mod tests {
 
     #[test]
     fn only_ground_threatening_air_evidence_unlocks_flak() {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 200,
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         obs.blips.push(TilePos::new(4, 4));
         assert!(!confirmed_air_threat(&obs, &[], &[]));
 
@@ -1599,10 +1601,10 @@ mod tests {
 
     #[test]
     fn array_case_is_bounded_below_decisive_and_pressing() {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 20,
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         obs.my_units.push(unit(
             3,
             PlayerId(0),

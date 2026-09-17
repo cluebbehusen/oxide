@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::observation::{BuildingObs, UnitObs};
 use crate::command::{Command, PlayerCommand};
 use crate::event::Event;
@@ -42,7 +44,7 @@ fn building(id: u32, kind: BuildingKind, anchor: TilePos, built: bool) -> Buildi
 }
 
 fn observation(scrap: u32) -> Observation {
-    Observation {
+    Observation::from_data(ObservationData {
         me: ME,
         scrap,
         faction: Faction::Ferrous,
@@ -50,8 +52,8 @@ fn observation(scrap: u32) -> Observation {
         map_height: 60,
         visible: vec![true; 80 * 60],
         explored: vec![true; 80 * 60],
-        ..Observation::default()
-    }
+        ..Default::default()
+    })
 }
 
 fn scenario_players(scrap: u32) -> Vec<PlayerSpec> {

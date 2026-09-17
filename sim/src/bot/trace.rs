@@ -24,6 +24,8 @@ use super::strategy::{
 };
 use super::{BuildingContact, ContactEvidence, StrategicIntelligence};
 use crate::PlayerCommand;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
@@ -5430,11 +5432,11 @@ mod tests {
 
     #[test]
     fn resource_trace_shortens_an_unrepresentable_horizon() {
-        let observation = Observation {
+        let observation = Observation::from_data(ObservationData {
             tick: Tick::MAX,
             scrap: 17,
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
 
         let trace = DecisionTrace::from_observation(&observation);
 

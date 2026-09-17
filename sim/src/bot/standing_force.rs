@@ -5,6 +5,8 @@
 //! unit would improve the ordinary force now, without turning an idle factory
 //! into a reason to buy something.
 
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use core::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -2240,15 +2242,15 @@ mod tests {
     }
 
     fn observation(scrap: u32) -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 120,
             scrap,
             map_width: 32,
             map_height: 20,
             visible: vec![true; 32 * 20],
             explored: vec![true; 32 * 20],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn public_map(

@@ -4,13 +4,14 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::bot::observation::OBSERVATION_VERSION;
+use oxide_sim::bot::observation::ObservationData;
 use oxide_sim::bot::{BuildingObs, Intent, Observation, Orientation, PublicMapBriefing, UnitObs};
 use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{BuildingId, Command, Faction, PlayerId, Scenario, Target, UnitId, UnitKind};
 
 fn obs_base() -> Observation {
-    Observation {
+    Observation::from_data(ObservationData {
         version: OBSERVATION_VERSION,
         tick: 0,
         me: PlayerId(0),
@@ -42,7 +43,7 @@ fn obs_base() -> Observation {
         faction: Faction::Ferrous,
         my_shells: 0,
         incoming_shells: Vec::new(),
-    }
+    })
 }
 
 fn public_map(obs: &Observation) -> PublicMapBriefing {
@@ -697,10 +698,16 @@ fn ground_armies_do_not_invent_a_road_through_an_unexplored_gulf() {
     obs.explored.fill(false);
     for y in 0..obs.map_height {
         for x in 0..=10 {
-            obs.explored[(y * obs.map_width + x) as usize] = true;
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
         }
         for x in 15..obs.map_width {
-            obs.explored[(y * obs.map_width + x) as usize] = true;
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
         }
     }
 
@@ -713,7 +720,10 @@ fn ground_armies_do_not_invent_a_road_through_an_unexplored_gulf() {
     );
 
     for x in 11..15 {
-        obs.explored[(6 * obs.map_width + x) as usize] = true;
+        {
+            let obs = &mut *obs;
+            obs.explored[(6 * obs.map_width + x) as usize] = true;
+        }
     }
     let connected = staged_ground_push_intents(&obs);
     assert!(
@@ -1481,10 +1491,16 @@ fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
     obs.explored.fill(false);
     for y in 0..obs.map_height {
         for x in 0..=5 {
-            obs.explored[(y * obs.map_width + x) as usize] = true;
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
         }
         for x in 7..obs.map_width {
-            obs.explored[(y * obs.map_width + x) as usize] = true;
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
         }
     }
     obs.my_units = vec![
@@ -1516,7 +1532,10 @@ fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
         }] if units == &vec![UnitId(2)] && *goal == staging
     ));
 
-    obs.explored[(4 * obs.map_width + 6) as usize] = true;
+    {
+        let obs = &mut *obs;
+        obs.explored[(4 * obs.map_width + 6) as usize] = true;
+    }
     let commands = exec.apply_with_reservations(
         PlayerId(0),
         &obs,

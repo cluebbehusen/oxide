@@ -1,5 +1,7 @@
 //! Retained producer-exit certificates for hypothetical construction layouts.
 use crate::bot::observation::Observation;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::bot::resources::FoundationCancellations;
 use crate::stats::{BuildingKind, Domain};
@@ -635,7 +637,7 @@ mod tests {
         use crate::bot::observation::BuildingObs;
         use crate::ids::{BuildingId, PlayerId};
 
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 32,
             map_height: 32,
             my_buildings: vec![BuildingObs {
@@ -649,8 +651,8 @@ mod tests {
                 tier: 0,
                 provisional: false,
             }],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut retained = None;
         GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut retained, &obs);
         let cold = retained.clone();
@@ -676,7 +678,7 @@ mod tests {
         use crate::ids::{BuildingId, PlayerId};
 
         for owner in 0..3 {
-            let mut obs = Observation {
+            let mut obs = Observation::from_data(ObservationData {
                 map_width: 16,
                 map_height: 16,
                 my_buildings: vec![BuildingObs {
@@ -690,8 +692,8 @@ mod tests {
                     tier: 0,
                     provisional: false,
                 }],
-                ..Observation::default()
-            };
+                ..Default::default()
+            });
             let mut cache = None;
             GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
             let before = cache.clone().unwrap();
@@ -746,7 +748,7 @@ mod tests {
 
     #[test]
     fn producers_and_controller_clones_share_only_their_current_component_index() {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             map_width: 128,
             map_height: 128,
             my_buildings: (0..8)
@@ -762,8 +764,8 @@ mod tests {
                     provisional: false,
                 })
                 .collect(),
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut cache = None;
         GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
         let prior = cache.as_ref().unwrap().clone();

@@ -1,5 +1,7 @@
 //! Bounded, attributable experience. Reports come from owners, never from traces.
 
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::ids::UnitId;
 use chassis::Tick;
 use serde::Serialize;
@@ -878,12 +880,12 @@ mod tests {
     fn memory() -> Experience {
         let mut memory = Experience::default();
         memory.observe(
-            &Observation {
+            &Observation::from_data(ObservationData {
                 tick: 100,
                 map_width: 32,
                 map_height: 32,
                 ..Default::default()
-            },
+            }),
             12_000,
         );
         memory
@@ -951,34 +953,34 @@ mod tests {
         memory.report(report(1));
         for tick in [100, 400, 3100] {
             memory.observe(
-                &Observation {
+                &Observation::from_data(ObservationData {
                     tick,
                     map_width: 32,
                     map_height: 32,
                     ..Default::default()
-                },
+                }),
                 12_000,
             );
         }
         assert_eq!(memory.contextual_score(report(1).context), -128);
         let before = memory.clone();
         memory.observe(
-            &Observation {
+            &Observation::from_data(ObservationData {
                 tick: 3000,
                 map_width: 32,
                 map_height: 32,
                 ..Default::default()
-            },
+            }),
             12_000,
         );
         assert_eq!(memory, before);
         memory.observe(
-            &Observation {
+            &Observation::from_data(ObservationData {
                 tick: 6100,
                 map_width: 32,
                 map_height: 32,
                 ..Default::default()
-            },
+            }),
             12_000,
         );
         assert_eq!(memory.contextual_score(report(1).context), 0);
@@ -1046,12 +1048,12 @@ mod tests {
         let mut memory = memory();
         let key = report(1).context;
         memory.report(report(1));
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 3100,
             map_width: 32,
             map_height: 32,
             ..Default::default()
-        };
+        });
         memory.observe(&obs, 6000);
         let mut later = report(2);
         later.finished_at = obs.tick;
@@ -1074,12 +1076,12 @@ mod tests {
         delivery.outcome = Outcome::Partial;
         memory.report(delivery.clone());
         memory.report(report(2));
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 3100,
             map_width: 32,
             map_height: 32,
             ..Default::default()
-        };
+        });
         memory.observe(&obs, 6000);
         let mut assault = report(3);
         assault.credit = delivery.credit;
@@ -1123,12 +1125,12 @@ mod tests {
         }
         assert!(memory.score(report(1).context) > 0);
         memory.observe(
-            &Observation {
+            &Observation::from_data(ObservationData {
                 tick: 101,
                 map_width: 40,
                 map_height: 32,
                 ..Default::default()
-            },
+            }),
             12_000,
         );
         assert!(memory.episodes.is_empty());
@@ -1152,7 +1154,7 @@ mod tests {
 
     #[test]
     fn passengers_remain_alive_but_not_available() {
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             my_carried_units: vec![CarriedUnitObs {
                 carrier: UnitId(9),
                 id: UnitId(1),
@@ -1160,7 +1162,7 @@ mod tests {
                 hp: 40,
             }],
             ..Default::default()
-        };
+        });
         assert_eq!(own_unit_health(&obs, UnitId(1)), Some(40));
         assert_eq!(own_unit_health(&obs, UnitId(2)), None);
         assert!(obs.my_units.is_empty());
@@ -1168,7 +1170,7 @@ mod tests {
 
     #[test]
     fn an_owner_finishes_once_and_a_boarded_participant_is_not_a_loss() {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 100,
             my_carried_units: vec![CarriedUnitObs {
                 carrier: UnitId(9),
@@ -1176,8 +1178,8 @@ mod tests {
                 kind: UnitKind::Sentinel,
                 hp: 100,
             }],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let episode = report(1);
         let mut journal = OutcomeJournal::default();
         journal.watch(&obs, episode.id, episode.context, &[UnitId(1)], 1);
@@ -1223,7 +1225,7 @@ mod tests {
     fn delivery_watch_links_ground_credit_without_claiming_or_inventing_success() {
         use crate::{BuildingId, BuildingKind, PlayerId};
         use chassis::grid::TilePos;
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 100,
             map_width: 20,
             map_height: 20,
@@ -1245,8 +1247,8 @@ mod tests {
                 seen: true,
                 tier: 0,
             }],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut delivery = OutcomeJournal::default();
         let mut episode = report(1);
         episode.id.owner = EpisodeOwner::Lift;
@@ -1301,7 +1303,7 @@ mod tests {
     fn an_unresolved_handoff_expires_inconclusively_and_preserves_new_work() {
         use crate::{BuildingId, BuildingKind, PlayerId};
         use chassis::grid::TilePos;
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 100,
             map_width: 20,
             map_height: 20,
@@ -1323,8 +1325,8 @@ mod tests {
                 seen: true,
                 tier: 0,
             }],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut journal = OutcomeJournal::default();
         journal.watch(&obs, report(1).id, report(1).context, &[UnitId(1)], 1);
         journal.observe_objective(&obs, BuildingId(5));
@@ -1350,7 +1352,7 @@ mod tests {
         use super::super::observation::BuildingObs;
         use crate::{BuildingId, BuildingKind, PlayerId};
         use chassis::grid::TilePos;
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 100,
             map_width: 20,
             map_height: 20,
@@ -1366,8 +1368,8 @@ mod tests {
                 seen: true,
                 tier: 0,
             }],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut journal = OutcomeJournal::default();
         let episode = report(1);
         journal.watch(&obs, episode.id, episode.context, &[], 1);

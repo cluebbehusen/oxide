@@ -1,6 +1,8 @@
 //! Focused fixtures for maintained repair proposals and assignments.
 
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 
 impl UtilityPolicy {
     fn test_admit_repairs(
@@ -120,7 +122,7 @@ mod tests {
     }
 
     fn observation() -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 0,
             scrap: 200,
             map_width: 20,
@@ -133,8 +135,8 @@ mod tests {
             ],
             visible: vec![true; 20 * 12],
             explored: vec![true; 20 * 12],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -240,7 +242,10 @@ mod tests {
         ];
         for y in 0..obs.map_height {
             for x in 5..12 {
-                obs.explored[(y * obs.map_width + x) as usize] = false;
+                {
+                    let obs = &mut *obs;
+                    obs.explored[(y * obs.map_width + x) as usize] = false;
+                }
             }
         }
         let mut intents = Vec::new();
@@ -267,7 +272,10 @@ mod tests {
         ];
         obs.explored.fill(false);
         for x in 2..=6 {
-            obs.explored[(5 * obs.map_width + x) as usize] = true;
+            {
+                let obs = &mut *obs;
+                obs.explored[(5 * obs.map_width + x) as usize] = true;
+            }
         }
         let mut intents = Vec::new();
 

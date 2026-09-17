@@ -141,9 +141,59 @@ pub struct BuildingObs {
     pub tier: u8,
 }
 
-/// Everything a policy gets. Same shape for both builders.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Player knowledge with lazily prepared, immutable navigation inputs.
+/// Mutable access invalidates derived inputs before any field can change.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Observation {
+    data: ObservationData,
+    #[serde(skip)]
+    navigation: std::sync::OnceLock<std::sync::Arc<super::navigation::inputs::NavigationInputs>>,
+}
+
+impl Observation {
+    /// Own an observation snapshot. Derived inputs are prepared only when queried.
+    pub fn from_data(data: ObservationData) -> Self {
+        Self {
+            data,
+            navigation: Default::default(),
+        }
+    }
+
+    pub(super) fn navigation(&self) -> &super::navigation::inputs::NavigationInputs {
+        self.navigation.get_or_init(Default::default)
+    }
+}
+
+impl std::ops::Deref for Observation {
+    type Target = ObservationData;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::DerefMut for Observation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.navigation.take();
+        &mut self.data
+    }
+}
+
+impl std::fmt::Debug for Observation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.data.fmt(f)
+    }
+}
+impl PartialEq for Observation {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+impl Eq for Observation {}
+
+/// Serializable player knowledge, independent of derived navigation inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationData {
     /// Schema version ([`OBSERVATION_VERSION`]).
     pub version: u32,
     /// Sim tick this was taken at.
@@ -253,7 +303,7 @@ pub struct Observation {
 /// still declare its seat flip exhaustively there before this default
 /// can carry it anywhere else.
 #[cfg(test)]
-impl Default for Observation {
+impl Default for ObservationData {
     fn default() -> Self {
         Self {
             version: OBSERVATION_VERSION,
@@ -288,6 +338,13 @@ impl Default for Observation {
             my_shells: 0,
             incoming_shells: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+impl Default for Observation {
+    fn default() -> Self {
+        Self::from_data(ObservationData::default())
     }
 }
 
@@ -603,7 +660,7 @@ impl Observation {
     }
 
     fn base(state: &State, me: PlayerId) -> Self {
-        Self {
+        Self::from_data(ObservationData {
             version: OBSERVATION_VERSION,
             tick: state.current_tick(),
             me,
@@ -641,7 +698,7 @@ impl Observation {
             faction: state.player(me).faction,
             my_shells: 0,
             incoming_shells: Vec::new(),
-        }
+        })
     }
 }
 

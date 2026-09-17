@@ -15,6 +15,8 @@ use super::{
     ScheduledProducerJob, accepted_portfolio_rank, future_producer_lane_reservations,
 };
 use crate::bot::observation::Observation;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::resources::ProducerLaneReservations;
 use crate::bot::resources::{BuilderObligation, ResourceSnapshot, SiteFootprint};
 use crate::bot::strategy::{
@@ -1536,15 +1538,15 @@ mod tests {
     }
 
     fn observation() -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             version: crate::bot::observation::OBSERVATION_VERSION,
             me: PlayerId(0),
             map_width: 20,
             map_height: 20,
             visible: vec![true; 20 * 20],
             explored: vec![true; 20 * 20],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn harvester(id: u32) -> UnitObs {
@@ -2496,17 +2498,20 @@ mod tests {
     fn fixed_production_reserve_preserves_each_payment_deadline() {
         let mut obs = observation();
         obs.tick = 120;
-        obs.my_buildings.push(crate::bot::observation::BuildingObs {
-            id: BuildingId(1),
-            player: obs.me,
-            kind: BuildingKind::Reclaimer,
-            anchor: TilePos::new(2, 2),
-            hp: BuildingKind::Reclaimer.base_stats().max_hp,
-            built: true,
-            provisional: false,
-            seen: true,
-            tier: 0,
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.push(crate::bot::observation::BuildingObs {
+                id: BuildingId(1),
+                player: obs.me,
+                kind: BuildingKind::Reclaimer,
+                anchor: TilePos::new(2, 2),
+                hp: BuildingKind::Reclaimer.base_stats().max_hp,
+                built: true,
+                provisional: false,
+                seen: true,
+                tier: 0,
+            });
+        }
         let resources = ResourceSnapshot::from_observation(&obs);
         let kind = UnitKind::Sentinel;
         let cost = kind.stats().cost;

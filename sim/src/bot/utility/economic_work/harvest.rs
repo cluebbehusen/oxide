@@ -3,6 +3,8 @@
 use super::super::danger::HarvestDangerProjection;
 use super::super::economic_value::{HarvestWork, harvest_output, marginal_worker_return};
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::orient::Orientation;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -407,10 +409,13 @@ mod tests {
         let map = PublicMapBriefing::from_scenario(&scenario).unwrap();
         let mut obs = world::observation(PlayerId(0), world::LEFT_HOME);
         obs.visible.fill(true);
-        obs.my_buildings.extend([
-            world::building(2, obs.me, BuildingKind::Foundry, TilePos::new(28, 10)),
-            world::building(3, obs.me, BuildingKind::Foundry, TilePos::new(10, 3)),
-        ]);
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.extend([
+                world::building(2, obs.me, BuildingKind::Foundry, TilePos::new(28, 10)),
+                world::building(3, obs.me, BuildingKind::Foundry, TilePos::new(10, 3)),
+            ]);
+        }
         obs.my_queues = vec![
             vec![UnitKind::Harvester, UnitKind::Sentinel, UnitKind::Excavator],
             vec![],
@@ -466,7 +471,10 @@ mod tests {
         assert!(right.producer_distance(BuildingId(2)).is_some());
 
         obs.known_scrap[0].1 = 40;
-        obs.visible[(12 * obs.map_width + 26) as usize] = false;
+        {
+            let obs = &mut *obs;
+            obs.visible[(12 * obs.map_width + 26) as usize] = false;
+        }
         let updated = evaluate(&obs, &[UnitId(1), UnitId(3)]);
         assert_eq!(
             updated.len(),
@@ -562,14 +570,14 @@ mod tests {
 
     #[test]
     fn harvest_corridor_requires_safe_command_detours_in_both_directions() {
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 13,
             map_height: 9,
             visible: vec![true; 117],
             explored: vec![true; 117],
             known_rock: (3..=5).map(|y| TilePos::new(6, y)).collect(),
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let map = PublicMapBriefing {
             regions: Default::default(),
             map_width: obs.map_width,

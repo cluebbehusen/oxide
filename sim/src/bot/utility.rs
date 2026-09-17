@@ -28,6 +28,8 @@ use super::resources::{
     SiteFootprint, builder_is_free,
 };
 use super::{PublicMapBriefing, StartingFoundry};
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::scenario::BotStance;
@@ -2919,15 +2921,15 @@ mod tests {
     use crate::{Command, PlayerCommand, Scenario};
 
     fn obs_with(units: Vec<UnitObs>) -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 0,
             map_width: 32,
             map_height: 20,
             my_units: units,
             visible: vec![true; 32 * 20],
             explored: vec![true; 32 * 20],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     pub(super) fn public_map(obs: &Observation) -> PublicMapBriefing {

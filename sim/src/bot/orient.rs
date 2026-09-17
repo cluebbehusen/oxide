@@ -19,6 +19,8 @@
 use super::PublicMapBriefing;
 use super::executive::Intent;
 use super::observation::Observation;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::stats::BuildingKind;
 use chassis::grid::TilePos;
 
@@ -110,7 +112,8 @@ impl Orientation {
         if self.is_identity() {
             return obs.clone();
         }
-        let mut o = obs.clone();
+        let mut oriented = obs.clone();
+        let o = &mut *oriented;
         o.visible = (0..self.height)
             .flat_map(|y| {
                 (0..self.width).map(move |x| {
@@ -196,7 +199,7 @@ impl Orientation {
         o.incoming_shells.sort_by_key(|p| (p.y, p.x));
         o.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
-        o
+        oriented
     }
 
     /// Orients immutable authored map facts into the same frame as a policy's
@@ -401,7 +404,7 @@ mod tests {
         visible[(2 * width + 1) as usize] = true;
         let mut explored = vec![false; (width * height) as usize];
         explored[(3 * width + 2) as usize] = true;
-        Observation {
+        Observation::from_data(ObservationData {
             version: OBSERVATION_VERSION,
             tick: 42,
             me: PlayerId(0),
@@ -444,7 +447,7 @@ mod tests {
             faction: Faction::Ferrous,
             my_shells: 2,
             incoming_shells: vec![TilePos::new(1, 5), TilePos::new(5, 5)],
-        }
+        })
     }
 
     #[test]
@@ -464,12 +467,12 @@ mod tests {
                 BuildingKind::Turret,
             ] {
                 let target = building(17, 1, kind, TilePos::new(15, 9));
-                let obs = Observation {
+                let obs = Observation::from_data(ObservationData {
                     map_width: 40,
                     map_height: 32,
                     enemy_buildings: vec![target.clone()],
                     ..Default::default()
-                };
+                });
                 let orientation = Orientation::for_home(&obs, home);
                 let id = EpisodeId {
                     owner: EpisodeOwner::Ground,
@@ -518,11 +521,11 @@ mod tests {
     #[test]
     fn mission_objective_uses_footprint_orientation_without_changing_its_deadline() {
         use crate::bot::executive::{ArmyMission, ArmyObjective, ArmyPurpose};
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 40,
             map_height: 32,
             ..Default::default()
-        };
+        });
         let orientation = Orientation::for_home(&obs, TilePos::new(35, 27));
         let objective = ArmyObjective::from_building(&building(
             17,

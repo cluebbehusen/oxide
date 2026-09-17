@@ -17,6 +17,8 @@ use super::super::resources::{
     count_paid_queued_ready_with_access,
 };
 use crate::bot::allocation::{AllocationCapacity, ConnectedOffenseKey, ProducerJobClaim};
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::planning::{PlanningWork, Progress};
 use crate::ids::{PlayerId, UnitId};
 use crate::stats::{BOMB_SALVO_SPACING, BuildingKind, Domain, Role, UnitKind, WeaponStats};
@@ -2418,15 +2420,15 @@ mod tests {
     }
 
     fn observation(scrap: u32) -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 100,
             scrap,
             map_width: 30,
             map_height: 30,
             visible: vec![true; 900],
             explored: vec![true; 900],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
@@ -2469,9 +2471,10 @@ mod tests {
         anchor: TilePos,
         queue: Vec<UnitKind>,
     ) {
+        let player = observation.me.0;
         observation
             .my_buildings
-            .push(building(id, observation.me.0, kind, anchor));
+            .push(building(id, player, kind, anchor));
         observation.my_queues.push(queue);
     }
 
@@ -3242,21 +3245,24 @@ mod tests {
     fn deadline_observation_can_revalidate_live_providers_but_cannot_start_new_work() {
         let mut live = observation(0);
         add_complete_tech(&mut live);
-        live.my_units.extend([
-            unit(
-                40,
-                live.me.0,
-                Role::Scout.unit_for(live.faction),
-                TilePos::new(7, 7),
-            ),
-            unit(41, live.me.0, UnitKind::Bombard, TilePos::new(8, 7)),
-            unit(
-                42,
-                live.me.0,
-                Role::AirGround.unit_for(live.faction),
-                TilePos::new(9, 7),
-            ),
-        ]);
+        {
+            let live = &mut *live;
+            live.my_units.extend([
+                unit(
+                    40,
+                    live.me.0,
+                    Role::Scout.unit_for(live.faction),
+                    TilePos::new(7, 7),
+                ),
+                unit(41, live.me.0, UnitKind::Bombard, TilePos::new(8, 7)),
+                unit(
+                    42,
+                    live.me.0,
+                    Role::AirGround.unit_for(live.faction),
+                    TilePos::new(9, 7),
+                ),
+            ]);
+        }
         let (live_intelligence, live_target) = intelligence_with_target(&mut live, 0);
 
         let package = derive(
@@ -3349,12 +3355,15 @@ mod tests {
             TilePos::new(5, 2),
             Vec::new(),
         );
-        missing_strike_producer.my_units.push(unit(
-            40,
-            missing_strike_producer.me.0,
-            Role::Scout.unit_for(missing_strike_producer.faction),
-            TilePos::new(7, 7),
-        ));
+        {
+            let missing_strike_producer = &mut *missing_strike_producer;
+            missing_strike_producer.my_units.push(unit(
+                40,
+                missing_strike_producer.me.0,
+                Role::Scout.unit_for(missing_strike_producer.faction),
+                TilePos::new(7, 7),
+            ));
+        }
         let (missing_intelligence, missing_target) =
             intelligence_with_target(&mut missing_strike_producer, 0);
         assert_eq!(
@@ -3373,18 +3382,24 @@ mod tests {
 
         let mut too_late = observation(10_000);
         add_complete_tech(&mut too_late);
-        too_late.my_units.push(unit(
-            40,
-            too_late.me.0,
-            Role::Scout.unit_for(too_late.faction),
-            TilePos::new(7, 7),
-        ));
-        too_late.my_units.push(unit(
-            41,
-            too_late.me.0,
-            Role::AirGround.unit_for(too_late.faction),
-            TilePos::new(8, 7),
-        ));
+        {
+            let too_late = &mut *too_late;
+            too_late.my_units.push(unit(
+                40,
+                too_late.me.0,
+                Role::Scout.unit_for(too_late.faction),
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let too_late = &mut *too_late;
+            too_late.my_units.push(unit(
+                41,
+                too_late.me.0,
+                Role::AirGround.unit_for(too_late.faction),
+                TilePos::new(8, 7),
+            ));
+        }
         let (late_intelligence, late_target) = intelligence_with_target(&mut too_late, 0);
         let deadline = too_late.tick + Tick::from(UnitKind::Bombard.stats().train_ticks) - 1;
         assert_eq!(
@@ -3665,18 +3680,24 @@ mod tests {
             TilePos::new(14, 2),
             true,
         );
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            Role::Scout.unit_for(observation.faction),
-            TilePos::new(7, 7),
-        ));
-        observation.my_units.push(unit(
-            41,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(8, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                Role::Scout.unit_for(observation.faction),
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                41,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(8, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let income_period = crate::stats::RECLAIMER_PERIOD;
         let payment_tick = observation.tick.div_ceil(income_period) * income_period;
@@ -3724,18 +3745,24 @@ mod tests {
             TilePos::new(14, 2),
             true,
         );
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            Role::Scout.unit_for(observation.faction),
-            TilePos::new(7, 7),
-        ));
-        observation.my_units.push(unit(
-            41,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(8, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                Role::Scout.unit_for(observation.faction),
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                41,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(8, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let resources = ResourceSnapshot::from_observation(&observation);
         let access = ProductionAccess::Unrestricted;
@@ -3802,18 +3829,24 @@ mod tests {
             TilePos::new(14, 2),
             true,
         );
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            Role::Scout.unit_for(observation.faction),
-            TilePos::new(7, 7),
-        ));
-        observation.my_units.push(unit(
-            41,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(8, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                Role::Scout.unit_for(observation.faction),
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                41,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(8, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let income_period = crate::stats::RECLAIMER_PERIOD;
         let first_payment = observation.tick.div_ceil(income_period) * income_period;
@@ -5383,27 +5416,36 @@ mod tests {
             TilePos::new(14, 2),
             Vec::new(),
         );
-        for (building, queue) in observation
-            .my_buildings
-            .iter()
-            .zip(&mut observation.my_queues)
         {
-            if building.kind == BuildingKind::Airworks {
-                *queue = vec![UnitKind::Skyhook; 4];
+            let observation = &mut *observation;
+            for (building, queue) in observation
+                .my_buildings
+                .iter()
+                .zip(&mut observation.my_queues)
+            {
+                if building.kind == BuildingKind::Airworks {
+                    *queue = vec![UnitKind::Skyhook; 4];
+                }
             }
         }
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            UnitKind::Kestrel,
-            TilePos::new(7, 7),
-        ));
-        observation.my_units.push(unit(
-            41,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(8, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                UnitKind::Kestrel,
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                41,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(8, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let deadline = 2_500;
         let resources = ResourceSnapshot::from_observation(&observation);
@@ -5475,12 +5517,15 @@ mod tests {
             .position(|building| building.id == BuildingId(14))
             .expect("the second Airworks is present");
         observation.my_queue_progress[busy_airworks] = 30;
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(7, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(7, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let deadline = 370;
         let resources = ResourceSnapshot::from_observation(&observation);
@@ -5550,12 +5595,15 @@ mod tests {
             .position(|building| building.kind == BuildingKind::Airworks)
             .expect("airworks");
         observation.my_queues[airworks].push(UnitKind::Buzzard);
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(7, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(7, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 1);
         let resources = ResourceSnapshot::from_observation(&observation);
 
@@ -5597,18 +5645,24 @@ mod tests {
             .position(|building| building.kind == BuildingKind::Airworks)
             .expect("airworks");
         observation.my_queues[airworks].push(UnitKind::Buzzard);
-        observation.my_units.push(unit(
-            40,
-            observation.me.0,
-            Role::Scout.unit_for(observation.faction),
-            TilePos::new(7, 7),
-        ));
-        observation.my_units.push(unit(
-            41,
-            observation.me.0,
-            UnitKind::Bombard,
-            TilePos::new(8, 7),
-        ));
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                40,
+                observation.me.0,
+                Role::Scout.unit_for(observation.faction),
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let observation = &mut *observation;
+            observation.my_units.push(unit(
+                41,
+                observation.me.0,
+                UnitKind::Bombard,
+                TilePos::new(8, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let ready_tick = observation.tick + Tick::from(UnitKind::Buzzard.stats().train_ticks) - 1;
 
@@ -5657,18 +5711,24 @@ mod tests {
             .position(|building| building.kind == BuildingKind::Fabricator)
             .expect("fabricator");
         open.my_queues[fabricator].push(UnitKind::Bombard);
-        open.my_units.push(unit(
-            40,
-            open.me.0,
-            Role::Scout.unit_for(open.faction),
-            TilePos::new(7, 7),
-        ));
-        open.my_units.push(unit(
-            41,
-            open.me.0,
-            Role::AirGround.unit_for(open.faction),
-            TilePos::new(8, 7),
-        ));
+        {
+            let open = &mut *open;
+            open.my_units.push(unit(
+                40,
+                open.me.0,
+                Role::Scout.unit_for(open.faction),
+                TilePos::new(7, 7),
+            ));
+        }
+        {
+            let open = &mut *open;
+            open.my_units.push(unit(
+                41,
+                open.me.0,
+                Role::AirGround.unit_for(open.faction),
+                TilePos::new(8, 7),
+            ));
+        }
         let (intelligence, target) = intelligence_with_target(&mut open, 0);
         let ready_tick = open.tick + Tick::from(UnitKind::Bombard.stats().train_ticks) - 1;
         assert!(
@@ -5828,13 +5888,16 @@ mod tests {
         );
         if staggered {
             observation.my_queue_progress = vec![0; observation.my_buildings.len()];
-            for (building, progress) in observation
-                .my_buildings
-                .iter()
-                .zip(&mut observation.my_queue_progress)
             {
-                if building.kind == BuildingKind::Fabricator {
-                    *progress = (building.id.0 - 20) * 10;
+                let observation = &mut *observation;
+                for (building, progress) in observation
+                    .my_buildings
+                    .iter()
+                    .zip(&mut observation.my_queue_progress)
+                {
+                    if building.kind == BuildingKind::Fabricator {
+                        *progress = (building.id.0 - 20) * 10;
+                    }
                 }
             }
         }
@@ -5953,11 +6016,14 @@ mod tests {
             .last_mut()
             .expect("the refinery was appended")
             .tier = 1;
-        observation.my_units.extend([
-            unit(40, observation.me.0, UnitKind::Kestrel, TilePos::new(7, 7)),
-            unit(41, observation.me.0, UnitKind::Bombard, TilePos::new(8, 7)),
-            unit(42, observation.me.0, UnitKind::Buzzard, TilePos::new(9, 7)),
-        ]);
+        {
+            let observation = &mut *observation;
+            observation.my_units.extend([
+                unit(40, observation.me.0, UnitKind::Kestrel, TilePos::new(7, 7)),
+                unit(41, observation.me.0, UnitKind::Bombard, TilePos::new(8, 7)),
+                unit(42, observation.me.0, UnitKind::Buzzard, TilePos::new(9, 7)),
+            ]);
+        }
         observation.enemy_buildings.push(building(
             100,
             1,

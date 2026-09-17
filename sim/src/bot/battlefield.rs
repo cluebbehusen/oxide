@@ -714,7 +714,10 @@ mod tests {
         obs.tick = 24;
         obs.enemy_units.clear();
         obs.visible.fill(false);
-        obs.visible[(last.y * obs.map_width + last.x) as usize] = true;
+        {
+            let obs = &mut *obs;
+            obs.visible[(last.y * obs.map_width + last.x) as usize] = true;
+        }
         battlefield.observe(&obs, &[], tuning(), None);
         assert_eq!(battlefield.assessment.motion[0].3, last);
         assert_eq!(battlefield.assessment.motion[0].4, 12);

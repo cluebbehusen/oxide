@@ -24,6 +24,8 @@ use super::resources::{
     paid_queued_ready_occurrences_with_access, plan_production_with_access,
     production_demands_fit_horizon_with_access,
 };
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
@@ -8187,7 +8189,7 @@ mod tests {
     }
 
     fn obs(tick: Tick) -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick,
             map_width: 32,
             map_height: 20,
@@ -8200,8 +8202,8 @@ mod tests {
             enemy_buildings: vec![building(80, 1, BuildingKind::Crucible, TARGET, true)],
             visible: vec![false; 32 * 20],
             explored: vec![false; 32 * 20],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn own(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
@@ -8454,7 +8456,7 @@ mod tests {
         public_map_with_terrain(
             observation,
             (0..observation.map_height).flat_map(|y| {
-                (0..width).filter_map(move |x| {
+                (0..observation.map_width).filter_map(move |x| {
                     let tile = TilePos::new(x, y);
                     let open = y % 2 == 0
                         || (y % 4 == 1 && x == width - 1)
@@ -11557,10 +11559,11 @@ mod tests {
                 kind: UnitKind::Bombard,
             },
         ];
+        let (width, height) = (observation.map_width, observation.map_height);
         let terrain_with = |open: Vec<TilePos>| {
-            (0..observation.map_height).flat_map(move |y| {
+            (0..height).flat_map(move |y| {
                 let open = open.clone();
-                (0..observation.map_width).filter_map(move |x| {
+                (0..width).filter_map(move |x| {
                     let tile = TilePos::new(x, y);
                     (!open.contains(&tile)).then_some((tile, Terrain::Pit))
                 })
@@ -14042,7 +14045,7 @@ mod tests {
         observation.my_buildings[2].kind = BuildingKind::Fabricator;
         observation.my_buildings[2].anchor = TilePos::new(10, 3);
 
-        let isolated = &observation.my_buildings[0];
+        let isolated = observation.my_buildings[0].clone();
         let isolated_size = isolated.kind.tier_stats(isolated.tier).size;
         let isolated_spawn = crate::tick::rect_adjacent_tiles(isolated.anchor, isolated_size)
             .min_by_key(|tile| {
@@ -15197,6 +15200,7 @@ mod tests {
     fn centered_producer_preserves_the_authoritative_world_order_doorstep() {
         let mut world = developed_connected_obs(120);
         let (size, anchor) = {
+            let world = &mut *world;
             let producer = world
                 .my_buildings
                 .iter_mut()
@@ -15546,12 +15550,15 @@ mod tests {
             hidden.visible.fill(false);
             hidden.enemy_buildings[0].seen = false;
             if !retain_extractor {
-                let retained: Vec<_> = hidden
-                    .my_buildings
-                    .drain(..)
-                    .zip(hidden.my_queues.drain(..))
-                    .filter(|(building, _)| building.kind != BuildingKind::Extractor)
-                    .collect();
+                let retained: Vec<_> = {
+                    let hidden = &mut *hidden;
+                    hidden
+                        .my_buildings
+                        .drain(..)
+                        .zip(hidden.my_queues.drain(..))
+                        .filter(|(building, _)| building.kind != BuildingKind::Extractor)
+                        .collect()
+                };
                 (hidden.my_buildings, hidden.my_queues) = retained.into_iter().unzip();
             }
             let mut intelligence = knowledge(&initial);
@@ -15647,12 +15654,15 @@ mod tests {
         hidden.tick += 1;
         hidden.visible.fill(false);
         hidden.enemy_buildings[0].seen = false;
-        let retained: Vec<_> = hidden
-            .my_buildings
-            .drain(..)
-            .zip(hidden.my_queues.drain(..))
-            .filter(|(building, _)| building.kind != BuildingKind::Crucible)
-            .collect();
+        let retained: Vec<_> = {
+            let hidden = &mut *hidden;
+            hidden
+                .my_buildings
+                .drain(..)
+                .zip(hidden.my_queues.drain(..))
+                .filter(|(building, _)| building.kind != BuildingKind::Crucible)
+                .collect()
+        };
         (hidden.my_buildings, hidden.my_queues) = retained.into_iter().unzip();
         hidden.my_units.retain(|unit| {
             !matches!(

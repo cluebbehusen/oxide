@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::scenario::{PlayerSpec, Scenario};
 
@@ -113,7 +115,7 @@ pub(super) fn observation(me: PlayerId, home: TilePos) -> Observation {
     };
     let mut worker = unit(1, me, UnitKind::Harvester, worker_tile);
     worker.idle = true;
-    Observation {
+    Observation::from_data(ObservationData {
         tick: 1_000,
         me,
         scrap: 10_000,
@@ -129,6 +131,6 @@ pub(super) fn observation(me: PlayerId, home: TilePos) -> Observation {
         } else {
             crate::state::Faction::Cupric
         },
-        ..Observation::default()
-    }
+        ..Default::default()
+    })
 }

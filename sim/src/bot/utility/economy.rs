@@ -5,6 +5,8 @@ use super::construction::FOUNDRY_RECOVERY_TICKS;
 #[cfg(test)]
 use super::construction::FoundrySavingCommitment;
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::production::ImmediateProduction;
 use crate::bot::query_work::QueryPurpose;
 use crate::stats::Role;
@@ -750,7 +752,7 @@ mod tests {
             repairing: false,
             grounded: false,
         };
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 0,
             map_width: 16,
             map_height: 10,
@@ -770,8 +772,8 @@ mod tests {
             visible: vec![true; 16 * 10],
             explored: vec![true; 16 * 10],
             known_rock: (0..10).map(|y| TilePos::new(7, y)).collect(),
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn direct_player_facing_economy(
@@ -898,11 +900,14 @@ mod tests {
             .map(|y| TilePos::new(15, y))
             .collect();
         obs.my_units[0].tile = TilePos::new(3, 4);
-        obs.my_units.push(UnitObs {
-            id: UnitId(4),
-            tile: TilePos::new(3, 15),
-            ..obs.my_units[0].clone()
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_units.push(UnitObs {
+                id: UnitId(4),
+                tile: TilePos::new(3, 15),
+                ..obs.my_units[0].clone()
+            });
+        }
         obs.known_scrap = vec![
             (TilePos::new(6, 4), 100),
             (TilePos::new(6, 17), 100),
@@ -1241,14 +1246,20 @@ mod tests {
             "a remembered building on the explored home component remains a deployable job"
         );
         for y in 0..connected.map_height {
-            connected.explored[(y * connected.map_width + 3) as usize] = false;
+            {
+                let connected = &mut *connected;
+                connected.explored[(y * connected.map_width + 3) as usize] = false;
+            }
         }
         assert!(
             !policy.ordinary_ground_has_work(&dials, &connected, home),
             "an unexplored corridor is not an honestly known ground deployment route"
         );
         for y in 0..connected.map_height {
-            connected.explored[(y * connected.map_width + 3) as usize] = true;
+            {
+                let connected = &mut *connected;
+                connected.explored[(y * connected.map_width + 3) as usize] = true;
+            }
         }
         assert!(policy.ordinary_ground_has_work(&dials, &connected, home));
 
@@ -1321,11 +1332,14 @@ mod tests {
     fn player_facing_residual_production_does_not_duplicate_standing_combat_demand() {
         let mut obs = observation();
         for id in 4..=6 {
-            obs.my_units.push(UnitObs {
-                id: UnitId(id),
-                tile: TilePos::new(id as i32, 4),
-                ..obs.my_units[0].clone()
-            });
+            {
+                let obs = &mut *obs;
+                obs.my_units.push(UnitObs {
+                    id: UnitId(id),
+                    tile: TilePos::new(id as i32, 4),
+                    ..obs.my_units[0].clone()
+                });
+            }
         }
         let sentinel_cost = UnitKind::Sentinel.stats().cost;
         obs.scrap = sentinel_cost * 2;
@@ -3436,9 +3450,12 @@ mod tests {
         lost_sources
             .my_buildings
             .retain(|building| building.kind != BuildingKind::Reclaimer);
-        lost_sources
-            .my_queues
-            .truncate(lost_sources.my_buildings.len());
+        {
+            let lost_sources = &mut *lost_sources;
+            lost_sources
+                .my_queues
+                .truncate(lost_sources.my_buildings.len());
+        }
         let surviving = ResourceSnapshot::from_observation(&lost_sources)
             .forecast()
             .income_through(deadline)
@@ -4161,12 +4178,15 @@ mod tests {
             (5, TilePos::new(3, 5), 3),
             (6, TilePos::new(4, 5), 4),
         ] {
-            obs.my_units.push(UnitObs {
-                id: UnitId(id),
-                tile,
-                carrying,
-                ..obs.my_units[0].clone()
-            });
+            {
+                let obs = &mut *obs;
+                obs.my_units.push(UnitObs {
+                    id: UnitId(id),
+                    tile,
+                    carrying,
+                    ..obs.my_units[0].clone()
+                });
+            }
         }
         obs.known_wrecks = vec![(TilePos::new(8, 2), 400), (TilePos::new(8, 3), 119)];
         obs.my_units[0].idle = false;
@@ -4241,13 +4261,16 @@ mod tests {
         obs.my_units[0].tile = incident;
         obs.my_units[0].idle = false;
         obs.my_units[0].harvesting = Some(wreck);
-        obs.my_units.push(UnitObs {
-            id: UnitId(4),
-            tile: TilePos::new(2, 2),
-            idle: true,
-            harvesting: None,
-            ..obs.my_units[0].clone()
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_units.push(UnitObs {
+                id: UnitId(4),
+                tile: TilePos::new(2, 2),
+                idle: true,
+                harvesting: None,
+                ..obs.my_units[0].clone()
+            });
+        }
         let mut policy = UtilityPolicy::new();
 
         policy.refresh_contested_harvest_regions(&obs, None, None);
@@ -4778,14 +4801,17 @@ mod tests {
         obs.my_units[0].tile = incident;
         obs.my_units[0].idle = false;
         obs.my_units[0].founding = Some((BuildingKind::Foundry, pending));
-        obs.my_units.push(UnitObs {
-            id: UnitId(4),
-            tile: incident.offset(0, 1),
-            idle: false,
-            site: Some(BuildingId(12)),
-            founding: None,
-            ..obs.my_units[0].clone()
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_units.push(UnitObs {
+                id: UnitId(4),
+                tile: incident.offset(0, 1),
+                idle: false,
+                site: Some(BuildingId(12)),
+                founding: None,
+                ..obs.my_units[0].clone()
+            });
+        }
         let mut policy = UtilityPolicy::new();
         policy.state.pending_sites.push(pending);
         policy.state.scout = Some(UnitId(3));

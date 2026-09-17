@@ -9,6 +9,7 @@ mod components;
 pub(super) mod distance_work;
 pub(super) mod egress;
 pub(super) mod flood;
+pub(super) mod inputs;
 pub(super) mod paths;
 pub(super) mod public_fields;
 pub(super) mod regions;

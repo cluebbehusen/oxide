@@ -29,6 +29,8 @@ use crate::bot::lift::{
     LiftProducerAssignment, LiftProducerFunding, LiftProducerTiming,
 };
 use crate::bot::observation::Observation;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::orient::Orientation;
 use crate::bot::profile::ResolvedProfile;
 #[cfg(test)]
@@ -3676,14 +3678,14 @@ mod tests {
     }
 
     fn observation() -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             map_width: 20,
             map_height: 20,
             visible: vec![true; 400],
             explored: vec![true; 400],
             scrap: 40,
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn briefing() -> PublicMapBriefing {
@@ -3734,7 +3736,7 @@ mod tests {
 
     fn active_lift_fixture() -> (Observation, LiftPlanner, Tick) {
         const HOME: TilePos = TilePos::new(5, 15);
-        let mut observation = Observation {
+        let mut observation = Observation::from_data(ObservationData {
             tick: 0,
             map_width: 64,
             map_height: 32,
@@ -3748,8 +3750,8 @@ mod tests {
             visible: vec![true; 64 * 32],
             explored: vec![true; 64 * 32],
             known_rock: (0..32).map(|y| TilePos::new(32, y)).collect(),
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         observation.my_buildings.extend([
             observed_building(1, 0, BuildingKind::Foundry, HOME.offset(-1, -1)),
             observed_building(2, 0, BuildingKind::Airworks, HOME.offset(4, -4)),
@@ -3954,7 +3956,7 @@ mod tests {
     fn connected_observation(tick: Tick, scrap: u32) -> Observation {
         const HOME: TilePos = TilePos::new(3, 10);
         const TARGET: TilePos = TilePos::new(24, 10);
-        let mut observation = Observation {
+        let mut observation = Observation::from_data(ObservationData {
             tick,
             scrap,
             map_width: 32,
@@ -3962,8 +3964,8 @@ mod tests {
             visible: vec![true; 32 * 20],
             explored: vec![true; 32 * 20],
             enemy_buildings: vec![observed_building(80, 1, BuildingKind::Crucible, TARGET)],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         observation.my_units.extend((1..=13).map(|id| {
             owned_unit(
                 id,

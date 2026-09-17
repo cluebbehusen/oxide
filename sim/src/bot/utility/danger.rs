@@ -3,6 +3,8 @@
 use super::UtilityPolicy;
 use crate::bot::intelligence::{BuildingContact, UnitContact};
 use crate::bot::observation::Observation;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::stats::Domain;
 use chassis::grid::TilePos;
 use std::collections::BTreeMap;
@@ -502,14 +504,14 @@ mod tests {
     use crate::stats::{BuildingKind, UnitKind};
 
     fn observation(width: i32, height: i32) -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 1_000,
             map_width: width,
             map_height: height,
             visible: vec![true; map_cell_count((width, height))],
             explored: vec![true; map_cell_count((width, height))],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn enemy_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {

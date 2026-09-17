@@ -1,6 +1,8 @@
 //! Public-terrain connectivity and coarse travel estimates for strategic ranking.
 
 use crate::bot::PublicMapBriefing;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use chassis::grid::TilePos;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
@@ -321,11 +323,11 @@ mod tests {
         changed.map_width += 1;
         assert!(!Arc::ptr_eq(&first, &changed.regions()));
         let orientation = crate::bot::orient::Orientation::for_home(
-            &crate::bot::Observation {
+            &crate::bot::Observation::from_data(ObservationData {
                 map_width: briefing.map_width(),
                 map_height: briefing.map_height(),
                 ..Default::default()
-            },
+            }),
             TilePos::new(briefing.map_width() - 1, briefing.map_height() - 1),
         );
         let rotated = orientation.briefing(&briefing);
