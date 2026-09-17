@@ -8,17 +8,17 @@ use super::*;
 /// Hovered salvage says what it holds: live amounts on visible ground,
 /// remembered amounts under the dim — the same memory rule as every
 /// renderer, so the tooltip can't leak what fog took back.
-pub(crate) fn draw_salvage_tooltip(game: &Game, input: &InputState) {
-    if game.layout.get().chrome_owns(input.mouse) {
+pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputState) {
+    if game.presentation.layout.get().chrome_owns(input.mouse) {
         return;
     }
-    let world = game.camera.to_world(input.mouse);
+    let world = game.presentation.camera.to_world(input.mouse);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let vision = game.my_vision();
-    if !vision.explored(tile) && !game.all_seeing() {
+    if !vision.explored(tile) && !game.presentation.all_seeing() {
         return;
     }
-    let (scrap, wreck) = if vision.visible(tile) || game.all_seeing() {
+    let (scrap, wreck) = if vision.visible(tile) || game.presentation.all_seeing() {
         (
             game.state.map().scrap_at(tile),
             game.state.map().wreck_at(tile),
@@ -44,21 +44,33 @@ pub(crate) fn draw_salvage_tooltip(game: &Game, input: &InputState) {
     draw_text(&text, x, y, 16.0 * s, SCRAP_COLOR);
 }
 
-pub(crate) fn draw_overlay(game: &Game, alpha: f32) {
+pub(crate) fn draw_overlay(game: &crate::game::Scene<'_>, alpha: f32) {
     let (min, max) = visible_tiles(game);
     for x in min.x..=max.x {
-        let a = game.camera.to_screen(vec2(x as f32, min.y as f32));
-        let b = game.camera.to_screen(vec2(x as f32, max.y as f32));
+        let a = game
+            .presentation
+            .camera
+            .to_screen(vec2(x as f32, min.y as f32));
+        let b = game
+            .presentation
+            .camera
+            .to_screen(vec2(x as f32, max.y as f32));
         draw_line(a.x, a.y, b.x, b.y, 1.0, BONE_FAINT);
     }
     for y in min.y..=max.y {
-        let a = game.camera.to_screen(vec2(min.x as f32, y as f32));
-        let b = game.camera.to_screen(vec2(max.x as f32, y as f32));
+        let a = game
+            .presentation
+            .camera
+            .to_screen(vec2(min.x as f32, y as f32));
+        let b = game
+            .presentation
+            .camera
+            .to_screen(vec2(max.x as f32, y as f32));
         draw_line(a.x, a.y, b.x, b.y, 1.0, BONE_FAINT);
     }
     for unit in game.state.units() {
-        let pos = game.draw_pos(unit.id, unit.pos, alpha);
-        let screen = game.camera.to_screen(pos);
+        let pos = game.presentation.draw_pos(unit.id, unit.pos, alpha);
+        let screen = game.presentation.camera.to_screen(pos);
         draw_text(
             format!("u{} {}hp", unit.id.0, unit.hp),
             screen.x + 8.0,
@@ -70,6 +82,7 @@ pub(crate) fn draw_overlay(game: &Game, alpha: f32) {
             let mut previous = screen;
             for waypoint in path.waypoints.iter().skip(path.next as usize) {
                 let next = game
+                    .presentation
                     .camera
                     .to_screen(vec2(waypoint.x as f32 + 0.5, waypoint.y as f32 + 0.5));
                 draw_line(previous.x, previous.y, next.x, next.y, 1.0, BONE_FAINT);
@@ -79,17 +92,17 @@ pub(crate) fn draw_overlay(game: &Game, alpha: f32) {
     }
 }
 
-pub(crate) fn draw_overlay_info(game: &Game) {
+pub(crate) fn draw_overlay_info(game: &crate::game::Scene<'_>) {
     let info = format!(
         "tick {}  fps {}  zoom {:.0}  center ({:.1},{:.1})",
         game.state.current_tick(),
         get_fps(),
-        game.camera.zoom,
-        game.camera.center.x,
-        game.camera.center.y,
+        game.presentation.camera.zoom,
+        game.presentation.camera.center.x,
+        game.presentation.camera.center.y,
     );
     let s = ui_scale();
-    let panel = game.layout.get().performance;
+    let panel = game.presentation.layout.get().performance;
     let y = if panel.w > 0.0 {
         panel.y + panel.h + 20.0 * s
     } else {
@@ -210,7 +223,7 @@ fn toast_origin(viewport: Vec2, scale: f32, panel_top: f32, orders: Rect, index:
 }
 
 pub(crate) fn draw_hud(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
     performance: Option<&crate::performance::PerformanceView>,
@@ -221,7 +234,7 @@ pub(crate) fn draw_hud(
     // still publishes below so the minimap stays clickable.
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut status_space = None;
-    if !game.spectate {
+    if !game.presentation.spectate {
         // Top bar.
         draw_rectangle(
             0.0,
@@ -238,7 +251,7 @@ pub(crate) fn draw_hud(
                 .map(BindingMap::chord_label)
                 .unwrap_or_default()
         };
-        let scrap = game.state.player(game.human).scrap;
+        let scrap = game.state.player(game.presentation.human).scrap;
         let passive: u32 = game
             .state
             .buildings()
@@ -249,7 +262,7 @@ pub(crate) fn draw_hud(
             .state
             .units()
             .iter()
-            .filter(|unit| unit.player == game.human)
+            .filter(|unit| unit.player == game.presentation.human)
             .count();
         let scrap_text = scrap.to_string();
         let passive_text = format!("+{passive}/min passive");
@@ -291,10 +304,10 @@ pub(crate) fn draw_hud(
                 SCRAP_COLOR,
             );
         }
-        let status = if game.paused {
+        let status = if game.presentation.paused {
             format!("PAUSED [{}]", label(Action::TogglePause))
-        } else if (game.speed - 1.0).abs() > f64::EPSILON {
-            format!("x{:.2}", game.speed)
+        } else if (game.presentation.speed - 1.0).abs() > f64::EPSILON {
+            format!("x{:.2}", game.presentation.speed)
         } else {
             let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
             format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -312,8 +325,8 @@ pub(crate) fn draw_hud(
         );
     }
 
-    *game.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);
-    let panel = game.panel_model.borrow();
+    *game.presentation.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);
+    let panel = game.presentation.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];
     let mut roster_count = 0;
@@ -366,17 +379,17 @@ pub(crate) fn draw_hud(
         queue_count,
     );
     layout.panel_regions = panel_regions;
-    game.layout.set(layout);
+    game.presentation.layout.set(layout);
 
     if let Some(view) = performance {
         let panel = super::performance::draw(view, status_space);
-        let mut layout = game.layout.get();
+        let mut layout = game.presentation.layout.get();
         layout.performance = panel;
-        game.layout.set(layout);
+        game.presentation.layout.set(layout);
     }
 
     // Toasts: rejected orders and stalled units, newest at the bottom.
-    for (i, toast) in game.toasts.iter().rev().take(3).enumerate() {
+    for (i, toast) in game.presentation.toasts.iter().rev().take(3).enumerate() {
         let fade = (1.0 - (toast.age - 1.5).max(0.0)).clamp(0.0, 1.0);
         let origin = toast_origin(
             vec2(screen_width(), screen_height()),
@@ -404,7 +417,7 @@ pub(crate) fn draw_hud(
     // orders and the team plays on — but the human deserves to be told
     // the seat has no voice left. Commands still route; the sim rejects
     // them.
-    let resigned = game.state.player(game.human).resigned;
+    let resigned = game.state.player(game.presentation.human).resigned;
     if game.state.result().is_none() && (resigned || game.home_foundry().is_none()) {
         let text = if resigned {
             "SURRENDERED - SPECTATING"
@@ -428,8 +441,8 @@ pub(crate) fn draw_hud(
 /// keeps fighting. This compact exit offer is the only result-like layer
 /// gameplay still draws; a decided match moves to the dedicated Results
 /// screen with touchable next steps.
-pub(crate) fn draw_result_overlay(game: &Game) {
-    if !game.conceded_banner || game.state.result().is_some() {
+pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
+    if !game.presentation.conceded_banner || game.state.result().is_some() {
         return;
     }
     let s = ui_scale();

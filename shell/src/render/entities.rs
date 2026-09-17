@@ -10,20 +10,25 @@ use super::*;
 /// this instant, amber founds on arrival (part of the footprint is
 /// remembered ground, judged from memory — never live state, so the
 /// tint can't be a hidden-enemy detector), red is refused.
-pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &InputState) {
+pub(crate) fn draw_placement_ghost(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    input: &InputState,
+) {
     let Some(kind) = input.placing else { return };
-    let world = game.camera.to_world(input.mouse);
+    let world = game.presentation.camera.to_world(input.mouse);
     let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let anchor = crate::input::placement_anchor(game, kind, clicked);
-    let zoom = game.camera.zoom;
+    let zoom = game.presentation.camera.zoom;
     let (w, h) = kind.base_stats().size;
     let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
     let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
+        .presentation
         .camera
         .to_screen(vec2(anchor.x as f32, anchor.y as f32));
     let dest = vec2(w as f32 * zoom, h as f32 * zoom);
-    let faction = game.state.player(game.human).faction;
+    let faction = game.state.player(game.presentation.human).faction;
     let tint = if !ok {
         Color::new(1.0, 0.45, 0.4, 0.55)
     } else if crate::input::build_defer_needed(game, kind, anchor) {
@@ -45,17 +50,18 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
 
 /// Paid provisional scaffolds remain faint amber footprints until their
 /// ground has been verified.
-pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
-    let faction = game.state.player(game.human).faction;
+pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprites) {
+    let zoom = game.presentation.camera.zoom;
+    let faction = game.state.player(game.presentation.human).faction;
     for site in game
         .state
         .buildings()
         .iter()
-        .filter(|b| b.player == game.human && b.provisional)
+        .filter(|b| b.player == game.presentation.human && b.provisional)
     {
         let (w, h) = site.stats().size;
         let screen = game
+            .presentation
             .camera
             .to_screen(vec2(site.anchor.x as f32, site.anchor.y as f32));
         sprites.draw(
@@ -82,8 +88,11 @@ pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
 /// node the player has never seen). Each verb speaks its own color:
 /// bone walks, danger fights, scrap-gold harvests, patina builds,
 /// welds, and strips.
-pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usize, Vec2, Color)> {
-    if unit.player != game.human {
+pub(crate) fn breadcrumb_points(
+    game: &crate::game::Scene<'_>,
+    unit: &oxide_sim::Unit,
+) -> Vec<(usize, Vec2, Color)> {
+    if unit.player != game.presentation.human {
         return Vec::new();
     }
     let verb_color = |order: &oxide_sim::Order| match order {
@@ -125,7 +134,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::Unload { at } => *at,
             oxide_sim::Order::Land { goal } => *goal,
             oxide_sim::Order::Attack { target, .. } => {
-                let view = game.state.attack_view(game.human, *target)?;
+                let view = game.state.attack_view(game.presentation.human, *target)?;
                 return Some((
                     chassis::grid::TilePos::containing(view.position),
                     verb_color(order),
@@ -133,7 +142,8 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             }
             oxide_sim::Order::Idle => return None,
         };
-        (game.all_seeing() || game.my_vision().explored(goal)).then_some((goal, verb_color(order)))
+        (game.presentation.all_seeing() || game.my_vision().explored(goal))
+            .then_some((goal, verb_color(order)))
     };
     // Each point carries its PROGRAM position (0 = the active order,
     // i = queue[i-1]) — the same order the dock pushes chips in, so a
@@ -147,7 +157,8 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         if let Some((g, c)) = goal_of(order) {
             points.push((
                 i,
-                game.camera
+                game.presentation
+                    .camera
                     .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
                 c,
             ));
@@ -161,11 +172,12 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
 /// subject can never be the entry the cap drops: a selection arrives
 /// in id order, and twelve older workers ahead of a newer majority
 /// would push it past `DECOR_CAP`.
-pub(crate) fn decor_units(game: &Game) -> Vec<oxide_sim::UnitId> {
+pub(crate) fn decor_units(game: &crate::game::Scene<'_>) -> Vec<oxide_sim::UnitId> {
     let subject = crate::panel::subject_unit(game);
     let mut ids: Vec<oxide_sim::UnitId> = subject.into_iter().collect();
     ids.extend(
-        game.selection
+        game.presentation
+            .selection
             .units
             .iter()
             .copied()
@@ -175,12 +187,13 @@ pub(crate) fn decor_units(game: &Game) -> Vec<oxide_sim::UnitId> {
     ids
 }
 
-pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
+pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState) {
     let dot = |p: Vec2, color: Color| draw_circle(p.x, p.y, 3.0, color);
     if let Some(route) = &input.patrol_route {
         let mut prev: Option<Vec2> = None;
         for tile in route {
             let p = game
+                .presentation
                 .camera
                 .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
             if let Some(a) = prev {
@@ -212,6 +225,7 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
             }
         };
         let start = game
+            .presentation
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
         let s = ui_scale();
@@ -244,25 +258,31 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
     }
 }
 
-fn production_progress_visible(game: &Game, building: &oxide_sim::Building) -> bool {
-    building.player == game.human || game.all_seeing()
+fn production_progress_visible(
+    game: &crate::game::Scene<'_>,
+    building: &oxide_sim::Building,
+) -> bool {
+    building.player == game.presentation.human || game.presentation.all_seeing()
 }
 
 fn draw_defense_mount(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     building: &oxide_sim::Building,
     action: Option<usize>,
 ) {
-    let draw = |x, y, tint, params| sprites.draw_building(x, y, tint, params, game.camera.zoom);
+    let draw = |x, y, tint, params| {
+        sprites.draw_building(x, y, tint, params, game.presentation.camera.zoom)
+    };
     let faction = game.state.player(building.player).faction;
     let screen = game
+        .presentation
         .camera
         .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
     let (width, height) = building.stats().size;
     let dest = vec2(
-        width as f32 * game.camera.zoom,
-        height as f32 * game.camera.zoom,
+        width as f32 * game.presentation.camera.zoom,
+        height as f32 * game.presentation.camera.zoom,
     );
     let source = match action {
         Some(frame) => sprites.defense_mount_action(building.kind, building.tier, faction, frame),
@@ -272,6 +292,7 @@ fn draw_defense_mount(
         return;
     };
     let angle = game
+        .presentation
         .aim_buildings
         .get(&building.id.0)
         .map_or(0.0, |(angle, _)| *angle);
@@ -306,8 +327,8 @@ fn draw_defense_mount(
     }
 }
 
-pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
+pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
+    let zoom = game.presentation.camera.zoom;
     let draw = |x, y, tint, params| sprites.draw_building(x, y, tint, params, zoom);
     // Buildings an own crew is actively stripping (the salvage
     // read-back's fog-safe evidence).
@@ -315,7 +336,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         .state
         .units()
         .iter()
-        .filter(|u| u.player == game.human)
+        .filter(|u| u.player == game.presentation.human)
         .filter_map(|u| match u.order {
             oxide_sim::Order::Salvage { building } => Some(building),
             _ => None,
@@ -323,7 +344,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         .collect();
     // Live enemy buildings only where we have sight; remembered ghosts
     // cover explored-but-unseen ground (skipped in the omniscient overlay).
-    if !game.all_seeing() {
+    if !game.presentation.all_seeing() {
         for ghost in game.my_vision().ghosts() {
             let (w, h) = ghost.kind.base_stats().size;
             let visible = (0..h)
@@ -334,23 +355,29 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 && game.state.buildings_at(ghost.anchor).any(|b| {
                     b.player == ghost.owner
                         && b.kind == ghost.kind
-                        && game.state.building_apparent(game.human, b)
+                        && game.state.building_apparent(game.presentation.human, b)
                 });
             if observed {
-                game.last_seen.borrow_mut().insert(key, game.fx_time());
+                game.presentation
+                    .last_seen
+                    .borrow_mut()
+                    .insert(key, game.presentation.fx_time());
                 continue; // the live building (or its absence) is on show
             }
             // Staleness ramp: a memory the player has not refreshed in
             // a while stops pretending to be news. Unstamped memories
             // (loaded saves) start their ramp now.
             let age = {
-                let mut seen = game.last_seen.borrow_mut();
-                let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
-                game.fx_time() - stamp
+                let mut seen = game.presentation.last_seen.borrow_mut();
+                let stamp = *seen
+                    .entry(key)
+                    .or_insert_with(|| game.presentation.fx_time());
+                game.presentation.fx_time() - stamp
             };
             let fade = 1.0 - super::staleness_fade(age);
             let faction = game.state.player(ghost.owner).faction;
             let screen = game
+                .presentation
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
             // A remembered site stays translucent scaffolding until its
@@ -422,13 +449,15 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     }
     // Frustum cull by anchor with a margin covering the widest footprint
     // plus bars and site dressing — off-camera works cost nothing.
-    let (view_lo, view_hi) = game.camera.world_rect();
+    let (view_lo, view_hi) = game.presentation.camera.world_rect();
     const BUILDING_CULL_MARGIN: f32 = 4.5;
     for building in game.state.buildings().iter().filter(|b| !b.provisional) {
-        if building.player != game.human
-            && !game.all_seeing()
+        if building.player != game.presentation.human
+            && !game.presentation.all_seeing()
             && (!building.tiles().any(|t| game.my_vision().visible(t))
-                || !game.state.building_apparent(game.human, building))
+                || !game
+                    .state
+                    .building_apparent(game.presentation.human, building))
         {
             continue;
         }
@@ -441,14 +470,14 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             continue;
         }
         let faction = game.state.player(building.player).faction;
-        let screen = game.camera.to_screen(anchor);
+        let screen = game.presentation.camera.to_screen(anchor);
         let (w, h) = building.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
-        let animation = game.animations.building_state(
-            crate::presentation_animation::BuildingAnimationFacts::capture(&game.state, building),
+        let animation = game.presentation.animations.building_state(
+            crate::presentation_animation::BuildingAnimationFacts::capture(game.state, building),
             crate::presentation_animation::AnimationClock::from_state(
-                &game.state,
-                game.tick_fraction(),
+                game.state,
+                game.presentation.tick_fraction(),
             ),
             crate::presentation_animation::AnimationOptions {
                 reduced_motion: reduced_motion(),
@@ -555,7 +584,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 BONE,
             );
         }
-        if game.selection.buildings.contains(&building.id) {
+        if game.presentation.selection.buildings.contains(&building.id) {
             draw_rectangle_lines(
                 screen.x - 2.0,
                 screen.y - 2.0,
@@ -625,7 +654,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     }
 }
 
-pub(crate) fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
+pub(crate) fn draw_units(game: &crate::game::Scene<'_>, sprites: &Sprites, alpha: f32) {
     // Two passes: ground bodies first, then everything airborne above
     // them — each flyer casts an offset shadow so altitude reads even
     // when nothing overlaps.
@@ -634,8 +663,9 @@ pub(crate) fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
     draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Air);
 }
 
-fn bomber_release(game: &Game, index: usize) -> Option<crate::game::LaunchPose> {
-    game.projectile_releases
+fn bomber_release(game: &crate::game::Scene<'_>, index: usize) -> Option<crate::game::LaunchPose> {
+    game.presentation
+        .projectile_releases
         .release(game.state.shells(), index)
         .or_else(|| {
             let shell = game.state.shells().get(index)?;
@@ -712,9 +742,9 @@ fn moth_bomb_pose(
     (position, tangent.normalize_or_zero())
 }
 
-fn draw_bomber_bombs(game: &Game) {
-    let zoom = game.camera.zoom;
-    let now = game.state.current_tick() as f32 + game.tick_fraction();
+fn draw_bomber_bombs(game: &crate::game::Scene<'_>) {
+    let zoom = game.presentation.camera.zoom;
+    let now = game.state.current_tick() as f32 + game.presentation.tick_fraction();
     for (index, shell) in game.state.shells().iter().enumerate() {
         let Some(release) = bomber_release(game, index) else {
             continue;
@@ -737,8 +767,8 @@ fn draw_bomber_bombs(game: &Game) {
         } else {
             condor_bomb_pose(launch, impact, release.heading, t)
         };
-        if !game.all_seeing()
-            && game.state.hostile(game.human, shell.player)
+        if !game.presentation.all_seeing()
+            && game.state.hostile(game.presentation.human, shell.player)
             && !game.my_vision().visible(TilePos::new(
                 position.x.floor() as i32,
                 position.y.floor() as i32,
@@ -746,7 +776,7 @@ fn draw_bomber_bombs(game: &Game) {
         {
             continue;
         }
-        let flat = game.camera.to_screen(position);
+        let flat = game.presentation.camera.to_screen(position);
         let lift = if moth { 0.08 } else { 0.0625 };
         let center = flat - vec2(0.0, zoom * lift * (1.0 - t * t));
         let scale = zoom * (1.0 - 0.15 * t) * if moth { 0.70 } else { 1.0 };
@@ -1012,7 +1042,7 @@ fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, pr
     super::destruction::draw_hit(sprites, center, zoom, radius, progress);
 }
 
-pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
+pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
     let sees = |p: Vec2| {
         game.my_vision()
             .visible(TilePos::new(p.x.floor() as i32, p.y.floor() as i32))
@@ -1021,7 +1051,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
     // them mid-air, speed changes track, and a replay loaded mid-flight
     // restores them — no wall-clock effect can drift from the rules.
     let shell_speed = oxide_sim::stats::SHELL_SPEED.to_num::<f32>();
-    let now = game.state.current_tick() as f32 + game.tick_fraction();
+    let now = game.state.current_tick() as f32 + game.presentation.tick_fraction();
     for (index, shell) in game.state.shells().iter().enumerate() {
         if bomber_release(game, index).is_some() {
             continue;
@@ -1042,7 +1072,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         // a hostile shell appears only while its current local segment
         // crosses visible ground. Nothing anchors a trail at a fogged
         // muzzle and pinpoints the hidden artillery.
-        let mine = !game.state.hostile(game.human, shell.player);
+        let mine = !game.state.hostile(game.presentation.human, shell.player);
         let flat_seen = |k: f32| sees(from.lerp(to, k));
         // Reconstruct flight length the way the launch computed it, so
         // the shell lands exactly when the sim resolves the hit.
@@ -1058,23 +1088,27 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         } else {
             flight_progress
         };
-        if !game.all_seeing() && !mine && !flat_seen(t) {
+        if !game.presentation.all_seeing() && !mine && !flat_seen(t) {
             continue;
         }
-        let a = game.camera.to_screen(from);
-        let b = game.camera.to_screen(to);
+        let a = game.presentation.camera.to_screen(from);
+        let b = game.presentation.camera.to_screen(to);
         let dist = (b - a).length();
         let lift = if shell.kind == oxide_sim::ProjectileKind::Shell {
-            shell_arc_lift(dist, game.camera.zoom, shell.shooter)
+            shell_arc_lift(dist, game.presentation.camera.zoom, shell.shooter)
         } else {
             0.0
         };
         let bastion_shell = shell.kind == oxide_sim::ProjectileKind::Shell
             && matches!(shell.shooter, oxide_sim::Target::Building(_));
-        let artillery_heading = game.projectile_releases.artillery_heading(shell);
+        let artillery_heading = game
+            .presentation
+            .projectile_releases
+            .artillery_heading(shell);
         let at = |t: f32| {
             if let Some(heading) = artillery_heading {
                 return game
+                    .presentation
                     .camera
                     .to_screen(bombard_shell_position(launch, to, heading, t));
             }
@@ -1096,23 +1130,29 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             let direction = (at((t + 0.01).min(1.0)) - at((t - 0.01).max(0.0))).normalize_or_zero();
             let normal = vec2(-direction.y, direction.x);
             let missile = shell.kind == oxide_sim::ProjectileKind::Missile;
-            let length = game.camera.zoom * if missile { 0.375 } else { 0.28 };
-            let width = game.camera.zoom * if missile { 0.078125 } else { 0.13 };
+            let length = game.presentation.camera.zoom * if missile { 0.375 } else { 0.28 };
+            let width = game.presentation.camera.zoom * if missile { 0.078125 } else { 0.13 };
             let center = shell_at
                 - vec2(
                     0.0,
                     if missile {
                         0.0
                     } else {
-                        game.camera.zoom * 0.18 * (1.0 - t)
+                        game.presentation.camera.zoom * 0.18 * (1.0 - t)
                     },
                 );
             let back = center - direction * length * 0.5;
             let nose = center + direction * length * 0.5;
             let motor = missile_motor_strength(flight_progress, total);
-            if missile && motor > 0.0 && (mine || game.all_seeing() || flat_seen(tail_t)) {
-                let exhaust =
-                    back - direction * game.camera.zoom * motor * (0.16 + 0.025 * (t * 97.0).sin());
+            if missile
+                && motor > 0.0
+                && (mine || game.presentation.all_seeing() || flat_seen(tail_t))
+            {
+                let exhaust = back
+                    - direction
+                        * game.presentation.camera.zoom
+                        * motor
+                        * (0.16 + 0.025 * (t * 97.0).sin());
                 draw_line(
                     exhaust.x,
                     exhaust.y,
@@ -1121,7 +1161,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     width * 0.60,
                     Color::from_rgba(182, 83, 35, 180),
                 );
-                let core = back - direction * game.camera.zoom * 0.08 * motor;
+                let core = back - direction * game.presentation.camera.zoom * 0.08 * motor;
                 draw_line(
                     core.x,
                     core.y,
@@ -1148,7 +1188,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 nose.y,
                 width
                     + if missile {
-                        game.camera.zoom * 0.035
+                        game.presentation.camera.zoom * 0.035
                     } else {
                         2.0
                     },
@@ -1184,21 +1224,21 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             let direction = direction.normalize_or_zero();
             let normal = vec2(-direction.y, direction.x);
             let height = 4.0 * t * (1.0 - t);
-            let scale = game.camera.zoom * (1.0 + height * 0.22);
+            let scale = game.presentation.camera.zoom * (1.0 + height * 0.22);
             let width = scale * if bastion_shell { 0.12 } else { 0.14 };
             let length = scale * if bastion_shell { 0.34 } else { 0.30 };
             let back = shell_at - direction * length * 0.5;
             let nose = shell_at + direction * length * 0.5;
             let shoulder = nose - direction * length * 0.22;
-            let shadow =
-                shell_at + game.camera.zoom * (vec2(0.04, 0.06) + vec2(0.18, 0.26) * height);
-            let shadow_half = direction * game.camera.zoom * 0.10;
+            let shadow = shell_at
+                + game.presentation.camera.zoom * (vec2(0.04, 0.06) + vec2(0.18, 0.26) * height);
+            let shadow_half = direction * game.presentation.camera.zoom * 0.10;
             draw_line(
                 (shadow - shadow_half).x,
                 (shadow - shadow_half).y,
                 (shadow + shadow_half).x,
                 (shadow + shadow_half).y,
-                game.camera.zoom * (0.10 + 0.03 * height),
+                game.presentation.camera.zoom * (0.10 + 0.03 * height),
                 Color::new(0.02, 0.02, 0.025, 0.34 - 0.16 * height),
             );
             draw_line(
@@ -1206,7 +1246,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 back.y,
                 shoulder.x,
                 shoulder.y,
-                width + game.camera.zoom * 0.035,
+                width + game.presentation.camera.zoom * 0.035,
                 Color::from_rgba(14, 15, 18, 255),
             );
             draw_line(
@@ -1229,12 +1269,12 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 (band - normal * width * 0.5).y,
                 (band + normal * width * 0.5).x,
                 (band + normal * width * 0.5).y,
-                game.camera.zoom * 0.035,
+                game.presentation.camera.zoom * 0.035,
                 Color::from_rgba(149, 107, 58, 255),
             );
             continue;
         }
-        let radius = (game.camera.zoom * 0.075).clamp(2.2, 4.0);
+        let radius = (game.presentation.camera.zoom * 0.075).clamp(2.2, 4.0);
         // The tiny flat-path shadow makes the restrained lift legible
         // without restoring the old launch-to-impact glowing arc.
         draw_circle(
@@ -1243,7 +1283,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             radius * 0.7,
             Color::new(0.03, 0.03, 0.04, 0.35),
         );
-        if game.all_seeing() || mine || flat_seen(tail_t) {
+        if game.presentation.all_seeing() || mine || flat_seen(tail_t) {
             let before = at((t - 0.01).max(0.0));
             let after = at((t + 0.01).min(1.0));
             let travel = (after - before).normalize_or_zero();
@@ -1306,7 +1346,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             Color::new(1.0, 0.82, 0.48, 1.0),
         );
     }
-    for fx in &game.fx {
+    for fx in &game.presentation.fx {
         // A visible impact may always spark so incoming damage reads.
         // Directional geometry still requires a visible source and must
         // not pinpoint a fogged shooter.
@@ -1323,7 +1363,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 ..
             } => {
                 let visibility = sapper_effect_visibility(
-                    player == game.human,
+                    player == game.presentation.human,
                     source_witnessed || sees(at),
                     impact_witnessed || sees(blast_at),
                 );
@@ -1339,7 +1379,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             // already impossible to order onto.
             EffectKind::Ping { .. } => true,
         };
-        if !game.all_seeing() && !in_sight {
+        if !game.presentation.all_seeing() && !in_sight {
             continue;
         }
         match fx.kind {
@@ -1351,27 +1391,33 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 ..
             } => {
                 use crate::game::ShotStyle;
-                let a = game.camera.to_screen(from);
-                let b = game.camera.to_screen(to);
-                let age = fx.age_at(game.state.current_tick(), game.tick_fraction());
+                let a = game.presentation.camera.to_screen(from);
+                let b = game.presentation.camera.to_screen(to);
+                let age = fx.age_at(game.state.current_tick(), game.presentation.tick_fraction());
                 let progress = (age / style.life()).clamp(0.0, 1.0);
                 let fade = 1.0 - progress;
                 let impact = shot_impact_progress(style, age);
                 let visibility = shot_visibility(
                     style,
-                    game.all_seeing() || sees(from),
-                    game.all_seeing() || sees(to),
+                    game.presentation.all_seeing() || sees(from),
+                    game.presentation.all_seeing() || sees(to),
                 );
                 if visibility == ShotVisibility::ImpactOnly {
                     if let Some(radius) = splash
                         && impact > 0.0
                     {
-                        draw_splash_bloom(sprites, b, game.camera.zoom, radius, impact);
+                        draw_splash_bloom(
+                            sprites,
+                            b,
+                            game.presentation.camera.zoom,
+                            radius,
+                            impact,
+                        );
                     }
                     let seed = (to.x * 31.7 + to.y * 17.3).abs();
                     for i in 0..3 {
                         let angle = seed + i as f32 * 2.1;
-                        let reach = game.camera.zoom * (0.08 + impact * 0.12);
+                        let reach = game.presentation.camera.zoom * (0.08 + impact * 0.12);
                         let tip = b + vec2(angle.cos(), angle.sin()) * reach;
                         draw_line(
                             b.x,
@@ -1390,14 +1436,14 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     // The area bloom is part of the round-arrival phase,
                     // behind the projectiles, rather than an explosion the
                     // rounds visibly fly into.
-                    draw_splash_bloom(sprites, b, game.camera.zoom, radius, impact);
+                    draw_splash_bloom(sprites, b, game.presentation.camera.zoom, radius, impact);
                 }
                 match style {
                     ShotStyle::Contact => {}
                     ShotStyle::Kinetic { heavy } => {
                         let (travel, impact) = forge_spot_phases(progress);
                         let direction = (b - a).normalize_or_zero();
-                        let zoom = game.camera.zoom;
+                        let zoom = game.presentation.camera.zoom;
                         let round = a.lerp(b, travel);
                         let length = zoom * if heavy { 0.19 } else { 0.09 };
                         let tail = round - direction * length.min(round.distance(a));
@@ -1452,7 +1498,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             Color::new(1.0, 0.85, 0.52, round_alpha),
                         );
                         if impact > 0.0 {
-                            let radius = game.camera.zoom * (0.05 + impact * 0.18);
+                            let radius = game.presentation.camera.zoom * (0.05 + impact * 0.18);
                             draw_circle_lines(
                                 b.x,
                                 b.y,
@@ -1468,7 +1514,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             a.y,
                             b.x,
                             b.y,
-                            game.camera.zoom * 0.10 * fade.max(0.25),
+                            game.presentation.camera.zoom * 0.10 * fade.max(0.25),
                             Color::new(0.70, 0.76, 0.80, 0.18 * fade * fade),
                         );
                         draw_line(
@@ -1476,7 +1522,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             a.y,
                             b.x,
                             b.y,
-                            (game.camera.zoom * 0.038).max(0.8),
+                            (game.presentation.camera.zoom * 0.038).max(0.8),
                             Color::new(0.89, 0.89, 0.80, fade * fade),
                         );
                     }
@@ -1490,7 +1536,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             .into_iter()
                             .flatten()
                         {
-                            let offset = normal * barrel * game.camera.zoom;
+                            let offset = normal * barrel * game.presentation.camera.zoom;
                             let end = b + offset;
                             let at = (a + offset).lerp(end, round);
                             draw_circle(at.x, at.y, 3.4, Color::new(0.98, 0.43, 0.12, 0.18));
@@ -1500,12 +1546,12 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                         let seed = (to.x * 31.7 + to.y * 17.3).abs();
                         for i in 0..3 {
                             let angle = seed + i as f32 * 2.1;
-                            let reach = impact * game.camera.zoom * 0.28;
+                            let reach = impact * game.presentation.camera.zoom * 0.28;
                             let puff = b + vec2(angle.cos(), angle.sin()) * reach;
                             draw_circle(
                                 puff.x,
                                 puff.y,
-                                game.camera.zoom * 0.07 * (1.0 - progress * 0.45),
+                                game.presentation.camera.zoom * 0.07 * (1.0 - progress * 0.45),
                                 Color::new(0.66, 0.65, 0.58, 0.42 * impact * fade),
                             );
                         }
@@ -1522,14 +1568,15 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 impact_witnessed,
                 ..
             } => {
-                let age = fx.age_at(game.state.current_tick(), game.tick_fraction());
+                let age = fx.age_at(game.state.current_tick(), game.presentation.tick_fraction());
                 let progress = (age / (crate::game::TICK_DT * 2.0)).clamp(0.0, 1.0);
                 let fade = 1.0 - progress;
-                let body = game.camera.to_screen(at);
-                let size = game.camera.zoom * super::unit_draw_scale(oxide_sim::UnitKind::Sapper);
+                let body = game.presentation.camera.to_screen(at);
+                let size = game.presentation.camera.zoom
+                    * super::unit_draw_scale(oxide_sim::UnitKind::Sapper);
                 let body_size = vec2(size, size);
                 let visibility = sapper_effect_visibility(
-                    game.all_seeing() || player == game.human,
+                    game.presentation.all_seeing() || player == game.presentation.human,
                     source_witnessed || sees(at),
                     impact_witnessed || sees(blast_at),
                 );
@@ -1569,8 +1616,8 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 if visibility.bloom {
                     draw_splash_bloom(
                         sprites,
-                        game.camera.to_screen(blast_at),
-                        game.camera.zoom,
+                        game.presentation.camera.to_screen(blast_at),
+                        game.presentation.camera.zoom,
                         oxide_sim::stats::SAPPER_BLAST_RADIUS.to_num::<f32>(),
                         progress,
                     );
@@ -1589,7 +1636,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                     at,
                     body,
                     seed,
-                    fx.age_at(game.state.current_tick(), game.tick_fraction()),
+                    fx.age_at(game.state.current_tick(), game.presentation.tick_fraction()),
                     crash,
                 );
             }
@@ -1600,8 +1647,8 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 payload,
             } => {
                 super::destruction::draw_impact(
-                    game.camera.to_screen(at),
-                    game.camera.zoom,
+                    game.presentation.camera.to_screen(at),
+                    game.presentation.camera.zoom,
                     radius,
                     fx.age,
                     payload,
@@ -1609,17 +1656,23 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             }
             EffectKind::Puff { at } => {
                 super::destruction::draw_impact(
-                    game.camera.to_screen(at),
-                    game.camera.zoom,
+                    game.presentation.camera.to_screen(at),
+                    game.presentation.camera.zoom,
                     0.45,
                     fx.age,
                     oxide_sim::ProjectileKind::Shell,
                 );
             }
             EffectKind::Burst { at, radius } => {
-                let center = game.camera.to_screen(at);
+                let center = game.presentation.camera.to_screen(at);
                 let progress = (fx.age / 0.35).clamp(0.0, 1.0);
-                draw_splash_bloom(sprites, center, game.camera.zoom, radius, progress);
+                draw_splash_bloom(
+                    sprites,
+                    center,
+                    game.presentation.camera.zoom,
+                    radius,
+                    progress,
+                );
             }
             EffectKind::Debris { .. } => {}
             EffectKind::Ping { .. } => {} // drawn above the fog, in draw_pings
@@ -1629,13 +1682,14 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
 
 /// Radar blips, drawn above the fog: contacts without identity from the
 /// Array's outer ring — the player's own intel, like pings.
-pub(crate) fn draw_blips(game: &Game) {
-    if game.overlay {
+pub(crate) fn draw_blips(game: &crate::game::Scene<'_>) {
+    if game.presentation.overlay {
         return; // the omniscient overlay already shows the real machines
     }
-    let zoom = game.camera.zoom;
+    let zoom = game.presentation.camera.zoom;
     for &tile in game.my_vision().contacts() {
         let center = game
+            .presentation
             .camera
             .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
         let r = zoom * 0.3;
@@ -1967,16 +2021,17 @@ struct EconomySupportLink {
     foundry: oxide_sim::BuildingId,
 }
 
-fn selected_economy_support_links(game: &Game) -> Vec<EconomySupportLink> {
-    let Some(oxide_sim::Target::Building(selected)) =
-        range_subject(&game.selection.units, &game.selection.buildings)
-    else {
+fn selected_economy_support_links(game: &crate::game::Scene<'_>) -> Vec<EconomySupportLink> {
+    let Some(oxide_sim::Target::Building(selected)) = range_subject(
+        &game.presentation.selection.units,
+        &game.presentation.selection.buildings,
+    ) else {
         return Vec::new();
     };
     let Some(building) = game.state.building(selected) else {
         return Vec::new();
     };
-    if building.player != game.human || !building.built || building.hp == 0 {
+    if building.player != game.presentation.human || !building.built || building.hp == 0 {
         return Vec::new();
     }
 
@@ -2009,14 +2064,18 @@ fn selected_economy_support_links(game: &Game) -> Vec<EconomySupportLink> {
 
 const ECONOMY_SUPPORT_COLOR: Color = Color::new(0.72, 0.63, 0.46, 0.58);
 
-fn building_screen_bounds(game: &Game, building: &oxide_sim::Building) -> (Vec2, Vec2) {
+fn building_screen_bounds(
+    game: &crate::game::Scene<'_>,
+    building: &oxide_sim::Building,
+) -> (Vec2, Vec2) {
     let (width, height) = building.stats().size;
     let min = game
+        .presentation
         .camera
         .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
     (
         min,
-        min + vec2(width as f32, height as f32) * game.camera.zoom,
+        min + vec2(width as f32, height as f32) * game.presentation.camera.zoom,
     )
 }
 
@@ -2059,17 +2118,19 @@ fn line_footprint_interval(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> Option<(f3
     (enter < exit).then_some((enter, exit))
 }
 
-fn range_occluders(game: &Game) -> Vec<(Vec2, Vec2)> {
+fn range_occluders(game: &crate::game::Scene<'_>) -> Vec<(Vec2, Vec2)> {
     let margin = Vec2::splat(2.0 * ui_scale());
-    let viewport = (-margin, game.camera.viewport() + margin);
+    let viewport = (-margin, game.presentation.camera.viewport() + margin);
     game.state
         .buildings()
         .iter()
         .filter(|building| {
-            building.player == game.human
-                || game.all_seeing()
+            building.player == game.presentation.human
+                || game.presentation.all_seeing()
                 || (building.tiles().any(|tile| game.my_vision().visible(tile))
-                    && game.state.building_apparent(game.human, building))
+                    && game
+                        .state
+                        .building_apparent(game.presentation.human, building))
         })
         .map(|building| {
             let (min, max) = building_screen_bounds(game, building);
@@ -2125,13 +2186,14 @@ impl RangeClipper {
 }
 
 fn visit_active_building_ranges(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     input: &InputState,
     mut visit: impl FnMut(BuildingRange),
 ) {
-    if let Some(oxide_sim::Target::Building(id)) =
-        range_subject(&game.selection.units, &game.selection.buildings)
-        && let Some(building) = game.state.building(id)
+    if let Some(oxide_sim::Target::Building(id)) = range_subject(
+        &game.presentation.selection.units,
+        &game.presentation.selection.buildings,
+    ) && let Some(building) = game.state.building(id)
     {
         visit_building_ranges(
             vec2(building.anchor.x as f32, building.anchor.y as f32),
@@ -2141,18 +2203,24 @@ fn visit_active_building_ranges(
         );
     }
     if let Some(kind) = input.placing {
-        let world = game.camera.to_world(input.mouse);
+        let world = game.presentation.camera.to_world(input.mouse);
         let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
         let anchor = crate::input::placement_anchor(game, kind, clicked);
         visit_building_ranges(vec2(anchor.x as f32, anchor.y as f32), kind, 0, visit);
     }
 }
 
-fn draw_economy_ground(game: &Game, shape: BuildingRangeShape) {
+fn draw_economy_ground(game: &crate::game::Scene<'_>, shape: BuildingRangeShape) {
     let scale = ui_scale();
     if let BuildingRangeShape::FootprintSquare { min, max, radius } = shape {
-        let min = game.camera.to_screen(min - Vec2::splat(radius));
-        let max = game.camera.to_screen(max + Vec2::splat(radius));
+        let min = game
+            .presentation
+            .camera
+            .to_screen(min - Vec2::splat(radius));
+        let max = game
+            .presentation
+            .camera
+            .to_screen(max + Vec2::splat(radius));
         let depth = (10.0 * scale).min((max - min).min_element() * 0.25);
         let steps = depth.ceil() as usize;
         for step in 0..steps {
@@ -2186,7 +2254,12 @@ fn draw_economy_ground(game: &Game, shape: BuildingRangeShape) {
     }
 }
 
-fn draw_economy_support_links(game: &Game, scale: f32, color: Color, occluders: &[(Vec2, Vec2)]) {
+fn draw_economy_support_links(
+    game: &crate::game::Scene<'_>,
+    scale: f32,
+    color: Color,
+    occluders: &[(Vec2, Vec2)],
+) {
     let links = selected_economy_support_links(game);
     for link in &links {
         let Some(extractor) = game.state.building(link.extractor) else {
@@ -2212,11 +2285,12 @@ fn draw_economy_support_links(game: &Game, scale: f32, color: Color, occluders: 
     endpoints.dedup();
     let footprints = endpoints
         .into_iter()
-        .filter(|id| !game.selection.buildings.contains(id))
+        .filter(|id| !game.presentation.selection.buildings.contains(id))
         .filter_map(|id| game.state.building(id))
         .map(|building| (building.anchor, building.stats().size));
-    for bracket in support_brackets::junctions(footprints, game.camera.zoom, scale) {
+    for bracket in support_brackets::junctions(footprints, game.presentation.camera.zoom, scale) {
         let origin = game
+            .presentation
             .camera
             .to_screen(vec2(bracket.corner.x as f32, bracket.corner.y as f32));
         for [from, to] in bracket.segments(origin) {
@@ -2244,7 +2318,11 @@ fn range_color(kind: BuildingRangeKind) -> Color {
     }
 }
 
-fn visit_active_ranges(game: &Game, input: &InputState, mut visit: impl FnMut(RangeIndicator)) {
+fn visit_active_ranges(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+    mut visit: impl FnMut(RangeIndicator),
+) {
     visit_active_building_ranges(game, input, |range| {
         visit(RangeIndicator {
             range,
@@ -2252,10 +2330,11 @@ fn visit_active_ranges(game: &Game, input: &InputState, mut visit: impl FnMut(Ra
             color: range_color(range.kind),
         });
     });
-    if let Some(oxide_sim::Target::Unit(id)) =
-        range_subject(&game.selection.units, &game.selection.buildings)
-        && let Some(unit) = game.state.unit(id)
-        && unit.player == game.human
+    if let Some(oxide_sim::Target::Unit(id)) = range_subject(
+        &game.presentation.selection.units,
+        &game.presentation.selection.buildings,
+    ) && let Some(unit) = game.state.unit(id)
+        && unit.player == game.presentation.human
     {
         let center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         let stats = unit.kind.stats();
@@ -2294,24 +2373,27 @@ fn visit_active_ranges(game: &Game, input: &InputState, mut visit: impl FnMut(Ra
     }
 }
 
-fn screen_range_shape(game: &Game, shape: BuildingRangeShape) -> BuildingRangeShape {
+fn screen_range_shape(
+    game: &crate::game::Scene<'_>,
+    shape: BuildingRangeShape,
+) -> BuildingRangeShape {
     match shape {
         BuildingRangeShape::Circle { center, radius } => BuildingRangeShape::Circle {
-            center: game.camera.to_screen(center),
-            radius: radius * game.camera.zoom,
+            center: game.presentation.camera.to_screen(center),
+            radius: radius * game.presentation.camera.zoom,
         },
         BuildingRangeShape::FootprintOffset { min, max, radius } => {
             BuildingRangeShape::FootprintOffset {
-                min: game.camera.to_screen(min),
-                max: game.camera.to_screen(max),
-                radius: radius * game.camera.zoom,
+                min: game.presentation.camera.to_screen(min),
+                max: game.presentation.camera.to_screen(max),
+                radius: radius * game.presentation.camera.zoom,
             }
         }
         BuildingRangeShape::FootprintSquare { min, max, radius } => {
             BuildingRangeShape::FootprintSquare {
-                min: game.camera.to_screen(min),
-                max: game.camera.to_screen(max),
-                radius: radius * game.camera.zoom,
+                min: game.presentation.camera.to_screen(min),
+                max: game.presentation.camera.to_screen(max),
+                radius: radius * game.presentation.camera.zoom,
             }
         }
     }
@@ -2372,7 +2454,7 @@ fn range_fade_mesh(shape: BuildingRangeShape, width: f32, color: Color) -> Mesh 
     mesh
 }
 
-pub(crate) fn draw_range_ground(game: &Game, input: &InputState) {
+pub(crate) fn draw_range_ground(game: &crate::game::Scene<'_>, input: &InputState) {
     visit_active_ranges(game, input, |indicator| {
         if indicator.range.kind == BuildingRangeKind::EconomySupport {
             draw_economy_ground(game, indicator.range.shape);
@@ -2388,8 +2470,12 @@ pub(crate) fn draw_range_ground(game: &Game, input: &InputState) {
     });
 }
 
-pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
-    if range_subject(&game.selection.units, &game.selection.buildings).is_none()
+pub(crate) fn draw_range_rings(game: &crate::game::Scene<'_>, input: &InputState) {
+    if range_subject(
+        &game.presentation.selection.units,
+        &game.presentation.selection.buildings,
+    )
+    .is_none()
         && input.placing.is_none()
     {
         return;
@@ -2434,19 +2520,19 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     });
 }
 
-pub(crate) fn draw_pings(game: &Game) {
-    for fx in &game.fx {
+pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
+    for fx in &game.presentation.fx {
         let EffectKind::Ping { at, kind } = fx.kind else {
             continue;
         };
-        let center = game.camera.to_screen(at);
+        let center = game.presentation.camera.to_screen(at);
         let progress = (fx.age / 0.5).clamp(0.0, 1.0);
         // Damped: a still ring instead of a collapsing one — the verb
         // color still says what was ordered.
         let radius = if reduced_motion() {
-            game.camera.zoom * 0.4
+            game.presentation.camera.zoom * 0.4
         } else {
-            game.camera.zoom * (0.65 * (1.0 - progress) + 0.12)
+            game.presentation.camera.zoom * (0.65 * (1.0 - progress) + 0.12)
         };
         let base = match kind {
             crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
@@ -2462,42 +2548,45 @@ pub(crate) fn draw_pings(game: &Game) {
 
 /// The selected own building's rally flag, above the fog for the same
 /// reason as pings.
-pub(crate) fn draw_rally_marker(game: &Game) {
+pub(crate) fn draw_rally_marker(game: &crate::game::Scene<'_>) {
     // A selected producer draws the line to its rally, not just the
     // flag — where fresh machines will walk should read at a glance.
     // OWN producers only, like the flag below: the foreign panel hides
     // rally and orders on purpose, and an inspected enemy building
     // must not leak its intent through this line either.
     for (building, rally) in game
+        .presentation
         .selection
         .buildings
         .iter()
         .filter_map(|id| game.state.building(*id))
-        .filter(|building| building.player == game.human)
+        .filter(|building| building.player == game.presentation.human)
         .filter_map(|building| building.rally.map(|rally| (building, rally)))
     {
-        let a = game.camera.to_screen(vec2(
+        let a = game.presentation.camera.to_screen(vec2(
             building.anchor.x as f32 + building.stats().size.0 as f32 * 0.5,
             building.anchor.y as f32 + building.stats().size.1 as f32 * 0.5,
         ));
         let b = game
+            .presentation
             .camera
             .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
         draw_line(a.x, a.y, b.x, b.y, 1.5, Color::new(0.91, 0.89, 0.85, 0.35));
     }
     for rally in game
+        .presentation
         .selection
         .buildings
         .iter()
         .filter_map(|id| game.state.building(*id))
-        .filter(|building| building.player == game.human)
+        .filter(|building| building.player == game.presentation.human)
         .filter_map(|building| building.rally)
     {
-        draw_rally_flag(game, rally, game.camera.zoom);
+        draw_rally_flag(game, rally, game.presentation.camera.zoom);
     }
 }
 
-pub(crate) fn draw_drag_rect(game: &Game, input: &InputState) {
+pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) {
     let Some(origin) = input.drag_origin else {
         return;
     };
@@ -2520,19 +2609,19 @@ pub(crate) fn draw_drag_rect(game: &Game, input: &InputState) {
         return;
     }
     // Live preview starts only once release would commit a box-select.
-    let a = game.camera.to_world(lo);
-    let b = game.camera.to_world(lo + size);
+    let a = game.presentation.camera.to_world(lo);
+    let b = game.presentation.camera.to_world(lo + size);
     for unit in game.state.units() {
-        if unit.player != game.human {
+        if unit.player != game.presentation.human {
             continue;
         }
         let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
-            let screen = game.camera.to_screen(p);
+            let screen = game.presentation.camera.to_screen(p);
             draw_circle_lines(
                 screen.x,
                 screen.y,
-                unit.kind.stats().radius.to_num::<f32>() * game.camera.zoom + 3.0,
+                unit.kind.stats().radius.to_num::<f32>() * game.presentation.camera.zoom + 3.0,
                 1.5,
                 BONE_FAINT,
             );
@@ -2543,6 +2632,7 @@ pub(crate) fn draw_drag_rect(game: &Game, input: &InputState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
 
     fn economy_support_game() -> Game {
         let mut scenario = oxide_sim::Scenario::skirmish();
@@ -2595,7 +2685,7 @@ mod tests {
             .buildings()
             .iter()
             .find(|building| {
-                building.player == game.human
+                building.player == game.presentation.human
                     && building.kind == oxide_sim::BuildingKind::Extractor
                     && game.state.extractor_income(building.id)
                         == Some(oxide_sim::ExtractorIncome::Supported)
@@ -2607,7 +2697,7 @@ mod tests {
             .buildings()
             .iter()
             .find(|building| {
-                building.player == game.human
+                building.player == game.presentation.human
                     && building.kind == oxide_sim::BuildingKind::Extractor
                     && game.state.extractor_income(building.id)
                         == Some(oxide_sim::ExtractorIncome::Remote)
@@ -2619,7 +2709,7 @@ mod tests {
             .buildings()
             .iter()
             .find(|building| {
-                building.player != game.human
+                building.player != game.presentation.human
                     && building.kind == oxide_sim::BuildingKind::Extractor
                     && game.state.extractor_income(building.id)
                         == Some(oxide_sim::ExtractorIncome::Supported)
@@ -2627,14 +2717,14 @@ mod tests {
             .expect("supported foreign Extractor")
             .id;
 
-        game.selection.buildings = vec![supported];
-        let links = selected_economy_support_links(&game);
+        game.presentation.selection.buildings = vec![supported];
+        let links = selected_economy_support_links(&game.view());
         assert!(!links.is_empty());
         assert!(links.iter().all(|link| link.extractor == supported));
 
         let foundry = links[0].foundry;
-        game.selection.buildings = vec![foundry];
-        let from_foundry = selected_economy_support_links(&game);
+        game.presentation.selection.buildings = vec![foundry];
+        let from_foundry = selected_economy_support_links(&game.view());
         assert!(from_foundry.contains(&EconomySupportLink {
             extractor: supported,
             foundry,
@@ -2644,12 +2734,12 @@ mod tests {
             "remote Extractors cannot gain a decorative connection"
         );
 
-        game.selection.buildings = vec![remote];
-        assert!(selected_economy_support_links(&game).is_empty());
+        game.presentation.selection.buildings = vec![remote];
+        assert!(selected_economy_support_links(&game.view()).is_empty());
 
-        game.selection.buildings = vec![foreign];
+        game.presentation.selection.buildings = vec![foreign];
         assert!(
-            selected_economy_support_links(&game).is_empty(),
+            selected_economy_support_links(&game.view()).is_empty(),
             "foreign support state must not be disclosed by a link"
         );
     }
@@ -2662,19 +2752,19 @@ mod tests {
             .state
             .buildings()
             .iter()
-            .find(|building| building.player == game.human)
+            .find(|building| building.player == game.presentation.human)
             .expect("the human has a Foundry");
         let hostile = game
             .state
             .buildings()
             .iter()
-            .find(|building| building.player != game.human)
+            .find(|building| building.player != game.presentation.human)
             .expect("the opponent has a Foundry");
-        assert!(production_progress_visible(&game, own));
-        assert!(!production_progress_visible(&game, hostile));
+        assert!(production_progress_visible(&game.view(), own));
+        assert!(!production_progress_visible(&game.view(), hostile));
 
-        game.spectate = true;
-        assert!(production_progress_visible(&game, hostile));
+        game.presentation.spectate = true;
+        assert!(production_progress_visible(&game.view(), hostile));
     }
 
     #[test]
@@ -2868,7 +2958,7 @@ mod tests {
         let mut input = InputState::new();
         input.placing = Some(kind);
         let mut indicators = Vec::new();
-        visit_active_ranges(&game, &input, |indicator| indicators.push(indicator));
+        visit_active_ranges(&game.view(), &input, |indicator| indicators.push(indicator));
         assert!(
             indicators
                 .iter()
@@ -2906,9 +2996,9 @@ mod tests {
                 .find(|unit| unit.kind == kind)
                 .unwrap()
                 .id;
-            game.selection.units = vec![id];
+            game.presentation.selection.units = vec![id];
             let mut indicators = Vec::new();
-            visit_active_ranges(&game, &InputState::new(), |indicator| {
+            visit_active_ranges(&game.view(), &InputState::new(), |indicator| {
                 indicators.push(indicator)
             });
             let weapons: Vec<_> = indicators
@@ -3098,19 +3188,19 @@ mod tests {
             .state
             .buildings()
             .iter()
-            .find(|building| building.player != game.human)
+            .find(|building| building.player != game.presentation.human)
             .unwrap();
         assert!(!hostile.tiles().any(|tile| game.my_vision().visible(tile)));
         let (width, height) = hostile.stats().size;
-        game.camera.center = vec2(
+        game.presentation.camera.center = vec2(
             hostile.anchor.x as f32 + width as f32 * 0.5,
             hostile.anchor.y as f32 + height as f32 * 0.5,
         );
-        assert!(range_occluders(&game).is_empty());
-        game.spectate = true;
-        assert!(!range_occluders(&game).is_empty());
-        game.camera.center = vec2(-1000.0, -1000.0);
-        assert!(range_occluders(&game).is_empty());
+        assert!(range_occluders(&game.view()).is_empty());
+        game.presentation.spectate = true;
+        assert!(!range_occluders(&game.view()).is_empty());
+        game.presentation.camera.center = vec2(-1000.0, -1000.0);
+        assert!(range_occluders(&game.view()).is_empty());
     }
 
     #[test]

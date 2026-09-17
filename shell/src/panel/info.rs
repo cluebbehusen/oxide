@@ -1,6 +1,7 @@
 //! Selection facts, independent of their placement in the HUD.
 
 use super::*;
+use crate::game::Scene;
 use oxide_sim::stats::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,9 +76,9 @@ impl SelectionInfo {
         }
     }
 
-    fn ownership(&mut self, game: &Game, owner: oxide_sim::PlayerId) {
-        if owner != game.human {
-            let relation = if game.state.hostile(game.human, owner) {
+    fn ownership(&mut self, game: &Scene<'_>, owner: oxide_sim::PlayerId) {
+        if owner != game.presentation.human {
+            let relation = if game.state.hostile(game.presentation.human, owner) {
                 "Hostile"
             } else {
                 "Ally"
@@ -91,15 +92,18 @@ impl SelectionInfo {
     }
 }
 
-pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
+pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
     use StatIcon::{Capability as Cap, Verb};
     let mut info = SelectionInfo::default();
-    if game.selection.buildings.len() == 1 {
-        let Some(b) = game.state.building(game.selection.buildings[0]) else {
+    if game.presentation.selection.buildings.len() == 1 {
+        let Some(b) = game
+            .state
+            .building(game.presentation.selection.buildings[0])
+        else {
             return info;
         };
         let stats = b.stats();
-        if b.player == game.human && b.built {
+        if b.player == game.presentation.human && b.built {
             info.upgrade = super::upgrade::comparison(b.kind, b.tier);
         }
         info.health = Some((b.hp, stats.max_hp));
@@ -119,7 +123,7 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
             format!("{} tiles", stats.vision),
             Some(Cap(CapabilityIcon::Vision)),
         );
-        if b.player == game.human {
+        if b.player == game.presentation.human {
             if let Some(income) = game.state.extractor_income(b.id) {
                 info.row(
                     "Income",
@@ -214,8 +218,8 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
             _ => {}
         }
         info.weapons(stats.weapons);
-    } else if game.selection.units.len() == 1 {
-        let Some(u) = game.state.unit(game.selection.units[0]) else {
+    } else if game.presentation.selection.units.len() == 1 {
+        let Some(u) = game.state.unit(game.presentation.selection.units[0]) else {
             return info;
         };
         let stats = u.kind.stats();
@@ -245,7 +249,7 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
             );
         }
         if stats.transport_capacity > 0 {
-            let value = if !game.state.hostile(game.human, u.player) {
+            let value = if !game.state.hostile(game.presentation.human, u.player) {
                 let held: u8 = u.cargo.iter().map(|r| r.kind.stats().transport_size).sum();
                 format!("{held}/{} points", stats.transport_capacity)
             } else {
@@ -256,7 +260,7 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
         if let Some(harvest) = stats.harvest {
             info.row(
                 "Scrap load",
-                if u.player == game.human {
+                if u.player == game.presentation.human {
                     format!("{}/{}", u.carrying, harvest.capacity)
                 } else {
                     format!("{} capacity", harvest.capacity)
@@ -297,6 +301,7 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
         if let Some(u) = subject_unit(game).and_then(|id| game.state.unit(id)) {
             info.ownership(game, u.player);
         } else if let Some(b) = game
+            .presentation
             .selection
             .buildings
             .first()
@@ -311,6 +316,7 @@ pub(crate) fn selection_info(game: &Game, panel: &Panel) -> SelectionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
 
     fn selected(kind: UnitKind, foreign: bool) -> Panel {
         let mut scenario = oxide_sim::Scenario::skirmish();
@@ -325,8 +331,8 @@ mod tests {
         }];
         let mut game =
             Game::with_viewport(scenario, macroquad::prelude::vec2(640.0, 400.0)).unwrap();
-        game.selection.units = game.state.units().iter().map(|u| u.id).collect();
-        build_for_palette(&game, &BindingMap::classic(), false).unwrap()
+        game.presentation.selection.units = game.state.units().iter().map(|u| u.id).collect();
+        build_for_palette(&game.view(), &BindingMap::classic(), false).unwrap()
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Building capabilities and orders shared by single and grouped selections.
 
 use crate::action::{Action, BindingMap};
-use crate::game::Game;
+use crate::game::{Game, Scene};
 use crate::panel::{Card, CardAction, CardIcon, VerbIcon, tick_time_label};
 use crate::typography::entity_name;
 use oxide_sim::{Building, BuildingId, BuildingKind, Command, Faction};
@@ -22,39 +22,39 @@ pub(crate) struct UpgradeBatch {
 }
 
 impl SelectedBuildings {
-    pub fn inspect(game: &Game) -> Self {
-        Self::inspect_ids(game, &game.selection.buildings)
+    pub fn inspect(game: &Scene<'_>) -> Self {
+        Self::inspect_ids(game, &game.presentation.selection.buildings)
     }
 
-    pub fn inspect_ids(game: &Game, ids: &[BuildingId]) -> Self {
+    pub fn inspect_ids(game: &Scene<'_>, ids: &[BuildingId]) -> Self {
         let snapshot = |buildings: &[Building], scrap, accepts| Self {
             buildings: buildings
                 .iter()
-                .filter(|b| b.player == game.human && ids.contains(&b.id))
+                .filter(|b| b.player == game.presentation.human && ids.contains(&b.id))
                 .cloned()
                 .collect(),
             tech: buildings
                 .iter()
-                .filter(|b| b.player == game.human && b.built)
+                .filter(|b| b.player == game.presentation.human && b.built)
                 .map(|b| b.kind)
                 .collect(),
             scrap,
-            faction: game.state.player(game.human).faction,
+            faction: game.state.player(game.presentation.human).faction,
             accepts,
         };
         if game.pending.is_empty() {
-            let player = game.state.player(game.human);
+            let player = game.state.player(game.presentation.human);
             snapshot(
                 game.state.buildings(),
                 player.scrap,
                 game.state.result().is_none() && !player.resigned && game.home_foundry().is_some(),
             )
         } else {
-            game.state.inspect_command_phase(&game.pending, |state| {
+            game.state.inspect_command_phase(game.pending, |state| {
                 snapshot(
                     state.buildings(),
-                    state.scrap(game.human).unwrap_or(0),
-                    state.accepts_commands(game.human),
+                    state.scrap(game.presentation.human).unwrap_or(0),
+                    state.accepts_commands(game.presentation.human),
                 )
             })
         }
@@ -303,7 +303,7 @@ impl SelectedBuildings {
 }
 
 pub(crate) fn upgrade(game: &mut Game) {
-    let selected = SelectedBuildings::inspect(game);
+    let selected = SelectedBuildings::inspect(&game.view());
     let Some(batch) = selected.upgrade_batch() else {
         return;
     };
@@ -312,7 +312,7 @@ pub(crate) fn upgrade(game: &mut Game) {
         game.issue(Command::UpgradeBuilding { building });
     }
     if let Some(reason) = batch.reason {
-        game.toast(if selected.buildings.len() > 1 {
+        game.presentation.toast(if selected.buildings.len() > 1 {
             format!(
                 "Upgrading {count} of {}: {reason}",
                 selected.buildings.len()
@@ -324,22 +324,25 @@ pub(crate) fn upgrade(game: &mut Game) {
 }
 
 pub(crate) fn scrap_sites(game: &mut Game) {
-    let sites = SelectedBuildings::inspect(game).sites();
+    let sites = SelectedBuildings::inspect(&game.view()).sites();
     for &building in &sites {
         game.issue(Command::Cancel { building });
     }
-    game.selection.buildings.retain(|id| !sites.contains(id));
+    game.presentation
+        .selection
+        .buildings
+        .retain(|id| !sites.contains(id));
 }
 
 pub(crate) fn stop_or_scrap(game: &mut Game) {
-    let selected = SelectedBuildings::inspect(game);
+    let selected = SelectedBuildings::inspect(&game.view());
     let buildings = selected.defenses(None);
     if !buildings.is_empty() {
         game.issue(Command::ClearFocus { buildings });
     } else if !selected.sites().is_empty() {
         scrap_sites(game);
     } else if selected.buildings.iter().any(|b| !b.built && b.tier > 0) {
-        game.toast("upgrades cannot be cancelled");
+        game.presentation.toast("upgrades cannot be cancelled");
     }
 }
 

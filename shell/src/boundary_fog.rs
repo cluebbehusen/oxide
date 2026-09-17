@@ -190,10 +190,10 @@ mod tests {
         let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
         game.bots.clear();
         let tile = TilePos::new(3, -1);
-        assert!(game.boundary_fog.visible(tile));
+        assert!(game.presentation.boundary_fog.visible(tile));
         let id = game.state.units()[0].id;
         game.pending.push(PlayerCommand {
-            player: game.human,
+            player: game.presentation.human,
             command: Command::Move {
                 units: vec![id],
                 goal: TilePos::new(15, 15),
@@ -201,12 +201,15 @@ mod tests {
             },
         });
         game.advance_ticks(300);
-        assert!(!game.boundary_fog.visible(tile));
-        assert!(game.boundary_fog.explored(tile));
+        assert!(!game.presentation.boundary_fog.visible(tile));
+        assert!(game.presentation.boundary_fog.explored(tile));
         let mut replay = game.recorder.clone();
         replay.meta.ticks = Some(game.state.current_tick());
         let resumed = Game::from_replay(replay).unwrap();
         assert_eq!(game.hash_hex(), resumed.hash_hex());
-        assert_eq!(game.boundary_fog, resumed.boundary_fog);
+        assert_eq!(
+            game.presentation.boundary_fog,
+            resumed.presentation.boundary_fog
+        );
     }
 }

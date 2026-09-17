@@ -13,12 +13,12 @@ use oxide_sim::UnitId;
 
 /// Own harvesters with nothing to do, in id order — the cycle key and
 /// the HUD badge both read this.
-pub fn idle_harvesters(game: &Game) -> Vec<UnitId> {
+pub fn idle_harvesters(game: &crate::game::Scene<'_>) -> Vec<UnitId> {
     game.state
         .units()
         .iter()
         .filter(|u| {
-            u.player == game.human
+            u.player == game.presentation.human
                 && u.kind.stats().harvest.is_some()
                 && u.order == oxide_sim::Order::Idle
         })
@@ -30,12 +30,12 @@ pub fn idle_harvesters(game: &Game) -> Vec<UnitId> {
 /// order, wrapping) and centers the camera on it. Stateless: the
 /// selection itself is the cursor.
 pub(super) fn cycle_idle_worker(game: &mut Game) {
-    let idle = idle_harvesters(game);
+    let idle = idle_harvesters(&game.view());
     let Some(&first) = idle.first() else {
-        game.toast("no idle harvesters");
+        game.presentation.toast("no idle harvesters");
         return;
     };
-    let next = match game.selection.units.as_slice() {
+    let next = match game.presentation.selection.units.as_slice() {
         [current] => idle
             .iter()
             .copied()
@@ -43,17 +43,17 @@ pub(super) fn cycle_idle_worker(game: &mut Game) {
             .unwrap_or(first),
         _ => first,
     };
-    game.selection.units = vec![next];
-    game.selection.buildings.clear();
+    game.presentation.selection.units = vec![next];
+    game.presentation.selection.buildings.clear();
     let unit = game.state.unit(next).expect("listed above");
-    game.camera.center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-    game.camera.pan(Vec2::ZERO); // re-clamp
+    game.presentation.camera.center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+    game.presentation.camera.pan(Vec2::ZERO); // re-clamp
 }
 
 /// World-space pick radius around a unit: generous when zoomed out so
 /// units never need tweezers (at least 10 logical px on screen).
 fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind) -> f32 {
-    (10.0 * ui / game.camera.zoom).max(super::unit_pick_radius(kind))
+    (10.0 * ui / game.presentation.camera.zoom).max(super::unit_pick_radius(kind))
 }
 
 /// HUD chrome that swallows clicks: the top bar always; the bottom panel
@@ -61,15 +61,15 @@ fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind) -> f32 {
 /// (the packed palette wraps to several rows on narrow windows; clicks
 /// on the upper rows must not fall through to the world).
 pub(super) fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
-    game.layout.get().chrome_owns(screen)
+    game.presentation.layout.get().chrome_owns(screen)
 }
 
 /// Whether the human may SEE this unit at all — own and allies always
 /// (team sight), enemies only on currently visible ground. Selection
 /// must never reach through fog.
 fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
-    !game.state.hostile(game.human, unit.player)
-        || game.all_seeing()
+    !game.state.hostile(game.presentation.human, unit.player)
+        || game.presentation.all_seeing()
         || game.my_vision().visible(unit.tile())
 }
 
@@ -77,16 +77,18 @@ fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
 /// fog — or through stealth: an undetected buried charge must not be
 /// clickable on ground the player merely sees.
 fn selectable_building(game: &Game, building: &oxide_sim::Building) -> bool {
-    building.player == game.human
-        || game.all_seeing()
+    building.player == game.presentation.human
+        || game.presentation.all_seeing()
         || (building.tiles().any(|tile| game.my_vision().visible(tile))
-            && game.state.building_apparent(game.human, building))
+            && game
+                .state
+                .building_apparent(game.presentation.human, building))
 }
 
 pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
-    let world = game.camera.to_world(screen);
+    let world = game.presentation.camera.to_world(screen);
     if !additive {
-        game.selection.buildings.clear();
+        game.presentation.selection.buildings.clear();
     }
     // Nearest visible unit of any owner within pick range wins; own
     // units outrank foreign ones inside the radius so a scrum never
@@ -100,7 +102,7 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             let distance = p.distance(world);
             (distance <= pick_radius(game, ui, u.kind)).then_some((
-                u.player != game.human,
+                u.player != game.presentation.human,
                 distance,
                 u.id,
                 u.player,
@@ -108,8 +110,9 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
         })
         .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
     if let Some((_, _, id, owner)) = picked {
-        game.selection.buildings.clear();
+        game.presentation.selection.buildings.clear();
         let current_owner = game
+            .presentation
             .selection
             .units
             .first()
@@ -117,15 +120,21 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
             .map(|u| u.player);
         if additive && current_owner == Some(owner) {
             // Shift-click toggles membership within one allegiance.
-            if let Some(index) = game.selection.units.iter().position(|u| *u == id) {
-                game.selection.units.remove(index);
+            if let Some(index) = game
+                .presentation
+                .selection
+                .units
+                .iter()
+                .position(|u| *u == id)
+            {
+                game.presentation.selection.units.remove(index);
             } else {
-                game.selection.units.push(id);
+                game.presentation.selection.units.push(id);
             }
         } else {
             // A different owner REPLACES: single-allegiance by
             // construction.
-            game.selection.units = vec![id];
+            game.presentation.selection.units = vec![id];
         }
         return;
     }
@@ -140,8 +149,9 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
         .buildings_at(tile)
         .find(|b| selectable_building(game, b));
     if let Some(building) = picked {
-        game.selection.units.clear();
+        game.presentation.selection.units.clear();
         let current_owner = game
+            .presentation
             .selection
             .buildings
             .first()
@@ -149,18 +159,19 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
             .map(|selected| selected.player);
         if additive && current_owner == Some(building.player) {
             if let Some(index) = game
+                .presentation
                 .selection
                 .buildings
                 .iter()
                 .position(|id| *id == building.id)
             {
-                game.selection.buildings.remove(index);
+                game.presentation.selection.buildings.remove(index);
             } else {
-                game.selection.buildings.push(building.id);
-                game.selection.buildings.sort_unstable();
+                game.presentation.selection.buildings.push(building.id);
+                game.presentation.selection.buildings.sort_unstable();
             }
         } else {
-            game.selection.buildings = vec![building.id];
+            game.presentation.selection.buildings = vec![building.id];
         }
         return;
     }
@@ -168,13 +179,13 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
         return; // shift-miss leaves the selection alone
     }
     // …otherwise clear.
-    game.selection.units.clear();
-    game.selection.buildings.clear();
+    game.presentation.selection.units.clear();
+    game.presentation.selection.buildings.clear();
 }
 
 pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additive: bool) {
-    let a = game.camera.to_world(a_screen);
-    let b = game.camera.to_world(b_screen);
+    let a = game.presentation.camera.to_world(a_screen);
+    let b = game.presentation.camera.to_world(b_screen);
     let (lo, hi) = (a.min(b), a.max(b));
     let unit_inside = |u: &&oxide_sim::Unit| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
@@ -187,24 +198,29 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
         .state
         .units()
         .iter()
-        .filter(|u| u.player == game.human)
+        .filter(|u| u.player == game.presentation.human)
         .filter(unit_inside)
         .map(|u| u.id)
         .collect();
     if !boxed.is_empty() {
         if additive {
             boxed.extend(
-                game.selection
+                game.presentation
+                    .selection
                     .units
                     .iter()
                     .copied()
-                    .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human)),
+                    .filter(|id| {
+                        game.state
+                            .unit(*id)
+                            .is_some_and(|u| u.player == game.presentation.human)
+                    }),
             );
             boxed.sort_unstable();
             boxed.dedup();
         }
-        game.selection.units = boxed;
-        game.selection.buildings.clear();
+        game.presentation.selection.units = boxed;
+        game.presentation.selection.buildings.clear();
         return;
     }
 
@@ -219,22 +235,29 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
         .state
         .buildings()
         .iter()
-        .filter(|building| building.player == game.human)
+        .filter(|building| building.player == game.presentation.human)
         .filter(building_inside)
         .map(|building| building.id)
         .collect();
     if !buildings.is_empty() {
         if additive {
-            buildings.extend(game.selection.buildings.iter().copied().filter(|id| {
-                game.state
-                    .building(*id)
-                    .is_some_and(|building| building.player == game.human)
-            }));
+            buildings.extend(
+                game.presentation
+                    .selection
+                    .buildings
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        game.state
+                            .building(*id)
+                            .is_some_and(|building| building.player == game.presentation.human)
+                    }),
+            );
             buildings.sort_unstable();
             buildings.dedup();
         }
-        game.selection.units.clear();
-        game.selection.buildings = buildings;
+        game.presentation.selection.units.clear();
+        game.presentation.selection.buildings = buildings;
         return;
     }
 
@@ -245,7 +268,7 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
         .state
         .units()
         .iter()
-        .filter(|unit| unit.player != game.human && selectable(game, unit))
+        .filter(|unit| unit.player != game.presentation.human && selectable(game, unit))
         .filter(unit_inside)
         .map(|unit| unit.player)
         .min();
@@ -260,19 +283,20 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
             .collect();
         if additive {
             let current_owner = game
+                .presentation
                 .selection
                 .units
                 .first()
                 .and_then(|id| game.state.unit(*id))
                 .map(|unit| unit.player);
             if current_owner == Some(owner) {
-                units.extend(game.selection.units.iter().copied());
+                units.extend(game.presentation.selection.units.iter().copied());
                 units.sort_unstable();
                 units.dedup();
             }
         }
-        game.selection.units = units;
-        game.selection.buildings.clear();
+        game.presentation.selection.units = units;
+        game.presentation.selection.buildings.clear();
         return;
     }
 
@@ -280,7 +304,7 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
         .state
         .buildings()
         .iter()
-        .filter(|building| building.player != game.human)
+        .filter(|building| building.player != game.presentation.human)
         .filter(|building| selectable_building(game, building))
         .filter(building_inside)
         .map(|building| building.player)
@@ -296,31 +320,32 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
             .collect();
         if additive {
             let current_owner = game
+                .presentation
                 .selection
                 .buildings
                 .first()
                 .and_then(|id| game.state.building(*id))
                 .map(|building| building.player);
             if current_owner == Some(owner) {
-                buildings.extend(game.selection.buildings.iter().copied());
+                buildings.extend(game.presentation.selection.buildings.iter().copied());
                 buildings.sort_unstable();
                 buildings.dedup();
             }
         }
-        game.selection.units.clear();
-        game.selection.buildings = buildings;
+        game.presentation.selection.units.clear();
+        game.presentation.selection.buildings = buildings;
         return;
     }
 
     if !additive {
-        game.selection.units.clear();
-        game.selection.buildings.clear();
+        game.presentation.selection.units.clear();
+        game.presentation.selection.buildings.clear();
     }
 }
 
 /// Double-click: everyone of the clicked unit's kind currently on screen.
 pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
-    let world = game.camera.to_world(screen);
+    let world = game.presentation.camera.to_world(screen);
     // The sweep stays within the PICKED unit's owner: double-clicking
     // an ally harvester gathers that ally's harvesters on screen, never
     // a cross-allegiance soup. Own units outrank foreign at the pick,
@@ -334,7 +359,7 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             let distance = p.distance(world);
             (distance <= pick_radius(game, ui, u.kind)).then_some((
-                u.player != game.human,
+                u.player != game.presentation.human,
                 distance,
                 u.kind,
                 u.player,
@@ -344,9 +369,9 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
     let Some((_, _, kind, owner)) = picked else {
         return;
     };
-    let (lo, hi) = game.camera.world_rect();
-    game.selection.buildings.clear();
-    game.selection.units = game
+    let (lo, hi) = game.presentation.camera.world_rect();
+    game.presentation.selection.buildings.clear();
+    game.presentation.selection.units = game
         .state
         .units()
         .iter()

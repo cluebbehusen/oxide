@@ -14,7 +14,7 @@ const MINI_PIT: Color = color_u8!(6, 6, 9, 255);
 
 /// Minimap identity color: the same faction-own, cool-allied, warm-hostile
 /// seat accents used by the world renderer.
-fn mini_entity_color(game: &Game, owner: oxide_sim::PlayerId) -> Color {
+fn mini_entity_color(game: &crate::game::Scene<'_>, owner: oxide_sim::PlayerId) -> Color {
     super::seat_identity_color(game, owner)
 }
 
@@ -37,10 +37,12 @@ fn stale_toward(color: Color, floor: Color, age: f32) -> Color {
 
 /// Shared stamp read: how long since the player last saw this key
 /// (unstamped memories — loaded saves — start their ramp now).
-fn memory_age(game: &Game, key: (i32, i32)) -> f32 {
-    let mut seen = game.last_seen.borrow_mut();
-    let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
-    game.fx_time() - stamp
+fn memory_age(game: &crate::game::Scene<'_>, key: (i32, i32)) -> f32 {
+    let mut seen = game.presentation.last_seen.borrow_mut();
+    let stamp = *seen
+        .entry(key)
+        .or_insert_with(|| game.presentation.fx_time());
+    game.presentation.fx_time() - stamp
 }
 
 /// Where the minimap sits (flush bottom-right, matching the command
@@ -61,21 +63,25 @@ pub fn minimap_rect_scaled(map_w: i32, map_h: i32, viewport: Vec2, s: f32) -> Re
 }
 
 /// Where the minimap sits this frame.
-pub fn minimap_rect(game: &Game) -> Rect {
+pub fn minimap_rect(game: &crate::game::Scene<'_>) -> Rect {
     minimap_rect_for(
         game.state.map().width(),
         game.state.map().height(),
-        game.camera.viewport(),
+        game.presentation.camera.viewport(),
     )
 }
 
 /// The world point under a screen position, if it lies on the minimap —
 /// how clicks jump the camera (and where armed ground orders land).
-pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
+pub fn minimap_world_at(game: &crate::game::Scene<'_>, screen: Vec2) -> Option<Vec2> {
     // The *published* rect, not a recomputation — hit-testing reads the
     // LayoutModel like all chrome, and never touches the window (which
     // also keeps the whole click path headless-testable).
-    minimap_world_in(game.layout.get().minimap, game.state.map().width(), screen)
+    minimap_world_in(
+        game.presentation.layout.get().minimap,
+        game.state.map().width(),
+        screen,
+    )
 }
 
 /// Testable core of [`minimap_world_at`] (no window queries).
@@ -118,13 +124,13 @@ impl MinimapLayer {
 
 /// The whole war at a glance, under the same fog rules as the world view
 /// (and, like everything else, omniscient while the F1 overlay is up).
-pub(crate) fn draw_minimap(game: &Game) {
-    let rect = game.layout.get().minimap;
+pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
+    let rect = game.presentation.layout.get().minimap;
     if rect.w <= 0.0 || rect.h <= 0.0 {
         return;
     }
     let scale = rect.w / game.state.map().width() as f32;
-    let omniscient = game.all_seeing();
+    let omniscient = game.presentation.all_seeing();
     let vision = game.my_vision();
     draw_rectangle(
         rect.x - 3.0,
@@ -134,7 +140,7 @@ pub(crate) fn draw_minimap(game: &Game) {
         PANEL,
     );
 
-    let mut layer_slot = game.minimap_layer.borrow_mut();
+    let mut layer_slot = game.presentation.minimap_layer.borrow_mut();
     let layer = MinimapLayer::ensure(
         &mut layer_slot,
         game.state.map().width(),
@@ -169,9 +175,10 @@ pub(crate) fn draw_minimap(game: &Game) {
                 // re-scouted off-camera resumed fading from its old
                 // timestamp the moment sight dropped.
                 if tile.scrap > 0 || tile.wreck > 0 {
-                    game.last_seen
+                    game.presentation
+                        .last_seen
                         .borrow_mut()
-                        .insert((pos.x, pos.y), game.fx_time());
+                        .insert((pos.x, pos.y), game.presentation.fx_time());
                 }
                 base
             } else if scrap > 0 {
@@ -232,9 +239,11 @@ pub(crate) fn draw_minimap(game: &Game) {
     }
     for building in game.state.buildings() {
         let seen = omniscient
-            || building.player == game.human
+            || building.player == game.presentation.human
             || (building.tiles().any(|t| vision.visible(t))
-                && game.state.building_apparent(game.human, building));
+                && game
+                    .state
+                    .building_apparent(game.presentation.human, building));
         if !seen {
             continue;
         }
@@ -248,7 +257,8 @@ pub(crate) fn draw_minimap(game: &Game) {
         );
     }
     for unit in game.state.units() {
-        let seen = omniscient || unit.player == game.human || vision.visible(unit.tile());
+        let seen =
+            omniscient || unit.player == game.presentation.human || vision.visible(unit.tile());
         if !seen {
             continue;
         }
@@ -263,7 +273,7 @@ pub(crate) fn draw_minimap(game: &Game) {
     }
 
     // Camera frame.
-    let (lo, hi) = game.camera.world_rect();
+    let (lo, hi) = game.presentation.camera.world_rect();
     let x = rect.x + lo.x.max(0.0) * scale;
     let y = rect.y + lo.y.max(0.0) * scale;
     let x2 = rect.x + hi.x.min(game.state.map().width() as f32) * scale;
@@ -272,7 +282,7 @@ pub(crate) fn draw_minimap(game: &Game) {
 
     // Under-attack pulses: an expanding, fading ring where trouble is —
     // or, damped, a steady marker that fades without expanding.
-    for (world, age) in &game.alerts {
+    for (world, age) in &game.presentation.alerts {
         let center = vec2(rect.x + world.x * scale, rect.y + world.y * scale);
         let (radius, alpha) = if reduced_motion() {
             (5.0, (1.0 - (age / 6.0)).max(0.0))

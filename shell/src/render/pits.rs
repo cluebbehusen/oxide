@@ -13,7 +13,7 @@ use super::environment::{
     Layer, Material, WAVE_LIFTS, draw_fracture, draw_lip, draw_missing_slab, draw_rebar,
     draw_strata, hash, mixed, quarry_color, rgba, shifted,
 };
-use crate::game::Game;
+use crate::game::Scene;
 use chassis::grid::TilePos;
 use macroquad::prelude::*;
 use oxide_sim::map::Terrain;
@@ -138,7 +138,7 @@ struct PitField {
 }
 
 impl PitField {
-    fn build(game: &Game, min: TilePos, max: TilePos) -> Self {
+    fn build(game: &Scene<'_>, min: TilePos, max: TilePos) -> Self {
         let pad = (MAX_DEPTH + CELLS - 1) / CELLS + 1;
         let origin = TilePos::new(min.x - pad, min.y - pad);
         let width = max.x - min.x + 2 * pad;
@@ -148,7 +148,7 @@ impl PitField {
         let mut known = vec![false; (width * height).max(0) as usize];
         let map = game.state.map();
         let vision = game.my_vision();
-        let all_seeing = game.all_seeing();
+        let all_seeing = game.presentation.all_seeing();
         for ty in 0..height {
             for tx in 0..width {
                 let pos = TilePos::new(origin.x + tx, origin.y + ty);
@@ -241,12 +241,13 @@ impl PitField {
 
 /// Screen-space cell edges for one tile, floored so neighbors share exact
 /// edges and no hairline opens between cells.
-fn cell_edges(game: &Game, pos: TilePos) -> ([f32; 5], [f32; 5]) {
+fn cell_edges(game: &Scene<'_>, pos: TilePos) -> ([f32; 5], [f32; 5]) {
     let mut xs = [0.0; 5];
     let mut ys = [0.0; 5];
     for (i, (x, y)) in xs.iter_mut().zip(ys.iter_mut()).enumerate() {
         let frac = i as f32 / CELLS as f32;
         let screen = game
+            .presentation
             .camera
             .to_screen(vec2(pos.x as f32 + frac, pos.y as f32 + frac));
         *x = screen.x.floor();
@@ -275,7 +276,7 @@ fn draw_glints(xs: &[f32; 5], ys: &[f32; 5], pos: TilePos, zoom: f32) {
     }
 }
 
-fn draw_fill(game: &Game, field: &PitField, pos: TilePos, zoom: f32, fractured: bool) {
+fn draw_fill(game: &Scene<'_>, field: &PitField, pos: TilePos, zoom: f32, fractured: bool) {
     let (xs, ys) = cell_edges(game, pos);
     let color = |sx: i32, sy: i32| {
         let material = field.material_at(pos, sx, sy).unwrap_or(Material::Void);
@@ -323,7 +324,7 @@ fn uniform_bench(field: &PitField, pos: TilePos, sx: i32, sy: i32) -> Option<usi
         .then_some(level)
 }
 
-fn draw_relief(game: &Game, field: &PitField, pos: TilePos, zoom: f32, fractured: bool) {
+fn draw_relief(game: &Scene<'_>, field: &PitField, pos: TilePos, zoom: f32, fractured: bool) {
     let (xs, ys) = cell_edges(game, pos);
     let lip = (zoom * 0.055).max(1.0);
     let cell = zoom / CELLS as f32;
@@ -371,13 +372,13 @@ fn draw_relief(game: &Game, field: &PitField, pos: TilePos, zoom: f32, fractured
     }
 }
 
-pub(super) fn draw_pits(game: &Game, fractured: bool) {
+pub(super) fn draw_pits(game: &Scene<'_>, fractured: bool) {
     let (min, max) = super::visible_tiles(game);
     if min.x >= max.x || min.y >= max.y {
         return;
     }
     let field = PitField::build(game, min, max);
-    let zoom = game.camera.zoom;
+    let zoom = game.presentation.camera.zoom;
     let pit_tiles: Vec<TilePos> = (min.y..max.y)
         .flat_map(|y| (min.x..max.x).map(move |x| TilePos::new(x, y)))
         .filter(|pos| field.known_pit(*pos))

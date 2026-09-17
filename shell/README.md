@@ -17,7 +17,9 @@ crate-level rustdoc.
 - `screens/wizard` owns New Match seat, team, faction, and opponent choices;
   `bot_label` keeps configured opponent names consistent across the wizard, HUD,
   and result report.
-- `game` owns one live session, its recorder, bots, and presentation state.
+- `game` owns one live session, its recorder, and bots. `game::Presentation`
+  holds camera, interpolation, effects, and UI state; rendering borrows the
+  active live or replay world through `game::Scene`.
 - `input` and `action` form the single hardware and injected-input funnel.
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.
