@@ -530,7 +530,7 @@ impl ResultsScreen {
                     .iter()
                     .find(|entry| usize::from(entry.seat) == seat);
                 let y = rule_y + (row as f32 + layout.row_baseline) * row_h;
-                let color = render::seat_identity_color(game, PlayerId(seat as u8));
+                let color = render::seat_identity_color(&game.view(), PlayerId(seat as u8));
                 draw_marker(
                     columns[0],
                     y - layout.row_size * 0.36,
@@ -667,16 +667,18 @@ impl ResultsScreen {
 fn verdict(game: &Game) -> (&'static str, Color, String) {
     let winners = game.state.winners();
     match game.state.result() {
-        Some(GameResult::Victory { .. }) if winners.contains(&game.human) => (
+        Some(GameResult::Victory { .. }) if winners.contains(&game.presentation.human) => (
             "VICTORY",
             theme::TEXT_ACCENT,
             winner_subtitle(game, &winners),
         ),
-        Some(GameResult::Victory { .. }) if game.state.player(game.human).resigned => (
-            "SURRENDERED",
-            theme::TEXT_DANGER,
-            "your machines fell silent".to_string(),
-        ),
+        Some(GameResult::Victory { .. }) if game.state.player(game.presentation.human).resigned => {
+            (
+                "SURRENDERED",
+                theme::TEXT_DANGER,
+                "your machines fell silent".to_string(),
+            )
+        }
         Some(GameResult::Victory { .. }) => (
             "DEFEAT",
             theme::TEXT_DANGER,
@@ -932,7 +934,7 @@ fn draw_army_graph(
         );
     }
     for player in &report.players {
-        let color = render::seat_identity_color(game, PlayerId(player.seat));
+        let color = render::seat_identity_color(&game.view(), PlayerId(player.seat));
         let points = graph_points(
             &report.sample_ticks,
             &player.army_value,

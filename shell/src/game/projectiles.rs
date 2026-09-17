@@ -202,7 +202,11 @@ mod tests {
             let report = game.do_tick();
             let shells = game.state.shells();
             for (index, shell) in shells.iter().enumerate() {
-                let pose = game.projectile_releases.release(shells, index).unwrap();
+                let pose = game
+                    .presentation
+                    .projectile_releases
+                    .release(shells, index)
+                    .unwrap();
                 if shell.shooter == Target::Unit(UnitId(1)) {
                     assert_eq!(pose.kind, UnitKind::Moth);
                     if !saw_moth {
@@ -210,7 +214,12 @@ mod tests {
                             .iter()
                             .enumerate()
                             .filter(|(_, s)| s.shooter == shell.shooter)
-                            .map(|(i, _)| game.projectile_releases.release(shells, i).unwrap())
+                            .map(|(i, _)| {
+                                game.presentation
+                                    .projectile_releases
+                                    .release(shells, i)
+                                    .unwrap()
+                            })
                             .collect();
                         assert_eq!(
                             moth.iter().map(|p| p.slot).collect::<Vec<_>>(),
@@ -222,8 +231,11 @@ mod tests {
                         assert_eq!(loaded.hash_hex(), game.hash_hex());
                         for i in 0..shells.len() {
                             assert_eq!(
-                                loaded.projectile_releases.release(loaded.state.shells(), i),
-                                game.projectile_releases.release(shells, i)
+                                loaded
+                                    .presentation
+                                    .projectile_releases
+                                    .release(loaded.state.shells(), i),
+                                game.presentation.projectile_releases.release(shells, i)
                             );
                         }
                         let mut clamped_events = report.events.clone();
@@ -264,7 +276,9 @@ mod tests {
         assert_eq!(resumed.hash_hex(), game.hash_hex());
         let lookup = |game: &Game| {
             let index = game.state.shells().iter().position(|s| s == &shell)?;
-            game.projectile_releases.release(game.state.shells(), index)
+            game.presentation
+                .projectile_releases
+                .release(game.state.shells(), index)
         };
         assert_eq!(lookup(&resumed), Some(pose));
         game.advance_ticks(2);

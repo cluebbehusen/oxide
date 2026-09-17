@@ -10,603 +10,77 @@ description:
 
 # Oxide scripted bot
 
-Build one opponent that plays a recognizable, complete game under the same
-constraints as a person. Do not turn aggregate success into a claim that its
-matches are sensible or fun.
-
-For work that changes strategic allocation, forecasting, personality,
-opportunity scaling, or coordination across domains, first read the normative
-[scripted bot strategy](../../../docs/bot-strategy.md). Keep detailed procedures
-and implementation-specific invariants in this skill rather than duplicating
-that design model here.
-
-## Preserve the level playing field
-
-The bot is an ordinary command source. It receives a fog-honest observation and
-may issue only shared `PlayerCommand` values. It gets no hidden income, vision,
-stats, prerequisites, queue space, build privileges, movement, or combat rules.
-
-`PublicMapBriefing` may explicitly provide the authored facts disclosed before
-play: static terrain, Extractor frames, initial scrap, teams, and starting
-Foundry anchors. Treat starts and resources as priors, never as current enemy
-contacts or live amounts. Other hidden state and omniscient driver views may not
-influence a decision. When behavior needs dynamic information the observation
-does not contain, either add a fog-honest observation with tests or design
-behavior that does not require it.
-
-## Know the controller stack
-
-The maintained path is:
-
-```text
-immutable PublicMapBriefing + fog-honest Observation
-  -> oriented public priors + StrategicIntelligence
-  -> once-per-decision battlefield assessment + grounded outcome experience
-  -> persistent playbooks + mission demand + exact domain proposals and obligations
-  -> AllocationSession shared portfolio and residual capacity
-  -> committed planner intents + exact ground missions + UtilityPolicy Intent
-  -> Executive
-  -> PlayerCommand[]
-```
-
-- `Brain::scripted` is the configurable player-facing controller;
-  `Brain::balanced` is its default-profile convenience constructor.
-- `BotConfig::scripted` records difficulty, stance, and personality seed.
-- `ResolvedProfile` and `DifficultyTuning` derive stable strategic and cognitive
-  dials before play begins.
-- `StrategicIntelligence` separates current evidence from timestamped memory.
-- `StrategicPlanner`, `LiftPlanner`, `RaidPlanner`, and `TeamReliefPlanner`
-  retain phased operations across decisions, reserve exact units, and budget
-  committed scrap.
-- `AllocationSession` builds one resource snapshot; imports retained
-  construction, opening, unit, saved-Foundry, connected-operation, exact
-  current-threat emergency-defense, and supported legacy-planner claims; then
-  resolves the current cross-domain portfolio atomically. An admitted island
-  operation advances once and contributes its exact same-think claims here. Its
-  current proposal set compares Foundry, connected offense, standing force,
-  defense, economy, reconnaissance, and support. Each domain admits at most one
-  fresh alternative per pass; retained assignments can run concurrently. The
-  allocator uses bounded portfolio refinement. Validate it against small
-  exhaustive oracles, and distinguish unrefined alternatives from proven
-  conflicts. Only accepted Support relief starts a new team operation. Fresh
-  lift, tactical raid execution, and unmigrated utility work consume the
-  resulting residual.
-- `sim/src/bot/strategy.rs` owns air operations, `sim/src/bot/lift.rs` owns
-  severed-ground transport operations, and `sim/src/bot/navigation/commands.rs`
-  owns their fog-honest route projection and exact command-subset checks.
-- `UtilityPolicy` fills work not claimed by those operations, while `Executive`
-  owns exact-unit bookkeeping and lowers every intent to commands.
-- `seat_bots` constructs controllers requested by scenario `BotConfig`.
-- Replays preserve the exact configuration and emitted commands, so playback
-  does not rerun the controller.
-
-Keep reconnaissance ownership question-local. Reconcile existing preparation,
-outbound work, recalls, and cooldowns independently of discretionary attention.
-Compare live observers, exact paid queue occurrences, and dedicated purchases;
-one occurrence cannot satisfy two independent assignments. Freeze the consumer,
-evidence, useful deadline, and dispatch identity at acceptance. An accepted
-future purchase retains its producer schedule and must not emit a command from
-forecast credit. Releasing unpaid demand never cancels a paid queue item. Keep
-contested observers owned until their safe return is actually observed.
-
-For battlefield adaptation, derive shared observed concentrations and movement
-history once before proposing fresh work. Record displacement only between
-actual sightings; never advance an unseen enemy through fog. Anonymous radar
-must not provide composition. Exercise the full observation history with hidden
-state twins, not merely two identical snapshots at one tick.
-
-Keep general ground missions Executive-owned. Exact staging reorganization must
-validate all members and both resulting minimums before mutating anything.
-Exercise partial operational transfers through the coordinator: retained lift
-payloads must not immobilize the unreserved defensive remainder. Test two
-pressured fronts, an unreachable higher-ranked candidate, unchanged pressure
-elsewhere, and ordinary recovery movement that does not reacquire a chase.
-Maintenance withdrawal commands win over same-decision mission directives.
-Pressure must retain its exact building site across current-to-remembered and
-remembered-to-current observations. Ghosts share a placeholder id, so test
-multiple remembered objectives, changed ownership, real-id replacement, and
-footprint orientation separately from movement goals. Reacquisition must not
-recall an army, renew its deadline, or complete its outcome journal.
-
-Treat outcome journals as owner reports, never as trace-derived intelligence.
-Test completed service, actual progress, aborted preparation, execution loss,
-invalidation, and inconclusive results separately. Keep paid queues and
-foundations alive when unpaid work cancels. Own cargo identity and health prove
-presence but never availability. Shared air/lift credit and a post-delivery
-objective watch must not reward delivery as a kill or claim handed-off units.
-
-Validate experience at neutral, both one-band thresholds, bounded saturation,
-decay, and counterevidence. Old contributions must not inherit renewed ages from
-later reports. Test staggered contributions and shared-credit replacement
-independently. Failed-approach questions must match frozen objective sites
-through fog, not remembered placeholder ids. One route failure stays contextual;
-broader doctrine requires corroborating attributable episodes. Exercise retries
-from exact dispatched worker/target receipts, distinguishing death, preemption,
-exhaustion, missing funding, and currently occupied footprints from blocked
-paths. Remembered buildings alone cannot establish current site occupation.
-Fresh blocking foundations must not displace active builders from their current
-work tiles; test movement and completion release and nonblocking charges.
-General retry expiry cannot clear contested-harvest quarantine.
-
-Run the focused `battlefield_adaptation` integration suite alongside
-`recon_support`, owning planner tests, and required repository gates. Review
-native defense, lost-contact restraint, recon, successor assault choices, and
-recovery against exact fog-seat replay evidence. Compare isolated before/after
-performance medians without concurrent builds or coverage; investigate overhead
-above 10%. Automated results do not establish human fun or final calibration.
-
-Match paid reconnaissance to the exact producer exit and queue occurrence. An
-absent completed observer releases that question into bounded recovery; never
-wait for a later occurrence and steal another question's newborn. Authored
-hostile starts are pre-match priors, so free bootstrap observation need not wait
-for a reaction to newly seen evidence. Dynamic questions retain reaction delays.
-When a paid observer is alive but cannot arrive in time, keep its exact recall
-ownership; do not record a death or extend the question deadline. Use one viable
-raid muster request to exclude its exact raiders from observer selection and to
-procure only missing serviceable members.
-
-Carry exact paid occurrence exclusions across operational and question-driven
-reconnaissance. Excluded items still delay the FIFO lane; never count them as
-free capability or append a duplicate while an owned scout is already queued.
-Credit overlapping point questions only when the same route can answer their
-whole footprints before both deadlines. Never use this credit for contested
-sweeps, or turn a recent positive sighting into an immediate replacement scout.
-
-Support compares finite repair work after reachable live and delayed service.
-Price ordinary repair debits separately from patient replacement value. Retain
-exact funded repair workers through residual allocation, including their
-observed repair obligation; never import an active repair worker as free. Stop
-unfunded voluntary programs before protected purchases. Protective deployments
-own exact fighters and assets; their current requests feed ordinary Standing
-Force screen and anti-air procurement without creating another purchaser.
-
-Keep allocation as a coordination seam. For every migrated domain, build its
-proposal and obligations from the same `ResourceSnapshot`; do not manufacture a
-reduced observation to represent a budget. A domain owns its evidence, ranking,
-target, composition, placement, and tactics. The allocator owns compatibility
-and exact shared capacity, and the domain must commit the accepted payload
-without reranking it. Retained jobs keep their exact producer and timing, while
-current-versus-forecast funding is refreshed from the latest observation. Pass
-the accepted future-lane reservations into residual production instead of
-fabricating queued units.
-
-Test retained funding across forecast-to-current maturation. A deadline-safe
-funding split must remain possible without moving fixed producer times. If older
-protected current capital truly makes a retained lift unfundable, use bounded
-recovery rather than extending its deadline or starving other domains.
-
-Residual `UtilityPolicy` work uses immutable observations, a fixed admission
-bank, and the allocator's explicit Foundry handoff. Preserve exact ownership at
-shared allocation; residual safety may cancel or recover unpaid Foundry work but
-cannot fund or dispatch it. Keep remaining spending allowances separate from the
-bank used by starvation and salvage. Pass same-decision foundation cancellations
-to worker and placement queries; do not erase observed programs or release paid
-sites and queued work. Stops still reserve their workers against construction.
-Exercise saving, recovery, and dispatch through allocation; focused residual
-tests consume its handoff instead of recreating an alternate executor.
-
-Economic actions must own exact current or forecast capital, worker lanes,
-founders and sites, or upgrade building ids. Do not restore a residual
-technology floor or an operational Airworks tax. Value finite safe work, useful
-capability demand, payback, and capacity bottlenecks; count paid and uniquely
-deferred supply without granting it spendable income. Refit downtime must remove
-only the source income that would arrive while offline, separately from the
-purchase cost. Saving and deferred founding retain one identity and deadline.
-Test expiry, core loss, changed site knowledge, exact founder ownership, and
-preservation of paid work. A newly shallow Sentinel cannot repeatedly revoke
-already accepted construction; preserve its required escrow through the deferred
-interval. Ensure prior-based demand cannot borrow the confidence of a smaller
-current need already covered by existing resources. Test combined complete
-selected foundation sets, including a fourth Support site when every pair and
-triple is individually safe.
-
-Treat a current-threat emergency Turret or Flak Turret as a survival obligation
-when the opening core is deficient. Freeze the scorer-selected kind, site,
-builder, footprint, and current cost before clamping the remaining opening-core
-reserve. Emergency work has precedence over voluntary defensive proposals, and
-Utility must not independently select another defense in the same think.
-
-Keep policy memory controller-local and deterministic. A resumed replay rebuilds
-controller memory by observing the authoritative recorded prefix; never add an
-unrecorded state mutation to make resume convenient.
-
-Admit new persistent strategic work on the shared 24-tick boundaries, not on a
-difficulty's private think cadence. Air, lift, and raid admission,
-remembered-to-current air promotion, and the initial team-relief pressure watch
-must sample a world tick available to every rung; apply rung-specific reaction
-and commitment latency afterward. This keeps a faster controller from freezing a
-different roster or contact merely because it sampled between shared boundaries.
-
-Treat renewable economy as a strategic demand problem, not a bot-only entity
-cap. The player-facing opening preserves the exact costs of its fourth Harvester
-and a visible home Extractor restoration while establishing its difficulty core.
-The frame must be supported by the exact living authored starting Foundry and
-have an exact safe builder. Restore only after the whole frame is explored, and
-pause while current sight or recent local salvage evidence makes its footprint
-unsafe. Keep persistent combat rally points off known frames so restoring one
-cannot invalidate an existing order.
-
-Once a built Fabricator unlocks expansion Foundries, an owned completed
-Extractor without completed or projected support is a priority objective, but
-only across fog-honestly known reachable ground. Reserve capital only when a
-legal support footprint has a route-capable builder, and try other known
-Extractors when the nearest one cannot be supported. Count paid and deferred
-Foundry claims before promising another.
-
-Do not impose a player-facing Foundry count ceiling. Rank every exact legal site
-by the economic work it would add: the supported-minus-remote gain for owned
-completed Extractors, Foundry drip only when the site serves an external
-objective, and reduced hauling distance for currently visible positive scrap.
-Calculate hauling savings from public-ground routes that avoid observed dynamic
-danger, not geometric distance. Public unbuilt Extractor frames are scouting
-priors, not live income. Start recurring payback only after construction
-completes, and let greed plus genuinely uncommitted scrap extend a bounded
-forecast rather than unlock the capability.
-
-Expansion saving and construction must consume the same exact safe
-worker-and-site assessment. Preserve the difficulty's unreserved ordinary core,
-assign current and confidence-weighted remembered ground threats to the nearest
-reachable Foundry, and charge a forward site one additional Sentinel-equivalent
-when it advances toward an uncleared reachable public hostile start. Completed
-ground defenses count only where their real weapon and sight geometry covers the
-asset. A valuable unsafe site may prepare the exact missing ordinary core only
-when its projected surplus and greed justify that security; wealth never waives
-the requirement. Price each candidate after removing its own missing-security
-cost from genuinely uncommitted wealth; buying that protection must reduce the
-remaining cost and cash together so the opportunity does not invalidate itself.
-Reserve Foundry capital only after projected security is ready, and keep at most
-one unpaid Foundry claim. Once a safe opportunity owns a partial or complete
-Foundry fund, close later voluntary production, construction, and paid-repair
-spending until its exact `BuildWith` command is emitted. Automatic Repair Bay
-pulses remain ordinary simulation spending.
-
-Treat a generic frontier nearer to a known enemy Foundry than to any projected
-own Foundry as enemy-controlled, not as a reason to hoard. Count completed,
-upgrading, pending, and uniquely deferred Reclaimer income once when projecting
-supply. Reclaimer construction should answer completed production demand and
-known resource exhaustion; do not impose a fixed count ceiling that a human
-player does not share.
-
-For adaptive profiles, fill an ordinary unreserved ground core before voluntary
-investment. HP-weight live Sentinel, Warden, and Breaker hulls; count queued and
-same-think orders exactly once; exclude exact persistent-operation reservations
-but not ordinary Executive armies. Protect difficulty floors of four, five, six,
-and eight Sentinel-equivalents for Scrapheap, Standard, Veteran, and Prime.
-Stance and personality must not alter those floors.
-
-While below the floor, pause voluntary capital, upgrades, discretionary
-production, mobile support, paid repairs, and new strategic operations. Existing
-operations may advance or release units but must not purchase, and paid sites or
-queues remain intact merely because the core fell; independent current-danger
-safety rules may still cancel an unsafe unattended defense site. Permit only the
-fourth Harvester, the exact safe authored home Extractor, one Turret for a
-current visible ground threat, and one Flak Turret for a current visible
-ground-attack aircraft. Pure air-to-air aircraft do not threaten the defended
-ground assets and cannot unlock emergency Flak. Memory, public starts, radar
-blips, and raid history are not emergency evidence. A think that begins below
-the floor remains recovery-gated until the next observation: same-think core
-orders count toward the projected floor so the bot does not over-order, but they
-do not reopen voluntary spending or strategic admission during that think. Once
-the floor is observed, voluntary capital must leave a Sentinel that remains
-shallow after the upcoming production phase or preserve its exact cost, unless
-honest known routing proves no ground objective exists. A lone existing
-front-slot Sentinel may complete before a deferred founder pays and is not
-enough. Keep the exact reserve in the bank while an unpaid founder travels;
-after payment, return it to shallow production before another voluntary project.
-Reapply the gate whenever projected core strength later falls.
-
-After the opening core is projected, derive ordinary standing-force production
-as ranked, mutually exclusive, one-unit alternatives. Base demand on exact live,
-queued, same-think, and planner-owned inventory; current and remembered threats;
-paid construction and expansion security; reachable wounded combatants; useful
-ground objectives; completed technology; current producers; public terrain; and
-observed dynamic blockers. Identify each alternative by its unit kind and a
-canonical service point or footprint. Count inventory and eligible producers
-only when public terrain and current blockers let them serve that target, so a
-same-kind option on one disconnected front cannot erase an independently useful
-option on another. Preserve useful tier-one screens and counters, but let
-stronger unlocked providers substitute when their role, route, cost, and
-readiness are better. Personality ranks otherwise legal providers and domains;
-it never removes a role or provider.
-
-Immediate standing-force alternatives require current scrap and a completed
-producer. A non-urgent demand may also propose a future purchase when completed
-income supports a strictly better unlocked provider within a bounded production
-horizon. Retain an accepted purchase's exact schedule across decisions; never
-spend forecast credit as current scrap. Exercise maturation, lost production,
-vanished demand, lost income, and emergency preemption. Enemy fortifications
-alone justify deliberate siege preparation; current threats to our forces still
-spend immediately. Waiting for one need must not suppress a useful counter for
-another. Compare complete investment cases before counting compatible extras,
-and preserve stronger production slots when adding optional connected scale.
-Exclude exact units and paid queue work owned by persistent operations, retain
-the selected producer assignment through lowering, and select no more than one
-standing alternative per allocation pass. When a fresh connected operation is
-available, derive separate Standing proposal sets for its absence, minimum, and
-each cumulative marginal. Each selected context excludes that scale's exact live
-units and canonical paid `(producer, kind)` occurrences. Combine retained and
-same-think paid ownership by maximum multiset multiplicity, not addition, so one
-queued occurrence is neither double-owned nor made available twice. The decision
-trace records which context won. An idle factory is not by itself a reason to
-buy a unit.
-
-If a retained Connected revision loses its exact feasible producer schedule,
-remove its typed obligation and selected-only Standing contexts atomically.
-Enter bounded recovery while retaining surviving operation units, then rederive
-unconditional Standing proposals against the remaining exact paid ownership
-before allocation. Never let a failed revision leave contextual inventory or a
-paid queue occurrence stranded between the two domains.
-
-Worker investment belongs to typed Economy. Scuttler procurement must answer a
-viable current raid objective and only the missing serviceable tactical pair.
-Count paid occurrences once, exclude other operations' ownership, and keep the
-preparation deadline fixed. The Standing Force adapter requests the missing pair
-atomically from current scrap and compatible producer lanes. Do not restore the
-residual Scuttler quota or change raid execution when changing procurement.
-
-Prepare allied relief from current pressure and a credibility watch, then let
-Support allocation accept the exact deployment. Observation and proposal
-preparation must not launch it. Size service against pressure while preserving
-home strength and the two-member tactical minimum; personality may rank useful
-work but never gate relief or impose a group-size ceiling. Keep the selection
-pass bounded as the roster grows, and always service active withdrawal and
-release even when discretionary attention is unavailable.
-
-Persistent air and lift operations own partial bomber, ground-attack-air, and
-transport cohorts and their accepted producer work. Outstanding work contributes
-deadline-bound economic demand for additional Airworks; it does not reserve an
-unowned factory cost. Standing force may buy an independently useful air-defense
-provider only when that capacity is free.
-
-For a connected air-and-siege operation, derive a shared capability minimum and
-an opportunity-specific useful capability target in reconnaissance, suppression,
-and strike. Use only the bounded current building cluster around the selected
-target, every currently observed operational anti-air source covering that
-cluster, unclaimed live units, already-paid queue work that can conservatively
-finish, the spendable current bank after prior reserves, completed-source income
-forecasts net of earlier promises, and completed producer throughput. Require
-providers, producer exits, staging, reconnaissance, and strike routes to agree
-with public terrain and observed dynamic blockers. Treat the forecast as
-feasibility evidence only; lower commands with the current spendable bank and
-exact legal producer slots. Preserve useful lower-tier providers instead of
-replacing them merely because later tech is available.
-
-Rank current connected objectives canonically and try them in that order until
-one admits a complete package; an infeasible top choice must not hide a viable
-lower-ranked target. Within that objective's bounded current cluster, retain an
-optional target only when the complete revised package still fits the same
-producer access, queues, funds, and fixed preparation deadline. Before absence
-of anti-air becomes usable evidence, reconnaissance must clear every footprint
-tile of every surviving admitted target. Canonical target anchors belong in the
-decision trace so the package's actual scope remains inspectable.
-
-Give every personality the complete connected-operation repertoire. After every
-family reaches the shared capability minimum, package selection maximizes capped
-total useful capability first and uses personality to weight how otherwise
-competitive marginal capability is divided between air and siege. Personality
-never gates either family. For otherwise identical evidence, more current scrap,
-more available preparation time at derivation, or additional completed usable
-production capability must not revoke admission or reduce capped total useful
-capability. Fix the decision deadline when the current target admits spending.
-Revisions during Recon and Assemble may change demand without moving that
-deadline. Providers produced before the deadline may first appear in its
-observation; incomplete preparation at that observation enters recovery. Freeze
-exact assignments when SuppressAa begins. Later suppression- and strike-cohort
-losses are measured against the shared capability minimum; the required scout
-remains an exact-identity requirement.
-
-Route preflight carries the active seat's original `Orientation` into the
-oriented observation. It reproduces authoritative center snapping and group
-spreading for `Move` and `AttackMove`, uses the authoritative world-frame
-producer doorstep, and validates a reachable legal firing stand for every exact
-suppression `Attack` member without applying group spread. When the complete
-live suppression roster already exists, staging preflight reproduces its one
-authoritative spread. When scheduled members do not yet have positions, prove
-both possible deterministic spread scans. Operational mobile anti-air already
-priced as mandatory suppression work is not counted again as optional bomber
-collateral. Cover deadline and queue boundaries, egress, current versus forecast
-funds, lower- and higher-tier mixes, target and defense evidence, personality
-invariants, exact-id freeze, and bounded abort and recovery with pure and
-composed tests.
-
-Defend every completed owned Foundry, not only the starting base. Derive and
-retain at most one exact quote for each of Turret, Bastion, Flak Turret, Scuttle
-Charge, Barricade, and Array, then present them as mutually exclusive
-alternatives in one Defense proposal domain. Do the expensive placement work
-once per role; portfolio masks and commitment must reuse the quoted kind,
-footprint, builder, coverage, evidence, and timing without reranking the map.
-
-Choose weapon-bearing sites from exposed strategic value and credible hostile
-approaches. Score each kind's actual firing, spotting, trigger, or
-path-disruption geometry; preserve builder egress and resource access; and treat
-unfinished defenses as paid coverage reservations rather than live fire. Value
-newly protected assets fully and already protected assets with diminishing
-return. Compare that marginal value with current or remembered threats, mobile
-reinforcement readiness, builder travel, construction delay, completion risk,
-and opportunity cost through the allocator's named bands. Predict the exact
-ordinary builder route with the public static terrain the bot was briefed on,
-while taking dynamic blockers only from current observation. Current contacts
-and remembered sites remain stronger evidence than an uncleared public starting
-prior. Ordinary construction prerequisites are the only role gates;
-fortification and the role's relevant secondary trait rank otherwise legal
-choices but never remove one.
-
-Treat an Array as a persistent sensor, not as an unarmed defense. Its
-alternative shares the Defense portfolio domain but uses positive novel usable
-radar coverage as its value. Search around relevant owned assets for useful
-coverage of strategic approaches, discounting own, allied, and pending Arrays.
-Rank demand at exact builder readiness, not just the current tick; test an
-expired-on-arrival leader against a useful runner-up and preserve bounded route
-quotation through optimistic coverage bounds. Use current contacts, remembered
-contacts, then uncleared public starts to break equally useful ties toward a
-credible approach. Off-map area and Peaks provide no detection value because no
-unit can occupy them. Preserve active resource access and bind the exact
-ordinary route-capable builder proven through public terrain and current dynamic
-danger. Keep sensor proposals below immediate survival defense, allow partial
-coverage on maps smaller than the radar diameter.
-
-Harvest work must also respect anonymous regional loss evidence, but a wreck
-near a dead combat unit is not automatically a dangerous replacement source. Use
-an authoritative incident as immediate short-lived caution, and promote it to a
-durable quarantine only when a matching own or visible allied Harvester lost HP
-or disappeared near its position or active source. Retain no attacker identity.
-Keep distinct incident centers when their danger regions overlap; coalescing
-them to one center can reopen part of a kill zone before it is swept. Renew only
-an exactly repeated center. After current warnings and projected danger clear,
-scout every still unseen safe tile in the exact quarantined region through a
-bounded, deterministically ordered sweep. Clear the region on complete safe
-coverage; danger, an unreachable target, or no progress must recall the scout,
-reserve it until it is observed back in the safe home area, and only then
-schedule a bounded retry. An idle body or elapsed timer in the field must not
-release it into another role or a replacement loop.
-
-Treat severed-ground attacks as coordinated operations, not a singleton ferry.
-Let a lift's payload and matching carrier target grow while it remains in
-Provision, then freeze exact, disjoint manifests when Boarding begins. Derive
-carrier demand from that payload and usable landing space instead of imposing an
-arbitrary controller cap, and retain a ground-capable home-defense floor. Launch
-only after a shared boarding quorum. Bound every provision, boarding, landing,
-and recovery phase; an incomplete wave must recover or shrink deterministically
-rather than leak one carrier at a time.
-
-While a remembered, built objective is being reacquired, reserve at most the
-first Skyhook's exact cost only when optimistic fog-honest routing still proves
-the target ground-disconnected, a completed Airworks and transportable payload
-exist, and no usable carrier is live or queued. Treat this as capital only. Do
-not start the lift, claim riders, or queue the carrier until current evidence
-admits the ordinary operation, and release the reservation when any premise no
-longer holds.
-
-Preview that exact retained or newly admissible Recon target before shared
-allocation and apply its carrier cost as the maximum minimum-residual floor on
-every fresh voluntary proposal. Do not import it as owned capital or add it to
-the shallow Sentinel guard. Let residual coordination confirm, release, and
-trace the actual hold once after the planners advance.
-
-A wealthy island operation has a separate admission gate of 12 currently armed
-units. This is a standing-roster readiness check, not its desired screen or
-bomber count and not a ceiling on later force scaling. Once admitted, it should
-consider a screen and bomber wing even when air is not the bot's seeded
-specialty, because personality may change emphasis but cannot remove the only
-credible attack domain. Let airborne screen and bomber targets grow during Recon
-and Assemble, then freeze the requested force when the operation enters
-SuppressAa. Use current sight for uncoordinated commitments, remembered
-objectives only for honest reconnaissance, and currently visible flak along the
-complete known corridor for suppression. Air and lift plans must remain
-independently viable. When both choose the same objective, coordinate only
-through an explicit target-specific hold, release, or abort signal; neither may
-infer the other's success from missing omniscient state.
-
-Aircraft that can land are ground bodies while parked. `UnitObs::grounded`
-reports that physical fact for own, allied, and visible enemy units, and
-`UnitObs::body_domain` resolves the domain a body occupies right now; hit
-legality, focus fire, matchup strength, and pressure censuses read it, while
-routing, air-defense exposure, and procurement keep the kind's flight domain
-because the next flight is planned in the air. There is no landing command: a
-flier's ground destination is a landing, so the player-facing planner holds its
-bomber wing by moving it to a deterministic pad near the home anchor through
-`Intent::MoveUnits`, while a fixed-wing screen keeps an airborne hold over home.
-The later strike order lifts the parked wing off exactly as a person's would.
-
-Distinguish an empty scout slot from a lost dispatched scout. The planner may
-fill or train the former before commitment. The latter must abort into bounded
-recovery, release its factory bank, return surviving claimed units once, and
-respect a cooldown rather than drafting a replacement into an endless probe
-loop. Cover Recon and Assemble separately because both phases can otherwise
-replace a missing unit before loss handling observes it.
-
-Audit question-owned reconnaissance separately from the persistent air planner.
-A dispatched observer's loss releases only its question's unpaid capital and
-starts its 3,600-tick cooldown. Reconsider it after the cooldown and a 300-tick
-quiet interval only when an unanswered, useful question has a newly validated
-safe approach; fresh enemy sight is not required. No timer automatically buys a
-replacement, and one failed question must not suspend unrelated reconnaissance.
-Keep temporary public-route priors separate from observed losses and exact
-contested-sweep evidence. Exercise recovery through the whole `Brain`, including
-paid occurrence completion and concurrent questions, because isolated
-air-planner tests cannot detect a cross-planner replacement conveyor.
-
-## Keep identity and difficulty honest
-
-The personality seed resolves independent, stance-bounded preferences for air,
-siege, support, fortification, greed, and guile. These rank otherwise legal
-choices; they never alter vision, costs, prerequisites, capabilities, or unit
-strength, and they never roll private competence such as strength-estimation
-accuracy. Expect each axis to leave an observable signature: air in wing size
-and timing; siege in artillery volume and preference; support in support units,
-flak, and allied relief; fortification in defensive opportunity and role
-ranking; greed in worker targets and renewable-expansion payback appetite; and
-guile in raid size, timing, withdrawal, and some mine or airborne-screen
-emphasis. Store the seed in the scenario and replay rather than serializing
-resolved traits or planner state.
-
-Scale defensive choices from opportunity across identities. After the protected
-core is projected, every legal role may compete when its marginal protection or
-information value justifies its real cost. Existing coverage and reserved
-unfinished footprints create diminishing return; personality never supplies a
-count cap or unlock. Below the core, only current visible armed evidence may
-justify the one matching emergency Turret or Flak Turret. Emergency Flak
-specifically requires an aircraft capable of attacking ground; a pure
-air-superiority flyer is not a threat to the defended ground assets. Anonymous
-radar blips are not confirmed air and must not independently trigger emergency
-flak construction.
-
-Scrapheap, Standard, Veteran, and Prime use the same strategic repertoire.
-Scrapheap alone thinks less often; Standard, Veteran, and Prime intentionally
-share one competent decision cadence because additional controller APM must not
-become a disadvantage. Higher rungs still react sooner, remember more, service
-no fewer simultaneous concerns, use a smaller fixed conservative error in
-private estimates, coordinate focus fire, and hesitate less before commitment.
-Prime also directs an overlapping static-defense line through the same explicit
-focus-fire command available to a person. It locks one currently visible ground
-threat until the target or firing overlap disappears; blocked or out-of-range
-defenses retain the simulation's ordinary target fallback. No rung may receive a
-rules advantage or lose an entire strategy merely to become easier.
-
-Keep those limits structurally monotone. Lower-rung decision ticks must nest
-inside higher-rung schedules; reaction and commitment windows must become no
-slower as difficulty rises; and attention and memory must become no smaller. The
-four, five, six, and eight opening-core floors must remain monotone and
-independent of stance and personality. Lower rungs use a fixed deterministic
-underestimate of their own force, so they may miss a marginal opening; Veteran
-and Prime coordinate whole-army focus, while Scrapheap and Standard rely on
-ordinary unit acquisition. Veteran and Prime share the same optional-operation
-attention ceiling: neither peels a raid off while air and lift work already run
-together. Personality must never change these competence limits.
-
-A successful New Match chooses new personality seeds. Restart, Rematch, save
-loading, and replay reconstruction must preserve the recorded difficulty,
-stance, and seed.
-
-## Change one behavior at a time
-
-For opening-economy work, cover exact floor boundaries, HP weighting,
-live/queued/same-think accounting, strategic-reservation exclusions, and every
-blocked spend channel. Exercise both current-threat emergency domains and
-noncurrent negatives; exact home-frame identity and builder safety; shallow
-Sentinel, exact-remainder, and no-ground-objective boundaries; a later core
-loss; and active planners advancing without purchases while new admissions stay
-closed.
-
-State the player-visible problem before tuning. Good targets are concrete:
-
-- leaves harvesters idle while known safe scrap exists;
-- repeats an impossible build forever;
-- never reaches a named tech rung on a map where it can;
-- sends an army through a visible losing fight;
-- hoards through a winning window;
-- stops issuing meaningful commands for a long interval.
-
-Capture the smallest deterministic scenario and seed that exhibits the problem.
-Test the observation, intent, or lowering layer that owns it. Avoid adding a
-special case in a later layer to hide an earlier bad decision.
-
-Use explicit stable tie-breakers and dedicated RNG streams for genuine seeded
-variation. Do not use randomness to make a broken policy harder to diagnose.
-
-## Evaluate from cheap to expensive
-
-Run focused bot tests first:
+Build a credible opponent under ordinary game rules. Automated metrics identify
+failures and candidates; human play and replay review decide whether it is fun.
+
+## Establish the owning contract
+
+Read [Bot architecture](../../../docs/bot-architecture.md) for the maintained
+controller, knowledge and ownership boundaries. For allocation, forecasting,
+personality, opportunity scaling or cross-domain coordination, also read the
+normative [Bot strategy](../../../docs/bot-strategy.md). Desired behavior is not
+proof that the current implementation already provides it.
+
+State the observable problem and the layer that owns it: observation, memory,
+proposal derivation, admission, persistent execution, or command lowering.
+Capture a deterministic scenario and seed before changing policy. For a
+structural refactor, name the old mechanism being removed and preserve the
+commands, state hashes, events and deterministic planning progress it produced.
+
+The bot receives fog-honest observations and an immutable public briefing.
+Authored starts, initial resources and terrain are priors, never current enemy
+contacts or live resource amounts. Hidden QA state and replay diagnostics cannot
+feed decisions. Add honest evidence with tests when needed; do not infer it from
+an omniscient view.
+
+Domains own evidence, ranking and tactics. Shared admission owns exact capital,
+units, queues, workers and sites. Commit the accepted payload without reranking
+it or reconstructing a second budget. Retained work, release and recovery must
+remain explicit. Current scrap funds commands; forecast income proves future
+feasibility only. Personality ranks legal choices and never grants or removes a
+capability. Difficulty changes the documented cognitive limits, not game rules.
+
+## Choose evidence by boundary
+
+Read only the relevant sections of
+[Domain regression guide](references/domain-regressions.md). It identifies
+cross-domain cases that small planner tests miss; it is not a checklist to run
+in full for every edit.
+
+- Pure-domain tests prove ranking, route, schedule and fixed-point boundaries.
+- Coordinated-controller tests prove ownership transfer, funding, recovery and
+  actual commands across domains. Use the maintained planner configuration.
+- Long-horizon scenarios prove liveness and reconstruction over time; they do
+  not replace the smaller regression explaining the failure.
+
+Keep fixture builders, fault injection, deterministic work counters and small
+independent exhaustive oracles when they prove a real contract. Test-only
+execution modes, impossible planner states and bookkeeping with no production
+consumer need a specific justification. Assert the production output rather than
+maintaining a second result solely for tests. Do not ban `cfg(test)` or expose
+invalid default observations to make fixtures easier.
+
+## Measure architecture and execution together
+
+Remove duplicate preparation before adding concurrency. Assess ownership, shared
+inputs, scratch lifetime, invalidation and memory as well as function size. One
+proposal should not require unrelated domains to recreate its claims.
+
+For runtime parallelism, identify independent frozen inputs and worker-owned
+scratch. Fix work allowances before dispatch and join results in canonical
+order; completion order must not change choices, tie breaks or planning
+progress. Admission and mutation stay ordered. Measure small and large workloads
+plus nested-seat and concurrent-match contention. Preserve negative experiments.
+Distinguish authoritative tick latency, controller latency, frame cost and batch
+throughput; improvement in one does not prove improvement in the others.
+
+Compare isolated repeated before/after runs without competing builds or
+coverage. Investigate overhead above 10%, but report absolute costs and variance
+rather than treating a percentage threshold as a verdict.
+
+## Evaluate in layers
+
+Start with the affected module and integration suite. Common controller seams:
 
 ```sh
 cargo test -p oxide-sim --test bot_brain --locked
@@ -615,132 +89,19 @@ cargo test -p oxide-sim --test scripted_bot --locked
 cargo test -p oxide-sim --test bot_frames --locked
 ```
 
-Then run complete seeded matches on representative shapes: a normal duel, an
-island or severed-ground map, a team map, and a long or grand map. Ask the
-driver for its current syntax rather than copying stale flags:
+For battlefield or reconnaissance ownership, include `battlefield_adaptation`,
+`recon_support` and the owning planner tests. Required gates and CI duplication
+rules live in `AGENTS.md`.
 
-```sh
-cargo run -p oxide-driver -- run --help
-cargo run -p oxide-driver -- replay-summary --help
-```
+For complete matches and profiling, use
+[Evaluation procedure](references/evaluation.md). Representative behavior
+changes need an ordinary duel, severed-ground or island play, team play and a
+long/grand map. Sample difficulties, stances and multiple personality seeds as
+relevant. A lower difficulty need not lose every paired match; its cognitive
+limits must remain explainable and monotone.
 
-The complete-match path is `run <scenario> --all-bots`; ordinary `--bots` honors
-the scenario's configured chairs and therefore leaves its human chair under
-human control. Add `--save-replay <path>` for review evidence.
-
-Sample every difficulty and stance across the review set, plus multiple
-personality seeds. Lower difficulty is not required to lose every paired match,
-but its cognitive limits should remain visible and internally consistent.
-
-Use `bot-eval` for reproducible player-facing profile cells. It stops when the
-match decides, emits one compact JSONL row per leg, and can preserve the replay:
-
-```sh
-cargo run -p oxide-driver -- bot-eval skirmish \
-  --difficulty prime --stance balanced \
-  --scenario-seed-base 7000 --personality-seed-base 9000 \
-  --paired --candidate candidate-a --out replays/bot-eval.jsonl \
-  --replay-dir replays/bot-eval
-```
-
-When a compact row or replay shows suspicious behavior, capture the
-player-facing controller's runtime decisions with
-`--decision-trace-out replays/bot-eval-trace.jsonl`. The trace sidecar requires
-`--out` and `--candidate`, joins each record to its exact evaluation leg, and
-contains only fog-honest facts the current coordinator can state directly.
-Schema version 12 includes retained military producer schedules alongside
-battlefield evidence, mission ownership, grounded outcomes and adjusted return,
-alongside exact economic, defensive, and support identities, building and
-repair-worker ownership, refit forecast losses, and complete combined-layout
-conflict sets. Test four-way closures even when every triple retains a route.
-Verify voluntary repair funding and preemption against ordinary commands,
-including decisions between macro-admission boundaries. It does not reconstruct
-explanations from a replay or infer reasons from absent planner output. Treat
-the sidecar as disposable diagnostic evidence and keep it out of production
-commits.
-
-For controlled current-controller comparisons, run a paired block across both
-faction assignments and both map-end geometries:
-
-```sh
-cargo run -p oxide-driver -- bot-eval skirmish \
-  --difficulty prime --stance balanced --opponent-difficulty standard --paired \
-  --ticks 60000 --scenario-seeds 7000,7001 \
-  --personality-seeds 9000,9001 --faction-cells fc,cf \
-  --geometries authored,rot180 --candidate prime-standard-a \
-  --out replays/prime-standard-a.jsonl \
-  --replay-dir replays/prime-standard-a
-```
-
-`--paired` exchanges complete profiles while holding the transformed world and
-faction rosters fixed. Cross independent `--scenario-seeds` and
-`--personality-seeds`; simulation randomness and personality are separate
-factors. Each personality value is the primary seat's seed, with ordinary
-opponent seed assignment unless `--same-personality-seed` is selected. Use
-`--runs N` for consecutive cells without explicit axes. Refuse nominal cells
-that resolve to the same executable matchup.
-
-Use `sweep`, `pace-sweep`, `sweep-factorial`, or `bench --scenario` to measure
-one configured controller interacting with the simulation. Select
-`--difficulty`, `--stance`, and `--personality-seed` explicitly for comparisons;
-defaults are Standard/Balanced/zero. Keep the complete profile identical in
-symmetric seats and fixed while varying simulation seeds. Preserve the exact
-profile and simulation version in reports. Symmetric bot matchups do not isolate
-engine or map fairness. Keep synthetic simulation benchmarks separate from bot
-timing.
-
-Use the per-unit stall breakdown to distinguish one blocked order from a broad
-command failure. A leg ends as `termination: stall_loop` once one unit stalls
-the same way `--stall-loop-limit` times (200 by default, 0 disables); that row
-names the seat, unit, reason, count, and tick, and is an anomaly to inspect, not
-a result. Treat rejections, stalls, and outcomes as diagnostic evidence, not a
-quality score. Persisted evidence requires an explicit stable `--candidate`;
-replay evidence also requires its JSONL `--out` sidecar. Rows record the
-complete scenario and execution fingerprints, exact controller profiles, a
-seed-independent command-stream hash, and the requested tick limit. Use repeated
-command hashes to identify seed cells that generated the same play rather than
-counting them as independent samples. The driver stages the whole invocation,
-rolls back normal publication errors, and refuses to replace an existing JSONL
-or replay. This is not a cross-path crash transaction: abrupt process
-termination can leave hidden staging files or a partial replay set. Inspect and
-remove the incomplete batch, then rerun it under a fresh candidate rather than
-treating those files as complete evidence.
-
-For each candidate, preserve the scenario, seed, replay, final hash, result,
-duration, and a short behavioral verdict. Compare repeated identical runs for
-exact hashes. Check that the controller:
-
-- keeps an economy alive and replaces losses;
-- builds and uses the reachable tech tree rather than merely owning it;
-- scouts, reacts to discovered threats, and attacks through legal knowledge;
-- escapes or changes plans after a failed route or site;
-- behaves coherently after the opening and through the match's end;
-- remains active on every seat, faction, and team shape in scope.
-
-When paired results follow the physical seat, reduce the divergence to a
-half-turned scenario before tuning policy. Compare authoritative state after
-each relevant tick phase and audit equal-cost A* ties, footprint doorsteps,
-production spawns, blocked group-goal snapping and spreading, signed fixed-point
-vector scaling, and perfectly stacked collision separation. Outcome-relevant
-tie-breaks belong in a query-, local-, or map-relative frame; an absolute
-row-major or compass preference can turn a mechanical asymmetry into a false
-personality or difficulty signal.
-
-Use `replay-summary` to find long silences, nonsense loops, missed tech,
-one-sided non-participation, and suspicious endings. Then watch the suspicious
-and representative replays. Metrics are a triage tool; they do not certify
-credible play.
-
-## Promote by human judgment
-
-A scripted change is not done because it wins, decides more games, or improves
-an average. Play against it and watch full matches beyond the opening. Record
-what the bot appeared to be trying to do, where that intention became legible,
-and where it behaved nonsensically.
-
-Review every difficulty and stance as the same opponent under explainable
-cognitive limits. Do not promote a rung because its win rate alone looks
-plausible, and do not hide a broken strategy behind personality variation.
-
-Finish with the full Rust gates from `AGENTS.md` and the native QA path from the
-`oxide-live-qa` skill whenever setup UI or player-facing behavior changed.
+Finish player-facing changes with replay review and the native QA path in
+`oxide-live-qa`. Watch beyond the opening: economy, replacement, tech use,
+scouting, legal reaction, failed-route recovery and meaningful late activity.
+Report exact evidence, limitations and what still needs human judgment. Do not
+claim credible play from a higher win rate or a green suite alone.

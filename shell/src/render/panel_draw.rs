@@ -610,7 +610,7 @@ fn selection_info_rect(viewport: Vec2, width: f32, content_height: f32, actions:
 
 /// Draws the command panel band and returns its clickable geometry.
 pub(crate) fn draw_panel(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
     panel: &crate::panel::Panel,
@@ -1298,12 +1298,12 @@ pub(crate) fn draw_panel(
 /// The hover tooltip for panel cards, drawn over everything: name,
 /// hotkey, cost, description, weapon lines, and why a disabled card
 /// refuses. Rebuilt from the same panel model the frame drew.
-pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
-    let panel = game.panel_model.borrow();
+pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputState) {
+    let panel = game.presentation.panel_model.borrow();
     let Some(panel) = panel.as_ref() else {
         return;
     };
-    let layout = game.layout.get();
+    let layout = game.presentation.layout.get();
     if !layout.panel_top.is_finite() {
         return;
     }
@@ -1456,6 +1456,7 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
 
     #[test]
     fn collective_queue_keeps_every_kind_visible_in_narrow_windows() {
@@ -1485,12 +1486,14 @@ mod tests {
             .state
             .buildings()
             .iter()
-            .find(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry)
+            .find(|b| {
+                b.player == game.presentation.human && b.kind == oxide_sim::BuildingKind::Foundry
+            })
             .unwrap()
             .id;
-        game.selection.buildings = vec![foundry];
+        game.presentation.selection.buildings = vec![foundry];
         let train = oxide_sim::PlayerCommand {
-            player: game.human,
+            player: game.presentation.human,
             command: oxide_sim::Command::Train {
                 building: foundry,
                 kind: oxide_sim::UnitKind::Harvester,
@@ -1510,7 +1513,7 @@ mod tests {
         let mut labels = Vec::new();
         for _ in 0..oxide_sim::UnitKind::Harvester.stats().train_ticks {
             let mut panel = crate::panel::build_for_palette(
-                &game,
+                &game.view(),
                 &crate::action::BindingMap::classic(),
                 false,
             )
@@ -1544,17 +1547,23 @@ mod tests {
             y: 3,
         });
         let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
-        game.selection.buildings = vec![
+        game.presentation.selection.buildings = vec![
             game.state
                 .buildings()
                 .iter()
-                .find(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Fabricator)
+                .find(|b| {
+                    b.player == game.presentation.human
+                        && b.kind == oxide_sim::BuildingKind::Fabricator
+                })
                 .unwrap()
                 .id,
         ];
-        let panel =
-            crate::panel::build_for_palette(&game, &crate::action::BindingMap::classic(), false)
-                .unwrap();
+        let panel = crate::panel::build_for_palette(
+            &game.view(),
+            &crate::action::BindingMap::classic(),
+            false,
+        )
+        .unwrap();
         for (viewport, scale) in [(vec2(1280.0, 800.0), 1.0), (vec2(1920.0, 1200.0), 1.5)] {
             let minimap = minimap_rect_scaled(40, 24, viewport, scale);
             let packing = panel_packing(
@@ -1609,10 +1618,12 @@ mod tests {
                         .state
                         .buildings()
                         .iter()
-                        .find(|building| building.player == game.human && building.kind == kind)
+                        .find(|building| {
+                            building.player == game.presentation.human && building.kind == kind
+                        })
                         .unwrap()
                         .id;
-                    game.selection.buildings = vec![building];
+                    game.presentation.selection.buildings = vec![building];
                     if full_queue {
                         let unit = *kind
                             .base_stats()
@@ -1622,7 +1633,7 @@ mod tests {
                             .unwrap();
                         for _ in 0..oxide_sim::stats::QUEUE_CAP {
                             game.state.tick(&[PlayerCommand {
-                                player: game.human,
+                                player: game.presentation.human,
                                 command: Command::Train {
                                     building,
                                     kind: unit,
@@ -1637,16 +1648,19 @@ mod tests {
                     for rally in [false, true] {
                         if rally {
                             game.state.tick(&[PlayerCommand {
-                                player: game.human,
+                                player: game.presentation.human,
                                 command: Command::SetRally {
                                     building,
                                     rally: Some(chassis::grid::TilePos::new(12, 8)),
                                 },
                             }]);
                         }
-                        let panel =
-                            crate::panel::build_for_palette(&game, &BindingMap::classic(), false)
-                                .unwrap();
+                        let panel = crate::panel::build_for_palette(
+                            &game.view(),
+                            &BindingMap::classic(),
+                            false,
+                        )
+                        .unwrap();
                         for width in (640..=1920).step_by(17).chain([799, 800, 1280, 1440, 1920]) {
                             for height in [400, 499, 500, 600, 800, 1080] {
                                 let viewport = vec2(width as f32, height as f32);
@@ -1782,7 +1796,7 @@ mod tests {
                     .state
                     .buildings()
                     .iter()
-                    .filter(|b| b.player == game.human && b.kind == kind)
+                    .filter(|b| b.player == game.presentation.human && b.kind == kind)
                     .map(|b| b.id)
                     .collect();
                 for selection in [
@@ -1791,15 +1805,18 @@ mod tests {
                     game.state
                         .buildings()
                         .iter()
-                        .filter(|b| b.player == game.human)
+                        .filter(|b| b.player == game.presentation.human)
                         .map(|b| b.id)
                         .collect(),
                 ] {
-                    game.selection.buildings = selection.clone();
+                    game.presentation.selection.buildings = selection.clone();
                     let geometry = |game: &Game| {
-                        let panel =
-                            crate::panel::build_for_palette(game, &BindingMap::classic(), false)
-                                .unwrap();
+                        let panel = crate::panel::build_for_palette(
+                            &game.view(),
+                            &BindingMap::classic(),
+                            false,
+                        )
+                        .unwrap();
                         assert_eq!(rally_card_count(&panel.cards), 2);
                         let mut result = Vec::new();
                         for viewport in [
@@ -1832,7 +1849,7 @@ mod tests {
                             let commands: Vec<_> = ids
                                 .iter()
                                 .map(|id| PlayerCommand {
-                                    player: game.human,
+                                    player: game.presentation.human,
                                     command: Command::SetRally {
                                         building: *id,
                                         rally,
@@ -1842,7 +1859,7 @@ mod tests {
                             game.state.tick(&commands);
                             assert_eq!(geometry(&game), baseline);
                             let panel = crate::panel::build_for_palette(
-                                &game,
+                                &game.view(),
                                 &BindingMap::classic(),
                                 false,
                             )
@@ -1951,10 +1968,13 @@ mod tests {
             });
         }
         let mut game = Game::with_viewport(scenario, vec2(640.0, 400.0)).unwrap();
-        game.selection.units = game.state.units().iter().map(|u| u.id).collect();
-        let panel =
-            crate::panel::build_for_palette(&game, &crate::action::BindingMap::classic(), false)
-                .unwrap();
+        game.presentation.selection.units = game.state.units().iter().map(|u| u.id).collect();
+        let panel = crate::panel::build_for_palette(
+            &game.view(),
+            &crate::action::BindingMap::classic(),
+            false,
+        )
+        .unwrap();
         let info = measure_info(&panel, 204.0, 1.0, true, |text, size| {
             text.len() as f32 * size * 0.5
         });

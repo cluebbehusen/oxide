@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use chassis::fx::Vec2Fx;
 use oxide_sim::stats::{Domain, MAX_WEAPONS};
 use oxide_sim::{
-    Building, BuildingId, BuildingKind, Event, Order, State, TickReport, Unit, UnitId, UnitKind,
+    Building, BuildingId, BuildingKind, Event, Order, State, Unit, UnitId, UnitKind,
     UnitRepairSource,
 };
 
@@ -362,13 +362,7 @@ pub(crate) struct AnimationController {
 }
 
 impl AnimationController {
-    /// Records the transient action events produced by one completed tick.
-    pub(crate) fn observe(&mut self, report: &TickReport) {
-        let completed_tick = report.tick.saturating_add(1);
-        self.observe_events(completed_tick, &report.events);
-    }
-
-    /// Records events when playback already supplies the post-tick cursor.
+    /// Records transient action events at the completed tick.
     pub(crate) fn observe_events(&mut self, completed_tick: u64, events: &[Event]) {
         for event in events {
             match event {
@@ -974,6 +968,7 @@ fn tile_adjacent_to_building(tile: chassis::grid::TilePos, building: &Building) 
 
 #[cfg(test)]
 mod tests {
+    use oxide_sim::TickReport;
     use std::collections::VecDeque;
 
     use chassis::fx::Vec2Fx;
@@ -1090,7 +1085,8 @@ mod tests {
     #[test]
     fn damage_event_drives_one_report_then_recovery() {
         let mut controller = AnimationController::default();
-        controller.observe(&unit_attack_report(40, UnitId(7), 0));
+        let report = &unit_attack_report(40, UnitId(7), 0);
+        controller.observe_events(report.tick + 1, &report.events);
         let facts = unit_facts(UnitKind::Sentinel);
 
         let report = controller.unit_state(
@@ -1172,7 +1168,7 @@ mod tests {
     #[test]
     fn projectile_launch_drives_bombard_and_bastion_reports() {
         let mut controller = AnimationController::default();
-        controller.observe(&TickReport {
+        let report = &TickReport {
             tick: 8,
             movement: Vec::new(),
             events: vec![
@@ -1195,7 +1191,8 @@ mod tests {
                     flight: 10,
                 },
             ],
-        });
+        };
+        controller.observe_events(report.tick + 1, &report.events);
         let clock = AnimationClock::new(9, 0.0);
         assert!(matches!(
             controller
@@ -1739,11 +1736,12 @@ mod tests {
             );
             assert_eq!(before.activity, BuildingActivity::Idle);
 
-            controller.observe(&TickReport {
+            let report = &TickReport {
                 tick: 20,
                 movement: Vec::new(),
                 events: vec![event],
-            });
+            };
+            controller.observe_events(report.tick + 1, &report.events);
             let pulse = controller.building_state(
                 facts,
                 AnimationClock::new(21, 0.0),
@@ -1807,7 +1805,8 @@ mod tests {
     #[test]
     fn reset_for_seek_drops_reports_but_cooldowns_still_reconstruct() {
         let mut controller = AnimationController::default();
-        controller.observe(&unit_attack_report(4, UnitId(7), 0));
+        let report = &unit_attack_report(4, UnitId(7), 0);
+        controller.observe_events(report.tick + 1, &report.events);
         let mut facts = unit_facts(UnitKind::Lancer);
         facts.cooldowns[0] = 20;
         controller.reset_transients();

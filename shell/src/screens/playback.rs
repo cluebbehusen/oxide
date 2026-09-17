@@ -1,10 +1,8 @@
-//! The read-only replay viewer: the playback engine owns truth, a
-//! `Game` is its render vehicle, and this screen owns the transport
-//! (pause, seek, speed, camera). Update is windowless — the whole
-//! transport drives headless in tests.
+//! Read-only replay viewing. The engine owns simulation state; presentation
+//! borrows it for rendering, interpolation, effects, and audio.
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
-use crate::game::{self, Game, GameReplay};
+use crate::game::{self, GameReplay, Presentation, Scene};
 use crate::render;
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
@@ -24,15 +22,13 @@ pub enum ReturnTo {
     Results,
 }
 
-/// A playback viewing session: the engine owns truth, the `Game` is a
-/// render vehicle whose state gets replaced after every advance — its
-/// recorder, sounds, and effects are simply never fed.
+/// Replay engine, presentation, and viewer transport controls.
 pub struct PlaybackSession {
     pub engine: oxide_kit::playback::Playback,
     pub diagnostics: Option<oxide_kit::diagnostics::Recorder>,
     pub recording: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
     diagnostics_warned: bool,
-    pub game: Game,
+    pub presentation: Presentation,
     pub speed: f32,
     pub paused: bool,
     pub accum: f32,
@@ -60,6 +56,15 @@ pub struct PlaybackSession {
 }
 
 impl PlaybackSession {
+    pub(crate) fn view(&self) -> Scene<'_> {
+        Scene {
+            state: &self.engine.state,
+            scenario: &self.replay.setup,
+            pending: &[],
+            presentation: &self.presentation,
+        }
+    }
+
     pub(crate) fn configure_diagnostics(&mut self, enabled: bool, root: Option<&std::path::Path>) {
         if !enabled {
             self.diagnostics_warned = false;
@@ -87,7 +92,7 @@ impl PlaybackSession {
                 }
                 Err(error) => {
                     self.diagnostics_warned = true;
-                    self.game
+                    self.presentation
                         .toast(format!("Playback diagnostics unavailable: {error}"));
                 }
             }
@@ -102,7 +107,7 @@ impl PlaybackSession {
                 .and_then(|writer| writer.status().error)
         {
             self.diagnostics_warned = true;
-            self.game
+            self.presentation
                 .toast(format!("Playback diagnostics stopped: {error}"));
         }
     }
@@ -120,21 +125,30 @@ impl PlaybackSession {
     }
 
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
-        let scenario = replay.setup.clone();
         let record = replay.clone();
         let engine = oxide_kit::playback::Playback::load(replay)?;
         // The spectator door: an all-bot record (driver benchmark,
         // bot-vs-bot spectacle) is a perfectly watchable replay.
-        let mut game = Game::spectator(scenario)?;
+        let vantage = record
+            .setup
+            .players
+            .iter()
+            .position(|player| !player.bot)
+            .unwrap_or(0);
+        let mut presentation = Presentation::new(
+            &engine.state,
+            oxide_sim::PlayerId(vantage as u8),
+            render::viewport(),
+        );
         // Spectator truth: fog-free, but NOT the developer overlay —
         // playback must look like the game, not the debugger.
-        game.spectate = true;
+        presentation.spectate = true;
         Ok(Self {
             engine,
             diagnostics: None,
             recording: None,
             diagnostics_warned: false,
-            game,
+            presentation,
             speed: 1.0,
             paused: false,
             accum: 0.0,
@@ -163,7 +177,7 @@ impl PlaybackSession {
     }
 
     fn sync_render_clock(&mut self) {
-        self.game
+        self.presentation
             .sync_external_tick_fraction(self.accum / game::TICK_DT);
     }
 
@@ -176,7 +190,7 @@ impl PlaybackSession {
 /// Where the scrub bar lives: a strip above the transport line,
 /// stopping short of the minimap's corner. One geometry source for
 /// hit-testing and drawing, like all chrome.
-pub fn scrub_rect(game: &Game, viewport: Vec2) -> macroquad::prelude::Rect {
+pub fn scrub_rect(game: &Scene<'_>, viewport: Vec2) -> macroquad::prelude::Rect {
     let s = render::ui_scale();
     let mini = render::minimap_rect(game);
     let right = (mini.x - 8.0 * s).min(viewport.x - 12.0 * s);
@@ -189,7 +203,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
     let size = 18.0 * s;
     // The timeline: played track, live position, and the ghost of a
     // seek in flight.
-    let bar = scrub_rect(&pb.game, viewport);
+    let bar = scrub_rect(&pb.view(), viewport);
     draw_rectangle(
         bar.x,
         bar.y,
@@ -418,27 +432,27 @@ impl PlaybackSession {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(*x, *y);
                     if let Some(anchor) = self.middle_anchor {
-                        self.game
+                        self.presentation
                             .camera
-                            .pan((anchor - *mouse) / self.game.camera.zoom);
+                            .pan((anchor - *mouse) / self.presentation.camera.zoom);
                         self.middle_anchor = Some(*mouse);
                     }
                     if self.scrubbing {
-                        let bar = scrub_rect(&self.game, viewport);
+                        let bar = scrub_rect(&self.view(), viewport);
                         seek_to = Some(self.tick_at(bar, mouse.x));
                     }
                     // A held minimap press keeps steering, clamped so
                     // sliding off the edge doesn't stall the pan — same
                     // feel as live play.
                     if self.minimap_drag {
-                        let rect = render::minimap_rect(&self.game);
+                        let rect = render::minimap_rect(&self.view());
                         let clamped = vec2(
                             x.clamp(rect.x, rect.x + rect.w - 1.0),
                             y.clamp(rect.y, rect.y + rect.h - 1.0),
                         );
-                        if let Some(world) = render::minimap_world_at(&self.game, clamped) {
-                            self.game.camera.center = world;
-                            self.game.camera.pan(vec2(0.0, 0.0));
+                        if let Some(world) = render::minimap_world_at(&self.view(), clamped) {
+                            self.presentation.camera.center = world;
+                            self.presentation.camera.pan(vec2(0.0, 0.0));
                         }
                     }
                 }
@@ -448,13 +462,13 @@ impl PlaybackSession {
                     y,
                 } => {
                     *mouse = vec2(*x, *y);
-                    let bar = scrub_rect(&self.game, viewport);
+                    let bar = scrub_rect(&self.view(), viewport);
                     if bar.contains(*mouse) {
                         self.scrubbing = true;
                         seek_to = Some(self.tick_at(bar, mouse.x));
-                    } else if let Some(world) = render::minimap_world_at(&self.game, *mouse) {
-                        self.game.camera.center = world;
-                        self.game.camera.pan(vec2(0.0, 0.0));
+                    } else if let Some(world) = render::minimap_world_at(&self.view(), *mouse) {
+                        self.presentation.camera.center = world;
+                        self.presentation.camera.pan(vec2(0.0, 0.0));
                         self.minimap_drag = true;
                     }
                 }
@@ -467,7 +481,7 @@ impl PlaybackSession {
                 }
                 RawEvent::Wheel { delta } => {
                     let delta = if zoom_inverted { -*delta } else { *delta };
-                    self.game.camera.zoom_at(*mouse, delta);
+                    self.presentation.camera.zoom_at(*mouse, delta);
                 }
                 RawEvent::KeyDown { key } => {
                     if let Some(ActionEvent::Pressed(action)) = self.resolver.key_edge_in(
@@ -524,8 +538,10 @@ impl PlaybackSession {
             dir.x += 1.0;
         }
         if dir != vec2(0.0, 0.0) {
-            let world_per_sec = 240.0 * pan_speed / self.game.camera.zoom;
-            self.game.camera.pan(dir.normalize() * world_per_sec * dt);
+            let world_per_sec = 240.0 * pan_speed / self.presentation.camera.zoom;
+            self.presentation
+                .camera
+                .pan(dir.normalize() * world_per_sec * dt);
         }
         if let Some(target) = seek_to {
             // A fresh transport command replaces any seek in flight.
@@ -547,7 +563,7 @@ impl PlaybackSession {
             // Every budgeted chunk is a bulk jump. Establish the new
             // destination as both interpolation endpoints instead of
             // drawing motion from the prior timeline while seeking.
-            self.game.replace_state_after_jump(&self.engine.state);
+            self.presentation.reset_after_jump(&self.engine.state);
         } else if !self.paused && !self.engine.at_end() {
             self.accum += dt * self.speed;
             let ticks = (self.accum / game::TICK_DT) as u64;
@@ -559,8 +575,9 @@ impl PlaybackSession {
                 // are dropped debt, exactly like the live clock after a
                 // hitch.
                 for _ in 0..ticks.min(24) {
+                    self.presentation.remember_previous_tick(&self.engine.state);
                     let events = self.engine.advance(1);
-                    self.game.playback_present(
+                    self.presentation.observe_tick(
                         &self.engine.state,
                         &events,
                         &self.engine.last_motion,
@@ -571,14 +588,12 @@ impl PlaybackSession {
                 }
             }
         }
-        if self.game.state.current_tick() != self.engine.position() {
-            self.game.replace_state_after_jump(&self.engine.state);
-        }
         self.sync_render_clock();
-        self.game.paused = self.paused;
-        self.game.update_wall_clock_fx(dt);
-        self.game.camera.set_viewport(viewport);
-        self.game.camera.update(dt);
+        self.presentation.paused = self.paused;
+        self.presentation
+            .update_wall_clock_fx(&self.engine.state, dt);
+        self.presentation.camera.set_viewport(viewport);
+        self.presentation.camera.update(dt);
     }
 
     #[cfg(test)]
@@ -601,20 +616,17 @@ impl PlaybackSession {
 
 /// The viewer's half of the debug protocol's shared surface. The engine
 /// owns truth, so every state-shaped answer reads `engine.state`
-/// directly — no per-request clone into the render vehicle — and the
-/// driven clock seeks the record instead of simulating.
+/// directly. The driven clock advances or seeks through recorded commands.
 impl oxide_protocol::DebugSession for PlaybackSession {
     fn status(&self) -> oxide_protocol::StatusView {
-        // The clock the caller cares about is the transport's, not the
-        // render vehicle's disconnected fields.
         oxide_protocol::StatusView {
             tick: self.engine.state.current_tick(),
             paused: self.paused,
             speed: f64::from(self.speed),
-            scenario: self.game.scenario.name.clone(),
+            scenario: self.replay.setup.name.clone(),
             sim_version: SIM_VERSION.to_string(),
             result: self.engine.state.result(),
-            recorded_commands: self.game.recorder.commands.len(),
+            recorded_commands: 0,
         }
     }
 
@@ -635,7 +647,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
         self.reset_clock_debt();
         let before = self.engine.position();
         self.engine.seek(before.saturating_add(ticks));
-        self.game.replace_state_after_jump(&self.engine.state);
+        self.presentation.reset_after_jump(&self.engine.state);
         oxide_protocol::AdvancedView {
             ticks: self.engine.position() - before,
             tick: self.engine.state.current_tick(),
@@ -655,10 +667,15 @@ impl oxide_protocol::DebugSession for PlaybackSession {
             // Mirror Game::present_ticks: the previous tick's transients
             // age by one sim interval, while effects emitted by the
             // newest tick stay fresh.
-            self.game.update_fx(game::TICK_DT);
+            self.presentation
+                .update_fx(&self.engine.state, game::TICK_DT);
+            self.presentation.remember_previous_tick(&self.engine.state);
             let tick_events = self.engine.advance(1);
-            self.game
-                .playback_present(&self.engine.state, &tick_events, &self.engine.last_motion);
+            self.presentation.observe_tick(
+                &self.engine.state,
+                &tick_events,
+                &self.engine.last_motion,
+            );
             events.extend(tick_events);
         }
         oxide_protocol::PresentedView {
@@ -671,7 +688,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
         self.paused = paused;
-        self.game.paused = paused;
+        self.presentation.paused = paused;
         Ok(())
     }
 
@@ -685,6 +702,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
     use macroquad::prelude::vec2;
 
     fn replay() -> GameReplay {
@@ -741,7 +759,7 @@ mod tests {
         let mut replay = outcome.replay.expect("recorded");
         replay.meta.ticks = Some(60);
         let pb = PlaybackSession::from_replay(replay).expect("a spectator needs no command seat");
-        assert!(pb.game.spectate, "the viewer stays fog-free");
+        assert!(pb.presentation.spectate, "the viewer stays fog-free");
     }
 
     #[test]
@@ -761,7 +779,7 @@ mod tests {
         assert_eq!(pb.seeking, Some(60));
         pb.advance_frame(1.0, viewport);
         assert_eq!(pb.engine.position(), 60);
-        assert_eq!(pb.game.state.current_tick(), 60);
+        assert_eq!(pb.engine.state.current_tick(), 60);
 
         assert!(!pb.apply_input(
             &[RawEvent::KeyDown { key: Key::Home }],
@@ -814,7 +832,7 @@ mod tests {
     fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
         let mut pb = session();
         let viewport = vec2(1280.0, 800.0);
-        let bar = scrub_rect(&pb.game, viewport);
+        let bar = scrub_rect(&pb.view(), viewport);
         let mut mouse = vec2(0.0, 0.0);
         pb.update(
             &[RawEvent::MouseDown {
@@ -931,12 +949,12 @@ mod tests {
         let mut pb = session();
         key(&mut pb, Key::Space);
         let before = pb.engine.position();
-        let fx_before = pb.game.fx_time();
+        let fx_before = pb.presentation.fx_time();
         let mut mouse = vec2(0.0, 0.0);
         pb.update(&[], 1.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
         assert_eq!(pb.engine.position(), before, "a paused viewer holds still");
         assert_eq!(
-            pb.game.fx_time(),
+            pb.presentation.fx_time(),
             fx_before,
             "a paused viewer holds decorative animation too"
         );
@@ -957,8 +975,8 @@ mod tests {
             &mut mouse,
         );
         assert_eq!(pb.engine.position(), start);
-        assert!((pb.game.tick_fraction() - 0.25).abs() < 1e-6);
-        assert!((pb.game.render_alpha() - 0.25).abs() < 1e-6);
+        assert!((pb.presentation.tick_fraction() - 0.25).abs() < 1e-6);
+        assert!((pb.presentation.render_alpha() - 0.25).abs() < 1e-6);
 
         pb.update(
             &[],
@@ -969,7 +987,7 @@ mod tests {
             &mut mouse,
         );
         assert_eq!(pb.engine.position(), start + 1);
-        assert!((pb.game.tick_fraction() - 0.25).abs() < 1e-6);
+        assert!((pb.presentation.tick_fraction() - 0.25).abs() < 1e-6);
     }
 
     #[test]
@@ -987,7 +1005,7 @@ mod tests {
                 1.0,
                 &mut mouse,
             );
-            assert!((pb.game.tick_fraction() - 0.75).abs() < 1e-6);
+            assert!((pb.presentation.tick_fraction() - 0.75).abs() < 1e-6);
 
             if present {
                 DebugSession::present(&mut pb, 1);
@@ -999,7 +1017,7 @@ mod tests {
                 pb.accum, 0.0,
                 "a driven step must reset the viewer clock like a live session"
             );
-            assert_eq!(pb.game.tick_fraction(), 0.0);
+            assert_eq!(pb.presentation.tick_fraction(), 0.0);
             let after_step = pb.engine.position();
             pb.update(
                 &[],
@@ -1022,23 +1040,23 @@ mod tests {
         use oxide_protocol::DebugSession;
 
         let mut pb = session();
-        pb.game
+        pb.presentation
             .prev_pos
             .values_mut()
             .for_each(|position| *position += vec2(99.0, 99.0));
-        pb.game.facing.insert(0, 1.25);
+        pb.presentation.facing.insert(0, 1.25);
 
         DebugSession::advance(&mut pb, 40);
 
-        for (&id, &angle) in &pb.game.facing {
-            let unit = pb.game.state.unit(oxide_sim::UnitId(id)).unwrap();
+        for (&id, &angle) in &pb.presentation.facing {
+            let unit = pb.engine.state.unit(oxide_sim::UnitId(id)).unwrap();
             let expected = f32::from(unit.heading) * std::f32::consts::TAU / 256.0
                 + std::f32::consts::FRAC_PI_2;
             assert_eq!(angle, expected);
         }
-        for unit in pb.game.state.units() {
+        for unit in pb.engine.state.units() {
             let expected = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-            assert_eq!(pb.game.prev_pos.get(&unit.id.0), Some(&expected));
+            assert_eq!(pb.presentation.prev_pos.get(&unit.id.0), Some(&expected));
         }
     }
 
@@ -1117,13 +1135,13 @@ mod tests {
         use crate::action::Chord;
         let mut pb = session();
         pb.paused = true;
-        pb.game.camera.zoom_at(vec2(640.0, 400.0), 4.0);
-        pb.game.camera.update(1.0);
+        pb.presentation.camera.zoom_at(vec2(640.0, 400.0), 4.0);
+        pb.presentation.camera.update(1.0);
         assert!(pb.bindings.rebind(Action::PanRight, Chord::bare(Key::L)));
         assert!(pb.bindings.rebind(Action::ReplayStats, Chord::bare(Key::O)));
         let mut mouse = vec2(640.0, 400.0);
         let tick = pb.engine.position();
-        let before = pb.game.camera.center.x;
+        let before = pb.presentation.camera.center.x;
         pb.update(
             &[
                 RawEvent::KeyDown { key: Key::L },
@@ -1135,7 +1153,7 @@ mod tests {
             1.0,
             &mut mouse,
         );
-        let halfway = pb.game.camera.center.x;
+        let halfway = pb.presentation.camera.center.x;
         pb.update(
             &[RawEvent::KeyUp { key: Key::L }],
             0.1,
@@ -1144,7 +1162,7 @@ mod tests {
             1.0,
             &mut mouse,
         );
-        let after = pb.game.camera.center.x;
+        let after = pb.presentation.camera.center.x;
         assert!(before < halfway && halfway < after);
         pb.update(
             &[RawEvent::KeyUp { key: Key::Right }],
@@ -1154,7 +1172,7 @@ mod tests {
             1.0,
             &mut mouse,
         );
-        assert_eq!(pb.game.camera.center.x, after);
+        assert_eq!(pb.presentation.camera.center.x, after);
         assert_eq!(pb.engine.position(), tick);
         key(&mut pb, Key::Tab);
         assert!(!pb.show_stats);

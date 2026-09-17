@@ -78,10 +78,8 @@ pub(super) fn detonate_under_construction(
         }
         detonate(state, slot, events);
         for (id, player) in sites {
-            state
-                .building_mut(id)
-                .expect("site survives until cleanup")
-                .hp = 0;
+            let site = state.building_mut(id).expect("site survives until cleanup");
+            super::damage::building(site, site.hp, events);
             super::commands::clear_site_orders(state, player, id);
         }
     }
@@ -123,7 +121,7 @@ fn detonate(state: &mut State, slot: usize, events: &mut Vec<Event>) {
             && u.domain() == Domain::Ground
             && u.pos.dist_sq(center) <= blast_sq
         {
-            u.hp = u.hp.saturating_sub(CHARGE_DAMAGE);
+            super::damage::unit(u, CHARGE_DAMAGE, events);
         }
     }
     for other in &mut state.buildings {
@@ -133,7 +131,7 @@ fn detonate(state: &mut State, slot: usize, events: &mut Vec<Event>) {
             && state.players[owner.0 as usize].team != state.players[other.player.0 as usize].team
             && other.center().dist_sq(center) <= blast_sq
         {
-            other.hp = other.hp.saturating_sub(CHARGE_DAMAGE);
+            super::damage::building(other, CHARGE_DAMAGE, events);
         }
     }
 }

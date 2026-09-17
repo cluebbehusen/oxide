@@ -2,7 +2,7 @@
 
 use super::{air_presentation, reduced_motion, seat_identity_tint, unit_draw_scale};
 use crate::assets::Sprites;
-use crate::game::{EffectKind, Game, UnitBody};
+use crate::game::{EffectKind, Scene, UnitBody};
 use macroquad::prelude::*;
 use oxide_sim::{BuildingKind, ProjectileKind};
 
@@ -28,19 +28,19 @@ fn rotate(v: Vec2, angle: f32) -> Vec2 {
     vec2(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
-fn visible(game: &Game, at: Vec2) -> bool {
-    game.all_seeing()
+fn visible(game: &Scene<'_>, at: Vec2) -> bool {
+    game.presentation.all_seeing()
         || game.my_vision().visible(chassis::grid::TilePos::new(
             at.x.floor() as i32,
             at.y.floor() as i32,
         ))
 }
 
-pub(super) fn casualty_visible(game: &Game, at: Vec2, body: UnitBody) -> bool {
-    body.player == game.human || visible(game, at)
+pub(super) fn casualty_visible(game: &Scene<'_>, at: Vec2, body: UnitBody) -> bool {
+    body.player == game.presentation.human || visible(game, at)
 }
 
-fn floor_contact(game: &Game, at: Vec2) -> bool {
+fn floor_contact(game: &Scene<'_>, at: Vec2) -> bool {
     game.state
         .map()
         .tile(chassis::grid::TilePos::new(
@@ -302,7 +302,7 @@ const HULL_PIECES: [Rect; 4] = [
 ];
 
 fn draw_unit_wreck(
-    game: &Game,
+    game: &Scene<'_>,
     sprites: &Sprites,
     at: Vec2,
     body: UnitBody,
@@ -313,8 +313,8 @@ fn draw_unit_wreck(
     if age < 0.0 || !(witnessed || casualty_visible(game, at, body)) || !floor_contact(game, at) {
         return;
     }
-    let zoom = game.camera.zoom;
-    let center = game.camera.to_screen(at);
+    let zoom = game.presentation.camera.zoom;
+    let center = game.presentation.camera.to_screen(at);
     let scale = unit_draw_scale(body.kind);
     let t = if reduced_motion() {
         1.0
@@ -466,7 +466,7 @@ fn air_fragment(body: UnitBody, seed: u32, index: usize, age: f32) -> AirFragmen
 }
 
 fn draw_air_fragments(
-    game: &Game,
+    game: &Scene<'_>,
     sprites: &Sprites,
     at: Vec2,
     body: UnitBody,
@@ -474,7 +474,7 @@ fn draw_air_fragments(
     age: f32,
     grounded: bool,
 ) {
-    let zoom = game.camera.zoom;
+    let zoom = game.presentation.camera.zoom;
     for (i, part) in HULL_PIECES.into_iter().enumerate() {
         let pose = air_fragment(body, seed, i, age);
         if (pose.lift == 0.0) != grounded
@@ -484,7 +484,8 @@ fn draw_air_fragments(
             continue;
         }
         let hull = RigidSprite {
-            center: game.camera.to_screen(at + pose.offset) - vec2(0.0, pose.lift * zoom),
+            center: game.presentation.camera.to_screen(at + pose.offset)
+                - vec2(0.0, pose.lift * zoom),
             size: Vec2::splat(unit_draw_scale(body.kind) * zoom),
             rotation: body.rotation,
             source: sprites.unit(body.kind, body.faction),
@@ -548,7 +549,7 @@ fn draw_airburst(center: Vec2, zoom: f32, scale: f32, age: f32) {
 }
 
 pub(super) fn draw_falling(
-    game: &Game,
+    game: &Scene<'_>,
     sprites: &Sprites,
     at: Vec2,
     body: UnitBody,
@@ -561,9 +562,17 @@ pub(super) fn draw_falling(
             draw_air_fragments(game, sprites, at, body, seed, age, false);
         }
         if casualty_visible(game, at, body) && age < 0.32 {
-            let center = game.camera.to_screen(at)
-                - vec2(0.0, air_presentation(body.kind, game.camera.zoom).2);
-            draw_airburst(center, game.camera.zoom, unit_draw_scale(body.kind), age);
+            let center = game.presentation.camera.to_screen(at)
+                - vec2(
+                    0.0,
+                    air_presentation(body.kind, game.presentation.camera.zoom).2,
+                );
+            draw_airburst(
+                center,
+                game.presentation.camera.zoom,
+                unit_draw_scale(body.kind),
+                age,
+            );
         }
         return;
     }
@@ -574,8 +583,8 @@ pub(super) fn draw_falling(
     if !casualty_visible(game, pose.at, body) {
         return;
     }
-    let zoom = game.camera.zoom;
-    let ground = game.camera.to_screen(pose.at);
+    let zoom = game.presentation.camera.zoom;
+    let ground = game.presentation.camera.to_screen(pose.at);
     let size = unit_draw_scale(body.kind) * zoom;
     let t = age / CRASH_TIME;
     let (shadow_size, _, _) = air_presentation(body.kind, zoom);
@@ -592,7 +601,7 @@ pub(super) fn draw_falling(
         );
     }
     let hull = RigidSprite {
-        center: game.camera.to_screen(pose.body_at),
+        center: game.presentation.camera.to_screen(pose.body_at),
         size: Vec2::splat(size),
         rotation: pose.rotation,
         source: sprites.unit(body.kind, body.faction),
@@ -617,7 +626,7 @@ pub(super) fn draw_falling(
     for i in 1..4 {
         let earlier = (age - i as f32 * 0.035).max(0.0);
         let trail = fall_pose(at, body, earlier, crash);
-        let p = game.camera.to_screen(trail.body_at);
+        let p = game.presentation.camera.to_screen(trail.body_at);
         pixel_rect(
             p,
             vec2(size * 0.11, size * 0.08),
@@ -627,15 +636,15 @@ pub(super) fn draw_falling(
     }
 }
 
-pub(super) fn draw_ground_effects(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
-    for effect in &game.fx {
+pub(super) fn draw_ground_effects(game: &Scene<'_>, sprites: &Sprites) {
+    let zoom = game.presentation.camera.zoom;
+    for effect in &game.presentation.fx {
         match effect.kind {
             EffectKind::Impact { at, radius, .. }
                 if visible(game, at) && floor_contact(game, at) =>
             {
                 ground_mark(
-                    game.camera.to_screen(at),
+                    game.presentation.camera.to_screen(at),
                     zoom,
                     radius * 0.68,
                     ((1.4 - effect.age) / 0.7).clamp(0.0, 1.0) * 0.70,
@@ -668,7 +677,8 @@ pub(super) fn draw_ground_effects(game: &Game, sprites: &Sprites) {
                     CRASH_TIME
                 };
                 let pose = fall_pose(at, body, delay, crash);
-                let age = effect.age_at(game.state.current_tick(), game.tick_fraction());
+                let age =
+                    effect.age_at(game.state.current_tick(), game.presentation.tick_fraction());
                 if crash.is_some_and(|crash| game.state.current_tick() <= crash.arrival) {
                     continue;
                 }
@@ -686,9 +696,9 @@ pub(super) fn draw_ground_effects(game: &Game, sprites: &Sprites) {
                 );
             }
             EffectKind::Collapse { at, body, seed }
-                if visible(game, at) || body.player == game.human =>
+                if visible(game, at) || body.player == game.presentation.human =>
             {
-                let center = game.camera.to_screen(at);
+                let center = game.presentation.camera.to_screen(at);
                 let (w, h) = body.kind.base_stats().size;
                 let size = vec2(w as f32, h as f32) * zoom;
                 let age = if reduced_motion() {
@@ -775,6 +785,7 @@ pub(super) fn draw_ground_effects(game: &Game, sprites: &Sprites) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
 
     #[test]
     fn scheduled_airframe_contacts_the_damage_point_with_its_full_level_pose() {
@@ -836,14 +847,19 @@ mod tests {
         let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
         for _ in 0..600 {
             game.present_ticks(1);
-            if let Some((at, body)) = game.fx.iter().find_map(|effect| match effect.kind {
-                EffectKind::Falling { at, body, .. } => Some((at, body)),
-                _ => None,
-            }) {
-                assert!(!visible(&game, at));
-                assert!(casualty_visible(&game, at, body));
+            if let Some((at, body)) =
+                game.presentation
+                    .fx
+                    .iter()
+                    .find_map(|effect| match effect.kind {
+                        EffectKind::Falling { at, body, .. } => Some((at, body)),
+                        _ => None,
+                    })
+            {
+                assert!(!visible(&game.view(), at));
+                assert!(casualty_visible(&game.view(), at, body));
                 assert!(!casualty_visible(
-                    &game,
+                    &game.view(),
                     at,
                     UnitBody {
                         player: oxide_sim::PlayerId(1),

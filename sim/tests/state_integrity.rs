@@ -379,10 +379,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidContactTracking(_) => 73,
         E::InvalidProvisionalSite(_) => 74,
         E::InvalidReturnCargo(_) => 75,
+        E::ScrapBeyondCapacity(_) => 76,
     }
 }
 
-const ROWS: usize = 76;
+const ROWS: usize = 77;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -471,6 +472,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidContactTracking(PlayerId(0)),
         E::InvalidProvisionalSite(BuildingId(0)),
         E::InvalidReturnCargo(UnitId(0)),
+        E::ScrapBeyondCapacity(UnitId(0)),
     ]
 }
 
@@ -513,6 +515,87 @@ fn make_transport(d: &mut Value) {
     unit.remove("queue");
 }
 
+#[test]
+fn scrap_load_is_bounded_for_walking_and_carried_units() {
+    for carried in [false, true] {
+        for kind in [UnitKind::Harvester, UnitKind::Excavator, UnitKind::Sentinel] {
+            let mut scenario = arena();
+            scenario.buildings.clear();
+            scenario.units = vec![
+                UnitSpec {
+                    player: 0,
+                    kind,
+                    x: 4,
+                    y: 4,
+                },
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Skyhook,
+                    x: 4,
+                    y: 5,
+                },
+            ];
+            let mut state = scenario.build().unwrap();
+            if carried {
+                let rider = state.units()[0].id;
+                let transport = state.units()[1].id;
+                state.tick(&[cmd(
+                    0,
+                    Command::Load {
+                        units: vec![rider],
+                        transport,
+                        queue: false,
+                    },
+                )]);
+                for _ in 0..100 {
+                    if state.unit(rider).is_none() {
+                        break;
+                    }
+                    state.tick(&[]);
+                }
+                assert_eq!(state.unit(transport).unwrap().cargo.len(), 1);
+            }
+            let base = serde_json::to_value(&state).unwrap();
+            let capacity = kind.stats().harvest.map_or(0, |harvest| harvest.capacity);
+            for amount in [0, capacity, capacity + 1, 1_000_000] {
+                let mut data = base.clone();
+                if carried {
+                    data["units"][0]["cargo"][0]["carrying"] = json!(amount);
+                } else {
+                    data["units"][0]["carrying"] = json!(amount);
+                }
+                let restored = serde_json::from_value::<State>(data);
+                if amount <= capacity {
+                    let state = restored.unwrap();
+                    let round_trip: State =
+                        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+                    assert_eq!(state.hash(), round_trip.hash());
+                } else {
+                    assert!(
+                        restored
+                            .unwrap_err()
+                            .to_string()
+                            .contains("scrap beyond its harvest capacity")
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn state_deserialization_checks_the_rng_stream() {
+    let state = arena().build().unwrap();
+    let mut data = serde_json::to_value(&state).unwrap();
+    data["rng"]["inc"] = json!(2);
+    assert!(
+        serde_json::from_value::<State>(data)
+            .unwrap_err()
+            .to_string()
+            .contains("PCG stream increment must be odd")
+    );
+}
+
 /// Reshapes unit 0 into a Condor parked on a tile center, facing east
 /// with open sky ahead of it.
 fn make_landed(d: &mut Value) {
@@ -539,6 +622,11 @@ fn make_landed(d: &mut Value) {
 #[test]
 fn every_checklist_row_refuses_its_forgery() {
     let fixtures: Vec<Forgery> = vec![
+        (
+            "an oversized scrap load",
+            |d| d["units"][0]["carrying"] = json!(1_000_000),
+            "unit u0 carries scrap beyond its harvest capacity",
+        ),
         (
             "ground unit with crash momentum",
             |d| {

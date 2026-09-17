@@ -444,12 +444,12 @@ impl Mixer {
     }
 }
 
-fn match_soundtrack_scene(game: &Game, paused: bool) -> crate::soundtrack::Scene {
+fn match_soundtrack_scene(game: &crate::game::Scene<'_>, paused: bool) -> crate::soundtrack::Scene {
     match game.state.result() {
         Some(oxide_sim::GameResult::Draw) => crate::soundtrack::Scene::Result,
         Some(oxide_sim::GameResult::Victory { team })
-            if !game.state.player(game.human).resigned
-                && game.state.player(game.human).team == team =>
+            if !game.state.player(game.presentation.human).resigned
+                && game.state.player(game.presentation.human).team == team =>
         {
             crate::soundtrack::Scene::Victory
         }
@@ -469,19 +469,19 @@ fn result_playback(game: &Game) -> Result<PlaybackSession> {
 
 fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
     match screen {
-        Screen::Playing => match_soundtrack_scene(game, false),
+        Screen::Playing => match_soundtrack_scene(&game.view(), false),
         Screen::Playback(playback) => match_soundtrack_scene(
-            &playback.game,
+            &playback.view(),
             playback.paused || playback.seeking.is_some(),
         ),
-        Screen::FinalMap(_) => match_soundtrack_scene(game, true),
-        Screen::Pause(_) => match_soundtrack_scene(game, true),
+        Screen::FinalMap(_) => match_soundtrack_scene(&game.view(), true),
+        Screen::Pause(_) => match_soundtrack_scene(&game.view(), true),
         Screen::Settings { back, .. } | Screen::Codex { back, .. }
             if matches!(**back, Screen::Pause(_)) =>
         {
-            match_soundtrack_scene(game, true)
+            match_soundtrack_scene(&game.view(), true)
         }
-        Screen::Results(_) => match_soundtrack_scene(game, false),
+        Screen::Results(_) => match_soundtrack_scene(&game.view(), false),
         Screen::Home(_)
         | Screen::Settings { .. }
         | Screen::Codex { .. }
@@ -610,10 +610,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     };
     game.recovery_root = crate::paths::recovery_dir();
     if game.recovery_root.is_none() {
-        game.toast("Recovery unavailable: no writable data folder is configured.");
+        game.presentation
+            .toast("Recovery unavailable: no writable data folder is configured.");
     }
-    game.paused = args.paused;
-    game.speed = args.speed;
+    game.presentation.paused = args.paused;
+    game.presentation.speed = args.speed;
     mark("game built");
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
@@ -724,7 +725,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 paused: match &screen {
                     Screen::Playback(playback) => playback.paused,
                     Screen::Pause(_) => true,
-                    _ => app.game.paused,
+                    _ => app.game.presentation.paused,
                 },
                 minimized: input::reported_minimized(),
             });
@@ -770,10 +771,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // then advance any zoom glide. Menus take the same injection —
         // their update logic runs headless in tests on the default size.
         app.game
+            .presentation
             .camera
             .set_viewport(vec2(screen_width(), screen_height()));
         render::set_viewport(screen_width(), screen_height());
-        app.game.camera.update(dt);
+        app.game.presentation.camera.update(dt);
 
         let input_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
@@ -883,25 +885,25 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             f32,
         ) = match &mut screen {
             Screen::Playback(pb) => (
-                std::mem::take(&mut pb.game.sounds_pending),
-                pb.game.camera.center,
-                pb.game.camera.viewport() / pb.game.camera.zoom * 0.5,
-                pb.game.camera.zoom,
+                std::mem::take(&mut pb.presentation.sounds_pending),
+                pb.presentation.camera.center,
+                pb.presentation.camera.viewport() / pb.presentation.camera.zoom * 0.5,
+                pb.presentation.camera.zoom,
             ),
             _ => (
-                std::mem::take(&mut app.game.sounds_pending),
-                app.game.camera.center,
-                app.game.camera.viewport() / app.game.camera.zoom * 0.5,
-                app.game.camera.zoom,
+                std::mem::take(&mut app.game.presentation.sounds_pending),
+                app.game.presentation.camera.center,
+                app.game.presentation.camera.viewport() / app.game.presentation.camera.zoom * 0.5,
+                app.game.presentation.camera.zoom,
             ),
         };
         let (motor_game, motor_running) = match &screen {
-            Screen::Playback(pb) => (&pb.game, !pb.paused && pb.seeking.is_none()),
-            Screen::Playing => (&app.game, !app.game.paused),
-            _ => (&app.game, false),
+            Screen::Playback(pb) => (pb.view(), !pb.paused && pb.seeking.is_none()),
+            Screen::Playing => (app.game.view(), !app.game.presentation.paused),
+            _ => (app.game.view(), false),
         };
         app.mixer.rocket_loops.update(
-            motor_game,
+            &motor_game,
             motor_running,
             &app.sounds.rocket_motors,
             app.config.volumes.master
@@ -958,7 +960,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         if let Err(err) = app.config.save() {
                             let line = format!("could not save settings: {err}");
                             if matches!(screen, Screen::Playing) {
-                                app.game.toast(line);
+                                app.game.presentation.toast(line);
                             } else {
                                 app.menu_notice = Some((line, get_time() + 5.0));
                             }
@@ -986,7 +988,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     std::process::exit(0)
                 }
                 Err(err) => {
-                    app.game.paused = true;
+                    app.game.presentation.paused = true;
                     // The dialog's home-vs-match classification must
                     // see THROUGH screens opened from Pause: a quit
                     // while Settings or Playback sits over a paused
@@ -1042,7 +1044,7 @@ fn resume(
 /// sim's own command gate so the menu never offers a verb the sim
 /// would only reject.
 fn can_surrender(game: &Game) -> bool {
-    !game.state.player(game.human).resigned && game.home_foundry().is_some()
+    !game.state.player(game.presentation.human).resigned && game.home_foundry().is_some()
 }
 
 fn visible_diagnostics<'a>(
@@ -1083,7 +1085,7 @@ fn performance_context(screen: &Screen) -> u8 {
 fn visible_speed(screen: &Screen, live: &Game) -> f64 {
     match screen {
         Screen::Playback(playback) => f64::from(playback.speed),
-        _ => live.speed,
+        _ => live.presentation.speed,
     }
 }
 
@@ -1168,9 +1170,9 @@ fn track_pointer_position(mouse: &mut Vec2, event: &RawEvent) {
 /// Carries session-level toggles (pause/speed/overlay) onto a fresh game.
 fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     old.finish_recovery();
-    fresh.paused = old.paused;
-    fresh.speed = old.speed;
-    fresh.overlay = old.overlay;
+    fresh.presentation.paused = old.presentation.paused;
+    fresh.presentation.speed = old.presentation.speed;
+    fresh.presentation.overlay = old.presentation.overlay;
     fresh.recovery_root.clone_from(&old.recovery_root);
     fresh
 }
@@ -1238,13 +1240,14 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         hover: menu.and_then(Menu::hover),
         panel_regions: matches!(screen, Screen::Playing).then(|| {
             app.game
+                .presentation
                 .layout
                 .get()
                 .panel_regions
                 .map(|r| [r.x, r.y, r.w, r.h])
         }),
         chrome: matches!(screen, Screen::Playing).then(|| {
-            let l = app.game.layout.get();
+            let l = app.game.presentation.layout.get();
             let m = l.minimap;
             // JSON has no Infinity: an absent panel reports the window
             // bottom, a band no click can land in.
@@ -1440,16 +1443,13 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 // Window-shaped answers describe the screen the window
                 // shows — the viewer's render vehicle during playback.
                 let game = match &*screen {
-                    Screen::Playback(pb) => &pb.game,
-                    _ => &*game,
+                    Screen::Playback(pb) => &pb.presentation.camera,
+                    _ => &game.presentation.camera,
                 };
-                let (lo, hi) = game.camera.world_rect();
+                let (lo, hi) = game.world_rect();
                 Ok(Reply::Camera(CameraView {
-                    center: [
-                        f64::from(game.camera.center.x),
-                        f64::from(game.camera.center.y),
-                    ],
-                    zoom: f64::from(game.camera.zoom),
+                    center: [f64::from(game.center.x), f64::from(game.center.y)],
+                    zoom: f64::from(game.zoom),
                     viewport: [f64::from(screen_width()), f64::from(screen_height())],
                     world_rect: [
                         f64::from(lo.x),
@@ -1471,7 +1471,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             Request::BeginPerformanceWindow { from_tick, to_tick } => {
                 if !matches!(&*screen, Screen::Playing) {
                     Err("exact frame windows require the live Playing screen".to_string())
-                } else if !game.paused {
+                } else if !game.presentation.paused {
                     Err("pause the live match before arming a frame window".to_string())
                 } else if game.state.current_tick() != from_tick {
                     Err(format!(
@@ -1486,8 +1486,8 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             }
             Request::ToggleOverlay => {
                 let game = match &mut *screen {
-                    Screen::Playback(pb) => &mut pb.game,
-                    _ => game,
+                    Screen::Playback(pb) => &mut pb.presentation,
+                    _ => &mut game.presentation,
                 };
                 game.overlay = !game.overlay;
                 Ok(Reply::Overlay(OverlayView {
@@ -1605,14 +1605,14 @@ mod tests {
         use oxide_protocol::DebugSession;
 
         let mut live = Game::new(Scenario::skirmish()).unwrap();
-        live.speed = 4.0;
+        live.presentation.speed = 4.0;
         let replay = oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, Scenario::skirmish());
         let mut playback = PlaybackSession::from_replay(replay).unwrap();
         for speed in [0.5, 1.0, 8.0, 64.0] {
             playback.set_speed(speed).unwrap();
             let screen = Screen::Playback(Box::new(playback));
             assert_eq!(visible_speed(&screen, &live), speed);
-            assert_eq!(live.speed, 4.0);
+            assert_eq!(live.presentation.speed, 4.0);
             let Screen::Playback(session) = screen else {
                 unreachable!()
             };
@@ -1732,7 +1732,7 @@ mod tests {
         let game = launch(&draft, 0x1000).expect("launches");
         let players = &game.scenario.players;
         assert!(!players[2].bot, "the chosen chair is the human's");
-        assert_eq!(game.human, oxide_sim::PlayerId(2));
+        assert_eq!(game.presentation.human, oxide_sim::PlayerId(2));
         for (i, p) in players.iter().enumerate() {
             if i == 2 {
                 assert!(p.bot_config.is_none());
@@ -1890,11 +1890,11 @@ mod tests {
         let mut backdrop_draft = NewMatchDraft::default();
         backdrop_draft.set_scenario(scenario.clone(), None);
         let mut backdrop = launch(&backdrop_draft, 0x2000).expect("backdrop match");
-        backdrop.camera.pan(vec2(-1000.0, -1000.0));
-        backdrop.paused = true;
-        backdrop.speed = 4.0;
-        backdrop.overlay = true;
-        let backdrop_center = backdrop.camera.center;
+        backdrop.presentation.camera.pan(vec2(-1000.0, -1000.0));
+        backdrop.presentation.paused = true;
+        backdrop.presentation.speed = 4.0;
+        backdrop.presentation.overlay = true;
+        let backdrop_center = backdrop.presentation.camera.center;
 
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(scenario, None);
@@ -1904,26 +1904,26 @@ mod tests {
             &backdrop,
         );
 
-        assert_eq!(game.human, oxide_sim::PlayerId(1));
+        assert_eq!(game.presentation.human, oxide_sim::PlayerId(1));
         let home = game.home_foundry().expect("human Foundry").center();
         let home = vec2(home.x.to_num::<f32>(), home.y.to_num::<f32>());
-        let (lo, hi) = game.camera.world_rect();
+        let (lo, hi) = game.presentation.camera.world_rect();
         assert!(
             home.x >= lo.x && home.x <= hi.x && home.y >= lo.y && home.y <= hi.y,
             "the new human's Foundry at {home:?} is outside the opening view {lo:?}..{hi:?}"
         );
         assert_ne!(
-            game.camera.center, backdrop_center,
+            game.presentation.camera.center, backdrop_center,
             "session flags must not carry the backdrop camera into the new match"
         );
-        assert!(game.paused);
-        assert_eq!(game.speed, 4.0);
-        assert!(game.overlay);
+        assert!(game.presentation.paused);
+        assert_eq!(game.presentation.speed, 4.0);
+        assert!(game.presentation.overlay);
 
-        let opening_center = game.camera.center;
+        let opening_center = game.presentation.camera.center;
         input::update_held(&mut game, &input, 1.0);
         assert_eq!(
-            game.camera.center, opening_center,
+            game.presentation.camera.center, opening_center,
             "edge pan must not mistake the menu click for a pointer at (0, 0)"
         );
     }
@@ -2052,11 +2052,11 @@ mod tests {
     fn soundtrack_context_tracks_pause_victory_and_surrender() {
         let mut won = Game::new(Scenario::skirmish()).expect("game");
         assert_eq!(
-            match_soundtrack_scene(&won, false),
+            match_soundtrack_scene(&won.view(), false),
             crate::soundtrack::Scene::Match
         );
         assert_eq!(
-            match_soundtrack_scene(&won, true),
+            match_soundtrack_scene(&won.view(), true),
             crate::soundtrack::Scene::Pause
         );
         won.state.tick(&[oxide_sim::PlayerCommand {
@@ -2064,17 +2064,17 @@ mod tests {
             command: oxide_sim::Command::Surrender,
         }]);
         assert_eq!(
-            match_soundtrack_scene(&won, false),
+            match_soundtrack_scene(&won.view(), false),
             crate::soundtrack::Scene::Victory
         );
 
         let mut lost = Game::new(Scenario::skirmish()).expect("game");
         lost.state.tick(&[oxide_sim::PlayerCommand {
-            player: lost.human,
+            player: lost.presentation.human,
             command: oxide_sim::Command::Surrender,
         }]);
         assert_eq!(
-            match_soundtrack_scene(&lost, false),
+            match_soundtrack_scene(&lost.view(), false),
             crate::soundtrack::Scene::Defeat,
             "a resigned human never hears a teammate's eventual win as their victory"
         );

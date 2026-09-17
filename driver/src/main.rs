@@ -80,6 +80,9 @@ enum Cmd {
         /// Scenario paths, or "skirmish" for the built-in map.
         #[arg(required = true)]
         scenarios: Vec<String>,
+        /// Maximum simultaneous matches; bounded by available CPUs. Use 1 for serial legs.
+        #[arg(long, default_value = "4")]
+        jobs: std::num::NonZeroUsize,
         /// Maximum ticks per match.
         #[arg(long, default_value_t = 60_000, value_parser = clap::value_parser!(u64).range(1..))]
         ticks: u64,
@@ -541,6 +544,7 @@ fn main() -> Result<()> {
         }
         Cmd::BotEval {
             scenarios,
+            jobs,
             ticks,
             stall_loop_limit,
             runs,
@@ -702,59 +706,19 @@ fn main() -> Result<()> {
                 }
             }
 
-            oxide_driver::bot_eval::ensure_unique_execution_plans(
-                plans.iter().map(|(plan, _)| plan),
+            let result = oxide_driver::bot_eval::evaluate_batch(
+                &plans,
+                &oxide_driver::bot_eval::EvaluationBatchOptions {
+                    ticks,
+                    stall_loop_limit,
+                    candidate: &candidate,
+                    jobs,
+                    output: out.as_deref(),
+                    trace_output: decision_trace_out.as_deref().map(PathBuf::as_path),
+                },
             )?;
-
-            let mut destinations: Vec<PathBuf> = plans
-                .iter()
-                .filter_map(|(_, replay_path)| replay_path.clone())
-                .collect();
-            destinations.extend(out.iter().cloned());
-            destinations.extend(decision_trace_out.iter().map(|path| (**path).clone()));
-            oxide_driver::bot_eval::preflight_destinations(&destinations)?;
-
-            let mut rows = Vec::with_capacity(plans.len());
-            let mut evidence = oxide_driver::bot_eval::EvidenceBatch::default();
-            let mut trace_writer = decision_trace_out
-                .as_deref()
-                .map(|path| evidence.stage_trace_jsonl(path))
-                .transpose()?;
-            let mut trace_row_count = 0_u64;
-            for (plan, replay_path) in plans {
-                let (mut row, replay) = if let Some(writer) = trace_writer.as_mut() {
-                    let (row, replay, leg_trace_count) =
-                        oxide_driver::bot_eval::evaluate_plan_artifact_traced_with(
-                            &plan,
-                            ticks,
-                            stall_loop_limit,
-                            &candidate,
-                            |trace| writer.write_row(trace),
-                        )?;
-                    trace_row_count = trace_row_count.saturating_add(leg_trace_count);
-                    (row, replay)
-                } else {
-                    oxide_driver::bot_eval::evaluate_plan_artifact_with(
-                        &plan,
-                        ticks,
-                        stall_loop_limit,
-                        &candidate,
-                    )?
-                };
-                if let Some(path) = replay_path {
-                    evidence.stage_replay(&replay, &path)?;
-                    row.replay = Some(path.display().to_string());
-                }
-                rows.push(row);
-            }
-            if let Some(writer) = trace_writer {
-                let written = writer.finish()?;
-                debug_assert_eq!(written, trace_row_count);
-            }
-            if let Some(path) = out.as_deref() {
-                evidence.stage_jsonl(&rows, path)?;
-            }
-            evidence.publish()?;
+            let rows = result.rows;
+            let trace_row_count = result.trace_rows;
 
             if let Some(path) = decision_trace_out {
                 eprintln!(

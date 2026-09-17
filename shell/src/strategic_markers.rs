@@ -1,5 +1,6 @@
 //! Role and allegiance cues at strategic camera scales.
 
+use crate::game::Scene;
 use macroquad::prelude::*;
 use oxide_sim::{Unit, UnitKind};
 
@@ -63,18 +64,20 @@ fn role(kind: UnitKind) -> Role {
     }
 }
 
-pub(crate) fn visible(game: &crate::game::Game, unit: &Unit) -> bool {
-    unit.player == game.human || game.all_seeing() || game.my_vision().visible(unit.tile())
+pub(crate) fn visible(game: &Scene<'_>, unit: &Unit) -> bool {
+    unit.player == game.presentation.human
+        || game.presentation.all_seeing()
+        || game.my_vision().visible(unit.tile())
 }
 
-pub fn draw_markers(game: &crate::game::Game, alpha: f32) {
-    let opacity = marker_alpha(game.camera.zoom);
+pub fn draw_markers(game: &Scene<'_>, alpha: f32) {
+    let opacity = marker_alpha(game.presentation.camera.zoom);
     if opacity <= 0.0 {
         return;
     }
     let scale = prefs().scale;
-    let (lo, hi) = game.camera.world_rect();
-    let viewport = game.camera.viewport();
+    let (lo, hi) = game.presentation.camera.world_rect();
+    let viewport = game.presentation.camera.viewport();
     push_camera_state();
     set_camera(&marker_camera(viewport, scale));
     // Draw all backplates before any glyph so adjacent markers cannot erase roles.
@@ -83,29 +86,29 @@ pub fn draw_markers(game: &crate::game::Game, alpha: f32) {
             .state
             .units()
             .iter()
-            .filter(|u| !game.selection.units.contains(&u.id))
+            .filter(|u| !game.presentation.selection.units.contains(&u.id))
             .chain(
                 game.state
                     .units()
                     .iter()
-                    .filter(|u| game.selection.units.contains(&u.id)),
+                    .filter(|u| game.presentation.selection.units.contains(&u.id)),
             )
         {
             if !visible(game, unit) {
                 continue;
             }
-            let pos = game.draw_pos(unit.id, unit.pos, alpha);
+            let pos = game.presentation.draw_pos(unit.id, unit.pos, alpha);
             if pos.x < lo.x - 2.0 || pos.y < lo.y - 2.0 || pos.x > hi.x + 2.0 || pos.y > hi.y + 2.0
             {
                 continue;
             }
-            let screen = game.camera.to_screen(pos);
+            let screen = game.presentation.camera.to_screen(pos);
             let center = screen / scale;
             let tint = crate::render::seat_identity_color(game, unit.player);
             let color = Color { a: opacity, ..tint };
             let fill = Color::new(0.065, 0.065, 0.075, opacity);
             let ink = Color::new(0.91, 0.89, 0.83, opacity);
-            let selected = game.selection.units.contains(&unit.id);
+            let selected = game.presentation.selection.units.contains(&unit.id);
             let air = unit.domain() == oxide_sim::stats::Domain::Air;
             if backplates {
                 if air {
@@ -166,14 +169,14 @@ pub fn draw_markers(game: &crate::game::Game, alpha: f32) {
                     line((-3.0, 3.0), (3.0, -3.0));
                 }
             }
-            if game.state.hostile(game.human, unit.player) {
+            if game.state.hostile(game.presentation.human, unit.player) {
                 draw_triangle(
                     center + vec2(-3.0, 8.0),
                     center + vec2(3.0, 8.0),
                     center + vec2(0.0, 11.0),
                     color,
                 );
-            } else if unit.player != game.human {
+            } else if unit.player != game.presentation.human {
                 draw_line(
                     center.x - 3.0,
                     center.y + 9.0,
@@ -201,20 +204,20 @@ pub fn draw_markers(game: &crate::game::Game, alpha: f32) {
     pop_camera_state();
 }
 
-pub(crate) fn building_visible(game: &crate::game::Game, b: &oxide_sim::Building) -> bool {
-    b.player == game.human
-        || game.all_seeing()
+pub(crate) fn building_visible(game: &Scene<'_>, b: &oxide_sim::Building) -> bool {
+    b.player == game.presentation.human
+        || game.presentation.all_seeing()
         || (b.tiles().any(|t| game.my_vision().visible(t))
-            && game.state.building_apparent(game.human, b))
+            && game.state.building_apparent(game.presentation.human, b))
 }
 
-pub(crate) fn draw_buildings(game: &crate::game::Game) {
-    let alpha = marker_alpha(game.camera.zoom);
+pub(crate) fn draw_buildings(game: &Scene<'_>) {
+    let alpha = marker_alpha(game.presentation.camera.zoom);
     if alpha <= 0.0 {
         return;
     }
     let scale = prefs().scale;
-    let (lo, hi) = game.camera.world_rect();
+    let (lo, hi) = game.presentation.camera.world_rect();
     let mut markers = Vec::new();
     for b in game
         .state
@@ -228,11 +231,11 @@ pub(crate) fn draw_buildings(game: &crate::game::Game) {
             b.anchor,
             b.built,
             false,
-            game.selection.buildings.contains(&b.id),
+            game.presentation.selection.buildings.contains(&b.id),
             1.0,
         ));
     }
-    if !game.all_seeing() {
+    if !game.presentation.all_seeing() {
         for g in game.my_vision().ghosts() {
             let observed = game
                 .state
@@ -242,10 +245,11 @@ pub(crate) fn draw_buildings(game: &crate::game::Game) {
                 continue;
             }
             let age = game
+                .presentation
                 .last_seen
                 .borrow()
                 .get(&(g.anchor.x, g.anchor.y))
-                .map_or(0.0, |stamp| game.fx_time() - stamp);
+                .map_or(0.0, |stamp| game.presentation.fx_time() - stamp);
             markers.push((
                 g.kind,
                 g.owner,
@@ -257,7 +261,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Game) {
             ));
         }
     }
-    let viewport = game.camera.viewport();
+    let viewport = game.presentation.camera.viewport();
     push_camera_state();
     set_camera(&marker_camera(viewport, scale));
     for (kind, owner, anchor, built, memory, selected, fade) in markers {
@@ -273,7 +277,7 @@ pub(crate) fn draw_buildings(game: &crate::game::Game) {
         {
             continue;
         }
-        let p = game.camera.to_screen(world) / scale;
+        let p = game.presentation.camera.to_screen(world) / scale;
         let opacity = alpha * fade;
         let identity = crate::render::seat_identity_color(game, owner);
         let edge = Color {
@@ -294,14 +298,14 @@ pub(crate) fn draw_buildings(game: &crate::game::Game) {
         if selected {
             draw_poly_lines(p.x, p.y, 8, 13.0, 22.5, 1.4, ink);
         }
-        if game.state.hostile(game.human, owner) {
+        if game.state.hostile(game.presentation.human, owner) {
             draw_triangle(
                 p + vec2(-3.0, 11.0),
                 p + vec2(3.0, 11.0),
                 p + vec2(0.0, 14.0),
                 edge,
             );
-        } else if owner != game.human {
+        } else if owner != game.presentation.human {
             draw_line(p.x - 3.0, p.y + 12.0, p.x + 3.0, p.y + 12.0, 1.4, ink);
         }
     }
@@ -381,33 +385,31 @@ fn building_glyph(kind: oxide_sim::BuildingKind, p: Vec2, ink: Color) {
     }
 }
 
-pub(crate) fn extractor_frame_visible(
-    game: &crate::game::Game,
-    frame: chassis::grid::TilePos,
-) -> bool {
-    let known = game.all_seeing()
+pub(crate) fn extractor_frame_visible(game: &Scene<'_>, frame: chassis::grid::TilePos) -> bool {
+    let known = game.presentation.all_seeing()
         || (0..2).any(|dy| (0..2).any(|dx| game.my_vision().explored(frame.offset(dx, dy))));
-    let claimed = if game.all_seeing() {
+    let claimed = if game.presentation.all_seeing() {
         game.state
             .buildings()
             .iter()
             .any(|building| building.hp > 0 && building.anchor == frame)
     } else {
-        game.state.extractor_frame_claim_known(game.human, frame)
+        game.state
+            .extractor_frame_claim_known(game.presentation.human, frame)
     };
     known && !claimed
 }
 
-pub(crate) fn draw_extractor_frames(game: &crate::game::Game) {
+pub(crate) fn draw_extractor_frames(game: &Scene<'_>) {
     let prefs = prefs();
-    let alpha = marker_alpha(game.camera.zoom);
+    let alpha = marker_alpha(game.presentation.camera.zoom);
     if alpha <= 0.0 {
         return;
     }
     let scale = prefs.scale;
-    let (lo, hi) = game.camera.world_rect();
+    let (lo, hi) = game.presentation.camera.world_rect();
     push_camera_state();
-    set_camera(&marker_camera(game.camera.viewport(), scale));
+    set_camera(&marker_camera(game.presentation.camera.viewport(), scale));
     for &frame in game.state.map().extractor_frames() {
         let pos = vec2(frame.x as f32 + 1.0, frame.y as f32 + 1.0);
         if pos.x < lo.x - 2.0
@@ -418,7 +420,7 @@ pub(crate) fn draw_extractor_frames(game: &crate::game::Game) {
         {
             continue;
         }
-        let p = game.camera.to_screen(pos) / scale;
+        let p = game.presentation.camera.to_screen(pos) / scale;
         let ink = Color::new(0.83, 0.66, 0.36, alpha);
         draw_rectangle(
             p.x - 8.0,
@@ -450,8 +452,8 @@ pub(crate) fn draw_extractor_frames(game: &crate::game::Game) {
     pop_camera_state();
 }
 
-pub(crate) fn known_resource(game: &crate::game::Game, pos: chassis::grid::TilePos) -> u32 {
-    if game.all_seeing() || game.my_vision().visible(pos) {
+pub(crate) fn known_resource(game: &Scene<'_>, pos: chassis::grid::TilePos) -> u32 {
+    if game.presentation.all_seeing() || game.my_vision().visible(pos) {
         game.state
             .map()
             .tile(pos)
@@ -462,19 +464,19 @@ pub(crate) fn known_resource(game: &crate::game::Game, pos: chassis::grid::TileP
             .saturating_add(game.my_vision().remembered_wreck(pos))
     }
 }
-fn resource_marker_opacity(game: &crate::game::Game, pos: chassis::grid::TilePos) -> f32 {
+fn resource_marker_opacity(game: &Scene<'_>, pos: chassis::grid::TilePos) -> f32 {
     let age_opacity = crate::render::resource_memory_opacity(game, pos);
     age_opacity
-        * if game.all_seeing() || game.my_vision().visible(pos) {
+        * if game.presentation.all_seeing() || game.my_vision().visible(pos) {
             1.0
         } else {
             0.4
         }
 }
-pub(crate) fn draw_resources(game: &crate::game::Game) {
+pub(crate) fn draw_resources(game: &Scene<'_>) {
     let p = prefs();
     let opacity = transition(
-        game.camera.zoom,
+        game.presentation.camera.zoom,
         (p.start - 4.0).max(p.end - 1.0),
         p.end - 2.0,
     ) * 0.65;
@@ -482,7 +484,7 @@ pub(crate) fn draw_resources(game: &crate::game::Game) {
         return;
     }
     let mut groups = std::collections::BTreeMap::<(i32, i32), (Vec2, u32, f32)>::new();
-    let (lo, hi) = game.camera.world_rect();
+    let (lo, hi) = game.presentation.camera.world_rect();
     // World-anchored cells keep summaries stable while the camera pans.
     for y in ((lo.y.floor() as i32).div_euclid(4) * 4).max(0)
         ..(((hi.y.ceil() as i32).div_euclid(4) + 1) * 4).min(game.state.map().height())
@@ -504,7 +506,7 @@ pub(crate) fn draw_resources(game: &crate::game::Game) {
         }
     }
     for (_, (sum, count, evidence)) in groups {
-        let p = game.camera.to_screen(sum / count as f32);
+        let p = game.presentation.camera.to_screen(sum / count as f32);
         // Average tile evidence so an old memory cannot dim every live node in a cell.
         let alpha = opacity * evidence / count as f32;
         let scale = prefs().scale;
@@ -539,26 +541,28 @@ mod tests {
         let hidden = TilePos::new(30, 18);
         assert!(!game.my_vision().visible(hidden));
         for (age, expected) in [(0.0, 0.4), (45.0, 0.29), (90.0, 0.18), (900.0, 0.18)] {
-            game.last_seen
+            game.presentation
+                .last_seen
                 .borrow_mut()
-                .insert((hidden.x, hidden.y), game.fx_time() - age);
-            assert!((resource_marker_opacity(&game, hidden) - expected).abs() < 0.0001);
+                .insert((hidden.x, hidden.y), game.presentation.fx_time() - age);
+            assert!((resource_marker_opacity(&game.view(), hidden) - expected).abs() < 0.0001);
             assert!(
-                (resource_marker_opacity(&game, hidden)
-                    - 0.4 * crate::render::resource_memory_opacity(&game, hidden))
+                (resource_marker_opacity(&game.view(), hidden)
+                    - 0.4 * crate::render::resource_memory_opacity(&game.view(), hidden))
                 .abs()
                     < 0.0001
             );
         }
         let visible = TilePos::new(8, 4);
         assert!(game.my_vision().visible(visible));
-        game.last_seen
+        game.presentation
+            .last_seen
             .borrow_mut()
-            .insert((visible.x, visible.y), game.fx_time() - 90.0);
-        assert_eq!(resource_marker_opacity(&game, visible), 1.0);
+            .insert((visible.x, visible.y), game.presentation.fx_time() - 90.0);
+        assert_eq!(resource_marker_opacity(&game.view(), visible), 1.0);
         assert_eq!(
-            game.last_seen.borrow()[&(visible.x, visible.y)],
-            game.fx_time()
+            game.presentation.last_seen.borrow()[&(visible.x, visible.y)],
+            game.presentation.fx_time()
         );
     }
 
@@ -573,10 +577,10 @@ mod tests {
         let far = TilePos::new(30, 18);
         assert!(game.state.map().is_extractor_frame(near));
         assert!(game.state.map().is_extractor_frame(far));
-        assert!(extractor_frame_visible(&game, near));
-        assert!(!extractor_frame_visible(&game, far));
-        game.overlay = true;
-        assert!(extractor_frame_visible(&game, far));
+        assert!(extractor_frame_visible(&game.view(), near));
+        assert!(!extractor_frame_visible(&game.view(), far));
+        game.presentation.overlay = true;
+        assert!(extractor_frame_visible(&game.view(), far));
 
         let mut claimed = scenario;
         for (player, anchor) in [(0, near), (1, far)] {
@@ -588,11 +592,11 @@ mod tests {
             });
         }
         let mut game = crate::game::Game::with_viewport(claimed, vec2(1280.0, 800.0)).unwrap();
-        assert!(!extractor_frame_visible(&game, near));
-        assert!(!extractor_frame_visible(&game, far));
-        game.overlay = true;
-        assert!(!extractor_frame_visible(&game, near));
-        assert!(!extractor_frame_visible(&game, far));
+        assert!(!extractor_frame_visible(&game.view(), near));
+        assert!(!extractor_frame_visible(&game.view(), far));
+        game.presentation.overlay = true;
+        assert!(!extractor_frame_visible(&game.view(), near));
+        assert!(!extractor_frame_visible(&game.view(), far));
     }
 
     #[test]
@@ -628,7 +632,7 @@ mod tests {
             .find(|b| b.kind == oxide_sim::BuildingKind::ScuttleCharge)
             .unwrap();
         assert!(game.my_vision().visible(mine.anchor));
-        assert!(!building_visible(&game, mine));
+        assert!(!building_visible(&game.view(), mine));
     }
     #[test]
     fn earlier_transition_reaches_full_opacity_before_the_old_transition_starts() {
@@ -643,14 +647,17 @@ mod tests {
             serde_json::from_str(include_str!("../../scenarios/skirmish.json")).unwrap();
         let game = crate::game::Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
         for b in game.state.buildings() {
-            assert_eq!(building_visible(&game, b), b.player == game.human);
+            assert_eq!(
+                building_visible(&game.view(), b),
+                b.player == game.presentation.human
+            );
         }
         let mut hidden_nodes = 0;
         for y in 0..game.state.map().height() {
             for x in 0..game.state.map().width() {
                 let p = chassis::grid::TilePos::new(x, y);
                 if !game.my_vision().explored(p) && game.state.map().tile(p).unwrap().scrap > 0 {
-                    assert_eq!(known_resource(&game, p), 0);
+                    assert_eq!(known_resource(&game.view(), p), 0);
                     hidden_nodes += 1;
                 }
             }
@@ -670,14 +677,14 @@ mod tests {
         let scenario: oxide_sim::scenario::Scenario = serde_json::from_str(source).unwrap();
         let mut game =
             crate::game::Game::with_viewport(scenario.clone(), vec2(1280.0, 800.0)).unwrap();
-        assert!(visible(&game, &game.state.units()[0]));
-        assert!(!visible(&game, &game.state.units()[4]));
-        game.overlay = true;
-        assert!(visible(&game, &game.state.units()[4]));
+        assert!(visible(&game.view(), &game.state.units()[0]));
+        assert!(!visible(&game.view(), &game.state.units()[4]));
+        game.presentation.overlay = true;
+        assert!(visible(&game.view(), &game.state.units()[4]));
         let mut nearby = scenario;
         nearby.units[4].x = 10;
         nearby.units[4].y = 9;
         let game = crate::game::Game::with_viewport(nearby, vec2(1280.0, 800.0)).unwrap();
-        assert!(visible(&game, &game.state.units()[4]));
+        assert!(visible(&game.view(), &game.state.units()[4]));
     }
 }
