@@ -1802,7 +1802,10 @@ mod tests {
             value: StrategicValue::Material,
             urgency: Urgency::Timely,
         };
-        obs.visible[(anchor.y * obs.map_width + anchor.x) as usize] = true;
+        {
+            let obs = &mut *obs;
+            obs.visible[(anchor.y * obs.map_width + anchor.x) as usize] = true;
+        }
         let mut building = obs.my_buildings[0].clone();
         building.player = PlayerId(1);
         building.anchor = anchor;
@@ -1811,7 +1814,10 @@ mod tests {
         assert!(!policy.recon_answered(&obs, &question));
         for dy in 0..9 {
             for dx in 0..9 {
-                obs.visible[((anchor.y + dy) * obs.map_width + anchor.x + dx) as usize] = true;
+                {
+                    let obs = &mut *obs;
+                    obs.visible[((anchor.y + dy) * obs.map_width + anchor.x + dx) as usize] = true;
+                }
             }
         }
         assert!(policy.recon_answered(&obs, &question));
@@ -2175,17 +2181,26 @@ mod tests {
         );
         let tiles: Vec<_> = UtilityPolicy::contested_region_tiles(&obs, center).collect();
         for tile in &tiles {
-            obs.visible[(tile.y * obs.map_width + tile.x) as usize] = true;
+            {
+                let obs = &mut *obs;
+                obs.visible[(tile.y * obs.map_width + tile.x) as usize] = true;
+            }
         }
         let last = *tiles.last().unwrap();
-        obs.visible[(last.y * obs.map_width + last.x) as usize] = false;
+        {
+            let obs = &mut *obs;
+            obs.visible[(last.y * obs.map_width + last.x) as usize] = false;
+        }
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
         assert!(
             policy.harvest_location_contested(center),
             "partial negative evidence cannot end a sweep"
         );
-        obs.visible[(last.y * obs.map_width + last.x) as usize] = true;
+        {
+            let obs = &mut *obs;
+            obs.visible[(last.y * obs.map_width + last.x) as usize] = true;
+        }
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
         assert!(!policy.harvest_location_contested(center));
@@ -2195,7 +2210,10 @@ mod tests {
     fn partial_negative_evidence_and_permuted_inputs_preserve_question_identity() {
         let (mut obs, map, profile) = fixture();
         let tile = map.starting_foundries()[0].anchor;
-        obs.visible[(tile.y * obs.map_width + tile.x) as usize] = true;
+        {
+            let obs = &mut *obs;
+            obs.visible[(tile.y * obs.map_width + tile.x) as usize] = true;
+        }
         let mut policy = UtilityPolicy::new();
         let before = proposals(&mut policy, &obs, &map, &profile);
         assert!(
@@ -2209,7 +2227,10 @@ mod tests {
         let size = BuildingKind::Foundry.base_stats().size;
         for dy in 0..size.1 {
             for dx in 0..size.0 {
-                obs.visible[((tile.y + dy) * obs.map_width + tile.x + dx) as usize] = true;
+                {
+                    let obs = &mut *obs;
+                    obs.visible[((tile.y + dy) * obs.map_width + tile.x + dx) as usize] = true;
+                }
             }
         }
         obs.tick += 24;
@@ -2226,17 +2247,20 @@ mod tests {
         let scout = obs.my_units[0].clone();
         obs.my_units.clear();
         let factory = BuildingId(10);
-        obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: factory,
-            player: obs.me,
-            kind: BuildingKind::Airworks,
-            anchor: TilePos::new(6, 13),
-            hp: BuildingKind::Airworks.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.push(BuildingObs {
+                provisional: false,
+                id: factory,
+                player: obs.me,
+                kind: BuildingKind::Airworks,
+                anchor: TilePos::new(6, 13),
+                hp: BuildingKind::Airworks.base_stats().max_hp,
+                built: true,
+                seen: true,
+                tier: 0,
+            });
+        }
         obs.my_queues
             .push(vec![UnitKind::Kestrel, UnitKind::Kestrel]);
         obs.my_queue_progress.push(0);
@@ -2382,17 +2406,20 @@ mod tests {
         obs.my_units.clear();
         obs.tick = crate::stats::FOUNDRY_DRIP_START_TICK;
         obs.scrap = UnitKind::Kestrel.stats().cost - 5;
-        obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(10),
-            player: obs.me,
-            kind: BuildingKind::Airworks,
-            anchor: TilePos::new(6, 13),
-            hp: BuildingKind::Airworks.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.push(BuildingObs {
+                provisional: false,
+                id: BuildingId(10),
+                player: obs.me,
+                kind: BuildingKind::Airworks,
+                anchor: TilePos::new(6, 13),
+                hp: BuildingKind::Airworks.base_stats().max_hp,
+                built: true,
+                seen: true,
+                tier: 0,
+            });
+        }
         obs.my_queues.push(vec![]);
         obs.my_queue_progress.push(0);
         let mut policy = UtilityPolicy::new();

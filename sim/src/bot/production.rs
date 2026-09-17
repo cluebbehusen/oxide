@@ -1,6 +1,8 @@
 //! Immediate queue capacity after already-staged commands.
 
 use super::{Intent, Observation, resources::ProducerLaneReservations};
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::{
     ids::BuildingId,
     stats::{BuildingKind, QUEUE_CAP, UnitKind},
@@ -101,13 +103,13 @@ mod tests {
     use chassis::grid::TilePos;
 
     fn observation() -> Observation {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             map_width: 48,
             map_height: 24,
             visible: vec![true; 48 * 24],
             explored: vec![true; 48 * 24],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         obs.my_buildings = [7, 3]
             .into_iter()
             .map(|id| BuildingObs {

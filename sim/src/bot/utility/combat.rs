@@ -1,6 +1,8 @@
 //! Air raids, scouting, and ground-army strategy.
 
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 mod missions;
 use crate::bot::intelligence::MAX_CONFIDENCE;
@@ -1700,7 +1702,7 @@ mod tests {
             issued: None,
             bounces: 0,
         };
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             tick: 20_000,
             map_width: 40,
             map_height: 24,
@@ -1711,8 +1713,8 @@ mod tests {
             ],
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         (obs, army)
     }
 
@@ -1883,14 +1885,14 @@ mod tests {
     }
 
     fn mission_fixture() -> (Observation, Vec<Army>, UtilityPolicy, Dials, MissionFixture) {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 1200,
             map_width: 64,
             map_height: 32,
             visible: vec![true; 2048],
             explored: vec![true; 2048],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         obs.my_buildings = vec![
             own_foundry(1, TilePos::new(3, 3)),
             own_foundry(2, TilePos::new(28, 3)),
@@ -4297,7 +4299,7 @@ mod tests {
             issued: None,
             bounces: 0,
         };
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 4_200,
             map_width: 40,
             map_height: 24,
@@ -4313,8 +4315,8 @@ mod tests {
             ],
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut dials = Dials::full();
         dials.army_size = 5;
 
@@ -4417,8 +4419,11 @@ mod tests {
             "threat selection must not depend on observation order"
         );
 
-        for unit in &obs.enemy_units {
-            obs.visible[(unit.tile.y * obs.map_width + unit.tile.x) as usize] = false;
+        {
+            let obs = &mut *obs;
+            for unit in &obs.enemy_units {
+                obs.visible[(unit.tile.y * obs.map_width + unit.tile.x) as usize] = false;
+            }
         }
         let hidden_intents = defend(&obs, &coherent);
         assert!(
@@ -4451,7 +4456,7 @@ mod tests {
             issued: None,
             bounces: 0,
         };
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 4_200,
             map_width: 40,
             map_height: 24,
@@ -4460,8 +4465,8 @@ mod tests {
             my_queues: vec![Vec::new(), Vec::new()],
             visible: vec![true; 40 * 24],
             explored: vec![true; 40 * 24],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let mut dials = Dials::full();
         dials.army_size = 5;
         let defend = |observation: &Observation| {
@@ -4526,7 +4531,11 @@ mod tests {
 
         let avalanche = TilePos::new(35, 13);
         obs.enemy_units = vec![hostile(20, UnitKind::Avalanche, avalanche)];
-        obs.visible[usize::try_from(avalanche.y * obs.map_width + avalanche.x).unwrap()] = false;
+        {
+            let obs = &mut *obs;
+            obs.visible[usize::try_from(avalanche.y * obs.map_width + avalanche.x).unwrap()] =
+                false;
+        }
         assert_eq!(
             push_target(&defend(&obs)),
             None,
@@ -4688,17 +4697,19 @@ mod tests {
             };
             (units, army)
         };
-        let observation = |units: Vec<UnitObs>, enemy_units: Vec<UnitObs>| Observation {
-            tick: 4_200,
-            map_width: 40,
-            map_height: 24,
-            my_units: units,
-            my_buildings: vec![own_foundry(0, home), own_foundry(1, expansion)],
-            my_queues: vec![Vec::new(), Vec::new()],
-            enemy_units,
-            visible: vec![true; 40 * 24],
-            explored: vec![true; 40 * 24],
-            ..Observation::default()
+        let observation = |units: Vec<UnitObs>, enemy_units: Vec<UnitObs>| {
+            Observation::from_data(ObservationData {
+                tick: 4_200,
+                map_width: 40,
+                map_height: 24,
+                my_units: units,
+                my_buildings: vec![own_foundry(0, home), own_foundry(1, expansion)],
+                my_queues: vec![Vec::new(), Vec::new()],
+                enemy_units,
+                visible: vec![true; 40 * 24],
+                explored: vec![true; 40 * 24],
+                ..Default::default()
+            })
         };
         let mut dials = Dials::full();
         dials.army_size = 5;

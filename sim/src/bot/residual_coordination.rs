@@ -18,6 +18,8 @@ use super::strategy::{AirOperationPhase, StrategicDecision, StrategicPlanner};
 use super::team::TeamReliefAdmission;
 use super::team::TeamReliefPlanner;
 use super::utility::combat_core_status;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::ids::UnitId;
 use chassis::grid::TilePos;
 
@@ -773,15 +775,15 @@ mod tests {
 
     fn open_observation(width: i32, height: i32) -> Observation {
         let tile_count = usize::try_from(width.saturating_mul(height)).expect("the map fits usize");
-        Observation {
+        Observation::from_data(ObservationData {
             me: PlayerId(0),
             map_width: width,
             map_height: height,
             visible: vec![true; tile_count],
             explored: vec![true; tile_count],
             faction: Faction::Ferrous,
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn unit(id: u32, player: u8, kind: UnitKind, tile: TilePos) -> UnitObs {

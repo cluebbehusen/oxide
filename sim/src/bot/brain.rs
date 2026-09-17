@@ -47,6 +47,8 @@ use super::trace::{
     UtilityTrace, bounded_count, channel_effects, connected_force_trace,
 };
 use super::utility::{Dials, StrategicUtilityContext, UtilityPolicy, combat_core_status};
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{PlayerId, UnitId};
 use crate::scenario::BotConfig;
@@ -9528,7 +9530,7 @@ mod tests {
     }
 
     fn test_island_observation() -> Observation {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 0,
             map_width: 64,
             map_height: 32,
@@ -9536,8 +9538,8 @@ mod tests {
             visible: vec![true; 64 * 32],
             explored: vec![true; 64 * 32],
             known_rock: (0..32).map(|y| TilePos::new(32, y)).collect(),
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         obs.my_buildings.push(test_building(
             1,
             0,

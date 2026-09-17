@@ -2,6 +2,7 @@
 //! driven through the public API.
 
 use chassis::grid::TilePos;
+use oxide_sim::bot::observation::ObservationData;
 use oxide_sim::bot::{
     ArmyState, Brain, Executive, Intent, Observation, PublicMapBriefing, Specialty,
 };
@@ -1371,38 +1372,40 @@ fn wounded_members_rotate_and_repaired_units_return_to_the_draft() {
     use oxide_sim::bot::UnitObs;
 
     let me = PlayerId(0);
-    let obs_with = |units: Vec<UnitObs>| Observation {
-        version: oxide_sim::bot::observation::OBSERVATION_VERSION,
-        tick: 0,
-        me,
-        scrap: 0,
-        map_width: 24,
-        map_height: 13,
-        my_units: units,
-        my_carried_units: Vec::new(),
-        my_buildings: Vec::new(),
-        my_queues: Vec::new(),
-        my_queue_progress: Vec::new(),
-        my_queued_units: Vec::new(),
-        my_repair_targets: Vec::new(),
-        ally_units: Vec::new(),
-        ally_buildings: Vec::new(),
-        enemy_units: Vec::new(),
-        enemy_buildings: Vec::new(),
-        visible: vec![true; 24 * 13],
-        explored: vec![true; 24 * 13],
-        known_scrap: Vec::new(),
-        known_rock: Vec::new(),
-        known_pits: Vec::new(),
-        known_frames: Vec::new(),
-        known_peaks: Vec::new(),
-        known_wrecks: Vec::new(),
-        salvage_incidents: Vec::new(),
-        blips: Vec::new(),
-        contact_tracks: Vec::new(),
-        faction: oxide_sim::Faction::Ferrous,
-        my_shells: 0,
-        incoming_shells: Vec::new(),
+    let obs_with = |units: Vec<UnitObs>| {
+        Observation::from_data(ObservationData {
+            version: oxide_sim::bot::observation::OBSERVATION_VERSION,
+            tick: 0,
+            me,
+            scrap: 0,
+            map_width: 24,
+            map_height: 13,
+            my_units: units,
+            my_carried_units: Vec::new(),
+            my_buildings: Vec::new(),
+            my_queues: Vec::new(),
+            my_queue_progress: Vec::new(),
+            my_queued_units: Vec::new(),
+            my_repair_targets: Vec::new(),
+            ally_units: Vec::new(),
+            ally_buildings: Vec::new(),
+            enemy_units: Vec::new(),
+            enemy_buildings: Vec::new(),
+            visible: vec![true; 24 * 13],
+            explored: vec![true; 24 * 13],
+            known_scrap: Vec::new(),
+            known_rock: Vec::new(),
+            known_pits: Vec::new(),
+            known_frames: Vec::new(),
+            known_peaks: Vec::new(),
+            known_wrecks: Vec::new(),
+            salvage_incidents: Vec::new(),
+            blips: Vec::new(),
+            contact_tracks: Vec::new(),
+            faction: oxide_sim::Faction::Ferrous,
+            my_shells: 0,
+            incoming_shells: Vec::new(),
+        })
     };
     let sentinel = |id: u32, player: u8, x: i32, y: i32, hp: u32| UnitObs {
         id: UnitId(id),

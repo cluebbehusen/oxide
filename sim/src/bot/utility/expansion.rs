@@ -1,5 +1,7 @@
 //! Pure economic and security quotes for player-facing Foundry expansion.
 
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use chassis::grid::TilePos;
 use core::cmp::Reverse;
@@ -1834,15 +1836,15 @@ mod tests {
 
     fn observed_map(width: i32, height: i32, home: TilePos) -> Observation {
         let cells = usize::try_from(width * height).expect("small test map");
-        Observation {
+        Observation::from_data(ObservationData {
             map_width: width,
             map_height: height,
             my_buildings: vec![building(0, 0, BuildingKind::Foundry, home)],
             my_queues: vec![Vec::new()],
             visible: vec![true; cells],
             explored: vec![true; cells],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn expansion_plan(anchor: TilePos, current_scrap_credit: u64) -> FoundryExpansionPlan {

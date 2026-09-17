@@ -3240,18 +3240,24 @@ mod tests {
     fn coverage_batch_preserves_repeated_paths_and_asset_masks() {
         let map = PublicMapBriefing::from_scenario(&scenario_with(|_| '.')).unwrap();
         let mut obs = observation(PlayerId(0), LEFT_HOME);
-        obs.my_buildings.push(building(
-            8,
-            obs.me,
-            BuildingKind::Turret,
-            TilePos::new(9, 8),
-        ));
-        obs.my_buildings.push(building(
-            9,
-            obs.me,
-            BuildingKind::Bastion,
-            TilePos::new(8, 12),
-        ));
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.push(building(
+                8,
+                obs.me,
+                BuildingKind::Turret,
+                TilePos::new(9, 8),
+            ));
+        }
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.push(building(
+                9,
+                obs.me,
+                BuildingKind::Bastion,
+                TilePos::new(8, 12),
+            ));
+        }
         let mut planned = building(10, obs.me, BuildingKind::Turret, TilePos::new(11, 8));
         planned.built = false;
         obs.my_buildings.push(planned);
@@ -3325,12 +3331,15 @@ mod tests {
             for defended in [false, true] {
                 let mut obs = observation(PlayerId(0), LEFT_HOME);
                 if defended {
-                    obs.my_buildings.push(building(
-                        8,
-                        obs.me,
-                        BuildingKind::Turret,
-                        TilePos::new(9, 8),
-                    ));
+                    {
+                        let obs = &mut *obs;
+                        obs.my_buildings.push(building(
+                            8,
+                            obs.me,
+                            BuildingKind::Turret,
+                            TilePos::new(9, 8),
+                        ));
+                    }
                     let mut planned =
                         building(9, obs.me, BuildingKind::Bastion, TilePos::new(8, 12));
                     planned.built = false;

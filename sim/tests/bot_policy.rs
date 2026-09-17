@@ -1,6 +1,7 @@
 //! Utility-policy contracts: deterministic thinking and budget honesty.
 
 use chassis::grid::TilePos;
+use oxide_sim::bot::observation::ObservationData;
 use oxide_sim::bot::trace::{
     ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace,
 };
@@ -85,7 +86,7 @@ fn construction_observation(scrap: u32) -> Observation {
             TilePos::new(7 + i32::try_from(offset).unwrap(), 14),
         )
     }));
-    Observation {
+    Observation::from_data(ObservationData {
         version: oxide_sim::bot::observation::OBSERVATION_VERSION,
         tick: 2_016,
         me: PlayerId(0),
@@ -117,7 +118,7 @@ fn construction_observation(scrap: u32) -> Observation {
         faction: Faction::Ferrous,
         my_shells: 0,
         incoming_shells: Vec::new(),
-    }
+    })
 }
 
 fn public_map(obs: &Observation) -> PublicMapBriefing {
@@ -1655,7 +1656,10 @@ fn projected_support_and_unknown_routes_do_not_create_duplicate_foundry_claims()
     obs.my_buildings.pop();
     obs.my_queues.pop();
     for y in 0..obs.map_height {
-        obs.explored[usize::try_from(y * obs.map_width + 20).unwrap()] = false;
+        {
+            let obs = &mut *obs;
+            obs.explored[usize::try_from(y * obs.map_width + 20).unwrap()] = false;
+        }
     }
     let unknown_route = player_facing_intents(&dials, &obs);
     assert!(

@@ -3,6 +3,8 @@ use crate::bot::experience::{
     Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, Outcome, OutcomeJournal,
     OutcomeReason,
 };
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::ids::Target;
 use chassis::Tick;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +21,7 @@ mod tests {
     use super::*;
 
     fn observation() -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 100,
             map_width: 30,
             map_height: 20,
@@ -43,8 +45,8 @@ mod tests {
                 repairing: false,
                 grounded: false,
             }],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -199,17 +201,20 @@ mod tests {
         policy.observe_work_experience(&obs);
         policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
         obs.tick = 124;
-        obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(8),
-            player: obs.me,
-            kind: BuildingKind::Fabricator,
-            anchor: site,
-            hp: 10,
-            built: false,
-            seen: true,
-            tier: 0,
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_buildings.push(BuildingObs {
+                provisional: false,
+                id: BuildingId(8),
+                player: obs.me,
+                kind: BuildingKind::Fabricator,
+                anchor: site,
+                hp: 10,
+                built: false,
+                seen: true,
+                tier: 0,
+            });
+        }
         policy.observe_work_experience(&obs);
         assert!(policy.state.work_experience.builds.is_empty());
         assert_eq!(policy.state.work_experience.foundations.len(), 1);

@@ -2,6 +2,8 @@
 
 use super::armies::{is_artillery, march, vanguard_centroid};
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 
 impl Executive {
@@ -1013,7 +1015,7 @@ mod tests {
         let target = TilePos::new(19, 9);
         let mut units: Vec<_> = (1..=6).map(|id| fighter(id, target, false)).collect();
         units.extend((100..=104).map(|id| fighter(id, TilePos::new(4, 4), true)));
-        let observation = Observation {
+        let observation = Observation::from_data(ObservationData {
             version: OBSERVATION_VERSION,
             tick: 200_000,
             me: PlayerId(0),
@@ -1045,7 +1047,7 @@ mod tests {
             faction: Faction::Ferrous,
             my_shells: 0,
             incoming_shells: Vec::new(),
-        };
+        });
         let executive = Executive {
             armies: vec![Army {
                 id: ArmyId(7),
@@ -1382,17 +1384,20 @@ mod tests {
             (true, true, true),
         ] {
             let (mut obs, mut executive) = target_holding_position();
-            obs.my_buildings.push(BuildingObs {
-                provisional: false,
-                id: BuildingId(900),
-                player: obs.me,
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(20, 8),
-                hp: 100,
-                built: true,
-                seen: true,
-                tier: 0,
-            });
+            {
+                let obs = &mut *obs;
+                obs.my_buildings.push(BuildingObs {
+                    provisional: false,
+                    id: BuildingId(900),
+                    player: obs.me,
+                    kind: BuildingKind::Foundry,
+                    anchor: TilePos::new(20, 8),
+                    hp: 100,
+                    built: true,
+                    seen: true,
+                    tier: 0,
+                });
+            }
             let mut mission = ArmyMission {
                 purpose: ArmyPurpose::Defend(BuildingId(900)),
                 goal: TilePos::new(19, 9),
@@ -1576,7 +1581,7 @@ mod tests {
         let expansion = TilePos::new(31, 17);
         let mut units: Vec<_> = (1..=5).map(|id| fighter(id, home, false)).collect();
         units.push(fighter(100, expansion, true));
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             version: OBSERVATION_VERSION,
             tick: 20_000,
             me: PlayerId(0),
@@ -1608,7 +1613,7 @@ mod tests {
             faction: Faction::Ferrous,
             my_shells: 0,
             incoming_shells: Vec::new(),
-        };
+        });
         let mut executive = Executive {
             armies: vec![Army {
                 id: ArmyId(7),

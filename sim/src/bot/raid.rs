@@ -10,6 +10,8 @@ use super::navigation::commands::{RouteProjection, first_reachable_group};
 use super::observation::{Observation, UnitObs};
 use super::profile::ResolvedProfile;
 use super::strategy::StrategicDecision;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::scenario::BotStance;
@@ -756,7 +758,7 @@ mod tests {
         let tick = super::super::difficulty::strategic_admission_at_or_after(tick);
         let mut visible = vec![false; 24 * 16];
         visible[(TARGET.y as usize) * 24 + TARGET.x as usize] = true;
-        Observation {
+        Observation::from_data(ObservationData {
             tick,
             map_width: 24,
             map_height: 16,
@@ -767,8 +769,8 @@ mod tests {
             enemy_units: vec![unit(80, 1, UnitKind::Harvester, TARGET)],
             visible,
             explored: vec![true; 24 * 16],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     #[test]

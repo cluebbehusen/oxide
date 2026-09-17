@@ -12,6 +12,8 @@ use super::observation::{BuildingObs, Observation, UnitObs};
 use super::profile::ResolvedProfile;
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::stats::{BuildingKind, Domain};
@@ -931,7 +933,7 @@ mod tests {
                 visible[y * 40 + x] = true;
             }
         }
-        Observation {
+        Observation::from_data(ObservationData {
             tick,
             map_width: 40,
             map_height: 24,
@@ -945,8 +947,8 @@ mod tests {
             )],
             visible,
             explored: vec![true; 40 * 24],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn building(id: u32, player: PlayerId, anchor: TilePos) -> BuildingObs {

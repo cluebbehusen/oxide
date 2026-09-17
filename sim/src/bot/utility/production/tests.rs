@@ -1,10 +1,12 @@
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::observation::{BuildingObs, UnitObs};
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::Faction;
 
 fn observation() -> Observation {
-    Observation {
+    Observation::from_data(ObservationData {
         tick: 200,
         scrap: 20_000,
         faction: Faction::Ferrous,
@@ -12,8 +14,8 @@ fn observation() -> Observation {
         map_height: 14,
         visible: vec![true; 24 * 14],
         explored: vec![true; 24 * 14],
-        ..Observation::default()
-    }
+        ..Default::default()
+    })
 }
 
 fn building(id: u32, kind: BuildingKind) -> BuildingObs {

@@ -9,6 +9,8 @@ use crate::bot::allocation::{
 };
 use crate::bot::intelligence::StrategicIntelligence;
 use crate::bot::navigation::service::ServiceRoutes;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::orient::Orientation;
 use crate::bot::query_work::QueryPurpose;
 use crate::bot::resources::ProducerEgress;
@@ -879,7 +881,7 @@ mod tests {
     }
 
     fn fixture() -> (Observation, PublicMapBriefing, ResolvedProfile) {
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             tick: 120,
             scrap: 1_000,
             map_width: 40,
@@ -890,8 +892,8 @@ mod tests {
             my_units: vec![worker(1, TilePos::new(8, 12))],
             my_queues: vec![Vec::new()],
             my_queue_progress: vec![0],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let map = PublicMapBriefing {
             regions: Default::default(),
             map_width: 40,
@@ -955,8 +957,14 @@ mod tests {
             .push(building(2, BuildingKind::Fabricator, TilePos::new(8, 5)));
         obs.my_buildings
             .push(building(3, BuildingKind::Crucible, TilePos::new(12, 5)));
-        obs.my_queues.resize(obs.my_buildings.len(), Vec::new());
-        obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        {
+            let obs = &mut *obs;
+            obs.my_queues.resize(obs.my_buildings.len(), Vec::new());
+        }
+        {
+            let obs = &mut *obs;
+            obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        }
         let mut target = building(90, BuildingKind::Foundry, TilePos::new(30, 12));
         target.player = PlayerId(1);
         obs.enemy_buildings.push(target);
@@ -1788,7 +1796,11 @@ mod tests {
         for frame in cluster.iter().skip(1) {
             for dy in 0..2 {
                 for dx in 0..2 {
-                    obs.explored[((frame.y + dy) * obs.map_width + frame.x + dx) as usize] = false;
+                    {
+                        let obs = &mut *obs;
+                        obs.explored[((frame.y + dy) * obs.map_width + frame.x + dx) as usize] =
+                            false;
+                    }
                 }
             }
         }
@@ -2365,8 +2377,14 @@ mod tests {
             building(3, BuildingKind::Crucible, TilePos::new(12, 5)),
             building(4, BuildingKind::Reclaimer, TilePos::new(2, 23)),
         ]);
-        obs.my_queues.resize(obs.my_buildings.len(), vec![]);
-        obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        {
+            let obs = &mut *obs;
+            obs.my_queues.resize(obs.my_buildings.len(), vec![]);
+        }
+        {
+            let obs = &mut *obs;
+            obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        }
         let mut target = building(90, BuildingKind::Foundry, TilePos::new(30, 12));
         target.player = PlayerId(1);
         obs.enemy_buildings.push(target);

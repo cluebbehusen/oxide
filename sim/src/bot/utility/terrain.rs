@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::bot::navigation::egress::GroundEgressCache;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 
 type PlannedFootprint = (BuildingKind, TilePos);
@@ -558,14 +560,14 @@ mod tests {
     fn observation() -> Observation {
         let width = 18;
         let height = 14;
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 0,
             map_width: width,
             map_height: height,
             visible: vec![true; (width * height) as usize],
             explored: vec![true; (width * height) as usize],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         add_building(&mut obs, BuildingKind::Foundry, TilePos::new(7, 5));
         obs
     }
@@ -665,22 +667,25 @@ mod tests {
             BuildingKind::Fabricator,
             anchor
         ));
-        obs.my_units.push(UnitObs {
-            id: UnitId(70),
-            player: obs.me,
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(12, 10),
-            hp: 60,
-            idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: Some((BuildingKind::Fabricator, anchor)),
-            repairing: false,
-            grounded: false,
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_units.push(UnitObs {
+                id: UnitId(70),
+                player: obs.me,
+                kind: UnitKind::Harvester,
+                tile: TilePos::new(12, 10),
+                hp: 60,
+                idle: false,
+                carrying: 0,
+                harvesting: None,
+                cargo: 0,
+                site: None,
+                salvaging: None,
+                founding: Some((BuildingKind::Fabricator, anchor)),
+                repairing: false,
+                grounded: false,
+            });
+        }
         assert!(!placement_valid(
             &policy,
             &obs,
@@ -730,7 +735,10 @@ mod tests {
         obs.my_units[0].site = Some(obs.my_buildings[0].id);
         assert!(!cancellations.builder_is_free(&obs, &obs.my_units[0]));
         obs.my_units[0].site = None;
-        obs.my_queued_units.push(obs.my_units[0].id);
+        {
+            let obs = &mut *obs;
+            obs.my_queued_units.push(obs.my_units[0].id);
+        }
         assert!(!cancellations.builder_is_free(&obs, &obs.my_units[0]));
     }
 
@@ -741,22 +749,25 @@ mod tests {
         let work = TilePos::new(10, 6);
         add_building(&mut obs, BuildingKind::Reclaimer, site);
         obs.my_buildings[1].built = false;
-        obs.my_units.push(UnitObs {
-            id: UnitId(70),
-            player: obs.me,
-            kind: UnitKind::Harvester,
-            tile: work,
-            hp: 60,
-            idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: Some(obs.my_buildings[1].id),
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        });
+        {
+            let obs = &mut *obs;
+            obs.my_units.push(UnitObs {
+                id: UnitId(70),
+                player: obs.me,
+                kind: UnitKind::Harvester,
+                tile: work,
+                hp: 60,
+                idle: false,
+                carrying: 0,
+                harvesting: None,
+                cargo: 0,
+                site: Some(obs.my_buildings[1].id),
+                salvaging: None,
+                founding: None,
+                repairing: false,
+                grounded: false,
+            });
+        }
         let unobserved = UtilityPolicy::new();
         assert!(placement_valid(
             &unobserved,

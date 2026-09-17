@@ -1,5 +1,7 @@
 //! Construction, repair, upgrade, and salvage decisions.
 
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 mod foundry_commitment;
 mod foundry_planning;
@@ -1597,7 +1599,7 @@ mod tests {
     const HOME: TilePos = TilePos::new(4, 10);
 
     fn observation() -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 0,
             scrap: 10_000,
             map_width: 40,
@@ -1609,8 +1611,8 @@ mod tests {
             explored: vec![true; 40 * 24],
             known_scrap: vec![(TilePos::new(10, 10), 200)],
             known_rock: Vec::new(),
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn harvester(id: u32, tile: TilePos, founding: Option<(BuildingKind, TilePos)>) -> UnitObs {
@@ -2772,9 +2774,12 @@ mod tests {
         interrupted
             .my_buildings
             .retain(|building| building.kind != BuildingKind::Reclaimer);
-        interrupted
-            .my_queues
-            .truncate(interrupted.my_buildings.len());
+        {
+            let interrupted = &mut *interrupted;
+            interrupted
+                .my_queues
+                .truncate(interrupted.my_buildings.len());
+        }
         let interrupted_resources = ResourceSnapshot::from_observation(&interrupted);
         let blocked = policy
             .validated_foundry_obligation(&interrupted, &interrupted_resources, true, 0)
@@ -4357,8 +4362,11 @@ mod tests {
 
         let mut partially_unknown = ready.clone();
         let unknown = frame.offset(1, 1);
-        partially_unknown.explored
-            [(unknown.y * partially_unknown.map_width + unknown.x) as usize] = false;
+        {
+            let partially_unknown = &mut *partially_unknown;
+            partially_unknown.explored
+                [(unknown.y * partially_unknown.map_width + unknown.x) as usize] = false;
+        }
         assert!(!has_supported_restoration(
             &policy,
             &partially_unknown,

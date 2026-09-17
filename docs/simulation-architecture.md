@@ -1395,11 +1395,23 @@ searches, including their scratch storage, cache invalidation, and retention.
 Command projection preserves orientation, goal spreading, and Build doorstep
 selection. Service connectivity, safe travel costs, work-distance queries, and
 producer-exit certificates retain answers within their navigation contexts.
-Route projections build dense passability directly from sparse known obstacles
-and public terrain. Exact component labels can be shared across projections with
-identical dimensions and complete passability masks. Each worker retains at most
-sixteen such masks and 4 MiB of mask/label payloads. Cache hits and eviction
-affect CPU cost only; they never change work allowances or yield points.
+
+Each `Observation` owns lazily prepared navigation inputs. Its serialized
+`ObservationData` remains player knowledge only; derived inputs do not affect
+serialization or equality. Unmodified clones share preparation. Mutable access
+invalidates it before exposing the data, including same-tick hypothetical edits
+and orientation transforms. Ground and air surfaces, with and without public
+terrain, share their component labels and command-frame masks across consumers.
+Exploration restrictions have separate derived masks; danger and hypothetical
+footprints remain query overlays. Search scratch remains query- or worker-owned.
+Alternate public briefings and command orientations are checked against exact
+inputs and cannot reuse an incompatible surface.
+
+Exact component labels can also be shared across observations with identical
+dimensions and complete passability masks. Each worker retains at most sixteen
+such masks and 4 MiB of mask/label payloads. Cache hits and eviction affect CPU
+cost only; they never change work allowances or yield points.
+
 Emergency detection first excludes threat/asset pairs beyond its local radius,
 including weapon standoff range, and stops after its first qualifying approach.
 Distant threats do not require full routes to prove they are not local

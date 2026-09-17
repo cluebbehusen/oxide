@@ -10,6 +10,8 @@ use super::resources::ProducerLaneReservations;
 use super::resources::ResourceSnapshot;
 use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::stats::{BuildingKind, Domain, UnitKind};
@@ -2826,8 +2828,11 @@ mod tests {
         obs.my_queues.clear();
         obs.my_units.clear();
         let home = TilePos::new(10, 15);
-        obs.known_rock
-            .extend((0..obs.map_height).map(|y| TilePos::new(home.x, y)));
+        {
+            let obs = &mut *obs;
+            obs.known_rock
+                .extend((0..obs.map_height).map(|y| TilePos::new(home.x, y)));
+        }
         obs.known_rock.sort_unstable_by_key(|tile| (tile.y, tile.x));
         obs.known_rock.dedup();
         obs.my_units.extend((1..=8).map(|id| {
@@ -6243,7 +6248,7 @@ mod tests {
     }
 
     fn island_obs() -> Observation {
-        let mut obs = Observation {
+        let mut obs = Observation::from_data(ObservationData {
             tick: 0,
             map_width: 64,
             map_height: 32,
@@ -6251,8 +6256,8 @@ mod tests {
             visible: vec![true; 64 * 32],
             explored: vec![true; 64 * 32],
             known_rock: (0..32).map(|y| TilePos::new(32, y)).collect(),
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         obs.my_buildings
             .push(building(1, 0, BuildingKind::Foundry, HOME.offset(-1, -1)));
         obs.my_queues.push(Vec::new());
@@ -6272,8 +6277,11 @@ mod tests {
 
     fn split_staging_obs(pocket_count: u32, strong_count: u32) -> Observation {
         let mut obs = island_obs();
-        obs.known_rock
-            .extend((0..obs.map_height).map(|y| TilePos::new(HOME.x, y)));
+        {
+            let obs = &mut *obs;
+            obs.known_rock
+                .extend((0..obs.map_height).map(|y| TilePos::new(HOME.x, y)));
+        }
         obs.known_rock.sort_unstable_by_key(|tile| (tile.y, tile.x));
         obs.known_rock.dedup();
         obs.my_units.extend((1..=pocket_count).map(|id| {

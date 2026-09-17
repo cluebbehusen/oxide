@@ -1,6 +1,8 @@
 //! Fog-honest projection of movement-command routing.
 
 use crate::bot::PublicMapBriefing;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::observation::{BuildingObs, Observation, UnitObs};
 use crate::bot::orient::Orientation;
 use crate::bot::query_work::QueryPurpose;
@@ -30,8 +32,8 @@ pub(in crate::bot) struct RouteProjection<'a> {
     blocked_tiles: Vec<bool>,
     has_blocked_tiles: bool,
     labels: std::cell::OnceCell<std::sync::Arc<[u32]>>,
-    domain_open: Vec<bool>,
-    command_surface: std::cell::OnceCell<Vec<bool>>,
+    surface: std::sync::Arc<super::inputs::Surface>,
+    command_surface: std::cell::OnceCell<std::sync::Arc<[bool]>>,
 }
 
 /// Exact route geometry for retaining derived service evidence across observations.
@@ -50,56 +52,6 @@ impl<'a> RouteProjection<'a> {
         obs: &'a Observation,
         domain: Domain,
     ) -> Self {
-        let cells = usize::try_from(obs.map_width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(obs.map_height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
-        crate::bot::query_work::record(
-            query_purpose,
-            crate::bot::query_work::QueryOperation::PrepareSurface,
-            cells,
-        );
-        let mut domain_open = vec![true; cells];
-        if domain == Domain::Ground {
-            let mut block = |tile: TilePos| {
-                if in_bounds(obs, tile) {
-                    domain_open[(tile.y * obs.map_width + tile.x) as usize] = false;
-                }
-            };
-            for tile in obs
-                .known_rock
-                .iter()
-                .copied()
-                .chain(obs.known_scrap.iter().map(|(tile, _)| *tile))
-            {
-                block(tile);
-            }
-            for building in obs
-                .my_buildings
-                .iter()
-                .chain(&obs.ally_buildings)
-                .chain(&obs.enemy_buildings)
-                .filter(|building| !building.provisional && !building.kind.is_stealthy())
-            {
-                let (width, height) = building.kind.base_stats().size;
-                for dy in 0..height {
-                    for dx in 0..width {
-                        block(building.anchor.offset(dx, dy));
-                    }
-                }
-            }
-        }
-        if domain == Domain::Air {
-            for &tile in &obs.known_peaks {
-                if in_bounds(obs, tile) {
-                    domain_open[(tile.y * obs.map_width + tile.x) as usize] = false;
-                }
-            }
-        }
         Self {
             query_purpose,
             obs,
@@ -111,10 +63,10 @@ impl<'a> RouteProjection<'a> {
             safety: Default::default(),
             require_explored: false,
             blocked_ground_rect: None,
-            blocked_tiles: vec![false; cells],
+            blocked_tiles: Vec::new(),
             has_blocked_tiles: false,
             labels: std::cell::OnceCell::new(),
-            domain_open,
+            surface: obs.navigation().surface(query_purpose, obs, domain, None),
             command_surface: Default::default(),
         }
     }
@@ -135,26 +87,10 @@ impl<'a> RouteProjection<'a> {
     fn set_public_terrain(&mut self, map: &'a PublicMapBriefing) {
         self.command_surface.take();
         self.public_map = Some(map);
-        if map.map_width < self.obs.map_width || map.map_height < self.obs.map_height {
-            for y in 0..self.obs.map_height {
-                for x in 0..self.obs.map_width {
-                    if x >= map.map_width || y >= map.map_height {
-                        let index = self.index(TilePos::new(x, y));
-                        self.domain_open[index] = false;
-                    }
-                }
-            }
-        }
-        for &(tile, terrain) in &map.non_ground_terrain {
-            let blocked = match self.domain {
-                Domain::Ground => terrain.blocks_ground(),
-                Domain::Air => terrain.blocks_air(),
-            };
-            if blocked && in_bounds(self.obs, tile) {
-                let index = self.index(tile);
-                self.domain_open[index] = false;
-            }
-        }
+        self.surface =
+            self.obs
+                .navigation()
+                .surface(self.query_purpose, self.obs, self.domain, Some(map));
     }
 
     /// Movement projected in policy coordinates while reproducing group
@@ -225,6 +161,9 @@ impl<'a> RouteProjection<'a> {
         mut blocked: impl FnMut(TilePos) -> bool,
     ) -> Self {
         let mut projection = Self::new(query_purpose, obs, domain);
+        projection
+            .blocked_tiles
+            .resize(projection.surface.open.len(), false);
         for y in 0..obs.map_height {
             for x in 0..obs.map_width {
                 let tile = TilePos::new(x, y);
@@ -284,7 +223,11 @@ impl<'a> RouteProjection<'a> {
             allowed: (0..self.obs.map_height)
                 .flat_map(|y| (0..self.obs.map_width).map(move |x| self.open(TilePos::new(x, y))))
                 .collect(),
-            danger: self.blocked_tiles.clone(),
+            danger: if self.blocked_tiles.is_empty() {
+                vec![false; self.surface.open.len()]
+            } else {
+                self.blocked_tiles.clone()
+            },
         }
     }
 
@@ -298,7 +241,12 @@ impl<'a> RouteProjection<'a> {
     /// from choosing a shorter route straight through a remembered kill zone.
     pub(in crate::bot) fn direct_line_avoids_blocked(&self, from: TilePos, to: TilePos) -> bool {
         !chassis::path::line_blocked(from.center(), to.center(), |tile| {
-            !in_bounds(self.obs, tile) || !self.blocked_tiles[self.index(tile)]
+            !in_bounds(self.obs, tile)
+                || !self
+                    .blocked_tiles
+                    .get(self.index(tile))
+                    .copied()
+                    .unwrap_or(false)
         })
     }
 
@@ -416,13 +364,8 @@ impl<'a> RouteProjection<'a> {
                 .map_or(tile, |orientation| orientation.tile(tile))
         };
         let blocked = self.command_surface.get_or_init(|| {
-            (0..self.obs.map_height)
-                .flat_map(|y| (0..self.obs.map_width).map(move |x| TilePos::new(x, y)))
-                .map(|tile| {
-                    let tile = transform(tile);
-                    !self.domain_open(tile) || (self.require_explored && !self.obs.explored(tile))
-                })
-                .collect()
+            self.surface
+                .command_surface(self.obs, self.require_explored, self.command_orientation)
         });
         let grid = super::KnownGrid::new(self.obs.map_width, self.obs.map_height, blocked)?;
         let path = super::paths::with_command_routes(|cache| {
@@ -567,7 +510,7 @@ impl<'a> RouteProjection<'a> {
         // A* uses a consistent octile heuristic, so each cell is expanded at
         // most once. Below the cap, cardinal connectivity has the same verdict
         // as its no-corner-cut search without repeating a search for each goal.
-        if self.blocked_tiles.len() <= crate::stats::PATH_EXPANSION_CAP as usize {
+        if self.surface.open.len() <= crate::stats::PATH_EXPANSION_CAP as usize {
             return self.reaches(from, to);
         }
         crate::bot::navigation::search::canonical_path(
@@ -586,6 +529,11 @@ impl<'a> RouteProjection<'a> {
             return None;
         }
         let labels = self.labels.get_or_init(|| {
+            if !self.has_blocked_tiles && self.blocked_ground_rect.is_none() {
+                return self
+                    .surface
+                    .labels(self.query_purpose, self.obs, self.require_explored);
+            }
             let open = (0..self.obs.map_height)
                 .flat_map(|y| (0..self.obs.map_width).map(move |x| self.open(TilePos::new(x, y))))
                 .collect();
@@ -610,7 +558,12 @@ impl<'a> RouteProjection<'a> {
                     (anchor.x..anchor.x + width).contains(&tile.x)
                         && (anchor.y..anchor.y + height).contains(&tile.y)
                 });
-        let blocked_by_tile = in_bounds(self.obs, tile) && self.blocked_tiles[self.index(tile)];
+        let blocked_by_tile = in_bounds(self.obs, tile)
+            && self
+                .blocked_tiles
+                .get(self.index(tile))
+                .copied()
+                .unwrap_or(false);
         !blocked_by_candidate
             && !blocked_by_tile
             && (!self.require_explored || self.obs.explored(tile))
@@ -620,7 +573,7 @@ impl<'a> RouteProjection<'a> {
     fn domain_open(&self, tile: TilePos) -> bool {
         #[cfg(test)]
         super::work::record(|work| work.passability_queries += 1);
-        in_bounds(self.obs, tile) && self.domain_open[self.index(tile)]
+        in_bounds(self.obs, tile) && self.surface.open[self.index(tile)]
     }
 
     fn index(&self, tile: TilePos) -> usize {
@@ -836,7 +789,7 @@ impl<'a> BuildRouteProjection<'a> {
     ) -> std::sync::Arc<BuildLayout> {
         let routes = &self.routes;
         let dimensions = (routes.obs.map_width, routes.obs.map_height);
-        let mut open = routes.domain_open.clone();
+        let mut open = routes.surface.open.clone();
         for (index, open) in open.iter_mut().enumerate() {
             let tile = TilePos::new(index as i32 % dimensions.0, index as i32 / dimensions.0);
             *open &= !additional_blocked(tile);
@@ -1757,15 +1710,15 @@ mod tests {
     use crate::stats::{BuildingKind, UnitKind};
 
     fn observation() -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick: 0,
             map_width: 12,
             map_height: 8,
             my_units: vec![unit(1, Domain::Ground), unit(2, Domain::Ground)],
             visible: vec![false; 12 * 8],
             explored: vec![false; 12 * 8],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -2004,10 +1957,10 @@ mod tests {
                     orientation,
                 );
                 assert_eq!(changed_routes.command_route(from[0], goal), None);
-                let unexplored = Observation {
+                let unexplored = Observation::from_data(ObservationData {
                     explored: vec![false; 80 * 60],
-                    ..obs.clone()
-                };
+                    ..(*obs).clone()
+                });
                 let explored_routes =
                     RouteProjection::known_ground(QueryPurpose::NavigationTest, &unexplored);
                 assert_eq!(explored_routes.command_route(from[0], goal), None);
@@ -2272,11 +2225,11 @@ mod tests {
 
     #[test]
     fn component_flood_does_not_recheck_already_labeled_open_tiles() {
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 128,
             map_height: 128,
             ..Default::default()
-        };
+        });
         for domain in [Domain::Ground, Domain::Air] {
             super::super::components::clear();
             let routes = RouteProjection::new(QueryPurpose::NavigationTest, &obs, domain);
@@ -2298,7 +2251,11 @@ mod tests {
                 assert!(shared.reaches(TilePos::new(0, 0), TilePos::new(127, 127)));
             });
             assert_eq!(reused.expanded, 0);
-            assert_eq!(reused.hits, 1);
+            assert_eq!(reused.components, 0);
+            assert!(std::sync::Arc::ptr_eq(
+                routes.labels.get().unwrap(),
+                shared.labels.get().unwrap()
+            ));
         }
     }
 

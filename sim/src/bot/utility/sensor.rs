@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::stats::RADAR_DETECT_RADIUS;
 use std::cmp::Reverse;
@@ -968,13 +970,13 @@ mod tests {
 
     #[test]
     fn array_coverage_excludes_peaks_that_no_unit_can_occupy() {
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 7,
             map_height: 7,
             visible: vec![false; 49],
             explored: vec![false; 49],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let anchor = TilePos::new(3, 3);
         let ground_briefing = briefing_with('.');
         let peak_briefing = briefing_with('^');
@@ -988,13 +990,13 @@ mod tests {
 
     #[test]
     fn an_existing_array_leaves_no_novel_coverage_at_the_same_site() {
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 7,
             map_height: 7,
             visible: vec![false; 49],
             explored: vec![false; 49],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let anchor = TilePos::new(3, 3);
         let map = briefing_with('.');
         let (_, novel, _) = ArrayCoverageIndex::new(&obs, &map, &[anchor]).coverage(anchor);
@@ -1005,13 +1007,13 @@ mod tests {
     #[test]
     fn strategic_coverage_is_marginal_deadline_bound_and_overlap_deduplicated() {
         use crate::bot::battlefield::CoverageDemand;
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: 7,
             map_height: 7,
             visible: vec![false; 49],
             explored: vec![false; 49],
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
         let anchor = TilePos::new(3, 3);
         let demand = CoverageDemand {
             asset: BuildingId(1),
@@ -1079,13 +1081,13 @@ mod tests {
                 explored[(y * width + x) as usize] = (x * 13 + y * 5) % 7 <= 2;
             }
         }
-        let obs = Observation {
+        let obs = Observation::from_data(ObservationData {
             map_width: width,
             map_height: height,
             visible: vec![false; (width * height) as usize],
             explored,
-            ..Observation::default()
-        };
+            ..Default::default()
+        });
 
         for existing_arrays in [
             Vec::new(),

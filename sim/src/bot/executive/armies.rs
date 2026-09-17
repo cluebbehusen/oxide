@@ -1,6 +1,8 @@
 //! Army lifecycle, marching, contact, and strength assessment.
 
 use super::*;
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::bot::query_work::QueryPurpose;
 use crate::stats::Domain;
 use chassis::fx::Fx;
@@ -1390,7 +1392,7 @@ mod tests {
         enemy_units: Vec<UnitObs>,
     ) -> Observation {
         let cells = usize::try_from(map_size.0 * map_size.1).unwrap();
-        Observation {
+        Observation::from_data(ObservationData {
             tick,
             map_width: map_size.0,
             map_height: map_size.1,
@@ -1398,8 +1400,8 @@ mod tests {
             enemy_units,
             visible: vec![true; cells],
             explored: vec![true; cells],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn building(id: u32, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
@@ -1602,7 +1604,8 @@ mod tests {
         assert!(commands.iter().any(|command| matches!(&command.command,
             Command::Move { units, goal, .. } if units == &[UnitId(1), UnitId(2)] && *goal == staging)));
 
-        let members: Vec<_> = obs.my_units.iter().collect();
+        let units = obs.my_units.clone();
+        let members: Vec<_> = units.iter().collect();
         obs.enemy_buildings[0].seen = false;
         assert_eq!(local_fight_strength(&obs, &members), (0, 0));
         obs.enemy_buildings[0].seen = true;

@@ -6,6 +6,8 @@
 //! over a remembered location is the only thing that invalidates it.
 
 use super::observation::{OBSERVATION_VERSION, Observation};
+#[cfg(test)]
+use crate::bot::observation::ObservationData;
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::stats::{BuildingKind, Domain, UnitKind, WeaponStats};
 use chassis::Tick;
@@ -557,14 +559,14 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn observation(tick: Tick) -> Observation {
-        Observation {
+        Observation::from_data(ObservationData {
             tick,
             map_width: 20,
             map_height: 12,
             visible: vec![false; 20 * 12],
             explored: vec![false; 20 * 12],
-            ..Observation::default()
-        }
+            ..Default::default()
+        })
     }
 
     fn set_visible(observation: &mut Observation, tile: TilePos) {
