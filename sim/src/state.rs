@@ -613,7 +613,36 @@ pub struct State {
     /// times per tick; the linear building scan this replaces was the
     /// hottest pair of functions in match profiles.
     #[serde(skip)]
-    building_occupancy: Vec<u8>,
+    pub(crate) building_occupancy: Vec<u8>,
+}
+
+/// Ground passability for one moment: terrain plus the derived building
+/// occupancy grid. Equivalent to [`State::passable`] for every tile.
+#[derive(Clone, Copy)]
+pub(crate) struct GroundTerrain<'a> {
+    map: &'a Map,
+    occupancy: &'a [u8],
+}
+
+impl<'a> GroundTerrain<'a> {
+    pub(crate) fn new(map: &'a Map, occupancy: &'a [u8]) -> Self {
+        Self { map, occupancy }
+    }
+
+    /// Whether a ground body may occupy `tile`.
+    pub(crate) fn open(&self, tile: TilePos) -> bool {
+        self.map.terrain_passable(tile) && !self.building_blocks(tile)
+    }
+
+    /// Whether a non-stealthy, non-provisional building covers `tile`.
+    fn building_blocks(&self, tile: TilePos) -> bool {
+        let width = self.map.width();
+        if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= self.map.height() {
+            return false;
+        }
+        let idx = (tile.y as usize) * (width as usize) + (tile.x as usize);
+        self.occupancy.get(idx).copied().unwrap_or(0) != 0
+    }
 }
 
 impl State {
@@ -1590,12 +1619,14 @@ impl State {
     /// footprint; the grid is maintained at the single placement
     /// funnel and every removal site.
     fn building_blocks(&self, pos: TilePos) -> bool {
-        let width = self.map.width();
-        if pos.x < 0 || pos.y < 0 || pos.x >= width || pos.y >= self.map.height() {
-            return false;
-        }
-        let idx = (pos.y as usize) * (width as usize) + (pos.x as usize);
-        self.building_occupancy.get(idx).copied().unwrap_or(0) != 0
+        self.ground_terrain().building_blocks(pos)
+    }
+
+    /// Ground passability borrowed apart from the unit table, so a movement
+    /// pass can move bodies while consulting the same terrain and building
+    /// occupancy [`State::passable`] reads.
+    pub(crate) fn ground_terrain(&self) -> GroundTerrain<'_> {
+        GroundTerrain::new(&self.map, &self.building_occupancy)
     }
 
     /// Marks or clears one building's footprint in the occupancy grid.

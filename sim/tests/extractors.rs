@@ -296,14 +296,29 @@ fn an_unseen_enemy_claim_does_not_replace_the_remembered_frame() {
             queue: false,
         },
     )]);
+    // A hostile claim is known through any visible footprint tile, so the
+    // whole 2x2 frame has to leave sight, not just its anchor.
+    let frame_tiles = [
+        FOG_FRAME,
+        FOG_FRAME.offset(1, 0),
+        FOG_FRAME.offset(0, 1),
+        FOG_FRAME.offset(1, 1),
+    ];
     for _ in 0..1_000 {
-        if !state.vision(PlayerId(0)).visible(FOG_FRAME) {
+        if frame_tiles
+            .iter()
+            .all(|tile| !state.vision(PlayerId(0)).visible(*tile))
+        {
             break;
         }
         state.tick(&[]);
     }
     assert!(state.vision(PlayerId(0)).explored(FOG_FRAME));
-    assert!(!state.vision(PlayerId(0)).visible(FOG_FRAME));
+    assert!(
+        frame_tiles
+            .iter()
+            .all(|tile| !state.vision(PlayerId(0)).visible(*tile))
+    );
     assert!(
         state
             .vision(PlayerId(0))

@@ -16,7 +16,7 @@ mod ground;
 
 use super::flight;
 use crate::map::Map;
-use crate::state::{Order, PathFollow, State};
+use crate::state::{GroundTerrain, Order, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
@@ -109,23 +109,12 @@ fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
 /// the path itself. Callers check both the authored path leg and the shortcut
 /// from the body's actual tile because collision can carry a body past a
 /// waypoint from an adjacent tile.
-fn early_advance_safe(
-    cur: TilePos,
-    nxt: TilePos,
-    map: &Map,
-    buildings: &[crate::state::Building],
-) -> bool {
-    let open = |t: TilePos| {
-        map.terrain_passable(t)
-            && !buildings
-                .iter()
-                .any(|b| b.contains(t) && !b.kind.is_stealthy() && !b.provisional)
-    };
+fn early_advance_safe(cur: TilePos, nxt: TilePos, terrain: &GroundTerrain) -> bool {
     let (dx, dy) = (nxt.x - cur.x, nxt.y - cur.y);
     if dx == 0 || dy == 0 {
         return true;
     }
-    open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
+    terrain.open(cur.offset(dx, 0)) && terrain.open(cur.offset(0, dy))
 }
 
 /// Whether a body deflected around traffic has already crossed an
@@ -246,9 +235,10 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
     let State {
         units,
         map,
-        buildings,
+        building_occupancy,
         ..
     } = state;
+    let terrain = GroundTerrain::new(map, building_occupancy);
     let mut travel = vec![Vec2Fx::ZERO; units.len()];
     for (slot, unit) in units.iter_mut().enumerate() {
         if unit.hp == 0 || unit.brace_ticks > 0 {
@@ -270,7 +260,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             continue;
         }
         if stats.domain == crate::stats::Domain::Ground {
-            ground::advance(unit, map, buildings);
+            ground::advance(unit, &terrain);
             if unit.drive_speed == Fx::ZERO
                 && let Some(aim) = work_aims[slot]
             {
@@ -1171,8 +1161,10 @@ mod tests {
 
     #[test]
     fn coasting_worker_is_not_anchored_until_its_motor_stops() {
-        let mut state = boundary_pair();
-        let unit = &mut state.units[0];
+        let state = boundary_pair();
+        let terrain = state.ground_terrain();
+        let mut unit = state.units[0].clone();
+        let unit = &mut unit;
         unit.kind = UnitKind::Harvester;
         unit.heading = 0;
         unit.order = Order::Harvest {
@@ -1183,11 +1175,11 @@ mod tests {
         unit.drive_speed = unit.kind.stats().speed;
         let before = unit.pos;
         assert!(!is_anchored(unit));
-        ground::advance(unit, &state.map, &state.buildings);
+        ground::advance(unit, &terrain);
         assert!(unit.pos.x > before.x);
         assert!(!is_anchored(unit));
         for _ in 0..2 {
-            ground::advance(unit, &state.map, &state.buildings);
+            ground::advance(unit, &terrain);
         }
         assert_eq!(unit.drive_speed, Fx::ZERO);
         assert!(is_anchored(unit));
