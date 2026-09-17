@@ -304,7 +304,13 @@ fn every_shell_screen_keeps_its_identity_in_persisted_context() {
             context["screen_names"][id.to_string()],
             if mode == "pause" { "paused" } else { mode }
         );
-        persist(&recorder.inner, "context.json", &context);
+        let path = writer.directory().join("context.json");
+        until(|| {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .is_some_and(|stored| stored["screen"] == id)
+        });
         let stored: serde_json::Value = serde_json::from_slice(
             &std::fs::read(writer.directory().join("context.json")).unwrap(),
         )
