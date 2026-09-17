@@ -865,15 +865,14 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
     for _ in 0..10 {
         state.tick(&[]); // under way along the straight leg
     }
-    // Drop the turret onto the leg the mover is driving, short of its
-    // target: the follower must drop the leg and route around it, and
-    // every tile step around the site must still obey the no-corner-cut
-    // rule.
+    // Drop the turret onto the straight line the mover is driving toward
+    // its goal, short of the goal: the follower must drop the leg and
+    // route around it, and every tile step around the site must still
+    // obey the no-corner-cut rule.
     let anchor = {
         let mover = state.unit(mover).unwrap();
-        let path = mover.path.as_ref().expect("walking");
-        let target = path.waypoints[path.next as usize].center();
-        TilePos::containing(mover.pos + (target - mover.pos) * chassis::fx::HALF)
+        assert!(mover.path.is_some(), "walking");
+        TilePos::containing(mover.pos + (goal.center() - mover.pos) * chassis::fx::HALF)
     };
     assert_ne!(anchor, state.unit(mover).unwrap().tile());
     assert_ne!(anchor, goal);

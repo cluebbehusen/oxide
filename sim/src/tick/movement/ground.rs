@@ -30,13 +30,17 @@ fn leg_open(unit: &Unit, waypoint: TilePos, terrain: &GroundTerrain) -> bool {
     }
 }
 
-/// The point to steer for and whether it is the route's final waypoint.
+/// The point to steer for, its index in the route, and whether it is the
+/// route's final waypoint.
 ///
-/// Waypoints are accepted as before; then the follower looks ahead and
-/// steers for the furthest of the next few waypoints its hull can reach
-/// on a straight, clear leg, so a grid staircase is driven as one line and
-/// a corner is rounded only once the far side is actually visible.
-fn route_target(unit: &mut Unit, terrain: &GroundTerrain) -> Option<(Vec2Fx, bool)> {
+/// `path.next` stays the physical cursor: the first waypoint the body has
+/// not yet reached or passed, so every consumer that scans the remaining
+/// route (the harvest danger check above all) still sees every tile ahead.
+/// The steering target is looked up fresh each tick as the furthest of the
+/// next few waypoints the hull can reach on a straight, clear leg, so a grid
+/// staircase is driven as one line and a corner is rounded only once the far
+/// side is actually visible.
+fn route_target(unit: &mut Unit, terrain: &GroundTerrain) -> Option<(Vec2Fx, usize, bool)> {
     let radius = unit.kind.stats().radius;
     loop {
         let path = unit.path.as_ref()?;
@@ -71,21 +75,31 @@ fn route_target(unit: &mut Unit, terrain: &GroundTerrain) -> Option<(Vec2Fx, boo
                 .unsigned_abs()
                 <= 8
         };
-        let mut skipped = 0;
+        let cursor = path.next as usize;
+        let mut target = cursor;
         while !facing
-            && skipped < ROUTE_LOOKAHEAD
-            && let Some(&candidate) = path.waypoints.get(path.next as usize + 1)
+            && target < cursor + ROUTE_LOOKAHEAD
+            && let Some(&candidate) = path.waypoints.get(target + 1)
             && terrain.open(candidate)
             && !chassis::path::swept_line_blocked(unit.pos, candidate.center(), radius, |tile| {
                 terrain.open(tile)
             })
         {
-            path.next += 1;
-            skipped += 1;
+            target += 1;
         }
-        let waypoint = path.waypoints[path.next as usize];
-        let final_point = path.waypoints.len() == path.next as usize + 1;
-        return Some((waypoint.center(), final_point));
+        let point = path.waypoints[target].center();
+        // Waypoints the straight leg has already carried the body past are
+        // reached: the cursor never trails behind the hull's own plane.
+        let ahead = point - unit.pos;
+        while (path.next as usize) < target {
+            let offset = path.waypoints[path.next as usize].center() - unit.pos;
+            if offset.x * ahead.x + offset.y * ahead.y > Fx::ZERO {
+                break;
+            }
+            path.next += 1;
+        }
+        let final_point = path.waypoints.len() == target + 1;
+        return Some((point, target, final_point));
     }
 }
 
@@ -103,7 +117,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain) {
     let max_speed = unit.kind.stats().speed;
     let turn_rate = unit.kind.ground_turn_rate();
     let brake = increment(max_speed, 3);
-    let offset = target.map(|(point, _)| point - unit.pos);
+    let offset = target.map(|(point, _, _)| point - unit.pos);
     let desired = offset
         .filter(|v| *v != Vec2Fx::ZERO)
         .map_or(unit.heading, heading_of);
@@ -180,14 +194,14 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain) {
     } else {
         unit.drive_speed = Fx::ZERO;
     }
-    if let Some((point, final_point)) = target
+    if let Some((point, index, final_point)) = target
         && unit.pos == point
     {
         if final_point {
             unit.path = None;
             unit.drive_speed = Fx::ZERO;
         } else if let Some(path) = unit.path.as_mut() {
-            path.next += 1;
+            path.next = index as u32 + 1;
         }
     }
 }
@@ -271,6 +285,13 @@ mod tests {
         ])
     }
 
+    /// The steering target's route index, without moving the body.
+    fn target_index(unit: &mut Unit, state: &crate::State) -> usize {
+        route_target(unit, &state.ground_terrain())
+            .expect("still en route")
+            .1
+    }
+
     #[test]
     fn lookahead_steers_for_the_furthest_visible_waypoint_of_a_staircase() {
         let state = scene(UnitKind::Harvester);
@@ -278,9 +299,7 @@ mod tests {
         unit.heading = 0;
         unit.drive_speed = unit.kind.stats().speed;
         route(&mut unit, staircase());
-        advance(&mut unit, &state.ground_terrain());
-        let path = unit.path.as_ref().expect("still en route");
-        assert_eq!(path.next as usize, ROUTE_LOOKAHEAD);
+        assert_eq!(target_index(&mut unit, &state), ROUTE_LOOKAHEAD);
         for _ in 0..400 {
             advance(&mut unit, &state.ground_terrain());
             assert!(state.ground_terrain().open(unit.tile()));
@@ -290,16 +309,50 @@ mod tests {
     }
 
     #[test]
+    fn the_route_cursor_trails_the_hull_not_the_steering_target() {
+        // Tiles the body has not reached stay ahead of the cursor, so a
+        // scan of the remaining route (the harvest danger check) still sees
+        // every tile the straight leg will cross.
+        let state = scene(UnitKind::Harvester);
+        let mut unit = state.units()[0].clone();
+        unit.heading = 0;
+        unit.drive_speed = unit.kind.stats().speed;
+        let waypoints = staircase();
+        route(&mut unit, waypoints.clone());
+        for _ in 0..80 {
+            advance(&mut unit, &state.ground_terrain());
+            let Some(path) = unit.path.as_ref() else {
+                break;
+            };
+            let next = path.next as usize;
+            // A waypoint counts as reached once the hull is past it or
+            // within the deflection reach that accepts it.
+            let reach =
+                unit.kind.stats().radius.max(WAYPOINT_ACCEPT) + crate::stats::COLLISION_MAX_STEP;
+            let ahead = waypoints.last().unwrap().center() - unit.pos;
+            for (index, waypoint) in waypoints.iter().enumerate() {
+                let offset = waypoint.center() - unit.pos;
+                let in_front = offset.x * ahead.x + offset.y * ahead.y > Fx::ZERO;
+                let reached = !in_front || offset.length() <= reach;
+                assert!(
+                    index >= next || reached,
+                    "waypoint {index} is still ahead of the hull but behind the cursor {next}"
+                );
+            }
+        }
+        assert!(unit.path.is_none(), "never arrived");
+    }
+
+    #[test]
     fn a_chassis_at_rest_facing_its_next_waypoint_rolls_before_looking_ahead() {
         let state = scene(UnitKind::Harvester);
         let mut unit = state.units()[0].clone();
         unit.heading = 0;
         route(&mut unit, staircase());
+        assert_eq!(target_index(&mut unit, &state), 0);
         advance(&mut unit, &state.ground_terrain());
-        assert_eq!(unit.path.as_ref().expect("still en route").next, 0);
         assert!(unit.drive_speed > Fx::ZERO);
-        advance(&mut unit, &state.ground_terrain());
-        assert!(unit.path.as_ref().expect("still en route").next > 0);
+        assert!(target_index(&mut unit, &state) > 0);
     }
 
     #[test]
@@ -325,9 +378,8 @@ mod tests {
                 (17, 12),
             ]),
         );
-        advance(&mut unit, &state.ground_terrain());
-        let path = unit.path.as_ref().expect("still en route");
-        assert!(path.next < 3, "cut the corner: next = {}", path.next);
+        let target = target_index(&mut unit, &state);
+        assert!(target < 3, "cut the corner: target = {target}");
         for _ in 0..400 {
             advance(&mut unit, &state.ground_terrain());
             assert!(state.ground_terrain().open(unit.tile()));
@@ -347,9 +399,7 @@ mod tests {
                 &mut unit,
                 tiles(&[(9, 8), (10, 8), (11, 8), (12, 8), (13, 8)]),
             );
-            advance(&mut unit, &state.ground_terrain());
-            let path = unit.path.as_ref().expect("still en route");
-            assert_eq!(path.next > 0, skips, "{kind:?}");
+            assert_eq!(target_index(&mut unit, &state) > 0, skips, "{kind:?}");
         }
     }
 
