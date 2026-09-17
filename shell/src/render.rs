@@ -453,16 +453,26 @@ fn draw_capability_icon(
 /// The user's UI scale preference — atomic f32 bits so the settings
 /// screen can retune it live while every draw and hit-test path reads
 /// it lock-free.
+#[cfg(not(test))]
 static USER_SCALE: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(f32::to_bits(1.0));
+
+// Parallel layout tests must not change each other's hit-test geometry.
+#[cfg(test)]
+thread_local! {
+    static USER_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
 
 /// Installs the user scale factor (clamped to sane bounds; a config
 /// promising 0x or 10x chrome must not brick the window).
 pub fn set_user_scale(factor: f32) {
+    #[cfg(not(test))]
     USER_SCALE.store(
         f32::to_bits(factor.clamp(0.5, 3.0)),
         std::sync::atomic::Ordering::Relaxed,
     );
+    #[cfg(test)]
+    USER_SCALE.set(factor.clamp(0.5, 3.0));
 }
 
 static REDUCED_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -486,7 +496,10 @@ pub fn reduced_motion() -> bool {
 /// swallowing minimap, root-caused by a live probe: screen_w=1280 on a
 /// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
+    #[cfg(not(test))]
     let user = f32::from_bits(USER_SCALE.load(std::sync::atomic::Ordering::Relaxed));
+    #[cfg(test)]
+    let user = USER_SCALE.get();
     effective_ui_scale(user, viewport())
 }
 

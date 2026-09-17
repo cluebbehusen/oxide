@@ -327,6 +327,93 @@ fn an_unseen_enemy_claim_does_not_replace_the_remembered_frame() {
 }
 
 #[test]
+fn enemy_provisional_extractor_keeps_the_visible_frame_available_until_activation() {
+    let mut state = fog_arena(vec![harvester(0, 14, 4), harvester(1, 19, 4)])
+        .build()
+        .unwrap();
+    let observer = state.units()[0].id;
+    let enemy_builder = state.units()[1].id;
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![enemy_builder],
+            goal: TilePos::new(26, 7),
+            queue: false,
+        },
+    )]);
+    for _ in 0..500 {
+        state.tick(&[]);
+    }
+    for dy in 0..2 {
+        for dx in 0..2 {
+            let tile = FOG_FRAME.offset(dx, dy);
+            assert!(state.vision(PlayerId(0)).visible(tile));
+            assert!(state.vision(PlayerId(1)).explored(tile));
+            assert!(!state.vision(PlayerId(1)).visible(tile));
+        }
+    }
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![enemy_builder],
+            kind: BuildingKind::Extractor,
+            anchor: FOG_FRAME,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|building| building.anchor == FOG_FRAME)
+        .unwrap();
+    let site_id = site.id;
+    assert!(site.provisional);
+    assert!(!state.building_apparent(PlayerId(0), site));
+    assert!(!state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
+    assert!(state.extractor_frame_claim_known(PlayerId(1), FOG_FRAME));
+    assert!(state.can_place(PlayerId(0), BuildingKind::Extractor, FOG_FRAME));
+
+    let mut contested = state.clone();
+    contested.tick(&[build(0, observer, BuildingKind::Extractor, FOG_FRAME)]);
+    assert!(contested.buildings().iter().any(|building| {
+        building.anchor == FOG_FRAME && building.player == PlayerId(0) && !building.provisional
+    }));
+    assert!(contested.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
+    let mut events = Vec::new();
+    for _ in 0..500 {
+        events.extend(contested.tick(&[]).events);
+        if contested.building(site_id).is_none() {
+            break;
+        }
+    }
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::BuildCancelled { building, player, refund: 100 }
+            if *building == site_id && *player == PlayerId(1)
+    )));
+    contested.validate_invariants().unwrap();
+
+    for _ in 0..500 {
+        state.tick(&[]);
+        if !state.building(site_id).unwrap().provisional {
+            break;
+        }
+    }
+    let site = state.building(site_id).unwrap();
+    assert!(!site.provisional);
+    assert!(!site.built);
+    assert_eq!(site.progress, 0);
+    assert!(state.building_apparent(PlayerId(0), site));
+    assert!(state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
+    assert!(!state.can_place(PlayerId(0), BuildingKind::Extractor, FOG_FRAME));
+    state.tick(&[cmd(1, Command::Cancel { building: site_id })]);
+    assert!(state.building(site_id).is_none());
+    assert!(!state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
+    state.validate_invariants().unwrap();
+}
+
+#[test]
 fn an_extractor_stands_only_on_its_frame_and_nothing_paves_one() {
     let mut state = arena(1_000, vec![harvester(0, 5, 4)], vec![])
         .build()

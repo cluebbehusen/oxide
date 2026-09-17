@@ -671,12 +671,17 @@ mod tests {
     #[test]
     fn music_volume_is_touch_reachable() {
         crate::render::set_viewport(1280.0, 800.0);
+        crate::render::set_user_scale(1.0);
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut screen = SettingsScreen::open(&config);
         let row = screen.menu.item_rect(3).expect("music row is visible");
         let x = row.x + row.w * 0.5;
         let y = row.y + row.h * 0.5;
+        // Another layout test must not move the row between measurement and input.
+        std::thread::spawn(|| crate::render::set_user_scale(0.75))
+            .join()
+            .unwrap();
         let update = drive(
             &mut screen,
             &mut config,
