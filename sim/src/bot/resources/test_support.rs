@@ -16,21 +16,6 @@ pub(crate) fn all_producers(resources: &ResourceSnapshot) -> ProductionAccess {
     ProductionAccess::restricted_kinds_with_paid(allowed, paid)
 }
 
-pub(crate) fn schedule_all_producers(
-    resources: &ResourceSnapshot,
-    demands: &[ProductionDemand],
-    deadline: Tick,
-    budget: u32,
-) -> ProductionSchedule {
-    plan_production_with_access(
-        resources,
-        demands,
-        deadline,
-        budget,
-        &all_producers(resources),
-    )
-}
-
 pub(crate) fn count_all_paid_ready(
     resources: &ResourceSnapshot,
     kind: UnitKind,

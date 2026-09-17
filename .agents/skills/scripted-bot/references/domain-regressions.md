@@ -24,10 +24,15 @@ search.
 
 Use allocation and Brain tests for retained forecast-to-current maturation,
 protected spending, future-lane reservations, preemption and producer loss.
-Preserve fixed times and deadlines when funding changes. A genuinely unfundable
-retained lift enters bounded recovery instead of extending its deadline. Test
-complete combined footprint sets, including a four-site closure where all pairs
-and triples retain a route. Verify same-decision cancellations in placement and
+Preserve fixed Lift, reconnaissance and standing-force bookings when funding
+changes. Connected procurement retains its deadline and actual investments but
+may change unpaid factories and times. Test earlier purchases, replacement
+factories, completed providers reducing demand, rollback retries, and retained
+paid ownership across revisions. Deferred scheduling must not release unpriced
+connected demand into discretionary spending. A genuinely unfundable retained
+lift enters bounded recovery instead of extending its deadline. Test complete
+combined footprint sets, including a four-site closure where all pairs and
+triples retain a route. Verify same-decision cancellations in placement and
 worker queries, and that Stop still reserves its worker against construction.
 
 ## Economy, core protection and expansion

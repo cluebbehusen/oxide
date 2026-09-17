@@ -203,14 +203,6 @@ impl LiftProducerFunding {
             forecast_scrap,
         }
     }
-
-    pub(in crate::bot) const fn current_scrap(self) -> u32 {
-        self.current_scrap
-    }
-
-    pub(in crate::bot) const fn forecast_scrap(self) -> u32 {
-        self.forecast_scrap
-    }
 }
 
 /// One exact allocator-selected future carrier job owned by a Lift operation.
@@ -254,10 +246,6 @@ impl LiftProducerAssignment {
 
     pub(in crate::bot) const fn timing(self) -> LiftProducerTiming {
         self.timing
-    }
-
-    pub(in crate::bot) const fn funding(self) -> LiftProducerFunding {
-        self.funding
     }
 }
 

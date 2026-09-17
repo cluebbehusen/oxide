@@ -19,10 +19,7 @@ use crate::bot::observation::Observation;
 use crate::bot::observation::ObservationData;
 use crate::bot::resources::ProducerLaneReservations;
 use crate::bot::resources::{BuilderObligation, ResourceSnapshot, SiteFootprint};
-use crate::bot::strategy::{
-    ActiveConnectedObligation, ConnectedProducerAssignment, ConnectedProducerFunding,
-    ConnectedProducerTiming, FreshConnectedProposal, StrategicDecision,
-};
+use crate::bot::strategy::{ActiveConnectedObligation, StrategicDecision};
 use crate::bot::trace::AllocationTrace;
 use crate::bot::utility::FreshEmergencyDefense;
 use crate::ids::{BuildingId, UnitId};
@@ -593,8 +590,8 @@ impl CrossDomainSettlement {
             .saturating_sub(self.current_committed_except(owner_is_utility))
     }
 
-    /// Final producer assignments, retained until the accepted domain payload
-    /// binds its exact lanes.
+    /// Decision-local producer assignments used for current commands and
+    /// future capacity protection.
     pub(crate) fn producer_schedule(&self) -> &[ScheduledProducerJob] {
         self.result.final_producer_schedule()
     }
@@ -1231,175 +1228,17 @@ pub(crate) fn active_connected_obligation(
             obligation
                 .provider_jobs()
                 .iter()
-                .copied()
-                .map(|assignment| {
-                    ProducerJobClaim::fixed(
-                        assignment.producer(),
-                        assignment.kind(),
-                        assignment.timing().enqueued_at(),
-                        assignment.timing().starts_at(),
-                        assignment.timing().ready_at(),
-                        assignment.timing().ready_before(),
+                .map(|job| {
+                    ProducerJobClaim::flexible(
+                        job.kind(),
+                        job.enqueue_not_before(),
+                        job.ready_before(),
+                        job.eligible_producers().to_vec(),
                     )
                 })
                 .collect(),
         )?,
     ))
-}
-
-/// Extracts the selected connected proposal's exact producer schedule in the
-/// domain-owned binding shape.
-pub(crate) fn connected_producer_assignments(
-    proposal: &FreshConnectedProposal,
-    schedule: &[ScheduledProducerJob],
-) -> Vec<ConnectedProducerAssignment> {
-    let identity = proposal.identity();
-    let owner = ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(
-        super::ConnectedOffenseKey {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        },
-    ));
-    let mut assignments = schedule
-        .iter()
-        .filter(|job| job.owner == owner)
-        .map(|job| connected_producer_assignment(identity, job.request_ordinal, job))
-        .collect::<Vec<_>>();
-    assignments.sort_unstable_by_key(|assignment| assignment.request_ordinal());
-    assignments
-}
-
-/// Reassembles an active revision's mandatory minimum and optional marginal
-/// jobs into the selected package's single ordinal space.
-pub(crate) fn active_connected_revision_producer_assignments(
-    proposal: &FreshConnectedProposal,
-    schedule: &[ScheduledProducerJob],
-) -> Vec<ConnectedProducerAssignment> {
-    debug_assert!(proposal.revises_active_operation());
-    let identity = proposal.identity();
-    let key = ObligationKey::ConnectedOffense {
-        objective: identity.objective(),
-        anchor: identity.anchor(),
-    };
-    let minimum_owner = ClaimOwner::Obligation {
-        class: ObligationClass::PersistentPlan,
-        accepted_at: proposal.accepted_at(),
-        key,
-    };
-    let marginal_owner = ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(
-        super::ConnectedOffenseKey {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        },
-    ));
-    let minimum_count = proposal.minimum_claims().provider_jobs().len();
-    let expected_count = proposal.selected_claims().provider_jobs().len();
-    let delta = proposal
-        .active_revision_provider_delta()
-        .expect("an active revision retains its bound producer schedule");
-    let minimum_order = delta.allocation_order(minimum_count);
-    let mut minimum = schedule
-        .iter()
-        .filter(|job| job.owner == minimum_owner)
-        .collect::<Vec<_>>();
-    minimum.sort_unstable_by_key(|job| job.request_ordinal);
-    let mut marginal = schedule
-        .iter()
-        .filter(|job| job.owner == marginal_owner)
-        .collect::<Vec<_>>();
-    marginal.sort_unstable_by_key(|job| job.request_ordinal);
-
-    let mut scheduled = minimum
-        .into_iter()
-        .map(|job| {
-            (
-                *minimum_order
-                    .get(job.request_ordinal)
-                    .expect("the retained minimum schedule belongs to the revision"),
-                job,
-            )
-        })
-        .chain(
-            marginal
-                .into_iter()
-                .map(|job| (minimum_count.saturating_add(job.request_ordinal), job)),
-        )
-        .collect::<Vec<_>>();
-    scheduled.sort_unstable_by_key(|(proposal_ordinal, _)| *proposal_ordinal);
-    let mut assignments = scheduled
-        .into_iter()
-        .map(|(proposal_ordinal, job)| {
-            let binding = delta
-                .jobs()
-                .get(proposal_ordinal)
-                .expect("the selected schedule belongs to the revision ladder");
-            connected_producer_assignment(identity, binding.binding_ordinal(), job)
-        })
-        .collect::<Vec<_>>();
-    assignments.sort_unstable_by_key(|assignment| assignment.request_ordinal());
-    debug_assert_eq!(assignments.len(), expected_count);
-    assignments
-}
-
-fn connected_producer_assignment(
-    identity: crate::bot::strategy::ConnectedOffenseIdentity,
-    request_ordinal: usize,
-    job: &ScheduledProducerJob,
-) -> ConnectedProducerAssignment {
-    ConnectedProducerAssignment::new(
-        identity,
-        request_ordinal,
-        job.producer,
-        job.kind,
-        ConnectedProducerTiming::new(
-            job.enqueued_at,
-            job.starts_at,
-            job.ready_at,
-            job.ready_before,
-        ),
-        ConnectedProducerFunding::new(job.current_scrap, job.forecast_scrap),
-    )
-}
-
-/// Extracts refreshed observation-relative funding for one active connected
-/// obligation while retaining its already accepted identity, lane, and timing.
-pub(crate) fn active_connected_producer_assignments(
-    obligation: &ActiveConnectedObligation,
-    schedule: &[ScheduledProducerJob],
-) -> Vec<ConnectedProducerAssignment> {
-    let identity = obligation.identity();
-    let owner = ClaimOwner::Obligation {
-        class: ObligationClass::PersistentPlan,
-        accepted_at: obligation.accepted_at(),
-        key: ObligationKey::ConnectedOffense {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        },
-    };
-    let mut scheduled = schedule
-        .iter()
-        .filter(|job| job.owner == owner)
-        .collect::<Vec<_>>();
-    scheduled.sort_unstable_by_key(|job| job.request_ordinal);
-    scheduled
-        .into_iter()
-        .zip(obligation.provider_jobs())
-        .map(|(job, retained)| {
-            ConnectedProducerAssignment::new(
-                identity,
-                retained.request_ordinal(),
-                job.producer,
-                job.kind,
-                ConnectedProducerTiming::new(
-                    job.enqueued_at,
-                    job.starts_at,
-                    job.ready_at,
-                    job.ready_before,
-                ),
-                ConnectedProducerFunding::new(job.current_scrap, job.forecast_scrap),
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -2705,7 +2544,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_binding_restores_request_order_across_busy_and_idle_lanes() {
+    fn connected_schedule_retains_request_ordinals_across_busy_and_idle_lanes() {
         let busy = BuildingId(8);
         let idle = BuildingId(9);
         let kind = UnitKind::Harvester;
@@ -2789,18 +2628,6 @@ mod tests {
             vec![1, 0],
             "the global schedule is intentionally ordered by actual start time"
         );
-        let assignments = connected_producer_assignments(&proposal, settlement.producer_schedule());
-        assert_eq!(
-            assignments
-                .iter()
-                .map(|assignment| assignment.request_ordinal())
-                .collect::<Vec<_>>(),
-            vec![0, 1]
-        );
-        let mut bound = proposal;
-        bound
-            .bind_producer_assignments(assignments)
-            .expect("domain binding consumes assignments in request order");
     }
 
     #[test]

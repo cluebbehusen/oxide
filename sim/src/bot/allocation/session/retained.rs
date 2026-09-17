@@ -215,7 +215,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                         &mut obligations,
                         &mut air_lift,
                         &earlier_producer_intents,
-                        island_precedes_lift,
                     );
                     if !island_precedes_lift {
                         earlier_producer_intents
@@ -236,7 +235,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             let _ = self
                 .participants
                 .strategy
-                .issued_connected_production_assignments(self.context.observation);
+                .paid_connected_production(self.context.observation);
         }
         let active_revision = self.prepare_active_connected_revision(
             &claims,
@@ -480,10 +479,34 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             ),
         );
 
-        let mut active_connected = self
-            .participants
-            .strategy
-            .active_connected_obligation(self.context.observation);
+        let mut active_connected = self.participants.strategy.active_connected_obligation(
+            FreshConnectedProposalRequest::new(
+                self.context.profile,
+                self.context.tuning,
+                self.context.observation,
+                &resources,
+                self.context.intelligence,
+                self.context.home,
+                StrategicCoordination {
+                    planning: Some(&self.participants.policy.planning),
+                    enlisted: &claims.planner_claims,
+                    lift_support: None,
+                    allow_new_operation: false,
+                    protected_current_scrap: 0,
+                    protected_forecast_scrap: 0,
+                    public_map: Some(self.context.public_map),
+                    orientation: self.context.orientation,
+                },
+            )
+            .with_paid_exclusions(
+                &self
+                    .participants
+                    .policy
+                    .state
+                    .reconnaissance
+                    .paid_exclusions(),
+            ),
+        );
         let mut active_lift = self.participants.lifts.active_production_obligation();
         let mut invalid_active_connected = false;
         let mut invalid_active_lift = false;
@@ -520,52 +543,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             }
         };
 
-        if (active_connected.is_some() || active_lift.is_some())
-            && lift_preceding_production_context(
-                &resources,
-                active_lift.as_ref(),
-                active_connected.as_ref(),
-                self.context.dials.cadence,
-                self.context.observation.tick,
-            )
-            .is_none()
-        {
-            let connected_valid = active_connected.as_ref().is_none_or(|active| {
-                lift_preceding_production_context(
-                    &resources,
-                    None,
-                    Some(active),
-                    self.context.dials.cadence,
-                    self.context.observation.tick,
-                )
-                .is_some()
-            });
-            let lift_valid = active_lift.as_ref().is_none_or(|active| {
-                lift_preceding_production_context(
-                    &resources,
-                    Some(active),
-                    None,
-                    self.context.dials.cadence,
-                    self.context.observation.tick,
-                )
-                .is_some()
-            });
-            match (connected_valid, lift_valid) {
-                (false, false) => {
-                    invalid_active_connected = connected_import.is_some();
-                    invalid_active_lift = lift_import.is_some();
-                }
-                (false, true) => invalid_active_connected = connected_import.is_some(),
-                (true, false) => invalid_active_lift = lift_import.is_some(),
-                (true, true) => match (connected_import.as_ref(), lift_import.as_ref()) {
-                    (Some(connected), Some(lift)) if connected.owner() < lift.owner() => {
-                        invalid_active_lift = true;
-                    }
-                    (Some(_), Some(_)) => invalid_active_connected = true,
-                    _ => {}
-                },
-            }
-        }
         if invalid_active_connected {
             active_connected = None;
             connected_import = None;
@@ -872,7 +849,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         obligations: &mut ObligationPreparation,
         air_lift: &mut AirLiftPreparation,
         prior_producer_intents: &[Intent],
-        protect_active_connected: bool,
     ) {
         if !self.advanced.lift_was_active {
             return;
@@ -896,22 +872,15 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let retained_production = lift_preceding_production_context(
             &obligations.resources,
             obligations.active_lift.as_ref(),
-            protect_active_connected
-                .then_some(obligations.active_connected.as_ref())
-                .flatten(),
+            obligations.active_connected.as_ref(),
             self.context.dials.cadence,
             self.context.observation.tick,
+            &self.participants.policy.planning,
         );
-        let (producer_lane_reservations, due_intents) = match retained_production {
-            Some(context) => context,
-            None => {
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-                );
-                (ProducerLaneReservations::default(), Vec::new())
-            }
+        let Some((producer_lane_reservations, due_intents)) = retained_production else {
+            // Shared adjudication distinguishes deferred search from an invalid
+            // retained owner and applies recovery without emitting speculative work.
+            return;
         };
         preceding_producer_intents.extend(due_intents);
         air_lift.lift_decision = self
@@ -1221,11 +1190,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             self.context.observation.tick,
             &self.participants.policy.planning,
         ) else {
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                Err(AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected),
-            );
+            // Later shared adjudication owns recovery. Freezing here would roll
+            // it back when an older island is visited before an invalid Lift.
             return;
         };
         let Some(result) = self.participants.strategy.stage_active_island(

@@ -1,13 +1,12 @@
-//! Deterministic scheduling for exact production demand.
+//! Deterministic capacity checks for exact production demand.
 //!
-//! This module chooses only among the unit kinds explicitly requested by its
-//! caller. It does not select capability substitutes, consume forecast income,
-//! or mutate the resource snapshot.
+//! This module checks the requested roster and paid inventory against producer
+//! capacity. Shared allocation owns funded schedules and command lowering.
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
-use super::{ProducerEgress, ProductionTiming, ResourceSnapshot};
+use super::{ProducerEgress, ResourceSnapshot};
 use crate::ids::BuildingId;
 use crate::stats::{Domain, UnitKind};
 use chassis::Tick;
@@ -22,31 +21,6 @@ pub(crate) struct ProductionDemand {
     pub(crate) kind: UnitKind,
     /// Number of new queue appends requested.
     pub(crate) count: usize,
-}
-
-/// One exact producer append selected by [`plan_production_with_access`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlannedAppend {
-    /// Completed producer that receives the append.
-    pub(crate) producer: BuildingId,
-    /// Exact unit kind appended to the producer.
-    pub(crate) kind: UnitKind,
-    /// Honest readiness and egress evidence after earlier planned appends.
-    pub(crate) timing: ProductionTiming,
-}
-
-/// Deterministic result of scheduling exact production demands.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct ProductionSchedule {
-    /// New queue appends in deterministic selection order.
-    pub(crate) appends: Vec<PlannedAppend>,
-    /// Current scrap consumed by `appends`.
-    pub(crate) spent: u32,
-    /// Current scrap protected for higher-priority appends that fit the fixed
-    /// horizon but are waiting for a live queue slot.
-    pub(crate) deferred_scrap: u32,
-    /// Full cost of the next selected append when current budget stopped work.
-    pub(crate) next_unfunded_cost: Option<u32>,
 }
 
 /// Producer-to-objective reachability supplied by an owning strategy.
@@ -117,17 +91,6 @@ impl ProductionAccess {
     }
 }
 
-/// One member of a complete fixed-horizon lane assignment.
-///
-/// Keeping this separate from [`PlannedAppend`] matters: an assignment may
-/// reserve a future queue position that cannot be appended on the current
-/// command tick.
-#[derive(Debug, Clone, Copy)]
-struct HorizonAssignment {
-    lane_index: usize,
-    timing: ProductionTiming,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct LaneCapacityClass {
     eligible_kinds: Vec<UnitKind>,
@@ -140,19 +103,13 @@ struct AssignmentSearchKey {
     lane_classes: Vec<LaneCapacityClass>,
 }
 
-#[derive(Debug)]
-enum HorizonAssignmentResult {
-    Found(Vec<HorizonAssignment>),
-    Impossible,
-}
-
 /// Immutable lane eligibility plus the available production time before a
 /// shared deadline.
 ///
 /// Concrete lane ids are intentionally kept outside the feasibility state.
 /// Lanes with the same eligibility signature and remaining capacity are
-/// interchangeable for feasibility, even though lowering later chooses one
-/// exact lane by readiness and id.
+/// interchangeable for feasibility. Shared allocation separately chooses exact
+/// lanes and purchase times.
 #[derive(Debug)]
 struct HorizonProblem {
     kinds: Vec<UnitKind>,
@@ -448,158 +405,6 @@ impl LanePatternEnumerator<'_> {
     }
 }
 
-/// Schedules exact unit demand against completed producer lanes.
-///
-/// Each accepted append is included in later timing calculations for its lane.
-/// Demands are considered in caller order. An infeasible higher-priority demand
-/// does not block independent lower-priority work, but a feasible
-/// higher-priority demand owns the remaining budget even when its next append
-/// cannot yet be afforded.
-/// Ground units require currently proven egress, and every selected unit must
-/// be present in an observation before the caller's fixed deadline under the
-/// conservative no-block bound. A unit that completes during the deadline's
-/// production phase is too late because bot decisions precede production.
-/// `budget` is additionally bounded by the snapshot's current bank; forecast
-/// income is never spendable here.
-pub(crate) fn plan_production_with_access(
-    resources: &ResourceSnapshot,
-    demands: &[ProductionDemand],
-    deadline: Tick,
-    budget: u32,
-    access: &ProductionAccess,
-) -> ProductionSchedule {
-    let requested: Vec<_> = demands
-        .iter()
-        .copied()
-        .filter(|demand| demand.count > 0)
-        .collect();
-    let requested_kinds: Vec<_> = requested
-        .iter()
-        .flat_map(|demand| core::iter::repeat_n(demand.kind, demand.count))
-        .collect();
-    let assignment = partial_horizon_assignment(resources, &requested_kinds, deadline, access);
-    lower_horizon_assignment(resources, &requested, &assignment, budget)
-}
-
-/// Lowers a priority-preserving horizon assignment without inventing forecast
-/// credit.
-///
-/// The assignment chooses accepted producer lanes together. This prevents an
-/// early, short provider from taking the only lane on which a later, long
-/// provider can meet the shared deadline. An unassigned request was proven not
-/// to fit alongside all earlier accepted work. Current queue slots and current
-/// scrap still decide which assigned providers can be commanded now.
-fn lower_horizon_assignment(
-    resources: &ResourceSnapshot,
-    requested: &[ProductionDemand],
-    assignment: &[Option<HorizonAssignment>],
-    budget: u32,
-) -> ProductionSchedule {
-    let mut assigned_by_lane = vec![0_usize; resources.producers().len()];
-    let spendable = budget.min(resources.current_scrap().amount());
-    let mut remaining_budget = spendable;
-    let mut appends = Vec::new();
-    let mut spent = 0_u32;
-    let mut deferred_scrap = 0_u32;
-    let mut next_unfunded_cost = None;
-
-    let mut assignment_index = 0_usize;
-    'demands: for demand in requested {
-        for _ in 0..demand.count {
-            let assigned = assignment
-                .get(assignment_index)
-                .copied()
-                .expect("an assignment has one entry per requested provider");
-            assignment_index += 1;
-            let Some(assigned) = assigned else {
-                continue;
-            };
-            let lane = &resources.producers()[assigned.lane_index];
-            let slot = lane.open_slots().nth(assigned_by_lane[assigned.lane_index]);
-            assigned_by_lane[assigned.lane_index] =
-                assigned_by_lane[assigned.lane_index].saturating_add(1);
-            let cost = demand.kind.stats().cost;
-            if cost > remaining_budget {
-                next_unfunded_cost = Some(cost);
-                break 'demands;
-            }
-
-            remaining_budget -= cost;
-            if let Some(slot) = slot {
-                spent = spent.saturating_add(cost);
-                appends.push(PlannedAppend {
-                    producer: slot.producer,
-                    kind: demand.kind,
-                    timing: assigned.timing,
-                });
-            } else {
-                deferred_scrap = deferred_scrap.saturating_add(cost);
-            }
-        }
-    }
-
-    ProductionSchedule {
-        appends,
-        spent,
-        deferred_scrap,
-        next_unfunded_cost,
-    }
-}
-
-/// Finds the lexicographically largest feasible subset in caller order.
-///
-/// Every newly requested provider is tested together with all earlier accepted
-/// work, allowing the solver to move those earlier providers between lanes. A
-/// failed addition therefore retains the last complete assignment instead of
-/// falling back to a locally greedy schedule. Later independent work remains
-/// eligible after a proven-impossible addition.
-fn partial_horizon_assignment(
-    resources: &ResourceSnapshot,
-    requested: &[UnitKind],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> Vec<Option<HorizonAssignment>> {
-    let mut accepted_indices = Vec::with_capacity(requested.len());
-    let mut accepted_kinds = Vec::with_capacity(requested.len());
-    let mut planned_by_lane = vec![Vec::<UnitKind>::new(); resources.producers().len()];
-    let mut assignment = vec![None; requested.len()];
-
-    for (request_index, &kind) in requested.iter().enumerate() {
-        if !kind_has_horizon_lane(resources, kind, deadline, access) {
-            continue;
-        }
-
-        if let Some(assigned) =
-            first_horizon_extension(resources, kind, &planned_by_lane, deadline, access)
-        {
-            planned_by_lane[assigned.lane_index].push(kind);
-            accepted_indices.push(request_index);
-            accepted_kinds.push(kind);
-            assignment[request_index] = Some(assigned);
-            continue;
-        }
-
-        accepted_kinds.push(kind);
-        match complete_horizon_assignment(resources, &accepted_kinds, deadline, access) {
-            HorizonAssignmentResult::Found(updated) => {
-                accepted_indices.push(request_index);
-                planned_by_lane.iter_mut().for_each(Vec::clear);
-                for (&accepted_kind, assigned) in accepted_kinds.iter().zip(&updated) {
-                    planned_by_lane[assigned.lane_index].push(accepted_kind);
-                }
-                for (&accepted_index, assigned) in accepted_indices.iter().zip(&updated) {
-                    assignment[accepted_index] = Some(*assigned);
-                }
-            }
-            HorizonAssignmentResult::Impossible => {
-                accepted_kinds.pop();
-            }
-        }
-    }
-
-    assignment
-}
-
 /// Necessary throughput bounds for ranking speculative rosters. A positive
 /// result still requires a funded FIFO schedule before admission.
 pub(crate) fn production_may_fit_horizon(
@@ -622,7 +427,7 @@ pub(crate) fn production_may_fit_horizon(
 ///
 /// This is structural feasibility evidence for a strategy that already owns a
 /// bounded forecast. It neither grants current credit nor permits an append;
-/// [`plan_production_with_access`] remains the command-lowering boundary.
+/// shared allocation owns funding and command schedules.
 pub(crate) fn production_demands_fit_horizon_with_access(
     resources: &ResourceSnapshot,
     demands: &[ProductionDemand],
@@ -634,70 +439,22 @@ pub(crate) fn production_demands_fit_horizon_with_access(
         .filter(|demand| demand.count > 0)
         .flat_map(|demand| core::iter::repeat_n(demand.kind, demand.count))
         .collect();
-    matches!(
-        complete_horizon_assignment(resources, &requested, deadline, access),
-        HorizonAssignmentResult::Found(_)
-    )
+    complete_horizon_fits(resources, &requested, deadline, access).0
 }
 
-fn complete_horizon_assignment(
+fn complete_horizon_fits(
     resources: &ResourceSnapshot,
     requested: &[UnitKind],
     deadline: Tick,
     access: &ProductionAccess,
-) -> HorizonAssignmentResult {
-    complete_horizon_assignment_diagnosed(resources, requested, deadline, access).0
-}
-
-fn complete_horizon_assignment_diagnosed(
-    resources: &ResourceSnapshot,
-    requested: &[UnitKind],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> (HorizonAssignmentResult, usize) {
+) -> (bool, usize) {
     let problem = HorizonProblem::new(resources, requested, deadline, access);
-    let mut remaining_counts = problem.request_counts(requested);
-    let mut remaining_capacities = problem.initial_capacities.clone();
     let mut search = AssignmentSearch::new(&problem);
-    if !search.fits_concrete(&remaining_counts, &remaining_capacities) {
-        return (HorizonAssignmentResult::Impossible, search.visited_states);
-    }
-
-    let mut planned_by_lane = vec![Vec::<UnitKind>::new(); resources.producers().len()];
-    let mut assignment = Vec::with_capacity(requested.len());
-    for &kind in requested {
-        let kind_index = problem
-            .kinds
-            .binary_search(&kind)
-            .expect("the problem kind list contains every request");
-        remaining_counts[kind_index] -= 1;
-        let duration = Tick::from(kind.stats().train_ticks);
-        let mut selected = None;
-        for (lane_index, timing, _) in
-            horizon_candidates(resources, kind, &planned_by_lane, deadline, access)
-        {
-            let prior_capacity = remaining_capacities[lane_index];
-            let Some(next_capacity) = prior_capacity.checked_sub(duration) else {
-                continue;
-            };
-            remaining_capacities[lane_index] = next_capacity;
-            if search.fits_concrete(&remaining_counts, &remaining_capacities) {
-                selected = Some(HorizonAssignment { lane_index, timing });
-                planned_by_lane[lane_index].push(kind);
-                break;
-            }
-            remaining_capacities[lane_index] = prior_capacity;
-        }
-        let Some(selected) = selected else {
-            return (HorizonAssignmentResult::Impossible, search.visited_states);
-        };
-        assignment.push(selected);
-    }
-
-    (
-        HorizonAssignmentResult::Found(assignment),
-        search.visited_states,
-    )
+    let fits = search.fits_concrete(
+        &problem.request_counts(requested),
+        &problem.initial_capacities,
+    );
+    (fits, search.visited_states)
 }
 
 fn most_constrained_remaining_kind(
@@ -821,63 +578,6 @@ fn lane_horizon_capacity(
         .checked_sub(1)?
         .checked_sub(timing.no_block_latest_ready_tick)?
         .checked_add(Tick::from(kind.stats().train_ticks))
-}
-
-fn first_horizon_extension(
-    resources: &ResourceSnapshot,
-    kind: UnitKind,
-    planned_by_lane: &[Vec<UnitKind>],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> Option<HorizonAssignment> {
-    horizon_candidates(resources, kind, planned_by_lane, deadline, access)
-        .into_iter()
-        .next()
-        .map(|(lane_index, timing, _)| HorizonAssignment { lane_index, timing })
-}
-
-fn horizon_candidates(
-    resources: &ResourceSnapshot,
-    kind: UnitKind,
-    planned_by_lane: &[Vec<UnitKind>],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> Vec<(usize, ProductionTiming, BuildingId)> {
-    let mut candidates: Vec<_> = resources
-        .producers()
-        .iter()
-        .enumerate()
-        .filter_map(|(lane_index, lane)| {
-            if !access.allows(lane.producer, kind) {
-                return None;
-            }
-            let mut proposed = planned_by_lane[lane_index].clone();
-            proposed.push(kind);
-            let timing = lane.horizon_timing(&proposed)?;
-            (timing.no_block_latest_ready_tick < deadline
-                && egress_is_credible_for(kind, timing.current_egress))
-            .then_some((lane_index, timing, lane.producer))
-        })
-        .collect();
-    candidates.sort_unstable_by_key(|(lane_index, timing, producer)| {
-        (timing.no_block_latest_ready_tick, *producer, *lane_index)
-    });
-    candidates
-}
-
-fn kind_has_horizon_lane(
-    resources: &ResourceSnapshot,
-    kind: UnitKind,
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> bool {
-    resources.producers().iter().any(|lane| {
-        access.allows(lane.producer, kind)
-            && lane.horizon_timing(&[kind]).is_some_and(|timing| {
-                timing.no_block_latest_ready_tick < deadline
-                    && egress_is_credible_for(kind, timing.current_egress)
-            })
-    })
 }
 
 /// Counts exact already-paid queue items that can credibly finish before

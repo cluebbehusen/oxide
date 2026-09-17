@@ -384,36 +384,10 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
     ));
     observation.my_queues.push(Vec::new());
     observation.my_queue_progress.push(0);
-    let mut proposal = current_connected_proposal(&observation);
-    let identity = proposal.identity();
-    let assignments = connected_assignments(&proposal, false)
-        .into_iter()
-        .map(|assignment| {
-            let timing = assignment.timing();
-            let shift = 24;
-            ConnectedProducerAssignment::new(
-                identity,
-                assignment.request_ordinal(),
-                assignment.producer(),
-                assignment.kind(),
-                ConnectedProducerTiming::new(
-                    timing.enqueued_at().saturating_add(shift),
-                    timing.starts_at().saturating_add(shift),
-                    timing.ready_at().saturating_add(shift),
-                    timing.ready_before(),
-                ),
-                ConnectedProducerFunding::new(assignment.kind().stats().cost, 0),
-            )
-        })
-        .collect::<Vec<_>>();
-    proposal
-        .bind_producer_assignments(assignments.clone())
-        .expect("the future exact minimum schedule binds");
+    let proposal = current_connected_proposal(&observation);
+    let fixed_deadline = proposal.deadline();
     let mut planner = StrategicPlanner::new();
-    planner
-        .commit_connected_proposal(proposal)
-        .expect("the bound connected package commits");
-    let fixed_deadline = assignments[0].timing().ready_before();
+    planner.commit_connected_proposal(proposal).unwrap();
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
@@ -455,75 +429,44 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
         !outcome.allocated_producer_intents.is_empty(),
         "ample residual capital should still admit fresh standing-force production"
     );
-    let retained = strategy
-        .active_connected_obligation(&observation)
-        .expect("the revised connected operation remains active");
+    let retained = connected_obligation(&mut strategy, &observation);
     assert_eq!(retained.deadline(), fixed_deadline);
-    assert_eq!(
+    assert!(
         retained
             .provider_jobs()
             .iter()
-            .take(assignments.len())
-            .map(|assignment| {
-                (
-                    assignment.request_ordinal(),
-                    assignment.producer(),
-                    assignment.kind(),
-                    assignment.timing(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        assignments
-            .iter()
-            .map(|assignment| {
-                (
-                    assignment.request_ordinal(),
-                    assignment.producer(),
-                    assignment.kind(),
-                    assignment.timing(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        "a compatible Foundry cannot shift accepted connected jobs while the revision adds new marginal work"
+            .all(|job| job.ready_before() == fixed_deadline)
     );
 }
 
 #[test]
 fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let observation = connected_observation(120, 10_000);
-    let (planner, assignments) = current_connected_planner(&observation, false);
-    let active = planner
-        .active_connected_obligation(&observation)
-        .expect("the committed operation exposes its exact obligation");
-    let first = assignments[0];
+    let (mut planner, requests) = current_connected_planner(&observation);
+    let active = connected_obligation(&mut planner, &observation);
+    let first = &requests[0];
     let resources = ResourceSnapshot::from_observation(&observation);
-    let newer_accepted_at = active.accepted_at().saturating_add(1);
+    let newer_accepted_at = active.accepted_at() + 1;
     let newer_key = ObligationKey::Legacy {
         channel: LegacyChannel::TeamRelief,
         sequence: 99,
     };
-    let decision = StrategicDecision {
-        intents: vec![Intent::TrainAt {
-            building: first.producer(),
-            kind: first.kind(),
-        }],
-        reservations: Vec::new(),
-        committed_scrap: first.kind().stats().cost,
-    };
-    let newer = legacy_decision_obligation(
-        &resources,
-        LegacyDecisionRequest {
-            cadence: 12,
-            accepted_at: newer_accepted_at,
-            decision_tick: first.timing().enqueued_at(),
-            channel: LegacyChannel::TeamRelief,
-            sequence: 99,
-            decision: &decision,
-            prior_producer_intents: &[],
-            production_deadline: active.deadline(),
-        },
-    )
-    .expect("the newer producer claim is independently legal");
+    let producer = first.eligible_producers()[0];
+    let ready = observation.tick + Tick::from(first.kind().stats().train_ticks) - 1;
+    let job = ProducerJobClaim::fixed(
+        producer,
+        first.kind(),
+        observation.tick,
+        observation.tick,
+        ready,
+        active.deadline(),
+    );
+    let newer = imported_obligation(
+        ObligationClass::Legacy,
+        newer_accepted_at,
+        newer_key,
+        ClaimBundle::new(0, vec![], vec![], vec![], vec![], vec![job.clone(), job]).unwrap(),
+    );
     let active_import = active_connected_obligation(&active)
         .expect("the older connected obligation adapts exactly");
     let active_owner = active_import.owner();
@@ -788,43 +731,10 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
 }
 
 #[test]
-fn connected_enqueue_missed_after_rollback_enters_bounded_recovery() {
+fn rolled_back_connected_procurement_retries_without_extending_deadline() {
     let mut observation = connected_observation(120, 10_000);
-    let mut proposal = current_connected_proposal(&observation);
-    let identity = proposal.identity();
-    let assignments = connected_assignments(&proposal, false)
-        .into_iter()
-        .map(|assignment| {
-            let timing = assignment.timing();
-            let shift = 24;
-            ConnectedProducerAssignment::new(
-                identity,
-                assignment.request_ordinal(),
-                assignment.producer(),
-                assignment.kind(),
-                ConnectedProducerTiming::new(
-                    timing.enqueued_at().saturating_add(shift),
-                    timing.starts_at().saturating_add(shift),
-                    timing.ready_at().saturating_add(shift),
-                    timing.ready_before(),
-                ),
-                ConnectedProducerFunding::new(assignment.kind().stats().cost, 0),
-            )
-        })
-        .collect::<Vec<_>>();
-    proposal
-        .bind_producer_assignments(assignments.clone())
-        .expect("the future exact minimum schedule binds");
-    let mut planner = StrategicPlanner::new();
-    planner
-        .commit_connected_proposal(proposal)
-        .expect("the bound connected package commits");
-    let first_enqueue = assignments
-        .iter()
-        .map(|assignment| assignment.timing().enqueued_at())
-        .min()
-        .expect("the connected minimum retains provider work");
-    observation.tick = first_enqueue;
+    let (planner, _) = current_connected_planner(&observation);
+    let first_enqueue = observation.tick;
     let invalid_team_decision = StrategicDecision {
         intents: vec![Intent::TrainAt {
             building: BuildingId(999),
@@ -845,22 +755,13 @@ fn connected_enqueue_missed_after_rollback_enters_bounded_recovery() {
         !failed.allocation_ok,
         "the unrelated invalid producer must roll the whole allocation pass back"
     );
-    let retained = strategy
-        .active_connected_obligation(&observation)
-        .expect("rollback must preserve the previously admitted operation");
-    assert!(
-        retained
-            .provider_jobs()
-            .iter()
-            .any(|assignment| assignment.timing().enqueued_at() == first_enqueue),
-        "rollback must leave the due append unpaid until a later pass diagnoses it"
-    );
-
-    observation.tick = first_enqueue.saturating_add(12);
-    assert_connected_enters_bounded_recovery(
-        &observation,
-        &mut policy,
-        &mut strategy,
-        "missed accepted enqueue after rollback",
-    );
+    let retained = connected_obligation(&mut strategy, &observation);
+    assert!(!retained.provider_jobs().is_empty());
+    observation.tick = first_enqueue + 12;
+    let retry = run_connected_session(&observation, &mut policy, &mut strategy);
+    assert!(retry.allocation_ok);
+    assert!(!retry.allocated_producer_intents.is_empty());
+    let after = connected_obligation(&mut strategy, &observation);
+    assert_eq!(after.deadline(), retained.deadline());
+    assert!(strategy.air_operation().unwrap().recovery_reason.is_none());
 }

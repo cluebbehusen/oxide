@@ -400,34 +400,17 @@ pub(crate) fn active_connected_revision_obligation(
 ) -> Result<ImportedObligation, ClaimBundleError> {
     debug_assert!(proposal.revises_active_operation());
     let identity = proposal.identity();
-    let delta = proposal
-        .active_revision_provider_delta()
-        .expect("an active revision retains its bound producer schedule");
     let minimum = proposal.minimum_claims();
-    let provider_jobs = delta
-        .allocation_order(minimum.provider_jobs().len())
-        .into_iter()
-        .map(|proposal_ordinal| {
-            let job = &delta.jobs()[proposal_ordinal];
-            if let Some(retained) = job.retained() {
-                let timing = retained.timing();
-                ProducerJobClaim::fixed(
-                    retained.producer(),
-                    retained.kind(),
-                    timing.enqueued_at(),
-                    timing.starts_at(),
-                    timing.ready_at(),
-                    timing.ready_before(),
-                )
-            } else {
-                let request = job.request();
-                ProducerJobClaim::flexible(
-                    request.kind(),
-                    request.enqueue_not_before(),
-                    request.ready_before(),
-                    request.eligible_producers().to_vec(),
-                )
-            }
+    let provider_jobs = minimum
+        .provider_jobs()
+        .iter()
+        .map(|job| {
+            ProducerJobClaim::flexible(
+                job.kind(),
+                job.enqueue_not_before(),
+                job.ready_before(),
+                job.eligible_producers().to_vec(),
+            )
         })
         .collect();
     Ok(super::imported_obligation(
@@ -1637,21 +1620,11 @@ mod tests {
         let schedule = result.final_producer_schedule().to_vec();
         let mut payloads = result.into_domain_payloads();
         assert!(payloads.take_foundry().is_some());
-        let mut revision = payloads
-            .take_connected()
-            .expect("the zero-claim carrier cannot lose to the empty portfolio");
-        let assignments =
-            super::super::active_connected_revision_producer_assignments(&revision, &schedule);
+        assert!(payloads.take_connected().is_some());
         assert_eq!(
-            assignments
-                .iter()
-                .map(|assignment| (assignment.request_ordinal(), assignment.kind()))
-                .collect::<Vec<_>>(),
-            vec![(0, minimum_kind), (1, marginal_kind)]
+            schedule.iter().map(|job| job.kind).collect::<Vec<_>>(),
+            vec![minimum_kind, marginal_kind]
         );
-        revision
-            .bind_producer_assignments(assignments)
-            .expect("the two allocation owners reassemble into one exact package");
     }
 
     #[test]

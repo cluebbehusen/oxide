@@ -119,13 +119,27 @@ boundary, but it never becomes current credit.
 Before considering fresh work, the session imports exact obligations for
 already-paid or retained construction, protected opening work, standing and
 planner-owned units, saved Foundry expansion, and active connected operations.
-`RetainedWork` owns that reconciliation and returns the claim snapshot, imported
-capacity, saved expansion, active revision, and admission guards used by fresh
-preparation. It selects the retained Foundry/island/lift order once and
-refreshes planner claims at the existing advancement boundaries. Standing-army
-ownership is imported after operation advancement and before a trailing Foundry.
-Equal admission ticks preserve island-before-lift and operation-before-Foundry
-ties. Repair renewal finishes before fresh support quotations.
+Connected operations retain their objective, admission priority, admissible
+minimum force and preparation deadline. Their unpaid production is reconstructed
+from current route-capable live providers, paid queues and eligible factories.
+Shared allocation schedules that demand flexibly on each decision; an earlier
+quote's factory or enqueue time is not a persistent obligation. Marginal growth
+above the admissible minimum stays optional and is adjudicated afresh on each
+decision rather than promoted to mandatory debt, so a revision may field a
+smaller opportunity-scaled force than an earlier decision funded. Only purchases
+emitted now enter the operation's paid ledger. Completed entries leave that
+ledger, so they cannot claim later ordinary work of the same kind. Blocked
+production retains ownership beyond its predicted completion until the queue
+advances. Emergency economy recovery asks only whether remaining demand still
+needs scrap, so any accessible paid queue satisfies it regardless of which
+program bought that work. `RetainedWork` owns that reconciliation and returns
+the claim snapshot, imported capacity, saved expansion, active revision, and
+admission guards used by fresh preparation. It selects the retained
+Foundry/island/lift order once and refreshes planner claims at the existing
+advancement boundaries. Standing-army ownership is imported after operation
+advancement and before a trailing Foundry. Equal admission ticks preserve
+island-before-lift and operation-before-Foundry ties. Repair renewal finishes
+before fresh support quotations.
 
 Lift, connected, and connected-revision funding share one conflict/retry path.
 Only a production conflict attributed to that exact retained owner can trigger
@@ -214,27 +228,34 @@ original context order; economic capability demand comes from the first context.
 Recovery rebuilds current ownership inputs before deriving replacement work.
 
 Accepted payloads retain the exact site, builder, objective, force membership,
-unit kind, and producer assignments selected by their domain. A defensive
-payload includes the scorer-selected role and footprint, its route-proven
-builder, and its quoted opportunity evidence. Commitment does not rerun domain
-ranking or placement. A connected package may add the largest feasible marginal
-extension only from the capacity left after its minimum and any compatible
-expansion, defense, or standing-force purchase. Any malformed input or failed
-exact commit freezes residual spending for that decision and restores
-speculative planner state; the decision trace records the allocator result or
-coordinator failure. Lower-priority lift and raid work then passes through the
-same admission pipeline with explicit remaining grants. Future producer
-reservations prevent it or `UtilityPolicy` from occupying an accepted lane.
+unit kind, and current purchases selected for their domain. A defensive payload
+includes the scorer-selected role and footprint, its route-proven builder, and
+its quoted opportunity evidence. Commitment does not rerun domain ranking or
+placement. A connected package may add the largest feasible marginal extension
+only from the capacity left after its minimum and any compatible expansion,
+defense, or standing-force purchase. Any malformed input or failed exact commit
+freezes residual spending for that decision and restores speculative planner
+state; the decision trace records the allocator result or coordinator failure.
+Lower-priority lift and raid work then passes through the same admission
+pipeline with explicit remaining grants. Future producer reservations prevent it
+or `UtilityPolicy` from occupying an accepted lane during that decision.
+Connected future rows are scheduling evidence; retained Lift, reconnaissance and
+standing-force bookings still have fixed timings. Advancing a Lift projects its
+fixed work jointly with flexible connected demand rather than validating a lane
+in isolation from the work that precedes it.
 
 Resolution returns either an exact settlement or a failure; deferred refinement
-may first try a portfolio containing only retained commitments. Commit adapters
-return errors directly and stop at the first rejection. Partially produced
-commands and budget effects stay private to commitment and are returned only on
-success. One outer boundary freezes spending and restores ownership on failure.
-Planner checkpoints precede active-work advancement; the policy checkpoint
-follows reconnaissance and support observation. Restoration retains observed
-outcome journals, unfinished planning, and maintenance commands from that
-observation phase. It does not provide rollback after a panic.
+may first try a portfolio containing only retained commitments. If retained
+connected demand still needs an unpriced flexible schedule, the transaction
+freezes instead of discarding that demand and exposing its budget to fresh
+spending. Planning progress survives this rollback. Commit adapters return
+errors directly and stop at the first rejection. Partially produced commands and
+budget effects stay private to commitment and are returned only on success. One
+outer boundary freezes spending and restores ownership on failure. Planner
+checkpoints precede active-work advancement; the policy checkpoint follows
+reconnaissance and support observation. Restoration retains observed outcome
+journals, unfinished planning, and maintenance commands from that observation
+phase. It does not provide rollback after a panic.
 
 `UtilityPolicy` separates three controller-owned lifetimes. `PolicyState` holds
 decision-relevant memory and commitments, including work history observed before
@@ -918,17 +939,18 @@ production service, including queue slots, timing, current funding, and shared
 work limits. Composition exploration uses shared necessary capacity bounds
 instead of scheduling every intermediate roster. The separate recursive
 funded-lane scheduler is a test-only oracle. A pending minimum remains a
-deferred target; a pending active revision preserves its accepted assignments
+deferred target; a pending active revision preserves its operation, paid work
 and deadline. Forecasts never reserve resources themselves. Fixed obligations
 reuse the same witness validator directly; they do not search for an alternative
 schedule. It checks current queue state, request identity, owner order, exact
 timing, and rebased funding. Unassigned mandatory purchases use the same bounded
-service. If they remain pending, the session settles only committed claims,
-restores the prior connected operation instead of accepting its replacement, and
-leaves new transport requests unbound. Due accepted jobs, paid work, and
-emergency commitments continue. Read-only funding checks preserve existing plans
-on deferred results. The exhaustive production solver is compiled only as a test
-oracle.
+service. If they remain pending, the session can settle only independently
+committed claims, restoring the prior operation instead of accepting its
+replacement and leaving new transport requests unbound. Retained connected
+demand prevents this fallback from releasing unpriced commitments; that decision
+freezes spending until refinement can settle. Read-only funding checks preserve
+existing plans on deferred results. The exhaustive production solver is compiled
+only as a test oracle.
 
 Site refinement and prospective Airworks targets use the same bounded candidate
 cursor. Airworks valuation admits two candidate factory sites and examines two
