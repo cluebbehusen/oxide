@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod batch;
+pub use batch::{EvaluationBatchOptions, EvaluationBatchResult, evaluate_batch};
+
 const MAX_CANDIDATE_LEN: usize = 128;
 
 /// Which half of a seat-paired evaluation produced a row.
