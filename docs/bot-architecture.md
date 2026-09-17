@@ -119,21 +119,27 @@ boundary, but it never becomes current credit.
 Before considering fresh work, the session imports exact obligations for
 already-paid or retained construction, protected opening work, standing and
 planner-owned units, saved Foundry expansion, and active connected operations.
-Connected operations retain their objective, admission priority, desired force
-and preparation deadline. Their unpaid production is reconstructed from current
-route-capable live providers, paid queues and eligible factories. Shared
-allocation schedules that demand flexibly on each decision; an earlier quote's
-factory or enqueue time is not a persistent obligation. Only purchases emitted
-now enter the operation's paid ledger. Completed entries leave that ledger, so
-they cannot claim later ordinary work of the same kind. Blocked production
-retains ownership beyond its predicted completion until the queue advances.
-`RetainedWork` owns that reconciliation and returns the claim snapshot, imported
-capacity, saved expansion, active revision, and admission guards used by fresh
-preparation. It selects the retained Foundry/island/lift order once and
-refreshes planner claims at the existing advancement boundaries. Standing-army
-ownership is imported after operation advancement and before a trailing Foundry.
-Equal admission ticks preserve island-before-lift and operation-before-Foundry
-ties. Repair renewal finishes before fresh support quotations.
+Connected operations retain their objective, admission priority, admissible
+minimum force and preparation deadline. Their unpaid production is reconstructed
+from current route-capable live providers, paid queues and eligible factories.
+Shared allocation schedules that demand flexibly on each decision; an earlier
+quote's factory or enqueue time is not a persistent obligation. Marginal growth
+above the admissible minimum stays optional and is adjudicated afresh on each
+decision rather than promoted to mandatory debt, so a revision may field a
+smaller opportunity-scaled force than an earlier decision funded. Only purchases
+emitted now enter the operation's paid ledger. Completed entries leave that
+ledger, so they cannot claim later ordinary work of the same kind. Blocked
+production retains ownership beyond its predicted completion until the queue
+advances. Emergency economy recovery asks only whether remaining demand still
+needs scrap, so any accessible paid queue satisfies it regardless of which
+program bought that work. `RetainedWork` owns that reconciliation and returns
+the claim snapshot, imported capacity, saved expansion, active revision, and
+admission guards used by fresh preparation. It selects the retained
+Foundry/island/lift order once and refreshes planner claims at the existing
+advancement boundaries. Standing-army ownership is imported after operation
+advancement and before a trailing Foundry. Equal admission ticks preserve
+island-before-lift and operation-before-Foundry ties. Repair renewal finishes
+before fresh support quotations.
 
 Lift, connected, and connected-revision funding share one conflict/retry path.
 Only a production conflict attributed to that exact retained owner can trigger
