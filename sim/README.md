@@ -72,15 +72,19 @@ an ordinary command source rather than a separate ruleset.
   emergency defense remains exact survival work with precedence over voluntary
   proposals, and admitted island-air work advances through the same transaction.
   Accepted domain payloads keep their exact choices; compatible work may proceed
-  together, while unmigrated planners and utility use only the residual
-  capacity. Connected air-and-siege operations derive opportunity-scaled
-  reconnaissance, suppression, direct strike, and current-visible
-  non-suppression bombing value, then freeze exact members at commitment. Their
-  route and queue preflight covers the complete admitted target cluster, whose
-  canonical anchors are exposed in optional decision traces without entering
-  controller state. See [Bot Strategy](../docs/bot-strategy.md) for the policy
-  direction and [Simulation Architecture](../docs/simulation-architecture.md)
-  for the current implementation contracts.
+  together. One admission pipeline advances retained operations, settles the
+  shared portfolio, and admits lower-priority lift and raid work in order. Fresh
+  lift candidates carry exact claims before commitment; utility receives an
+  explicit remaining-resource grant. All production planners are always present,
+  and command lowering does not reconstruct their budgets. Connected
+  air-and-siege operations derive opportunity-scaled reconnaissance,
+  suppression, direct strike, and current-visible non-suppression bombing value,
+  then freeze exact members at commitment. Their route and queue preflight
+  covers the complete admitted target cluster, whose canonical anchors are
+  exposed in optional decision traces without entering controller state. See
+  [Bot Strategy](../docs/bot-strategy.md) for the policy direction and
+  [Simulation Architecture](../docs/simulation-architecture.md) for the current
+  implementation contracts.
 - `vision` provides visibility and explored-world state.
 
 Queued construction pays for one site immediately. Fogged footprints remain
