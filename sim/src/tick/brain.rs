@@ -762,9 +762,10 @@ fn building_distance_sq(a: &crate::state::Building, b: &crate::state::Building) 
 /// wreck unit within its ring into one scrap for its owner. Fuel is
 /// unowned battlefield debris, so no fog or ownership question arises —
 /// the works eats what the war left where it stands. Crucibles work in
-/// id order and each takes the first wreck in row-major scan order
-/// inside its reach, so the same scattered field always melts in the
-/// same sequence.
+/// id order and each takes the nearest wreck inside its reach, then the
+/// richer one, with exact ties ordered in its half-turn frame, so the same
+/// scattered field always melts in the same sequence and mirrored
+/// crucibles melt mirrored tiles.
 fn crucible_smelter(state: &mut State) {
     use crate::stats::BuildingKind;
     use chassis::grid::TilePos;
@@ -789,21 +790,61 @@ fn crucible_smelter(state: &mut State) {
         let anchor = b.anchor;
         let (w, h) = b.stats().size;
         let reach = radius.to_num::<i32>() + 1;
-        let mut fuel = None;
-        'scan: for y in (anchor.y - reach)..(anchor.y + h + reach) {
+        // The nearest wreck feeds first, then the richer one; exact ties
+        // fall to tile order oriented in the crucible's half-turn frame, so
+        // mirrored crucibles with several wrecks in reach eat mirrored tiles
+        // instead of whichever the absolute scan meets first.
+        let footprint_center = |anchor: TilePos, (w, h): (i32, i32)| {
+            chassis::fx::Vec2Fx::new(
+                chassis::fx::Fx::from_num(anchor.x * 2 + w) / 2,
+                chassis::fx::Fx::from_num(anchor.y * 2 + h) / 2,
+            )
+        };
+        let hearth = footprint_center(anchor, (w, h));
+        // A crucible sitting exactly on the map center is its own mirror
+        // image, so its frame comes from the owner's earliest Foundry, the
+        // one thing a half-turn does exchange.
+        let map_center = chassis::fx::Vec2Fx::new(
+            chassis::fx::Fx::from_num(state.map.width()) / 2,
+            chassis::fx::Fx::from_num(state.map.height()) / 2,
+        );
+        let frame = if hearth == map_center {
+            state
+                .buildings
+                .iter()
+                .filter(|f| f.player == owner && f.kind == BuildingKind::Foundry)
+                .min_by_key(|f| f.id)
+                .map_or(hearth, |f| footprint_center(f.anchor, f.stats().size))
+        } else {
+            hearth
+        };
+        let rotated = super::movement::uses_rotated_map_frame(state, frame);
+        type FuelKey = (chassis::fx::Fx, std::cmp::Reverse<u32>, (i32, i32));
+        let mut fuel: Option<(FuelKey, TilePos)> = None;
+        for y in (anchor.y - reach)..(anchor.y + h + reach) {
             for x in (anchor.x - reach)..(anchor.x + w + reach) {
                 let tile = TilePos::new(x, y);
-                if state.map.wreck_at(tile) == 0 {
+                let amount = state.map.wreck_at(tile);
+                if amount == 0 {
                     continue;
                 }
                 let center = tile.center();
-                if b.closest_point_to(center).dist_sq(center) <= radius * radius {
-                    fuel = Some(tile);
-                    break 'scan;
+                let distance = b.closest_point_to(center).dist_sq(center);
+                if distance > radius * radius {
+                    continue;
+                }
+                let order = if rotated {
+                    (-tile.y, -tile.x)
+                } else {
+                    (tile.y, tile.x)
+                };
+                let key = (distance, std::cmp::Reverse(amount), order);
+                if fuel.as_ref().is_none_or(|(best, _)| key < *best) {
+                    fuel = Some((key, tile));
                 }
             }
         }
-        if let Some(tile) = fuel
+        if let Some((_, tile)) = fuel
             && state.map.extract_wreck(tile).is_some()
         {
             let bank = &mut state.player_mut(owner).scrap;

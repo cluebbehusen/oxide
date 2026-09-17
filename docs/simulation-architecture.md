@@ -256,6 +256,14 @@ escape path while preserving its order and work progress. Its scan frame
 reverses under a map half-turn, with body heading breaking an exact map-center
 tie.
 
+Routes stay body-blind, but a ground follower never admits a lookahead leg
+through a friendly ground body standing still, and a body whose contact cancels
+most of its intended progress toward its waypoint for twelve running ticks drops
+its route so its brain plans again from where it actually is; the counter is
+serialized and validated. Only friendly bodies count for the lookahead: steering
+around an unseen enemy before contact would leak its position, so hostile bodies
+are still met by the collision resolver alone.
+
 If a newly accepted foundation leaves a body without an escape route, make-way
 relocates it to a passable perimeter tile. That ring is ordered in the founder's
 approach frame, so rotating the map rotates the fallback destinations too.
@@ -274,7 +282,10 @@ Autonomous harvest replacement preserves worker distance, safe route length,
 source amount, anchor distance and source kind as its economic priorities. Exact
 ties use coordinates oriented by the worker's approach to the work-zone anchor.
 A worker standing on that anchor uses its hull bearing instead, so mirrored
-workers choose mirrored sources without depending on seat or unit ids.
+workers choose mirrored sources without depending on seat or unit ids. Work
+tiles that other friendly workers hold or are heading for are last resorts,
+taken only when every tile around a source is spoken for; a parked worker also
+claims every tile whose center lies within 0.9 tiles of its hull.
 
 Group `Move`, `Advance`, and `AttackMove` commands likewise resolve a blocked
 center and spread per-unit destinations in the approaching body's half-turn
@@ -322,8 +333,10 @@ Refineries pay on their cadences, restored Extractors provide fixed remote
 income, and a completed same-owner Foundry within the support radius raises an
 Extractor's fixed yield without stacking. Completed Foundries also provide the
 baseline drip and a finite recovery entitlement for a stranded seat. Crucibles
-consume nearby wreck salvage for income. These are ordinary authoritative rules,
-not shell conveniences.
+consume nearby wreck salvage for income, nearest tile first and then the richer
+one, with exact ties ordered in the crucible's half-turn frame so mirrored
+crucibles burn mirrored tiles. These are ordinary authoritative rules, not shell
+conveniences.
 
 Extractor frames are immutable authored map features. Only an Extractor may
 claim one, other foundations cannot cover one, and destroying an Extractor
@@ -423,11 +436,12 @@ during travel; fixed weapons wait for the motor to stop before turning to aim.
 A ground follower does not drive a grid route corner by corner. Each tick it
 looks ahead a bounded number of waypoints and steers for the furthest one its
 hull can reach on a straight leg, tested as a swept line of its body radius
-against terrain and building occupancy, so a staircase is driven as one line and
-a corner is rounded only once the far side is actually clear. A waypoint reached
-that way is revalidated each tick along the line its center travels; an adjacent
-waypoint keeps the tile rules the route was planned under, so a wide hull beside
-a wall never loses a leg it could always walk.
+against terrain, building occupancy and friendly bodies at rest, so a staircase
+is driven as one line and a corner is rounded only once the far side is actually
+clear. A waypoint reached that way is revalidated each tick with the same swept
+terrain test, so ground claimed beside the leg drops it for a fresh route; an
+adjacent waypoint keeps the tile rules the route was planned under, so a wide
+hull beside a wall never loses a leg it could always walk.
 
 A pathless ground unit can still be braking. Group arrival propagation and
 anchored collision priority require its motor speed to be zero.

@@ -380,10 +380,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidProvisionalSite(_) => 74,
         E::InvalidReturnCargo(_) => 75,
         E::ScrapBeyondCapacity(_) => 76,
+        E::InvalidStallTicks(_) => 77,
     }
 }
 
-const ROWS: usize = 77;
+const ROWS: usize = 78;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -473,6 +474,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidProvisionalSite(BuildingId(0)),
         E::InvalidReturnCargo(UnitId(0)),
         E::ScrapBeyondCapacity(UnitId(0)),
+        E::InvalidStallTicks(UnitId(0)),
     ]
 }
 
@@ -807,6 +809,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "a harvester carrying deployed spades",
             |d| d["units"][0]["brace_ticks"] = json!(1),
             "unit u0 carries invalid spade deployment",
+        ),
+        (
+            "a stall counter at its replan bound",
+            |d| d["units"][0]["stall_ticks"] = json!(oxide_sim::stats::STALL_REPLAN_TICKS),
+            "unit u0 carries an invalid stall counter",
         ),
         (
             "a unit shoved to the far end of the coordinate space",
