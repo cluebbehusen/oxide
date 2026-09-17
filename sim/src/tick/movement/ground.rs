@@ -1,5 +1,5 @@
-use crate::tick::flight::heading_of;
 use chassis::compass::dir;
+use chassis::compass::heading_of;
 use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 

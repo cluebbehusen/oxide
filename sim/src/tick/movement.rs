@@ -66,7 +66,7 @@ fn steer_bearing(heading: &mut u8, direction: Vec2Fx, rate: u8) -> bool {
     if rate == 0 || direction == Vec2Fx::ZERO {
         return true;
     }
-    let desired = flight::heading_of(direction);
+    let desired = chassis::compass::heading_of(direction);
     let delta = i16::from(desired.wrapping_sub(*heading) as i8);
     let step = delta.clamp(-i16::from(rate), i16::from(rate));
     *heading = heading.wrapping_add_signed(step as i8);
@@ -80,7 +80,10 @@ fn heading_aligned(current: u8, desired: u8) -> bool {
 pub(super) fn ground_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
     (unit.kind.ground_turn_rate() == 0 && unit.kind.cruise_turn_rate() == 0)
         || direction == Vec2Fx::ZERO
-        || heading_aligned(unit.weapon_heading(), flight::heading_of(direction))
+        || heading_aligned(
+            unit.weapon_heading(),
+            chassis::compass::heading_of(direction),
+        )
 }
 
 pub(super) fn advancing_weapon_aligned(unit: &crate::state::Unit, direction: Vec2Fx) -> bool {
@@ -1256,8 +1259,9 @@ mod tests {
             },
         ];
         for ((unit, position), path) in state.units.iter_mut().zip([pos, mirrored_pos]).zip(paths) {
-            unit.heading =
-                flight::heading_of(path.waypoints[path.next as usize].center() - position);
+            unit.heading = chassis::compass::heading_of(
+                path.waypoints[path.next as usize].center() - position,
+            );
             unit.pos = position;
             unit.order = Order::Move { goal: path.goal };
             unit.path = Some(path);
@@ -1420,7 +1424,8 @@ mod tests {
             },
         ];
         for ((unit, pos), path) in state.units.iter_mut().zip(positions).zip(paths) {
-            unit.heading = flight::heading_of(path.waypoints[path.next as usize].center() - pos);
+            unit.heading =
+                chassis::compass::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.pos = pos;
             unit.order = Order::AttackMove { goal: path.goal };
             unit.path = Some(path);
@@ -1786,7 +1791,8 @@ mod tests {
         ];
         for ((unit, pos), path) in state.units.iter_mut().zip(positions).zip(paths) {
             unit.kind = UnitKind::Avalanche;
-            unit.heading = flight::heading_of(path.waypoints[path.next as usize].center() - pos);
+            unit.heading =
+                chassis::compass::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.hp = UnitKind::Avalanche.stats().max_hp;
             unit.pos = pos;
             unit.order = Order::Move { goal: path.goal };

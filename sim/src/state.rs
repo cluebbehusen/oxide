@@ -1736,7 +1736,7 @@ impl State {
             heading: if kind.stats().domain == crate::stats::Domain::Ground
                 || kind.cruise_turn_rate() > 0
             {
-                crate::tick::flight::heading_of(
+                chassis::compass::heading_of(
                     Vec2Fx::new(
                         Fx::from_num(self.map.width()) / 2,
                         Fx::from_num(self.map.height()) / 2,

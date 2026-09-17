@@ -33,7 +33,7 @@ pub(super) fn remember_motion(state: &mut State, before: &[(UnitId, Vec2Fx)]) {
             delta
         };
         if unit.kind == crate::UnitKind::Skyhook && unit.air_motion != Vec2Fx::ZERO {
-            unit.heading = super::flight::heading_of(unit.air_motion);
+            unit.heading = chassis::compass::heading_of(unit.air_motion);
         }
     }
 }
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(state.unit(id).unwrap().air_motion, delta);
         assert_eq!(
             state.unit(id).unwrap().heading,
-            super::super::flight::heading_of(delta)
+            chassis::compass::heading_of(delta)
         );
         state.units.iter_mut().find(|u| u.id == id).unwrap().pos += Vec2Fx::new(Fx::ONE, Fx::ONE);
         remember_motion(&mut state, &before);

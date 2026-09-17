@@ -275,9 +275,93 @@ pub const fn dir(step: u8) -> Vec2Fx {
     COMPASS_256[step as usize]
 }
 
+/// The compass step maximizing the fixed-point dot product with `v`.
+/// Ties choose the lowest heading; the zero vector returns zero.
+pub fn heading_of(v: Vec2Fx) -> u8 {
+    let first: u8 = if v.y >= Fx::ZERO {
+        if v.x >= Fx::ZERO { 0 } else { 64 }
+    } else if v.x > Fx::ZERO {
+        192
+    } else {
+        128
+    };
+    let mut best = 0;
+    let mut best_dot = v.x;
+    // Reflecting either nonzero component into v's quadrant strictly improves
+    // a mismatched sign, even after fixed-point rounding. Include both axes,
+    // and keep heading zero as the earliest possible tied winner.
+    for k in first..=first.saturating_add(64) {
+        let d = dir(k);
+        let dot = d.x * v.x + d.y * v.y;
+        if dot > best_dot {
+            best = k;
+            best_dot = dot;
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heading_of_rounds_to_the_nearest_compass_step() {
+        assert_eq!(heading_of(Vec2Fx::new(Fx::lit("3"), Fx::ZERO)), 0);
+        assert_eq!(heading_of(Vec2Fx::new(Fx::ZERO, Fx::lit("-2"))), 192);
+        assert_eq!(heading_of(Vec2Fx::new(Fx::lit("1"), Fx::lit("1"))), 32);
+    }
+
+    fn exhaustive_heading(v: Vec2Fx) -> u8 {
+        let mut best = 0;
+        let mut best_dot = v.x;
+        for k in 1..=255 {
+            let d = dir(k);
+            let dot = d.x * v.x + d.y * v.y;
+            if dot > best_dot {
+                best = k;
+                best_dot = dot;
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn quadrant_search_preserves_fixed_point_rounding_and_first_ties() {
+        for x in -64..=64 {
+            for y in -64..=64 {
+                let v = Vec2Fx::new(Fx::from_bits(x), Fx::from_bits(y));
+                assert_eq!(heading_of(v), exhaustive_heading(v), "{v:?}");
+            }
+        }
+        for step in 0..=255u8 {
+            let v = dir(step);
+            let reflected_x = dir(128u8.wrapping_sub(step));
+            let reflected_y = dir(step.wrapping_neg());
+            assert_eq!(reflected_x, Vec2Fx::new(-v.x, v.y));
+            assert_eq!(reflected_y, Vec2Fx::new(v.x, -v.y));
+            for scale in [Fx::from_bits(1), Fx::lit("0.01"), Fx::ONE, Fx::lit("8192")] {
+                let boundary = v + dir(step.wrapping_add(1));
+                for dx in [-1, 0, 1] {
+                    for dy in [-1, 0, 1] {
+                        let v = Vec2Fx::new(
+                            boundary.x * scale + Fx::from_bits(dx),
+                            boundary.y * scale + Fx::from_bits(dy),
+                        );
+                        assert_eq!(heading_of(v), exhaustive_heading(v), "{v:?}");
+                    }
+                }
+            }
+        }
+        let mut rng = crate::rng::Pcg32::new(0x1234, 7);
+        for _ in 0..20_000 {
+            let v = Vec2Fx::new(
+                Fx::from_bits(i64::from(rng.next_u32().cast_signed()) << 13),
+                Fx::from_bits(i64::from(rng.next_u32().cast_signed()) << 13),
+            );
+            assert_eq!(heading_of(v), exhaustive_heading(v), "{v:?}");
+        }
+    }
 
     #[test]
     fn every_step_is_a_unit_vector() {

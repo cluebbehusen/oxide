@@ -128,10 +128,9 @@ pub(super) fn run(
     index: &mut super::spatial::UnitIndex,
     events: &mut Vec<Event>,
 ) -> logistics::Pending {
-    // One index serves every acquisition window this phase: brains
-    // decide against the start-of-tick world — positions, hp, and the
-    // unit list itself hold still until resolution — so a snapshot
-    // taken here stays exact for the whole decision loop.
+    // Positions and unit slots hold still until resolution, so acquisition
+    // and arrival queries share this index. Orders, speed and landed state
+    // can change during the loop and must still be read from the live unit.
     index.rebuild(&state.units);
     let motion = MotionSnapshot::capture(state);
     let mut hits: Vec<PendingHit> = Vec::new();
@@ -190,7 +189,7 @@ pub(super) fn run(
             Order::Idle => idle(state, index, id),
             Order::Move { goal } => {
                 if !land_at_destination(state, index, id, goal) {
-                    walk(state, id, goal, events);
+                    walk(state, index, id, goal, events);
                 }
             }
             Order::ReturnCargo { foundry, repair } => {
