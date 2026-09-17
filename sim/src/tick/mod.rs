@@ -1038,7 +1038,8 @@ mod tests {
         ] {
             let unit = state.unit(unit_id).unwrap();
             let direction = state.building(victim).unwrap().closest_point_to(unit.pos) - unit.pos;
-            state.unit_mut(unit_id).unwrap().turret_heading = Some(flight::heading_of(direction));
+            state.unit_mut(unit_id).unwrap().turret_heading =
+                Some(chassis::compass::heading_of(direction));
         }
         let report = state.tick(&[]);
         assert!(
