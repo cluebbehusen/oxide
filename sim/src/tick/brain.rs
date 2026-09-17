@@ -802,21 +802,41 @@ fn crucible_smelter(state: &mut State) {
         let anchor = b.anchor;
         let (w, h) = b.stats().size;
         let reach = radius.to_num::<i32>() + 1;
-        let mut fuel = None;
-        'scan: for y in (anchor.y - reach)..(anchor.y + h + reach) {
+        // The nearest wreck feeds first, then the richer one; exact ties
+        // fall to tile order oriented in the crucible's half-turn frame, so
+        // mirrored crucibles with several wrecks in reach eat mirrored tiles
+        // instead of whichever the absolute scan meets first.
+        let hearth = chassis::fx::Vec2Fx::new(
+            chassis::fx::Fx::from_num(anchor.x * 2 + w) / 2,
+            chassis::fx::Fx::from_num(anchor.y * 2 + h) / 2,
+        );
+        let rotated = super::movement::uses_rotated_map_frame(state, hearth);
+        type FuelKey = (chassis::fx::Fx, std::cmp::Reverse<u32>, (i32, i32));
+        let mut fuel: Option<(FuelKey, TilePos)> = None;
+        for y in (anchor.y - reach)..(anchor.y + h + reach) {
             for x in (anchor.x - reach)..(anchor.x + w + reach) {
                 let tile = TilePos::new(x, y);
-                if state.map.wreck_at(tile) == 0 {
+                let amount = state.map.wreck_at(tile);
+                if amount == 0 {
                     continue;
                 }
                 let center = tile.center();
-                if b.closest_point_to(center).dist_sq(center) <= radius * radius {
-                    fuel = Some(tile);
-                    break 'scan;
+                let distance = b.closest_point_to(center).dist_sq(center);
+                if distance > radius * radius {
+                    continue;
+                }
+                let order = if rotated {
+                    (-tile.y, -tile.x)
+                } else {
+                    (tile.y, tile.x)
+                };
+                let key = (distance, std::cmp::Reverse(amount), order);
+                if fuel.as_ref().is_none_or(|(best, _)| key < *best) {
+                    fuel = Some((key, tile));
                 }
             }
         }
-        if let Some(tile) = fuel
+        if let Some((_, tile)) = fuel
             && state.map.extract_wreck(tile).is_some()
         {
             let bank = &mut state.player_mut(owner).scrap;
