@@ -341,26 +341,12 @@ impl<'a> RouteProjection<'a> {
         {
             return false;
         }
-        let transform = |tile| {
-            self.command_orientation
-                .map_or(tile, |orientation| orientation.tile(tile))
-        };
         let mut search = crate::bot::navigation::search::Search::default();
-        let path = search.path(
-            self.query_purpose,
-            self.obs.map_width,
-            self.obs.map_height,
-            transform(from),
-            transform(to),
-            |tile| {
-                let tile = transform(tile);
-                self.domain_open(tile) && (!self.require_explored || self.obs.explored(tile))
-            },
-        );
+        let path = self.retained_command_route(from, to, &mut search);
         self.safety
             .borrow_mut()
             .record(from, to, search.last_expansions() as usize);
-        path.is_some_and(|path| path.into_iter().all(|tile| self.open(transform(tile))))
+        path.is_some_and(|path| path.into_iter().all(|tile| self.open(tile)))
     }
 
     /// Exact ordinary-command travel cost, optionally escaping an initial danger
@@ -416,6 +402,15 @@ impl<'a> RouteProjection<'a> {
         if !in_bounds(self.obs, from) || !self.domain_open(to) {
             return None;
         }
+        self.retained_command_route(from, to, &mut super::search::Search::default())
+    }
+
+    fn retained_command_route(
+        &self,
+        from: TilePos,
+        to: TilePos,
+        search: &mut super::search::Search,
+    ) -> Option<Vec<TilePos>> {
         let transform = |tile| {
             self.command_orientation
                 .map_or(tile, |orientation| orientation.tile(tile))
@@ -434,18 +429,10 @@ impl<'a> RouteProjection<'a> {
             super::paths::PathBoard {
                 query_purpose: self.query_purpose,
                 grid,
-                class: match self.domain {
-                    Domain::Ground => super::paths::CacheClass::Ground,
-                    Domain::Air => super::paths::CacheClass::Air,
-                },
+                class: super::paths::CacheClass::Command,
                 cache,
             }
-            .path(
-                transform(from),
-                transform(to),
-                None,
-                &mut super::search::Search::default(),
-            )
+            .path(transform(from), transform(to), None, search)
         })?;
         Some(path.into_iter().map(transform).collect())
     }
@@ -2508,6 +2495,7 @@ mod tests {
 
     #[test]
     fn many_work_routes_share_one_safety_proof_without_changing_command_choices() {
+        super::super::paths::with_command_routes(|cache| *cache.borrow_mut() = Default::default());
         let obs = observation();
         let goal = TilePos::new(0, 0);
         let routes = RouteProjection::ground_avoiding(QueryPurpose::NavigationTest, &obs, |tile| {
@@ -2546,6 +2534,9 @@ mod tests {
                 });
             let expected = routes.uncached_command_path_avoids_blocked(from, to);
             assert_eq!(expected, blocked.y == 0);
+            super::super::paths::with_command_routes(|cache| {
+                *cache.borrow_mut() = Default::default()
+            });
             let (actual, cold) = crate::bot::navigation::work::measure(|| {
                 routes.command_path_avoids_blocked(from, to)
             });
@@ -2568,6 +2559,168 @@ mod tests {
             assert_eq!(routes.safe_paths.borrow().len(), 4096);
             assert_eq!(routes.command_path_avoids_blocked(from, to), expected);
         }
+    }
+
+    #[test]
+    fn retained_command_paths_recheck_danger_in_each_direction_and_orientation() {
+        let mut obs = observation();
+        obs.known_rock = vec![TilePos::new(6, 3)];
+        obs.known_peaks = obs.known_rock.clone();
+        let map = public_map(&obs, vec![]);
+        for domain in [Domain::Ground, Domain::Air] {
+            for home in [
+                TilePos::new(0, 0),
+                TilePos::new(11, 0),
+                TilePos::new(0, 7),
+                TilePos::new(11, 7),
+            ] {
+                let orientation = Orientation::for_home(&obs, home);
+                super::super::paths::with_command_routes(|cache| {
+                    *cache.borrow_mut() = Default::default()
+                });
+                for (from, to) in [
+                    (TilePos::new(2, 3), TilePos::new(9, 3)),
+                    (TilePos::new(9, 3), TilePos::new(2, 3)),
+                ] {
+                    let expected = super::super::search::canonical_path(
+                        QueryPurpose::NavigationTest,
+                        obs.map_width,
+                        obs.map_height,
+                        orientation.tile(from),
+                        orientation.tile(to),
+                        |tile| {
+                            domain_open(
+                                QueryPurpose::NavigationTest,
+                                &obs,
+                                domain,
+                                orientation.tile(tile),
+                            )
+                        },
+                    )
+                    .unwrap()
+                    .into_iter()
+                    .map(|tile| orientation.tile(tile))
+                    .collect::<Vec<_>>();
+                    let middle = expected[expected.len() / 2];
+                    for (index, danger) in [TilePos::new(0, 7), middle, TilePos::new(0, 7)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let routes = RouteProjection::avoiding_with_public_terrain(
+                            QueryPurpose::NavigationTest,
+                            &obs,
+                            domain,
+                            &map,
+                            orientation,
+                            |tile| tile == danger,
+                        );
+                        let (safe, work) = super::super::work::measure(|| {
+                            routes.command_path_avoids_blocked(from, to)
+                        });
+                        assert_eq!(safe, !expected.contains(&danger));
+                        if index > 0 {
+                            assert_eq!(
+                                work.searches, 0,
+                                "changed danger must reuse the ordinary path: {work:?}"
+                            );
+                            assert_eq!(work.hits, 1);
+                        }
+                        assert_eq!(routes.command_route(from, to), Some(expected.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn retained_safety_paths_invalidate_terrain_and_exploration_without_caching_failures() {
+        let mut obs = observation();
+        obs.explored.fill(true);
+        let mut map = public_map(&obs, vec![]);
+        let from = TilePos::new(2, 3);
+        let to = TilePos::new(9, 3);
+        let orientation = Orientation::for_home(&obs, from);
+        super::super::paths::with_command_routes(|cache| *cache.borrow_mut() = Default::default());
+        for change in 0..7 {
+            match change {
+                1 => obs.known_rock = (0..8).map(|y| TilePos::new(6, y)).collect(),
+                2 => obs.known_rock.clear(),
+                3 => {
+                    map.non_ground_terrain = (0..8)
+                        .map(|y| (TilePos::new(6, y), Terrain::Rock))
+                        .collect()
+                }
+                4 => map.non_ground_terrain.clear(),
+                5 => obs.explored.fill(false),
+                6 => obs.explored.fill(true),
+                _ => {}
+            }
+            let expected = matches!(change, 0 | 2 | 4 | 6);
+            for _ in 0..2 {
+                let mut routes = RouteProjection::ground_avoiding_with_public_terrain(
+                    QueryPurpose::NavigationTest,
+                    &obs,
+                    &map,
+                    orientation,
+                    |tile| tile == TilePos::new(0, 7),
+                );
+                routes.require_explored = true;
+                let (safe, work) =
+                    super::super::work::measure(|| routes.command_path_avoids_blocked(from, to));
+                assert_eq!(safe, expected, "change {change}");
+                if !expected {
+                    assert_eq!(
+                        work.hits, 0,
+                        "a failed search must retain its own exhaustion evidence"
+                    );
+                    assert_eq!(
+                        work.searches - work.fields,
+                        1,
+                        "failed paths must rerun A* even after endpoint fields are prepared"
+                    );
+                }
+            }
+        }
+        // A zero-length command is accepted before A* tests public terrain;
+        // the safety entry point's observed-terrain guard still takes precedence.
+        map.non_ground_terrain.push((from, Terrain::Rock));
+        let routes = RouteProjection::ground_avoiding_with_public_terrain(
+            QueryPurpose::NavigationTest,
+            &obs,
+            &map,
+            orientation,
+            |_| true,
+        );
+        assert!(routes.command_path_avoids_blocked(from, from));
+        assert_eq!(routes.command_route(from, from), None);
+        assert!(!routes.command_path_avoids_blocked(TilePos::new(-1, 0), to));
+    }
+
+    #[test]
+    fn retained_safety_routes_preserve_capped_search_failure_and_recovery() {
+        let mut obs = observation();
+        obs.map_width = 300;
+        obs.map_height = 150;
+        obs.known_rock = (0..150).map(|y| TilePos::new(290, y)).collect();
+        let from = TilePos::new(2, 3);
+        let to = TilePos::new(299, 3);
+        for _ in 0..2 {
+            let routes =
+                RouteProjection::ground_avoiding(QueryPurpose::NavigationTest, &obs, |tile| {
+                    tile == TilePos::new(0, 0)
+                });
+            let (safe, work) =
+                super::super::work::measure(|| routes.command_path_avoids_blocked(from, to));
+            assert!(!safe);
+            assert_eq!(work.expanded, crate::stats::PATH_EXPANSION_CAP as usize + 1);
+            assert_eq!(work.fields, 0);
+            assert_eq!(work.hits, 0);
+        }
+        obs.known_rock.clear();
+        let routes = RouteProjection::ground_avoiding(QueryPurpose::NavigationTest, &obs, |tile| {
+            tile == TilePos::new(0, 0)
+        });
+        assert!(routes.command_path_avoids_blocked(from, to));
     }
 
     #[test]

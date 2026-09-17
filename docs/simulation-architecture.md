@@ -984,7 +984,12 @@ service region. Its exact equality key includes ordinary passability, allowed
 passability, the danger mask, orientation, public map knowledge, and completed
 drop-offs. Changed blockers or danger discard the old service evidence. Resource
 amounts, visibility, work eligibility, live workers, and producer schedules are
-evaluated afresh; cached geometry grants no resource or worker credit.
+evaluated afresh; cached geometry grants no resource or worker credit. Canonical
+command paths beneath those corridor verdicts have a separate navigation-owned
+lifetime. Their cache keys contain ordinary passability in the command
+coordinate frame and directed endpoints, so changed danger can reuse a path
+while checking every step against the current safety projection. Service
+connectivity and danger-avoiding distances still invalidate with danger.
 Concurrent air and lift demand share each Airworks lane's time once, bounded by
 readiness, customer deadlines, and route reachability. Local Foundry throughput
 opportunities reuse the expansion admission and security path. Additional
@@ -1379,15 +1384,22 @@ propagates safety along improving and tied predecessor edges, so classification
 uses the same movement rules without a second sorted traversal. Ambiguous routes
 still use canonical A*, and maps above its expansion cap bypass the proof. Each
 immutable route projection retains at most sixteen safety fields, independently
-of the directed route-answer cache. Producer-exit certificates first repair an
-intersected route inside a small rectangle around the candidate footprint,
-including nearby replacement doors or destinations when an endpoint is blocked.
-Producers share one row/column index per connected component; its four live
-coordinate extrema select the exact farthest destination without per-producer
-rankings. Failed local repairs use the full connectivity check; a failed local
-detour never proves that a producer is trapped. Long cardinal proofs first try a
-bounded monotone search. A successful probe retains the canonical shortest path;
-detours fall back to the complete search.
+of the directed route-answer cache. Canonical command routes and ambiguous
+safety fallbacks share a worker-local path cache retaining up to eight ordinary
+surfaces with 1 MiB per surface. Multiple seats can reuse their distinct
+fog-honest surfaces within an 8 MiB total accounted allowance. Ground and air
+share that allowance, keyed by their exact passability; danger verdicts remain
+projection-local. This command cache does not enter policy rollback snapshots or
+change planning allowances. Failed searches still run with their own
+capped-search evidence. Producer-exit certificates first repair an intersected
+route inside a small rectangle around the candidate footprint, including nearby
+replacement doors or destinations when an endpoint is blocked. Producers share
+one row/column index per connected component; its four live coordinate extrema
+select the exact farthest destination without per-producer rankings. Failed
+local repairs use the full connectivity check; a failed local detour never
+proves that a producer is trapped. Long cardinal proofs first try a bounded
+monotone search. A successful probe retains the canonical shortest path; detours
+fall back to the complete search.
 
 Reinforcement valuation requests scalar travel costs and visits units in
 optimistic arrival order, stopping when no remaining unit can arrive sooner.
