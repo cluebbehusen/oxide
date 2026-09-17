@@ -971,6 +971,9 @@ impl State {
             if u.hp == 0 || u.hp > stats.max_hp {
                 return Err(E::UnitHpOutOfRange(u.id));
             }
+            if u.carrying > stats.harvest.map_or(0, |harvest| harvest.capacity) {
+                return Err(E::ScrapBeyondCapacity(u.id));
+            }
             if u.progress > PROGRESS_ENVELOPE {
                 return Err(E::UnitProgressOutOfRange(u.id));
             }
@@ -1085,6 +1088,9 @@ impl State {
                 }
                 if rider.hp == 0 || rider.hp > rstats.max_hp {
                     return Err(E::CargoHpOutOfRange(u.id));
+                }
+                if rider.carrying > rstats.harvest.map_or(0, |harvest| harvest.capacity) {
+                    return Err(E::ScrapBeyondCapacity(rider.id));
                 }
                 if rider.player != u.player {
                     return Err(E::CargoOwnerMismatch(u.id));
@@ -2138,6 +2144,9 @@ mod tests {
 /// one names the entity that broke it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StateIntegrityError {
+    /// A walking or transported unit holds more scrap than its harvest gear permits.
+    #[error("unit {0} carries scrap beyond its harvest capacity")]
+    ScrapBeyondCapacity(UnitId),
     /// A stored aircraft displacement is not physically bounded.
     #[error("unit {0} carries invalid airborne motion")]
     InvalidAirMotion(UnitId),
