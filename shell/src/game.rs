@@ -1,12 +1,6 @@
-//! The shell's session state: one sim, its bots, the recorder, and every
-//! piece of presentation state (camera, selection, interpolation, effects).
-//!
-//! The dividing line is absolute: `state` evolves only inside [`Game::do_tick`]
-//! via tick-stamped commands, and everything else in this struct is allowed
-//! to be as floaty and frame-dependent as it likes because none of it feeds
-//! back into the sim.
+//! Live simulation, bot execution, command recording, and session bookkeeping.
+//! Shared presentation borrows the active world and never advances it.
 
-use crate::camera::Camera;
 use anyhow::Result;
 use chassis::replay::Replay;
 use macroquad::prelude::{Vec2, vec2};
@@ -14,9 +8,8 @@ use oxide_protocol::hash_hex;
 use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
-    TICKS_PER_SECOND, Target, UnitId, UnitKind,
+    TICKS_PER_SECOND, UnitId, UnitKind,
 };
-use std::collections::HashMap;
 use std::ops::Deref;
 
 pub(crate) fn finish_recording(writer: &oxide_kit::recovery::RecoveryWriter, tick: u64) {
@@ -92,6 +85,8 @@ pub struct Selection {
 
 /// A transient visual effect (never sim-relevant).
 mod fx;
+mod presentation;
+pub(crate) use presentation::{Presentation, Scene};
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 
@@ -124,81 +119,10 @@ pub struct Game {
     pub(crate) diagnostics: Option<oxide_kit::diagnostics::Recorder>,
     /// Commands staged for the next tick (human + debug socket).
     pub(crate) pending: PendingCommands,
-    /// The seat local input controls.
-    pub human: PlayerId,
-    /// Presentation camera.
-    pub camera: Camera,
-    /// Current selection.
-    pub selection: Selection,
-    /// Wall clock stopped?
-    pub paused: bool,
-    /// Wall-clock multiplier.
-    pub speed: f64,
-    /// Debug overlay on?
-    pub overlay: bool,
-    /// Positions at the previous tick, for render interpolation.
-    pub prev_pos: HashMap<u32, Vec2>,
-    /// Compass headings at the previous tick, for angular interpolation.
-    pub prev_heading: HashMap<u32, u8>,
-    /// Sprite rotation per unit (radians; 0 = up).
-    pub facing: HashMap<u32, f32>,
-    hull_heading: HashMap<u32, (f32, f32)>,
-    /// Combat aim overrides: unit id -> (angle, fx-clock stamp). A shot
-    /// turns the shooter toward its victim and holds briefly; movement
-    /// facing resumes when the hold expires. Presentation only.
-    pub aim_units: HashMap<u32, (f32, f32)>,
-    pub(crate) aim_unit_targets: HashMap<u32, Target>,
-    /// Same for buildings (turret mounts track their last victim).
-    pub aim_buildings: HashMap<u32, (f32, f32)>,
-    /// The live victims defense mounts follow between reports. The last
-    /// legal angle remains in `aim_buildings` after a target disappears.
-    pub(crate) aim_building_targets: HashMap<u32, Target>,
-    /// Action-driven authored sprite state. This remembers only transient
-    /// output events; clearing it never changes simulation truth.
-    pub(crate) animations: crate::presentation_animation::AnimationController,
-    pub(crate) track_motion: HashMap<u32, crate::track_motion::TrackMotion>,
-    pub(crate) projectile_releases: projectiles::ProjectileReleases,
-    fx_previous: fx::PreviousEffects,
-    /// Live effects.
-    pub fx: Vec<Effect>,
-    /// Retains projectile identity across the impact tick.
-    pub(crate) audio_timeline: crate::audio_timeline::AudioTimeline,
-    /// Clips queued by this frame's ticks; the main loop drains and plays.
-    pub sounds_pending: Vec<(SoundKind, Option<Vec2>)>,
-    /// Transient HUD messages, newest last.
-    pub toasts: Vec<Toast>,
-    /// Scorch decals where buildings died: (world pos, seconds old).
-    pub scorches: Vec<(Vec2, f32)>,
-    /// Live under-attack alerts: world position and seconds of age.
-    /// Pulsed on the minimap, jumpable, aged out by update_fx.
-    pub alerts: Vec<(Vec2, f32)>,
-    /// Where trouble last landed — the jump key's target.
-    pub last_alert: Option<Vec2>,
-    /// Per-region rate limiter for alerts (8-tile cells -> last raise
-    /// time in fx-seconds), so a running battle nags once, not per hit.
-    alert_gate: HashMap<(i32, i32), f32>,
-    /// Presentation clock: seconds of fx time since session start.
-    fx_clock: f32,
     /// Whether the current session content is already autosaved; a new
     /// tick makes it stale again. Guards double-writes when Main Menu
     /// saves and the same game then quits as the Home backdrop.
     pub autosave_done: bool,
-    /// When each remembered tile (ghost anchors, scrap, wrecks) was
-    /// last actually seen, on the fx clock — presentation state behind
-    /// the staleness ramp. A `RefCell` because drawing holds `&Game`.
-    pub last_seen: std::cell::RefCell<HashMap<(i32, i32), f32>>,
-    /// The minimap's cached terrain-and-fog texture layer. Presentation
-    /// only, lazily created by the first minimap draw (headless sessions
-    /// never touch the GPU). A `RefCell` because drawing holds `&Game`.
-    pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
-    pub boundary_fog: crate::boundary_fog::BoundaryFog,
-    /// The chrome geometry the renderer computed last frame — the one
-    /// model hit-testing reads, so drawn and clickable can never
-    /// disagree. A `Cell` because drawing holds `&Game`.
-    pub layout: std::cell::Cell<crate::layout::LayoutModel>,
-    /// The frame's command panel, built once in draw_hud and read by
-    /// the tooltip pass — building it twice per frame was pure waste.
-    pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// End-of-match statistics, computed once from the recorder when
     /// the result lands from the bounded live tracker.
     pub end_stats: Option<oxide_kit::stats::MatchStats>,
@@ -209,21 +133,13 @@ pub struct Game {
     /// UNDECIDED team match — the exit offer's stats. Decided matches
     /// (a 1v1 surrender included) go through `end_stats` instead.
     pub concede_stats: Option<oxide_kit::stats::MatchStats>,
-    /// Whether the surrender overlay (banner + concede stats + the
-    /// Esc-to-menu exit) is up. Presentation only; opening the pause
-    /// menu dismisses it so spectating the ally stays unobstructed.
-    pub conceded_banner: bool,
     /// What the player has demonstrably done — the tutorial's evidence.
     pub demo: crate::tutorial::Demo,
-    /// Fog-free viewing without the debug chrome — the playback
-    /// viewer's stance. `overlay` remains the developer's F1 (grid,
-    /// ids, camera internals) and implies this.
-    pub spectate: bool,
-    accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
     /// million-tick advance must not buffer a million battles.
     suppress_presentation: bool,
+    pub(crate) presentation: Presentation,
 }
 
 pub(crate) fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
@@ -231,20 +147,41 @@ pub(crate) fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
 }
 
 impl Game {
+    pub(crate) fn view(&self) -> Scene<'_> {
+        Scene {
+            state: &self.state,
+            scenario: &self.scenario,
+            pending: &self.pending,
+            presentation: &self.presentation,
+        }
+    }
+    pub fn selection_commandable(&self) -> bool {
+        self.view().selection_commandable()
+    }
+    pub fn home_foundry(&self) -> Option<&Building> {
+        self.view().home_foundry()
+    }
+    pub fn my_vision(&self) -> &oxide_sim::Vision {
+        self.state.vision(self.presentation.human)
+    }
+    pub(crate) fn update_fx(&mut self, dt: f32) {
+        self.presentation.update_fx(&self.state, dt);
+    }
+    pub(crate) fn update_wall_clock_fx(&mut self, dt: f32) {
+        self.presentation.update_wall_clock_fx(&self.state, dt);
+    }
+    pub(crate) fn drop_presentation(&mut self) {
+        self.presentation.drop_presentation(&self.state);
+    }
+    pub(crate) fn replace_state_after_jump(&mut self, state: &State) {
+        self.state.0 = state.clone();
+        self.presentation.reset_after_jump(&self.state);
+    }
+
     /// Starts a session from a scenario, at the injected window size
     /// (headless callers get the default without a window).
     pub fn new(scenario: Scenario) -> Result<Self> {
         Self::with_viewport(scenario, crate::render::viewport())
-    }
-
-    /// A read-only vantage for the playback viewer: no command seat is
-    /// required — `human` only anchors the opening camera and the
-    /// viewer is fog-free anyway. All-bot records (driver benchmarks,
-    /// bot-vs-bot spectacles) open here; the first non-bot seat, else
-    /// seat 0, is the initial vantage.
-    pub fn spectator(scenario: Scenario) -> Result<Self> {
-        let vantage = scenario.players.iter().position(|p| !p.bot).unwrap_or(0) as u8;
-        Self::assemble(scenario, crate::render::viewport(), PlayerId(vantage))
     }
 
     /// `new` with the window injected — the only constructor tests use,
@@ -278,46 +215,13 @@ impl Game {
         let live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let bots = seat_bots(&scenario)?;
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
-        let focus = state
-            .buildings()
-            .iter()
-            .find(|b| b.player == human)
-            .map(|b| world_vec(b.center()))
-            .unwrap_or_else(|| {
-                vec2(
-                    state.map().width() as f32 * 0.5,
-                    state.map().height() as f32 * 0.5,
-                )
-            });
-        let camera = Camera::new(focus, state.map().width(), state.map().height(), viewport);
-        let boundary_fog = crate::boundary_fog::BoundaryFog::new(&state, human);
+        let presentation = Presentation::new(&state, human, viewport);
         Ok(Self {
             scenario,
             state: ReadOnlyState(state),
             bots,
             recorder,
             pending: PendingCommands(Vec::new()),
-            human,
-            camera,
-            selection: Selection::default(),
-            paused: false,
-            speed: 1.0,
-            overlay: false,
-            prev_pos: HashMap::new(),
-            prev_heading: HashMap::new(),
-            facing: HashMap::new(),
-            hull_heading: HashMap::new(),
-            aim_units: HashMap::new(),
-            aim_unit_targets: HashMap::new(),
-            aim_buildings: HashMap::new(),
-            aim_building_targets: HashMap::new(),
-            animations: crate::presentation_animation::AnimationController::default(),
-            track_motion: HashMap::new(),
-            projectile_releases: projectiles::ProjectileReleases::default(),
-            fx_previous: fx::PreviousEffects::default(),
-            fx: Vec::new(),
-            audio_timeline: crate::audio_timeline::AudioTimeline::default(),
-            sounds_pending: Vec::new(),
             autosave_done: false,
             recovery_root: None,
             recovery: None,
@@ -325,25 +229,12 @@ impl Game {
             diagnostics_warned: false,
             recovery_source: None,
             diagnostics: None,
-            last_seen: std::cell::RefCell::new(HashMap::new()),
-            minimap_layer: std::cell::RefCell::new(None),
-            boundary_fog,
-            toasts: Vec::new(),
-            scorches: Vec::new(),
-            alerts: Vec::new(),
-            last_alert: None,
-            alert_gate: HashMap::new(),
-            fx_clock: 0.0,
-            layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
-            panel_model: std::cell::RefCell::new(None),
             end_stats: None,
             live_stats,
             concede_stats: None,
-            conceded_banner: false,
             demo: crate::tutorial::Demo::default(),
-            spectate: false,
-            accum: 0.0,
             suppress_presentation: false,
+            presentation,
         })
     }
 
@@ -392,7 +283,7 @@ impl Game {
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let mut projectile_releases = projectiles::ProjectileReleases::default();
         let mut game = Self::new(scenario)?;
-        let mut boundary_fog = game.boundary_fog.clone();
+        let mut boundary_fog = game.presentation.boundary_fog.clone();
         for _ in 0..total {
             if let Some(recorder) = diagnostics {
                 recorder.replay_progress(state.current_tick());
@@ -404,7 +295,7 @@ impl Game {
                 .map(|t| t.command.clone())
                 .collect();
             let report = state.tick(&commands);
-            boundary_fog.observe(&state, game.human);
+            boundary_fog.observe(&state, game.presentation.human);
             projectile_releases.observe(&state, &report.events);
             live_stats.observe(&state, &report.events);
         }
@@ -413,8 +304,8 @@ impl Game {
             "replay duration metadata does not cover its own commands"
         );
         game.replace_state_after_jump(&state);
-        game.boundary_fog = boundary_fog;
-        game.projectile_releases = projectile_releases;
+        game.presentation.boundary_fog = boundary_fog;
+        game.presentation.projectile_releases = projectile_releases;
         game.bots = bots;
         game.recorder = replay;
         game.live_stats = live_stats;
@@ -425,11 +316,11 @@ impl Game {
             .state
             .buildings()
             .iter()
-            .find(|b| b.player == game.human)
+            .find(|b| b.player == game.presentation.human)
             .map(|b| world_vec(b.center()))
         {
-            game.camera.center = focus;
-            game.camera.pan(Vec2::ZERO); // re-clamp
+            game.presentation.camera.center = focus;
+            game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         }
         Ok(game)
     }
@@ -448,7 +339,8 @@ impl Game {
                     }
                     Err(error) => {
                         self.diagnostics_warned = true;
-                        self.toast(format!("Diagnostics unavailable: {error}"));
+                        self.presentation
+                            .toast(format!("Diagnostics unavailable: {error}"));
                     }
                 }
             }
@@ -480,7 +372,8 @@ impl Game {
                 Ok(writer) => self.recovery = Some(std::sync::Arc::new(writer)),
                 Err(error) => {
                     self.recovery_warned = true;
-                    self.toast(format!("Recovery unavailable: {error}"));
+                    self.presentation
+                        .toast(format!("Recovery unavailable: {error}"));
                 }
             }
         }
@@ -492,7 +385,8 @@ impl Game {
             && let Some(error) = writer.status().error
         {
             self.recovery_warned = true;
-            self.toast(format!("Recovery stopped: {error}"));
+            self.presentation
+                .toast(format!("Recovery stopped: {error}"));
         }
     }
 
@@ -512,13 +406,13 @@ impl Game {
         // Interpolation cache; pointless during suppressed bulk advances
         // (advance_ticks rebuilds it once at the end).
         if !self.suppress_presentation {
-            self.remember_previous_tick();
+            self.presentation.remember_previous_tick(&self.state);
         }
 
         let mut commands = std::mem::take(&mut self.pending.0);
         let human_commands: Vec<Command> = commands
             .iter()
-            .filter(|pc| pc.player == self.human)
+            .filter(|pc| pc.player == self.presentation.human)
             .map(|pc| pc.command.clone())
             .collect();
         let bot_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Bots);
@@ -544,9 +438,9 @@ impl Game {
             recovery.completed(self.state.current_tick());
         }
         let _presentation_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Presentation);
-        self.boundary_fog.observe(&self.state, self.human);
-        self.projectile_releases
-            .observe(&self.state, &report.events);
+        self.presentation
+            .boundary_fog
+            .observe(&self.state, self.presentation.human);
         self.live_stats.observe(&self.state, &report.events);
         if self.state.result().is_some() && self.end_stats.is_none() {
             self.end_stats = Some(self.live_stats.snapshot(&self.state));
@@ -558,7 +452,7 @@ impl Game {
         if report
             .events
             .iter()
-            .any(|e| matches!(e, Event::ScrapDeposited { player, .. } if *player == self.human))
+            .any(|e| matches!(e, Event::ScrapDeposited { player, .. } if *player == self.presentation.human))
         {
             self.demo.deposited = true;
         }
@@ -574,10 +468,10 @@ impl Game {
             && report
                 .events
                 .iter()
-                .any(|e| matches!(e, Event::PlayerResigned { player } if *player == self.human))
+                .any(|e| matches!(e, Event::PlayerResigned { player } if *player == self.presentation.human))
         {
             self.concede_stats = Some(self.live_stats.snapshot(&self.state));
-            self.conceded_banner = true;
+            self.presentation.conceded_banner = true;
         }
 
         // The tutorial's evidence: what the human actually asked for
@@ -587,7 +481,7 @@ impl Game {
         let human_rejected = report
             .events
             .iter()
-            .any(|e| matches!(e, Event::CommandRejected { player, .. } if *player == self.human));
+            .any(|e| matches!(e, Event::CommandRejected { player, .. } if *player == self.presentation.human));
         if !human_rejected {
             for command in &human_commands {
                 match command {
@@ -608,19 +502,22 @@ impl Game {
         }
 
         if !self.suppress_presentation {
-            self.animations.observe(&report);
-            self.spawn_fx(&report.events);
-            self.refresh_facing(&report.movement);
+            self.presentation
+                .observe_tick(&self.state, &report.events, &report.movement);
+        } else {
+            self.presentation
+                .projectile_releases
+                .observe(&self.state, &report.events);
         }
         // Dead units leave the selection — and so do HOSTILES whose
         // ground fog has re-covered: the panel reads live hp from the
         // selection, and an inspection must never become a tracking
         // beacon into the dark. (Allies stay: team sight is standing.)
-        let human = self.human;
-        let all_seeing = self.all_seeing();
+        let human = self.presentation.human;
+        let all_seeing = self.presentation.all_seeing();
         {
             let state = &self.state;
-            self.selection.units.retain(|id| {
+            self.presentation.selection.units.retain(|id| {
                 state.unit(*id).is_some_and(|u| {
                     !state.hostile(human, u.player) || all_seeing || {
                         state.vision(human).visible(u.tile())
@@ -628,22 +525,7 @@ impl Game {
                 })
             });
         }
-        let state = &self.state;
-        self.facing
-            .retain(|id, _| state.unit(UnitId(*id)).is_some());
-        self.aim_units
-            .retain(|id, _| state.unit(UnitId(*id)).is_some());
-        self.aim_buildings
-            .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
-        self.aim_building_targets.retain(|id, target| {
-            state.building(oxide_sim::BuildingId(*id)).is_some()
-                && match target {
-                    Target::Unit(id) => state.unit(*id).is_some(),
-                    Target::Building(id) => state.building(*id).is_some(),
-                }
-        });
-        self.animations.retain_live(state);
-        self.selection.buildings.retain(|id| {
+        self.presentation.selection.buildings.retain(|id| {
             self.state.building(*id).is_some_and(|building| {
                 !self.state.hostile(human, building.player)
                     || all_seeing
@@ -656,237 +538,31 @@ impl Game {
         report
     }
 
-    /// Whether rendering should ignore fog: the debug overlay or a
-    /// spectator stance (playback). Chrome decides separately.
-    pub fn all_seeing(&self) -> bool {
-        self.overlay || self.spectate
-    }
-
-    /// Absorbs one batch of replayed ticks for presentation: the world
-    /// the engine produced plus the events it emitted on the way —
-    /// shots, deaths, aim, and sound work in playback exactly as live.
-    pub fn playback_present(
-        &mut self,
-        state: &oxide_sim::State,
-        events: &[Event],
-        movement: &[oxide_sim::GroundMotion],
-    ) {
-        self.remember_previous_tick();
-        self.state.0 = state.clone();
-        self.projectile_releases.observe(&self.state, events);
-        self.animations
-            .observe_events(self.state.current_tick(), events);
-        self.spawn_fx(events);
-        self.refresh_facing(movement);
-        let state = &self.state;
-        self.facing
-            .retain(|id, _| state.unit(UnitId(*id)).is_some());
-        self.aim_units
-            .retain(|id, _| state.unit(UnitId(*id)).is_some());
-        self.aim_buildings
-            .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
-        self.aim_building_targets.retain(|id, target| {
-            state.building(oxide_sim::BuildingId(*id)).is_some()
-                && match target {
-                    Target::Unit(id) => state.unit(*id).is_some(),
-                    Target::Building(id) => state.building(*id).is_some(),
-                }
-        });
-        self.animations.retain_live(state);
-    }
-
-    /// Drops queued transient presentation — what a bulk jump (a seek)
-    /// must not replay as a burst of noise.
-    pub fn drop_presentation(&mut self) {
-        self.fx.clear();
-        self.restore_pending_crashes();
-        self.sounds_pending.clear();
-        self.toasts.clear();
-        // Aim holds and recoil stamps are per-timeline: after a seek,
-        // an id that exists at the destination must not face or flash
-        // for a shot fired on the timeline we just left.
-        self.aim_units.clear();
-        self.aim_unit_targets.clear();
-        self.hull_heading.clear();
-        self.aim_buildings.clear();
-        self.aim_building_targets.clear();
-        self.animations.reset_transients();
-        self.audio_timeline.clear();
-        self.track_motion.clear();
-    }
-
-    /// Replaces truth after a seek or replay rebuild and establishes that
-    /// destination as both interpolation endpoints. Timeline-local facing,
-    /// aim, reports, and effects cannot survive across the jump.
-    pub fn replace_state_after_jump(&mut self, state: &State) {
-        self.state.0 = state.clone();
-        self.boundary_fog = crate::boundary_fog::BoundaryFog::new(state, self.human);
-        self.projectile_releases = projectiles::ProjectileReleases::default();
-        self.drop_presentation();
-        self.remember_previous_tick();
-        self.facing.clear();
-        // Nothing has moved across a jump, but a heading-first airframe
-        // still has a heading to show, parked or flying.
-        self.refresh_facing(&[]);
-    }
-
-    /// Sprite rotation for this tick: a heading-first airframe faces where
-    /// the simulation says it does, parked or flying, and everything else
-    /// faces the way it last moved. Live ticks, playback, and seeks all
-    /// agree through this one rule.
-    fn refresh_facing(&mut self, movement: &[oxide_sim::GroundMotion]) {
-        self.track_motion
-            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
-        for unit in self
-            .state
-            .units()
-            .iter()
-            .filter(|unit| crate::render::tracks::supported(unit.kind))
-        {
-            let tick = self.state.current_tick();
-            let heading = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
-            self.track_motion
-                .entry(unit.id.0)
-                .or_insert_with(|| crate::track_motion::TrackMotion::new(tick, heading))
-                .observe(
-                    tick,
-                    heading,
-                    crate::render::tracks::gauge(
-                        unit.kind,
-                        crate::render::unit_draw_scale(unit.kind),
-                    ),
-                    movement
-                        .binary_search_by_key(&unit.id, |motion| motion.unit)
-                        .ok()
-                        .map_or(Vec2::ZERO, |index| world_vec(movement[index].propulsion)),
-                );
-        }
-
-        self.aim_unit_targets
-            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
-        self.hull_heading
-            .retain(|id, _| self.state.unit(UnitId(*id)).is_some());
-        for unit in self.state.units() {
-            if unit.kind.stats().turn_rate > 0
-                || unit.kind.ground_turn_rate() > 0
-                || unit.kind.cruise_turn_rate() > 0
-            {
-                let angle = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
-                self.facing
-                    .insert(unit.id.0, angle + std::f32::consts::FRAC_PI_2);
-                if unit.kind.has_ground_turret() {
-                    let target = angle + std::f32::consts::FRAC_PI_2;
-                    let entry = self
-                        .hull_heading
-                        .entry(unit.id.0)
-                        .or_insert((target, target));
-                    *entry = (entry.1, target);
-                }
-                continue;
-            }
-            let now = world_vec(unit.pos);
-            let mut moving = false;
-            if let Some(prev) = self.prev_pos.get(&unit.id.0) {
-                let delta = now - *prev;
-                if delta.length_squared() > 1e-6 {
-                    moving = true;
-                    self.facing.insert(
-                        unit.id.0,
-                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
-                    );
-                }
-            }
-            if let Some(turn) = rotor_hull_turn_rate(unit.kind) {
-                let movement_facing = self.facing.get(&unit.id.0).copied().unwrap_or(0.0);
-                let target = if unit.kind == UnitKind::Wisp && !moving {
-                    self.aim_units
-                        .get(&unit.id.0)
-                        .filter(|(_, at)| self.fx_time() - at < 1.2)
-                        .map_or(movement_facing, |(angle, _)| *angle)
-                } else {
-                    movement_facing
-                };
-                let (previous, current) = self.hull_heading.entry(unit.id.0).or_insert((0.0, 0.0));
-                *previous = *current;
-                *current += angle_delta(*current, target).clamp(-turn, turn);
-            }
-        }
-    }
-
-    /// Records what the next tick's presentation needs to know about
-    /// this one: every body's position for interpolation, and which
-    /// airframes were parked for the death effect's fall-or-scatter
-    /// choice.
-    fn remember_previous_tick(&mut self) {
-        self.audio_timeline.remember_arrivals(&self.state);
-        self.fx_previous = fx::PreviousEffects::capture(self);
-        self.prev_heading = self
-            .state
-            .units()
-            .iter()
-            .map(|unit| (unit.id.0, unit.weapon_heading()))
-            .collect();
-        self.prev_pos = self
-            .state
-            .units()
-            .iter()
-            .map(|unit| (unit.id.0, world_vec(unit.pos)))
-            .collect();
-    }
-
-    /// The effect clock — what aim holds and recoil age against.
-    pub fn fx_time(&self) -> f32 {
-        self.fx_clock
-    }
-
-    /// Advances presentation from ordinary frame time while the match runs.
-    /// Driven presentation steps use [`Self::update_fx`] directly because
-    /// they represent sim time even when the wall clock is paused.
-    pub fn update_wall_clock_fx(&mut self, dt: f32) {
-        if !self.paused {
-            self.update_fx(dt);
-        }
-    }
-
-    /// How far the presentation clock sits between the last executed
-    /// tick and the next, 0..1 — frozen while paused. Interpolation
-    /// fuel for anything that must move on sim time, not wall time.
-    pub fn tick_fraction(&self) -> f32 {
-        (self.accum / TICK_DT).clamp(0.0, 1.0)
-    }
-
-    /// Mirrors an externally owned replay clock into this render vehicle.
-    /// Playback advances through its own engine, so this changes only the
-    /// interpolation and authored-animation fraction, never simulation time.
-    pub(crate) fn sync_external_tick_fraction(&mut self, fraction: f32) {
-        self.accum = fraction.clamp(0.0, 1.0) * TICK_DT;
-    }
-
     /// Advances the ordinary live path while optionally stopping on one exact
     /// tick. Native profiling supplies the bound so a multi-tick frame cannot
     /// overshoot its requested sample window; ordinary play passes `None`.
     pub fn advance_wall_clock(&mut self, dt: f32, stop_tick: Option<u64>) -> bool {
-        if self.paused {
+        if self.presentation.paused {
             return false;
         }
-        self.accum += dt * self.speed as f32;
+        self.presentation.accum += dt * self.presentation.speed as f32;
         let mut ran = 0;
-        while self.accum >= TICK_DT
+        while self.presentation.accum >= TICK_DT
             && ran < MAX_TICKS_PER_FRAME
             && stop_tick.is_none_or(|tick| self.state.current_tick() < tick)
         {
-            self.accum -= TICK_DT;
+            self.presentation.accum -= TICK_DT;
             self.do_tick();
             ran += 1;
         }
         if stop_tick.is_some_and(|tick| self.state.current_tick() >= tick) {
-            self.accum = 0.0;
+            self.presentation.accum = 0.0;
             return true;
         }
         // Behind by more than a frame's worth of ticks? Drop the debt
         // rather than spiraling.
         if ran == MAX_TICKS_PER_FRAME {
-            self.accum = self.accum.min(TICK_DT);
+            self.presentation.accum = self.presentation.accum.min(TICK_DT);
         }
         false
     }
@@ -901,11 +577,11 @@ impl Game {
         self.suppress_presentation = false;
         // No cross-jump interpolation after a bulk advance — and whatever
         // presentation slipped in beforehand doesn't survive the jump.
-        self.accum = 0.0;
+        self.presentation.accum = 0.0;
         self.drop_presentation();
-        self.remember_previous_tick();
-        self.facing.clear();
-        self.refresh_facing(&[]);
+        self.presentation.remember_previous_tick(&self.state);
+        self.presentation.facing.clear();
+        self.presentation.refresh_facing(&self.state, &[]);
     }
 
     /// Advances a small number of ticks while retaining presentation
@@ -921,34 +597,14 @@ impl Game {
             self.update_fx(TICK_DT);
             events.extend(self.do_tick().events);
         }
-        self.accum = 0.0;
+        self.presentation.accum = 0.0;
         events
-    }
-
-    /// Interpolation factor for rendering between ticks.
-    pub fn render_alpha(&self) -> f32 {
-        if self.paused {
-            1.0
-        } else {
-            (self.accum / TICK_DT).clamp(0.0, 1.0)
-        }
-    }
-
-    /// Whether the current unit selection is the human's to command.
-    /// Empty selections read as own (nothing to gate); a foreign
-    /// selection is read-only everywhere a verb would act.
-    pub fn selection_commandable(&self) -> bool {
-        self.selection
-            .units
-            .first()
-            .and_then(|id| self.state.unit(*id))
-            .is_none_or(|u| u.player == self.human)
     }
 
     /// Stages a command from the local player for the next tick.
     pub fn issue(&mut self, command: Command) {
         self.stage(PlayerCommand {
-            player: self.human,
+            player: self.presentation.human,
             command,
         });
     }
@@ -956,34 +612,6 @@ impl Game {
     /// Stages an already attributed command from the debug input surface.
     pub(crate) fn stage(&mut self, command: PlayerCommand) {
         self.pending.0.push(command);
-    }
-
-    /// Drops an order-acknowledgment ping at a world point.
-    pub fn ping(&mut self, at: Vec2, kind: PingKind) {
-        // An order the sim accepted deserves an answer in the ear as
-        // well as the eye (the mixer rate-limits volley spam).
-        self.sounds_pending.push((SoundKind::Ack, None));
-        self.fx.push(Effect {
-            kind: EffectKind::Ping { at, kind },
-            age: 0.0,
-        });
-    }
-
-    /// Raises a transient HUD message (capped; oldest fall off).
-    pub fn toast(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        self.toasts.retain(|toast| toast.text != text);
-        self.toasts.push(Toast { text, age: 0.0 });
-        if self.toasts.len() > 3 {
-            self.toasts.remove(0);
-        }
-    }
-
-    /// The human's first Foundry (hotkey target, camera home).
-    pub fn home_foundry(&self) -> Option<&Building> {
-        self.state.buildings().iter().find(|b| {
-            b.player == self.human && !b.provisional && b.kind == oxide_sim::BuildingKind::Foundry
-        })
     }
 
     /// Current state fingerprint, protocol-formatted.
@@ -996,87 +624,13 @@ impl Game {
     pub fn status_view(&self) -> oxide_protocol::StatusView {
         oxide_protocol::StatusView {
             tick: self.state.current_tick(),
-            paused: self.paused,
-            speed: self.speed,
+            paused: self.presentation.paused,
+            speed: self.presentation.speed,
             scenario: self.scenario.name.clone(),
             sim_version: SIM_VERSION.to_string(),
             result: self.state.result(),
             recorded_commands: self.recorder.commands.len(),
         }
-    }
-
-    /// The local player's fog view (what rendering and targeting honor).
-    pub fn my_vision(&self) -> &oxide_sim::Vision {
-        self.state.vision(self.human)
-    }
-
-    /// Ages and prunes effects and toasts.
-    /// Raises an under-attack alert, rate-limited per 8-tile region —
-    /// a running battle nags once, not once per hit.
-    fn raise_alert(&mut self, world: Vec2) {
-        let cell = ((world.x / 8.0) as i32, (world.y / 8.0) as i32);
-        let now = self.fx_clock;
-        if self
-            .alert_gate
-            .get(&cell)
-            .is_some_and(|&last| now - last < 6.0)
-        {
-            return;
-        }
-        self.alert_gate.insert(cell, now);
-        self.alerts.push((world, 0.0));
-        self.last_alert = Some(world);
-        self.toast("under attack");
-        self.sounds_pending.push((SoundKind::Alert, None));
-    }
-
-    /// Interpolated draw position for a unit.
-    pub fn draw_pos(&self, id: UnitId, current: chassis::fx::Vec2Fx, alpha: f32) -> Vec2 {
-        let now = world_vec(current);
-        match self.prev_pos.get(&id.0) {
-            Some(prev) => prev.lerp(now, alpha),
-            None => now,
-        }
-    }
-
-    pub fn draw_heading(&self, id: UnitId, current: u8, alpha: f32) -> f32 {
-        let previous = self.prev_heading.get(&id.0).copied().unwrap_or(current);
-        let delta = current.wrapping_sub(previous).cast_signed();
-        (f32::from(previous) + f32::from(delta) * alpha.clamp(0.0, 1.0)) * std::f32::consts::TAU
-            / 256.0
-            + std::f32::consts::FRAC_PI_2
-    }
-
-    pub(crate) fn chassis_turning(&self, unit: &oxide_sim::state::Unit) -> bool {
-        if unit.kind.ground_turn_rate() == 0 {
-            return false;
-        }
-        if unit.kind.has_ground_turret() {
-            self.hull_heading
-                .get(&unit.id.0)
-                .is_some_and(|(previous, current)| angle_delta(*previous, *current).abs() > 1e-6)
-        } else {
-            self.prev_heading
-                .get(&unit.id.0)
-                .is_some_and(|previous| *previous != unit.heading)
-        }
-    }
-
-    pub(crate) fn draw_hull_heading(&self, id: UnitId, alpha: f32) -> f32 {
-        self.hull_heading.get(&id.0).map_or_else(
-            || {
-                self.state.unit(id).map_or(0.0, |unit| {
-                    if rotor_hull_turn_rate(unit.kind).is_some() {
-                        return self.facing.get(&id.0).copied().unwrap_or(0.0);
-                    }
-                    f32::from(unit.heading) * std::f32::consts::TAU / 256.0
-                        + std::f32::consts::FRAC_PI_2
-                })
-            },
-            |(previous, current)| {
-                previous + angle_delta(*previous, *current) * alpha.clamp(0.0, 1.0)
-            },
-        )
     }
 }
 
@@ -1127,13 +681,13 @@ impl oxide_protocol::DebugSession for Game {
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
-        self.paused = paused;
+        self.presentation.paused = paused;
         Ok(())
     }
 
     fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
         oxide_protocol::check_speed(multiplier)?;
-        self.speed = multiplier;
+        self.presentation.speed = multiplier;
         Ok(())
     }
 }
@@ -1238,7 +792,7 @@ mod tests {
         assert_eq!(original.hash_hex(), resumed.hash_hex());
     }
 
-    use oxide_sim::{Command, Scenario, UnitKind};
+    use oxide_sim::{Command, Scenario, Target, UnitKind};
 
     #[test]
     fn playable_sessions_require_exactly_one_human_but_spectators_do_not() {
@@ -1253,7 +807,13 @@ mod tests {
             .expect("an all-bot match has no command seat");
         assert!(err.to_string().contains("got 0"));
         assert_eq!(
-            Game::spectator(all_bots).expect("spectator").human,
+            crate::screens::playback::PlaybackSession::from_replay(Replay::new(
+                SIM_VERSION,
+                all_bots
+            ))
+            .expect("spectator")
+            .presentation
+            .human,
             PlayerId(0)
         );
 
@@ -1297,16 +857,19 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("game");
-        game.paused = true;
+        game.presentation.paused = true;
         assert!(!game.advance_wall_clock(10.0, None));
         assert_eq!(game.state.current_tick(), 0);
-        assert_eq!(game.render_alpha(), 1.0);
+        assert_eq!(game.presentation.render_alpha(), 1.0);
 
-        game.paused = false;
-        game.speed = 64.0;
+        game.presentation.paused = false;
+        game.presentation.speed = 64.0;
         assert!(!game.advance_wall_clock(1.0, None));
         assert_eq!(game.state.current_tick(), u64::from(MAX_TICKS_PER_FRAME));
-        assert!(game.tick_fraction() <= 1.0, "excess hitch debt is dropped");
+        assert!(
+            game.presentation.tick_fraction() <= 1.0,
+            "excess hitch debt is dropped"
+        );
     }
 
     #[test]
@@ -1317,40 +880,43 @@ mod tests {
         )
         .expect("game");
         for text in ["one", "two", "three", "four"] {
-            game.toast(text);
+            game.presentation.toast(text);
         }
         assert_eq!(
-            game.toasts
+            game.presentation
+                .toasts
                 .iter()
                 .map(|toast| toast.text.as_str())
                 .collect::<Vec<_>>(),
             ["two", "three", "four"]
         );
-        game.toast("three");
+        game.presentation.toast("three");
         assert_eq!(
-            game.toasts
+            game.presentation
+                .toasts
                 .iter()
                 .map(|toast| toast.text.as_str())
                 .collect::<Vec<_>>(),
             ["two", "four", "three"]
         );
-        assert_eq!(game.toasts.last().unwrap().age, 0.0);
+        assert_eq!(game.presentation.toasts.last().unwrap().age, 0.0);
     }
 
     #[test]
     fn articulated_hull_interpolates_the_short_turn_and_drops_on_seek() {
         let mut game = Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
         let id = game.state.units()[0].id;
-        game.hull_heading.insert(id.0, (6.2, 0.1));
+        game.presentation.hull_heading.insert(id.0, (6.2, 0.1));
         assert!(
-            (game.draw_hull_heading(id, 0.5) - (6.2 + angle_delta(6.2, 0.1) * 0.5)).abs() < 1e-6
+            (game.view().draw_hull_heading(id, 0.5) - (6.2 + angle_delta(6.2, 0.1) * 0.5)).abs()
+                < 1e-6
         );
         assert!(angle_delta(6.2, 0.1) > 0.0);
         game.drop_presentation();
         let heading = f32::from(game.state.unit(id).unwrap().heading) * std::f32::consts::TAU
             / 256.0
             + std::f32::consts::FRAC_PI_2;
-        assert_eq!(game.draw_hull_heading(id, 0.5), heading);
+        assert_eq!(game.view().draw_hull_heading(id, 0.5), heading);
     }
 
     #[test]
@@ -1365,7 +931,11 @@ mod tests {
                     f32::from(game.state.unit(id).unwrap().heading) * std::f32::consts::TAU / 256.0
                         + std::f32::consts::FRAC_PI_2;
                 for alpha in [0.0, 0.5, 1.0] {
-                    assert_eq!(game.draw_hull_heading(id, alpha), expected, "{kind:?}");
+                    assert_eq!(
+                        game.view().draw_hull_heading(id, alpha),
+                        expected,
+                        "{kind:?}"
+                    );
                 }
             };
             assert_bearing(&game);
@@ -1396,9 +966,13 @@ mod tests {
                 game.replace_state_after_jump(&serde_json::from_value(snapshot).unwrap());
                 let expected = f32::from(heading) * std::f32::consts::TAU / 256.0
                     + std::f32::consts::FRAC_PI_2;
-                assert_eq!(game.facing.get(&id.0), Some(&expected), "{kind:?}");
+                assert_eq!(
+                    game.presentation.facing.get(&id.0),
+                    Some(&expected),
+                    "{kind:?}"
+                );
                 for alpha in [0.0, 0.5, 1.0] {
-                    assert_eq!(game.draw_heading(id, heading, alpha), expected);
+                    assert_eq!(game.presentation.draw_heading(id, heading, alpha), expected);
                 }
             }
         }
@@ -1433,7 +1007,7 @@ mod tests {
                 queue: false,
             });
             game.present_ticks(20);
-            let before = game.draw_hull_heading(id, 1.0);
+            let before = game.view().draw_hull_heading(id, 1.0);
             let position = game.state.unit(id).unwrap().pos;
             game.issue(Command::Move {
                 units: vec![id],
@@ -1442,10 +1016,10 @@ mod tests {
             });
             game.present_ticks(1);
             assert!(game.state.unit(id).unwrap().pos.x < position.x, "{kind:?}");
-            let turn = angle_delta(before, game.draw_hull_heading(id, 1.0)).abs();
+            let turn = angle_delta(before, game.view().draw_hull_heading(id, 1.0)).abs();
             assert!(turn > 0.1 && turn < 0.7, "{kind:?}: {turn}");
             first_turns.push(turn);
-            assert!((game.draw_hull_heading(id, 0.0) - before).abs() < 1e-6);
+            assert!((game.view().draw_hull_heading(id, 0.0) - before).abs() < 1e-6);
             game.issue(Command::Stop { units: vec![id] });
             game.present_ticks(1);
             let stopped = game.state.unit(id).unwrap().pos;
@@ -1453,7 +1027,7 @@ mod tests {
             assert_eq!(game.state.unit(id).unwrap().pos, stopped, "{kind:?}");
             assert!(
                 angle_delta(
-                    game.draw_hull_heading(id, 1.0),
+                    game.view().draw_hull_heading(id, 1.0),
                     -std::f32::consts::FRAC_PI_2
                 )
                 .abs()
@@ -1470,22 +1044,25 @@ mod tests {
         let mut game = rotor_game(UnitKind::Wisp);
         let id = game.state.units()[0].id;
         game.present_ticks(1);
-        let before = game.draw_hull_heading(id, 1.0);
+        let before = game.view().draw_hull_heading(id, 1.0);
         let position = game.state.unit(id).unwrap().pos;
-        game.aim_units
-            .insert(id.0, (std::f32::consts::PI, game.fx_time()));
+        game.presentation
+            .aim_units
+            .insert(id.0, (std::f32::consts::PI, game.presentation.fx_time()));
         game.present_ticks(1);
-        let after = game.draw_hull_heading(id, 1.0);
+        let after = game.view().draw_hull_heading(id, 1.0);
         assert!((0.1..0.7).contains(&angle_delta(before, after).abs()));
         assert_eq!(game.state.unit(id).unwrap().pos, position);
         game.present_ticks(8);
-        assert!(angle_delta(game.draw_hull_heading(id, 1.0), std::f32::consts::PI).abs() < 1e-5);
+        assert!(
+            angle_delta(game.view().draw_hull_heading(id, 1.0), std::f32::consts::PI).abs() < 1e-5
+        );
         game.replace_state_after_jump(&game.state.0.clone());
         assert_eq!(
-            game.draw_hull_heading(id, 0.0),
-            game.draw_hull_heading(id, 1.0)
+            game.view().draw_hull_heading(id, 0.0),
+            game.view().draw_hull_heading(id, 1.0)
         );
-        assert_eq!(game.draw_hull_heading(id, 1.0), 0.0);
+        assert_eq!(game.view().draw_hull_heading(id, 1.0), 0.0);
     }
 
     #[test]
@@ -1498,13 +1075,17 @@ mod tests {
         let unit_id = game.state.units()[0].id;
         let current = game.state.units()[0].pos;
         let now = world_vec(current);
-        game.prev_pos
+        game.presentation
+            .prev_pos
             .insert(unit_id.0, now - macroquad::prelude::vec2(2.0, 4.0));
         assert_eq!(
-            game.draw_pos(unit_id, current, 0.5),
+            game.presentation.draw_pos(unit_id, current, 0.5),
             now - macroquad::prelude::vec2(1.0, 2.0)
         );
-        assert_eq!(game.draw_pos(UnitId(u32::MAX), current, 0.5), now);
+        assert_eq!(
+            game.presentation.draw_pos(UnitId(u32::MAX), current, 0.5),
+            now
+        );
     }
 
     #[test]
@@ -1514,10 +1095,10 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("game");
-        game.sync_external_tick_fraction(2.0);
-        assert_eq!(game.tick_fraction(), 1.0);
-        game.sync_external_tick_fraction(-1.0);
-        assert_eq!(game.tick_fraction(), 0.0);
+        game.presentation.sync_external_tick_fraction(2.0);
+        assert_eq!(game.presentation.tick_fraction(), 1.0);
+        game.presentation.sync_external_tick_fraction(-1.0);
+        assert_eq!(game.presentation.tick_fraction(), 0.0);
     }
 
     #[test]
@@ -1527,13 +1108,15 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("skirmish builds");
-        game.sounds_pending.clear();
+        game.presentation.sounds_pending.clear();
 
-        game.raise_alert(macroquad::prelude::vec2(10.0, 10.0));
-        game.raise_alert(macroquad::prelude::vec2(11.0, 11.0));
+        game.presentation
+            .raise_alert(macroquad::prelude::vec2(10.0, 10.0));
+        game.presentation
+            .raise_alert(macroquad::prelude::vec2(11.0, 11.0));
 
         assert_eq!(
-            game.sounds_pending,
+            game.presentation.sounds_pending,
             vec![(SoundKind::Alert, None)],
             "the region gate must admit one alert cue rather than one per hit"
         );
@@ -1551,7 +1134,7 @@ mod tests {
             .state
             .buildings()
             .iter()
-            .find(|b| b.player == game.human)
+            .find(|b| b.player == game.presentation.human)
             .unwrap()
             .id;
         game.issue(Command::Train {
@@ -1588,7 +1171,7 @@ mod tests {
             .state
             .units()
             .iter()
-            .find(|unit| unit.player != game.human)
+            .find(|unit| unit.player != game.presentation.human)
             .expect("skirmish has an opponent")
             .id;
         game.issue(Command::Stop {
@@ -1599,10 +1182,11 @@ mod tests {
 
         assert!(events.iter().any(|event| matches!(
             event,
-            Event::CommandRejected { player, .. } if *player == game.human
+            Event::CommandRejected { player, .. } if *player == game.presentation.human
         )));
         assert!(
-            game.toasts
+            game.presentation
+                .toasts
                 .iter()
                 .any(|toast| toast.text == "nothing selected can do that"),
             "presentation-preserving steps must retain shell feedback"
@@ -1616,7 +1200,7 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("skirmish builds");
-        game.fx.push(Effect {
+        game.presentation.fx.push(Effect {
             kind: EffectKind::Ping {
                 at: macroquad::prelude::Vec2::ZERO,
                 kind: PingKind::Move,
@@ -1627,6 +1211,7 @@ mod tests {
         game.present_ticks(4);
 
         let age = game
+            .presentation
             .fx
             .iter()
             .find_map(|effect| matches!(effect.kind, EffectKind::Ping { .. }).then_some(effect.age))
@@ -1639,6 +1224,7 @@ mod tests {
         game.present_ticks(6);
         assert!(
             !game
+                .presentation
                 .fx
                 .iter()
                 .any(|effect| matches!(effect.kind, EffectKind::Ping { .. })),
@@ -1653,7 +1239,7 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("skirmish builds");
-        game.fx.push(Effect {
+        game.presentation.fx.push(Effect {
             kind: EffectKind::Ping {
                 at: macroquad::prelude::Vec2::ZERO,
                 kind: PingKind::Move,
@@ -1661,15 +1247,22 @@ mod tests {
             age: 0.0,
         });
 
-        game.paused = true;
+        game.presentation.paused = true;
         game.update_wall_clock_fx(0.25);
-        assert_eq!(game.fx_time(), 0.0, "decorative animation must hold");
-        assert_eq!(game.fx[0].age, 0.0, "transient effects must hold too");
+        assert_eq!(
+            game.presentation.fx_time(),
+            0.0,
+            "decorative animation must hold"
+        );
+        assert_eq!(
+            game.presentation.fx[0].age, 0.0,
+            "transient effects must hold too"
+        );
 
-        game.paused = false;
+        game.presentation.paused = false;
         game.update_wall_clock_fx(0.25);
-        assert_eq!(game.fx_time(), 0.25);
-        assert_eq!(game.fx[0].age, 0.25);
+        assert_eq!(game.presentation.fx_time(), 0.25);
+        assert_eq!(game.presentation.fx[0].age, 0.25);
     }
 
     #[test]
@@ -1679,11 +1272,11 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("skirmish builds");
-        game.speed = 8.0;
+        game.presentation.speed = 8.0;
 
         assert!(game.advance_wall_clock(1.0, Some(5)));
         assert_eq!(game.state.current_tick(), 5);
-        assert_eq!(game.tick_fraction(), 0.0);
+        assert_eq!(game.presentation.tick_fraction(), 0.0);
     }
 
     #[test]
@@ -1712,15 +1305,16 @@ mod tests {
 
         game.replace_state_after_jump(&snapshot);
         assert_eq!(
-            game.facing.get(&condor.0).copied(),
+            game.presentation.facing.get(&condor.0).copied(),
             Some(expected),
             "a seek shows the parked heading, not the default rotation"
         );
 
-        game.facing.clear();
-        game.playback_present(&snapshot, &[], &[]);
+        game.presentation.facing.clear();
+        game.presentation.remember_previous_tick(&game.state);
+        game.presentation.observe_tick(&snapshot, &[], &[]);
         assert_eq!(
-            game.facing.get(&condor.0).copied(),
+            game.presentation.facing.get(&condor.0).copied(),
             Some(expected),
             "playback faces the airframe as live play does"
         );
@@ -1735,10 +1329,15 @@ mod tests {
         .expect("skirmish builds");
         let unit = game.state.units()[0].id.0;
         let building = game.state.buildings()[0].id.0;
-        game.facing.insert(unit, 1.25);
-        game.aim_units.insert(unit, (2.5, game.fx_time()));
-        game.aim_buildings.insert(building, (0.75, game.fx_time()));
-        game.aim_building_targets
+        game.presentation.facing.insert(unit, 1.25);
+        game.presentation
+            .aim_units
+            .insert(unit, (2.5, game.presentation.fx_time()));
+        game.presentation
+            .aim_buildings
+            .insert(building, (0.75, game.presentation.fx_time()));
+        game.presentation
+            .aim_building_targets
             .insert(building, Target::Unit(UnitId(unit)));
 
         game.advance_ticks(1);
@@ -1747,10 +1346,10 @@ mod tests {
             * std::f32::consts::TAU
             / 256.0
             + std::f32::consts::FRAC_PI_2;
-        assert_eq!(game.facing.get(&unit), Some(&expected));
-        assert!(game.aim_units.is_empty());
-        assert!(game.aim_buildings.is_empty());
-        assert!(game.aim_building_targets.is_empty());
+        assert_eq!(game.presentation.facing.get(&unit), Some(&expected));
+        assert!(game.presentation.aim_units.is_empty());
+        assert!(game.presentation.aim_buildings.is_empty());
+        assert!(game.presentation.aim_building_targets.is_empty());
     }
 
     #[test]
@@ -1764,9 +1363,12 @@ mod tests {
         .expect("skirmish builds");
         game.issue(Command::Surrender);
         game.do_tick();
-        assert!(game.state.player(game.human).resigned);
+        assert!(game.state.player(game.presentation.human).resigned);
         assert!(game.state.result().is_some(), "a 1v1 concession decides");
-        assert!(!game.conceded_banner, "no concede overlay over a result");
+        assert!(
+            !game.presentation.conceded_banner,
+            "no concede overlay over a result"
+        );
         assert!(game.concede_stats.is_none());
         assert_eq!(
             game.end_stats.as_ref().map(|stats| stats.final_tick),
@@ -1813,13 +1415,13 @@ mod tests {
             .expect("the concede arena builds");
         game.issue(Command::Surrender);
         game.do_tick();
-        assert!(game.state.player(game.human).resigned);
+        assert!(game.state.player(game.presentation.human).resigned);
         assert!(
             game.state.result().is_none(),
             "the ally's Foundry keeps the match running"
         );
         assert!(
-            game.conceded_banner,
+            game.presentation.conceded_banner,
             "the undecided concession raises the overlay"
         );
         assert!(
@@ -1832,19 +1434,25 @@ mod tests {
         );
         // The banner is a one-shot moment: later ticks never re-raise
         // a dismissed overlay.
-        game.conceded_banner = false;
+        game.presentation.conceded_banner = false;
         game.do_tick();
-        assert!(!game.conceded_banner, "spectating stays unobstructed");
+        assert!(
+            !game.presentation.conceded_banner,
+            "spectating stays unobstructed"
+        );
     }
 
     #[test]
     fn angular_interpolation_crosses_zero_by_the_short_arc() {
         let mut game = Game::new(Scenario::skirmish()).unwrap();
         let id = game.state.units()[0].id;
-        game.prev_heading.insert(id.0, 254);
+        game.presentation.prev_heading.insert(id.0, 254);
         let expected = std::f32::consts::TAU + std::f32::consts::FRAC_PI_2;
-        assert!((game.draw_heading(id, 2, 0.5) - expected).abs() < 1e-6);
-        game.prev_heading.insert(id.0, 2);
-        assert!((game.draw_heading(id, 254, 0.5) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((game.presentation.draw_heading(id, 2, 0.5) - expected).abs() < 1e-6);
+        game.presentation.prev_heading.insert(id.0, 2);
+        assert!(
+            (game.presentation.draw_heading(id, 254, 0.5) - std::f32::consts::FRAC_PI_2).abs()
+                < 1e-6
+        );
     }
 }

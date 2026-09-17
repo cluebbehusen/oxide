@@ -180,13 +180,14 @@ impl Tutorial {
     /// the exit of.
     pub fn coach(&self, game: &crate::game::Game) -> Option<CoachLine> {
         let cost = self.required_spend()?;
-        let bank = game.state.player(game.human).scrap;
+        let bank = game.state.player(game.presentation.human).scrap;
         let hauling = game
             .state
             .units()
             .iter()
             .filter(|u| {
-                u.player == game.human && matches!(u.order, oxide_sim::Order::Harvest { .. })
+                u.player == game.presentation.human
+                    && matches!(u.order, oxide_sim::Order::Harvest { .. })
             })
             .count();
         if bank < cost && hauling == 0 {

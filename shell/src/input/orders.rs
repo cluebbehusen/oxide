@@ -10,7 +10,7 @@ use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::{Command, Target, UnitId};
 
 pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
-    crate::building_actions::SelectedBuildings::inspect(game).producers()
+    crate::building_actions::SelectedBuildings::inspect(&game.view()).producers()
 }
 
 pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2) {
@@ -24,7 +24,7 @@ pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2
             rally: Some(rally),
         });
     }
-    game.ping(at, PingKind::Rally);
+    game.presentation.ping(at, PingKind::Rally);
 }
 
 fn visible_hostile_target_at(
@@ -37,7 +37,8 @@ fn visible_hostile_target_at(
         .units()
         .iter()
         .filter(|unit| {
-            game.state.hostile(game.human, unit.player) && game.my_vision().visible(unit.tile())
+            game.state.hostile(game.presentation.human, unit.player)
+                && game.my_vision().visible(unit.tile())
         })
         .filter_map(|unit| {
             let position = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
@@ -62,11 +63,13 @@ fn visible_hostile_target_at(
     game.state
         .buildings_at(tile)
         .find(|building| {
-            game.state.hostile(game.human, building.player)
+            game.state.hostile(game.presentation.human, building.player)
                 && building
                     .tiles()
                     .any(|footprint| game.my_vision().visible(footprint))
-                && game.state.building_apparent(game.human, building)
+                && game
+                    .state
+                    .building_apparent(game.presentation.human, building)
         })
         .map(|building| {
             (
@@ -138,14 +141,18 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
     let alive: Vec<UnitId> = input.groups[slot]
         .iter()
         .copied()
-        .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human))
+        .filter(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|u| u.player == game.presentation.human)
+        })
         .collect();
     input.groups[slot] = alive.clone();
     if alive.is_empty() {
         return;
     }
-    game.selection.units = alive.clone();
-    game.selection.buildings.clear();
+    game.presentation.selection.units = alive.clone();
+    game.presentation.selection.buildings.clear();
     let now = input.now;
     if input
         .last_recall
@@ -156,8 +163,8 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
             let u = game.state.unit(*id).expect("pruned above");
             sum += vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
         }
-        game.camera.center = sum / alive.len() as f32;
-        game.camera.pan(Vec2::ZERO); // re-clamp
+        game.presentation.camera.center = sum / alive.len() as f32;
+        game.presentation.camera.pan(Vec2::ZERO); // re-clamp
     }
     input.last_recall = Some((slot, now));
 }
@@ -166,18 +173,18 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
 /// attack, scrap → harvest, ground → advance. The sim re-validates everything;
 /// this is only intent.
 pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
-    let world = game.camera.to_world(screen);
+    let world = game.presentation.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    if game.selection.units.is_empty() {
+    if game.presentation.selection.units.is_empty() {
         if let Some((target, at, domain)) = known_hostile_target_at(game, world, tile) {
             let defenses =
-                crate::building_actions::SelectedBuildings::inspect(game).defenses(domain);
+                crate::building_actions::SelectedBuildings::inspect(&game.view()).defenses(domain);
             if !defenses.is_empty() {
                 game.issue(Command::FocusFire {
                     buildings: defenses,
                     target,
                 });
-                game.ping(at, PingKind::Attack);
+                game.presentation.ping(at, PingKind::Attack);
                 return;
             }
         }
@@ -187,10 +194,11 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     if !game.selection_commandable() {
-        game.toast("You can only command your own units.");
+        game.presentation
+            .toast("You can only command your own units.");
         return;
     }
-    let units = game.selection.units.clone();
+    let units = game.presentation.selection.units.clone();
     // Each verb crews by its own capability, mirroring the sim's crew
     // filters exactly: workers (harvest kit) carry build and harvest
     // labor, welders carry the torch. A coarser union here would stage
@@ -212,13 +220,13 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let own_building = game
         .state
         .buildings_at(tile)
-        .find(|b| b.player == game.human);
+        .find(|b| b.player == game.presentation.human);
     if (has_worker || has_welder)
         && let Some(building) = own_building
     {
         if !building.built {
             if building.tier > 0 {
-                game.toast("upgrade runs automatically");
+                game.presentation.toast("upgrade runs automatically");
                 return;
             }
             if has_worker {
@@ -233,7 +241,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                     queue,
                     defer: false,
                 });
-                game.ping(world, PingKind::Harvest);
+                game.presentation.ping(world, PingKind::Harvest);
                 return;
             }
             // Welders alone cannot lay construction: fall through.
@@ -271,7 +279,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                     queue,
                 });
             }
-            game.ping(world, PingKind::Harvest);
+            game.presentation.ping(world, PingKind::Harvest);
             return;
         } else if building.hp < building.stats().max_hp && has_welder {
             game.issue(Command::Repair {
@@ -279,7 +287,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 building: building.id,
                 queue,
             });
-            game.ping(world, PingKind::Harvest);
+            game.presentation.ping(world, PingKind::Harvest);
             return;
         }
         // A healthy built own building — or a site without a worker, or
@@ -304,10 +312,10 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             .units()
             .iter()
             .filter(|u| {
-                u.player == game.human
+                u.player == game.presentation.human
                     && u.hp > 0
                     && u.kind.stats().transport_capacity > 0
-                    && !game.selection.units.contains(&u.id)
+                    && !game.presentation.selection.units.contains(&u.id)
             })
             .map(|u| {
                 let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
@@ -321,7 +329,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 transport,
                 queue,
             });
-            game.ping(world, PingKind::Move);
+            game.presentation.ping(world, PingKind::Move);
             return;
         }
     }
@@ -333,7 +341,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             target,
             queue,
         });
-        game.ping(at, PingKind::Attack);
+        game.presentation.ping(at, PingKind::Attack);
         return;
     }
     // A wounded own GROUND unit under the cursor takes the weld, the
@@ -348,11 +356,11 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             .units()
             .iter()
             .filter(|u| {
-                u.player == game.human
+                u.player == game.presentation.human
                     && u.hp > 0
                     && u.hp < u.kind.stats().max_hp
                     && u.domain() == oxide_sim::stats::Domain::Ground
-                    && !game.selection.units.contains(&u.id)
+                    && !game.presentation.selection.units.contains(&u.id)
             })
             .map(|u| {
                 let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
@@ -366,7 +374,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 target,
                 queue,
             });
-            game.ping(world, PingKind::Harvest);
+            game.presentation.ping(world, PingKind::Harvest);
             return;
         }
     }
@@ -381,7 +389,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             node: tile,
             queue,
         });
-        game.ping(world, PingKind::Harvest);
+        game.presentation.ping(world, PingKind::Harvest);
         return;
     }
     // Default ground movement keeps formation intent: weapons take
@@ -392,7 +400,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         goal: tile,
         queue,
     });
-    game.ping(world, PingKind::Move);
+    game.presentation.ping(world, PingKind::Move);
 }
 
 /// Train the selected production slot through the shared pending-command view.

@@ -2,7 +2,7 @@
 
 use crate::action::{Action, BindingMap};
 use crate::building_actions::SelectedBuildings;
-use crate::game::Game;
+use crate::game::{Game, Scene};
 use crate::panel::{Card, CardAction, CardIcon, unit_flavor, unit_stat_line, weapon_lines};
 use crate::typography::entity_name;
 use oxide_sim::{Building, BuildingId, Command, UnitKind};
@@ -26,7 +26,7 @@ pub(crate) struct QueueGroup {
 }
 
 impl Production {
-    pub fn inspect(game: &Game) -> Self {
+    pub fn inspect(game: &Scene<'_>) -> Self {
         Self::from_selected(SelectedBuildings::inspect(game))
     }
 
@@ -293,7 +293,7 @@ impl Production {
 }
 
 pub(crate) fn train(game: &mut Game, slot: usize) {
-    let Some(batch) = Production::inspect(game).batch(slot) else {
+    let Some(batch) = Production::inspect(&game.view()).batch(slot) else {
         return;
     };
     let count = batch.recipients.len();
@@ -304,7 +304,7 @@ pub(crate) fn train(game: &mut Game, slot: usize) {
         });
     }
     if let Some(reason) = batch.reason {
-        game.toast(if batch.total > 1 {
+        game.presentation.toast(if batch.total > 1 {
             format!("Queued {count} of {}: {reason}", batch.total)
         } else {
             reason
@@ -313,7 +313,7 @@ pub(crate) fn train(game: &mut Game, slot: usize) {
 }
 
 pub(crate) fn cancel_one(game: &mut Game, kind: UnitKind) {
-    if let Some((building, index)) = Production::inspect(game).cancel_target(kind) {
+    if let Some((building, index)) = Production::inspect(&game.view()).cancel_target(kind) {
         game.issue(Command::CancelTrain { building, index });
     }
 }
@@ -334,11 +334,11 @@ mod tests {
             y: 3,
         });
         let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
-        game.selection.buildings = game
+        game.presentation.selection.buildings = game
             .state
             .buildings()
             .iter()
-            .filter(|b| b.player == game.human)
+            .filter(|b| b.player == game.presentation.human)
             .map(|b| b.id)
             .collect();
         game
@@ -352,12 +352,13 @@ mod tests {
             .state
             .units()
             .iter()
-            .find(|u| u.player == game.human && u.kind.stats().harvest.is_some())
+            .find(|u| u.player == game.presentation.human && u.kind.stats().harvest.is_some())
             .unwrap()
             .id;
         let mut snapshot = serde_json::to_value(&*game.state).unwrap();
         snapshot["buildings"].as_array_mut().unwrap().retain(|b| {
-            b["player"] != serde_json::json!(game.human) || b["id"] == serde_json::json!(home.id)
+            b["player"] != serde_json::json!(game.presentation.human)
+                || b["id"] == serde_json::json!(home.id)
         });
         let site = snapshot["buildings"]
             .as_array_mut()
@@ -382,16 +383,16 @@ mod tests {
         *game.state = serde_json::from_value(snapshot).unwrap();
         game.state.validate_invariants().unwrap();
         assert!(game.state.result().is_none());
-        assert!(!game.state.player(game.human).resigned);
+        assert!(!game.state.player(game.presentation.human).resigned);
         assert!(game.home_foundry().is_none());
-        assert!(!Production::inspect(&game).selected.accepts);
+        assert!(!Production::inspect(&game.view()).selected.accepts);
     }
 
     #[test]
     fn grouped_production_spends_once_per_factory_in_id_order_and_projects_pending_commands() {
         let mut game = factories(150);
-        let ids = game.selection.buildings.clone();
-        game.selection.buildings = vec![ids[1], ids[0], ids[1]];
+        let ids = game.presentation.selection.buildings.clone();
+        game.presentation.selection.buildings = vec![ids[1], ids[0], ids[1]];
         let before = game.state.hash();
         train(&mut game, 0);
         train(&mut game, 0);
@@ -411,11 +412,12 @@ mod tests {
             .collect();
         assert_eq!(targets, vec![ids[0], ids[1], ids[0]]);
         assert!(
-            game.toasts
+            game.presentation
+                .toasts
                 .iter()
                 .any(|t| t.text == "Queued 1 of 2: insufficient scrap")
         );
-        let (cards, counts) = Production::inspect(&game).collective_queue();
+        let (cards, counts) = Production::inspect(&game.view()).collective_queue();
         assert_eq!(cards[0].title, "Harvester x 3");
         assert_eq!((counts[0].count, counts[0].active), (3, 2));
         let events = game.do_tick().events;
@@ -431,21 +433,22 @@ mod tests {
     #[test]
     fn grouped_production_skips_full_queues_including_staged_purchases() {
         let mut game = factories(5000);
-        let ids = game.selection.buildings.clone();
+        let ids = game.presentation.selection.buildings.clone();
         for _ in 0..oxide_sim::stats::QUEUE_CAP {
             game.issue(Command::Train {
                 building: ids[0],
                 kind: UnitKind::Harvester,
             });
         }
-        let batch = Production::inspect(&game).batch(0).unwrap();
+        let batch = Production::inspect(&game.view()).batch(0).unwrap();
         assert_eq!(batch.recipients, vec![ids[1]]);
         assert_eq!(batch.reason.as_deref(), Some("1 queue full"));
         for _ in 0..oxide_sim::stats::QUEUE_CAP + 2 {
             train(&mut game, 0);
         }
         assert_eq!(game.pending.len(), oxide_sim::stats::QUEUE_CAP * 2);
-        let panel = crate::panel::build_for_palette(&game, &BindingMap::classic(), false).unwrap();
+        let panel =
+            crate::panel::build_for_palette(&game.view(), &BindingMap::classic(), false).unwrap();
         assert_eq!(panel.queue.len(), 1, "sixteen paid units occupy one tile");
         assert_eq!(panel.queue_groups[0].count, 16);
         assert!(
@@ -467,14 +470,14 @@ mod tests {
     #[test]
     fn collective_cancellation_preserves_heads_and_repeated_clicks_use_updated_slots() {
         let mut game = factories(150);
-        let ids = game.selection.buildings.clone();
+        let ids = game.presentation.selection.buildings.clone();
         train(&mut game, 0);
         train(&mut game, 0);
         cancel_one(&mut game, UnitKind::Harvester);
         assert!(
             matches!(game.pending.last().unwrap().command, Command::CancelTrain { building, index: 1 } if building == ids[0])
         );
-        assert_eq!(Production::inspect(&game).selected.scrap, 50);
+        assert_eq!(Production::inspect(&game.view()).selected.scrap, 50);
         train(&mut game, 1); // 75 scrap must still be refused.
         assert!(matches!(
             game.pending.last().unwrap().command,
@@ -514,18 +517,18 @@ mod tests {
     #[test]
     fn grouped_production_honors_foreign_ownership_tech_and_pending_elimination() {
         let mut game = factories(5000);
-        let ids = game.selection.buildings.clone();
+        let ids = game.presentation.selection.buildings.clone();
         let foreign = game
             .state
             .buildings()
             .iter()
-            .find(|b| b.player != game.human)
+            .find(|b| b.player != game.presentation.human)
             .unwrap()
             .id;
-        game.selection.buildings = vec![foreign];
+        game.presentation.selection.buildings = vec![foreign];
         train(&mut game, 0);
         assert!(game.pending.is_empty());
-        game.selection.buildings = ids;
+        game.presentation.selection.buildings = ids;
         // Excavators require an Array.
         let slot = BuildingKind::Foundry
             .base_stats()
@@ -533,7 +536,7 @@ mod tests {
             .iter()
             .position(|k| *k == UnitKind::Excavator)
             .unwrap();
-        let batch = Production::inspect(&game).batch(slot).unwrap();
+        let batch = Production::inspect(&game.view()).batch(slot).unwrap();
         assert!(batch.recipients.is_empty());
         assert!(batch.reason.unwrap().contains("standing"));
         game.issue(Command::Surrender);
@@ -544,22 +547,24 @@ mod tests {
     #[test]
     fn grouped_production_observes_pending_invalid_purchases_and_refunds_without_charging_twice() {
         let mut game = factories(50);
-        let id = game.selection.buildings[0];
+        let id = game.presentation.selection.buildings[0];
         game.stage(PlayerCommand {
-            player: game.human,
+            player: game.presentation.human,
             command: Command::Train {
                 building: id,
                 kind: UnitKind::Condor,
             },
         });
         train(&mut game, 0);
-        assert_eq!(Production::inspect(&game).selected.scrap, 0);
+        assert_eq!(Production::inspect(&game.view()).selected.scrap, 0);
         assert_eq!(
-            Production::inspect(&game).selected.buildings[0].queue.len(),
+            Production::inspect(&game.view()).selected.buildings[0]
+                .queue
+                .len(),
             1
         );
         cancel_one(&mut game, UnitKind::Harvester);
-        assert_eq!(Production::inspect(&game).selected.scrap, 50);
+        assert_eq!(Production::inspect(&game.view()).selected.scrap, 50);
     }
 
     #[test]

@@ -201,33 +201,50 @@ pub(crate) struct PlacingStroke {
 /// ghost and the `defer` flag the armed click emits — one judgment,
 /// two surfaces.
 pub(crate) fn build_defer_needed(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
 ) -> bool {
     let (w, h) = kind.base_stats().size;
-    (0..h).any(|dy| (0..w).any(|dx| !game.state.vision(game.human).visible(anchor.offset(dx, dy))))
+    (0..h).any(|dy| {
+        (0..w).any(|dx| {
+            !game
+                .state
+                .vision(game.presentation.human)
+                .visible(anchor.offset(dx, dy))
+        })
+    })
 }
 
 /// Unit programs a non-queued build will replace. Queued builds preserve
 /// every claim because they append behind the current program.
-fn replaced_build_units(game: &Game, queue: bool) -> &[UnitId] {
-    if queue { &[] } else { &game.selection.units }
+fn replaced_build_units<'a>(game: &'a crate::game::Scene<'_>, queue: bool) -> &'a [UnitId] {
+    if queue {
+        &[]
+    } else {
+        &game.presentation.selection.units
+    }
 }
 
-pub(crate) fn available_construction_scrap(game: &Game, input: &InputState) -> u32 {
+pub(crate) fn available_construction_scrap(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+) -> u32 {
     let replaced = replaced_build_units(game, input.resolver.shift_held());
     if game.pending.is_empty() {
         return game
             .state
-            .player(game.human)
+            .player(game.presentation.human)
             .scrap
-            .saturating_add(game.state.construction_refund(game.human, replaced));
+            .saturating_add(
+                game.state
+                    .construction_refund(game.presentation.human, replaced),
+            );
     }
-    game.state.inspect_command_phase(&game.pending, |view| {
-        view.scrap(game.human)
+    game.state.inspect_command_phase(game.pending, |view| {
+        view.scrap(game.presentation.human)
             .unwrap_or(0)
-            .saturating_add(view.construction_refund(game.human, replaced))
+            .saturating_add(view.construction_refund(game.presentation.human, replaced))
     })
 }
 
@@ -254,7 +271,7 @@ struct PendingBuildProjection {
 /// Every accepted site is already paid. Replacement can spend the full refund
 /// from unstarted sites whose last worker commitment it removes.
 fn pending_build_projection(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
     queue: bool,
@@ -269,27 +286,27 @@ fn pending_build_projection(
 }
 
 fn pending_build_projection_for(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
     queue: bool,
     defer: bool,
 ) -> PendingBuildProjection {
     let replaced = replaced_build_units(game, queue);
-    game.state.inspect_command_phase(&game.pending, |state| {
-        let refusal = if state.accepts_commands(game.human) {
-            state.place_intent_refusal_replacing(game.human, kind, anchor, replaced)
+    game.state.inspect_command_phase(game.pending, |state| {
+        let refusal = if state.accepts_commands(game.presentation.human) {
+            state.place_intent_refusal_replacing(game.presentation.human, kind, anchor, replaced)
         } else {
             Some(oxide_sim::PlaceRefusal::NotConstructible)
         };
-        let refund = state.construction_refund(game.human, replaced);
+        let refund = state.construction_refund(game.presentation.human, replaced);
         let crew: Vec<_> = state
             .units()
             .iter()
             .filter(|unit| {
-                unit.player == game.human
+                unit.player == game.presentation.human
                     && unit.kind.stats().harvest.is_some()
-                    && game.selection.units.contains(&unit.id)
+                    && game.presentation.selection.units.contains(&unit.id)
             })
             .collect();
         let can_assign = |unit: &&oxide_sim::Unit| {
@@ -306,7 +323,7 @@ fn pending_build_projection_for(
             refusal,
             funds: PendingBuildFunds {
                 scrap: state
-                    .scrap(game.human)
+                    .scrap(game.presentation.human)
                     .expect("the live human seat remains in the projection"),
                 refund,
             },
@@ -319,7 +336,7 @@ fn pending_build_projection_for(
 /// Replacement clicks may reuse claims their selected harvesters abandon;
 /// Shift clicks and drag stamps preserve them.
 pub(crate) fn placement_refusal(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
     queue: bool,
@@ -330,11 +347,12 @@ pub(crate) fn placement_refusal(
 /// The fog-honest anchor shared by the placement ghost and every input path.
 /// A discovered Extractor frame is one 2x2 target, not four unrelated tiles.
 pub(crate) fn placement_anchor(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     kind: oxide_sim::BuildingKind,
     clicked: TilePos,
 ) -> TilePos {
-    game.state.canonical_build_anchor(game.human, kind, clicked)
+    game.state
+        .canonical_build_anchor(game.presentation.human, kind, clicked)
 }
 
 fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
@@ -398,10 +416,10 @@ impl InputState {
     pub(crate) fn context(&self, game: &Game) -> crate::action::Context {
         use crate::action::Context;
         if self.construction_open()
-            && game.selection.units.iter().any(|id| {
-                game.state
-                    .unit(*id)
-                    .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
+            && game.presentation.selection.units.iter().any(|id| {
+                game.state.unit(*id).is_some_and(|u| {
+                    u.player == game.presentation.human && u.kind.stats().harvest.is_some()
+                })
             })
         {
             return self
@@ -409,17 +427,17 @@ impl InputState {
                 .map(Context::BuildCategory)
                 .unwrap_or(Context::Construction);
         }
-        if game.selection.units.iter().any(|id| {
+        if game.presentation.selection.units.iter().any(|id| {
             game.state
                 .unit(*id)
                 .is_some_and(|unit| unit.kind.stats().harvest.is_some())
         }) {
             Context::Workers
-        } else if !game.selection.units.is_empty() {
+        } else if !game.presentation.selection.units.is_empty() {
             Context::Units
         } else if !orders::selected_producers(game).is_empty() {
             Context::Production
-        } else if !game.selection.buildings.is_empty() {
+        } else if !game.presentation.selection.buildings.is_empty() {
             Context::Buildings
         } else {
             Context::Empty
@@ -868,7 +886,7 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
     {
         return CursorIcon::Crosshair;
     }
-    let layout = game.layout.get();
+    let layout = game.presentation.layout.get();
     let p = input.mouse;
     if layout.minimap.contains(p)
         || layout.chrome_owns(p)
@@ -889,14 +907,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // into the minimap so sliding off its edge doesn't stall
                 // the pan mid-gesture.
                 if input.minimap_drag {
-                    let rect = crate::render::minimap_rect(game);
+                    let rect = crate::render::minimap_rect(&game.view());
                     let clamped = vec2(
                         x.clamp(rect.x, rect.x + rect.w - 1.0),
                         y.clamp(rect.y, rect.y + rect.h - 1.0),
                     );
-                    if let Some(world) = crate::render::minimap_world_at(game, clamped) {
-                        game.camera.center = world;
-                        game.camera.pan(Vec2::ZERO);
+                    if let Some(world) = crate::render::minimap_world_at(&game.view(), clamped) {
+                        game.presentation.camera.center = world;
+                        game.presentation.camera.pan(Vec2::ZERO);
                     }
                 }
                 // Middle-drag: the world follows the hand, so the pan
@@ -904,7 +922,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // space by the zoom.
                 if let Some(anchor) = input.mmb_anchor {
                     let delta = vec2(x, y) - anchor;
-                    game.camera.pan(-delta / game.camera.zoom);
+                    game.presentation
+                        .camera
+                        .pan(-delta / game.presentation.camera.zoom);
                     input.mmb_anchor = Some(vec2(x, y));
                 }
                 // Drag-to-place: while the button stays down in
@@ -916,18 +936,18 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // cap instead of firing doomed commands.
                 if let (Some(kind), Some(stroke)) = (input.placing, input.placing_stroke.as_mut())
                     && !click_on_hud(game, vec2(x, y))
-                    && crate::render::minimap_world_at(game, vec2(x, y)).is_none()
+                    && crate::render::minimap_world_at(&game.view(), vec2(x, y)).is_none()
                 {
-                    let world = game.camera.to_world(vec2(x, y));
+                    let world = game.presentation.camera.to_world(vec2(x, y));
                     let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                    let anchor = placement_anchor(game, kind, clicked);
+                    let anchor = placement_anchor(&game.view(), kind, clicked);
                     let (w, h) = kind.base_stats().size;
                     let overlaps = stroke
                         .anchors
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
                     let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-                    let projection = pending_build_projection(game, kind, anchor, true);
+                    let projection = pending_build_projection(&game.view(), kind, anchor, true);
                     // The projected bank already reflects every paid
                     // pending command; only surviving deferred claims
                     // need a future-price reserve. That keeps a fast
@@ -941,7 +961,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         && projection.queue_has_room
                         && projection.refusal.is_none()
                     {
-                        let units = game.selection.units.clone();
+                        let units = game.presentation.selection.units.clone();
                         game.issue(Command::Build {
                             units,
                             kind,
@@ -949,9 +969,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             queue: true,
                             // A stroke can cross the vision skirt: each
                             // stamp defers or founds on its own ground.
-                            defer: build_defer_needed(game, kind, anchor),
+                            defer: build_defer_needed(&game.view(), kind, anchor),
                         });
-                        game.ping(placement_ping(kind, anchor), PingKind::Rally);
+                        game.presentation
+                            .ping(placement_ping(kind, anchor), PingKind::Rally);
                         stroke.anchors.push(anchor);
                     }
                 }
@@ -962,7 +983,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 } else {
                     delta
                 };
-                game.camera.zoom_at(input.mouse, delta);
+                game.presentation.camera.zoom_at(input.mouse, delta);
             }
             RawEvent::MouseDown {
                 button: MouseButton::Left,
@@ -975,7 +996,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 }
                 // Panel cards are buttons: each carries the exact action
                 // its click performs — the same action its hotkey routes.
-                let layout = game.layout.get();
+                let layout = game.presentation.layout.get();
                 let card_hit = layout.roster_slots[..layout.roster_count]
                     .iter()
                     .chain(layout.cards[..layout.card_count].iter())
@@ -987,7 +1008,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     continue;
                 }
                 // The idle badge cycles workers on click.
-                let badge = game.layout.get().idle_badge;
+                let badge = game.presentation.layout.get().idle_badge;
                 if badge.w > 0.0 && badge.contains(vec2(x, y)) {
                     cycle_idle_worker(game);
                     continue;
@@ -995,9 +1016,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // The minimap owns clicks landing on it: jump the camera,
                 // never start a drag-select there. HUD chrome swallows
                 // clicks outright.
-                if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
-                    game.camera.center = world;
-                    game.camera.pan(Vec2::ZERO); // re-clamp
+                if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
+                    game.presentation.camera.center = world;
+                    game.presentation.camera.pan(Vec2::ZERO); // re-clamp
                     input.minimap_drag = true;
                 } else if !click_on_hud(game, vec2(x, y)) {
                     input.drag_origin = Some(vec2(x, y));
@@ -1052,7 +1073,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let cancelled_placement = input.placing.is_some();
                     input.close_construction();
                     if cancelled_placement {
-                        game.toast("placement cancelled; issuing new order");
+                        game.presentation
+                            .toast("placement cancelled; issuing new order");
                     }
                 }
                 // A right-click on the minimap orders to that world tile
@@ -1060,20 +1082,21 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
                 let queue = input.resolver.shift_held();
-                if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
+                if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast(format!(
+                            game.presentation.toast(format!(
                                 "patrol is full: {} starts it",
                                 input.bindings.label(Action::Patrol)
                             ));
                         } else {
                             route.push(tile);
-                            game.ping(vec2(world.x, world.y), PingKind::Rally);
+                            game.presentation
+                                .ping(vec2(world.x, world.y), PingKind::Rally);
                         }
                     } else {
-                        let units = game.selection.units.clone();
+                        let units = game.presentation.selection.units.clone();
                         // The same commandability gate the world path
                         // applies: an inspected ally or enemy takes no
                         // orders from the minimap either.
@@ -1083,23 +1106,24 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 goal: tile,
                                 queue,
                             });
-                            game.ping(vec2(world.x, world.y), PingKind::Move);
+                            game.presentation
+                                .ping(vec2(world.x, world.y), PingKind::Move);
                         } else if units.is_empty() {
                             rally_selected_producers(game, tile, world);
                         }
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
-                    let world = game.camera.to_world(vec2(x, y));
+                    let world = game.presentation.camera.to_world(vec2(x, y));
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast(format!(
+                            game.presentation.toast(format!(
                                 "patrol is full: {} starts it",
                                 input.bindings.label(Action::Patrol)
                             ));
                         } else {
                             route
                                 .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
-                            game.ping(world, PingKind::Rally);
+                            game.presentation.ping(world, PingKind::Rally);
                         }
                     } else {
                         context_order(game, vec2(x, y), queue);
@@ -1137,8 +1161,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             RawEvent::TouchDown { id, x, y } => {
                 let p = vec2(x, y);
                 input.touches.retain(|(tid, _)| *tid != id);
-                let chrome =
-                    crate::render::minimap_world_at(game, p).is_some() || click_on_hud(game, p);
+                let chrome = crate::render::minimap_world_at(&game.view(), p).is_some()
+                    || click_on_hud(game, p);
                 input.touches.push((
                     id,
                     TouchPoint {
@@ -1183,8 +1207,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     // One moved finger drags the world under the hand —
                     // unless it landed on chrome, whose ground it keeps.
                     1 if input.touches[0].1.moved && !input.touches[0].1.chrome => {
-                        game.camera.center -= delta / game.camera.zoom;
-                        game.camera.pan(Vec2::ZERO); // re-clamp
+                        game.presentation.camera.center -= delta / game.presentation.camera.zoom;
+                        game.presentation.camera.pan(Vec2::ZERO); // re-clamp
                     }
                     // Two fingers: a spread that has CUMULATIVELY moved
                     // past the threshold is a pinch (zoom at the
@@ -1204,7 +1228,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             let spread = new_dist - old;
                             if spread != 0.0 {
                                 let mid = (input.touches[0].1.at + input.touches[1].1.at) * 0.5;
-                                game.camera.zoom_at(mid, spread * 0.02);
+                                game.presentation.camera.zoom_at(mid, spread * 0.02);
                             }
                         }
                     }
@@ -1273,15 +1297,15 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // (and a minimap tap would grab) whatever
                             // world ground happens to sit under the
                             // chrome pixel.
-                            if let Some(world) = crate::render::minimap_world_at(game, p) {
-                                game.camera.center = world;
-                                game.camera.pan(Vec2::ZERO); // re-clamp
+                            if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
+                                game.presentation.camera.center = world;
+                                game.presentation.camera.pan(Vec2::ZERO); // re-clamp
                                 continue;
                             }
                             // Chrome next, through the touch pad: a
                             // fingertip needs 44 logical px even where
                             // the drawn card is smaller.
-                            let layout = game.layout.get();
+                            let layout = game.presentation.layout.get();
                             let card = layout.roster_slots[..layout.roster_count]
                                 .iter()
                                 .chain(layout.cards[..layout.card_count].iter())
@@ -1333,35 +1357,38 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
 fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
-    let cancel = game.layout.get().mode_cancel;
+    let cancel = game.presentation.layout.get().mode_cancel;
     if cancel.w > 0.0 && crate::layout::touch_pad(cancel, input.ui).contains(p) {
         if input.cancel_armed_mode() {
-            game.toast("command mode cancelled");
-            game.sounds_pending
+            game.presentation.toast("command mode cancelled");
+            game.presentation
+                .sounds_pending
                 .push((crate::game::SoundKind::Click, None));
         }
         return true;
     }
-    if click_on_hud(game, p) && crate::render::minimap_world_at(game, p).is_none() {
+    if click_on_hud(game, p) && crate::render::minimap_world_at(&game.view(), p).is_none() {
         return false;
     }
     if !input.rallying.is_empty() {
-        let world = crate::render::minimap_world_at(game, p)
-            .or_else(|| (!click_on_hud(game, p)).then(|| game.camera.to_world(p)));
+        let world = crate::render::minimap_world_at(&game.view(), p)
+            .or_else(|| (!click_on_hud(game, p)).then(|| game.presentation.camera.to_world(p)));
         if let Some(world) = world {
             let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-            for building in
-                crate::building_actions::SelectedBuildings::inspect_ids(game, &input.rallying)
-                    .producers()
+            for building in crate::building_actions::SelectedBuildings::inspect_ids(
+                &game.view(),
+                &input.rallying,
+            )
+            .producers()
             {
                 game.issue(Command::SetRally {
                     building,
                     rally: Some(rally),
                 });
             }
-            game.ping(world, PingKind::Rally);
+            game.presentation.ping(world, PingKind::Rally);
             input.rallying.clear();
-            game.toast("rally point set");
+            game.presentation.toast("rally point set");
         }
         return true;
     }
@@ -1369,15 +1396,15 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         // The minimap keeps its meaning while placing: jump the
         // camera, never misread the click as world ground (that would
         // spend scrap on a bogus tile).
-        if let Some(world) = crate::render::minimap_world_at(game, p) {
-            game.camera.center = world;
-            game.camera.pan(Vec2::ZERO); // re-clamp
+        if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
+            game.presentation.camera.center = world;
+            game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
-            let world = game.camera.to_world(p);
+            let world = game.presentation.camera.to_world(p);
             let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-            let anchor = placement_anchor(game, kind, clicked);
+            let anchor = placement_anchor(&game.view(), kind, clicked);
             let queue = input.resolver.shift_held();
-            let projection = pending_build_projection(game, kind, anchor, queue);
+            let projection = pending_build_projection(&game.view(), kind, anchor, queue);
             // The ghost already showed red; a misclick must not throw
             // away the armed mode on top of it. The toast names the
             // actual blocker — "needs open ground" while your own
@@ -1387,7 +1414,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // state — so Fog here means genuinely unscouted.
             if let Some(refusal) = projection.refusal {
                 use oxide_sim::PlaceRefusal;
-                game.toast(match refusal {
+                game.presentation.toast(match refusal {
                     PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
                     PlaceRefusal::Terrain => "can't build there: impassable ground",
                     PlaceRefusal::Building => "can't build there: something already stands there",
@@ -1401,7 +1428,8 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                         "can't build there: that ground belongs to a derelict frame"
                     }
                 });
-                game.sounds_pending
+                game.presentation
+                    .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
@@ -1411,11 +1439,12 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // acknowledgment ping followed by a sim rejection.
             let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             if projection.funds.available() < cost {
-                game.toast(format!(
+                game.presentation.toast(format!(
                     "not enough scrap for a {}",
                     crate::typography::entity_name(kind.name())
                 ));
-                game.sounds_pending
+                game.presentation
+                    .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
@@ -1424,12 +1453,14 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // would ping and then die in the sim as QueueFull. Same
             // honest refusal as the broke click, mode stays armed.
             if !projection.queue_has_room {
-                game.toast("that builder's order queue is full");
-                game.sounds_pending
+                game.presentation
+                    .toast("that builder's order queue is full");
+                game.presentation
+                    .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
-            let units = game.selection.units.clone();
+            let units = game.presentation.selection.units.clone();
             // Shift both keeps placing AND queues the build behind the
             // builder's current program — chained construction in one
             // gesture.
@@ -1442,9 +1473,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 // out and founds on arrival, paying then. Same click,
                 // two claim timings — the amber ghost already said
                 // which this stamp is.
-                defer: build_defer_needed(game, kind, anchor),
+                defer: build_defer_needed(&game.view(), kind, anchor),
             });
-            game.ping(placement_ping(kind, anchor), PingKind::Rally);
+            game.presentation
+                .ping(placement_ping(kind, anchor), PingKind::Rally);
             // The stroke opens: dragging stamps more of the same kind,
             // queued. Whether the MODE survives the release is still
             // Shift's call, decided at MouseUp.
@@ -1458,28 +1490,32 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         // The same manners placement keeps: minimap jumps the camera,
         // a misclick keeps the mode armed, and Shift chains teardowns
         // behind the crew's program.
-        if let Some(world) = crate::render::minimap_world_at(game, p) {
-            game.camera.center = world;
-            game.camera.pan(Vec2::ZERO); // re-clamp
+        if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
+            game.presentation.camera.center = world;
+            game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
-            let world = game.camera.to_world(p);
+            let world = game.presentation.camera.to_world(p);
             let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
             let target = game.state.buildings_at(tile).find(|b| {
-                b.player == game.human && b.built && b.kind != oxide_sim::BuildingKind::Foundry
+                b.player == game.presentation.human
+                    && b.built
+                    && b.kind != oxide_sim::BuildingKind::Foundry
             });
             let Some(building) = target.map(|b| b.id) else {
-                game.toast("salvage wants an own built building (not a Foundry)");
-                game.sounds_pending
+                game.presentation
+                    .toast("salvage wants an own built building (not a Foundry)");
+                game.presentation
+                    .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             };
-            let units = game.selection.units.clone();
+            let units = game.presentation.selection.units.clone();
             game.issue(Command::Salvage {
                 units,
                 building,
                 queue: input.resolver.shift_held(),
             });
-            game.ping(world, PingKind::Harvest);
+            game.presentation.ping(world, PingKind::Harvest);
             if !input.resolver.shift_held() {
                 input.salvaging = false;
             }
@@ -1490,17 +1526,17 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         // Same manners as salvage: minimap jumps the camera, a
         // misclick keeps the mode armed, Shift chains welds behind the
         // crew's program.
-        if let Some(world) = crate::render::minimap_world_at(game, p) {
-            game.camera.center = world;
-            game.camera.pan(Vec2::ZERO); // re-clamp
+        if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
+            game.presentation.camera.center = world;
+            game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
-            let world = game.camera.to_world(p);
+            let world = game.presentation.camera.to_world(p);
             let patient = game
                 .state
                 .units()
                 .iter()
                 .filter(|u| {
-                    u.player == game.human
+                    u.player == game.presentation.human
                         && u.hp > 0
                         && u.hp < u.kind.stats().max_hp
                         && u.domain() == oxide_sim::stats::Domain::Ground
@@ -1512,34 +1548,36 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 .filter(|(distance, _, kind)| *distance <= unit_pick_radius(*kind))
                 .min_by(|a, b| a.0.total_cmp(&b.0));
             let Some((_, target, _)) = patient else {
-                game.toast("weld wants a damaged own ground unit");
-                game.sounds_pending
+                game.presentation
+                    .toast("weld wants a damaged own ground unit");
+                game.presentation
+                    .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             };
             // A machine cannot weld itself: if the picked patient is
             // the only selected welder, the sim would reject after the
             // ping — refuse honestly at arm time instead.
-            let has_other_welder = game.selection.units.iter().any(|id| {
+            let has_other_welder = game.presentation.selection.units.iter().any(|id| {
                 *id != target
-                    && game
-                        .state
-                        .unit(*id)
-                        .is_some_and(|u| u.kind.stats().welder && u.player == game.human)
+                    && game.state.unit(*id).is_some_and(|u| {
+                        u.kind.stats().welder && u.player == game.presentation.human
+                    })
             });
             if !has_other_welder {
-                game.toast("weld needs another welder in hand");
-                game.sounds_pending
+                game.presentation.toast("weld needs another welder in hand");
+                game.presentation
+                    .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
-            let units = game.selection.units.clone();
+            let units = game.presentation.selection.units.clone();
             game.issue(Command::RepairUnit {
                 units,
                 target,
                 queue: input.resolver.shift_held(),
             });
-            game.ping(world, PingKind::Harvest);
+            game.presentation.ping(world, PingKind::Harvest);
             if !input.resolver.shift_held() {
                 input.repairing = false;
             }
@@ -1549,19 +1587,19 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     if input.running {
         // Same manners again: minimap jumps the camera, HUD swallows,
         // Shift chains legs and keeps the verb armed.
-        if let Some(world) = crate::render::minimap_world_at(game, p) {
-            game.camera.center = world;
-            game.camera.pan(Vec2::ZERO); // re-clamp
+        if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
+            game.presentation.camera.center = world;
+            game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
-            let world = game.camera.to_world(p);
+            let world = game.presentation.camera.to_world(p);
             let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-            let units = game.selection.units.clone();
+            let units = game.presentation.selection.units.clone();
             game.issue(Command::Move {
                 units,
                 goal,
                 queue: input.resolver.shift_held(),
             });
-            game.ping(world, PingKind::Move);
+            game.presentation.ping(world, PingKind::Move);
             if !input.resolver.shift_held() {
                 input.running = false;
             }
@@ -1571,19 +1609,19 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     if input.attacking {
         // Explicit fighting march: minimap jumps the camera, HUD
         // swallows, and Shift chains legs while keeping the verb armed.
-        if let Some(world) = crate::render::minimap_world_at(game, p) {
-            game.camera.center = world;
-            game.camera.pan(Vec2::ZERO); // re-clamp
+        if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
+            game.presentation.camera.center = world;
+            game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
-            let world = game.camera.to_world(p);
+            let world = game.presentation.camera.to_world(p);
             let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-            let units = game.selection.units.clone();
+            let units = game.presentation.selection.units.clone();
             game.issue(Command::AttackMove {
                 units,
                 goal,
                 queue: input.resolver.shift_held(),
             });
-            game.ping(world, PingKind::Attack);
+            game.presentation.ping(world, PingKind::Attack);
             if !input.resolver.shift_held() {
                 input.attacking = false;
             }
@@ -1594,7 +1632,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
 }
 
 pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, action: Action) {
-    let Some(panel) = crate::panel::build_for_input(game, input) else {
+    let Some(panel) = crate::panel::build_for_input(&game.view(), input) else {
         return;
     };
     if let Some(card) = panel
@@ -1605,7 +1643,7 @@ pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, acti
         if card.enabled {
             activate_card(game, input, card.action);
         } else if let Some(why) = &card.why {
-            game.toast(why.clone());
+            game.presentation.toast(why.clone());
         }
     } else if let Action::TrainSlot(slot) = action {
         orders::train(game, slot as usize);
@@ -1634,7 +1672,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             }
             input.disarm_click_verbs();
             input.rallying = buildings;
-            game.toast(format!(
+            game.presentation.toast(format!(
                 "set rally: click the battlefield or minimap, {} to cancel",
                 input.bindings.label(Action::Back)
             ));
@@ -1675,7 +1713,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             // The cut is shell-side only: selections are presentation,
             // no command leaves here.
             let keep = !input.resolver.ctrl_held();
-            game.selection.units.retain(|id| {
+            game.presentation.selection.units.retain(|id| {
                 game.state
                     .unit(*id)
                     .is_some_and(|u| (u.kind == kind) == keep)
@@ -1705,25 +1743,27 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world
     // point hiding under the HUD.
-    if crate::render::minimap_world_at(game, tp.at).is_some() || click_on_hud(game, tp.at) {
+    if crate::render::minimap_world_at(&game.view(), tp.at).is_some() || click_on_hud(game, tp.at) {
         return;
     }
-    let world = game.camera.to_world(tp.at);
+    let world = game.presentation.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     // Only entities the viewer can actually SEE steer the gesture — an
     // omniscient probe here let a hidden hostile under the fog flip a
     // rally into a select, making occupancy observable through touch.
-    let sees = |t: TilePos| game.all_seeing() || game.my_vision().visible(t);
+    let sees = |t: TilePos| game.presentation.all_seeing() || game.my_vision().visible(t);
     let on_entity = game.state.units().iter().any(|u| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-        p.distance(world) <= unit_pick_radius(u.kind) && (u.player == game.human || sees(u.tile()))
+        p.distance(world) <= unit_pick_radius(u.kind)
+            && (u.player == game.presentation.human || sees(u.tile()))
     }) || game.state.buildings_at(tile).any(|b| {
         // Same rule as fog, for stealth: an undetected buried charge
         // must not flip a rally into a select, or taps would scan for
         // occupancy the fog view denies.
-        b.player == game.human || (sees(tile) && game.state.building_apparent(game.human, b))
+        b.player == game.presentation.human
+            || (sees(tile) && game.state.building_apparent(game.presentation.human, b))
     });
-    if on_entity && game.selection.units.is_empty() {
+    if on_entity && game.presentation.selection.units.is_empty() {
         select::click_select(game, tp.at, false, input.ui);
     } else {
         orders::context_order(game, tp.at, false);
@@ -1749,7 +1789,7 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
         // windowed-mode mousing; keyboard panning always wins when both
         // speak.
         const EDGE: f32 = 8.0;
-        let viewport = game.camera.viewport();
+        let viewport = game.presentation.camera.viewport();
         if input.mouse.x <= EDGE {
             dir.x -= 1.0;
         } else if input.mouse.x >= viewport.x - EDGE {
@@ -1762,8 +1802,11 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
         }
     }
     if dir != vec2(0.0, 0.0) {
-        let world_per_sec = PAN_PX_PER_SEC * input.camera_prefs.pan_speed / game.camera.zoom;
-        game.camera.pan(dir.normalize() * world_per_sec * dt);
+        let world_per_sec =
+            PAN_PX_PER_SEC * input.camera_prefs.pan_speed / game.presentation.camera.zoom;
+        game.presentation
+            .camera
+            .pan(dir.normalize() * world_per_sec * dt);
     }
 }
 

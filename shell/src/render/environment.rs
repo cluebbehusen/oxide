@@ -1,7 +1,7 @@
 //! Production quarry boundary: collapsed, dark industrial terraces rising
 //! away from the battlefield floor.
 
-use crate::game::Game;
+use crate::game::Scene;
 use macroquad::prelude::*;
 
 const SALT: u32 = 347;
@@ -45,13 +45,13 @@ struct MapFrame {
 }
 
 impl MapFrame {
-    fn from_game(game: &Game) -> Self {
-        let origin = game.camera.to_screen(vec2(0.0, 0.0));
-        let far = game.camera.to_screen(vec2(
+    fn from_game(game: &Scene<'_>) -> Self {
+        let origin = game.presentation.camera.to_screen(vec2(0.0, 0.0));
+        let far = game.presentation.camera.to_screen(vec2(
             game.state.map().width() as f32,
             game.state.map().height() as f32,
         ));
-        let tile = game.camera.zoom;
+        let tile = game.presentation.camera.zoom;
         let mut rect = Rect::new(
             origin.x.floor(),
             origin.y.floor(),
@@ -501,7 +501,7 @@ pub(super) fn hash(x: i32, y: i32, salt: u32) -> u32 {
     value
 }
 
-pub(super) fn draw_backdrop(_game: &Game) {
+pub(super) fn draw_backdrop(_game: &Scene<'_>) {
     // Boundary sight extends off-map, so the void must match opaque fog.
     draw_rectangle(
         0.0,
@@ -512,7 +512,7 @@ pub(super) fn draw_backdrop(_game: &Game) {
     );
 }
 
-pub(super) fn draw_boundary(game: &Game, fractured: bool) {
+pub(super) fn draw_boundary(game: &Scene<'_>, fractured: bool) {
     draw_boundary_terraces(MapFrame::from_game(game), fractured);
 }
 

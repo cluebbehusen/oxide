@@ -38,18 +38,20 @@ impl FinalMapScreen {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(*x, *y);
                     if let Some(anchor) = self.middle_anchor {
-                        game.camera.pan((anchor - *mouse) / game.camera.zoom);
+                        game.presentation
+                            .camera
+                            .pan((anchor - *mouse) / game.presentation.camera.zoom);
                         self.middle_anchor = Some(*mouse);
                     }
                     if self.minimap_drag {
-                        let rect = render::minimap_rect(game);
+                        let rect = render::minimap_rect(&game.view());
                         let clamped = vec2(
                             x.clamp(rect.x, rect.x + rect.w - 1.0),
                             y.clamp(rect.y, rect.y + rect.h - 1.0),
                         );
-                        if let Some(world) = render::minimap_world_at(game, clamped) {
-                            game.camera.center = world;
-                            game.camera.pan(Vec2::ZERO);
+                        if let Some(world) = render::minimap_world_at(&game.view(), clamped) {
+                            game.presentation.camera.center = world;
+                            game.presentation.camera.pan(Vec2::ZERO);
                         }
                     }
                 }
@@ -59,9 +61,9 @@ impl FinalMapScreen {
                     y,
                 } => {
                     *mouse = vec2(*x, *y);
-                    if let Some(world) = render::minimap_world_at(game, *mouse) {
-                        game.camera.center = world;
-                        game.camera.pan(Vec2::ZERO);
+                    if let Some(world) = render::minimap_world_at(&game.view(), *mouse) {
+                        game.presentation.camera.center = world;
+                        game.presentation.camera.pan(Vec2::ZERO);
                         self.minimap_drag = true;
                     }
                 }
@@ -75,7 +77,7 @@ impl FinalMapScreen {
                     } else {
                         *delta
                     };
-                    game.camera.zoom_at(*mouse, delta);
+                    game.presentation.camera.zoom_at(*mouse, delta);
                 }
                 RawEvent::KeyDown { key } => {
                     if self
@@ -109,12 +111,13 @@ impl FinalMapScreen {
                 - i32::from(self.resolver.is_held(Action::PanUp)) as f32,
         );
         if direction != Vec2::ZERO {
-            let world_per_second = 240.0 * camera_prefs.pan_speed / game.camera.zoom;
-            game.camera
+            let world_per_second = 240.0 * camera_prefs.pan_speed / game.presentation.camera.zoom;
+            game.presentation
+                .camera
                 .pan(direction.normalize() * world_per_second * dt);
         }
-        game.camera.set_viewport(viewport);
-        game.camera.update(dt);
+        game.presentation.camera.set_viewport(viewport);
+        game.presentation.camera.update(dt);
         false
     }
 
@@ -152,7 +155,7 @@ mod tests {
         let mut game = Game::with_viewport(Scenario::skirmish(), viewport).expect("game");
         let mut screen = FinalMapScreen::open();
         let mut mouse = Vec2::ZERO;
-        let before = game.camera.center;
+        let before = game.presentation.camera.center;
         assert!(!screen.update(
             &[RawEvent::KeyDown { key: Key::Right }],
             0.25,
@@ -161,7 +164,7 @@ mod tests {
             &mut mouse,
             &mut game,
         ));
-        assert!(game.camera.center.x > before.x);
+        assert!(game.presentation.camera.center.x > before.x);
         assert!(screen.update(
             &[RawEvent::KeyDown { key: Key::Escape }],
             0.0,
@@ -183,18 +186,18 @@ mod tests {
         let mut game = Game::with_viewport(Scenario::skirmish(), viewport).expect("game");
         let mut screen = FinalMapScreen::open();
         let mut mouse = Vec2::ZERO;
-        let rect = render::minimap_rect(&game);
-        let mut layout = game.layout.get();
+        let rect = render::minimap_rect(&game.view());
+        let mut layout = game.presentation.layout.get();
         layout.minimap = rect;
-        game.layout.set(layout);
+        game.presentation.layout.set(layout);
         let press = vec2(rect.x + 2.0, rect.y + 2.0);
-        let expected = render::minimap_world_at(&game, press).expect("inside minimap");
-        let original = game.camera.center;
-        game.camera.center = expected;
-        game.camera.pan(Vec2::ZERO);
-        let expected = game.camera.center;
-        game.camera.center = original;
-        game.camera.pan(Vec2::ZERO);
+        let expected = render::minimap_world_at(&game.view(), press).expect("inside minimap");
+        let original = game.presentation.camera.center;
+        game.presentation.camera.center = expected;
+        game.presentation.camera.pan(Vec2::ZERO);
+        let expected = game.presentation.camera.center;
+        game.presentation.camera.center = original;
+        game.presentation.camera.pan(Vec2::ZERO);
 
         screen.update(
             &[RawEvent::MouseDown {
@@ -209,18 +212,18 @@ mod tests {
             &mut game,
         );
         assert!(screen.minimap_drag);
-        assert!((game.camera.center - expected).length() < 0.1);
+        assert!((game.presentation.camera.center - expected).length() < 0.1);
 
         let dragged = vec2(rect.x + rect.w + 100.0, rect.y + rect.h + 100.0);
         let clamped = vec2(rect.x + rect.w, rect.y + rect.h);
         let expected_after_drag =
-            render::minimap_world_at(&game, clamped).expect("clamped inside minimap");
-        let after_press = game.camera.center;
-        game.camera.center = expected_after_drag;
-        game.camera.pan(Vec2::ZERO);
-        let expected_after_drag = game.camera.center;
-        game.camera.center = after_press;
-        game.camera.pan(Vec2::ZERO);
+            render::minimap_world_at(&game.view(), clamped).expect("clamped inside minimap");
+        let after_press = game.presentation.camera.center;
+        game.presentation.camera.center = expected_after_drag;
+        game.presentation.camera.pan(Vec2::ZERO);
+        let expected_after_drag = game.presentation.camera.center;
+        game.presentation.camera.center = after_press;
+        game.presentation.camera.pan(Vec2::ZERO);
         screen.update(
             &[RawEvent::MouseMove {
                 x: dragged.x,
@@ -232,7 +235,7 @@ mod tests {
             &mut mouse,
             &mut game,
         );
-        let after_drag = game.camera.center;
+        let after_drag = game.presentation.camera.center;
         assert!((after_drag - expected_after_drag).length() < 0.1);
         assert_ne!(
             after_drag, after_press,
@@ -258,7 +261,7 @@ mod tests {
         );
         assert!(!screen.minimap_drag);
         assert_eq!(
-            game.camera.center, after_drag,
+            game.presentation.camera.center, after_drag,
             "released drags stop steering"
         );
 
@@ -273,14 +276,17 @@ mod tests {
             &mut mouse,
             &mut game,
         );
-        assert_eq!(game.camera.center, after_drag, "released keys do not pan");
+        assert_eq!(
+            game.presentation.camera.center, after_drag,
+            "released keys do not pan"
+        );
     }
     #[test]
     fn final_map_keeps_the_secondary_camera_hold_after_releasing_a_rebound_primary() {
         use crate::action::Chord;
         let mut game =
             Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(640.0, 400.0)).unwrap();
-        game.camera.center = vec2(18.0, 10.0);
+        game.presentation.camera.center = vec2(18.0, 10.0);
         let mut screen = FinalMapScreen::open();
         assert!(
             screen
@@ -300,7 +306,7 @@ mod tests {
             &mut mouse,
             &mut game,
         );
-        let halfway = game.camera.center.x;
+        let halfway = game.presentation.camera.center.x;
         screen.update(
             &[RawEvent::KeyUp { key: Key::L }],
             0.1,
@@ -309,7 +315,7 @@ mod tests {
             &mut mouse,
             &mut game,
         );
-        let after = game.camera.center.x;
+        let after = game.presentation.camera.center.x;
         assert!(after > halfway);
         screen.update(
             &[RawEvent::KeyUp { key: Key::Right }],
@@ -319,7 +325,7 @@ mod tests {
             &mut mouse,
             &mut game,
         );
-        assert_eq!(game.camera.center.x, after);
+        assert_eq!(game.presentation.camera.center.x, after);
         assert!(game.pending.is_empty());
     }
 }

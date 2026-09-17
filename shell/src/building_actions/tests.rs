@@ -36,15 +36,15 @@ pub(crate) fn fixture(kind: BuildingKind, tiers: &[u8], scrap: u32) -> Game {
         });
     }
     let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
-    game.selection.buildings = game
+    game.presentation.selection.buildings = game
         .state
         .buildings()
         .iter()
-        .filter(|b| b.player == game.human && b.kind == kind && b.anchor.y == 5)
+        .filter(|b| b.player == game.presentation.human && b.kind == kind && b.anchor.y == 5)
         .map(|b| b.id)
         .collect();
     let mut json = serde_json::to_value(&*game.state).unwrap();
-    for (id, &tier) in game.selection.buildings.iter().zip(tiers) {
+    for (id, &tier) in game.presentation.selection.buildings.iter().zip(tiers) {
         let b = json["buildings"]
             .as_array_mut()
             .unwrap()
@@ -80,8 +80,10 @@ fn mixed_tiers_advance_once_and_skip_max_tier_with_pending_input() {
     ] {
         let mut game = fixture(kind, &tiers, 5000);
         let before = game.state.hash();
-        let ids = game.selection.buildings.clone();
-        let batch = SelectedBuildings::inspect(&game).upgrade_batch().unwrap();
+        let ids = game.presentation.selection.buildings.clone();
+        let batch = SelectedBuildings::inspect(&game.view())
+            .upgrade_batch()
+            .unwrap();
         assert_eq!(batch.cost, cost);
         let expected: Vec<_> = ids
             .iter()
@@ -110,15 +112,15 @@ fn mixed_tiers_advance_once_and_skip_max_tier_with_pending_input() {
 #[test]
 fn funding_and_prerequisites_are_per_recipient_in_canonical_order() {
     let mut game = fixture(BuildingKind::Turret, &[1, 0, 0], 200);
-    let ids = game.selection.buildings.clone();
+    let ids = game.presentation.selection.buildings.clone();
     let foreign = game
         .state
         .buildings()
         .iter()
-        .find(|b| b.player != game.human)
+        .find(|b| b.player != game.presentation.human)
         .unwrap()
         .id;
-    game.selection.buildings = vec![
+    game.presentation.selection.buildings = vec![
         ids[2],
         foreign,
         ids[1],
@@ -126,7 +128,9 @@ fn funding_and_prerequisites_are_per_recipient_in_canonical_order() {
         ids[1],
         BuildingId(u32::MAX),
     ];
-    let batch = SelectedBuildings::inspect(&game).upgrade_batch().unwrap();
+    let batch = SelectedBuildings::inspect(&game.view())
+        .upgrade_batch()
+        .unwrap();
     assert_eq!(
         batch.recipients,
         vec![ids[1]],
@@ -151,8 +155,13 @@ fn funding_and_prerequisites_are_per_recipient_in_canonical_order() {
         .retain(|b| b["id"] != serde_json::json!(crucible));
     *game.state = serde_json::from_value(json).unwrap();
     game.state.validate_invariants().unwrap();
-    let batch = SelectedBuildings::inspect(&game).upgrade_batch().unwrap();
-    assert_eq!(batch.recipients, vec![game.selection.buildings[0]]);
+    let batch = SelectedBuildings::inspect(&game.view())
+        .upgrade_batch()
+        .unwrap();
+    assert_eq!(
+        batch.recipients,
+        vec![game.presentation.selection.buildings[0]]
+    );
     assert!(batch.reason.unwrap().contains("Crucible"));
     upgrade(&mut game);
     assert_accepted(&mut game);
@@ -167,7 +176,7 @@ fn pending_purchases_refunds_invalid_commands_and_surrender_share_one_preview() 
         kind: oxide_sim::UnitKind::Harvester,
     });
     assert_eq!(
-        SelectedBuildings::inspect(&game)
+        SelectedBuildings::inspect(&game.view())
             .upgrade_batch()
             .unwrap()
             .recipients
@@ -182,7 +191,7 @@ fn pending_purchases_refunds_invalid_commands_and_surrender_share_one_preview() 
         building: BuildingId(u32::MAX),
     });
     assert_eq!(
-        SelectedBuildings::inspect(&game)
+        SelectedBuildings::inspect(&game.view())
             .upgrade_batch()
             .unwrap()
             .recipients
@@ -203,7 +212,7 @@ fn pending_purchases_refunds_invalid_commands_and_surrender_share_one_preview() 
 #[test]
 fn pending_upgrades_and_cancellations_leave_only_live_defense_recipients() {
     let mut game = fixture(BuildingKind::Turret, &[0, 0, 2], 1000);
-    let ids = game.selection.buildings.clone();
+    let ids = game.presentation.selection.buildings.clone();
     game.issue(Command::UpgradeBuilding { building: ids[0] });
     stop_or_scrap(&mut game);
     assert!(
@@ -215,7 +224,7 @@ fn pending_upgrades_and_cancellations_leave_only_live_defense_recipients() {
 #[test]
 fn group_site_cancellation_skips_completed_and_committed_upgrades() {
     let mut game = fixture(BuildingKind::Turret, &[0, 0, 0], 1000);
-    let ids = game.selection.buildings.clone();
+    let ids = game.presentation.selection.buildings.clone();
     let mut json = serde_json::to_value(&*game.state).unwrap();
     let site = json["buildings"]
         .as_array_mut()
@@ -242,7 +251,7 @@ fn group_site_cancellation_skips_completed_and_committed_upgrades() {
             .count(),
         1
     );
-    assert_eq!(game.selection.buildings, vec![ids[0], ids[2]]);
+    assert_eq!(game.presentation.selection.buildings, vec![ids[0], ids[2]]);
     assert_accepted(&mut game);
     assert!(game.state.building(ids[1]).is_none());
     assert!(!game.state.building(ids[0]).unwrap().built);
@@ -251,7 +260,7 @@ fn group_site_cancellation_skips_completed_and_committed_upgrades() {
 #[test]
 fn every_building_inherits_single_and_group_actions_from_capabilities() {
     let game = fixture(BuildingKind::Turret, &[0, 0], 10000);
-    let original = SelectedBuildings::inspect(&game);
+    let original = SelectedBuildings::inspect(&game.view());
     for kind in BuildingKind::ALL {
         for count in [1, 2] {
             let mut selected = original.clone();
