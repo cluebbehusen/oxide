@@ -400,7 +400,10 @@ fn two_live_fronts_get_exact_disjoint_responses_without_emptying_home() {
         x: 35 + index % 3,
         y: 6 + index / 3,
     }));
-    for x in [14, 42] {
+    // Both guns open fire on the Sentinels they can see from where they
+    // stand, so each front is live on its own evidence rather than on a
+    // pre-emptive valuation that shifts with a few ticks of travel.
+    for x in [14, 41] {
         scenario.units.push(UnitSpec {
             player: 1,
             kind: UnitKind::Bombard,

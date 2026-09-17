@@ -570,9 +570,12 @@ fn derive_connected_package_options(
     ) {
         return Err(ConnectedPlanRejection::DisconnectedGroundRoute);
     }
+    // The package must refuse the same paid queue work as the resources it
+    // is derived against, or it can lean on an occurrence the lowered claims
+    // will not be allowed to take.
     let route = ConnectedRouteContext {
         campaign_routes: context.campaign_routes,
-        unavailable_paid: &[],
+        unavailable_paid: context.resources.access.paid_exclusions(),
         intel,
         home,
         target: target.anchor,
@@ -11924,6 +11927,53 @@ mod tests {
                 kind: UnitKind::Kestrel,
                 occurrence: 1
             }]
+        );
+    }
+
+    #[test]
+    fn connected_package_funds_a_scout_when_reconnaissance_holds_the_only_queued_one() {
+        let mut battle = production_hungry_connected_obs(120, 1000);
+        battle
+            .my_units
+            .retain(|unit| unit.kind != UnitKind::Kestrel);
+        let factory = battle
+            .my_buildings
+            .iter()
+            .position(|building| building.kind == BuildingKind::Airworks)
+            .unwrap();
+        let producer = battle.my_buildings[factory].id;
+        battle.my_queues[factory] = vec![UnitKind::Kestrel];
+        let intelligence = knowledge(&battle);
+        let resources = ResourceSnapshot::from_observation(&battle);
+        let proposal = StrategicPlanner::new()
+            .fresh_connected_minimum_proposal(
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &battle,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    coordination(None),
+                )
+                .with_paid_exclusions(&[(producer, UnitKind::Kestrel, 0)]),
+            )
+            .unwrap()
+            .unwrap();
+        let claims = proposal.minimum_claims();
+        assert!(
+            claims
+                .paid_providers()
+                .iter()
+                .all(|provider| provider.kind() != UnitKind::Kestrel),
+            "the reconnaissance-held occurrence must not be leaned on"
+        );
+        assert!(
+            claims
+                .provider_jobs()
+                .iter()
+                .any(|job| job.kind() == UnitKind::Kestrel),
+            "the package funds its own scout instead"
         );
     }
 

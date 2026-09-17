@@ -147,3 +147,182 @@ fn the_smelter_melts_ring_fuel_and_leaves_the_far_field() {
         "the ring wreck fed exactly the scrap credited (plus global decay)"
     );
 }
+
+#[test]
+fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
+    // Two wrecks at equal reach of each crucible, one above and one below,
+    // so only the tie-break decides which tile feeds first. Mirrored seats
+    // must burn mirrored tiles, not whichever an absolute scan meets first.
+    let (width, height) = (30usize, 10usize);
+    let mut rows = vec![vec!['.'; width]; height];
+    for row in rows.iter_mut() {
+        row[0] = '#';
+        row[width - 1] = '#';
+    }
+    rows[0] = vec!['#'; width];
+    rows[height - 1] = vec!['#'; width];
+    rows[1][1] = '1';
+    rows[height - 3][width - 3] = '2';
+    let (cw, ch) = BuildingKind::Crucible.base_stats().size;
+    let left_anchor = TilePos::new(6, 4);
+    let right_anchor = TilePos::new(
+        width as i32 - cw - left_anchor.x,
+        height as i32 - ch - left_anchor.y,
+    );
+    let scenario = Scenario {
+        name: "mirrored-smelters".into(),
+        seed: 3,
+        map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
+        players: vec![
+            PlayerSpec {
+                name: "West".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "East".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: Vec::new(),
+        buildings: vec![
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Crucible,
+                x: left_anchor.x,
+                y: left_anchor.y,
+            },
+            BuildingSpec {
+                player: 1,
+                kind: BuildingKind::Crucible,
+                x: right_anchor.x,
+                y: right_anchor.y,
+            },
+        ],
+        meta: None,
+    };
+    let state = scenario.build().unwrap();
+    let mirror =
+        |tile: TilePos| TilePos::new(width as i32 - 1 - tile.x, height as i32 - 1 - tile.y);
+    let above = TilePos::new(left_anchor.x, left_anchor.y - 2);
+    let below = TilePos::new(left_anchor.x, left_anchor.y + ch + 1);
+    let mut doc = serde_json::to_value(&state).unwrap();
+    for tile in [above, below, mirror(above), mirror(below)] {
+        let index = tile.y as usize * width + tile.x as usize;
+        doc["map"]["grid"]["cells"][index]["wreck"] = serde_json::json!(5);
+    }
+    let mut state: State = serde_json::from_value(doc).unwrap();
+    // One pulse: a second would take the other, now richer, tile on both
+    // sides and hide which tile each crucible burned first.
+    assert!(state.current_tick().is_multiple_of(CRUCIBLE_SMELT_PERIOD));
+    state.tick(&[]);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        state.player(PlayerId(1)).scrap
+    );
+    assert!(
+        state.player(PlayerId(0)).scrap > 0,
+        "the smelters never fed"
+    );
+    for tile in [above, below] {
+        assert_eq!(
+            state.map().wreck_at(tile),
+            state.map().wreck_at(mirror(tile)),
+            "mirrored crucibles burned different tiles: {:?} vs {:?}",
+            wreck_tiles(&state),
+            tile
+        );
+    }
+}
+
+#[test]
+fn a_centered_crucible_smelts_in_its_owners_home_frame() {
+    // A crucible on the exact map center is its own mirror image, so the
+    // owner's home side has to orient the tie-break: the same crucible
+    // owned from the other Foundry burns the mirrored tile.
+    let (width, height) = (30usize, 10usize);
+    let anchor = TilePos::new(14, 4);
+    let build = |owner: u8| {
+        let mut rows = vec![vec!['.'; width]; height];
+        for row in rows.iter_mut() {
+            row[0] = '#';
+            row[width - 1] = '#';
+        }
+        rows[0] = vec!['#'; width];
+        rows[height - 1] = vec!['#'; width];
+        rows[1][1] = '1';
+        rows[height - 3][width - 3] = '2';
+        let scenario = Scenario {
+            name: "centered-smelter".into(),
+            seed: 3,
+            map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
+            players: vec![
+                PlayerSpec {
+                    name: "West".into(),
+                    faction: Faction::Ferrous,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "East".into(),
+                    faction: Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units: Vec::new(),
+            buildings: vec![BuildingSpec {
+                player: owner,
+                kind: BuildingKind::Crucible,
+                x: anchor.x,
+                y: anchor.y,
+            }],
+            meta: None,
+        };
+        scenario.build().unwrap()
+    };
+    let mirror =
+        |tile: TilePos| TilePos::new(width as i32 - 1 - tile.x, height as i32 - 1 - tile.y);
+    let (cw, ch) = BuildingKind::Crucible.base_stats().size;
+    assert_eq!(
+        (anchor.x * 2 + cw, anchor.y * 2 + ch),
+        (width as i32, height as i32)
+    );
+    let above = TilePos::new(anchor.x, anchor.y - 2);
+    let below = mirror(above);
+    let burn = |owner: u8| {
+        let state = build(owner);
+        let mut doc = serde_json::to_value(&state).unwrap();
+        for tile in [above, below] {
+            let index = tile.y as usize * width + tile.x as usize;
+            doc["map"]["grid"]["cells"][index]["wreck"] = serde_json::json!(5);
+        }
+        let mut state: State = serde_json::from_value(doc).unwrap();
+        assert!(state.current_tick().is_multiple_of(CRUCIBLE_SMELT_PERIOD));
+        state.tick(&[]);
+        assert!(
+            state.player(PlayerId(owner)).scrap > 0,
+            "the smelter never fed"
+        );
+        (state.map().wreck_at(above), state.map().wreck_at(below))
+    };
+    let west = burn(0);
+    let east = burn(1);
+    assert_ne!(west.0, west.1, "one tile burned first");
+    assert_eq!(
+        (west.0, west.1),
+        (east.1, east.0),
+        "the eastern owner must burn the mirrored tile first"
+    );
+}

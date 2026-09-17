@@ -555,11 +555,15 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
     use oxide_sim::stats::BuildingKind;
     // Player 1 stands up a turret, then loses its Foundry. The turret
     // must not keep it in the game — survival means a Foundry.
+    // Five guns: the attack-move meets the turret and its builder on the
+    // way in, and that fight must not be a coin flip.
     let mut state = arena(vec![
         unit(1, UnitKind::Harvester, 12, 2),
         unit(0, UnitKind::Sentinel, 4, 6),
         unit(0, UnitKind::Sentinel, 5, 7),
         unit(0, UnitKind::Sentinel, 4, 7),
+        unit(0, UnitKind::Sentinel, 5, 6),
+        unit(0, UnitKind::Sentinel, 6, 7),
     ])
     .build()
     .unwrap();

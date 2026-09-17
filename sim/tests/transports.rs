@@ -722,3 +722,54 @@ fn a_lethally_hit_rider_is_not_entombed_as_cargo() {
         "the death pass must still own a rider killed during buffered boarding"
     );
 }
+
+#[test]
+fn a_rider_that_stalled_on_its_way_boards_dormant() {
+    // The sling clears every live field of a boarding rider; the stall
+    // counter is one of them, or cargo would fail the dormancy invariant
+    // and a save taken mid-flight could never load.
+    let mut state = arena(
+        open_map(),
+        vec![
+            unit(0, UnitKind::Skyhook, 4, 4),
+            unit(0, UnitKind::Sentinel, 10, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (sky, rider) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        0,
+        Command::Load {
+            units: vec![rider],
+            transport: sky,
+            queue: false,
+        },
+    )]);
+    let slot = state
+        .units()
+        .iter()
+        .position(|unit| unit.id == rider)
+        .unwrap();
+    assert!(state.units()[slot].path.is_some(), "walking to the sling");
+    let mut doc = serde_json::to_value(&state).unwrap();
+    doc["units"][slot]["stall_ticks"] = serde_json::json!(1);
+    let mut state: oxide_sim::State = serde_json::from_value(doc).unwrap();
+    let mut boarded = false;
+    for _ in 0..300 {
+        let report = state.tick(&[]);
+        if report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::UnitBoarded { .. }))
+        {
+            boarded = true;
+            break;
+        }
+    }
+    assert!(boarded, "the rider never boarded");
+    state.validate_invariants().expect("cargo is dormant");
+    let carrier = state.unit(sky).unwrap();
+    assert_eq!(carrier.cargo.len(), 1);
+    assert_eq!(carrier.cargo[0].stall_ticks, 0);
+}

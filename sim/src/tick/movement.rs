@@ -16,7 +16,7 @@ mod ground;
 
 use super::flight;
 use crate::map::Map;
-use crate::state::{Order, PathFollow, State};
+use crate::state::{GroundTerrain, Order, ParkedBodies, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
@@ -112,23 +112,12 @@ fn work_aim(state: &State, unit: &crate::state::Unit) -> Option<Vec2Fx> {
 /// the path itself. Callers check both the authored path leg and the shortcut
 /// from the body's actual tile because collision can carry a body past a
 /// waypoint from an adjacent tile.
-fn early_advance_safe(
-    cur: TilePos,
-    nxt: TilePos,
-    map: &Map,
-    buildings: &[crate::state::Building],
-) -> bool {
-    let open = |t: TilePos| {
-        map.terrain_passable(t)
-            && !buildings
-                .iter()
-                .any(|b| b.contains(t) && !b.kind.is_stealthy() && !b.provisional)
-    };
+fn early_advance_safe(cur: TilePos, nxt: TilePos, terrain: &GroundTerrain) -> bool {
     let (dx, dy) = (nxt.x - cur.x, nxt.y - cur.y);
     if dx == 0 || dy == 0 {
         return true;
     }
-    open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
+    terrain.open(cur.offset(dx, 0)) && terrain.open(cur.offset(0, dy))
 }
 
 /// Whether a body deflected around traffic has already crossed an
@@ -232,6 +221,41 @@ pub(super) fn evict_claimed_ground(state: &mut State) {
     }
 }
 
+/// After collisions: a ground body whose contact cancelled most of its
+/// intended progress toward its waypoint for
+/// [`crate::stats::STALL_REPLAN_TICKS`] running ticks drops its route, so
+/// its brain plans again from where the body actually is. `travel` and
+/// `driven` are this tick's propulsion and post-propulsion positions,
+/// indexed like `state.units`.
+pub(super) fn note_stalls(state: &mut State, travel: &[Vec2Fx], driven: &[Vec2Fx]) {
+    for (slot, unit) in state.units.iter_mut().enumerate() {
+        let stalled = unit.hp > 0
+            && unit.domain() == crate::stats::Domain::Ground
+            && travel[slot] != Vec2Fx::ZERO
+            && unit
+                .path
+                .as_ref()
+                .and_then(|path| path.waypoints.get(path.next as usize))
+                .is_some_and(|waypoint| {
+                    let before = driven[slot] - travel[slot];
+                    let toward = waypoint.center() - before;
+                    let net = unit.pos - before;
+                    let wanted = travel[slot].x * toward.x + travel[slot].y * toward.y;
+                    let made = net.x * toward.x + net.y * toward.y;
+                    wanted > Fx::ZERO && made * Fx::from_num(4) < wanted
+                });
+        if !stalled {
+            unit.stall_ticks = 0;
+            continue;
+        }
+        unit.stall_ticks += 1;
+        if unit.stall_ticks >= crate::stats::STALL_REPLAN_TICKS {
+            unit.path = None;
+            unit.stall_ticks = 0;
+        }
+    }
+}
+
 /// Advances every unit along its path by its speed, returning each
 /// unit's displacement this tick (indexed like `state.units`) — the
 /// collision resolver reads travel to slide movers around each other
@@ -245,13 +269,19 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
         .iter()
         .map(|unit| work_aim(state, unit))
         .collect();
+    // Friendly bodies at rest, per side: a ground follower will not admit
+    // a lookahead leg through one, though it still walks its planned tiles.
+    let parked: Vec<ParkedBodies> = (0..state.players.len())
+        .map(|player| state.parked_bodies(crate::ids::PlayerId(player as u8)))
+        .collect();
     // Disjoint field borrows: units move, terrain is read-only.
     let State {
         units,
         map,
-        buildings,
+        building_occupancy,
         ..
     } = state;
+    let terrain = GroundTerrain::new(map, building_occupancy);
     let mut travel = vec![Vec2Fx::ZERO; units.len()];
     for (slot, unit) in units.iter_mut().enumerate() {
         if unit.hp == 0 || unit.brace_ticks > 0 {
@@ -273,7 +303,7 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             continue;
         }
         if stats.domain == crate::stats::Domain::Ground {
-            ground::advance(unit, map, buildings);
+            ground::advance(unit, &terrain, &parked[unit.player.0 as usize]);
             if unit.drive_speed == Fx::ZERO
                 && let Some(aim) = work_aims[slot]
             {
@@ -554,7 +584,7 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
     Vec2Fx::new(Fx::lit("0.7071"), Fx::lit("-0.7071")),
 ];
 
-fn uses_rotated_map_frame(state: &State, pos: Vec2Fx) -> bool {
+pub(super) fn uses_rotated_map_frame(state: &State, pos: Vec2Fx) -> bool {
     let twice_x = pos.x + pos.x;
     let twice_y = pos.y + pos.y;
     let map_width = Fx::from_num(state.map.width());
@@ -925,6 +955,57 @@ mod tests {
     use crate::stats::UnitKind;
 
     #[test]
+    fn contact_that_cancels_progress_drops_the_route_after_the_stall_bound() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        let waypoint = TilePos::new(20, 12);
+        let slot = 0;
+        state.units[slot].path = Some(PathFollow {
+            goal: waypoint,
+            waypoints: vec![waypoint],
+            next: 0,
+        });
+        state.units[slot].pos = TilePos::new(10, 12).center();
+        let travel: Vec<Vec2Fx> = (0..state.units.len())
+            .map(|i| {
+                if i == slot {
+                    Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO)
+                } else {
+                    Vec2Fx::ZERO
+                }
+            })
+            .collect();
+        // Propulsion carried the body east; contact shoved it back to where
+        // it started, cancelling the whole step.
+        let driven: Vec<Vec2Fx> = state
+            .units
+            .iter()
+            .zip(&travel)
+            .map(|(unit, &step)| unit.pos + step)
+            .collect();
+        for tick in 1..crate::stats::STALL_REPLAN_TICKS {
+            note_stalls(&mut state, &travel, &driven);
+            assert_eq!(state.units[slot].stall_ticks, tick);
+            assert!(state.units[slot].path.is_some());
+        }
+        // One tick of real progress clears the count.
+        state.units[slot].pos += travel[slot];
+        note_stalls(&mut state, &travel, &driven);
+        assert_eq!(state.units[slot].stall_ticks, 0);
+        assert!(state.units[slot].path.is_some());
+        state.units[slot].pos -= travel[slot];
+        for _ in 1..crate::stats::STALL_REPLAN_TICKS {
+            note_stalls(&mut state, &travel, &driven);
+        }
+        assert!(state.units[slot].path.is_some());
+        note_stalls(&mut state, &travel, &driven);
+        assert!(
+            state.units[slot].path.is_none(),
+            "the stalled route was kept"
+        );
+        assert_eq!(state.units[slot].stall_ticks, 0);
+    }
+
+    #[test]
     fn footprint_escape_routes_rotate_with_the_body() {
         let state = Scenario::skirmish().build().unwrap();
         let mirror = |tile: TilePos| {
@@ -1174,8 +1255,11 @@ mod tests {
 
     #[test]
     fn coasting_worker_is_not_anchored_until_its_motor_stops() {
-        let mut state = boundary_pair();
-        let unit = &mut state.units[0];
+        let state = boundary_pair();
+        let terrain = state.ground_terrain();
+        let parked = ParkedBodies::default();
+        let mut unit = state.units[0].clone();
+        let unit = &mut unit;
         unit.kind = UnitKind::Harvester;
         unit.heading = 0;
         unit.order = Order::Harvest {
@@ -1186,11 +1270,11 @@ mod tests {
         unit.drive_speed = unit.kind.stats().speed;
         let before = unit.pos;
         assert!(!is_anchored(unit));
-        ground::advance(unit, &state.map, &state.buildings);
+        ground::advance(unit, &terrain, &parked);
         assert!(unit.pos.x > before.x);
         assert!(!is_anchored(unit));
         for _ in 0..2 {
-            ground::advance(unit, &state.map, &state.buildings);
+            ground::advance(unit, &terrain, &parked);
         }
         assert_eq!(unit.drive_speed, Fx::ZERO);
         assert!(is_anchored(unit));

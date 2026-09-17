@@ -2246,6 +2246,29 @@ pub const COLLISION_ITERATIONS: u32 = 3;
 /// push-off/re-seek oscillation that made crowds grind.
 pub const WAYPOINT_ACCEPT: Fx = Fx::lit("0.35");
 
+/// Heading error, in compass steps, beyond which a rolling ground chassis
+/// brakes and pivots in place instead of steering through the bend. 96
+/// steps is 135 degrees: right-angle corners are driven as arcs; a reversal
+/// stops first.
+pub const GROUND_PIVOT_THRESHOLD: u8 = 96;
+
+/// Running ticks of contact cancelling most of a ground body's intended
+/// progress before it drops its route and its brain plans again from where
+/// the body actually is. Long enough that a slide past a neighbor is not a
+/// replan; short enough that shoving a parked worker never lasts a second.
+pub const STALL_REPLAN_TICKS: u8 = 12;
+
+/// A parked worker claims every work tile whose center lies within this
+/// distance of its hull, so a second worker steers for a center it can
+/// actually reach instead of the one a stopped neighbor already covers.
+pub const WORK_TILE_CLAIM_REACH: Fx = Fx::lit("0.9");
+
+/// How many upcoming route waypoints the ground follower may skip per tick
+/// toward the furthest one its hull can reach on a straight, clear leg.
+/// Bounds the per-unit line checks; a longer clear leg is rediscovered tick
+/// by tick as the body advances.
+pub const ROUTE_LOOKAHEAD: usize = 6;
+
 /// Within this range of a shared goal, touching an already-arrived
 /// neighbor counts as arriving — crowds settle instead of churning on the
 /// click point.

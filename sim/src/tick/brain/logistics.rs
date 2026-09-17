@@ -223,6 +223,7 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
         rider.settled = 0;
         rider.brace_ticks = 0;
         rider.drive_speed = chassis::fx::Fx::ZERO;
+        rider.stall_ticks = 0;
         rider.progress = 0;
         rider.pos = carrier_pos;
         let carrier = state.unit_mut(transport).expect("just seen");
