@@ -1554,7 +1554,7 @@ fn strategic_defense_quote_from_projection(
                     &grounding.construction.placement,
                 );
                 progressive::rank(&mut candidate_tiles, assets, approaches, profile);
-                if let Some(egress) = policy.ground_egress_cache.borrow().as_ref() {
+                if let Some(egress) = policy.queries.ground_egress_cache.borrow().as_ref() {
                     candidate_tiles.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
                 }
                 match policy.planning.site_progress(
@@ -3782,7 +3782,7 @@ mod tests {
         };
         let (first, cold_navigation) = crate::bot::navigation::work::measure(quote);
         let first = first.expect("a useful wall site");
-        let work = policy.knowledge_paths.borrow().costs.work();
+        let work = policy.queries.knowledge_paths.borrow().costs.work();
         assert!(
             work.set_searches > 0,
             "wall detours must use the shared endpoint-set cost query"
@@ -3802,7 +3802,7 @@ mod tests {
         assert!(warm_navigation.paths <= 12, "{warm_navigation:?}");
         assert_eq!(warm_navigation.fields, 0);
         assert_eq!(warm_navigation.generations, 0);
-        let repeated = policy.knowledge_paths.borrow().costs.work();
+        let repeated = policy.queries.knowledge_paths.borrow().costs.work();
         assert_eq!(repeated.set_searches, work.set_searches);
         assert!(repeated.hits > work.hits);
     }
@@ -3891,8 +3891,12 @@ mod tests {
 
         let uncached_array =
             policy.strategic_array_quote(&obs, &map, LEFT_HOME, &[], &[], &builders);
-        let cached_array =
-            policy.strategic_array_quote_in_context(LEFT_HOME, &builders, &mut context);
+        let cached_array = policy.strategic_array_quote_in_context(
+            LEFT_HOME,
+            &builders,
+            &mut context,
+            &Default::default(),
+        );
         assert_eq!(
             cached_array, uncached_array,
             "Array changed under shared grounding"
@@ -6885,11 +6889,14 @@ mod tests {
         obs.explored[anchor_index] = true;
 
         let policy = UtilityPolicy {
-            contested_harvest_regions: vec![ContestedHarvestRegion {
-                center: dangerous_gap,
-                last_evidence: obs.tick,
-                sweep_started_at: None,
-            }],
+            state: super::PolicyState {
+                contested_harvest_regions: vec![ContestedHarvestRegion {
+                    center: dangerous_gap,
+                    last_evidence: obs.tick,
+                    sweep_started_at: None,
+                }],
+                ..super::PolicyState::default()
+            },
             ..UtilityPolicy::new()
         };
         let danger = policy.harvest_danger_projection(&obs, None, None);

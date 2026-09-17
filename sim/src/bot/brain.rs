@@ -270,7 +270,7 @@ impl Brain {
                 .ground_outcomes
                 .retain(|id, _| live_armies.contains(id));
             self.exec.missions.retain(|id, _| live_armies.contains(id));
-            for report in std::mem::take(&mut self.policy.work_experience.pending) {
+            for report in std::mem::take(&mut self.policy.state.work_experience.pending) {
                 mind.experience.report(report);
             }
             for journal in [
@@ -289,10 +289,8 @@ impl Brain {
             }
             mind.battlefield
                 .review_approaches(&oriented, &mind.experience);
-            self.policy.battlefield = Arc::new(mind.battlefield.assessment().clone());
-            self.policy.experience = Arc::new(mind.experience.clone());
             if let Some(planner) = &mut mind.strategy {
-                planner.experience = self.policy.experience.clone();
+                planner.experience = Arc::new(mind.experience.clone());
             }
             if let Some(recorder) = recorder.as_deref_mut() {
                 recorder.trace_mut().battlefield = Some(mind.battlefield.assessment().clone());
@@ -380,8 +378,14 @@ impl Brain {
             raids,
             public_map,
             oriented_public_map,
+            battlefield,
+            experience,
             ..
         } = mind.as_mut();
+        let evidence = super::utility::DecisionEvidence {
+            battlefield: battlefield.assessment(),
+            experience,
+        };
         let profile = &*profile;
         let oriented_public_map: &PublicMapBriefing =
             oriented_public_map.get_or_insert_with(|| orientation.briefing(public_map));
@@ -447,12 +451,12 @@ impl Brain {
 
         let initial_claims = PlannerClaims::new(&enlisted, strategy, raids, lifts);
         let mut initial_team_external = initial_claims.external_to_team();
-        initial_team_external.extend(self.policy.reconnaissance.reservations());
+        initial_team_external.extend(self.policy.state.reconnaissance.reservations());
         initial_team_external.extend(self.policy.support_reservations());
         initial_team_external.sort_unstable();
         initial_team_external.dedup();
         let mut initial_team_core_exclusions = initial_claims.core_exclusions(&[]);
-        initial_team_core_exclusions.extend(self.policy.reconnaissance.reservations());
+        initial_team_core_exclusions.extend(self.policy.state.reconnaissance.reservations());
         initial_team_core_exclusions.extend(self.policy.support_reservations());
         let team_decision = if team_was_active {
             team.as_mut()
@@ -503,14 +507,14 @@ impl Brain {
             .as_ref()
             .map_or_else(Vec::new, TeamReliefPlanner::core_reservations);
         let mut prior_non_lift_claims = claims_after_team.without_lift(&team_claims);
-        prior_non_lift_claims.extend(self.policy.reconnaissance.reservations());
+        prior_non_lift_claims.extend(self.policy.state.reconnaissance.reservations());
         prior_non_lift_claims.extend(self.policy.support_reservations());
         prior_non_lift_claims.sort_unstable();
         prior_non_lift_claims.dedup();
         let lift_unavailable_before =
             lift_unavailable(&oriented, &armies, &enlisted, &prior_non_lift_claims);
         let mut preliminary_core_exclusions = claims_after_team.core_exclusions(&team_claims);
-        preliminary_core_exclusions.extend(self.policy.reconnaissance.reservations());
+        preliminary_core_exclusions.extend(self.policy.state.reconnaissance.reservations());
         preliminary_core_exclusions.extend(self.policy.support_reservations());
         let preliminary_core = combat_core_status(
             &oriented,
@@ -520,7 +524,7 @@ impl Brain {
         );
         let mut raid_exclusions =
             PlannerClaims::new(&enlisted, strategy, raids, lifts).without_raid(&team_claims);
-        raid_exclusions.extend(self.policy.reconnaissance.reservations());
+        raid_exclusions.extend(self.policy.state.reconnaissance.reservations());
         raid_exclusions.extend(self.policy.support_reservations());
         raid_exclusions.sort_unstable();
         raid_exclusions.dedup();
@@ -548,6 +552,7 @@ impl Brain {
             .then(|| connected_force_trace(strategy.as_ref(), intelligence, None));
         let allocation_outcome = AllocationSession::new(
             AllocationSessionContext {
+                evidence,
                 dials: &self.dials,
                 profile,
                 tuning,
@@ -670,7 +675,7 @@ impl Brain {
                     },
                 )
                 .with_producer_lanes(&allocated_producer_intents, &producer_lane_reservations)
-                .with_paid_exclusions(&self.policy.reconnaissance.paid_exclusions()),
+                .with_paid_exclusions(&self.policy.state.reconnaissance.paid_exclusions()),
             )
         } else {
             Default::default()
@@ -702,7 +707,7 @@ impl Brain {
                 .as_ref()
                 .and_then(|planner| planner.active_connected_obligation(&oriented))
                 .is_some();
-        let mut utility_reservations = self.policy.reconnaissance.reservations();
+        let mut utility_reservations = self.policy.state.reconnaissance.reservations();
         utility_reservations.extend(self.policy.support_reservations());
         utility_reservations.sort_unstable();
         utility_reservations.dedup();
@@ -837,7 +842,7 @@ impl Brain {
             &oriented,
         );
         let mut utility_reservations = reservations.clone();
-        utility_reservations.extend(self.policy.reconnaissance.reservations());
+        utility_reservations.extend(self.policy.state.reconnaissance.reservations());
         utility_reservations.extend(self.policy.support_reservations());
         if let Some(planner) = team.as_ref() {
             utility_reservations.extend(planner.reservations());
@@ -852,6 +857,7 @@ impl Brain {
             intelligence.buildings(),
             oriented_public_map,
             strategic.intents,
+            evidence,
         )
         .with_combat_core_exclusions(&strategic_core_exclusions)
         .with_prior_scrap_commitment(utility_prior_commitment)
@@ -867,35 +873,36 @@ impl Brain {
         ground_unavailable.extend(self.exec.muster_exclusions());
         ground_unavailable.sort_unstable();
         ground_unavailable.dedup();
-        self.policy.ground_inputs = Some(super::utility::GroundMissionInputs {
-            missions: self
-                .exec
-                .missions
-                .iter()
-                .map(|(id, mission)| {
-                    let mut mission = mission.clone();
-                    orientation.mission(&mut mission);
-                    (*id, mission)
-                })
-                .collect(),
-            unavailable: ground_unavailable,
-            enlisted: enlisted.clone(),
+        let missions: Vec<_> = self
+            .exec
+            .missions
+            .iter()
+            .map(|(id, mission)| {
+                let mut mission = mission.clone();
+                orientation.mission(&mut mission);
+                (*id, mission)
+            })
+            .collect();
+        let ground_inputs = super::utility::GroundMissionInputs {
+            missions: &missions,
+            unavailable: &ground_unavailable,
+            enlisted: &enlisted,
             tuning,
             relief: team
                 .as_ref()
                 .and_then(|planner| planner.operation())
                 .filter(|operation| operation.phase != super::team::TeamReliefPhase::Withdrawing)
-                .map(|operation| (operation.foundry, operation.members.clone())),
-        });
+                .map(|operation| (operation.foundry, operation.members.as_slice())),
+        };
         let mut intents = self.policy.think_with_intelligence(
             &self.dials,
             &oriented,
             &armies,
             &enlisted,
-            utility_context,
+            utility_context.with_ground_missions(ground_inputs),
         );
         reservations.extend_from_slice(self.policy.worker_safety_reservations());
-        reservations.extend(self.policy.reconnaissance.reservations());
+        reservations.extend(self.policy.state.reconnaissance.reservations());
         reservations.extend(self.policy.support_reservations());
         reservations.sort_unstable();
         reservations.dedup();
@@ -4018,7 +4025,7 @@ mod tests {
             let resources = super::super::resources::ResourceSnapshot::from_observation(&oriented);
             let public_map = orientation.briefing(&brain.mind().public_map);
             let builders = oriented.my_units.iter().collect::<Vec<_>>();
-            let unguarded_defense = brain.policy.clone().fresh_defense_proposals(
+            let unguarded_defense = brain.policy.fresh_defense_proposals(
                 &brain.mind().profile,
                 &oriented,
                 &resources,
@@ -4032,6 +4039,10 @@ mod tests {
                 0,
                 0,
                 0,
+                super::super::utility::DecisionEvidence {
+                    battlefield: brain.mind().battlefield.assessment(),
+                    experience: &brain.mind().experience,
+                },
             );
             assert!(
                 !unguarded_defense.is_empty(),

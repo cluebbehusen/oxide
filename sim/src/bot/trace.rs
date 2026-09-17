@@ -214,6 +214,7 @@ pub struct SupportTrace {
 impl SupportTrace {
     pub(super) fn from_policy(policy: &super::utility::UtilityPolicy, tick: Tick) -> Self {
         let mut lifecycle = policy
+            .state
             .support_work
             .lifecycle
             .iter()
@@ -231,6 +232,7 @@ impl SupportTrace {
         Self {
             deployment_releases: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .support_deployments
                     .released
                     .iter()
@@ -245,6 +247,7 @@ impl SupportTrace {
             ),
             requests: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .support_deployments
                     .requests
                     .iter()
@@ -259,6 +262,7 @@ impl SupportTrace {
             ),
             deployments: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .support_deployments
                     .active
                     .iter()
@@ -276,6 +280,7 @@ impl SupportTrace {
             ),
             repairs: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .support_work
                     .repairs
                     .iter()
@@ -1270,6 +1275,7 @@ impl ReconnaissanceTrace {
         Self {
             covered: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .reconnaissance
                     .covered
                     .iter()
@@ -1308,6 +1314,7 @@ impl ReconnaissanceTrace {
             ),
             released: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .reconnaissance
                     .released
                     .iter()
@@ -1320,6 +1327,7 @@ impl ReconnaissanceTrace {
             ),
             assignments: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .reconnaissance
                     .assignments
                     .values()
@@ -1343,6 +1351,7 @@ impl ReconnaissanceTrace {
             ),
             recovery: BoundedTraceEntries::from_vec(
                 policy
+                    .state
                     .reconnaissance
                     .recovery
                     .iter()

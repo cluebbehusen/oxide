@@ -271,11 +271,13 @@ impl UtilityPolicy {
         now: Tick,
         tuning: DifficultyTuning,
     ) -> Vec<ProtectionRequest> {
-        self.support_deployments
+        self.state
+            .support_deployments
             .requests
             .iter()
             .filter(|request| {
-                self.support_deployments
+                self.state
+                    .support_deployments
                     .evidence
                     .get(&request.key)
                     .is_some_and(|first| now.saturating_sub(*first) >= tuning.reaction_delay)
@@ -286,12 +288,14 @@ impl UtilityPolicy {
     }
     pub(in crate::bot) fn support_reservations(&self) -> Vec<UnitId> {
         let mut units: Vec<_> = self
+            .state
             .support_work
             .repairs
             .iter()
             .map(|repair| repair.key.worker)
             .chain(
-                self.support_deployments
+                self.state
+                    .support_deployments
                     .active
                     .iter()
                     .map(|deployment| deployment.unit),
@@ -308,17 +312,19 @@ impl UtilityPolicy {
         requests: &[ProtectionRequest],
     ) -> Vec<Intent> {
         let obs = context.obs;
-        if self.support_deployments.observed_at == Some(obs.tick) {
+        if self.state.support_deployments.observed_at == Some(obs.tick) {
             return vec![];
         }
-        self.support_deployments.observed_at = Some(obs.tick);
-        self.support_deployments.released.clear();
-        self.support_deployments.requests = requests.to_vec();
-        self.support_deployments
+        self.state.support_deployments.observed_at = Some(obs.tick);
+        self.state.support_deployments.released.clear();
+        self.state.support_deployments.requests = requests.to_vec();
+        self.state
+            .support_deployments
             .evidence
             .retain(|key, _| requests.iter().any(|request| request.key == *key));
         for request in requests {
-            self.support_deployments
+            self.state
+                .support_deployments
                 .evidence
                 .entry(request.key)
                 .or_insert(obs.tick);
@@ -331,14 +337,14 @@ impl UtilityPolicy {
             context.briefing,
             context.orientation,
         );
-        let old = core::mem::take(&mut self.support_deployments.active);
+        let old = core::mem::take(&mut self.state.support_deployments.active);
         for mut deployment in old {
             let Some(unit) = obs
                 .my_units
                 .iter()
                 .find(|unit| unit.id == deployment.unit && unit.hp > 0)
             else {
-                self.support_deployments.released.push((
+                self.state.support_deployments.released.push((
                     deployment,
                     crate::bot::trace::DeploymentReleaseReason::UnitUnavailable,
                 ));
@@ -371,7 +377,10 @@ impl UtilityPolicy {
                         units: vec![unit.id],
                     });
                 }
-                self.support_deployments.released.push((deployment, reason));
+                self.state
+                    .support_deployments
+                    .released
+                    .push((deployment, reason));
                 continue;
             }
             let goal = target.expect("live asset was checked").0;
@@ -385,7 +394,7 @@ impl UtilityPolicy {
                 intents.push(Intent::StopUnits {
                     units: vec![unit.id],
                 });
-                self.support_deployments.released.push((
+                self.state.support_deployments.released.push((
                     deployment,
                     crate::bot::trace::DeploymentReleaseReason::RouteUnavailable,
                 ));
@@ -396,7 +405,7 @@ impl UtilityPolicy {
                 deployment.returning = returning;
                 intents.push(deployment.intent());
             }
-            self.support_deployments.active.push(deployment);
+            self.state.support_deployments.active.push(deployment);
         }
         intents
     }
@@ -412,17 +421,20 @@ impl UtilityPolicy {
             return vec![];
         }
         let requests = self
+            .state
             .support_deployments
             .requests
             .iter()
             .filter(|request| {
                 request.missing > 0
                     && !self
+                        .state
                         .support_deployments
                         .active
                         .iter()
                         .any(|work| work.covers(request))
                     && self
+                        .state
                         .support_deployments
                         .evidence
                         .get(&request.key)
@@ -521,6 +533,7 @@ impl UtilityPolicy {
             || deployment.deadline <= obs.tick
             || self.support_reservations().contains(&deployment.unit)
             || self
+                .state
                 .support_deployments
                 .active
                 .iter()
@@ -537,8 +550,11 @@ impl UtilityPolicy {
             return false;
         }
         intents.push(deployment.intent());
-        self.support_deployments.active.push(deployment);
-        self.support_deployments.active.sort_by_key(|work| work.key);
+        self.state.support_deployments.active.push(deployment);
+        self.state
+            .support_deployments
+            .active
+            .sort_by_key(|work| work.key);
         true
     }
 }
@@ -620,6 +636,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs,
             resources,
@@ -699,7 +716,7 @@ mod tests {
         for work in quoted {
             assert!(policy.commit_support_deployment(work, &obs, &mut vec![]));
         }
-        let deadline = policy.support_deployments.active[0].deadline;
+        let deadline = policy.state.support_deployments.active[0].deadline;
         obs.tick += 24;
         obs.my_units.retain(|unit| unit.id != UnitId(101));
         obs.my_units
@@ -723,7 +740,10 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(policy.support_reservations(), vec![UnitId(100)]);
-        assert_eq!(policy.support_deployments.active[0].deadline, deadline);
+        assert_eq!(
+            policy.state.support_deployments.active[0].deadline,
+            deadline
+        );
         let mut tuning = DifficultyTuning::for_level(profile.difficulty);
         tuning.attention_slots = 0;
         assert!(
@@ -794,7 +814,10 @@ mod tests {
                 goal
             }]
         );
-        assert_eq!(policy.support_deployments.active[0].deadline, deadline);
+        assert_eq!(
+            policy.state.support_deployments.active[0].deadline,
+            deadline
+        );
         obs.tick += 24;
         assert!(observe(&mut policy, &obs).is_empty());
         obs.tick += 24;

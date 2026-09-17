@@ -95,6 +95,8 @@ pub(in crate::bot) struct GroundEgressCache {
     >,
 }
 
+const MAX_LAYOUT_DECISIONS: usize = 256;
+
 impl GroundEgressLayout {
     fn from_observation(obs: &Observation, cancellations: FoundationCancellations<'_>) -> Self {
         let known_scrap = obs.known_scrap.iter().map(|(tile, _)| *tile).collect();
@@ -238,9 +240,7 @@ impl GroundEgressCache {
             let certificate =
                 Self::ground_egress_certificate(&open, cache.layout.map_size, &cache.producers)
                     .map(std::sync::Arc::new);
-            cache
-                .decisions
-                .insert(accepted.clone(), certificate.clone());
+            cache.retain_decision(accepted.clone(), certificate.clone());
             certificate
         };
         let Some(accepted_certificate) = accepted_certificate else {
@@ -301,8 +301,20 @@ impl GroundEgressCache {
             })
         };
         let result = certificate.is_some();
-        cache.decisions.insert(planned, certificate);
+        cache.retain_decision(planned, certificate);
         result
+    }
+
+    fn retain_decision(
+        &mut self,
+        planned: Vec<PlannedFootprint>,
+        certificate: Option<std::sync::Arc<GroundEgressCertificate>>,
+    ) {
+        if self.decisions.len() >= MAX_LAYOUT_DECISIONS {
+            // The empty base layout sorts first and is needed by every fresh placement.
+            self.decisions.pop_last();
+        }
+        self.decisions.insert(planned, certificate);
     }
 
     fn repair_route(
@@ -617,6 +629,45 @@ impl GroundEgressCertificate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hypothetical_layout_eviction_preserves_cold_egress_answers() {
+        use crate::bot::observation::BuildingObs;
+        use crate::ids::{BuildingId, PlayerId};
+
+        let obs = Observation {
+            map_width: 32,
+            map_height: 32,
+            my_buildings: vec![BuildingObs {
+                id: BuildingId(0),
+                player: PlayerId(0),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(2, 2),
+                hp: 1,
+                built: true,
+                seen: true,
+                tier: 0,
+                provisional: false,
+            }],
+            ..Observation::default()
+        };
+        let mut retained = None;
+        GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut retained, &obs);
+        let cold = retained.clone();
+        for x in (5..25).chain((5..25).rev()) {
+            for y in 5..25 {
+                let candidate = (BuildingKind::Barricade, TilePos::new(x, y));
+                assert_eq!(
+                    GroundEgressCache::preserves(&mut retained, &[], candidate),
+                    GroundEgressCache::preserves(&mut cold.clone(), &[], candidate)
+                );
+                let cache = retained.as_ref().unwrap();
+                assert!(cache.decisions.len() <= MAX_LAYOUT_DECISIONS);
+                assert!(cache.decisions.contains_key(&Vec::new()));
+            }
+        }
+        assert_eq!(retained.unwrap().decisions.len(), MAX_LAYOUT_DECISIONS);
+    }
 
     #[test]
     fn provisional_sites_preserve_egress_until_activation() {

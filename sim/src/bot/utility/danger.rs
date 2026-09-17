@@ -378,14 +378,16 @@ impl UtilityPolicy {
         unit_contacts: Option<&[UnitContact]>,
         building_contacts: Option<&[BuildingContact]>,
     ) -> Arc<HarvestDangerProjection> {
-        self.harvest_danger_cache
-            .borrow_mut()
-            .projection(obs, unit_contacts, building_contacts)
+        self.queries.harvest_danger_cache.borrow_mut().projection(
+            obs,
+            unit_contacts,
+            building_contacts,
+        )
     }
 
     #[cfg(test)]
     pub(super) fn harvest_danger_build_count(&self) -> usize {
-        self.harvest_danger_cache.borrow().build_count()
+        self.queries.harvest_danger_cache.borrow().build_count()
     }
 }
 

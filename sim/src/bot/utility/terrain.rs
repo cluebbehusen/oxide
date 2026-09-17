@@ -320,8 +320,8 @@ impl UtilityPolicy {
         open: impl Fn(TilePos) -> bool,
         unclaimed: impl Fn(TilePos) -> bool,
     ) -> bool {
-        if self.dead_anchors.contains(&anchor)
-            || (retained != Some((kind, anchor)) && self.pending_sites.contains(&anchor))
+        if self.state.dead_anchors.contains(&anchor)
+            || (retained != Some((kind, anchor)) && self.state.pending_sites.contains(&anchor))
         {
             return false;
         }
@@ -341,7 +341,11 @@ impl UtilityPolicy {
                 in_bounds(tile)
                     && obs.explored(tile)
                     && (kind.is_stealthy()
-                        || !self.work_experience.construction_work_tiles.contains(&tile))
+                        || !self
+                            .state
+                            .work_experience
+                            .construction_work_tiles
+                            .contains(&tile))
                     && if kind == BuildingKind::Extractor {
                         open(tile)
                     } else {
@@ -379,7 +383,7 @@ impl UtilityPolicy {
     pub(super) fn prepare_ground_producer_egress(&self, obs: &Observation) {
         GroundEgressCache::prepare(
             QueryPurpose::ConstructionAccess,
-            &mut self.ground_egress_cache.borrow_mut(),
+            &mut self.queries.ground_egress_cache.borrow_mut(),
             obs,
         );
     }
@@ -390,7 +394,7 @@ impl UtilityPolicy {
     ) {
         GroundEgressCache::prepare_after(
             QueryPurpose::ConstructionAccess,
-            &mut self.ground_egress_cache.borrow_mut(),
+            &mut self.queries.ground_egress_cache.borrow_mut(),
             obs,
             cancellations,
         );
@@ -401,7 +405,7 @@ impl UtilityPolicy {
         candidate: PlannedFootprint,
     ) -> bool {
         GroundEgressCache::preserves(
-            &mut self.ground_egress_cache.borrow_mut(),
+            &mut self.queries.ground_egress_cache.borrow_mut(),
             accepted,
             candidate,
         )
@@ -623,9 +627,10 @@ mod tests {
         obs.my_units.push(founder);
         let geometry = PlacementGeometry::new(&obs);
         let mut policy = UtilityPolicy::new();
-        policy.pending_sites.push(TilePos::new(8, 10));
-        policy.dead_anchors.push(TilePos::new(10, 2));
+        policy.state.pending_sites.push(TilePos::new(8, 10));
+        policy.state.dead_anchors.push(TilePos::new(10, 2));
         policy
+            .state
             .work_experience
             .construction_work_tiles
             .insert(TilePos::new(4, 9));
@@ -909,7 +914,7 @@ mod tests {
         let cold = UtilityPolicy::new();
         cold.prepare_ground_producer_egress(&with_mine);
         {
-            let cache = cold.ground_egress_cache.borrow();
+            let cache = cold.queries.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("cold egress is prepared");
             let index = (mine_anchor.y * with_mine.map_width + mine_anchor.x) as usize;
             assert!(cache.base_open()[index]);
@@ -924,6 +929,7 @@ mod tests {
         let cached = UtilityPolicy::new();
         cached.prepare_ground_producer_egress(&obs);
         let before = cached
+            .queries
             .ground_egress_cache
             .borrow()
             .as_ref()
@@ -934,6 +940,7 @@ mod tests {
             .expect("the baseline has a route certificate");
         cached.prepare_ground_producer_egress(&with_mine);
         let after = cached
+            .queries
             .ground_egress_cache
             .borrow()
             .as_ref()
@@ -969,7 +976,7 @@ mod tests {
         let policy = UtilityPolicy::new();
         policy.prepare_ground_producer_egress(&obs);
         {
-            let cache = policy.ground_egress_cache.borrow();
+            let cache = policy.queries.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("egress is prepared");
             assert_eq!(
                 cache.producer_count(),
@@ -1072,7 +1079,7 @@ mod tests {
         let policy = UtilityPolicy::new();
         policy.prepare_ground_producer_egress(&obs);
         let (baseline, candidate) = {
-            let cache = policy.ground_egress_cache.borrow();
+            let cache = policy.queries.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("egress cache is prepared");
             let baseline = cache
                 .decisions()
@@ -1097,7 +1104,7 @@ mod tests {
 
         assert!(policy.preserves_ground_producer_egress_prepared(&[], candidate));
 
-        let cache = policy.ground_egress_cache.borrow();
+        let cache = policy.queries.ground_egress_cache.borrow();
         let certificate = cache
             .as_ref()
             .expect("egress cache remains prepared")
@@ -1114,7 +1121,7 @@ mod tests {
         let policy = UtilityPolicy::new();
         policy.prepare_ground_producer_egress(&obs);
         let (baseline, candidate) = {
-            let cache = policy.ground_egress_cache.borrow();
+            let cache = policy.queries.ground_egress_cache.borrow();
             let cache = cache.as_ref().expect("egress cache is prepared");
             let baseline = cache
                 .decisions()
@@ -1137,7 +1144,7 @@ mod tests {
 
         assert!(policy.preserves_ground_producer_egress_prepared(&[], candidate));
 
-        let cache = policy.ground_egress_cache.borrow();
+        let cache = policy.queries.ground_egress_cache.borrow();
         let certificate = cache
             .as_ref()
             .expect("egress cache remains prepared")
@@ -1183,6 +1190,7 @@ mod tests {
             "the accepted footprints themselves must retain the one remaining doorstep"
         );
         let cached_decisions = policy
+            .queries
             .ground_egress_cache
             .borrow()
             .as_ref()
@@ -1196,6 +1204,7 @@ mod tests {
         );
         assert_eq!(
             policy
+                .queries
                 .ground_egress_cache
                 .borrow()
                 .as_ref()

@@ -35,7 +35,7 @@ pub(in crate::bot::utility) fn scrap_assets(
         nodes: ground
             .scrap
             .iter()
-            .filter(|(tile, amount)| **amount > 0 && !policy.dead_nodes.contains(tile))
+            .filter(|(tile, amount)| **amount > 0 && !policy.state.dead_nodes.contains(tile))
             .map(|(tile, _)| *tile)
             .collect(),
         harvest_targets: sorted_tiles(
@@ -48,7 +48,7 @@ pub(in crate::bot::utility) fn scrap_assets(
         ),
         foundries: foundries.to_vec(),
     };
-    if let Some(cached) = policy.resource_assets.borrow().as_ref()
+    if let Some(cached) = policy.queries.resource_assets.borrow().as_ref()
         && cached.inputs == inputs
     {
         let mut assets = cached.assets.clone();
@@ -58,7 +58,7 @@ pub(in crate::bot::utility) fn scrap_assets(
         return assets;
     }
     let assets = collect_assets(policy, ground, foundries);
-    *policy.resource_assets.borrow_mut() = Some(ResourceAssets {
+    *policy.queries.resource_assets.borrow_mut() = Some(ResourceAssets {
         inputs,
         assets: assets.clone(),
     });
@@ -73,7 +73,7 @@ fn collect_assets(
     let mut remaining: BTreeSet<_> = ground
         .scrap
         .iter()
-        .filter(|(tile, amount)| **amount > 0 && !policy.dead_nodes.contains(tile))
+        .filter(|(tile, amount)| **amount > 0 && !policy.state.dead_nodes.contains(tile))
         .map(|(tile, _)| *tile)
         .collect();
     let mut clusters = Vec::new();

@@ -104,6 +104,7 @@ impl UtilityPolicy {
             unit_contacts,
             building_contacts,
             builders,
+            &Default::default(),
             |anchor| {
                 if !resource_access.survives(kind, anchor) {
                     return None;
@@ -129,6 +130,7 @@ impl UtilityPolicy {
         home: TilePos,
         builders: &[&UnitObs],
         context: &mut DefenseThinkContext<'_>,
+        battlefield: &crate::bot::battlefield::BattlefieldAssessment,
     ) -> Option<StrategicArrayQuote> {
         if builders.is_empty() {
             return None;
@@ -142,6 +144,7 @@ impl UtilityPolicy {
             context.unit_contacts(),
             context.building_contacts(),
             builders,
+            battlefield,
             |anchor| {
                 if !context.future_ground_producer_egress_survives(kind, anchor)
                     || !context.resource_access_survives(kind, anchor)
@@ -168,6 +171,7 @@ impl UtilityPolicy {
         unit_contacts: &[UnitContact],
         building_contacts: &[BuildingContact],
         builders: &[&UnitObs],
+        battlefield: &crate::bot::battlefield::BattlefieldAssessment,
         mut quote_candidate: impl FnMut(TilePos) -> Option<(UnitId, u32)>,
     ) -> Option<StrategicArrayQuote> {
         let kind = BuildingKind::Array;
@@ -196,9 +200,8 @@ impl UtilityPolicy {
             .min()
             .expect("nonempty builders");
         let coverage = ArrayCoverageIndex::new(obs, briefing, &existing_arrays)
-            .with_demand(&self.battlefield.coverage, earliest_ready);
-        let first_deadline = self
-            .battlefield
+            .with_demand(&battlefield.coverage, earliest_ready);
+        let first_deadline = battlefield
             .coverage
             .iter()
             .filter(|demand| demand.deadline > earliest_ready)
@@ -218,7 +221,7 @@ impl UtilityPolicy {
                     || self.harvest_location_contested(tile)
             });
         let mut centers = std::collections::BTreeSet::from([(home_center.y, home_center.x)]);
-        for question in &self.battlefield.coverage {
+        for question in &battlefield.coverage {
             if let Some(asset) = obs
                 .my_buildings
                 .iter()
@@ -259,7 +262,7 @@ impl UtilityPolicy {
                 .min()
                 .expect("nonempty builders");
             let strategic_radar = if optimistic_ready >= first_deadline {
-                coverage.ready_demand(anchor, &self.battlefield.coverage, optimistic_ready)
+                coverage.ready_demand(anchor, &battlefield.coverage, optimistic_ready)
             } else {
                 coverage.circle_sum(&coverage.strategic, anchor, &coverage.radar_half_widths)
             };
@@ -288,8 +291,7 @@ impl UtilityPolicy {
                 .map_or(u64::MAX, |worker| {
                     array_ready_at(obs.tick, worker, builder_travel_cost)
                 });
-            let strategic_radar =
-                coverage.ready_demand(anchor, &self.battlefield.coverage, ready_at);
+            let strategic_radar = coverage.ready_demand(anchor, &battlefield.coverage, ready_at);
             candidate.strategic_radar = strategic_radar;
             let (evidence, evidence_count) = array_opportunity_evidence(
                 obs,
@@ -364,7 +366,7 @@ impl UtilityPolicy {
             .flat_map(|(valuable, nearby)| [valuable.anchor, nearby.anchor])
             .filter(|anchor| seen.insert(*anchor))
             .collect::<Vec<_>>();
-        if let Some(egress) = self.ground_egress_cache.borrow().as_ref() {
+        if let Some(egress) = self.queries.ground_egress_cache.borrow().as_ref() {
             anchors.sort_by_key(|anchor| !egress.certifies((kind, *anchor)));
         }
         let candidates = candidates
@@ -804,6 +806,7 @@ mod tests {
                     &[],
                     &[],
                     &builders,
+                    &Default::default(),
                     |anchor| {
                         visited.push(anchor);
                         None
@@ -846,6 +849,7 @@ mod tests {
                 &[],
                 &[],
                 &builders,
+                &Default::default(),
                 |_| Some((builders[0].id, 10)),
             )
         };
@@ -889,7 +893,7 @@ mod tests {
         let distant = TilePos::new(12, 26);
         let timely = TilePos::new(50, 26);
         let mut policy = UtilityPolicy::new();
-        policy.battlefield = std::sync::Arc::new(BattlefieldAssessment {
+        let mut battlefield = BattlefieldAssessment {
             coverage: vec![
                 CoverageDemand {
                     asset: obs.my_buildings[0].id,
@@ -907,35 +911,53 @@ mod tests {
                 },
             ],
             ..Default::default()
-        });
-        policy.dead_anchors = (0..obs.map_height)
+        };
+        policy.state.dead_anchors = (0..obs.map_height)
             .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
             .filter(|anchor| *anchor != distant && *anchor != timely)
             .collect();
         let quote = policy
-            .strategic_array_quote_with_candidate(&obs, &map, home, &[], &[], &builders, |anchor| {
-                if anchor == distant {
-                    Some((builders[0].id, 1000))
-                } else if anchor == timely {
-                    Some((builders[0].id, 250))
-                } else {
-                    None
-                }
-            })
+            .strategic_array_quote_with_candidate(
+                &obs,
+                &map,
+                home,
+                &[],
+                &[],
+                &builders,
+                &battlefield,
+                |anchor| {
+                    if anchor == distant {
+                        Some((builders[0].id, 1000))
+                    } else if anchor == timely {
+                        Some((builders[0].id, 250))
+                    } else {
+                        None
+                    }
+                },
+            )
             .unwrap();
         assert_eq!(quote.anchor, timely);
         assert_eq!(quote.strategic_radar, 5);
         assert_eq!(quote.builder_travel_cost, 250);
 
-        policy.dead_anchors.clear();
-        policy.battlefield = std::sync::Arc::new(Default::default());
+        policy.state.dead_anchors.clear();
+        battlefield = Default::default();
         let mut quoted = 0;
         assert!(
             policy
-                .strategic_array_quote_with_candidate(&obs, &map, home, &[], &[], &builders, |_| {
-                    quoted += 1;
-                    Some((builders[0].id, 250))
-                })
+                .strategic_array_quote_with_candidate(
+                    &obs,
+                    &map,
+                    home,
+                    &[],
+                    &[],
+                    &builders,
+                    &battlefield,
+                    |_| {
+                        quoted += 1;
+                        Some((builders[0].id, 250))
+                    }
+                )
                 .is_some()
         );
         assert_eq!(

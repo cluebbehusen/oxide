@@ -295,6 +295,7 @@ fn restore_ownership<T>(
 
 /// Immutable evidence shared by every phase of one allocation pass.
 pub(crate) struct AllocationSessionContext<'a> {
+    pub(in crate::bot) evidence: crate::bot::utility::DecisionEvidence<'a>,
     pub(crate) dials: &'a Dials,
     pub(crate) profile: &'a ResolvedProfile,
     pub(crate) tuning: DifficultyTuning,
@@ -445,6 +446,7 @@ impl<'a> AllocationSession<'a> {
         let initial_claims = snapshot_claims(&self.context, &self.participants);
         let resources = ResourceSnapshot::from_observation(self.context.observation);
         let observed_context = EconomicInvestmentContext {
+            evidence: self.context.evidence,
             obligations: &[],
             obs: self.context.observation,
             resources: &resources,
@@ -467,7 +469,12 @@ impl<'a> AllocationSession<'a> {
             .participants
             .policy
             .observe_reconnaissance(observed_context, self.context.home);
-        let recon_paid_exclusions = self.participants.policy.reconnaissance.paid_exclusions();
+        let recon_paid_exclusions = self
+            .participants
+            .policy
+            .state
+            .reconnaissance
+            .paid_exclusions();
         drop(recon_scope);
         let support_scope = crate::bot::observer::PhaseScope::new(
             self.observer,
@@ -521,6 +528,7 @@ impl<'a> AllocationSession<'a> {
             if claims.opening_core.ready && self.participants.policy.economic_saving().is_none() {
                 self.participants.policy.prepare_support_deployments(
                     EconomicInvestmentContext {
+                        evidence: self.context.evidence,
                         obligations: &[],
                         obs: self.context.observation,
                         resources: &obligations.resources,
@@ -575,6 +583,7 @@ impl<'a> AllocationSession<'a> {
                     && !self
                         .participants
                         .policy
+                        .state
                         .support_deployments
                         .active
                         .iter()
@@ -582,7 +591,7 @@ impl<'a> AllocationSession<'a> {
             })
             .take(self.context.tuning.attention_slots)
             .collect();
-        self.participants.policy.reconnaissance.operational =
+        self.participants.policy.state.reconnaissance.operational =
             self.participants.strategy.as_ref().and_then(|planner| {
                 let operation = planner.air_operation()?;
                 if operation.phase == crate::bot::strategy::AirOperationPhase::Recover {
@@ -599,6 +608,7 @@ impl<'a> AllocationSession<'a> {
         let fresh_reconnaissance = if self.context.dials.scouting {
             self.participants.policy.prepare_reconnaissance(
                 EconomicInvestmentContext {
+                    evidence: self.context.evidence,
                     obligations: &[],
                     obs: self.context.observation,
                     resources: &obligations.resources,
@@ -936,6 +946,7 @@ impl<'a> AllocationSession<'a> {
                 0,
                 fixed_production_current_reserve(&obligations.resources, &obligations.obligations),
                 defense_admission_reserve,
+                self.context.evidence,
             )
         } else {
             Vec::new()
@@ -1000,6 +1011,7 @@ impl<'a> AllocationSession<'a> {
             && self.participants.policy.economic_saving().is_none()
         {
             let economic_context = EconomicInvestmentContext {
+                evidence: self.context.evidence,
                 obligations: &obligations.obligations,
                 obs: self.context.observation,
                 resources: &obligations.resources,
@@ -1130,13 +1142,19 @@ impl<'a> AllocationSession<'a> {
             funded_repairers: self
                 .participants
                 .policy
+                .state
                 .support_work
                 .repairs
                 .iter()
                 .map(|repair| repair.key.worker)
                 .collect(),
-            saving: self.participants.policy.standing_saving.as_ref(),
-            recon_demands: self.participants.policy.reconnaissance.capability_demands(),
+            saving: self.participants.policy.state.standing_saving.as_ref(),
+            recon_demands: self
+                .participants
+                .policy
+                .state
+                .reconnaissance
+                .capability_demands(),
         }
     }
 
@@ -1443,7 +1461,7 @@ impl<'a> AllocationSession<'a> {
             }
         }
         allocation.apply_experience(
-            &self.participants.policy.experience,
+            self.context.evidence.experience,
             self.context.observation.tick,
         );
         let mut checked = std::collections::BTreeMap::new();
@@ -1633,11 +1651,11 @@ impl<'a> AllocationSession<'a> {
             })
             .collect();
         effects.producer_lane_reservations = settlement.producer_lane_reservations().clone();
-        if self.participants.policy.standing_saving.as_ref().is_some_and(|saving|
+        if self.participants.policy.state.standing_saving.as_ref().is_some_and(|saving|
             producer_schedule.iter().any(|job| job.enqueued_at == self.context.observation.tick
                 && matches!(job.owner, ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(key), .. }
                     if key == saving.proposal.key()))) {
-            self.participants.policy.standing_saving = None;
+            self.participants.policy.state.standing_saving = None;
         }
 
         if let Some(saved) = self.participants.policy.economic_saving().cloned() {
@@ -1759,7 +1777,7 @@ impl<'a> AllocationSession<'a> {
                         && job.enqueued_at > self.context.observation.tick
                 })
             {
-                self.participants.policy.standing_saving =
+                self.participants.policy.state.standing_saving =
                     Some(crate::bot::standing_force::StandingForceCommitment {
                         proposal: standing_force.clone(),
                         job: *job,
@@ -2103,9 +2121,9 @@ impl<'a> AllocationSession<'a> {
         let mut raid_decision = core::mem::take(&mut prepared.raid_decision);
         let mut staged_strategy = prepared.staged_strategy.take();
         if !allocation_ok {
-            let planning = std::mem::take(&mut self.participants.policy.planning);
-            *self.participants.policy = snapshots.policy;
-            self.participants.policy.planning = planning;
+            self.participants
+                .policy
+                .restore_checkpoint(snapshots.policy);
             self.advanced.snapshots.restore(&mut self.participants);
             team_decision = StrategicDecision::default();
             lift_decision = StrategicDecision::default();
@@ -2142,7 +2160,7 @@ impl<'a> AllocationSession<'a> {
         planner_claims.extend(committed.all(&team_members));
         strategic_core_exclusions.extend(committed.core_exclusions(&team_members));
         for claims in [&mut planner_claims, &mut strategic_core_exclusions] {
-            claims.extend(self.participants.policy.reconnaissance.reservations());
+            claims.extend(self.participants.policy.state.reconnaissance.reservations());
             claims.extend(self.participants.policy.support_reservations());
             claims.sort_unstable();
             claims.dedup();
@@ -2208,7 +2226,7 @@ fn snapshot_claims(
 }
 
 fn append_utility_assignments(participants: &AllocationParticipants<'_>, claims: &mut Vec<UnitId>) {
-    claims.extend(participants.policy.reconnaissance.reservations());
+    claims.extend(participants.policy.state.reconnaissance.reservations());
     claims.extend(participants.policy.support_reservations());
     claims.sort_unstable();
     claims.dedup();
@@ -2313,7 +2331,7 @@ fn allocation_horizon(
     if let Some(saving) = participants.policy.economic_saving() {
         horizon = horizon.max(saving.deadline);
     }
-    if let Some(saving) = &participants.policy.standing_saving {
+    if let Some(saving) = &participants.policy.state.standing_saving {
         horizon = horizon.max(saving.job.ready_before);
     }
     if let Some(active) = active_connected {
@@ -2331,6 +2349,7 @@ fn support_context<'a>(
     resources: &'a ResourceSnapshot,
 ) -> EconomicInvestmentContext<'a> {
     EconomicInvestmentContext {
+        evidence: context.evidence,
         obligations: &[],
         obs: context.observation,
         resources,
@@ -2587,7 +2606,7 @@ struct PreparedAllocation {
 }
 
 struct CommitSnapshots {
-    policy: UtilityPolicy,
+    policy: crate::bot::utility::PolicyCheckpoint,
 }
 
 #[derive(Debug)]
@@ -3529,6 +3548,7 @@ pub(in crate::bot) fn test_allocate_policy(
     let mut trace = AllocationTrace::default();
     let outcome = AllocationSession::new(
         AllocationSessionContext {
+            evidence: Default::default(),
             dials,
             profile: &profile,
             tuning,
@@ -3804,6 +3824,7 @@ mod tests {
         let mut trace = AllocationTrace::default();
         let outcome = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -4221,7 +4242,7 @@ mod tests {
             Some(&mut trace),
         );
         assert!(first.allocation_ok);
-        let saving = policy.standing_saving.clone().unwrap_or_else(|| {
+        let saving = policy.state.standing_saving.clone().unwrap_or_else(|| {
             panic!("useful higher-tier waiting must survive settlement: {trace:#?}")
         });
         assert!(saving.job.enqueued_at > obs.tick);
@@ -4233,7 +4254,10 @@ mod tests {
         obs.scrap = 1000;
         let second = run_connected_session(&obs, &mut policy, &mut None);
         assert!(second.allocation_ok);
-        assert_eq!(policy.standing_saving.as_ref().unwrap().job, saving.job);
+        assert_eq!(
+            policy.state.standing_saving.as_ref().unwrap().job,
+            saving.job
+        );
         assert!(!second.allocated_producer_intents.iter().any(
             |intent| matches!(intent, Intent::TrainAt { kind, .. } if *kind == saving.job.kind)
         ));
@@ -4248,7 +4272,7 @@ mod tests {
                     kind: saving.job.kind
                 })
         );
-        assert!(policy.standing_saving.is_none());
+        assert!(policy.state.standing_saving.is_none());
 
         for loss in [
             "core",
@@ -4280,11 +4304,12 @@ mod tests {
             invalid.my_queues = vec![Vec::new(); invalid.my_buildings.len()];
             invalid.my_queue_progress = vec![0; invalid.my_buildings.len()];
             let mut policy = UtilityPolicy::new();
-            policy.standing_saving = Some(saving.clone());
+            policy.state.standing_saving = Some(saving.clone());
             let result = run_connected_session(&invalid, &mut policy, &mut None);
             assert!(result.allocation_ok, "{loss}");
             assert!(
                 policy
+                    .state
                     .standing_saving
                     .as_ref()
                     .is_none_or(|next| next.job != saving.job),
@@ -4334,6 +4359,7 @@ mod tests {
             let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
             let mut session = AllocationSession::new(
                 AllocationSessionContext {
+                    evidence: Default::default(),
                     dials: &dials,
                     profile: &profile,
                     tuning,
@@ -4397,7 +4423,7 @@ mod tests {
             let resolved = session.resolve(
                 prepared,
                 CommitSnapshots {
-                    policy: original_policy,
+                    policy: original_policy.speculative_checkpoint(),
                 },
             );
             let outcome = session.commit_or_restore(resolved);
@@ -4444,6 +4470,7 @@ mod tests {
         work.team_decision = team_decision;
         AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -4867,6 +4894,7 @@ mod tests {
         work.lift_started_at = operation.started_at;
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -5164,6 +5192,7 @@ mod tests {
         let mut trace = AllocationTrace::default();
         let outcome = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -5188,7 +5217,7 @@ mod tests {
         .run();
         assert!(outcome.allocation_ok);
         assert_eq!(
-            policy.reconnaissance.reservations(),
+            policy.state.reconnaissance.reservations(),
             [UnitId(100)],
             "{trace:#?}"
         );
@@ -5228,6 +5257,7 @@ mod tests {
             .expect("an empty portfolio is feasible");
         let session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -5258,7 +5288,7 @@ mod tests {
             prepared: prepared(&observation, None),
             settlement: Ok(settlement),
             snapshots: CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         });
 
@@ -5383,6 +5413,7 @@ mod tests {
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -5408,7 +5439,7 @@ mod tests {
             prepared: prepared(&observation, None),
             settlement: Ok(settlement),
             snapshots: CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         });
 
@@ -5533,6 +5564,7 @@ mod tests {
             let mut trace = AllocationTrace::default();
             let mut session = AllocationSession::new(
                 AllocationSessionContext {
+                    evidence: Default::default(),
                     dials: &dials,
                     profile: &profile,
                     tuning,
@@ -5577,7 +5609,8 @@ mod tests {
                 );
                 assert_eq!(outcome.budget.utility_spendable, 0);
                 assert_eq!(outcome.budget.residual_scrap, 0);
-                assert_eq!(policy, expected_policy);
+                assert_eq!(policy.state, expected_policy.state);
+                assert_eq!(policy.planning, expected_policy.planning);
                 assert_eq!(strategy, original_strategy);
                 assert_eq!(raids, observed_raids);
                 let failure = trace.coordinator_failure.unwrap();
@@ -5622,7 +5655,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let dials = Dials::scripted(&profile, tuning);
         let intelligence = StrategicIntelligence::new();
-        let mut original_policy = UtilityPolicy::new();
+        let original_policy = UtilityPolicy::new();
         let mut policy = original_policy.clone();
         policy.planning = crate::bot::planning::PlanningWork::with_allowance(1);
         let blocked = crate::bot::navigation::public_fields::BlockedGroundLayout::from_predicate(
@@ -5642,10 +5675,7 @@ mod tests {
         let pending = policy.planning.clone();
         let checkpoint = policy.speculative_checkpoint();
         assert_eq!(policy.planning, pending);
-        assert_eq!(
-            checkpoint.planning,
-            crate::bot::planning::PlanningWork::default()
-        );
+        assert_eq!(checkpoint, original_policy.speculative_checkpoint());
         policy.record_dispatched_build(&observation, BuildingKind::Turret, TilePos::new(4, 4));
         let original_strategy = Some(StrategicPlanner::new());
         let mut strategy = None;
@@ -5657,6 +5687,7 @@ mod tests {
         let mut raids = None;
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -5719,7 +5750,7 @@ mod tests {
         let resolved = session.resolve(
             prepared,
             CommitSnapshots {
-                policy: original_policy.clone(),
+                policy: original_policy.speculative_checkpoint(),
             },
         );
         let outcome = session.commit_or_restore(resolved);
@@ -5748,8 +5779,7 @@ mod tests {
         assert_eq!(outcome.budget.utility_spendable, 0);
         assert_eq!(outcome.budget.connected_forecast_hold, u32::MAX);
         assert_eq!(policy.planning, pending);
-        original_policy.planning = pending;
-        assert_eq!(policy, original_policy);
+        assert_eq!(policy.state, original_policy.state);
         assert_eq!(strategy, original_strategy);
         assert_eq!(team, original_team);
         assert_eq!(lifts, original_lifts);
@@ -5787,6 +5817,7 @@ mod tests {
             .expect("the fixture installs one exact saved Foundry");
         let resources = ResourceSnapshot::from_observation(&observation);
         let observed_context = EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs: &observation,
             resources: &resources,
@@ -5834,6 +5865,7 @@ mod tests {
         };
         let outcome = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -5859,7 +5891,7 @@ mod tests {
 
         assert!(!outcome.allocation_ok);
         assert_eq!(
-            policy, original_policy,
+            policy.state, original_policy.state,
             "rollback must start before prepare can clear or age retained policy state"
         );
     }
@@ -6415,6 +6447,7 @@ mod tests {
         let mut trace = AllocationTrace::default();
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -6439,7 +6472,7 @@ mod tests {
         let resolved = session.resolve(
             input,
             CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         );
         assert!(resolved.settlement.is_ok());
@@ -6570,6 +6603,7 @@ mod tests {
         let mut trace = AllocationTrace::default();
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -6594,7 +6628,7 @@ mod tests {
         let resolved = session.resolve(
             input,
             CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         );
         let outcome = session.commit_or_restore(resolved);
@@ -6862,6 +6896,7 @@ mod tests {
         let mut trace = AllocationTrace::default();
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -6886,7 +6921,7 @@ mod tests {
         let resolved = session.resolve(
             input,
             CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         );
         let outcome = session.commit_or_restore(resolved);
@@ -7073,6 +7108,7 @@ mod tests {
         input.allocation_horizon = deadline;
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -7097,7 +7133,7 @@ mod tests {
         let resolved = session.resolve(
             input,
             CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         );
         let settlement = resolved
@@ -7179,6 +7215,7 @@ mod tests {
         input.voluntary_scrap_guard = UnitKind::Sentinel.stats().cost;
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -7203,7 +7240,7 @@ mod tests {
         let resolved = session.resolve(
             input,
             CommitSnapshots {
-                policy: original_policy,
+                policy: original_policy.speculative_checkpoint(),
             },
         );
         let outcome = session.commit_or_restore(resolved);
@@ -7334,6 +7371,7 @@ mod tests {
         work.lift_started_at = lift_operation.started_at;
         let outcome = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,

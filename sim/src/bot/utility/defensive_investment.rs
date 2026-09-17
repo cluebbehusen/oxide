@@ -173,6 +173,7 @@ impl UtilityPolicy {
         minimum_residual_scrap: u32,
         committed_current_scrap: u32,
         admission_reserve: u32,
+        evidence: super::DecisionEvidence<'_>,
     ) -> Vec<FreshDefenseProposal> {
         debug_assert_eq!(resources.forecast().observed_at(), obs.tick);
         let construction_builders = self.construction_builders(obs, &[], &[]);
@@ -183,8 +184,9 @@ impl UtilityPolicy {
                 construction_builders
                     .iter()
                     .any(|candidate| candidate.id == builder.id)
-                    && !self.evacuating_workers.contains(&builder.id)
+                    && !self.state.evacuating_workers.contains(&builder.id)
                     && self
+                        .state
                         .retreating_contested_scout
                         .is_none_or(|retreat| retreat.unit != builder.id)
                     && resources
@@ -246,17 +248,22 @@ impl UtilityPolicy {
                 return Vec::new();
             }
             let proposal = if construction == DefenseConstruction::Array {
-                self.strategic_array_quote_in_context(home, eligible_builders, context)
-                    .and_then(|quote| {
-                        array_proposal(
-                            construction,
-                            quote,
-                            profile,
-                            obs,
-                            eligible_builders,
-                            minimum_residual_scrap,
-                        )
-                    })
+                self.strategic_array_quote_in_context(
+                    home,
+                    eligible_builders,
+                    context,
+                    evidence.battlefield,
+                )
+                .and_then(|quote| {
+                    array_proposal(
+                        construction,
+                        quote,
+                        profile,
+                        obs,
+                        eligible_builders,
+                        minimum_residual_scrap,
+                    )
+                })
             } else {
                 self.strategic_defense_quote_in_context(kind, eligible_builders, context)
                     .and_then(|quote| {
@@ -882,9 +889,9 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(1));
-        policy.evacuating_workers.push(UnitId(2));
-        policy.retreating_contested_scout = Some(RetreatingContestedScout {
+        policy.state.scout = Some(UnitId(1));
+        policy.state.evacuating_workers.push(UnitId(2));
+        policy.state.retreating_contested_scout = Some(RetreatingContestedScout {
             unit: UnitId(3),
             order_dispatched: true,
             suspend_solo_air_on_loss: false,
@@ -933,6 +940,7 @@ mod tests {
             0,
             0,
             0,
+            Default::default(),
         );
         assert!(!proposals.is_empty());
         assert!(
@@ -963,6 +971,7 @@ mod tests {
                     0,
                     0,
                     0,
+                    Default::default()
                 )
                 .is_empty(),
             "active scouts, evacuating workers, retreating recovery scouts, and saved Foundry builders are not voluntary defense fallbacks"
@@ -994,6 +1003,7 @@ mod tests {
                         0,
                         committed,
                         admission,
+                        Default::default(),
                     )
                 };
                 let mut expected = quote(&UtilityPolicy::new(), 0);
@@ -1003,7 +1013,7 @@ mod tests {
                 assert_eq!(actual, expected, "bank={} committed={committed}", obs.scrap);
                 assert!(actual.iter().all(|p| p.minimum_residual_scrap() == 0));
                 if spendable == 15 {
-                    assert_eq!(*policy.knowledge_paths.borrow(), Default::default());
+                    assert_eq!(*policy.queries.knowledge_paths.borrow(), Default::default());
                 }
             }
         }
@@ -1021,7 +1031,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let mut policy = UtilityPolicy::new();
-        policy.harvester_watch = vec![HarvesterWatch {
+        policy.state.harvester_watch = vec![HarvesterWatch {
             id: UnitId(1),
             tile: endangered,
             hp: UnitKind::Harvester.stats().max_hp,
@@ -1045,6 +1055,7 @@ mod tests {
             0,
             0,
             0,
+            Default::default(),
         );
 
         assert!(!proposals.is_empty());
@@ -1535,6 +1546,7 @@ mod tests {
                     0,
                     0,
                     0,
+                    Default::default(),
                 )
                 .into_iter()
                 .find(|proposal| proposal.kind() == BuildingKind::FlakTurret)
@@ -1672,6 +1684,7 @@ mod tests {
             90,
             0,
             0,
+            Default::default(),
         );
         let roles: BTreeSet<_> = proposals.iter().map(FreshDefenseProposal::kind).collect();
 
@@ -1721,6 +1734,7 @@ mod tests {
                 90,
                 committed,
                 0,
+                Default::default(),
             )
         };
         let baseline = derive(0);
@@ -1768,6 +1782,7 @@ mod tests {
                     90,
                     0,
                     0,
+                    Default::default(),
                 )
                 .into_iter()
                 .find(|proposal| proposal.kind() == BuildingKind::Array);

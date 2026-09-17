@@ -42,7 +42,7 @@ impl UtilityPolicy {
             .filter(|(tile, amount)| {
                 *amount > 0
                     && obs.visible(*tile)
-                    && !self.dead_nodes.contains(tile)
+                    && !self.state.dead_nodes.contains(tile)
                     && !self.harvest_location_contested(*tile)
                     && road_reach
                         .get_or_insert_with(|| Self::known_road_reach(obs, home))
@@ -183,7 +183,8 @@ impl UtilityPolicy {
         let field = |planning: &crate::bot::planning::PlanningWork, sources: Vec<TilePos>| {
             if required.is_some() {
                 crate::bot::planning::Progress::Ready(
-                    self.expansion_routing_cache
+                    self.queries
+                        .expansion_routing_cache
                         .borrow_mut()
                         .danger_aware_source_set(
                             QueryPurpose::FoundryLogistics,

@@ -118,6 +118,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let mut session = AllocationSession::new(
             AllocationSessionContext {
+                evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
@@ -234,6 +235,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut session = AllocationSession::new(
         AllocationSessionContext {
+            evidence: Default::default(),
             dials: &dials,
             profile: &profile,
             tuning,
@@ -567,6 +569,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut session = AllocationSession::new(
         AllocationSessionContext {
+            evidence: Default::default(),
             dials: &dials,
             profile: &profile,
             tuning,
@@ -739,6 +742,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     prepared.foundry_saving = foundry_cost;
     let mut session = AllocationSession::new(
         AllocationSessionContext {
+            evidence: Default::default(),
             dials: &dials,
             profile: &profile,
             tuning,
@@ -763,7 +767,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     let resolved = session.resolve(
         prepared,
         CommitSnapshots {
-            policy: original_policy,
+            policy: original_policy.speculative_checkpoint(),
         },
     );
     let outcome = session.commit_or_restore(resolved);

@@ -171,18 +171,19 @@ impl UtilityPolicy {
         snapshot: &SupportWorkSnapshot,
         now: Tick,
     ) {
-        if self.support_work.observed_at == Some(now) {
+        if self.state.support_work.observed_at == Some(now) {
             return;
         }
-        self.support_work.observed_at = Some(now);
-        self.support_work.evidence.retain(|target, _| {
+        self.state.support_work.observed_at = Some(now);
+        self.state.support_work.evidence.retain(|target, _| {
             snapshot
                 .patients
                 .iter()
                 .any(|patient| patient.target == *target)
         });
         for patient in &snapshot.patients {
-            self.support_work
+            self.state
+                .support_work
                 .evidence
                 .entry(patient.target)
                 .or_insert(now);
@@ -200,7 +201,8 @@ impl UtilityPolicy {
                 .patients
                 .iter()
                 .filter(|patient| {
-                    self.support_work
+                    self.state
+                        .support_work
                         .evidence
                         .get(&patient.target)
                         .is_some_and(|first_seen| {
@@ -228,7 +230,10 @@ impl UtilityPolicy {
         SupportWorkSnapshot {
             patients,
             danger,
-            protection: super::support_deployment::protection_requests(context, &self.battlefield),
+            protection: super::support_deployment::protection_requests(
+                context,
+                context.evidence.battlefield,
+            ),
         }
     }
 
@@ -280,6 +285,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
         let candidates = self.fresh_repair_assignments(EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs,
             resources: &resources,
@@ -389,6 +395,7 @@ impl UtilityPolicy {
             .collect::<std::collections::BTreeSet<_>>();
         let work = snapshot.unit_work();
         let funded_repairers: Vec<_> = self
+            .state
             .support_work
             .repairs
             .iter()
@@ -475,6 +482,7 @@ impl UtilityPolicy {
                         })
                         .sum::<u64>();
                     let assigned = self
+                        .state
                         .support_work
                         .repairs
                         .iter()
@@ -545,14 +553,15 @@ impl UtilityPolicy {
         available: u32,
         allow_repair: bool,
     ) -> Vec<RepairAssignment> {
-        self.support_work.lifecycle.clear();
-        if self.support_work.repairs.is_empty() {
+        self.state.support_work.lifecycle.clear();
+        if self.state.support_work.repairs.is_empty() {
             return Vec::new();
         }
         if !allow_repair || available == 0 {
-            self.support_work
+            self.state
+                .support_work
                 .lifecycle
-                .extend(self.support_work.repairs.iter().map(|repair| {
+                .extend(self.state.support_work.repairs.iter().map(|repair| {
                     repair.lifecycle(
                         context.obs.tick,
                         if allow_repair {
@@ -562,7 +571,7 @@ impl UtilityPolicy {
                         },
                     )
                 }));
-            self.support_work.repairs.clear();
+            self.state.support_work.repairs.clear();
             return Vec::new();
         }
         let obs = context.obs;
@@ -577,12 +586,13 @@ impl UtilityPolicy {
         );
         let mut available = available;
         let mut retained = Vec::new();
-        for repair in &self.support_work.repairs {
+        for repair in &self.state.support_work.repairs {
             let Some(patient) = patients
                 .iter()
                 .find(|patient| patient.target == repair.key.patient)
             else {
-                self.support_work
+                self.state
+                    .support_work
                     .lifecycle
                     .push(repair.lifecycle(obs.tick, SupportLifecycleReason::PatientUnavailable));
                 continue;
@@ -592,7 +602,8 @@ impl UtilityPolicy {
                 .iter()
                 .find(|worker| worker.id == repair.key.worker && worker.hp > 0)
             else {
-                self.support_work
+                self.state
+                    .support_work
                     .lifecycle
                     .push(repair.lifecycle(obs.tick, SupportLifecycleReason::WorkerUnavailable));
                 continue;
@@ -601,13 +612,15 @@ impl UtilityPolicy {
                 || obs.my_queued_units.contains(&worker.id)
                 || context.unavailable.contains(&worker.id)
             {
-                self.support_work
+                self.state
+                    .support_work
                     .lifecycle
                     .push(repair.lifecycle(obs.tick, SupportLifecycleReason::Preempted));
                 continue;
             }
             if danger.contains(worker.tile) {
-                self.support_work
+                self.state
+                    .support_work
                     .lifecycle
                     .push(repair.lifecycle(obs.tick, SupportLifecycleReason::UnsafeApproach));
                 continue;
@@ -628,7 +641,7 @@ impl UtilityPolicy {
             };
             let debit = patient.reserve(context.cadence);
             if !reaches || debit > available {
-                self.support_work.lifecycle.push(repair.lifecycle(
+                self.state.support_work.lifecycle.push(repair.lifecycle(
                     obs.tick,
                     if reaches {
                         SupportLifecycleReason::Unfunded
@@ -642,12 +655,13 @@ impl UtilityPolicy {
             let mut funded = repair.clone();
             funded.debit = debit;
             funded.funded_until = obs.tick.saturating_add(context.cadence);
-            self.support_work
+            self.state
+                .support_work
                 .lifecycle
                 .push(funded.lifecycle(obs.tick, SupportLifecycleReason::Renewed));
             retained.push(funded);
         }
-        self.support_work.repairs = retained.clone();
+        self.state.support_work.repairs = retained.clone();
         retained
     }
 
@@ -659,7 +673,7 @@ impl UtilityPolicy {
     ) -> bool {
         if assignment.accepted_at != obs.tick
             || assignment.funded_until <= obs.tick
-            || self.support_work.repairs.iter().any(|work| {
+            || self.state.support_work.repairs.iter().any(|work| {
                 work.key.worker == assignment.key.worker
                     || work.key.patient == assignment.key.patient
             })
@@ -695,16 +709,21 @@ impl UtilityPolicy {
             return false;
         }
         intents.push(assignment.intent());
-        self.support_work
+        self.state
+            .support_work
             .lifecycle
             .push(assignment.lifecycle(obs.tick, SupportLifecycleReason::Accepted));
-        self.support_work.repairs.push(assignment);
-        self.support_work.repairs.sort_by_key(|repair| repair.key);
+        self.state.support_work.repairs.push(assignment);
+        self.state
+            .support_work
+            .repairs
+            .sort_by_key(|repair| repair.key);
         true
     }
 
     pub(crate) fn repair_is_funded(&self, worker: UnitId, tick: Tick) -> bool {
-        self.support_work
+        self.state
+            .support_work
             .repairs
             .iter()
             .any(|repair| repair.key.worker == worker && repair.funded_until > tick)
@@ -751,7 +770,7 @@ impl UtilityPolicy {
                     .my_units
                     .iter()
                     .any(|unit| unit.salvaging == Some(building.id))
-                || self.economic_saving.as_ref().is_some_and(|saving| {
+                || self.state.economic_saving.as_ref().is_some_and(|saving| {
                     matches!(saving.key,
                     EconomicInvestmentKey::Upgrade { building: id, .. } if id == building.id)
                 })
@@ -817,6 +836,7 @@ impl UtilityPolicy {
         let mut proposals = Vec::new();
         for patient in patients {
             if self
+                .state
                 .support_work
                 .repairs
                 .iter()
@@ -950,6 +970,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs,
             resources,
@@ -1112,7 +1133,7 @@ mod tests {
         assert!(policy.commit_repair_assignment(proposal.clone(), &obs, &mut intents));
         assert_eq!(intents, vec![proposal.intent()]);
         assert_eq!(
-            policy.support_work.lifecycle[0].reason,
+            policy.state.support_work.lifecycle[0].reason,
             SupportLifecycleReason::Accepted
         );
         obs.my_units
@@ -1133,7 +1154,7 @@ mod tests {
         assert_eq!(renewed[0].accepted_at, proposal.accepted_at);
         assert_eq!(renewed[0].funded_until, obs.tick + 12);
         assert_eq!(
-            policy.support_work.lifecycle[0].reason,
+            policy.state.support_work.lifecycle[0].reason,
             SupportLifecycleReason::Renewed
         );
         let mut commands = Vec::new();
@@ -1146,7 +1167,7 @@ mod tests {
         );
         policy.stop_unfunded_repairs(&obs, &mut commands);
         assert_eq!(
-            policy.support_work.lifecycle[0].reason,
+            policy.state.support_work.lifecycle[0].reason,
             SupportLifecycleReason::Unfunded
         );
         assert_eq!(

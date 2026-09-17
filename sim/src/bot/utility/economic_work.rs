@@ -71,8 +71,8 @@ impl UtilityPolicy {
                 if unit.kind.stats().harvest.is_none()
                     || unavailable.contains(&unit.id)
                     || !builder_is_free(obs, unit)
-                    || self.scout == Some(unit.id)
-                    || self.evacuating_workers.contains(&unit.id)
+                    || self.state.scout == Some(unit.id)
+                    || self.state.evacuating_workers.contains(&unit.id)
                 {
                     continue;
                 }

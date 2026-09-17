@@ -162,7 +162,8 @@ impl UtilityPolicy {
     /// ahead of the saved Foundry. Equal ticks mean the operation was admitted
     /// earlier in the same normal decision pass, before utility expansion.
     pub(in crate::bot) fn operation_precedes_foundry_saving(&self, started_at: Tick) -> bool {
-        self.foundry_saving
+        self.state
+            .foundry_saving
             .as_ref()
             .is_none_or(|saving| started_at <= saving.accepted_at)
     }
@@ -177,7 +178,7 @@ impl UtilityPolicy {
     }
 
     fn foundry_saving_invalid(&self, obs: &Observation, saving: &FoundrySavingCommitment) -> bool {
-        self.dead_anchors.contains(&saving.plan.anchor)
+        self.state.dead_anchors.contains(&saving.plan.anchor)
             || obs
                 .my_units
                 .iter()
@@ -186,7 +187,8 @@ impl UtilityPolicy {
     }
 
     pub(in crate::bot) fn foundry_builder_lease(&self, obs: &Observation) -> Option<BuilderLease> {
-        self.foundry_saving
+        self.state
+            .foundry_saving
             .as_ref()
             .filter(|saving| {
                 !Self::foundry_saving_transitioned(obs, saving)
@@ -209,14 +211,15 @@ impl UtilityPolicy {
         opening_core_ready: bool,
     ) -> u32 {
         let release = !opening_core_ready
-            || self.foundry_saving.as_ref().is_some_and(|saving| {
+            || self.state.foundry_saving.as_ref().is_some_and(|saving| {
                 Self::foundry_saving_transitioned(obs, saving)
                     || self.foundry_saving_invalid(obs, saving)
             });
         if release {
-            self.foundry_saving = None;
+            self.state.foundry_saving = None;
         }
-        self.foundry_saving
+        self.state
+            .foundry_saving
             .as_ref()
             .map_or(0, |saving| saving.required_scrap)
     }
@@ -270,7 +273,7 @@ impl UtilityPolicy {
         current_before_protected_reserve: u32,
     ) -> Option<ValidatedFoundryObligation> {
         self.validated_foundry_saving(obs, opening_core_ready);
-        let saving = self.foundry_saving.as_ref()?.clone();
+        let saving = self.state.foundry_saving.as_ref()?.clone();
         let funding = Self::foundry_funding_revalidation(
             resources,
             &saving,
@@ -280,6 +283,7 @@ impl UtilityPolicy {
             return None;
         }
         let saving = self
+            .state
             .foundry_saving
             .as_ref()
             .expect("bounded recovery retained the validated Foundry");
@@ -297,7 +301,8 @@ impl UtilityPolicy {
     }
 
     pub(in crate::bot) fn foundry_handoff(&self) -> FoundryHandoff {
-        self.foundry_saving
+        self.state
+            .foundry_saving
             .as_ref()
             .map_or_else(FoundryHandoff::default, |saving| FoundryHandoff {
                 protected_scrap: saving.required_scrap,
@@ -315,7 +320,7 @@ impl UtilityPolicy {
         handoff: FoundryHandoff,
         intents: &[Intent],
     ) {
-        let Some(saving) = self.foundry_saving.clone() else {
+        let Some(saving) = self.state.foundry_saving.clone() else {
             return;
         };
         if saving.accepted_at == obs.tick
@@ -342,7 +347,7 @@ impl UtilityPolicy {
                     && !context.claims.enlisted.contains(&builder.id)
                     && !context.claims.reserved.contains(&builder.id)
                     && !unavailable.contains(&builder.id)
-                    && self.scout != Some(builder.id)
+                    && self.state.scout != Some(builder.id)
             })
             .collect();
         let resources = ResourceSnapshot::from_observation(obs);
@@ -400,7 +405,7 @@ impl UtilityPolicy {
         intents: &mut Vec<Intent>,
     ) -> bool {
         if !obligation.ready_to_build()
-            || self.foundry_saving.as_ref().is_none_or(|saving| {
+            || self.state.foundry_saving.as_ref().is_none_or(|saving| {
                 saving.accepted_at != obligation.accepted_at
                     || saving.plan.anchor != obligation.anchor
                     || saving.plan.builder != obligation.builder
@@ -422,12 +427,12 @@ impl UtilityPolicy {
     }
 
     pub(in crate::bot) fn retain_blocked_foundry_saving(&mut self, now: u64) -> bool {
-        let Some(saving) = self.foundry_saving.as_mut() else {
+        let Some(saving) = self.state.foundry_saving.as_mut() else {
             return false;
         };
         let blocked_since = *saving.blocked_since.get_or_insert(now);
         if now.saturating_sub(blocked_since) >= FOUNDRY_RECOVERY_TICKS {
-            self.foundry_saving = None;
+            self.state.foundry_saving = None;
             false
         } else {
             true
@@ -435,7 +440,7 @@ impl UtilityPolicy {
     }
 
     pub(in crate::bot) fn recover_ready_foundry_saving(&mut self) {
-        if let Some(saving) = self.foundry_saving.as_mut() {
+        if let Some(saving) = self.state.foundry_saving.as_mut() {
             saving.blocked_since = None;
         }
     }
@@ -444,7 +449,7 @@ impl UtilityPolicy {
     /// allocator. The expansion can be reconsidered after mobile protection
     /// changes, without retaining a stale site or builder.
     pub(in crate::bot) fn release_saved_foundry_for_preparation(&mut self) {
-        self.foundry_saving = None;
+        self.state.foundry_saving = None;
     }
 
     /// Rechecks the exact retained Foundry against current security and route
@@ -456,7 +461,7 @@ impl UtilityPolicy {
         obligation: ValidatedFoundryObligation,
         context: FreshFoundryProposalContext<'_>,
     ) -> SavedFoundryReadiness {
-        let Some(saving) = self.foundry_saving.as_ref() else {
+        let Some(saving) = self.state.foundry_saving.as_ref() else {
             return SavedFoundryReadiness::Blocked;
         };
         let (_, pending_foundries) = Self::projected_foundries(obs);
@@ -469,7 +474,7 @@ impl UtilityPolicy {
             .filter(|builder| builder.id == obligation.builder())
             .filter(|builder| context.available_builders.contains(&builder.id))
             .filter(|builder| builder_is_free(obs, builder))
-            .filter(|builder| self.scout != Some(builder.id))
+            .filter(|builder| self.state.scout != Some(builder.id))
             .collect::<Vec<_>>();
         let danger = self.harvest_danger_projection(
             obs,
@@ -514,7 +519,7 @@ impl UtilityPolicy {
             saving.plan.opportunity,
             saving.plan.builder,
             &assessment_context,
-            &mut self.expansion_routing_cache.borrow_mut(),
+            &mut self.queries.expansion_routing_cache.borrow_mut(),
         );
         match assessment.disposition {
             expansion::ExpansionDisposition::Build => SavedFoundryReadiness::Ready,
@@ -537,7 +542,7 @@ impl UtilityPolicy {
         accepted_at: Tick,
         intents: &mut Vec<Intent>,
     ) -> Result<(), ExistingFoundryCommitment> {
-        if self.foundry_saving.is_some() {
+        if self.state.foundry_saving.is_some() {
             return Err(ExistingFoundryCommitment);
         }
 
@@ -550,7 +555,7 @@ impl UtilityPolicy {
             decision_cadence: proposal.decision_cadence,
         };
         let plan = proposal.plan;
-        self.foundry_saving = Some(FoundrySavingCommitment {
+        self.state.foundry_saving = Some(FoundrySavingCommitment {
             plan: plan.clone(),
             accepted_at,
             required_scrap,
@@ -581,13 +586,13 @@ impl UtilityPolicy {
         kind: BuildingKind,
         anchor: TilePos,
     ) {
-        let dispatched = self.foundry_saving.as_ref().is_some_and(|saving| {
+        let dispatched = self.state.foundry_saving.as_ref().is_some_and(|saving| {
             kind == BuildingKind::Foundry
                 && saving.plan.anchor == anchor
                 && builders.contains(&saving.plan.builder)
         });
         if dispatched {
-            self.foundry_saving = None;
+            self.state.foundry_saving = None;
         }
     }
 }

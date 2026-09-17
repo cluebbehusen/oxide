@@ -756,8 +756,9 @@ impl UtilityPolicy {
                     && cancellations.retained(unit).is_none()
                     && !enlisted.contains(&unit.id)
                     && !reserved.contains(&unit.id)
-                    && self.scout != Some(unit.id)
+                    && self.state.scout != Some(unit.id)
                     && self
+                        .state
                         .foundry_saving
                         .as_ref()
                         .is_none_or(|saving| saving.plan.builder != unit.id)
@@ -892,7 +893,7 @@ impl UtilityPolicy {
             .filter(|(tile, amount)| {
                 *amount > 0
                     && obs.visible(*tile)
-                    && !self.dead_nodes.contains(tile)
+                    && !self.state.dead_nodes.contains(tile)
                     && !self.harvest_location_contested(*tile)
                     && road_reach
                         .get_or_insert_with(|| Self::known_road_reach(obs, home))
@@ -902,6 +903,7 @@ impl UtilityPolicy {
             .collect::<Vec<_>>();
         let blocked = self.foundry_logistics_blocked_layout(public_map, danger);
         let distance_fields = self
+            .queries
             .expansion_routing_cache
             .borrow_mut()
             .danger_aware_fields(
@@ -1074,7 +1076,7 @@ impl UtilityPolicy {
         let quotes = expansion::quote_foundry_expansions_cached(
             opportunities,
             &assessment_context,
-            &mut self.expansion_routing_cache.borrow_mut(),
+            &mut self.queries.expansion_routing_cache.borrow_mut(),
         );
         if quotes.is_empty() {
             return None;
@@ -1128,7 +1130,7 @@ impl UtilityPolicy {
         if !dials.expansion
             || !has_built(BuildingKind::Foundry)
             || !has_built(BuildingKind::Fabricator)
-            || self.foundry_saving.is_some()
+            || self.state.foundry_saving.is_some()
         {
             return None;
         }
@@ -1177,7 +1179,7 @@ impl UtilityPolicy {
             .iter()
             .filter(|builder| context.available_builders.contains(&builder.id))
             .filter(|builder| builder_is_free(obs, builder))
-            .filter(|builder| self.scout != Some(builder.id))
+            .filter(|builder| self.state.scout != Some(builder.id))
             .collect();
         builders.sort_unstable_by_key(|builder| builder.id);
         builders.dedup_by_key(|builder| builder.id);
@@ -1389,8 +1391,9 @@ impl UtilityPolicy {
             .filter(|builder| {
                 available_builders.contains(&builder.id)
                     && claimed.binary_search(&builder.id).is_err()
-                    && !self.evacuating_workers.contains(&builder.id)
+                    && !self.state.evacuating_workers.contains(&builder.id)
                     && self
+                        .state
                         .retreating_contested_scout
                         .is_none_or(|retreat| retreat.unit != builder.id)
             })
@@ -1560,9 +1563,9 @@ impl UtilityPolicy {
             .my_buildings
             .iter()
             .filter(|b| b.built)
-            .filter(|b| !self.support_work.repairs.iter().any(|repair| repair.key.patient == crate::ids::Target::Building(b.id)))
+            .filter(|b| !self.state.support_work.repairs.iter().any(|repair| repair.key.patient == crate::ids::Target::Building(b.id)))
             .filter(|b| !intents.iter().any(|intent| matches!(intent, Intent::Upgrade { building } if *building == b.id)))
-            .filter(|b| self.economic_saving.as_ref().is_none_or(|saving|
+            .filter(|b| self.state.economic_saving.as_ref().is_none_or(|saving|
                 !matches!(saving.key, EconomicInvestmentKey::Upgrade { building, .. } if building == b.id)))
             .filter_map(|b| {
                 SALVAGE_PRIORITY
@@ -1693,7 +1696,7 @@ mod tests {
         enemy.player = PlayerId(1);
         obs.enemy_units = vec![enemy];
         let mut policy = UtilityPolicy::new();
-        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+        policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
             center: contested,
             last_evidence: obs.tick,
             sweep_started_at: None,
@@ -2471,9 +2474,9 @@ mod tests {
             first.construction_capital().saturating_add(73)
         );
         assert!(first.projected_return() > 0);
-        assert!(policy.foundry_saving.is_none());
-        assert!(policy.pending_sites.is_empty());
-        assert!(policy.dead_anchors.is_empty());
+        assert!(policy.state.foundry_saving.is_none());
+        assert!(policy.state.pending_sites.is_empty());
+        assert!(policy.state.dead_anchors.is_empty());
     }
 
     #[test]
@@ -2603,7 +2606,7 @@ mod tests {
             proposal.case().time_to_impact(),
             FoundryTimeToImpact::Patient
         );
-        assert!(policy.foundry_saving.is_none());
+        assert!(policy.state.foundry_saving.is_none());
 
         let mut intents = Vec::new();
         policy
@@ -3097,6 +3100,7 @@ mod tests {
             ] if (*anchor, *builder) == (expected.0, expected.1)
         ));
         let saving = policy
+            .state
             .foundry_saving
             .as_ref()
             .expect("the exact lease survives until command lowering");
@@ -3190,6 +3194,7 @@ mod tests {
             "current route and security evidence should validate the frozen plan without reranking economics"
         );
         let saving = policy
+            .state
             .foundry_saving
             .as_ref()
             .expect("the exact retained plan survives readiness validation");
@@ -3249,7 +3254,7 @@ mod tests {
                 delta < FOUNDRY_RECOVERY_TICKS
             );
         }
-        assert!(policy.foundry_saving.is_none());
+        assert!(policy.state.foundry_saving.is_none());
     }
 
     #[test]
@@ -3272,6 +3277,7 @@ mod tests {
             .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
             .expect("there is no prior Foundry obligation");
         policy
+            .state
             .foundry_saving
             .as_mut()
             .expect("the accepted plan remains pending")
@@ -3284,12 +3290,13 @@ mod tests {
 
         assert!(!obligation.blocked());
         assert_eq!(
-            policy.foundry_saving.as_ref().unwrap().blocked_since,
+            policy.state.foundry_saving.as_ref().unwrap().blocked_since,
             Some(obs.tick.saturating_sub(20))
         );
         policy.recover_ready_foundry_saving();
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|saving| saving.blocked_since),
@@ -3361,13 +3368,13 @@ mod tests {
             .expect("there is no prior expansion obligation");
         assert!(intents.is_empty());
 
-        let before = policy.foundry_saving.clone();
+        let before = policy.state.foundry_saving.clone();
         let mut rejected_intents = Vec::new();
         assert_eq!(
             policy.commit_adjudicated_foundry(expected, 38, &mut rejected_intents,),
             Err(ExistingFoundryCommitment)
         );
-        assert_eq!(policy.foundry_saving, before);
+        assert_eq!(policy.state.foundry_saving, before);
         assert!(rejected_intents.is_empty());
     }
 
@@ -3430,6 +3437,7 @@ mod tests {
         assert_eq!(obligation.current_construction_capital(), 0);
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|saving| saving.blocked_since),
@@ -3689,6 +3697,7 @@ mod tests {
         assert!(selected.len() <= 8);
         assert!(
             policy
+                .queries
                 .expansion_routing_cache
                 .borrow()
                 .build_count()
@@ -3939,7 +3948,7 @@ mod tests {
         for radius in [2, 8] {
             let expected = frontier.offset(-radius, 0);
             let mut policy = UtilityPolicy::new();
-            policy.dead_anchors = (0..obs.map_height)
+            policy.state.dead_anchors = (0..obs.map_height)
                 .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
                 .filter(|anchor| *anchor != expected)
                 .collect();
@@ -4006,12 +4015,13 @@ mod tests {
             .collect();
 
         let mut blocked_policy = UtilityPolicy::new();
-        blocked_policy.dead_anchors = (0..ready.map_height)
+        blocked_policy.state.dead_anchors = (0..ready.map_height)
             .flat_map(|y| (0..ready.map_width).map(move |x| TilePos::new(x, y)))
             .collect();
 
         let mut contested_policy = UtilityPolicy::new();
         contested_policy
+            .state
             .contested_harvest_regions
             .push(ContestedHarvestRegion {
                 center: frontier,
@@ -4453,7 +4463,10 @@ mod tests {
         obs.my_units[0].hp -= 1;
         obs.salvage_incidents = vec![incident];
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_harvest_regions[0].sweep_started_at, None);
+        assert_eq!(
+            policy.state.contested_harvest_regions[0].sweep_started_at,
+            None
+        );
         assert!(
             restoration(&policy, &obs).is_empty(),
             "an active loss incident must hold the destroyed home frame"
@@ -4464,9 +4477,10 @@ mod tests {
         let hidden_index = (hidden_corner.y * obs.map_width + hidden_corner.x) as usize;
         obs.visible[hidden_index] = false;
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_harvest_regions.len(), 1);
+        assert_eq!(policy.state.contested_harvest_regions.len(), 1);
         assert!(
             !policy
+                .state
                 .contested_harvest_clear_tiles
                 .contains(&(incident, hidden_corner))
         );
@@ -4481,7 +4495,10 @@ mod tests {
         obs.visible[hidden_index] = true;
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_harvest_regions[0].sweep_started_at, None);
+        assert_eq!(
+            policy.state.contested_harvest_regions[0].sweep_started_at,
+            None
+        );
         assert!(
             restoration(&policy, &obs).is_empty(),
             "a known threat must restart a partial clear interval and keep complete sight from \
@@ -4562,6 +4579,7 @@ mod tests {
             }];
             policy
                 .economic_quotes(EconomicInvestmentContext {
+                    evidence: Default::default(),
                     obligations: &[],
                     obs: current,
                     resources: &resources,
@@ -4579,7 +4597,7 @@ mod tests {
                 .investments()
         };
         let mut policy = UtilityPolicy::new();
-        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+        policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
             center: choke,
             last_evidence: obs.tick,
             sweep_started_at: None,
@@ -4767,7 +4785,7 @@ mod tests {
         flak_dials.aa_response = true;
 
         let mut flak_policy = UtilityPolicy::new();
-        flak_policy.seen_air = true;
+        flak_policy.state.seen_air = true;
         assert_absent("Flak Turret", &flak_dials, &mut flak_policy);
 
         let mut bastion_dials = focused_dials();
@@ -4881,7 +4899,7 @@ mod tests {
         obs.enemy_units.push(threat);
 
         let mut policy = UtilityPolicy::new();
-        policy.evacuating_workers.push(UnitId(1));
+        policy.state.evacuating_workers.push(UnitId(1));
         assert_eq!(
             policy.fresh_emergency_defense(
                 &dials,
@@ -5087,6 +5105,7 @@ mod tests {
                 0,
                 0,
                 0,
+                Default::default(),
             )
             .into_iter()
             .find(|proposal| proposal.kind() == BuildingKind::Turret)
