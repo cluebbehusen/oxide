@@ -1293,3 +1293,102 @@ fn stacked_heaps_hand_two_workers_distinct_work_tiles() {
         "workers took too long to start extracting: {first_scrap:?}"
     );
 }
+
+#[test]
+fn a_claimed_work_tile_still_serves_when_the_free_ones_are_sealed() {
+    // The source's only reachable work tile is the one a first worker is
+    // heading for; its other doorsteps sit in a walled pocket. A second
+    // worker chaining onto the source must take the claimed tile as the
+    // last resort instead of giving the source up.
+    let source = TilePos::new(12, 6);
+    let starter = TilePos::new(9, 2);
+    let mut state = {
+        let mut scenario = open_arena_with(
+            24,
+            12,
+            vec![
+                unit(0, UnitKind::Harvester, 8, 6),
+                unit(0, UnitKind::Harvester, 8, 2),
+            ],
+            |rows| {
+                rows[6][12] = 's';
+                rows[2][9] = 's';
+                for (x, y) in [(11, 5), (11, 7), (12, 5), (12, 7), (13, 4), (13, 8)] {
+                    rows[y][x] = '#';
+                }
+                for row in rows.iter_mut().take(9).skip(4) {
+                    row[14] = '#';
+                }
+            },
+        );
+        scenario.buildings = Vec::new();
+        let state = scenario.build().unwrap();
+        let mut doc = serde_json::to_value(&state).unwrap();
+        let width = doc["map"]["grid"]["width"].as_i64().unwrap() as usize;
+        for (pos, scrap) in [(source, 100), (starter, 1)] {
+            let index = pos.y as usize * width + pos.x as usize;
+            doc["map"]["grid"]["cells"][index]["scrap"] = json!(scrap);
+        }
+        let mut state: State = serde_json::from_value(doc).unwrap();
+        state.tick(&[]);
+        state
+    };
+    let (first, second) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Harvest {
+                units: vec![first],
+                node: source,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Harvest {
+                units: vec![second],
+                node: starter,
+                queue: false,
+            },
+        ),
+    ]);
+    let west = TilePos::new(11, 6);
+    assert_eq!(
+        state
+            .unit(first)
+            .unwrap()
+            .path
+            .as_ref()
+            .map(|path| path.goal),
+        Some(west),
+        "the first worker heads for the only open doorstep"
+    );
+    let mut chained = false;
+    let mut extracted = false;
+    for _ in 0..200 {
+        state.tick(&[]);
+        let worker = state.unit(second).unwrap();
+        let Order::Harvest { node, retiring, .. } = worker.order else {
+            panic!("the chained worker dropped its harvest: {:?}", worker.order);
+        };
+        if node != source {
+            continue;
+        }
+        chained = true;
+        assert!(!retiring, "the chained worker gave the source up");
+        if worker.carrying > 1 {
+            extracted = true;
+            break;
+        }
+        assert!(
+            matches!(&worker.path, Some(path) if path.goal == west) || worker.path.is_none(),
+            "the chained worker must route to the claimed doorstep, not elsewhere: {:?}",
+            worker.path
+        );
+    }
+    assert!(chained, "the starter node never chained onto the source");
+    assert!(
+        extracted,
+        "the chained worker never extracted from the shared doorstep"
+    );
+}

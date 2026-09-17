@@ -1017,46 +1017,53 @@ fn source_route_avoiding_danger(
     match source.kind {
         SourceKind::Wreck => safe_route(source.pos).map(|route| (source.pos, route)),
         SourceKind::Scrap => {
-            let mut candidates: Vec<TilePos> = rect_adjacent_tiles(source.pos, (1, 1))
+            let candidates: Vec<TilePos> = rect_adjacent_tiles(source.pos, (1, 1))
                 .filter(|tile| known_ground_passable(state, danger, player, *tile))
                 .filter(|tile| allow_dangerous_goal || !danger.contains(*tile))
                 .collect();
-            // Work tiles other workers hold are last resorts, taken only
-            // when every tile around the source is spoken for.
+            // Work tiles other workers hold are last resorts: the free
+            // tiles are tried first, and the whole ring only when none of
+            // them routes, so a claimed tile beside a sealed free one still
+            // keeps the worker on its source.
             let claimed = claimed_work_tiles(state, player, id);
             let free: Vec<TilePos> = candidates
                 .iter()
                 .copied()
                 .filter(|tile| !claimed.contains(tile))
                 .collect();
-            if !free.is_empty() {
-                candidates = free;
-            }
-            candidates.sort_by_key(|tile| rect_approach_key(from, source.pos, (1, 1), *tile));
-            let near = candidates.len().min(4);
-            if near > 1 {
-                let rank = crate::ids::owner_local_unit_rank(
-                    id,
-                    player,
-                    state.units.iter().map(|unit| (unit.id, unit.player)),
-                );
-                candidates[..near].rotate_left(rank % near);
-            }
-            let mut reachability = None;
-            best_candidate_route(&candidates, from, |rank, goal| {
-                if reachability
-                    .as_ref()
-                    .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
-                {
-                    return None;
+            let rank = crate::ids::owner_local_unit_rank(
+                id,
+                player,
+                state.units.iter().map(|unit| (unit.id, unit.player)),
+            );
+            let route_ring = |mut ring: Vec<TilePos>| -> Option<(TilePos, Vec<TilePos>)> {
+                ring.sort_by_key(|tile| rect_approach_key(from, source.pos, (1, 1), *tile));
+                let near = ring.len().min(4);
+                if near > 1 {
+                    ring[..near].rotate_left(rank % near);
                 }
-                let route = safe_route(goal);
-                if route.is_none() && reachability.is_none() {
-                    reachability =
-                        danger.last_route_reachability(&candidates, allow_dangerous_goal);
-                }
-                route
-            })
+                let mut reachability = None;
+                best_candidate_route(&ring, from, |rank, goal| {
+                    if reachability
+                        .as_ref()
+                        .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
+                    {
+                        return None;
+                    }
+                    let route = safe_route(goal);
+                    if route.is_none() && reachability.is_none() {
+                        reachability = danger.last_route_reachability(&ring, allow_dangerous_goal);
+                    }
+                    route
+                })
+            };
+            if !free.is_empty()
+                && free.len() < candidates.len()
+                && let Some(found) = route_ring(free)
+            {
+                return Some(found);
+            }
+            route_ring(candidates)
         }
     }
 }
