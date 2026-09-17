@@ -174,12 +174,13 @@ impl State {
 
     /// Whether the player knows a derelict frame is covered by a live or
     /// remembered claim. Own and allied works are shared facts; a hostile
-    /// claim counts only while visible or retained as a building ghost.
+    /// claim counts only while apparent and visible or retained as a building ghost.
     pub fn extractor_frame_claim_known(&self, player: PlayerId, frame: TilePos) -> bool {
         let vision = self.vision(player);
         self.buildings.iter().any(|building| {
             building.hp > 0
                 && building.anchor == frame
+                && self.building_apparent(player, building)
                 && (!self.hostile(player, building.player)
                     || building.tiles().any(|tile| vision.visible(tile)))
         }) || vision
