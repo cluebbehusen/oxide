@@ -514,7 +514,7 @@ fn prime_skirmish_places_an_accepted_defense_on_the_hostile_approach() {
 
 #[test]
 fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
-    use oxide_sim::bot::trace::{ReconConsumerTrace, ReconPhaseTrace};
+    use oxide_sim::bot::trace::{ReconConsumerTrace, ReconPhaseTrace, ReconReleaseReason};
     let mut scenario = Scenario::skirmish();
     scenario.seed = 7_000;
     let briefing = public_map(&scenario);
@@ -595,6 +595,19 @@ fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
             });
             chase_started = true;
         }
+        // The chase is over once the observer is released home safely;
+        // whatever the bot probes with after that is a fresh decision on
+        // fresh evidence, not a replacement conveyor.
+        let chase_over = decision.trace.as_ref().is_some_and(|trace| {
+            trace.reconnaissance.released.entries.iter().any(|release| {
+                matches!(
+                    release.consumer,
+                    ReconConsumerTrace::HostileStart {
+                        player: PlayerId(1)
+                    }
+                ) && release.reason == ReconReleaseReason::SafeReturn
+            })
+        });
         let report = state.tick(&commands);
         assert!(
             report
@@ -602,6 +615,9 @@ fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
                 .iter()
                 .all(|event| !matches!(event, Event::CommandRejected { .. }))
         );
+        if chase_started && chase_over {
+            break;
+        }
     }
     assert!(
         chase_started,
