@@ -81,7 +81,7 @@ pub(super) fn land(state: &mut State, events: &mut Vec<Event>) {
                 && state.players[usize::from(unit.player.0)].team != team
                 && unit.pos.dist_sq(crash.impact) <= radius_sq
             {
-                unit.hp = unit.hp.saturating_sub(profile.damage);
+                super::damage::unit(unit, profile.damage, events);
             }
         }
         for building in &mut state.buildings {
@@ -92,7 +92,7 @@ pub(super) fn land(state: &mut State, events: &mut Vec<Event>) {
                     .dist_sq(crash.impact)
                     <= radius_sq
             {
-                building.hp = building.hp.saturating_sub(profile.damage);
+                super::damage::building(building, profile.damage, events);
             }
         }
     }
@@ -147,6 +147,10 @@ mod tests {
             assert_eq!(report, resumed.tick(&[]));
             assert_eq!(state.hash(), resumed.hash());
             assert!(report.events.contains(&Event::AircraftImpacted { crash }));
+            assert!(report.events.contains(&Event::DamageTaken {
+                player: PlayerId(1),
+                pos: state.unit(target).unwrap().pos,
+            }));
             assert_eq!(
                 state.unit(target).map_or(0, |u| u.hp),
                 hp.saturating_sub(kind.crash_profile().unwrap().damage)
@@ -183,7 +187,25 @@ mod tests {
             .unwrap()
             .pos = at(20, 16);
         state.tick = AIRCRAFT_CRASH_TICKS;
-        land(&mut state, &mut Vec::new());
+        let mut events = Vec::new();
+        land(&mut state, &mut events);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::DamageTaken { .. }))
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![
+                Event::DamageTaken {
+                    player: PlayerId(1),
+                    pos: at(20, 16)
+                },
+                Event::DamageTaken {
+                    player: PlayerId(1),
+                    pos: state.building(building).unwrap().center()
+                },
+            ],
+        );
         assert_eq!(state.unit(friendly).unwrap().hp, friendly_hp);
         assert_eq!(state.unit(air).unwrap().hp, air_hp);
         assert_eq!(

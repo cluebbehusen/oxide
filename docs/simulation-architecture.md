@@ -159,9 +159,12 @@ Validation covers, among other things:
 - player, team, result, map, and vision-table consistency;
 - sorted entity ids and monotonic next-id counters;
 - hp, cooldown, progress, queue, coordinate, and tick envelopes;
+- harvest-capacity bounds on scrap held by walking and transported units;
 - valid owners, faction production, entity references, and shell fields;
 - coherent construction, salvage, recovery, ghost, radar, and memory state;
 - canonical ordering for every collection whose order is observable.
+
+`Pcg32` validates its odd stream increment at its own deserialization boundary.
 
 Each new serialized field needs an invariant decision and an adversarial case in
 `sim/tests/state_integrity.rs`. The same test suite also round-trips states the
@@ -202,6 +205,12 @@ in their declared deterministic order; the whole brain phase is not an immutable
 snapshot. Damage resolves before construction, salvage, or repair work, so fire
 wins a same-tick tie and nothing can repair a destroyed target back into
 existence. Retaliation is derived afterward from surviving victims.
+
+Weapon hits, mine blasts, and aircraft impacts share HP reduction and
+`DamageTaken` notification for the victim's owner. They retain their individual
+tick phases and targeting rules. Zero damage, already-dead entities, and
+provisional scaffolds produce no damage notification. Salvage-risk memory and
+retaliation remain weapon-resolution responsibilities.
 
 Once a result exists, later calls ignore commands and skip world phases, but the
 tick counter still advances so external timelines remain aligned. Per-tick

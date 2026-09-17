@@ -1862,6 +1862,22 @@ mod tests {
                     assert!(!game.my_vision().visible(tile));
                 }
                 let report = game.do_tick();
+                if viewer == 0 {
+                    assert!(game.alerts.is_empty());
+                } else if viewer == 2 && !collateral_charge {
+                    assert_eq!(game.alerts, vec![(world_vec(tile.center()), 0.0)]);
+                    assert!(
+                        game.sounds_pending
+                            .iter()
+                            .any(|(kind, _)| *kind == SoundKind::Alert)
+                    );
+                    let mut playback =
+                        Game::with_viewport(game.scenario.clone(), Vec2::new(1280.0, 800.0))
+                            .unwrap();
+                    playback.human = game.human;
+                    playback.playback_present(&game.state, &report.events, &report.movement);
+                    assert_eq!(playback.alerts, game.alerts);
+                }
                 let detonated: Vec<_> = report
                     .events
                     .iter()

@@ -43,6 +43,7 @@ mod brain;
 mod charges;
 mod commands;
 pub(crate) mod construction;
+mod damage;
 pub(crate) mod flight;
 pub(crate) mod landing;
 mod movement;
