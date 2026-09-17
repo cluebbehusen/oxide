@@ -34,6 +34,16 @@ pub(in crate::bot) struct RouteProjection<'a> {
     command_surface: std::cell::OnceCell<Vec<bool>>,
 }
 
+/// Exact route geometry for retaining derived service evidence across observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct RouteGeometryKey {
+    dimensions: (i32, i32),
+    orientation: Option<Orientation>,
+    ordinary: Vec<bool>,
+    allowed: Vec<bool>,
+    danger: Vec<bool>,
+}
+
 impl<'a> RouteProjection<'a> {
     pub(in crate::bot) fn new(
         query_purpose: QueryPurpose,
@@ -256,6 +266,26 @@ impl<'a> RouteProjection<'a> {
         projection.set_public_terrain(briefing);
         projection.command_orientation = Some(orientation);
         projection
+    }
+
+    pub(in crate::bot) fn geometry_key(&self) -> RouteGeometryKey {
+        RouteGeometryKey {
+            dimensions: (self.obs.map_width, self.obs.map_height),
+            orientation: self.command_orientation,
+            ordinary: (0..self.obs.map_height)
+                .flat_map(|y| {
+                    (0..self.obs.map_width).map(move |x| {
+                        let tile = TilePos::new(x, y);
+                        self.domain_open(tile)
+                            && (!self.require_explored || self.obs.explored(tile))
+                    })
+                })
+                .collect(),
+            allowed: (0..self.obs.map_height)
+                .flat_map(|y| (0..self.obs.map_width).map(move |x| self.open(TilePos::new(x, y))))
+                .collect(),
+            danger: self.blocked_tiles.clone(),
+        }
     }
 
     pub(in crate::bot) fn unit_reaches(&mut self, unit: &UnitObs, goal: TilePos) -> bool {
@@ -2440,6 +2470,40 @@ mod tests {
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
+    }
+
+    #[test]
+    fn retained_geometry_distinguishes_command_ground_from_safe_ground_and_danger() {
+        let mut obs = observation();
+        obs.known_rock = vec![TilePos::new(6, 3)];
+        let key = |obs: &Observation, danger: bool| {
+            RouteProjection::ground_avoiding(QueryPurpose::NavigationTest, obs, |tile| {
+                danger && tile.x == 6
+            })
+            .geometry_key()
+        };
+        let clear = key(&obs, false);
+        let dangerous = key(&obs, true);
+        assert_eq!(clear.ordinary, dangerous.ordinary);
+        assert_ne!(clear.danger, dangerous.danger);
+        obs.known_rock.push(TilePos::new(6, 4));
+        let changed_ground = key(&obs, true);
+        assert_eq!(changed_ground.allowed, dangerous.allowed);
+        assert_ne!(changed_ground.ordinary, dangerous.ordinary);
+        assert_ne!(changed_ground, dangerous);
+
+        let on_rock =
+            RouteProjection::ground_avoiding(QueryPurpose::NavigationTest, &obs, |tile| {
+                tile == TilePos::new(6, 3)
+            })
+            .geometry_key();
+        let clear = key(&obs, false);
+        assert_eq!(on_rock.allowed, clear.allowed);
+        assert_eq!(on_rock.ordinary, clear.ordinary);
+        assert_ne!(
+            on_rock, clear,
+            "direct corridor checks still see danger on impassable terrain"
+        );
     }
 
     #[test]
