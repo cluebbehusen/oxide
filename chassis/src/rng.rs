@@ -19,7 +19,18 @@ pub struct Pcg32 {
     state: u64,
     /// Stream selector (always odd). Two generators with the same seed but
     /// different streams produce unrelated sequences.
+    #[serde(deserialize_with = "deserialize_increment")]
     inc: u64,
+}
+
+fn deserialize_increment<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
+    let inc = u64::deserialize(deserializer)?;
+    if inc & 1 == 0 {
+        return Err(serde::de::Error::custom("PCG stream increment must be odd"));
+    }
+    Ok(inc)
 }
 
 impl Pcg32 {
@@ -110,6 +121,22 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&rng).unwrap()).unwrap();
         for _ in 0..100 {
             assert_eq!(rng.next_u32(), restored.next_u32());
+        }
+    }
+
+    #[test]
+    fn deserialization_rejects_even_stream_increments() {
+        for inc in [0, 2, u64::MAX - 1] {
+            let encoded = serde_json::json!({ "state": 0, "inc": inc });
+            let err = serde_json::from_value::<Pcg32>(encoded).unwrap_err();
+            assert!(err.to_string().contains("PCG stream increment must be odd"));
+        }
+        for inc in [1, 3, u64::MAX] {
+            for state in [0, u64::MAX] {
+                let encoded = serde_json::json!({ "state": state, "inc": inc });
+                let rng: Pcg32 = serde_json::from_value(encoded.clone()).unwrap();
+                assert_eq!(serde_json::to_value(rng).unwrap(), encoded);
+            }
         }
     }
 }

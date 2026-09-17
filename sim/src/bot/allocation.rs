@@ -19,13 +19,16 @@ use chassis::Tick;
 use chassis::grid::TilePos;
 
 mod adapters;
+pub(in crate::bot) mod admission;
 mod coordinator;
 pub(in crate::bot) mod forecast;
+pub(in crate::bot) mod operations;
 mod portfolio_search;
 mod production_bounds;
 mod production_search;
 pub(in crate::bot) mod production_work;
 mod session;
+pub(in crate::bot) use admission::{AdmittedWork, DecisionContext, admit_decision};
 #[cfg(test)]
 pub(in crate::bot) use session::test_allocate_policy;
 mod witness;

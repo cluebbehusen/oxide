@@ -855,7 +855,7 @@ pub(super) fn advance(
     if super::locomotion::land_at_destination(state, index, id, goal) {
         return;
     }
-    walk(state, id, goal, events);
+    walk(state, index, id, goal, events);
     if !state
         .unit(id)
         .is_some_and(|u| matches!(u.order, Order::Advance { goal: current } if current == goal))

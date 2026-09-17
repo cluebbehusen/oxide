@@ -8,6 +8,7 @@
 //! thread count never reaches a verdict.
 
 use anyhow::Result;
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -24,6 +25,18 @@ where
     R: Send,
     F: Fn(&J) -> Result<R> + Sync,
 {
+    fan_out_bounded(jobs, NonZeroUsize::MAX, play)
+}
+
+/// Runs independent jobs with at most `limit` workers and returns input order.
+/// Multiple match workers suppress nested bot-seat parallelism. Large outputs
+/// should be staged by `play`; completed results are retained until all jobs end.
+pub fn fan_out_bounded<J, R, F>(jobs: &[J], limit: NonZeroUsize, play: F) -> Result<Vec<R>>
+where
+    J: Sync,
+    R: Send,
+    F: Fn(&J) -> Result<R> + Sync,
+{
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
@@ -32,6 +45,7 @@ where
     let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
+        .min(limit.get())
         .min(jobs.len());
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -74,6 +88,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_limit_bounds_live_jobs() {
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let jobs: Vec<_> = (0..16).collect();
+        let out = fan_out_bounded(&jobs, NonZeroUsize::new(2).unwrap(), |&job| {
+            let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(count, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(job)
+        })
+        .unwrap();
+        assert_eq!(out, jobs);
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn results_come_back_in_job_order() {

@@ -128,10 +128,9 @@ pub(super) fn run(
     index: &mut super::spatial::UnitIndex,
     events: &mut Vec<Event>,
 ) -> logistics::Pending {
-    // One index serves every acquisition window this phase: brains
-    // decide against the start-of-tick world — positions, hp, and the
-    // unit list itself hold still until resolution — so a snapshot
-    // taken here stays exact for the whole decision loop.
+    // Positions and unit slots hold still until resolution, so acquisition
+    // and arrival queries share this index. Orders, speed and landed state
+    // can change during the loop and must still be read from the live unit.
     index.rebuild(&state.units);
     let motion = MotionSnapshot::capture(state);
     let mut hits: Vec<PendingHit> = Vec::new();
@@ -190,7 +189,7 @@ pub(super) fn run(
             Order::Idle => idle(state, index, id),
             Order::Move { goal } => {
                 if !land_at_destination(state, index, id, goal) {
-                    walk(state, id, goal, events);
+                    walk(state, index, id, goal, events);
                 }
             }
             Order::ReturnCargo { foundry, repair } => {
@@ -299,19 +298,13 @@ fn resolve_hits(
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
-                    if v.hp > 0 && hit.damage > 0 {
-                        events.push(Event::DamageTaken {
-                            player: v.player,
-                            pos: v.pos,
-                        });
-                    }
                     let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
                     let relevant_loss =
                         hit.damage >= v.hp && v.domain() == crate::stats::Domain::Ground;
                     if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
                         incidents.push((v.player, v.tile()));
                     }
-                    v.hp = v.hp.saturating_sub(hit.damage);
+                    super::damage::unit(v, hit.damage, events);
                 }
             }
             Target::Building(bid) => {
@@ -329,12 +322,6 @@ fn resolve_hits(
                     })
                 });
                 if let Some(b) = state.building_mut(bid) {
-                    if b.hp > 0 && hit.damage > 0 {
-                        events.push(Event::DamageTaken {
-                            player: b.player,
-                            pos: b.center(),
-                        });
-                    }
                     let relevant_hit = b.kind == crate::stats::BuildingKind::Reclaimer;
                     let relevant_loss = hit.damage >= b.hp;
                     if b.hp > 0
@@ -344,7 +331,7 @@ fn resolve_hits(
                     {
                         incidents.push((b.player, tile));
                     }
-                    b.hp = b.hp.saturating_sub(hit.damage);
+                    super::damage::building(b, hit.damage, events);
                 }
             }
         }

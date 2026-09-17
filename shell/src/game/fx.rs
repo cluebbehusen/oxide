@@ -3,7 +3,8 @@
 //! sim reports into transient visuals and positional audio. Nothing
 //! here is sim-relevant; dropping it all is always safe.
 
-use super::{Game, world_vec};
+use super::{Presentation, world_vec};
+use oxide_sim::State;
 
 use macroquad::prelude::Vec2;
 use oxide_sim::Event;
@@ -27,10 +28,10 @@ pub(crate) struct UnitBody {
 }
 
 impl UnitBody {
-    fn capture(game: &Game, unit: &oxide_sim::state::Unit) -> Self {
+    fn capture(game: &Presentation, state: &State, unit: &oxide_sim::state::Unit) -> Self {
         let kind = unit.kind;
         let rotation = if kind.has_ground_turret() || super::rotor_hull_turn_rate(kind).is_some() {
-            game.draw_hull_heading(unit.id, 1.0)
+            game.draw_hull_heading(state, unit.id, 1.0)
         } else if kind.stats().turn_rate > 0
             || kind.ground_turn_rate() > 0
             || kind.cruise_turn_rate() > 0
@@ -53,7 +54,7 @@ impl UnitBody {
         Self {
             kind,
             player: unit.player,
-            faction: game.state.player(unit.player).faction,
+            faction: state.player(unit.player).faction,
             rotation,
             velocity: velocity
                 .clamp_length_max(kind.stats().speed.to_num::<f32>() / super::TICK_DT),
@@ -70,32 +71,30 @@ pub(super) struct PreviousEffects {
 }
 
 impl PreviousEffects {
-    pub(super) fn capture(game: &Game) -> Self {
+    pub(super) fn capture(game: &Presentation, state: &State) -> Self {
         Self {
-            visible_crash_contacts: game
-                .state
+            visible_crash_contacts: state
                 .aircraft_crashes()
                 .iter()
                 .filter(|crash| {
-                    crash.arrival == game.state.current_tick()
+                    crash.arrival == state.current_tick()
                         && (crash.player == game.human
                             || game.all_seeing()
-                            || game
-                                .my_vision()
+                            || state
+                                .vision(game.human)
                                 .visible(chassis::grid::TilePos::containing(crash.impact)))
                 })
                 .map(|crash| crash.unit)
                 .collect(),
-            buildings: game
-                .state
+            buildings: state
                 .buildings()
                 .iter()
                 .filter(|b| {
                     b.built
                         && (b.player == game.human
                             || game.all_seeing()
-                            || (b.tiles().any(|t| game.my_vision().visible(t))
-                                && game.state.building_apparent(game.human, b)))
+                            || (b.tiles().any(|t| state.vision(game.human).visible(t))
+                                && state.building_apparent(game.human, b)))
                 })
                 .map(|b| {
                     (
@@ -104,23 +103,22 @@ impl PreviousEffects {
                             kind: b.kind,
                             tier: b.tier,
                             player: b.player,
-                            faction: game.state.player(b.player).faction,
+                            faction: state.player(b.player).faction,
                             rotation: game.aim_buildings.get(&b.id.0).map_or(0.0, |pose| pose.0),
                         },
                     )
                 })
                 .collect(),
-            shells: game.state.shells().to_vec(),
-            units: game
-                .state
+            shells: state.shells().to_vec(),
+            units: state
                 .units()
                 .iter()
                 .filter(|unit| {
                     unit.player == game.human
                         || game.all_seeing()
-                        || game.my_vision().visible(unit.tile())
+                        || state.vision(game.human).visible(unit.tile())
                 })
-                .map(|unit| (unit.id, UnitBody::capture(game, unit)))
+                .map(|unit| (unit.id, UnitBody::capture(game, state, unit)))
                 .collect(),
         }
     }
@@ -591,14 +589,19 @@ fn event_target_owner(
     }
 }
 
-impl Game {
-    pub(super) fn restore_pending_crashes(&mut self) {
-        for crash in self.state.aircraft_crashes().to_vec() {
-            self.restore_crash_effect(crash, false);
+impl Presentation {
+    pub(super) fn restore_pending_crashes(&mut self, state: &State) {
+        for crash in state.aircraft_crashes().to_vec() {
+            self.restore_crash_effect(state, crash, false);
         }
     }
 
-    fn restore_crash_effect(&mut self, crash: oxide_sim::state::AircraftCrash, witnessed: bool) {
+    fn restore_crash_effect(
+        &mut self,
+        state: &State,
+        crash: oxide_sim::state::AircraftCrash,
+        witnessed: bool,
+    ) {
         for effect in &mut self.fx {
             if let EffectKind::Falling {
                 crash: Some(existing),
@@ -614,11 +617,11 @@ impl Game {
         let visible = witnessed
             || self.all_seeing()
             || crash.player == self.human
-            || self
-                .my_vision()
+            || state
+                .vision(self.human)
                 .visible(chassis::grid::TilePos::containing(crash.launch))
-            || self
-                .my_vision()
+            || state
+                .vision(self.human)
                 .visible(chassis::grid::TilePos::containing(crash.impact));
         if !visible {
             return;
@@ -632,7 +635,7 @@ impl Game {
                 body: UnitBody {
                     kind: crash.kind,
                     player: crash.player,
-                    faction: self.state.player(crash.player).faction,
+                    faction: state.player(crash.player).faction,
                     rotation: f32::from(crash.heading) * std::f32::consts::TAU / 256.0
                         + std::f32::consts::FRAC_PI_2,
                     velocity: Vec2::ZERO,
@@ -642,13 +645,13 @@ impl Game {
         });
     }
 
-    pub fn update_fx(&mut self, dt: f32) {
+    pub fn update_fx(&mut self, state: &State, dt: f32) {
         self.fx_clock += dt;
         for (_, age) in &mut self.alerts {
             *age += dt;
         }
         self.alerts.retain(|(_, age)| *age < 6.0);
-        let terminal = self.state.result().is_some();
+        let terminal = state.result().is_some();
         for fx in &mut self.fx {
             match fx.kind {
                 EffectKind::DirectShot { .. }
@@ -664,7 +667,7 @@ impl Game {
                 _ => fx.age += dt,
             }
         }
-        let completed_ticks = self.state.current_tick();
+        let completed_ticks = state.current_tick();
         let tick_fraction = self.tick_fraction();
         self.fx.retain(|fx| {
             fx.age_at(completed_ticks, tick_fraction)
@@ -693,9 +696,10 @@ impl Game {
     /// Turns a tick's events into flashes and queued clips. Explosions can be
     /// heard through fog; the camera mixer bounds their audible distance.
     /// Visual effects retain their independent sight rules.
-    pub(super) fn spawn_fx(&mut self, events: &[Event]) {
+    pub(super) fn spawn_fx(&mut self, state: &State, events: &[Event]) {
         let sees = |game: &Self, pos: chassis::fx::Vec2Fx| {
-            game.my_vision()
+            state
+                .vision(game.human)
                 .visible(chassis::grid::TilePos::containing(pos))
         };
         for event in events {
@@ -728,7 +732,7 @@ impl Game {
                         );
                     }
                     let target_owner =
-                        target.and_then(|target| event_target_owner(&self.state, events, target));
+                        target.and_then(|target| event_target_owner(state, events, target));
                     // Kind rides in the event: the attacker itself may have
                     // died later this same tick, and a rail shot deserves
                     // its report either way. The weapon's character decides
@@ -746,8 +750,7 @@ impl Game {
                     let source_witnessed =
                         sees(self, *attacker_pos) || sapper_owner == Some(self.human);
                     let impact_witnessed = sees(self, *target_pos)
-                        || target_owner
-                            .is_some_and(|player| !self.state.hostile(self.human, player));
+                        || target_owner.is_some_and(|player| !state.hostile(self.human, player));
                     let heard = source_witnessed || impact_witnessed;
                     let sound = unit_fire_sound(*attacker_kind);
                     // The burst radius comes from the exact weapon that
@@ -784,10 +787,10 @@ impl Game {
                                     blast_at: world_vec(*target_pos),
                                     rotation,
                                     player,
-                                    faction: self.state.player(player).faction,
+                                    faction: state.player(player).faction,
                                     source_witnessed,
                                     impact_witnessed,
-                                    completed_tick: self.state.current_tick(),
+                                    completed_tick: state.current_tick(),
                                 },
                                 age: 0.0,
                             });
@@ -803,7 +806,7 @@ impl Game {
                             ),
                             world_vec(*target_pos),
                             splash,
-                            self.state.current_tick(),
+                            state.current_tick(),
                         );
                     }
                 }
@@ -856,7 +859,7 @@ impl Game {
                         ),
                         world_vec(*target_pos),
                         splash,
-                        self.state.current_tick(),
+                        state.current_tick(),
                     );
                 }
                 Event::BuildingCompleted {
@@ -866,7 +869,7 @@ impl Game {
                 } if *player == self.human => {
                     // A completion at a nonzero tier is an upgrade
                     // finishing: its own cue, its own name.
-                    let tier = self.state.building(*building).map_or(0, |b| b.tier);
+                    let tier = state.building(*building).map_or(0, |b| b.tier);
                     if tier > 0 {
                         self.sounds_pending.push((SoundKind::UpgradeDone, None));
                         self.toast(format!(
@@ -912,7 +915,7 @@ impl Game {
                     let body = prior.unwrap_or(UnitBody {
                         kind: *kind,
                         player: *player,
-                        faction: self.state.player(*player).faction,
+                        faction: state.player(*player).faction,
                         rotation: self.facing.get(&unit.0).copied().unwrap_or(0.0),
                         velocity: Vec2::ZERO,
                     });
@@ -925,8 +928,7 @@ impl Game {
                                 body,
                                 seed: unit.0,
                                 impact_witnessed: false,
-                                crash: self
-                                    .state
+                                crash: state
                                     .aircraft_crashes()
                                     .iter()
                                     .find(|crash| crash.unit == *unit)
@@ -950,9 +952,8 @@ impl Game {
                             .fx_previous
                             .visible_crash_contacts
                             .contains(&crash.unit);
-                    self.restore_crash_effect(*crash, witnessed);
-                    if self
-                        .state
+                    self.restore_crash_effect(state, *crash, witnessed);
+                    if state
                         .map()
                         .tile(chassis::grid::TilePos::containing(crash.impact))
                         .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Pit)
@@ -1003,7 +1004,7 @@ impl Game {
                 }
                 Event::UnitTrained { unit, player, .. } if *player == self.human => {
                     self.sounds_pending.push((SoundKind::TrainDone, None));
-                    if let Some(u) = self.state.unit(*unit) {
+                    if let Some(u) = state.unit(*unit) {
                         self.fx.push(Effect {
                             kind: EffectKind::Ping {
                                 at: world_vec(u.pos),
@@ -1082,7 +1083,7 @@ impl Game {
                     // sense grants (impact tile visible), loudest when
                     // it is falling on you, and nothing tracks the gun.
                     let own = *player == self.human;
-                    let hostile = self.state.hostile(self.human, *player);
+                    let hostile = state.hostile(self.human, *player);
                     if let Some((sound, anchor)) = shell_launch_audio(
                         *shooter,
                         own,
@@ -1132,20 +1133,18 @@ impl Game {
                     let impact_sound = self.audio_timeline.landed(*player, *at);
                     let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
                     let world = world_vec(*at);
-                    let hostile_shell = self.state.hostile(self.human, *player);
+                    let hostile_shell = state.hostile(self.human, *player);
                     // Parenthesized deliberately: && binds tighter than
                     // ||, and an unguarded building branch once alarmed
                     // on the player's own defensive artillery.
                     let own_hurt = hostile_shell
-                        && (self
-                            .state
+                        && (state
                             .units()
                             .iter()
                             .filter(|u| u.player == self.human && targets.covers(u.domain()))
                             .any(|u| world_vec(u.pos).distance(world) <= reach)
                             || (targets.covers(oxide_sim::stats::Domain::Ground)
-                                && self
-                                    .state
+                                && state
                                     .buildings()
                                     .iter()
                                     .filter(|b| b.player == self.human)
@@ -1167,7 +1166,7 @@ impl Game {
                                 && shell.impact == *at
                                 && shell.targets == *targets
                                 && shell.splash == *splash
-                                && shell.arrival < self.state.current_tick()
+                                && shell.arrival < state.current_tick()
                         })
                         .map(|index| self.fx_previous.shells.remove(index).kind)
                         .unwrap_or(oxide_sim::ProjectileKind::Shell);
@@ -1216,7 +1215,7 @@ impl Game {
                     let won = matches!(
                         result,
                         oxide_sim::GameResult::Victory { team }
-                            if *team == self.state.player(self.human).team
+                            if *team == state.player(self.human).team
                     );
                     self.sounds_pending.push((
                         if won {
@@ -1230,10 +1229,10 @@ impl Game {
                 _ => {}
             }
         }
-        self.refresh_defense_aim();
+        self.refresh_defense_aim(state);
     }
 
-    fn refresh_defense_aim(&mut self) {
+    fn refresh_defense_aim(&mut self, state: &State) {
         let updates: Vec<_> = self
             .aim_building_targets
             .iter()
@@ -1245,23 +1244,25 @@ impl Game {
                 {
                     return None;
                 }
-                let building = self.state.building(oxide_sim::BuildingId(building_id))?;
+                let building = state.building(oxide_sim::BuildingId(building_id))?;
                 if building.cooldown == 0 {
                     return None;
                 }
                 let target_pos = match target {
                     oxide_sim::Target::Unit(id) => {
-                        let unit = self.state.unit(id)?;
+                        let unit = state.unit(id)?;
                         let visible = self.all_seeing()
-                            || !self.state.hostile(self.human, unit.player)
-                            || self.my_vision().visible(unit.tile());
+                            || !state.hostile(self.human, unit.player)
+                            || state.vision(self.human).visible(unit.tile());
                         visible.then(|| world_vec(unit.pos))?
                     }
                     oxide_sim::Target::Building(id) => {
-                        let target = self.state.building(id)?;
+                        let target = state.building(id)?;
                         let visible = self.all_seeing()
-                            || !self.state.hostile(self.human, target.player)
-                            || target.tiles().any(|tile| self.my_vision().visible(tile));
+                            || !state.hostile(self.human, target.player)
+                            || target
+                                .tiles()
+                                .any(|tile| state.vision(self.human).visible(tile));
                         visible.then(|| world_vec(target.center()))?
                     }
                 };
@@ -1287,6 +1288,7 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
     fn blind_bulwark_scene(victim: UnitKind) -> Game {
@@ -1373,9 +1375,10 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Event::TurretFired { target: None, .. }))
         );
-        assert_eq!(live.alerts.len(), 1);
+        assert_eq!(live.presentation.alerts.len(), 1);
         assert_eq!(
-            live.sounds_pending
+            live.presentation
+                .sounds_pending
                 .iter()
                 .filter(|(sound, _)| *sound == SoundKind::Alert)
                 .count(),
@@ -1383,12 +1386,17 @@ mod tests {
         );
         for human in [0, 1] {
             let mut playback = blind_bulwark_scene(UnitKind::Excavator);
-            playback.human = oxide_sim::PlayerId(human);
-            playback.playback_present(&live.state, &report.events, &report.movement);
-            assert_eq!(playback.alerts.len(), usize::from(human == 0));
-            assert_eq!(playback.last_alert.is_some(), human == 0);
-            assert!(playback.aim_building_targets.is_empty());
-            assert!(playback.aim_unit_targets.is_empty());
+            playback.presentation.human = oxide_sim::PlayerId(human);
+            playback
+                .presentation
+                .remember_previous_tick(&playback.state);
+            playback
+                .presentation
+                .observe_tick(&live.state, &report.events, &report.movement);
+            assert_eq!(playback.presentation.alerts.len(), usize::from(human == 0));
+            assert_eq!(playback.presentation.last_alert.is_some(), human == 0);
+            assert!(playback.presentation.aim_building_targets.is_empty());
+            assert!(playback.presentation.aim_unit_targets.is_empty());
         }
     }
 
@@ -1411,9 +1419,10 @@ mod tests {
                 .any(|event| matches!(event, Event::DamageTaken { .. }))
         );
         assert_eq!(game.state.unit(victim).unwrap().hp, hp);
-        assert!(game.alerts.is_empty());
+        assert!(game.presentation.alerts.is_empty());
         assert!(
             !game
+                .presentation
                 .sounds_pending
                 .iter()
                 .any(|(sound, _)| *sound == SoundKind::Alert)
@@ -1445,15 +1454,19 @@ mod tests {
             .collect();
         for (human, hit) in [(0, true), (1, true), (0, false)] {
             let mut game = blind_bulwark_scene(UnitKind::Excavator);
-            game.human = oxide_sim::PlayerId(human);
+            game.presentation.human = oxide_sim::PlayerId(human);
             let events: Vec<_> = events
                 .iter()
                 .filter(|event| hit || !matches!(event, Event::DamageTaken { .. }))
                 .cloned()
                 .collect();
-            game.playback_present(&source.state, &events, &[]);
-            assert_eq!(game.alerts.len(), usize::from(human == 0 && hit));
-            assert!(game.aim_unit_targets.is_empty());
+            game.presentation.remember_previous_tick(&game.state);
+            game.presentation.observe_tick(&source.state, &events, &[]);
+            assert_eq!(
+                game.presentation.alerts.len(),
+                usize::from(human == 0 && hit)
+            );
+            assert!(game.presentation.aim_unit_targets.is_empty());
         }
     }
 
@@ -1482,19 +1495,27 @@ mod tests {
                     y: 10,
                 },
             ];
-            let mut live = Game::with_viewport(scenario.clone(), Vec2::new(1280.0, 800.0)).unwrap();
-            let mut playback = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+            let mut live = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
             let mut wire = serde_json::to_value(&*live.state).unwrap();
             wire["units"][0]["hp"] = serde_json::json!(1);
             live.state.0 = serde_json::from_value(wire).unwrap();
-            playback.state.0 = live.state.0.clone();
+            let mut playback = Presentation::new(
+                &live.state,
+                live.presentation.human,
+                Vec2::new(1280.0, 800.0),
+            );
             let mut reference = live.state.0.clone();
             let mut died = false;
             for _ in 0..80 {
-                let expected_body = UnitBody::capture(&live, live.state.unit(UnitId(0)).unwrap());
+                let expected_body = UnitBody::capture(
+                    &live.presentation,
+                    &live.state,
+                    live.state.unit(UnitId(0)).unwrap(),
+                );
+                playback.remember_previous_tick(&reference);
                 let expected = reference.tick(&[]);
                 let report = live.do_tick();
-                playback.playback_present(&reference, &expected.events, &expected.movement);
+                playback.observe_tick(&reference, &expected.events, &expected.movement);
                 assert_eq!(live.state.hash(), reference.hash());
                 if report.events.iter().any(|event| {
                     matches!(
@@ -1505,9 +1526,9 @@ mod tests {
                         }
                     )
                 }) {
-                    for game in [&live, &playback] {
-                        assert!(game.state.unit(UnitId(0)).is_none());
-                        let body = game
+                    for presentation in [&live.presentation, &playback] {
+                        assert!(reference.unit(UnitId(0)).is_none());
+                        let body = presentation
                             .fx
                             .iter()
                             .find_map(|effect| match effect.kind {
@@ -1546,11 +1567,19 @@ mod tests {
                 y: 8,
             }];
             let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
-            game.hull_heading.insert(0, (0.4, 0.7));
+            game.presentation.hull_heading.insert(0, (0.4, 0.7));
             let unit = game.state.unit(UnitId(0)).unwrap();
-            assert!((game.draw_heading(unit.id, unit.weapon_heading(), 1.0) - 0.7).abs() > 0.1);
             assert!(
-                (UnitBody::capture(&game, unit).rotation - 0.7).abs() < 1e-6,
+                (game
+                    .presentation
+                    .draw_heading(unit.id, unit.weapon_heading(), 1.0)
+                    - 0.7)
+                    .abs()
+                    > 0.1
+            );
+            assert!(
+                (UnitBody::capture(&game.presentation, &game.state, unit).rotation - 0.7).abs()
+                    < 1e-6,
                 "{kind:?}"
             );
         }
@@ -1612,10 +1641,14 @@ mod tests {
             game.present_ticks(1);
             assert!(!game.my_vision().visible(tile));
             assert_eq!(game.state.unit(UnitId(1)).is_none(), witnessed);
-            assert!(game.sounds_pending.iter().any(|(sound, pos)| *sound
-                == SoundKind::BuildingBoom
-                && *pos == Some(world_vec(at))));
-            assert_eq!(game.fx.iter().any(|effect| matches!(effect.kind,
+            assert!(
+                game.presentation
+                    .sounds_pending
+                    .iter()
+                    .any(|(sound, pos)| *sound == SoundKind::BuildingBoom
+                        && *pos == Some(world_vec(at)))
+            );
+            assert_eq!(game.presentation.fx.iter().any(|effect| matches!(effect.kind,
                 EffectKind::Falling { crash: Some(saved), impact_witnessed: true, .. } if saved.unit == crash.unit
             )), witnessed);
         }
@@ -1629,7 +1662,7 @@ mod tests {
         let unit = wire["units"].as_array_mut().unwrap().remove(0);
         let crash = oxide_sim::state::AircraftCrash {
             unit: serde_json::from_value(unit["id"].clone()).unwrap(),
-            player: game.human,
+            player: game.presentation.human,
             kind: UnitKind::Condor,
             heading: 32,
             launch: chassis::grid::TilePos::new(8, 8).center(),
@@ -1641,15 +1674,26 @@ mod tests {
         wire["aircraft_crashes"] = serde_json::json!([crash]);
         let state = serde_json::from_value(wire).unwrap();
         game.replace_state_after_jump(&state);
-        game.paused = true;
-        let age = game.fx[0].age_at(game.state.current_tick(), 0.0);
+        game.presentation.paused = true;
+        let age = game.presentation.fx[0].age_at(game.state.current_tick(), 0.0);
         assert!((age - 4.0 * crate::game::TICK_DT).abs() < 1.0e-6);
         game.update_fx(30.0);
-        assert_eq!(game.fx.len(), 1, "a paused fall cannot expire on wall time");
-        assert_eq!(game.fx[0].age_at(game.state.current_tick(), 0.0), age);
+        assert_eq!(
+            game.presentation.fx.len(),
+            1,
+            "a paused fall cannot expire on wall time"
+        );
+        assert_eq!(
+            game.presentation.fx[0].age_at(game.state.current_tick(), 0.0),
+            age
+        );
         game.advance_ticks(4);
-        assert_eq!(game.fx.len(), 1, "a bulk seek restores a pending fall");
-        let fx = &game.fx[0];
+        assert_eq!(
+            game.presentation.fx.len(),
+            1,
+            "a bulk seek restores a pending fall"
+        );
+        let fx = &game.presentation.fx[0];
         assert!(
             matches!(fx.kind, EffectKind::Falling { crash: Some(restored), .. } if restored == crash)
         );
@@ -1660,7 +1704,8 @@ mod tests {
         assert_eq!(game.state.current_tick(), 14);
         assert!(game.state.aircraft_crashes().is_empty());
         assert_eq!(
-            game.fx
+            game.presentation
+                .fx
                 .iter()
                 .filter(|fx| matches!(fx.kind, EffectKind::Falling { crash: Some(_), .. }))
                 .count(),
@@ -1679,16 +1724,19 @@ mod tests {
                 .my_vision()
                 .visible(chassis::grid::TilePos::containing(at))
         );
-        game.fx_previous = PreviousEffects::capture(&game);
-        game.spawn_fx(&[Event::UnitDied {
-            unit: UnitId(999),
-            kind: UnitKind::Condor,
-            player: oxide_sim::PlayerId(1),
-            pos: at,
-            grounded: false,
-        }]);
-        assert!(game.fx.is_empty());
-        assert!(game.sounds_pending.is_empty());
+        game.presentation.fx_previous = PreviousEffects::capture(&game.presentation, &game.state);
+        game.presentation.spawn_fx(
+            &game.state,
+            &[Event::UnitDied {
+                unit: UnitId(999),
+                kind: UnitKind::Condor,
+                player: oxide_sim::PlayerId(1),
+                pos: at,
+                grounded: false,
+            }],
+        );
+        assert!(game.presentation.fx.is_empty());
+        assert!(game.presentation.sounds_pending.is_empty());
     }
 
     #[test]
@@ -1709,12 +1757,7 @@ mod tests {
             x: 11,
             y: 10,
         }];
-        let mut live = crate::game::Game::with_viewport(
-            scenario.clone(),
-            macroquad::prelude::vec2(1280.0, 800.0),
-        )
-        .unwrap();
-        let mut playback =
+        let mut live =
             crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
                 .unwrap();
         let mut wire = serde_json::to_value(&*live.state).unwrap();
@@ -1726,7 +1769,11 @@ mod tests {
             .unwrap();
         casualty["hp"] = serde_json::json!(1);
         live.state.0 = serde_json::from_value(wire).unwrap();
-        playback.state.0 = live.state.0.clone();
+        let mut playback = Presentation::new(
+            &live.state,
+            live.presentation.human,
+            Vec2::new(1280.0, 800.0),
+        );
         let mut reference = live.state.0.clone();
         let id = live
             .state
@@ -1736,18 +1783,19 @@ mod tests {
             .unwrap()
             .id;
         for _ in 0..40 {
+            playback.remember_previous_tick(&reference);
             let expected = reference.tick(&[]);
             let report = live.do_tick();
-            playback.playback_present(&reference, &expected.events, &expected.movement);
+            playback.observe_tick(&reference, &expected.events, &expected.movement);
             assert_eq!(live.state.hash(), reference.hash());
             if report.events.iter().any(|event| matches!(event, oxide_sim::Event::BuildingDestroyed { building, .. } if *building == id)) {
                 assert!(live.state.building(id).is_none());
-                for game in [&live, &playback] {
-                    assert!(game.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Collapse { body, seed, .. } if body.kind == BuildingKind::Bastion && seed == id.0)));
-                    assert!(!game.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Puff { .. })));
+                for presentation in [&live.presentation, &playback] {
+                    assert!(presentation.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Collapse { body, seed, .. } if body.kind == BuildingKind::Bastion && seed == id.0)));
+                    assert!(!presentation.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Puff { .. })));
                 }
                 live.update_fx(4.6);
-                assert!(!live.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Collapse { .. })));
+                assert!(!live.presentation.fx.iter().any(|fx| matches!(fx.kind, EffectKind::Collapse { .. })));
                 return;
             }
         }
@@ -1818,7 +1866,9 @@ mod tests {
                         SoundKind::Artillery
                     };
                     assert!(
-                        game.sounds_pending.contains(&(sound, Some(world_vec(at)))),
+                        game.presentation
+                            .sounds_pending
+                            .contains(&(sound, Some(world_vec(at)))),
                         "{kind:?}, {player:?}, visible={visible}"
                     );
                     assert_eq!(game.state.hash(), reference.hash());
@@ -1856,12 +1906,39 @@ mod tests {
                 }))
                 .unwrap();
                 let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
-                game.human = oxide_sim::PlayerId(viewer);
+                game.presentation.human = oxide_sim::PlayerId(viewer);
                 let tile = chassis::grid::TilePos::new(30, 20);
                 if viewer == 0 {
                     assert!(!game.my_vision().visible(tile));
                 }
                 let report = game.do_tick();
+                if viewer == 0 {
+                    assert!(game.presentation.alerts.is_empty());
+                } else if viewer == 2 && !collateral_charge {
+                    assert_eq!(
+                        game.presentation.alerts,
+                        vec![(world_vec(tile.center()), 0.0)]
+                    );
+                    assert!(
+                        game.presentation
+                            .sounds_pending
+                            .iter()
+                            .any(|(kind, _)| *kind == SoundKind::Alert)
+                    );
+                    let mut playback =
+                        Game::with_viewport(game.scenario.clone(), Vec2::new(1280.0, 800.0))
+                            .unwrap();
+                    playback.presentation.human = game.presentation.human;
+                    playback
+                        .presentation
+                        .remember_previous_tick(&playback.state);
+                    playback.presentation.observe_tick(
+                        &game.state,
+                        &report.events,
+                        &report.movement,
+                    );
+                    assert_eq!(playback.presentation.alerts, game.presentation.alerts);
+                }
                 let detonated: Vec<_> = report
                     .events
                     .iter()
@@ -1879,6 +1956,7 @@ mod tests {
                 )).count();
                 assert_eq!(other_losses, usize::from(collateral_charge));
                 let explosion_cues: Vec<_> = game
+                    .presentation
                     .sounds_pending
                     .iter()
                     .copied()
@@ -1940,31 +2018,35 @@ mod tests {
                 pos: at,
             },
         ] {
-            game.sounds_pending.clear();
-            game.spawn_fx(&[event]);
-            assert_eq!(game.sounds_pending.len(), 1);
-            assert!(game.sounds_pending[0].0.is_explosion());
-            assert_eq!(game.sounds_pending[0].1, Some(world_vec(at)));
+            game.presentation.sounds_pending.clear();
+            game.presentation.spawn_fx(&game.state, &[event]);
+            assert_eq!(game.presentation.sounds_pending.len(), 1);
+            assert!(game.presentation.sounds_pending[0].0.is_explosion());
+            assert_eq!(game.presentation.sounds_pending[0].1, Some(world_vec(at)));
             assert_eq!(game.state.hash(), hash);
-            assert!(game.toasts.is_empty());
+            assert!(game.presentation.toasts.is_empty());
             assert!(
                 !game
+                    .presentation
                     .fx
                     .iter()
                     .any(|effect| matches!(effect.kind, EffectKind::Collapse { .. }))
             );
         }
-        game.sounds_pending.clear();
-        game.spawn_fx(&[Event::AttackHit {
-            attacker: UnitId(999),
-            attacker_kind: UnitKind::Sentinel,
-            weapon: 0,
-            target: None,
-            attacker_pos: at,
-            target_pos: at,
-        }]);
+        game.presentation.sounds_pending.clear();
+        game.presentation.spawn_fx(
+            &game.state,
+            &[Event::AttackHit {
+                attacker: UnitId(999),
+                attacker_kind: UnitKind::Sentinel,
+                weapon: 0,
+                target: None,
+                attacker_pos: at,
+                target_pos: at,
+            }],
+        );
         assert!(
-            game.sounds_pending.is_empty(),
+            game.presentation.sounds_pending.is_empty(),
             "ordinary hidden firing remains silent"
         );
     }
@@ -1982,17 +2064,20 @@ mod tests {
             oxide_sim::ProjectileKind::Missile,
             oxide_sim::ProjectileKind::Shell,
         ] {
-            game.fx_previous.shells.push(oxide_sim::state::Shell {
-                kind,
-                shooter: Target::Unit(UnitId(0)),
-                player: oxide_sim::PlayerId(0),
-                launch: at,
-                impact: at,
-                arrival: 0,
-                damage: 1,
-                targets: oxide_sim::stats::DomainMask::GROUND,
-                splash: None,
-            });
+            game.presentation
+                .fx_previous
+                .shells
+                .push(oxide_sim::state::Shell {
+                    kind,
+                    shooter: Target::Unit(UnitId(0)),
+                    player: oxide_sim::PlayerId(0),
+                    launch: at,
+                    impact: at,
+                    arrival: 0,
+                    damage: 1,
+                    targets: oxide_sim::stats::DomainMask::GROUND,
+                    splash: None,
+                });
         }
         let event = oxide_sim::Event::ShellLanded {
             player: oxide_sim::PlayerId(0),
@@ -2000,8 +2085,10 @@ mod tests {
             targets: oxide_sim::stats::DomainMask::GROUND,
             splash: None,
         };
-        game.spawn_fx(&[event.clone(), event]);
+        game.presentation
+            .spawn_fx(&game.state, &[event.clone(), event]);
         let payloads: Vec<_> = game
+            .presentation
             .fx
             .iter()
             .filter_map(|fx| {
@@ -2019,7 +2106,7 @@ mod tests {
                 oxide_sim::ProjectileKind::Shell
             ]
         );
-        assert!(game.fx_previous.shells.is_empty());
+        assert!(game.presentation.fx_previous.shells.is_empty());
     }
 
     #[test]
@@ -2054,8 +2141,10 @@ mod tests {
                 queue: false,
             },
         }]);
-        game.playback_present(&state, &report.events, &report.movement);
-        assert!(game.state.building(BuildingId(2)).is_none());
+        game.presentation.remember_previous_tick(&game.state);
+        game.presentation
+            .observe_tick(&state, &report.events, &report.movement);
+        assert!(state.building(BuildingId(2)).is_none());
         assert!(report.events.iter().any(|event| matches!(
             event,
             Event::TurretFired {
@@ -2064,7 +2153,7 @@ mod tests {
                 ..
             }
         )));
-        assert!(game.fx.iter().any(|effect| matches!(
+        assert!(game.presentation.fx.iter().any(|effect| matches!(
             effect.kind,
             EffectKind::DirectShot {
                 style: ShotStyle::FlakBurst {
@@ -2263,20 +2352,21 @@ mod tests {
             oxide_sim::Event::UnitDied {
                 unit: attacker,
                 kind: UnitKind::Sapper,
-                player: game.human,
+                player: game.presentation.human,
                 pos: at,
                 grounded: true,
             },
         ];
 
-        game.spawn_fx(&events);
+        game.presentation.spawn_fx(&game.state, &events);
 
-        assert!(game.fx.iter().any(|effect| matches!(
+        assert!(game.presentation.fx.iter().any(|effect| matches!(
             effect.kind,
-            EffectKind::SapperDetonation { player, .. } if player == game.human
+            EffectKind::SapperDetonation { player, .. } if player == game.presentation.human
         )));
         assert!(
-            game.sounds_pending
+            game.presentation
+                .sounds_pending
                 .iter()
                 .any(|(sound, _)| *sound == SoundKind::DemolitionBoom)
         );
@@ -2310,21 +2400,22 @@ mod tests {
             oxide_sim::Event::UnitDied {
                 unit: victim,
                 kind: UnitKind::Sentinel,
-                player: game.human,
+                player: game.presentation.human,
                 pos: at,
                 grounded: true,
             },
         ];
 
-        game.spawn_fx(&events);
+        game.presentation.spawn_fx(&game.state, &events);
 
         assert!(
-            game.sounds_pending
+            game.presentation
+                .sounds_pending
                 .iter()
                 .any(|(sound, _)| *sound == SoundKind::DemolitionBoom),
             "the witnessed demolition must not become silent after its last observer dies"
         );
-        assert!(game.fx.iter().any(|effect| matches!(
+        assert!(game.presentation.fx.iter().any(|effect| matches!(
             effect.kind,
             EffectKind::SapperDetonation {
                 source_witnessed: false,
@@ -2346,7 +2437,7 @@ mod tests {
         assert!(game.state.result().is_some());
 
         let completed_tick = game.state.current_tick();
-        game.fx.push(Effect {
+        game.presentation.fx.push(Effect {
             kind: EffectKind::DirectShot {
                 style: ShotStyle::ForgeSpot,
                 from: Vec2::ZERO,
@@ -2357,7 +2448,7 @@ mod tests {
             age: 0.0,
         });
         game.update_fx(ShotStyle::ForgeSpot.life() + 0.01);
-        assert!(game.fx.is_empty());
+        assert!(game.presentation.fx.is_empty());
     }
 
     #[test]
@@ -2492,29 +2583,33 @@ mod tests {
     fn defense_mount_tracks_only_a_target_the_viewer_may_see() {
         let (mut game, building, _) = defense_tracking_game();
         let report = game.state.tick(&[]);
-        game.spawn_fx(&report.events);
+        game.presentation.spawn_fx(&game.state, &report.events);
         assert!(game.state.building(building).unwrap().cooldown > 0);
         let hostile = game
             .state
             .units()
             .iter()
             .find(|unit| {
-                game.state.hostile(game.human, unit.player)
+                game.state.hostile(game.presentation.human, unit.player)
                     && !game.my_vision().visible(unit.tile())
             })
             .expect("skirmish has a fogged hostile unit");
         assert!(!game.my_vision().visible(hostile.tile()));
         let target = Target::Unit(hostile.id);
-        game.aim_building_targets.insert(building.0, target);
-        game.aim_buildings.insert(building.0, (0.42, 0.0));
+        game.presentation
+            .aim_building_targets
+            .insert(building.0, target);
+        game.presentation
+            .aim_buildings
+            .insert(building.0, (0.42, 0.0));
         game.update_fx(crate::game::TICK_DT);
 
-        game.refresh_defense_aim();
-        assert_eq!(game.aim_buildings[&building.0].0, 0.42);
+        game.presentation.refresh_defense_aim(&game.state);
+        assert_eq!(game.presentation.aim_buildings[&building.0].0, 0.42);
 
-        game.overlay = true;
-        game.refresh_defense_aim();
-        assert_ne!(game.aim_buildings[&building.0].0, 0.42);
+        game.presentation.overlay = true;
+        game.presentation.refresh_defense_aim(&game.state);
+        assert_ne!(game.presentation.aim_buildings[&building.0].0, 0.42);
     }
 
     #[test]
@@ -2522,8 +2617,8 @@ mod tests {
         let (mut game, building, target) = defense_tracking_game();
         face_south(&mut game, target);
         let report = game.state.tick(&[]);
-        game.spawn_fx(&report.events);
-        let first_angle = game.aim_buildings[&building.0].0;
+        game.presentation.spawn_fx(&game.state, &report.events);
+        let first_angle = game.presentation.aim_buildings[&building.0].0;
         let first_pos = game.state.unit(target).unwrap().pos;
 
         game.update_fx(crate::game::TICK_DT);
@@ -2535,10 +2630,10 @@ mod tests {
                 queue: false,
             },
         }]);
-        game.spawn_fx(&report.events);
+        game.presentation.spawn_fx(&game.state, &report.events);
 
         assert_ne!(game.state.unit(target).unwrap().pos, first_pos);
-        assert_ne!(game.aim_buildings[&building.0].0, first_angle);
+        assert_ne!(game.presentation.aim_buildings[&building.0].0, first_angle);
         assert!(game.state.building(building).unwrap().cooldown > 0);
     }
 
@@ -2607,8 +2702,8 @@ mod tests {
         let current_angle = current.y.atan2(current.x) + std::f32::consts::FRAC_PI_2;
         assert!((expected_angle - current_angle).abs() > 1e-4);
 
-        game.spawn_fx(&report.events);
-        let angle = game.aim_buildings[&shooter.0].0;
+        game.presentation.spawn_fx(&game.state, &report.events);
+        let angle = game.presentation.aim_buildings[&shooter.0].0;
         assert!((angle - expected_angle).abs() < 1e-6);
     }
 
@@ -2624,56 +2719,70 @@ mod tests {
             x: chassis::fx::Fx::from_num(5),
             y: chassis::fx::Fx::from_num(5),
         };
-        game.spawn_fx(&[oxide_sim::Event::UnitDied {
-            unit: oxide_sim::UnitId(7),
-            kind: UnitKind::Sentinel,
-            player: oxide_sim::PlayerId(1),
-            pos: at,
-            grounded: true,
-        }]);
+        game.presentation.spawn_fx(
+            &game.state,
+            &[oxide_sim::Event::UnitDied {
+                unit: oxide_sim::UnitId(7),
+                kind: UnitKind::Sentinel,
+                player: oxide_sim::PlayerId(1),
+                pos: at,
+                grounded: true,
+            }],
+        );
         assert!(
-            game.fx
+            game.presentation
+                .fx
                 .iter()
                 .any(|e| matches!(e.kind, EffectKind::Debris { seed: 7, .. })),
             "a ground kill scatters shards seeded by the casualty"
         );
-        game.fx.clear();
-        game.spawn_fx(&[oxide_sim::Event::UnitDied {
-            unit: oxide_sim::UnitId(8),
-            kind: UnitKind::Buzzard,
-            player: oxide_sim::PlayerId(1),
-            pos: at,
-            grounded: false,
-        }]);
+        game.presentation.fx.clear();
+        game.presentation.spawn_fx(
+            &game.state,
+            &[oxide_sim::Event::UnitDied {
+                unit: oxide_sim::UnitId(8),
+                kind: UnitKind::Buzzard,
+                player: oxide_sim::PlayerId(1),
+                pos: at,
+                grounded: false,
+            }],
+        );
         assert!(
-            game.fx
+            game.presentation
+                .fx
                 .iter()
                 .any(|e| matches!(e.kind, EffectKind::Falling { .. })),
             "a flyer tells its death with the fall"
         );
         assert!(
             !game
+                .presentation
                 .fx
                 .iter()
                 .any(|e| matches!(e.kind, EffectKind::Debris { .. })),
             "no double story for one death"
         );
-        game.fx.clear();
-        game.spawn_fx(&[oxide_sim::Event::UnitDied {
-            unit: oxide_sim::UnitId(9),
-            kind: UnitKind::Condor,
-            player: oxide_sim::PlayerId(1),
-            pos: at,
-            grounded: true,
-        }]);
+        game.presentation.fx.clear();
+        game.presentation.spawn_fx(
+            &game.state,
+            &[oxide_sim::Event::UnitDied {
+                unit: oxide_sim::UnitId(9),
+                kind: UnitKind::Condor,
+                player: oxide_sim::PlayerId(1),
+                pos: at,
+                grounded: true,
+            }],
+        );
         assert!(
-            game.fx
+            game.presentation
+                .fx
                 .iter()
                 .any(|e| matches!(e.kind, EffectKind::Debris { seed: 9, .. })),
             "a parked airframe has no altitude to fall from"
         );
         assert!(
             !game
+                .presentation
                 .fx
                 .iter()
                 .any(|e| matches!(e.kind, EffectKind::Falling { .. })),

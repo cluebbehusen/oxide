@@ -55,17 +55,14 @@ pub(crate) enum AllegianceCue {
     Hostile,
 }
 
-pub(crate) fn allegiance_cue(
-    game: &crate::game::Game,
-    owner: oxide_sim::PlayerId,
-) -> AllegianceCue {
-    if owner == game.human {
+pub(crate) fn allegiance_cue(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> AllegianceCue {
+    if owner == game.presentation.human {
         return AllegianceCue::Mine;
     }
-    if !game.state.hostile(game.human, owner) {
+    if !game.state.hostile(game.presentation.human, owner) {
         return AllegianceCue::Ally;
     }
-    if game.state.player(owner).faction == game.state.player(game.human).faction {
+    if game.state.player(owner).faction == game.state.player(game.presentation.human).faction {
         return AllegianceCue::HostileTwin;
     }
     AllegianceCue::Hostile
@@ -93,7 +90,7 @@ pub(crate) fn allegiance_tint(cue: AllegianceCue) -> Option<Color> {
 /// The underlying silhouette, allegiance ring, and friend/foe family still
 /// carry meaning when hue cannot; the per-seat tint is an identity aid, not
 /// the only allegiance signal.
-pub(crate) fn seat_identity_color(game: &crate::game::Game, owner: oxide_sim::PlayerId) -> Color {
+pub(crate) fn seat_identity_color(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> Color {
     let cue = allegiance_cue(game, owner);
     if cue == AllegianceCue::Mine {
         return faction_accent(game.state.player(owner).faction);
@@ -173,11 +170,8 @@ pub(crate) fn seat_identity_color(game: &crate::game::Game, owner: oxide_sim::Pl
 
 /// The seat-aware sprite/minimap accent. Own machines keep their faction
 /// art; every other seat receives its stable ally- or enemy-family tint.
-pub(crate) fn seat_identity_tint(
-    game: &crate::game::Game,
-    owner: oxide_sim::PlayerId,
-) -> Option<Color> {
-    (owner != game.human).then(|| seat_identity_color(game, owner))
+pub(crate) fn seat_identity_tint(game: &Scene<'_>, owner: oxide_sim::PlayerId) -> Option<Color> {
+    (owner != game.presentation.human).then(|| seat_identity_color(game, owner))
 }
 
 /// How faded a memory draws after `age` seconds unseen: 0 fresh,
@@ -189,13 +183,10 @@ pub fn staleness_fade(age: f32) -> f32 {
 }
 
 /// Shared age of an honestly observed salvage tile in the presentation clock.
-pub(crate) fn resource_memory_opacity(
-    game: &crate::game::Game,
-    pos: chassis::grid::TilePos,
-) -> f32 {
-    let mut seen = game.last_seen.borrow_mut();
-    let now = game.fx_time();
-    if game.all_seeing() || game.my_vision().visible(pos) {
+pub(crate) fn resource_memory_opacity(game: &Scene<'_>, pos: chassis::grid::TilePos) -> f32 {
+    let mut seen = game.presentation.last_seen.borrow_mut();
+    let now = game.presentation.fx_time();
+    if game.presentation.all_seeing() || game.my_vision().visible(pos) {
         seen.insert((pos.x, pos.y), now);
         1.0
     } else {
@@ -222,7 +213,7 @@ pub use minimap::*;
 use panel_draw::*;
 use world::*;
 
-use crate::game::{EffectKind, Game};
+use crate::game::{EffectKind, Scene};
 use crate::input::InputState;
 use chassis::grid::TilePos;
 use macroquad::prelude::*;
@@ -605,19 +596,19 @@ fn view_height() -> f32 {
 }
 
 /// Draws one frame.
-pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
+pub fn draw(game: &crate::game::Scene<'_>, sprites: &Sprites, input: &InputState) {
     draw_with_performance(game, sprites, input, None);
 }
 
 pub(crate) fn draw_with_performance(
-    game: &Game,
+    game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
     performance: Option<&crate::performance::PerformanceView>,
 ) {
     clear_background(OUTSIDE);
     environment::draw_backdrop(game);
-    let alpha = game.render_alpha();
+    let alpha = game.presentation.render_alpha();
     draw_tiles(game, sprites);
     pits::draw_pits(game, sprites.quarry_dressing(0).is_some());
     crate::render::world::draw_extractor_frames(game, sprites);
@@ -634,9 +625,9 @@ pub(crate) fn draw_with_performance(
     draw_fx(game, sprites);
     // The debug overlay is deliberately omniscient; the spectator
     // stance (playback) skips the fog too but never the debug chrome.
-    if game.overlay {
+    if game.presentation.overlay {
         draw_overlay(game, alpha);
-    } else if !game.spectate {
+    } else if !game.presentation.spectate {
         draw_fog(game);
     }
     // Own-order acknowledgments, rally flags, and radar blips sit above
@@ -648,14 +639,14 @@ pub(crate) fn draw_with_performance(
     draw_breadcrumbs(game, input);
     // Deferred claims are the player's own intent, like breadcrumbs —
     // a spectator has no chair whose promises deserve footprints.
-    if !game.spectate {
+    if !game.presentation.spectate {
         draw_pending_founds(game, sprites);
     }
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_salvage_tooltip(game, input);
     draw_hud(game, sprites, input, performance);
-    if game.overlay {
+    if game.presentation.overlay {
         draw_overlay_info(game);
     }
     draw_minimap(game);
@@ -666,8 +657,8 @@ pub(crate) fn draw_with_performance(
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
 const FOG_EXPLORED: Color = color_u8!(13, 13, 17, 135);
 
-fn visible_tiles(game: &Game) -> (TilePos, TilePos) {
-    let (lo, hi) = game.camera.world_rect();
+fn visible_tiles(game: &crate::game::Scene<'_>) -> (TilePos, TilePos) {
+    let (lo, hi) = game.presentation.camera.world_rect();
     let min = TilePos::new((lo.x.floor() as i32).max(0), (lo.y.floor() as i32).max(0));
     let max = TilePos::new(
         (hi.x.ceil() as i32).min(game.state.map().width()),
@@ -761,38 +752,49 @@ pub(crate) fn air_presentation(kind: oxide_sim::UnitKind, zoom: f32) -> (Vec2, V
     }
 }
 
-fn tracked_mount_angle(game: &Game, unit: &oxide_sim::Unit, alpha: f32) -> Option<f32> {
-    let target = game.aim_unit_targets.get(&unit.id.0).copied().or_else(|| {
-        if unit.kind == oxide_sim::UnitKind::Sapper
-            && let oxide_sim::Order::Attack { target, .. } = unit.order
-        {
-            game.state
-                .attack_view(unit.player, target)
-                .and_then(|view| view.entity)
-        } else {
-            None
-        }
-    })?;
+fn tracked_mount_angle(
+    game: &crate::game::Scene<'_>,
+    unit: &oxide_sim::Unit,
+    alpha: f32,
+) -> Option<f32> {
+    let target = game
+        .presentation
+        .aim_unit_targets
+        .get(&unit.id.0)
+        .copied()
+        .or_else(|| {
+            if unit.kind == oxide_sim::UnitKind::Sapper
+                && let oxide_sim::Order::Attack { target, .. } = unit.order
+            {
+                game.state
+                    .attack_view(unit.player, target)
+                    .and_then(|view| view.entity)
+            } else {
+                None
+            }
+        })?;
     let position = match target {
         oxide_sim::Target::Unit(id) => {
             let target = game.state.unit(id)?;
-            if target.player != game.human
-                && !game.all_seeing()
+            if target.player != game.presentation.human
+                && !game.presentation.all_seeing()
                 && !game.my_vision().visible(target.tile())
             {
                 return None;
             }
-            game.draw_pos(target.id, target.pos, alpha)
+            game.presentation.draw_pos(target.id, target.pos, alpha)
         }
         oxide_sim::Target::Building(id) => {
             let target = game.state.building(id)?;
-            if !game.all_seeing()
+            if !game.presentation.all_seeing()
                 && (!target.tiles().any(|tile| game.my_vision().visible(tile))
-                    || !game.state.building_apparent(game.human, target))
+                    || !game
+                        .state
+                        .building_apparent(game.presentation.human, target))
             {
                 return None;
             }
-            let from = game.draw_pos(unit.id, unit.pos, alpha);
+            let from = game.presentation.draw_pos(unit.id, unit.pos, alpha);
             let (width, height) = target.stats().size;
             from.clamp(
                 vec2(target.anchor.x as f32, target.anchor.y as f32),
@@ -803,17 +805,22 @@ fn tracked_mount_angle(game: &Game, unit: &oxide_sim::Unit, alpha: f32) -> Optio
             )
         }
     };
-    let direction = position - game.draw_pos(unit.id, unit.pos, alpha);
+    let direction = position - game.presentation.draw_pos(unit.id, unit.pos, alpha);
     (direction.length_squared() > 1e-6)
         .then(|| direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2)
 }
 
-fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
-    let zoom = game.camera.zoom;
+fn draw_unit_pass(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    alpha: f32,
+    domain: oxide_sim::stats::Domain,
+) {
+    let zoom = game.presentation.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
     // Frustum cull with a margin covering the sprite, its shadow, rings,
     // and bars — off-camera machines cost nothing on grand maps.
-    let (view_lo, view_hi) = game.camera.world_rect();
+    let (view_lo, view_hi) = game.presentation.camera.world_rect();
     const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
         // The body's current layer, not its kind's: a parked airframe
@@ -825,7 +832,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             continue;
         }
         let faction = game.state.player(unit.player).faction;
-        let pos = game.draw_pos(unit.id, unit.pos, alpha);
+        let pos = game.presentation.draw_pos(unit.id, unit.pos, alpha);
         if pos.x < view_lo.x - CULL_MARGIN
             || pos.y < view_lo.y - CULL_MARGIN
             || pos.x > view_hi.x + CULL_MARGIN
@@ -833,7 +840,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         {
             continue;
         }
-        let mut screen = game.camera.to_screen(pos);
+        let mut screen = game.presentation.camera.to_screen(pos);
         if crate::strategic_markers::replaces_units(zoom) {
             continue;
         }
@@ -841,18 +848,19 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         let dest = zoom * draw_scale;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         let moving = game
+            .presentation
             .prev_pos
             .get(&unit.id.0)
             .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
-        let animation = game.animations.unit_state(
+        let animation = game.presentation.animations.unit_state(
             crate::presentation_animation::UnitAnimationFacts::capture(
-                &game.state,
+                game.state,
                 unit,
-                moving || game.chassis_turning(unit),
+                moving || game.presentation.chassis_turning(unit),
             ),
             crate::presentation_animation::AnimationClock::from_state(
-                &game.state,
-                game.tick_fraction(),
+                game.state,
+                game.presentation.tick_fraction(),
             ),
             crate::presentation_animation::AnimationOptions {
                 reduced_motion: reduced_motion(),
@@ -880,14 +888,19 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // then keeps that aim throughout its physical reload; real
         // locomotion resumes movement facing instead of sliding sideways.
         let rig = sprites.unit_rig(unit.kind);
-        let aim = game.aim_units.get(&unit.id.0).copied().map(|(angle, at)| {
-            let angle = if rig.is_some() && animation.attack.is_none() {
-                tracked_mount_angle(game, unit, alpha).unwrap_or(angle)
-            } else {
-                angle
-            };
-            (angle, at)
-        });
+        let aim = game
+            .presentation
+            .aim_units
+            .get(&unit.id.0)
+            .copied()
+            .map(|(angle, at)| {
+                let angle = if rig.is_some() && animation.attack.is_none() {
+                    tracked_mount_angle(game, unit, alpha).unwrap_or(angle)
+                } else {
+                    angle
+                };
+                (angle, at)
+            });
         let work_facing = unit_work_facing(unit.pos, animation.work);
         let contact_facing = animation
             .demolition_preparation
@@ -897,7 +910,8 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             || unit.kind.cruise_turn_rate() > 0
             || unit.kind.turret_turn_rate() > 0
         {
-            game.draw_heading(unit.id, unit.weapon_heading(), alpha)
+            game.presentation
+                .draw_heading(unit.id, unit.weapon_heading(), alpha)
         } else if crate::game::rotor_hull_turn_rate(unit.kind).is_some() {
             game.draw_hull_heading(unit.id, alpha)
         } else if let Some(angle) = contact_facing {
@@ -907,12 +921,17 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 Some((angle, at))
                     if animation.attack.is_some()
                         || (rig.is_some() || !moving)
-                            && (preparing || game.fx_time() - at < 1.2) =>
+                            && (preparing || game.presentation.fx_time() - at < 1.2) =>
                 {
                     angle
                 }
-                _ => work_facing
-                    .unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
+                _ => work_facing.unwrap_or_else(|| {
+                    game.presentation
+                        .facing
+                        .get(&unit.id.0)
+                        .copied()
+                        .unwrap_or(0.0)
+                }),
             }
         };
         if airborne {
@@ -932,8 +951,8 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             screen.y -= body_lift;
         }
         let body = screen;
-        if game.selection.units.contains(&unit.id) {
-            if unit.player == game.human {
+        if game.presentation.selection.units.contains(&unit.id) {
+            if unit.player == game.presentation.human {
                 draw_circle_lines(
                     screen.x,
                     screen.y,
@@ -1057,7 +1076,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             params.clone(),
             zoom,
         );
-        if let Some(motion) = game.track_motion.get(&unit.id.0) {
+        if let Some(motion) = game.presentation.track_motion.get(&unit.id.0) {
             tracks::draw(
                 unit.kind,
                 body,
@@ -1158,8 +1177,9 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
 }
 
 /// A little pennant marking a selected building's rally tile.
-fn draw_rally_flag(game: &Game, rally: TilePos, zoom: f32) {
+fn draw_rally_flag(game: &crate::game::Scene<'_>, rally: TilePos, zoom: f32) {
     let base = game
+        .presentation
         .camera
         .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
     let pole_top = base - vec2(0.0, zoom * 0.7);
@@ -1311,7 +1331,7 @@ mod tests {
             .state
             .units()
             .iter()
-            .find(|unit| unit.player == game.human)
+            .find(|unit| unit.player == game.presentation.human)
             .unwrap()
             .clone();
         let own = game.home_foundry().unwrap().id;
@@ -1319,21 +1339,22 @@ mod tests {
             .state
             .buildings()
             .iter()
-            .find(|building| building.player != game.human)
+            .find(|building| building.player != game.presentation.human)
             .unwrap();
         assert!(!enemy.tiles().any(|tile| game.my_vision().visible(tile)));
         let hidden = enemy.id;
-        game.aim_unit_targets
+        game.presentation
+            .aim_unit_targets
             .insert(unit.id.0, oxide_sim::Target::Building(own));
-        game.prev_pos.insert(
+        game.presentation.prev_pos.insert(
             unit.id.0,
             vec2(
                 unit.pos.x.to_num::<f32>() + 1.0,
                 unit.pos.y.to_num::<f32>() + 1.0,
             ),
         );
-        let before = super::tracked_mount_angle(&game, &unit, 0.0).unwrap();
-        let after = super::tracked_mount_angle(&game, &unit, 1.0).unwrap();
+        let before = super::tracked_mount_angle(&game.view(), &unit, 0.0).unwrap();
+        let after = super::tracked_mount_angle(&game.view(), &unit, 1.0).unwrap();
         assert!((before - after).abs() > 0.01);
         let hit = game.state.building(own).unwrap().closest_point_to(unit.pos);
         let direction = hit - unit.pos;
@@ -1346,15 +1367,16 @@ mod tests {
             (after - expected).abs() < 1e-5,
             "mount aims at the same near edge as combat"
         );
-        game.aim_unit_targets
+        game.presentation
+            .aim_unit_targets
             .insert(unit.id.0, oxide_sim::Target::Building(hidden));
-        assert_eq!(super::tracked_mount_angle(&game, &unit, 1.0), None);
-        game.aim_unit_targets.insert(
+        assert_eq!(super::tracked_mount_angle(&game.view(), &unit, 1.0), None);
+        game.presentation.aim_unit_targets.insert(
             unit.id.0,
             oxide_sim::Target::Unit(oxide_sim::UnitId(u32::MAX)),
         );
-        assert_eq!(super::tracked_mount_angle(&game, &unit, 1.0), None);
-        game.aim_unit_targets.clear();
+        assert_eq!(super::tracked_mount_angle(&game.view(), &unit, 1.0), None);
+        game.presentation.aim_unit_targets.clear();
         let mut sapper = unit;
         sapper.kind = oxide_sim::UnitKind::Sapper;
         let known = game
@@ -1374,13 +1396,16 @@ mod tests {
             target: oxide_sim::Target::Building(known.id).into(),
             resume: None,
         };
-        assert!((super::tracked_mount_angle(&game, &sapper, 1.0).unwrap() - expected).abs() < 1e-5);
+        assert!(
+            (super::tracked_mount_angle(&game.view(), &sapper, 1.0).unwrap() - expected).abs()
+                < 1e-5
+        );
         sapper.order = oxide_sim::Order::Attack {
             pursue: false,
             target: oxide_sim::Target::Building(hidden).into(),
             resume: None,
         };
-        assert_eq!(super::tracked_mount_angle(&game, &sapper, 1.0), None);
+        assert_eq!(super::tracked_mount_angle(&game.view(), &sapper, 1.0), None);
     }
 
     #[test]
@@ -1548,7 +1573,7 @@ mod tests {
             crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
                 .expect("compass grand builds");
         use super::AllegianceCue::*;
-        let cue = |seat: u8| super::allegiance_cue(&game, oxide_sim::PlayerId(seat));
+        let cue = |seat: u8| super::allegiance_cue(&game.view(), oxide_sim::PlayerId(seat));
         assert_eq!(cue(0), Mine);
         assert_eq!(cue(1), Ally, "west Cupric teammate");
         assert_eq!(cue(2), Ally, "west Ferrous teammate");
@@ -1596,7 +1621,7 @@ mod tests {
                 .expect("compass grand builds");
         super::set_colorblind(false);
         let key = |seat: u8| {
-            let color = super::seat_identity_color(&game, oxide_sim::PlayerId(seat));
+            let color = super::seat_identity_color(&game.view(), oxide_sim::PlayerId(seat));
             (
                 (color.r * 255.0).round() as u8,
                 (color.g * 255.0).round() as u8,
@@ -1637,7 +1662,7 @@ mod tests {
         super::set_colorblind(false);
         let colors: Vec<_> = (1..8)
             .map(|seat| {
-                let color = super::seat_identity_color(&game, oxide_sim::PlayerId(seat));
+                let color = super::seat_identity_color(&game.view(), oxide_sim::PlayerId(seat));
                 (
                     (color.r * 255.0).round() as u8,
                     (color.g * 255.0).round() as u8,

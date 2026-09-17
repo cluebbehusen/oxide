@@ -57,7 +57,7 @@ pub(crate) fn straight_in(
     length > Fx::ZERO
         && sweep <= 64
         && room
-        && flight::escapable(map, goal, flight::heading_of(approach), radius)
+        && flight::escapable(map, goal, chassis::compass::heading_of(approach), radius)
         && !chassis::path::line_blocked(pos, goal, |t| sky_open(state, t))
 }
 
@@ -196,7 +196,7 @@ pub(crate) fn run_in_route(
             if flight::escapable(
                 map,
                 goal - along * accept,
-                flight::heading_of(along),
+                chassis::compass::heading_of(along),
                 radius,
             ) {
                 return route_for_position(state, kind, pos, target);
@@ -217,7 +217,7 @@ pub(crate) fn run_in_route(
         // An attack pass reaches its initial point on whatever heading the
         // leg gives it; a landing lines up on the run-in bearing there.
         let arrival_heading = match mode {
-            RunIn::Attack => flight::heading_of(leg),
+            RunIn::Attack => chassis::compass::heading_of(leg),
             RunIn::Landing => run_in,
         };
         if !flight::escapable(map, point.center(), arrival_heading, radius) {
@@ -229,10 +229,11 @@ pub(crate) fn run_in_route(
         // must come about first.
         let lining_up = match mode {
             RunIn::Attack => 0,
-            RunIn::Landing => {
-                flight::turn_to(flight::heading_of(leg), chassis::compass::dir(run_in))
-                    .map_or(0, |(_, sweep)| sweep)
-            }
+            RunIn::Landing => flight::turn_to(
+                chassis::compass::heading_of(leg),
+                chassis::compass::dir(run_in),
+            )
+            .map_or(0, |(_, sweep)| sweep),
         };
         let key = (
             turn + lining_up,
@@ -347,7 +348,8 @@ pub(crate) fn nearest_landable(
                     {
                         continue;
                     }
-                    let bearing = flight::heading_of(tile.center() - pos).wrapping_sub(heading);
+                    let bearing =
+                        chassis::compass::heading_of(tile.center() - pos).wrapping_sub(heading);
                     let key = (bearing.min(bearing.wrapping_neg()), bearing, tile.y, tile.x);
                     if best.as_ref().is_none_or(|(held, _)| key < *held) {
                         best = Some((key, tile));

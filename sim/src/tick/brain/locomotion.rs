@@ -192,7 +192,7 @@ pub(super) fn land(
             // radii ahead of its own projection, which settles it onto the
             // line from whatever heading it reached the point on, then
             // walks the carrot down to the tile itself.
-            let bearing = flight::heading_of(center - path.waypoints[len - 2].center());
+            let bearing = chassis::compass::heading_of(center - path.waypoints[len - 2].center());
             let v = chassis::compass::dir(bearing);
             let d = center - pos;
             let ahead = v.x * d.x + v.y * d.y;
@@ -275,7 +275,7 @@ pub(super) fn attack_move(
     if land_at_destination(state, index, id, goal) {
         return;
     }
-    walk(state, id, goal, events);
+    walk(state, index, id, goal, events);
 }
 
 /// A flier's ground destination is a landing. Once the last step of its
@@ -327,7 +327,13 @@ pub(super) fn land_at_destination(
 /// exists. A unit close to the goal that bumps into an already-settled
 /// arrival also counts as arrived — the whole group parks instead of
 /// churning around the click point forever.
-pub(super) fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
+pub(super) fn walk(
+    state: &mut State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+    goal: TilePos,
+    events: &mut Vec<Event>,
+) {
     let unit = state.unit(id).expect("caller checked");
     let tile = unit.tile();
     // A bounded-turn flier cannot promise an exact tile center — the
@@ -336,7 +342,7 @@ pub(super) fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Ve
         let accept = unit.kind.stats().turn_acceptance();
         unit.pos.dist_sq(goal.center()) <= accept * accept
     };
-    if tile == goal || arced_in || touching_settled_arrival(state, id, goal) {
+    if tile == goal || arced_in || touching_settled_arrival(state, index, id, goal) {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
@@ -372,7 +378,12 @@ pub(super) fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Ve
 /// Whether this near-goal unit is in contact with a settled (idle,
 /// pathless) unit that itself sits near the same goal — the arrival wave
 /// propagates outward from the first unit to park.
-fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
+fn touching_settled_arrival(
+    state: &State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+    goal: TilePos,
+) -> bool {
     let unit = state.unit(id).expect("caller checked");
     let near_sq = crate::stats::ARRIVAL_NEAR * crate::stats::ARRIVAL_NEAR;
     let goal_center = goal.center();
@@ -384,15 +395,23 @@ fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
     let contact_slack = chassis::fx::Fx::lit("0.05");
     // Contact only means anything between bodies that collide: a flyer
     // hovering over a parked crowd is not "touching" it.
-    state.units.iter().any(|other| {
-        other.id != id
-            && other.hp > 0
-            && other.domain() == unit.domain()
-            && other.path.is_none()
-            && other.drive_speed == chassis::fx::Fx::ZERO
-            && other.order == Order::Idle
-            && other.pos.dist_sq(goal_center) <= near_sq
-            && unit.pos.dist(other.pos) <= my_radius + other.kind.stats().radius + contact_slack
+    let reach = crate::stats::ARRIVAL_NEAR.to_num::<i32>() + 1;
+    (goal.y - reach..=goal.y + reach).any(|y| {
+        index
+            .row_span(y, goal.x - reach, goal.x + reach)
+            .iter()
+            .any(|&(_, slot)| {
+                let other = &state.units[slot];
+                other.id != id
+                    && other.hp > 0
+                    && other.domain() == unit.domain()
+                    && other.path.is_none()
+                    && other.drive_speed == chassis::fx::Fx::ZERO
+                    && other.order == Order::Idle
+                    && other.pos.dist_sq(goal_center) <= near_sq
+                    && unit.pos.dist(other.pos)
+                        <= my_radius + other.kind.stats().radius + contact_slack
+            })
     })
 }
 
@@ -473,6 +492,73 @@ mod tests {
     use crate::stats::{AUTO_LAND_IDLE_TICKS, AUTO_LAND_RETRY_TICKS};
 
     #[test]
+    fn indexed_arrival_matches_live_neighbors_and_domains() {
+        use crate::{Order, PlayerId, Scenario, UnitKind};
+        use chassis::fx::{Fx, Vec2Fx};
+        use chassis::grid::TilePos;
+        let mut state = Scenario::skirmish().build().unwrap();
+        state.units.clear();
+        let goal = TilePos::new(15, 12);
+        let mover = state.spawn_unit(PlayerId(0), UnitKind::Sentinel, goal.center());
+        for y in -4..=4 {
+            for x in -4..=4 {
+                state.spawn_unit(
+                    PlayerId(0),
+                    if x % 2 == 0 {
+                        UnitKind::Sentinel
+                    } else {
+                        UnitKind::Condor
+                    },
+                    goal.center() + Vec2Fx::new(Fx::from_num(x), Fx::from_num(y)),
+                );
+            }
+        }
+        let mut index = super::super::super::spatial::UnitIndex::new();
+        for offset in -12..=12 {
+            state.unit_mut(mover).unwrap().pos =
+                goal.center() + Vec2Fx::new(Fx::from_num(offset) / 4, Fx::lit("0.49"));
+            index.rebuild(&state.units);
+            // These facts can change during the brain pass without invalidating
+            // the position index. Queries must still read them from the world.
+            for phase in 0..4 {
+                for (slot, unit) in state.units.iter_mut().enumerate().skip(1) {
+                    unit.landed = phase % 2 == 0 && unit.kind == UnitKind::Condor;
+                    unit.order = if (slot + phase) % 3 == 0 {
+                        Order::Move { goal }
+                    } else {
+                        Order::Idle
+                    };
+                    unit.drive_speed = if (slot + phase) % 5 == 0 {
+                        Fx::ONE
+                    } else {
+                        Fx::ZERO
+                    };
+                }
+                let unit = state.unit(mover).unwrap();
+                let near_sq = crate::stats::ARRIVAL_NEAR * crate::stats::ARRIVAL_NEAR;
+                let expected = unit.pos.dist_sq(goal.center()) <= near_sq
+                    && state.units.iter().any(|other| {
+                        other.id != mover
+                            && other.hp > 0
+                            && other.domain() == unit.domain()
+                            && other.path.is_none()
+                            && other.drive_speed == Fx::ZERO
+                            && other.order == Order::Idle
+                            && other.pos.dist_sq(goal.center()) <= near_sq
+                            && unit.pos.dist(other.pos)
+                                <= unit.kind.stats().radius
+                                    + other.kind.stats().radius
+                                    + Fx::lit("0.05")
+                    });
+                assert_eq!(
+                    super::touching_settled_arrival(&state, &index, mover, goal),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn coasting_arrival_does_not_complete_a_neighbor_order() {
         use super::{touching_settled_arrival, walk};
         use crate::state::{Order, PathFollow};
@@ -499,17 +585,19 @@ mod tests {
         let follower = state.units[1].id;
         let mut events = Vec::new();
 
-        walk(&mut state, leader, goal, &mut events);
+        let mut index = super::super::super::spatial::UnitIndex::new();
+        index.rebuild(&state.units);
+        walk(&mut state, &index, leader, goal, &mut events);
         assert!(state.units[0].path.is_none());
         assert!(state.units[0].drive_speed > Fx::ZERO);
         assert_ne!(state.units[1].tile(), goal);
-        assert!(!touching_settled_arrival(&state, follower, goal));
-        walk(&mut state, follower, goal, &mut events);
+        assert!(!touching_settled_arrival(&state, &index, follower, goal));
+        walk(&mut state, &index, follower, goal, &mut events);
         assert_eq!(state.units[1].order, Order::Move { goal });
 
         state.units[0].drive_speed = Fx::ZERO;
-        assert!(touching_settled_arrival(&state, follower, goal));
-        walk(&mut state, follower, goal, &mut events);
+        assert!(touching_settled_arrival(&state, &index, follower, goal));
+        walk(&mut state, &index, follower, goal, &mut events);
         assert_eq!(state.units[1].order, Order::Idle);
     }
 

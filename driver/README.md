@@ -87,6 +87,14 @@ evaluation run because reconstructing policy reasoning later from a replay may
 use different controller code. It is not replay input, and enabling it does not
 change the compact row, command stream, final hash, or replay payload.
 
+`bot-eval --jobs N` bounds concurrent matches (default four, capped by available
+CPUs and leg count). Multiple match workers disable nested bot-seat parallelism;
+`--jobs 1` runs legs serially with ordinary seat scheduling. Workers stage each
+completed replay and stream trace records to private files. Completed payloads
+are not accumulated in memory. Rows and traces merge in input-plan order before
+the whole invocation publishes. This improves evaluation throughput, not the
+latency of an individual simulation tick.
+
 Each `bot-eval` row reports rejected commands and stalled orders by reason. Its
 per-unit stall breakdown distinguishes one persistently blocked order from a
 controller-wide failure and points replay inspection at the exact unit. When one

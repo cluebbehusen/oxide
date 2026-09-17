@@ -86,37 +86,33 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         recon_paid_exclusions: &mut Vec<(crate::ids::BuildingId, UnitKind, usize)>,
         support_snapshot: &SupportWorkSnapshot,
     ) -> RetainedPreparation {
-        if let Some(planner) = self.participants.raids.as_mut() {
-            planner.reconcile_procurement_routes(
-                self.context.observation,
-                Some(self.context.public_map),
-                Some(self.context.orientation),
-            );
-            recon_paid_exclusions.extend(
-                planner
-                    .paid_claims()
-                    .iter()
-                    .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
-            );
-            recon_paid_exclusions.sort_unstable();
-            recon_paid_exclusions.dedup();
-        }
+        self.participants.raids.reconcile_procurement_routes(
+            self.context.observation,
+            Some(self.context.public_map),
+            Some(self.context.orientation),
+        );
+        recon_paid_exclusions.extend(
+            self.participants
+                .raids
+                .paid_claims()
+                .iter()
+                .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
+        );
+        recon_paid_exclusions.sort_unstable();
+        recon_paid_exclusions.dedup();
+
         let mut claims = snapshot_claims(self.context, self.participants);
         let mut obligations = self.collect_legacy_obligations(&claims, resources);
         self.prepare_standing_saving(&claims, &mut obligations);
         if obligations.invalid_active_connected {
             self.participants
                 .strategy
-                .as_mut()
-                .expect("an invalid active connected obligation belongs to its planner")
                 .recover_unfundable_active_connected(self.context.observation.tick);
             obligations.active_connected = None;
         }
         if obligations.invalid_active_lift {
             self.participants
                 .lifts
-                .as_mut()
-                .expect("an invalid active Lift obligation belongs to its planner")
                 .recover_invalid_production(self.context.observation.tick);
             obligations.active_lift = None;
         }
@@ -174,13 +170,9 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let island_admitted_at = self
             .participants
             .strategy
-            .as_ref()
-            .filter(|planner| {
-                planner
-                    .air_operation()
-                    .is_some_and(|operation| operation.assault_admitted)
-            })
-            .and_then(StrategicPlanner::air_admitted_at);
+            .air_operation()
+            .filter(|operation| operation.assault_admitted)
+            .and_then(|_| self.participants.strategy.air_admitted_at());
         let island_precedes_foundry = island_admitted_at.is_some_and(|accepted_at| {
             self.participants
                 .policy
@@ -213,14 +205,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                         self.advanced.lift_unavailable.sort_unstable();
                         self.advanced.lift_unavailable.dedup();
                         self.advanced.initial_lift_support = lift_air_support(
-                            self.participants
-                                .strategy
-                                .as_ref()
-                                .and_then(StrategicPlanner::air_operation),
-                            self.participants
-                                .strategy
-                                .as_ref()
-                                .and_then(StrategicPlanner::terminal_outcome),
+                            self.participants.strategy.air_operation(),
+                            self.participants.strategy.terminal_outcome(),
                         );
                     }
                 }
@@ -244,10 +230,13 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             }
         }
         let mut saved = saved.expect("retained preparation visits the Foundry exactly once");
-        if let Some(planner) = self.participants.strategy.as_mut() {
+        {
             // Active revision proposals carry the exact planner snapshot they
             // revise, so settle completed queue ownership before deriving one.
-            let _ = planner.issued_connected_production_assignments(self.context.observation);
+            let _ = self
+                .participants
+                .strategy
+                .issued_connected_production_assignments(self.context.observation);
         }
         let active_revision = self.prepare_active_connected_revision(
             &claims,
@@ -350,9 +339,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             &self.advanced.lift_unavailable,
         );
         let mut obligations = Vec::new();
-        if let Some(planner) = self.participants.raids.as_ref()
-            && !planner.paid_claims().is_empty()
-        {
+        let planner = &*self.participants.raids;
+        if !planner.paid_claims().is_empty() {
             obligations.push(imported_obligation(
                 ObligationClass::PersistentPlan,
                 planner
@@ -464,11 +452,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     decision: &self.advanced.team_decision,
                     protect_unspent_current_scrap: true,
                     prior_producer_intents: &[],
-                    retained_units: self
-                        .participants
-                        .team
-                        .as_ref()
-                        .map_or_else(Vec::new, TeamReliefPlanner::core_reservations),
+                    retained_units: self.participants.team.core_reservations(),
                     production_deadline: connected_preparation_horizon()
                         .saturating_add(self.context.observation.tick),
                 },
@@ -489,11 +473,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     decision: &self.advanced.raid_decision,
                     protect_unspent_current_scrap: true,
                     prior_producer_intents: &self.advanced.team_decision.intents,
-                    retained_units: self
-                        .participants
-                        .raids
-                        .as_ref()
-                        .map_or_else(Vec::new, |planner| planner.reservations().to_vec()),
+                    retained_units: self.participants.raids.reservations().to_vec(),
                     production_deadline: connected_preparation_horizon()
                         .saturating_add(self.context.observation.tick),
                 },
@@ -503,13 +483,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let mut active_connected = self
             .participants
             .strategy
-            .as_ref()
-            .and_then(|planner| planner.active_connected_obligation(self.context.observation));
-        let mut active_lift = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::active_production_obligation);
+            .active_connected_obligation(self.context.observation);
+        let mut active_lift = self.participants.lifts.active_production_obligation();
         let mut invalid_active_connected = false;
         let mut invalid_active_lift = false;
         let mut connected_import = match active_connected
@@ -608,20 +583,15 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             );
             None
         } else {
-            self.participants
-                .strategy
-                .as_ref()
-                .and_then(StrategicPlanner::air_operation)
-                .map(|operation| {
-                    (
-                        self.participants
-                            .strategy
-                            .as_ref()
-                            .and_then(StrategicPlanner::air_admitted_at)
-                            .unwrap_or(self.context.observation.tick),
-                        prior_planner_claims(&[], Some(operation), &[], &[], None),
-                    )
-                })
+            self.participants.strategy.air_operation().map(|operation| {
+                (
+                    self.participants
+                        .strategy
+                        .air_admitted_at()
+                        .unwrap_or(self.context.observation.tick),
+                    prior_planner_claims(&[], Some(operation), &[], &[], None),
+                )
+            })
         };
 
         if active_lift.is_some() {
@@ -826,20 +796,15 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 .participants
                 .policy
                 .operation_precedes_foundry_saving(self.advanced.lift_started_at);
-        let lift_deadline = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-            .map_or_else(
-                || {
-                    self.context
-                        .observation
-                        .tick
-                        .saturating_add(connected_preparation_horizon())
-                },
-                |operation| operation.deadline,
-            );
+        let lift_deadline = self.participants.lifts.operation().map_or_else(
+            || {
+                self.context
+                    .observation
+                    .tick
+                    .saturating_add(connected_preparation_horizon())
+            },
+            |operation| operation.deadline,
+        );
 
         let saved_plan_reserve_already_imported = if claims.opening_core.ready {
             opening_bootstrap
@@ -865,37 +830,41 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         if !allocation_possible || !claims.opening_core.ready {
             return 0;
         }
-        let Some(target) = self.participants.strategy.as_ref().and_then(|planner| {
-            planner.prospective_recon_target(StrategicThinkContext::new(
-                self.context.profile,
-                self.context.tuning,
-                self.context.observation,
-                self.context.intelligence,
-                self.context.home,
-                StrategicCoordination {
-                    planning: Some(&self.participants.policy.planning),
-                    enlisted: &claims.planner_claims,
-                    lift_support: self.context.lift_support,
-                    allow_new_operation: true,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
-                    public_map: Some(self.context.public_map),
-                    orientation: self.context.orientation,
-                },
-            ))
-        }) else {
+        let Some(target) =
+            self.participants
+                .strategy
+                .prospective_recon_target(StrategicThinkContext::new(
+                    self.context.profile,
+                    self.context.tuning,
+                    self.context.observation,
+                    self.context.intelligence,
+                    self.context.home,
+                    StrategicCoordination {
+                        planning: Some(&self.participants.policy.planning),
+                        enlisted: &claims.planner_claims,
+                        lift_support: self.context.lift_support,
+                        allow_new_operation: true,
+                        protected_current_scrap: 0,
+                        protected_forecast_scrap: 0,
+                        public_map: Some(self.context.public_map),
+                        orientation: self.context.orientation,
+                    },
+                ))
+        else {
             return 0;
         };
-        self.participants.lifts.as_ref().map_or(0, |planner| {
-            planner.prospective_first_carrier_commitment(
-                self.context.observation,
-                self.context.home,
-                &self.advanced.lift_unavailable,
-                &claims.strategic_core_exclusions,
-                u64::from(self.context.dials.minimum_core_equivalents),
-                target,
-            )
-        })
+        {
+            self.participants
+                .lifts
+                .prospective_first_carrier_commitment(
+                    self.context.observation,
+                    self.context.home,
+                    &self.advanced.lift_unavailable,
+                    &claims.strategic_core_exclusions,
+                    u64::from(self.context.dials.minimum_core_equivalents),
+                    target,
+                )
+        }
     }
 
     pub(super) fn advance_active_lift(
@@ -948,8 +917,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         air_lift.lift_decision = self
             .participants
             .lifts
-            .as_mut()
-            .expect("an active lift planner exists")
             .think_with_admission_and_producer_lanes(
                 &projected_observation,
                 self.context.home,
@@ -968,8 +935,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let retained_lift_units = self
             .participants
             .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
+            .operation()
             .map_or_else(Vec::new, |operation| {
                 observable_lift_operation_reservations(operation, self.context.observation)
             });
@@ -993,12 +959,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 Err(error),
             ),
         }
-        let future_context = self
-            .participants
-            .lifts
-            .as_ref()
-            .and_then(LiftPlanner::operation)
-            .map(|operation| ActiveLiftFutureProductionContext {
+        let future_context = self.participants.lifts.operation().map(|operation| {
+            ActiveLiftFutureProductionContext {
                 resources: &obligations.resources,
                 observation: self.context.observation,
                 operation,
@@ -1007,7 +969,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 lift_decision: &air_lift.lift_decision,
                 cadence: self.context.dials.cadence,
                 accepted_at: self.advanced.lift_started_at,
-            });
+            }
+        });
         // The operation's desired carrier count remains a tactical target, not
         // debt the economy has already incurred. Preserve only the unpaid
         // prefix that the shared allocator can actually fund and schedule
@@ -1065,18 +1028,13 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     protect_unspent_current_scrap: !future_lift_claimed,
                     prior_producer_intents: &preceding_producer_intents,
                     retained_units: retained_lift_units,
-                    production_deadline: self
-                        .participants
-                        .lifts
-                        .as_ref()
-                        .and_then(LiftPlanner::operation)
-                        .map_or_else(
-                            || {
-                                connected_preparation_horizon()
-                                    .saturating_add(self.context.observation.tick)
-                            },
-                            |operation| operation.deadline,
-                        ),
+                    production_deadline: self.participants.lifts.operation().map_or_else(
+                        || {
+                            connected_preparation_horizon()
+                                .saturating_add(self.context.observation.tick)
+                        },
+                        |operation| operation.deadline,
+                    ),
                 },
             ),
         );
@@ -1227,8 +1185,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         }
         self.participants
             .lifts
-            .as_mut()
-            .expect("retained Lift production has a planner")
             .recover_invalid_production(self.context.observation.tick);
         obligations
             .obligations
@@ -1245,19 +1201,10 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         if obligations.coordinator_failure.is_some() {
             return;
         }
-        if !self
-            .participants
-            .strategy
-            .as_ref()
-            .is_some_and(|planner| planner.has_active_island_operation())
-        {
+        if !{ self.participants.strategy.has_active_island_operation() } {
             return;
         }
-        let accepted_at = self
-            .participants
-            .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_admitted_at);
+        let accepted_at = self.participants.strategy.air_admitted_at();
         let protected_current_scrap =
             current_reserve_at(&obligations.obligations, self.context.observation.tick);
         let production_deadline = self
@@ -1281,29 +1228,27 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             );
             return;
         };
-        let Some(result) = self.participants.strategy.as_mut().and_then(|planner| {
-            planner.stage_active_island(
-                StrategicThinkContext::new(
-                    self.context.profile,
-                    self.context.tuning,
-                    self.context.observation,
-                    self.context.intelligence,
-                    self.context.home,
-                    StrategicCoordination {
-                        planning: Some(&self.participants.policy.planning),
-                        enlisted: &claims.planner_claims,
-                        lift_support: self.context.lift_support,
-                        allow_new_operation: claims.opening_core.ready,
-                        protected_current_scrap,
-                        protected_forecast_scrap,
-                        public_map: Some(self.context.public_map),
-                        orientation: self.context.orientation,
-                    },
-                )
-                .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations)
-                .with_paid_exclusions(recon_paid_exclusions),
+        let Some(result) = self.participants.strategy.stage_active_island(
+            StrategicThinkContext::new(
+                self.context.profile,
+                self.context.tuning,
+                self.context.observation,
+                self.context.intelligence,
+                self.context.home,
+                StrategicCoordination {
+                    planning: Some(&self.participants.policy.planning),
+                    enlisted: &claims.planner_claims,
+                    lift_support: self.context.lift_support,
+                    allow_new_operation: claims.opening_core.ready,
+                    protected_current_scrap,
+                    protected_forecast_scrap,
+                    public_map: Some(self.context.public_map),
+                    orientation: self.context.orientation,
+                },
             )
-        }) else {
+            .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations)
+            .with_paid_exclusions(recon_paid_exclusions),
+        ) else {
             return;
         };
         let accepted_at = accepted_at.expect("a staged island operation has an admission tick");
@@ -1341,8 +1286,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let deadline = self
             .participants
             .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::connected_package_diagnostics)
+            .connected_package_diagnostics()
             .map(|diagnostics| diagnostics.preparation_deadline)
             .unwrap_or_else(|| {
                 self.context
@@ -1350,16 +1294,15 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     .tick
                     .saturating_add(connected_preparation_horizon())
             });
-        let connected_precedes_foundry = self
-            .participants
-            .strategy
-            .as_ref()
-            .and_then(StrategicPlanner::air_admitted_at)
-            .is_some_and(|accepted_at| {
-                self.participants
-                    .policy
-                    .operation_precedes_foundry_saving(accepted_at)
-            });
+        let connected_precedes_foundry =
+            self.participants
+                .strategy
+                .air_admitted_at()
+                .is_some_and(|accepted_at| {
+                    self.participants
+                        .policy
+                        .operation_precedes_foundry_saving(accepted_at)
+                });
         let other_obligations = obligations
             .obligations
             .iter()
@@ -1395,10 +1338,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let revision = self
             .participants
             .strategy
-            .as_ref()
-            .map_or(Ok(None), |planner| {
-                planner.active_connected_revision_proposal(request)
-            });
+            .active_connected_revision_proposal(request);
         match revision {
             Ok(None) => ActiveRevisionPreparation::default(),
             Ok(Some(proposal)) => {
@@ -1446,19 +1386,13 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 rejected: Some(rejected),
             },
             Err(rejected) => {
-                let retained_units = active_air_units(
-                    self.participants.strategy.as_ref(),
-                    self.context.observation,
-                );
+                let retained_units =
+                    active_air_units(self.participants.strategy, self.context.observation);
                 remove_active_connected_obligation(&mut obligations.obligations);
-                self.participants
-                    .strategy
-                    .as_mut()
-                    .expect("a rejected active revision belongs to its planner")
-                    .reject_active_connected_revision(
-                        rejected.reason,
-                        self.context.observation.tick,
-                    );
+                self.participants.strategy.reject_active_connected_revision(
+                    rejected.reason,
+                    self.context.observation.tick,
+                );
                 retain_first_coordinator_failure(
                     &mut obligations.coordinator_failure,
                     AllocationCoordinatorStageTrace::ObligationCollection,
@@ -1531,8 +1465,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         );
         self.participants
             .strategy
-            .as_mut()
-            .expect("an active connected obligation can only come from its planner")
             .recover_unfundable_active_connected(self.context.observation.tick);
         obligations.active_connected = None;
     }
@@ -1778,17 +1710,12 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         ) {
             return false;
         }
-        let retained_units = active_air_units(
-            self.participants.strategy.as_ref(),
-            self.context.observation,
-        );
+        let retained_units = active_air_units(self.participants.strategy, self.context.observation);
         obligations
             .obligations
             .retain(|obligation| obligation.owner() != owner);
         self.participants
             .strategy
-            .as_mut()
-            .expect("an active revision belongs to its planner")
             .recover_unfundable_active_connected(self.context.observation.tick);
         retain_first_coordinator_failure(
             &mut obligations.coordinator_failure,

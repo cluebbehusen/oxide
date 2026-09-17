@@ -7,7 +7,7 @@ use macroquad::prelude::Vec2;
 use oxide_sim::{ProjectileKind, Target};
 
 use crate::audio_timeline::{missile_ejection_ticks, missile_elapsed_ticks};
-use crate::game::{Game, SoundKind, world_vec};
+use crate::game::{Scene, SoundKind, world_vec};
 
 pub(crate) const MOTOR_VOICES: usize = 16;
 
@@ -35,8 +35,8 @@ fn motor_envelope(elapsed: f32, total: f32) -> f32 {
     (powered / 0.4).clamp(0.0, 1.0) * ((total - elapsed) / 0.4).clamp(0.0, 1.0)
 }
 
-fn audible_motors(game: &Game) -> Vec<Motor> {
-    let now = game.state.current_tick() as f32 + game.tick_fraction();
+fn audible_motors(game: &Scene<'_>) -> Vec<Motor> {
+    let now = game.state.current_tick() as f32 + game.presentation.tick_fraction();
     let shells = game.state.shells();
     let mut motors = Vec::new();
     for (index, shell) in shells.iter().enumerate() {
@@ -61,25 +61,26 @@ fn audible_motors(game: &Game) -> Vec<Motor> {
             from.distance(impact),
         );
         let at = from.lerp(impact, progress);
-        if game.state.hostile(game.human, shell.player)
-            && !game.all_seeing()
+        if game.state.hostile(game.presentation.human, shell.player)
+            && !game.presentation.all_seeing()
             && !game
                 .my_vision()
                 .visible(TilePos::new(at.x.floor() as i32, at.y.floor() as i32))
         {
             continue;
         }
-        let half_extents = game.camera.viewport() / game.camera.zoom * 0.5;
+        let half_extents =
+            game.presentation.camera.viewport() / game.presentation.camera.zoom * 0.5;
         let camera_gain = crate::audio_mix::frame_mix(
             [(SoundKind::RocketMotor, Some(at))],
-            game.camera.center,
+            game.presentation.camera.center,
             half_extents,
-            game.camera.zoom,
+            game.presentation.camera.zoom,
         )[0]
         .gain;
         // Motors outside the viewport fall away fully instead of leaving the
         // one-shot mix's minimum gain as a permanent offscreen noise floor.
-        let outside = ((at - game.camera.center).abs() - half_extents)
+        let outside = ((at - game.presentation.camera.center).abs() - half_extents)
             .max(Vec2::ZERO)
             .length();
         let falloff = (1.0 - outside / half_extents.length().max(1.0)).clamp(0.0, 1.0);
@@ -151,7 +152,7 @@ impl RocketLoops {
         changes
     }
 
-    pub(crate) fn update(&mut self, game: &Game, running: bool, clips: &[Sound], volume: f32) {
+    pub(crate) fn update(&mut self, game: &Scene<'_>, running: bool, clips: &[Sound], volume: f32) {
         let desired = if running && clips.len() == MOTOR_VOICES && volume > 0.0 {
             audible_motors(game)
         } else {
@@ -176,6 +177,7 @@ impl RocketLoops {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::Game;
 
     fn motor(id: u32, arrival: u64) -> Motor {
         Motor {
@@ -249,7 +251,7 @@ mod tests {
         }))
         .unwrap();
         let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
-        game.camera.center = Vec2::new(26.0, 12.0);
+        game.presentation.camera.center = Vec2::new(26.0, 12.0);
         for _ in 0..200 {
             game.do_tick();
             if !game.state.shells().is_empty() {
@@ -257,61 +259,69 @@ mod tests {
             }
         }
         assert!(
-            game.sounds_pending
+            game.presentation
+                .sounds_pending
                 .iter()
                 .any(|(kind, _)| *kind == SoundKind::AvalancheFire)
         );
         assert!(
             !game
+                .presentation
                 .sounds_pending
                 .iter()
                 .any(|(kind, _)| *kind == SoundKind::RocketMotor)
         );
         let arrival = game.state.shells()[0].arrival;
         assert!(
-            audible_motors(&game).is_empty(),
+            audible_motors(&game.view()).is_empty(),
             "ejection precedes ignition"
         );
         for _ in 0..4 {
             game.do_tick();
         }
-        let original = audible_motors(&game);
+        let original = audible_motors(&game.view());
         assert_eq!(original.len(), 1);
 
-        game.human = oxide_sim::PlayerId(1);
+        game.presentation.human = oxide_sim::PlayerId(1);
         assert!(
-            audible_motors(&game).is_empty(),
+            audible_motors(&game.view()).is_empty(),
             "hidden hostile motor must not reveal its muzzle"
         );
-        game.overlay = true;
-        assert_eq!(audible_motors(&game).len(), 1);
-        game.overlay = false;
-        game.human = oxide_sim::PlayerId(0);
-        game.camera.center = Vec2::new(75.0, 30.0);
+        game.presentation.overlay = true;
+        assert_eq!(audible_motors(&game.view()).len(), 1);
+        game.presentation.overlay = false;
+        game.presentation.human = oxide_sim::PlayerId(0);
+        game.presentation.camera.center = Vec2::new(75.0, 30.0);
         assert!(
-            audible_motors(&game).is_empty(),
+            audible_motors(&game.view()).is_empty(),
             "distant motors must fall silent"
         );
-        game.camera.center = Vec2::new(26.0, 12.0);
+        game.presentation.camera.center = Vec2::new(26.0, 12.0);
 
         let snapshot = (*game.state).clone();
         game.replace_state_after_jump(&snapshot);
-        assert_eq!(audible_motors(&game)[0].key, original[0].key);
+        assert_eq!(audible_motors(&game.view())[0].key, original[0].key);
         while game.state.current_tick() <= arrival {
-            game.sounds_pending.clear();
+            game.presentation.sounds_pending.clear();
             game.do_tick();
             if game.state.current_tick() <= arrival {
-                assert_eq!(audible_motors(&game).len(), 1, "motor died before arrival");
+                assert_eq!(
+                    audible_motors(&game.view()).len(),
+                    1,
+                    "motor died before arrival"
+                );
             }
         }
-        assert!(audible_motors(&game).is_empty());
+        assert!(audible_motors(&game.view()).is_empty());
         assert!(
-            game.sounds_pending
+            game.presentation
+                .sounds_pending
                 .iter()
                 .any(|(kind, _)| *kind == SoundKind::RocketImpact)
         );
         assert!(
             !game
+                .presentation
                 .sounds_pending
                 .iter()
                 .any(|(kind, _)| *kind == SoundKind::Artillery)

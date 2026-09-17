@@ -133,24 +133,14 @@ fn boarding_route(
 ) -> Option<(TilePos, Vec<TilePos>)> {
     let center = TilePos::containing(carrier_pos);
     let reach_sq = crate::stats::LOAD_REACH * crate::stats::LOAD_REACH;
-    let mut routes = Vec::new();
-    for y in center.y - 2..=center.y + 2 {
-        for x in center.x - 2..=center.x + 2 {
-            let goal = TilePos::new(x, y);
-            if !state.passable(goal) || goal.center().dist_sq(carrier_pos) > reach_sq {
-                continue;
-            }
-            if let Some(waypoints) = route_for(state, kind, from, goal)
-                && !waypoints.is_empty()
-            {
-                routes.push((waypoints.len(), goal.y, goal.x, waypoints));
-            }
-        }
-    }
-    routes
-        .into_iter()
-        .min_by_key(|(length, y, x, _)| (*length, *y, *x))
-        .map(|(_, y, x, waypoints)| (TilePos::new(x, y), waypoints))
+    (center.y - 2..=center.y + 2)
+        .flat_map(|y| (center.x - 2..=center.x + 2).map(move |x| TilePos::new(x, y)))
+        .filter(|goal| state.passable(*goal) && goal.center().dist_sq(carrier_pos) <= reach_sq)
+        .filter_map(|goal| {
+            let waypoints = route_for(state, kind, from, goal)?;
+            (!waypoints.is_empty()).then_some((goal, waypoints))
+        })
+        .min_by_key(|(goal, waypoints)| (waypoints.len(), goal.y, goal.x))
 }
 
 /// Fly to the drop point; standing on it, ask to set the riders down.

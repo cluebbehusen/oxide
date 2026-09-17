@@ -13,8 +13,11 @@ commands and review procedures belong in the
 
 `Game` owns one live session: its starting `Scenario`, authoritative `State`,
 bot controllers, pending commands, replay recorder, and presentation state. The
-latter includes camera, selection, interpolation, effects, audio cues, and
-statistics.
+`Presentation` member holds camera, selection, interpolation, effects, and audio
+cues. Statistics, recording, and bot execution stay with the live session.
+Rendering and read-only UI queries receive a borrowed `Scene`: the active world,
+scenario, pending commands, and presentation. Neither `Presentation` nor `Scene`
+owns or advances a simulation.
 
 `Game::do_tick` is the only live-shell path that advances state. It collects
 pending human/debug commands and bot commands, records them at the current tick,
@@ -186,10 +189,14 @@ seeks restore an earlier in-memory checkpoint and replay the suffix. Checkpoint
 storage is bounded, and the shell slices seeks across frames.
 
 While Playback is visible, `App` retains a hidden live game. `PlaybackSession`
-owns both the playback engine and a `Game` used as its render vehicle. Debug
-state and clock requests target the playback engine; camera and overlay requests
-target its render vehicle. UI, profiling, and diagnostic context describe the
-visible session. Authoritative session mutations are refused.
+owns the playback engine and its own `Presentation`. Rendering borrows the
+engine state directly; stepping keeps only the previous positions, headings, and
+effect metadata needed for interpolation and casualties. It neither clones the
+world into a render vehicle nor constructs live bots or a live recorder. Live
+and playback ticks use the same presentation update. Debug state and clock
+requests target the engine; camera and overlay requests target presentation. UI,
+profiling, and diagnostic context describe the visible session. Authoritative
+session mutations are refused.
 
 Playback diagnostics retain the complete watched replay in a separate recording.
 Its kind identifies viewer evidence, so it can be exported after a force quit

@@ -5,9 +5,9 @@ use super::*;
 
 /// Fog of war from the local player's perspective: unexplored is void,
 /// explored-but-unseen is dimmed.
-pub(crate) fn draw_fog(game: &Game) {
+pub(crate) fn draw_fog(game: &crate::game::Scene<'_>) {
     let fog_alpha = |tile| tile_fog_alpha(game, tile);
-    let (lo, hi) = game.camera.world_rect();
+    let (lo, hi) = game.presentation.camera.world_rect();
     let min = TilePos::new(lo.x.floor() as i32, lo.y.floor() as i32);
     let max = TilePos::new(hi.x.ceil() as i32, hi.y.ceil() as i32);
     for y in min.y..max.y {
@@ -19,8 +19,13 @@ pub(crate) fn draw_fog(game: &Game) {
             let cover = Color::new(FOG_UNEXPLORED.r, FOG_UNEXPLORED.g, FOG_UNEXPLORED.b, alpha);
             // Exact shared edges: translucent rects that overlap draw
             // double-dark seams, so each tile ends where the next begins.
-            let a = game.camera.to_screen(vec2(x as f32, y as f32)).floor();
+            let a = game
+                .presentation
+                .camera
+                .to_screen(vec2(x as f32, y as f32))
+                .floor();
             let b = game
+                .presentation
                 .camera
                 .to_screen(vec2((x + 1) as f32, (y + 1) as f32))
                 .floor();
@@ -35,12 +40,17 @@ pub(crate) fn draw_fog(game: &Game) {
             if current >= 1.0 {
                 continue;
             }
-            let a = game.camera.to_screen(vec2(x as f32, y as f32)).floor();
+            let a = game
+                .presentation
+                .camera
+                .to_screen(vec2(x as f32, y as f32))
+                .floor();
             let b = game
+                .presentation
                 .camera
                 .to_screen(vec2((x + 1) as f32, (y + 1) as f32))
                 .floor();
-            let width = game.camera.zoom * 0.45;
+            let width = game.presentation.camera.zoom * 0.45;
             for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
                 let neighbor = fog_alpha(tile.offset(dx, dy));
                 let Some(alpha) = fog_edge_alpha(current, neighbor) else {
@@ -92,7 +102,7 @@ pub(crate) fn draw_fog(game: &Game) {
     }
 }
 
-fn tile_fog_alpha(game: &Game, tile: TilePos) -> f32 {
+fn tile_fog_alpha(game: &crate::game::Scene<'_>, tile: TilePos) -> f32 {
     let (explored, visible) = if game.state.map().tile(tile).is_some() {
         (
             game.my_vision().explored(tile),
@@ -100,8 +110,8 @@ fn tile_fog_alpha(game: &Game, tile: TilePos) -> f32 {
         )
     } else {
         (
-            game.boundary_fog.explored(tile),
-            game.boundary_fog.visible(tile),
+            game.presentation.boundary_fog.explored(tile),
+            game.presentation.boundary_fog.visible(tile),
         )
     };
     if !explored {
@@ -119,12 +129,12 @@ fn fog_edge_alpha(current: f32, neighbor: f32) -> Option<f32> {
 
 /// Fog-honest peak connectivity. An explored barrier cannot disclose that
 /// its wall continues into an unexplored neighbor merely through edge art.
-fn peak_neighbor_mask(game: &Game, pos: TilePos) -> u8 {
+fn peak_neighbor_mask(game: &crate::game::Scene<'_>, pos: TilePos) -> u8 {
     [(0, -1, 1), (1, 0, 2), (0, 1, 4), (-1, 0, 8)]
         .into_iter()
         .fold(0, |mask, (dx, dy, bit)| {
             let neighbor = pos.offset(dx, dy);
-            let known = game.all_seeing() || game.my_vision().explored(neighbor);
+            let known = game.presentation.all_seeing() || game.my_vision().explored(neighbor);
             let connected = known
                 && game
                     .state
@@ -267,9 +277,9 @@ fn group_origin(pos: TilePos) -> TilePos {
     TilePos::new(pos.x.div_euclid(3) * 3, pos.y.div_euclid(2) * 2)
 }
 
-fn visible_obstacle(game: &Game, group: TilePos) -> Option<ObstaclePlacement> {
+fn visible_obstacle(game: &crate::game::Scene<'_>, group: TilePos) -> Option<ObstaclePlacement> {
     placement_for_group(group, |pos| {
-        let known = game.all_seeing() || game.my_vision().explored(pos);
+        let known = game.presentation.all_seeing() || game.my_vision().explored(pos);
         known
             && game
                 .state
@@ -438,8 +448,8 @@ fn quarry_dressing(pos: TilePos, width: i32, height: i32, seed: u64) -> Option<Q
     })
 }
 
-pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
+pub(crate) fn draw_tiles(game: &crate::game::Scene<'_>, sprites: &Sprites) {
+    let zoom = game.presentation.camera.zoom;
     let size = zoom.ceil() + 1.0; // slight overlap kills seam hairlines
     let theme = game
         .scenario
@@ -457,11 +467,14 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             let Some(tile) = game.state.map().tile(TilePos::new(x, y)) else {
                 continue;
             };
-            let screen = game.camera.to_screen(vec2(x as f32, y as f32));
+            let screen = game.presentation.camera.to_screen(vec2(x as f32, y as f32));
             // Position hashes drive all variety: deterministic, no state.
             let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
             let variant = h % 6;
-            let next = game.camera.to_screen(vec2((x + 1) as f32, (y + 1) as f32));
+            let next = game
+                .presentation
+                .camera
+                .to_screen(vec2((x + 1) as f32, (y + 1) as f32));
             sprites.draw(
                 screen.x.floor(),
                 screen.y.floor(),
@@ -567,7 +580,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             }
             // Scrap draws at its live amount only in sight; unseen ground
             // shows what the player remembers (frozen, like ghosts).
-            let seen_now = game.all_seeing() || game.my_vision().visible(pos);
+            let seen_now = game.presentation.all_seeing() || game.my_vision().visible(pos);
             let scrap = if seen_now {
                 tile.scrap
             } else {
@@ -639,6 +652,7 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 ObstacleArt::Industrial(variant) => sprites.ground_blocker(variant),
             };
             let screen = game
+                .presentation
                 .camera
                 .to_screen(vec2(placement.anchor.x as f32, placement.anchor.y as f32));
             sprites.draw(
@@ -662,13 +676,16 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
 /// collapsed 2x2 machine bed that says "rebuild here". A standing
 /// building on the anchor covers its frame; unexplored ground hides it
 /// like any other terrain fact.
-pub(crate) fn draw_extractor_frames(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
+pub(crate) fn draw_extractor_frames(game: &crate::game::Scene<'_>, sprites: &Sprites) {
+    let zoom = game.presentation.camera.zoom;
     for &frame in game.state.map().extractor_frames() {
         if !crate::strategic_markers::extractor_frame_visible(game, frame) {
             continue;
         }
-        let screen = game.camera.to_screen(vec2(frame.x as f32, frame.y as f32));
+        let screen = game
+            .presentation
+            .camera
+            .to_screen(vec2(frame.x as f32, frame.y as f32));
         sprites.draw(
             screen.x.floor(),
             screen.y.floor(),
@@ -683,12 +700,12 @@ pub(crate) fn draw_extractor_frames(game: &Game, sprites: &Sprites) {
 }
 
 /// Battle scars: scorch decals where buildings died, fading over ~20s.
-pub(crate) fn draw_scorches(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
-    for (at, age) in &game.scorches {
+pub(crate) fn draw_scorches(game: &crate::game::Scene<'_>, sprites: &Sprites) {
+    let zoom = game.presentation.camera.zoom;
+    for (at, age) in &game.presentation.scorches {
         let alpha = (1.0 - age / 20.0).clamp(0.0, 1.0) * 0.85;
         let size = zoom * 2.4;
-        let screen = game.camera.to_screen(*at);
+        let screen = game.presentation.camera.to_screen(*at);
         sprites.draw(
             screen.x - size * 0.5,
             screen.y - size * 0.5,

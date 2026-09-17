@@ -92,6 +92,55 @@ fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
 }
 
 #[test]
+fn hidden_charge_reports_damage_to_its_victim_for_lethal_and_nonlethal_blasts() {
+    for kind in [UnitKind::Harvester, UnitKind::Warden] {
+        let mut state = arena(
+            open_map(),
+            vec![unit(0, kind, 11, 4)],
+            vec![building(1, BuildingKind::ScuttleCharge, 11, 4)],
+        )
+        .build()
+        .unwrap();
+        let victim = state.units()[0].id;
+        let pos = state.units()[0].pos;
+        let charge = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::ScuttleCharge)
+            .unwrap()
+            .id;
+        assert!(!state.building_apparent(PlayerId(0), state.building(charge).unwrap()));
+        let report = state.tick(&[]);
+        let damage: Vec<_> = report
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::DamageTaken { .. }))
+            .collect();
+        assert_eq!(
+            damage,
+            vec![&Event::DamageTaken {
+                player: PlayerId(0),
+                pos
+            }]
+        );
+        assert_eq!(
+            state.unit(victim).map_or(0, |u| u.hp),
+            kind.stats()
+                .max_hp
+                .saturating_sub(oxide_sim::stats::CHARGE_DAMAGE)
+        );
+        assert!(state.building(charge).is_none());
+        assert!(
+            !state
+                .tick(&[])
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::DamageTaken { .. }))
+        );
+    }
+}
+
+#[test]
 fn a_charge_is_invisible_until_scouted() {
     // A Ferrous Warden stands right next to a Cupric charge: full tile
     // sight, zero knowledge.

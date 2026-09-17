@@ -108,17 +108,21 @@ pub(super) fn update_and_draw(
             // a frame — presentation only, and only while nothing
             // is at stake (a resumable match keeps its exact view).
             if app.game.state.current_tick() == 0 && !render::reduced_motion() {
-                app.game.camera.pan(vec2(dt * 0.55, dt * 0.22));
-                let (_, hi) = app.game.camera.world_rect();
+                app.game.presentation.camera.pan(vec2(dt * 0.55, dt * 0.22));
+                let (_, hi) = app.game.presentation.camera.world_rect();
                 if hi.x >= app.game.state.map().width() as f32 + 1.9 {
-                    app.game.camera.center = vec2(0.0, 0.0);
-                    app.game.camera.pan(vec2(0.0, 0.0)); // re-clamp home
+                    app.game.presentation.camera.center = vec2(0.0, 0.0);
+                    app.game.presentation.camera.pan(vec2(0.0, 0.0)); // re-clamp home
                 }
             }
             let input_scope = app
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = home.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            let out = home.update(
+                &events,
+                &mut app.input.mouse,
+                &mut app.game.presentation.sounds_pending,
+            );
             drop(input_scope);
             // Session verbs first — Continue and Tutorial swap the
             // game this frame then draws under the menu. The menu
@@ -145,13 +149,14 @@ pub(super) fn update_and_draw(
                         Ok(fresh) => {
                             app.tutorial = None;
                             app.game = keep_flags(fresh, &app.game);
-                            app.game.paused = true;
+                            app.game.presentation.paused = true;
                             app.game.recovery_source = home
                                 .recovery
                                 .as_ref()
                                 .map(|record| record.directory.clone());
                             app.game.start_recovery();
                             app.game
+                                .presentation
                                 .toast("Recovered match is paused. Resume when ready.");
                             app.performance.reset();
                             app.input.reset_session();
@@ -177,11 +182,11 @@ pub(super) fn update_and_draw(
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
                         app.performance.reset();
-                        app.game.paused = app.args.paused;
+                        app.game.presentation.paused = app.args.paused;
                         app.input.reset_session();
                         next = Some(Screen::Playing);
                     } else {
-                        app.game.toast("that save no longer loads");
+                        app.game.presentation.toast("that save no longer loads");
                     }
                 }
                 screens::home::Out::Play => {
@@ -193,7 +198,7 @@ pub(super) fn update_and_draw(
                     let fresh = Game::new(tutorial::tutorial_scenario())?;
                     app.game = keep_flags(fresh, &app.game);
                     app.performance.reset();
-                    app.game.paused = app.args.paused;
+                    app.game.presentation.paused = app.args.paused;
                     app.tutorial = Some(tutorial::Tutorial::new());
                     app.input.reset_session();
                     next = Some(Screen::Playing);
@@ -216,7 +221,7 @@ pub(super) fn update_and_draw(
                     }
                 },
             }
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw(&app.game.view(), &app.sprites, &app.input);
             veil();
             home.menu.draw(home.subtitle());
             if out == screens::home::Out::Settings {
@@ -255,7 +260,7 @@ pub(super) fn update_and_draw(
             let up = sc.update(
                 &events,
                 &mut app.input.mouse,
-                &mut app.game.sounds_pending,
+                &mut app.game.presentation.sounds_pending,
                 &mut app.config,
                 &mut app.input.bindings,
                 ctrl_at_frame_start,
@@ -291,7 +296,7 @@ pub(super) fn update_and_draw(
                 app.menu_notice =
                     Some((format!("could not save settings: {err}"), get_time() + 5.0));
             }
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw(&app.game.view(), &app.sprites, &app.input);
             veil();
             sc.draw();
             if up.out == screens::settings::Out::Leave {
@@ -310,11 +315,15 @@ pub(super) fn update_and_draw(
             let input_scope = app
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = codex.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            let out = codex.update(
+                &events,
+                &mut app.input.mouse,
+                &mut app.game.presentation.sounds_pending,
+            );
             drop(input_scope);
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw(&app.game.view(), &app.sprites, &app.input);
             veil();
-            let viewer = app.game.state.player(app.game.human).faction;
+            let viewer = app.game.state.player(app.game.presentation.human).faction;
             codex.draw(&app.sprites, viewer);
             if out == screens::codex::Out::Leave {
                 *back
@@ -336,7 +345,7 @@ pub(super) fn update_and_draw(
                 &events,
                 &mut app.input.mouse,
                 &mut app.draft,
-                &mut app.game.sounds_pending,
+                &mut app.game.presentation.sounds_pending,
             ) {
                 Ok(out) => out,
                 Err(err) => {
@@ -351,7 +360,7 @@ pub(super) fn update_and_draw(
             match out {
                 WizardOut::Home => {
                     let home = HomeScreen::open();
-                    render::draw(&app.game, &app.sprites, &app.input);
+                    render::draw(&app.game.view(), &app.sprites, &app.input);
                     veil();
                     home.menu.draw(home.subtitle());
                     rerun = true;
@@ -362,9 +371,9 @@ pub(super) fn update_and_draw(
                         app.tutorial = None;
                         app.game = keep_flags(fresh, &app.game);
                         app.performance.reset();
-                        app.game.paused = app.args.paused;
+                        app.game.presentation.paused = app.args.paused;
                         app.input.reset_session();
-                        render::draw(&app.game, &app.sprites, &app.input);
+                        render::draw(&app.game.view(), &app.sprites, &app.input);
                         rerun = true;
                         next = Some(Screen::Playing);
                     }
@@ -378,7 +387,7 @@ pub(super) fn update_and_draw(
             if let Some(next) = next {
                 next
             } else {
-                render::draw(&app.game, &app.sprites, &app.input);
+                render::draw(&app.game.view(), &app.sprites, &app.input);
                 veil();
                 match w.step {
                     WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
@@ -417,8 +426,8 @@ pub(super) fn update_and_draw(
                     app.input.drag_origin = None;
                 }
             }
-            let had_selection =
-                !app.game.selection.units.is_empty() || !app.game.selection.buildings.is_empty();
+            let had_selection = !app.game.presentation.selection.units.is_empty()
+                || !app.game.presentation.selection.buildings.is_empty();
             let mut ctrl = ctrl_at_frame_start;
             let mut shift = shift_at_frame_start;
             let escape_pressed = events.iter().any(|event| {
@@ -460,12 +469,12 @@ pub(super) fn update_and_draw(
                 escape_pressed,
                 had_selection,
                 app.game.state.result().is_some(),
-                app.game.conceded_banner,
+                app.game.presentation.conceded_banner,
             ) {
                 // Opening the menu dismisses the concede overlay for
                 // good — Resume from here is clean spectating.
-                app.game.conceded_banner = false;
-                app.game.paused = true;
+                app.game.presentation.conceded_banner = false;
+                app.game.presentation.paused = true;
                 app.game.demo.paused_menu = true;
                 next = Some(Screen::Pause(PauseScreen::open(
                     app.game.state.result().is_some(),
@@ -487,8 +496,9 @@ pub(super) fn update_and_draw(
                 }
             }
             drop(input_scope);
-            let profile_barrier = !app.game.paused && app.frame_profiler.take_start_barrier();
-            profile_frame_active = !app.game.paused && !profile_barrier;
+            let profile_barrier =
+                !app.game.presentation.paused && app.frame_profiler.take_start_barrier();
+            profile_frame_active = !app.game.presentation.paused && !profile_barrier;
             let profile_stopped = if profile_barrier {
                 false
             } else {
@@ -499,7 +509,7 @@ pub(super) fn update_and_draw(
                 stopped
             };
             if profile_stopped {
-                app.game.paused = true;
+                app.game.presentation.paused = true;
             }
             if app.game.state.result().is_some() && app.game.end_stats.is_some() {
                 next = Some(Screen::Results(ResultsScreen::open()));
@@ -508,7 +518,7 @@ pub(super) fn update_and_draw(
                 rerun = true;
             }
             render::draw_with_performance(
-                &app.game,
+                &app.game.view(),
                 &app.sprites,
                 &app.input,
                 Some(app.performance.view()),
@@ -546,7 +556,7 @@ pub(super) fn update_and_draw(
             } else {
                 pb.advance_frame(dt, vec2(screen_width(), screen_height()));
                 render::draw_with_performance(
-                    &pb.game,
+                    &pb.view(),
                     &app.sprites,
                     &app.input,
                     Some(app.performance.view()),
@@ -570,14 +580,14 @@ pub(super) fn update_and_draw(
             );
             drop(input_scope);
             render::draw_with_performance(
-                &app.game,
+                &app.game.view(),
                 &app.sprites,
                 &app.input,
                 Some(app.performance.view()),
             );
             final_map.draw_hud();
             if leave {
-                app.game.spectate = false;
+                app.game.presentation.spectate = false;
                 rerun = true;
                 Screen::Results(ResultsScreen::open())
             } else {
@@ -593,10 +603,10 @@ pub(super) fn update_and_draw(
                 &mut app.input.mouse,
                 vec2(screen_width(), screen_height()),
                 render::ui_scale(),
-                &mut app.game.sounds_pending,
+                &mut app.game.presentation.sounds_pending,
             );
             drop(input_scope);
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw(&app.game.view(), &app.sprites, &app.input);
             results.draw(&app.game);
             match out {
                 screens::results::Out::Stay => Screen::Results(results),
@@ -605,7 +615,7 @@ pub(super) fn update_and_draw(
                         let fresh = rebuild_match(&app.game)?;
                         app.game = keep_flags(fresh, &app.game);
                         app.performance.reset();
-                        app.game.paused = app.args.paused;
+                        app.game.presentation.paused = app.args.paused;
                         app.tutorial = None;
                         app.input.reset_session();
                         rerun = true;
@@ -631,10 +641,10 @@ pub(super) fn update_and_draw(
                     }
                 },
                 screens::results::Out::ViewFinalMap => {
-                    app.game.paused = true;
-                    app.game.spectate = true;
-                    app.game.selection.units.clear();
-                    app.game.selection.buildings.clear();
+                    app.game.presentation.paused = true;
+                    app.game.presentation.spectate = true;
+                    app.game.presentation.selection.units.clear();
+                    app.game.presentation.selection.buildings.clear();
                     rerun = true;
                     Screen::FinalMap(FinalMapScreen::open())
                 }
@@ -658,12 +668,16 @@ pub(super) fn update_and_draw(
             let input_scope = app
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = shelf.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            let out = shelf.update(
+                &events,
+                &mut app.input.mouse,
+                &mut app.game.presentation.sounds_pending,
+            );
             drop(input_scope);
             match out {
                 screens::shelf::Out::Home => {
                     let home = HomeScreen::open();
-                    render::draw(&app.game, &app.sprites, &app.input);
+                    render::draw(&app.game.view(), &app.sprites, &app.input);
                     veil();
                     home.menu.draw(home.subtitle());
                     rerun = true;
@@ -672,12 +686,15 @@ pub(super) fn update_and_draw(
                 screens::shelf::Out::Watch(path) => {
                     match PlaybackSession::open(&path.to_string_lossy()) {
                         Ok(session) => {
-                            render::draw(&app.game, &app.sprites, &app.input);
+                            render::draw(&app.game.view(), &app.sprites, &app.input);
                             rerun = true;
                             leave = Some(Screen::Playback(Box::new(session)));
                         }
                         Err(_) => {
-                            app.game.sounds_pending.push((SoundKind::Denied, None));
+                            app.game
+                                .presentation
+                                .sounds_pending
+                                .push((SoundKind::Denied, None));
                         }
                     }
                 }
@@ -689,14 +706,17 @@ pub(super) fn update_and_draw(
                             app.tutorial = None;
                             app.game = keep_flags(fresh, &app.game);
                             app.performance.reset();
-                            app.game.paused = app.args.paused;
+                            app.game.presentation.paused = app.args.paused;
                             app.input.reset_session();
-                            render::draw(&app.game, &app.sprites, &app.input);
+                            render::draw(&app.game.view(), &app.sprites, &app.input);
                             rerun = true;
                             leave = Some(Screen::Playing);
                         }
                         Err(_) => {
-                            app.game.sounds_pending.push((SoundKind::Denied, None));
+                            app.game
+                                .presentation
+                                .sounds_pending
+                                .push((SoundKind::Denied, None));
                         }
                     }
                 }
@@ -710,7 +730,7 @@ pub(super) fn update_and_draw(
             if let Some(next) = leave {
                 next
             } else {
-                render::draw(&app.game, &app.sprites, &app.input);
+                render::draw(&app.game.view(), &app.sprites, &app.input);
                 veil();
                 shelf.menu.draw(&shelf.subtitle());
                 Screen::Replays(shelf)
@@ -720,15 +740,19 @@ pub(super) fn update_and_draw(
             let input_scope = app
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = ps.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+            let out = ps.update(
+                &events,
+                &mut app.input.mouse,
+                &mut app.game.presentation.sounds_pending,
+            );
             drop(input_scope);
-            render::draw(&app.game, &app.sprites, &app.input);
+            render::draw(&app.game.view(), &app.sprites, &app.input);
             veil();
             ps.menu.draw(ps.subtitle(&app.game.scenario.name));
             match out {
                 screens::pause::Out::Stay => Screen::Pause(ps),
                 screens::pause::Out::Resume => {
-                    app.game.paused = false;
+                    app.game.presentation.paused = false;
                     Screen::Playing
                 }
                 screens::pause::Out::SaveGame => {
@@ -774,7 +798,7 @@ pub(super) fn update_and_draw(
                     // the concede overlay meets the player back in
                     // the match while the ally plays on.
                     app.game.issue(oxide_sim::Command::Surrender);
-                    app.game.paused = false;
+                    app.game.presentation.paused = false;
                     Screen::Playing
                 }
                 screens::pause::Out::WatchReplay => {
@@ -789,7 +813,9 @@ pub(super) fn update_and_draw(
                             Screen::Playback(Box::new(session))
                         }
                         Err(err) => {
-                            app.game.toast(format!("cannot open playback: {err}"));
+                            app.game
+                                .presentation
+                                .toast(format!("cannot open playback: {err}"));
                             Screen::Pause(ps)
                         }
                     }
@@ -802,7 +828,7 @@ pub(super) fn update_and_draw(
                     }
                     app.game = keep_flags(fresh, &app.game);
                     app.performance.reset();
-                    app.game.paused = app.args.paused;
+                    app.game.presentation.paused = app.args.paused;
                     app.input.reset_session();
                     Screen::Playing
                 }

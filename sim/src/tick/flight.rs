@@ -207,21 +207,6 @@ pub(crate) fn turn_to(heading: u8, d: Vec2Fx) -> Option<(u8, u16)> {
     Some((step, sweep))
 }
 
-/// The compass step whose direction lies closest to `v`.
-pub(crate) fn heading_of(v: Vec2Fx) -> u8 {
-    let mut best = 0u8;
-    let mut best_dot = dir(0).x * v.x + dir(0).y * v.y;
-    for k in 1..=255u8 {
-        let d = dir(k);
-        let dot = d.x * v.x + d.y * v.y;
-        if dot > best_dot {
-            best = k;
-            best_dot = dot;
-        }
-    }
-    best
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,13 +314,6 @@ mod tests {
             let opposite = dir(k.wrapping_add(128));
             assert_eq!(opposite, Vec2Fx::new(-d.x, -d.y), "step {k}");
         }
-    }
-
-    #[test]
-    fn heading_of_rounds_to_the_nearest_compass_step() {
-        assert_eq!(heading_of(Vec2Fx::new(Fx::lit("3"), Fx::ZERO)), 0);
-        assert_eq!(heading_of(Vec2Fx::new(Fx::ZERO, Fx::lit("-2"))), 192);
-        assert_eq!(heading_of(Vec2Fx::new(Fx::lit("1"), Fx::lit("1"))), 32);
     }
 
     #[test]
