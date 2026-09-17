@@ -14,6 +14,8 @@ mod production;
 mod site;
 #[cfg(test)]
 mod snapshot_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub(crate) use planning::*;
 pub(crate) use production::*;
