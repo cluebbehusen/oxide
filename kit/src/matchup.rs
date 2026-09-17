@@ -418,12 +418,22 @@ fn siege_leg(
     let mut units = Vec::new();
     // The east side's k-th deployment slot is the exact 180-degree
     // image of the west side's k-th slot. Anything less contaminates a
-    // controlled duel with seat geometry.
+    // controlled duel with seat geometry. Each column fills from the
+    // middle rows outward so both marches share one band and meet; a
+    // column filled from the top would seat small armies in opposite
+    // corners, and their straight marches would pass beside each other
+    // outside acquisition range.
     let mut place = |army: &[(UnitKind, u32)], player: u8, mirrored: bool| {
         let mut i = 0i32;
         for (kind, n) in army {
             for _ in 0..*n {
-                let (x, y) = (8 + (i / 16), 4 + (i % 16));
+                let slot = i % 16;
+                let y = if slot % 2 == 0 {
+                    11 - slot / 2
+                } else {
+                    12 + slot / 2
+                };
+                let (x, y) = (8 + (i / 16), y);
                 let (x, y) = if mirrored {
                     (width - 1 - x, height - 1 - y)
                 } else {
@@ -798,7 +808,11 @@ mod tests {
                 leg.a_value == 0 || leg.b_value == 0 || leg.ticks == 20_000,
                 "the duel neither resolved nor ran honestly to the cap: {out:?}"
             );
-            assert!(leg.ticks > 302, "ended during the approach: {out:?}");
+            assert_ne!(
+                leg.termination,
+                DuelTermination::NoProgress,
+                "ended as a phantom draw: {out:?}"
+            );
         }
     }
 

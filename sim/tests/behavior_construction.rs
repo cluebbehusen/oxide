@@ -638,31 +638,34 @@ fn queue_overflow_is_rejected_not_swallowed() {
         .build()
         .unwrap();
     let mover = state.units()[0].id;
-    let mut rejected = 0;
-    for i in 0..(ORDER_QUEUE_CAP + 9) {
-        let goal = TilePos::new(3 + (i % 10) as i32, 2);
-        let report = state.tick(&[cmd(
-            0,
-            Command::Move {
-                units: vec![mover],
-                goal,
-                queue: true,
-            },
-        )]);
-        rejected += report
-            .events
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    Event::CommandRejected {
-                        reason: RejectReason::QueueFull,
-                        ..
-                    }
-                )
-            })
-            .count();
-    }
+    // One tick: the first order starts the walk and nothing can finish
+    // before the cap is tested.
+    let commands: Vec<_> = (0..(ORDER_QUEUE_CAP + 9))
+        .map(|i| {
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![mover],
+                    goal: TilePos::new(3 + (i % 10) as i32, 2),
+                    queue: true,
+                },
+            )
+        })
+        .collect();
+    let rejected = state
+        .tick(&commands)
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::CommandRejected {
+                    reason: RejectReason::QueueFull,
+                    ..
+                }
+            )
+        })
+        .count();
     assert_eq!(state.unit(mover).unwrap().queue.len(), ORDER_QUEUE_CAP);
     assert!(rejected > 0, "silent drops at the cap");
 }
@@ -860,23 +863,19 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
         },
     )]);
     for _ in 0..10 {
-        state.tick(&[]); // under way along the staircase
+        state.tick(&[]); // under way along the straight leg
     }
-    // Read the actual route and flank an upcoming diagonal step — the
-    // test adapts to whatever staircase A* chose.
+    // Drop the turret onto the straight line the mover is driving toward
+    // its goal, short of the goal: the follower must drop the leg and
+    // route around it, and every tile step around the site must still
+    // obey the no-corner-cut rule.
     let anchor = {
-        let path = state.unit(mover).unwrap().path.as_ref().expect("walking");
-        let next = path.next as usize;
-        let mut flank = None;
-        for w in path.waypoints[next..].windows(2) {
-            let (a, b) = (w[0], w[1]);
-            if a.x != b.x && a.y != b.y {
-                flank = Some(TilePos::new(b.x, a.y));
-                break;
-            }
-        }
-        flank.expect("the route has a diagonal step")
+        let mover = state.unit(mover).unwrap();
+        assert!(mover.path.is_some(), "walking");
+        TilePos::containing(mover.pos + (goal.center() - mover.pos) * chassis::fx::HALF)
     };
+    assert_ne!(anchor, state.unit(mover).unwrap().tile());
+    assert_ne!(anchor, goal);
     state.tick(&[cmd(
         0,
         Command::Build {

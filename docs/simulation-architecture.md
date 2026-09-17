@@ -405,16 +405,29 @@ may cover ground, air, or both; sidearms are separate weapon slots and cooldowns
 are stored per slot.
 
 Ground chassis retain a motor speed independently of collision displacement.
-They accelerate from rest over six ticks and brake from full speed over three. A
-sharp route change first brakes along the existing heading, then pivots; final
-approaches reduce speed to stop at the goal. Stop and lost paths brake without
-retaining the old order. Newly blocked terrain can arrest that coast. Turn rate
-remains the ceiling of movement speed times 64, bounded to four through ten
-compass steps per tick; Breaker retains four, and Avalanche and Bombard retain
-three. Translation resumes within eight of 256 compass steps. Ground units spawn
-facing the map center so mirrored placements have mirrored initial turn costs.
-Independent weapon mounts can aim during travel; fixed weapons wait for the
-motor to stop before turning to aim.
+They accelerate from rest over six ticks and brake from full speed over three.
+The hull turns toward its target every tick and keeps rolling through a bend,
+easing off as the heading error grows; off the exact bearing the body travels
+along its heading, so a bend is driven as an arc. Only an error past 96 of 256
+compass steps (135 degrees) brakes along the existing heading and pivots in
+place. Final approaches reduce speed to stop at the goal, and inside the last
+braking step the body lands on the point whatever its bearing. Stop and lost
+paths brake without retaining the old order. Newly blocked terrain can arrest
+that coast. Turn rate remains the ceiling of movement speed times 64, bounded to
+four through ten compass steps per tick; Breaker retains four, and Avalanche and
+Bombard retain three. Within eight compass steps of the bearing the body tracks
+the target point directly. Ground units spawn facing the map center so mirrored
+placements have mirrored initial turn costs. Independent weapon mounts can aim
+during travel; fixed weapons wait for the motor to stop before turning to aim.
+
+A ground follower does not drive a grid route corner by corner. Each tick it
+looks ahead a bounded number of waypoints and steers for the furthest one its
+hull can reach on a straight leg, tested as a swept line of its body radius
+against terrain and building occupancy, so a staircase is driven as one line and
+a corner is rounded only once the far side is actually clear. A waypoint reached
+that way is revalidated each tick along the line its center travels; an adjacent
+waypoint keeps the tile rules the route was planned under, so a wide hull beside
+a wall never loses a leg it could always walk.
 
 A pathless ground unit can still be braking. Group arrival propagation and
 anchored collision priority require its motor speed to be zero.

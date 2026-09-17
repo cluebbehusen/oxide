@@ -508,7 +508,9 @@ fn partial_scrap_heals_the_earliest_id_first_then_starves() {
     let units = vec![
         unit(0, UnitKind::Harvester, FAR.x, FAR.y), // first patient
         unit(0, UnitKind::Harvester, FAR.x, FAR.y + 2), // second patient
-        unit(1, UnitKind::Scuttler, 17, 10),
+        // Parked beyond its own aggro reach of both patients' walk to the ring,
+        // so the raider never picks the chase back up.
+        unit(1, UnitKind::Scuttler, 18, 10),
     ];
     let mut state = arena(units, [Faction::Ferrous, Faction::Cupric], 5, true)
         .build()
@@ -522,9 +524,9 @@ fn partial_scrap_heals_the_earliest_id_first_then_starves() {
     let hurt_b = {
         state.tick(&[walk(1, vec![raider], TilePos::new(FAR.x, FAR.y + 4))]);
         run_until(&mut state, 3_000, |s, _| s.unit(b).unwrap().hp <= 20);
-        state.tick(&[walk(1, vec![raider], TilePos::new(17, 10))]);
+        state.tick(&[walk(1, vec![raider], TilePos::new(18, 10))]);
         run_until(&mut state, 800, |s, _| {
-            s.unit(raider).unwrap().tile() == TilePos::new(17, 10)
+            s.unit(raider).unwrap().tile() == TilePos::new(18, 10)
         });
         state.unit(b).unwrap().hp
     };

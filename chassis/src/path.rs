@@ -118,6 +118,36 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
     false // numerically exhausted without hitting anything — clear
 }
 
+/// Whether a body of `radius` sweeping the segment from `a` to `b` crosses a
+/// tile that fails `passable`: the center line plus the two parallel edge
+/// lines offset by `radius`. Endpoint tiles are never tested, like
+/// [`line_blocked`], so the caller checks the destination tile itself. A
+/// zero-length segment is never blocked.
+///
+/// The offset pair is exactly sign-symmetric, so the verdict keeps
+/// [`line_blocked`]'s mirror fairness under a map half-turn.
+pub fn swept_line_blocked(
+    a: Vec2Fx,
+    b: Vec2Fx,
+    radius: Fx,
+    mut passable: impl FnMut(TilePos) -> bool,
+) -> bool {
+    let delta = b - a;
+    let length = delta.length();
+    if length == Fx::ZERO {
+        return false;
+    }
+    if line_blocked(a, b, &mut passable) {
+        return true;
+    }
+    if radius <= Fx::ZERO {
+        return false;
+    }
+    let side = Vec2Fx::new(-delta.y, delta.x) * (radius / length);
+    line_blocked(a + side, b + side, &mut passable)
+        || line_blocked(a - side, b - side, &mut passable)
+}
+
 const STRAIGHT_COST: u32 = 10;
 const DIAGONAL_COST: u32 = 14;
 
@@ -1375,6 +1405,54 @@ mod tests {
                             line_blocked(a, b, open),
                             line_blocked(rot(a), rot(b), rot_open),
                             "mirror-unfair trace {ax},{ay} -> {bx},{by}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn swept_line_respects_the_body_radius() {
+        let (grid, _, _) = arena(&["......", "......", "..#...", "......"]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        let (a, b) = (center(0, 1), center(5, 1));
+        assert!(!line_blocked(a, b, open));
+        assert!(!swept_line_blocked(a, b, Fx::lit("0.3"), open));
+        assert!(swept_line_blocked(a, b, Fx::lit("0.6"), open));
+        assert!(!swept_line_blocked(a, a, Fx::lit("0.6"), open));
+    }
+
+    #[test]
+    fn swept_line_catches_a_pillar_between_its_edges() {
+        let (grid, _, _) = arena(&["......", "..#...", "......"]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        let (a, b) = (center(0, 1), center(5, 1));
+        assert!(line_blocked(a, b, open));
+        assert!(swept_line_blocked(a, b, Fx::lit("0.6"), open));
+    }
+
+    #[test]
+    fn swept_trace_is_mirror_fair() {
+        let rows = &["........", "..##....", "....#...", ".#......", "........"];
+        let (grid, w, h) = arena(rows);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        let rot_open = |p: TilePos| {
+            grid.get(TilePos::new(w - 1 - p.x, h - 1 - p.y))
+                .copied()
+                .unwrap_or(false)
+        };
+        let rot = |v: Vec2Fx| Vec2Fx::new(Fx::from_num(w) - v.x, Fx::from_num(h) - v.y);
+        let radius = Fx::lit("0.35");
+        for ax in 0..w {
+            for ay in 0..h {
+                for bx in 0..w {
+                    for by in 0..h {
+                        let (a, b) = (center(ax, ay), center(bx, by));
+                        assert_eq!(
+                            swept_line_blocked(a, b, radius, open),
+                            swept_line_blocked(rot(a), rot(b), radius, rot_open),
+                            "mirror-unfair swept trace {ax},{ay} -> {bx},{by}"
                         );
                     }
                 }
