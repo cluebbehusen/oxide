@@ -362,11 +362,6 @@ pub(in crate::bot) fn admit_decision(
             .with_paid_exclusions(&policy.state.reconnaissance.paid_exclusions()),
         )
     };
-    let centrally_allocated_connected =
-        allocation_ok && (connected_continues || accepted_connected);
-    if centrally_allocated_connected {
-        strategy.mark_current_connected_providers_issued(oriented.tick);
-    }
     if rejected_connected_candidate.is_none() {
         rejected_connected_candidate = strategic_result.rejected_connected_candidate;
     }
@@ -385,7 +380,10 @@ pub(in crate::bot) fn admit_decision(
     let connected_is_typed = accepted_connected
         || connected_continues
         || (strategic_was_staged && allocation_ok)
-        || { strategy.active_connected_obligation(oriented) }.is_some();
+        || (strategy
+            .air_operation()
+            .is_some_and(|op| op.assault_admitted)
+            && strategy.connected_package_diagnostics().is_some());
     let mut utility_reservations = policy.state.reconnaissance.reservations();
     utility_reservations.extend(policy.support_reservations());
     utility_reservations.sort_unstable();

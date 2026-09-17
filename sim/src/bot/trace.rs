@@ -19,8 +19,8 @@ use super::resources::{
 use super::strategy::force_package::{ForceFamily, ForcePackageRejection};
 use super::strategy::{
     AirOperation, AirOperationOutcome, AirRecoveryReason, ConnectedPackageDiagnostics,
-    ConnectedPlanRejection, ConnectedProducerBindingError, ConnectedProposalCommitError,
-    RejectedConnectedCandidate, StrategicPlanner,
+    ConnectedPlanRejection, ConnectedProposalCommitError, RejectedConnectedCandidate,
+    StrategicPlanner,
 };
 use super::{BuildingContact, ContactEvidence, StrategicIntelligence};
 use crate::PlayerCommand;
@@ -2707,11 +2707,7 @@ pub enum AllocationCoordinatorStageTrace {
     StandingForceProposalAdaptation,
     /// A retained saved Foundry could not emit its exact build command.
     SavedFoundryDispatch,
-    /// An active connected operation could not retain its accepted producer schedule.
-    ActiveConnectedRefresh,
-    /// A fresh connected payload could not bind the allocator's exact producer schedule.
-    ConnectedProposalBinding,
-    /// A bound connected payload could not be installed into its domain planner.
+    /// A selected connected payload could not be installed into its domain planner.
     ConnectedProposalCommit,
     /// A selected Foundry payload could not be installed into its domain planner.
     FoundryProposalCommit,
@@ -2747,12 +2743,7 @@ pub enum AllocationCoordinatorFailureReasonTrace {
         /// Unit the command attempted to enqueue.
         kind: UnitKind,
     },
-    /// A retained or selected connected schedule failed exact binding.
-    ConnectedProducerBinding {
-        /// Binding error.
-        error: ConnectedProducerBindingErrorTrace,
-    },
-    /// A bound connected proposal could not be committed unchanged.
+    /// A selected connected proposal could not be committed unchanged.
     ConnectedProposalCommit {
         /// Commit error.
         error: ConnectedProposalCommitErrorTrace,
@@ -2785,14 +2776,6 @@ impl From<&CoordinatorInputError> for AllocationCoordinatorFailureReasonTrace {
 impl From<ClaimBundleError> for AllocationCoordinatorFailureReasonTrace {
     fn from(value: ClaimBundleError) -> Self {
         Self::Claims {
-            error: value.into(),
-        }
-    }
-}
-
-impl From<ConnectedProducerBindingError> for AllocationCoordinatorFailureReasonTrace {
-    fn from(value: ConnectedProducerBindingError) -> Self {
-        Self::ConnectedProducerBinding {
             error: value.into(),
         }
     }
@@ -2958,97 +2941,12 @@ impl From<PlanningProjectionError> for PlanningProjectionErrorTrace {
 
 /// Why exact connected producer assignments could not be retained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ConnectedProducerBindingErrorTrace {
-    /// A fresh proposal was already bound.
-    AlreadyBound,
-    /// The active operation changed before its schedule was refreshed.
-    StaleActiveOperation,
-    /// The allocator returned the wrong number of assignments.
-    JobCount {
-        /// Expected job count.
-        expected: u32,
-        /// Actual job count.
-        actual: u32,
-    },
-    /// One assignment belonged to another operation.
-    Owner {
-        /// Request position that failed.
-        request_ordinal: u32,
-    },
-    /// One assignment had the wrong request position.
-    RequestOrdinal {
-        /// Expected request position.
-        expected: u32,
-        /// Actual request position.
-        actual: u32,
-    },
-    /// One assignment trained the wrong unit kind.
-    Kind {
-        /// Request position that failed.
-        request_ordinal: u32,
-    },
-    /// One assignment used a producer outside the proposal's access set.
-    Producer {
-        /// Request position that failed.
-        request_ordinal: u32,
-    },
-    /// One assignment changed its exact queue timing.
-    Timing {
-        /// Request position that failed.
-        request_ordinal: u32,
-    },
-    /// One assignment no longer attributed exactly one unit cost.
-    Funding {
-        /// Request position that failed.
-        request_ordinal: u32,
-    },
-}
-
-impl From<ConnectedProducerBindingError> for ConnectedProducerBindingErrorTrace {
-    fn from(value: ConnectedProducerBindingError) -> Self {
-        match value {
-            ConnectedProducerBindingError::AlreadyBound => Self::AlreadyBound,
-            ConnectedProducerBindingError::StaleActiveOperation => Self::StaleActiveOperation,
-            ConnectedProducerBindingError::JobCount { expected, actual } => Self::JobCount {
-                expected: bounded_count(expected),
-                actual: bounded_count(actual),
-            },
-            ConnectedProducerBindingError::Owner { request_ordinal } => Self::Owner {
-                request_ordinal: bounded_count(request_ordinal),
-            },
-            ConnectedProducerBindingError::RequestOrdinal { expected, actual } => {
-                Self::RequestOrdinal {
-                    expected: bounded_count(expected),
-                    actual: bounded_count(actual),
-                }
-            }
-            ConnectedProducerBindingError::Kind { request_ordinal } => Self::Kind {
-                request_ordinal: bounded_count(request_ordinal),
-            },
-            ConnectedProducerBindingError::Producer { request_ordinal } => Self::Producer {
-                request_ordinal: bounded_count(request_ordinal),
-            },
-            ConnectedProducerBindingError::Timing { request_ordinal } => Self::Timing {
-                request_ordinal: bounded_count(request_ordinal),
-            },
-            ConnectedProducerBindingError::Funding { request_ordinal } => Self::Funding {
-                request_ordinal: bounded_count(request_ordinal),
-            },
-        }
-    }
-}
-
-/// Why a bound connected proposal could not enter planner state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectedProposalCommitErrorTrace {
     /// Planner state changed after derivation.
     StalePlanner,
     /// Another connected assault already owned the planner.
     ExistingAssault,
-    /// The proposal lacked the allocator's exact producer schedule.
-    UnboundProducerSchedule,
 }
 
 impl From<ConnectedProposalCommitError> for ConnectedProposalCommitErrorTrace {
@@ -3056,7 +2954,6 @@ impl From<ConnectedProposalCommitError> for ConnectedProposalCommitErrorTrace {
         match value {
             ConnectedProposalCommitError::StalePlanner => Self::StalePlanner,
             ConnectedProposalCommitError::ExistingAssault => Self::ExistingAssault,
-            ConnectedProposalCommitError::UnboundProducerSchedule => Self::UnboundProducerSchedule,
         }
     }
 }
@@ -4139,27 +4036,6 @@ mod tests {
                 },
             })
         );
-
-        trace.record_coordinator_failure(
-            AllocationCoordinatorStageTrace::ConnectedProposalBinding,
-            ConnectedProducerBindingError::RequestOrdinal {
-                expected: usize::MAX,
-                actual: 4,
-            }
-            .into(),
-        );
-        assert_eq!(
-            trace.coordinator_failure,
-            Some(AllocationCoordinatorFailureTrace {
-                stage: AllocationCoordinatorStageTrace::ConnectedProposalBinding,
-                reason: AllocationCoordinatorFailureReasonTrace::ConnectedProducerBinding {
-                    error: ConnectedProducerBindingErrorTrace::RequestOrdinal {
-                        expected: u32::MAX,
-                        actual: 4,
-                    },
-                },
-            })
-        );
     }
 
     #[test]
@@ -4281,71 +4157,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_binding_and_commit_errors_remain_distinguishable() {
-        let binding_cases = [
-            (
-                ConnectedProducerBindingError::AlreadyBound,
-                ConnectedProducerBindingErrorTrace::AlreadyBound,
-            ),
-            (
-                ConnectedProducerBindingError::StaleActiveOperation,
-                ConnectedProducerBindingErrorTrace::StaleActiveOperation,
-            ),
-            (
-                ConnectedProducerBindingError::JobCount {
-                    expected: usize::MAX,
-                    actual: 3,
-                },
-                ConnectedProducerBindingErrorTrace::JobCount {
-                    expected: u32::MAX,
-                    actual: 3,
-                },
-            ),
-            (
-                ConnectedProducerBindingError::Owner { request_ordinal: 4 },
-                ConnectedProducerBindingErrorTrace::Owner { request_ordinal: 4 },
-            ),
-            (
-                ConnectedProducerBindingError::RequestOrdinal {
-                    expected: 5,
-                    actual: 6,
-                },
-                ConnectedProducerBindingErrorTrace::RequestOrdinal {
-                    expected: 5,
-                    actual: 6,
-                },
-            ),
-            (
-                ConnectedProducerBindingError::Kind { request_ordinal: 7 },
-                ConnectedProducerBindingErrorTrace::Kind { request_ordinal: 7 },
-            ),
-            (
-                ConnectedProducerBindingError::Producer { request_ordinal: 8 },
-                ConnectedProducerBindingErrorTrace::Producer { request_ordinal: 8 },
-            ),
-            (
-                ConnectedProducerBindingError::Timing { request_ordinal: 9 },
-                ConnectedProducerBindingErrorTrace::Timing { request_ordinal: 9 },
-            ),
-            (
-                ConnectedProducerBindingError::Funding {
-                    request_ordinal: 10,
-                },
-                ConnectedProducerBindingErrorTrace::Funding {
-                    request_ordinal: 10,
-                },
-            ),
-        ];
-        for (error, expected) in binding_cases {
-            assert_eq!(ConnectedProducerBindingErrorTrace::from(error), expected);
-            assert_eq!(
-                AllocationCoordinatorFailureReasonTrace::from(error),
-                AllocationCoordinatorFailureReasonTrace::ConnectedProducerBinding {
-                    error: expected,
-                }
-            );
-        }
-
+    fn connected_commit_errors_remain_distinguishable() {
         let commit_cases = [
             (
                 ConnectedProposalCommitError::StalePlanner,
@@ -4354,10 +4166,6 @@ mod tests {
             (
                 ConnectedProposalCommitError::ExistingAssault,
                 ConnectedProposalCommitErrorTrace::ExistingAssault,
-            ),
-            (
-                ConnectedProposalCommitError::UnboundProducerSchedule,
-                ConnectedProposalCommitErrorTrace::UnboundProducerSchedule,
             ),
         ];
         for (error, expected) in commit_cases {

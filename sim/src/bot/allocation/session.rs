@@ -11,14 +11,13 @@ use super::{
     CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
     ImportedObligation, LegacyChannel, LegacyDecisionRequest, ObligationClass, ObligationKey,
     ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
-    active_connected_producer_assignments, active_connected_revision_investment_proposal,
-    active_connected_revision_obligation, active_connected_revision_producer_assignments,
-    clamped_current_reserve_obligation, connected_investment_proposal,
-    connected_producer_assignments, current_reserve_at, defense_investment_proposals,
-    economic_investment_claims, economic_investment_proposal, fixed_production_current_reserve,
-    forecast_reserve_through, foundry_investment_proposal, fresh_emergency_defense_obligation,
-    imported_obligation, legacy_decision_obligation, legacy_unit_obligation,
-    observed_builder_obligations, saved_foundry_obligation, standing_force_investment_proposals,
+    active_connected_revision_investment_proposal, active_connected_revision_obligation,
+    clamped_current_reserve_obligation, connected_investment_proposal, current_reserve_at,
+    defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
+    fixed_production_current_reserve, forecast_reserve_through, foundry_investment_proposal,
+    fresh_emergency_defense_obligation, imported_obligation, legacy_decision_obligation,
+    legacy_unit_obligation, observed_builder_obligations, saved_foundry_obligation,
+    standing_force_investment_proposals,
 };
 use crate::bot::PublicMapBriefing;
 use crate::bot::difficulty::{DifficultyTuning, strategic_admission_tick};
@@ -36,7 +35,7 @@ use crate::bot::profile::ResolvedProfile;
 #[cfg(test)]
 use crate::bot::query_work::QueryPurpose;
 use crate::bot::raid::RaidPlanner;
-use crate::bot::resources::{ProducerLaneReservations, ReservedProducerJob, ResourceSnapshot};
+use crate::bot::resources::{ProducerLaneReservations, ResourceSnapshot};
 use crate::bot::standing_force::{
     StandingForceContext, StandingGroundTarget, StandingProductionCommitment,
     derive_standing_force_with_demand,
@@ -1085,7 +1084,7 @@ impl<'a> AllocationSession<'a> {
         committed.extend(
             self.participants
                 .strategy
-                .issued_connected_production_assignments(self.context.observation)
+                .paid_connected_production(self.context.observation)
                 .into_iter()
                 .map(|assignment| {
                     StandingProductionCommitment::paid(assignment.producer(), assignment.kind())
@@ -1507,15 +1506,46 @@ impl<'a> AllocationSession<'a> {
         if revises_active {
             remove_active_connected_obligation(&mut prepared.obligations);
             prepared.active_connected = {
-                self.participants
-                    .strategy
-                    .active_connected_obligation(self.context.observation)
+                self.participants.strategy.active_connected_obligation(
+                    FreshConnectedProposalRequest::new(
+                        self.context.profile,
+                        self.context.tuning,
+                        self.context.observation,
+                        &prepared.resources,
+                        self.context.intelligence,
+                        self.context.home,
+                        StrategicCoordination {
+                            planning: Some(&self.participants.policy.planning),
+                            enlisted: &prepared.planner_claims,
+                            lift_support: None,
+                            allow_new_operation: false,
+                            protected_current_scrap: 0,
+                            protected_forecast_scrap: 0,
+                            public_map: Some(self.context.public_map),
+                            orientation: self.context.orientation,
+                        },
+                    )
+                    .with_paid_exclusions(
+                        &self
+                            .participants
+                            .policy
+                            .state
+                            .reconnaissance
+                            .paid_exclusions(),
+                    ),
+                )
             };
             if let Some(active) = &prepared.active_connected {
                 prepared
                     .obligations
                     .push(active_connected_obligation(active).ok()?);
             }
+        }
+        if prepared.obligations.iter().any(|obligation| {
+            matches!(obligation.key, ObligationKey::ConnectedOffense { .. })
+                && !obligation.claims.producer_jobs().is_empty()
+        }) {
+            return None;
         }
         prepared.obligations.retain(|obligation| {
             obligation
@@ -1662,8 +1692,10 @@ impl<'a> AllocationSession<'a> {
         self.refresh_and_bind_lift(prepared, &producer_schedule)?;
         let mut payloads = settlement.into_payloads();
         self.dispatch_ready_saved_foundry(prepared, &mut effects)?;
-        self.refresh_active_connected(prepared, &producer_schedule)?;
-        self.commit_fresh_connected(&producer_schedule, &mut payloads, &mut effects)?;
+        self.commit_fresh_connected(&mut payloads, &mut effects)?;
+        self.participants
+            .strategy
+            .record_connected_purchases(&producer_schedule, self.context.observation.tick);
         self.commit_fresh_foundry(prepared, &mut payloads, &mut effects)?;
         for job in &producer_schedule {
             if let ClaimOwner::Obligation {
@@ -1958,49 +1990,14 @@ impl<'a> AllocationSession<'a> {
         Ok(())
     }
 
-    fn refresh_active_connected(
-        &mut self,
-        prepared: &PreparedAllocation,
-        producer_schedule: &[super::ScheduledProducerJob],
-    ) -> Result<(), CoordinatorFailure> {
-        let Some(active) = prepared.active_connected.as_ref() else {
-            return Ok(());
-        };
-        let planner = &mut *self.participants.strategy;
-        let assignments = active_connected_producer_assignments(active, producer_schedule);
-        planner
-            .refresh_active_connected_funding(active, &assignments)
-            .map_err(|error| {
-                (
-                    AllocationCoordinatorStageTrace::ActiveConnectedRefresh,
-                    error.into(),
-                )
-            })
-    }
-
     fn commit_fresh_connected(
         &mut self,
-        producer_schedule: &[super::ScheduledProducerJob],
         payloads: &mut super::AcceptedDomainPayloads,
         effects: &mut CommitEffects,
     ) -> Result<(), CoordinatorFailure> {
-        let Some(mut connected) = payloads.take_connected() else {
+        let Some(connected) = payloads.take_connected() else {
             return Ok(());
         };
-        let revises_active = connected.revises_active_operation();
-        let assignments = if revises_active {
-            active_connected_revision_producer_assignments(&connected, producer_schedule)
-        } else {
-            connected_producer_assignments(&connected, producer_schedule)
-        };
-        connected
-            .bind_producer_assignments(assignments)
-            .map_err(|error| {
-                (
-                    AllocationCoordinatorStageTrace::ConnectedProposalBinding,
-                    error.into(),
-                )
-            })?;
         let planner = &mut *self.participants.strategy;
         planner
             .commit_connected_proposal(connected)
@@ -3113,46 +3110,6 @@ fn feasible_active_lift_future_production_obligation(
     Ok(best)
 }
 
-#[cfg(test)]
-fn active_connected_production_context(
-    resources: &ResourceSnapshot,
-    active: &ActiveConnectedObligation,
-    cadence: Tick,
-    observed_at: Tick,
-) -> Option<(ProducerLaneReservations, Vec<Intent>)> {
-    if !active.producer_schedule_is_executable(resources, cadence, observed_at) {
-        return None;
-    }
-    let due: Vec<_> = active
-        .provider_jobs()
-        .iter()
-        .filter(|assignment| assignment.timing().enqueued_at() == observed_at)
-        .map(|assignment| Intent::TrainAt {
-            building: assignment.producer(),
-            kind: assignment.kind(),
-        })
-        .collect();
-    let projection = resources
-        .planning_projection(active.deadline(), cadence)
-        .ok()?;
-    let lanes = ProducerLaneReservations::from_jobs(
-        &projection,
-        active.provider_jobs().iter().map(|assignment| {
-            let timing = assignment.timing();
-            ReservedProducerJob {
-                producer: assignment.producer(),
-                kind: assignment.kind(),
-                enqueued_at: timing.enqueued_at(),
-                starts_at: timing.starts_at(),
-                ready_at: timing.ready_at(),
-                ready_before: timing.ready_before(),
-            }
-        }),
-    )
-    .ok()?;
-    Some((lanes, due))
-}
-
 fn active_lift_production_obligation(
     obligation: &ActiveLiftProductionObligation,
 ) -> Result<ImportedObligation, ClaimBundleError> {
@@ -3194,118 +3151,37 @@ fn lift_preceding_production_context(
     connected: Option<&ActiveConnectedObligation>,
     cadence: Tick,
     observed_at: Tick,
+    planning: &crate::bot::planning::PlanningWork,
 ) -> Option<(ProducerLaneReservations, Vec<Intent>)> {
-    let mut jobs = Vec::new();
-    let mut funding = Vec::new();
-    if let Some(lift) = lift {
-        funding.extend(lift.producer_jobs().iter().map(|assignment| {
-            let split = assignment.funding();
-            RetainedProducerFunding {
-                through: assignment.timing().enqueued_at(),
-                current_scrap: split.current_scrap(),
-                forecast_scrap: split.forecast_scrap(),
-            }
-        }));
-        jobs.extend(
+    let horizon = lift
+        .map_or(observed_at.saturating_add(cadence), |lift| {
             lift.producer_jobs()
                 .iter()
-                .map(|assignment| ReservedProducerJob {
-                    producer: assignment.producer(),
-                    kind: assignment.kind(),
-                    enqueued_at: assignment.timing().enqueued_at(),
-                    starts_at: assignment.timing().starts_at(),
-                    ready_at: assignment.timing().ready_at(),
-                    ready_before: assignment.timing().ready_before(),
-                }),
-        );
+                .map(|job| job.timing().ready_before())
+                .max()
+                .unwrap_or(observed_at.saturating_add(cadence))
+        })
+        .max(connected.map_or(0, ActiveConnectedObligation::deadline));
+    let mut allocation = CrossDomainAllocation::new(resources, horizon, cadence).ok()?;
+    if let Some(lift) = lift {
+        allocation.import(active_lift_production_obligation(lift).ok()?);
     }
     if let Some(connected) = connected {
-        funding.extend(connected.provider_jobs().iter().map(|assignment| {
-            let split = assignment.funding();
-            RetainedProducerFunding {
-                through: assignment.timing().enqueued_at(),
-                current_scrap: split.current_scrap(),
-                forecast_scrap: split.forecast_scrap(),
-            }
-        }));
-        jobs.extend(
-            connected
-                .provider_jobs()
-                .iter()
-                .map(|assignment| ReservedProducerJob {
-                    producer: assignment.producer(),
-                    kind: assignment.kind(),
-                    enqueued_at: assignment.timing().enqueued_at(),
-                    starts_at: assignment.timing().starts_at(),
-                    ready_at: assignment.timing().ready_at(),
-                    ready_before: assignment.timing().ready_before(),
-                }),
-        );
+        allocation.import(active_connected_obligation(connected).ok()?);
     }
-    jobs.sort_unstable_by_key(|job| {
-        (
-            job.producer,
-            job.starts_at,
-            job.ready_at,
-            job.enqueued_at,
-            job.kind,
-        )
-    });
-    if !retained_producer_funding_is_backed(resources, &funding) {
-        return None;
-    }
-    let projection = resources
-        .planning_projection(
-            jobs.iter()
-                .map(|job| job.ready_before)
-                .max()
-                .unwrap_or(observed_at.saturating_add(cadence)),
-            cadence,
-        )
+    let settled = allocation
+        .resolve_planned(AllocationPersonality::default(), None, planning)
         .ok()?;
-    let lanes = ProducerLaneReservations::from_jobs(&projection, jobs.iter().copied()).ok()?;
-    let due = jobs
-        .into_iter()
+    let due = settled
+        .producer_schedule()
+        .iter()
         .filter(|job| job.enqueued_at == observed_at)
         .map(|job| Intent::TrainAt {
             building: job.producer,
             kind: job.kind,
         })
         .collect();
-    Some((lanes, due))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RetainedProducerFunding {
-    through: Tick,
-    current_scrap: u32,
-    forecast_scrap: u32,
-}
-
-fn retained_producer_funding_is_backed(
-    resources: &ResourceSnapshot,
-    assignments: &[RetainedProducerFunding],
-) -> bool {
-    let mut scheduled = assignments.to_vec();
-    scheduled.sort_unstable_by_key(|assignment| assignment.through);
-    let mut required = 0_u64;
-    let mut index = 0;
-    while index < scheduled.len() {
-        let through = scheduled[index].through;
-        while index < scheduled.len() && scheduled[index].through == through {
-            required = required
-                .saturating_add(u64::from(scheduled[index].current_scrap))
-                .saturating_add(u64::from(scheduled[index].forecast_scrap));
-            index += 1;
-        }
-        let available = u64::from(resources.current_scrap().amount()).saturating_add(u64::from(
-            resources.forecast().income_through(through).amount(),
-        ));
-        if required > available {
-            return false;
-        }
-    }
-    true
+    Some((settled.producer_lane_reservations().clone(), due))
 }
 
 fn fresh_lift_producer_assignments(
@@ -3569,8 +3445,7 @@ mod tests {
     };
     use crate::bot::strategy::{
         AirRecoveryReason, ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
-        ConnectedOpportunityCase, ConnectedProducerAssignment, ConnectedProducerFunding,
-        ConnectedProducerTiming, ConnectedProviderJob, ConnectedStrategicValue,
+        ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
         ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposalFixture,
     };
     use crate::bot::trace::{AllocationConflictTrace, ProposalDispositionTrace, ProposalKeyTrace};
@@ -4086,68 +3961,44 @@ mod tests {
         })
     }
 
-    fn connected_assignments(
-        proposal: &FreshConnectedProposal,
-        forecast_funded: bool,
-    ) -> Vec<ConnectedProducerAssignment> {
-        let identity = proposal.identity();
-        let mut lanes = Vec::<(BuildingId, Tick)>::new();
-        proposal
-            .minimum_claims()
-            .provider_jobs()
-            .iter()
-            .enumerate()
-            .map(|(request_ordinal, job)| {
-                let producer = job.eligible_producers()[0];
-                let lane_index = lanes
-                    .iter()
-                    .position(|(candidate, _)| *candidate == producer)
-                    .unwrap_or_else(|| {
-                        lanes.push((producer, job.enqueue_not_before()));
-                        lanes.len() - 1
-                    });
-                let starts_at = lanes[lane_index].1.max(job.enqueue_not_before());
-                let ready_at = starts_at
-                    .saturating_add(Tick::from(job.kind().stats().train_ticks))
-                    .saturating_sub(1);
-                assert!(ready_at < job.ready_before());
-                lanes[lane_index].1 = ready_at.saturating_add(1);
-                let cost = job.kind().stats().cost;
-                ConnectedProducerAssignment::new(
-                    identity,
-                    request_ordinal,
-                    producer,
-                    job.kind(),
-                    ConnectedProducerTiming::new(
-                        job.enqueue_not_before(),
-                        starts_at,
-                        ready_at,
-                        job.ready_before(),
-                    ),
-                    if forecast_funded {
-                        ConnectedProducerFunding::new(0, cost)
-                    } else {
-                        ConnectedProducerFunding::new(cost, 0)
-                    },
-                )
-            })
-            .collect()
-    }
-
     fn current_connected_planner(
         observation: &Observation,
-        forecast_funded: bool,
-    ) -> (StrategicPlanner, Vec<ConnectedProducerAssignment>) {
-        let mut proposal = current_connected_proposal(observation);
-        let assignments = connected_assignments(&proposal, forecast_funded);
-        proposal
-            .bind_producer_assignments(assignments.clone())
-            .expect("the exact minimum schedule binds");
+    ) -> (StrategicPlanner, Vec<ConnectedProviderJob>) {
+        let proposal = current_connected_proposal(observation);
+        let jobs = proposal.minimum_claims().provider_jobs().to_vec();
         let mut planner = StrategicPlanner::new();
+        planner.commit_connected_proposal(proposal).unwrap();
+        (planner, jobs)
+    }
+
+    fn connected_obligation(
+        planner: &mut StrategicPlanner,
+        observation: &Observation,
+    ) -> ActiveConnectedObligation {
+        let profile = prime_profile();
+        let briefing = connected_briefing(observation);
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(observation);
         planner
-            .commit_connected_proposal(proposal)
-            .expect("the bound connected package commits");
-        (planner, assignments)
+            .active_connected_obligation(FreshConnectedProposalRequest::new(
+                &profile,
+                DifficultyTuning::for_level(profile.difficulty),
+                observation,
+                &ResourceSnapshot::from_observation(observation),
+                &intelligence,
+                TilePos::new(3, 10),
+                StrategicCoordination {
+                    planning: None,
+                    enlisted: &[],
+                    lift_support: None,
+                    allow_new_operation: false,
+                    protected_current_scrap: 0,
+                    protected_forecast_scrap: 0,
+                    public_map: Some(&briefing),
+                    orientation: Orientation::for_home(observation, TilePos::new(3, 10)),
+                },
+            ))
+            .expect("an admitted connected operation retains demand")
     }
 
     fn run_connected_session(
@@ -4871,7 +4722,6 @@ mod tests {
             &mut obligations,
             &mut air_lift,
             &active_connected_due_intents,
-            true,
         );
 
         assert_eq!(
@@ -5579,7 +5429,7 @@ mod tests {
                     session
                         .participants
                         .strategy
-                        .active_connected_obligation(&observation)
+                        .connected_package_diagnostics()
                         .is_some()
                 );
                 assert_eq!(
@@ -5844,170 +5694,60 @@ mod tests {
     }
 
     #[test]
-    fn due_connected_append_preserves_its_later_lane_against_lift_production() {
-        const HOME: TilePos = TilePos::new(5, 15);
-        let (mut observation, lift, _) = active_lift_fixture();
-        observation.my_buildings.push(observed_building(
-            4,
-            0,
-            BuildingKind::Crucible,
-            TilePos::new(12, 18),
-        ));
-        observation.my_queues.push(Vec::new());
-        observation.my_queue_progress = vec![0; observation.my_buildings.len()];
-
-        let mut proposal = current_connected_proposal(&observation);
-        let mut assignments = connected_assignments(&proposal, false);
-        let pair = assignments
-            .iter()
-            .enumerate()
-            .find_map(|(first_index, first)| {
-                assignments
-                    .iter()
-                    .enumerate()
-                    .skip(first_index + 1)
-                    .find(|(_, later)| later.producer() == first.producer())
-                    .map(|(later_index, _)| (first_index, later_index))
-            });
-        let (due_index, later_index) = pair.expect(
-            "the connected minimum must share its Airworks between scout and strike providers",
-        );
-        let due = assignments[due_index];
-        let later = assignments[later_index];
-        assert_eq!(due.timing().enqueued_at(), observation.tick);
-        let deferred_enqueue = observation.tick.saturating_add(12);
-        assert!(deferred_enqueue <= later.timing().starts_at());
-        assignments[later_index] = ConnectedProducerAssignment::new(
-            proposal.identity(),
-            later.request_ordinal(),
-            later.producer(),
-            later.kind(),
-            ConnectedProducerTiming::new(
-                deferred_enqueue,
-                later.timing().starts_at(),
-                later.timing().ready_at(),
-                later.timing().ready_before(),
-            ),
-            ConnectedProducerFunding::new(later.kind().stats().cost, 0),
-        );
-        let expected_later = assignments[later_index];
-        proposal
-            .bind_producer_assignments(assignments)
-            .expect("delaying the queued append without moving production remains exact");
-        let mut strategy = StrategicPlanner::new();
-        strategy
-            .commit_connected_proposal(proposal)
-            .expect("the exact connected schedule commits");
-        let mut committed_strategy = strategy.clone();
-        let committed = run_connected_session(
-            &observation,
-            &mut UtilityPolicy::new(),
-            &mut committed_strategy,
-        );
-        assert!(committed.allocation_ok);
-        assert_eq!(
-            committed
-                .allocated_producer_intents
-                .iter()
-                .filter(|intent| {
-                    **intent
-                        == (Intent::TrainAt {
-                            building: due.producer(),
-                            kind: due.kind(),
-                        })
-                })
-                .count(),
-            1,
-            "the allocator must lower its current job exactly once"
-        );
-        assert!(
-            committed_strategy
-                .active_connected_obligation(&observation)
-                .is_some_and(|active| active
-                    .provider_jobs()
-                    .iter()
-                    .any(|assignment| assignment.request_ordinal() == due.request_ordinal())),
-            "settlement must leave current jobs visible until post-allocation tactics validate the complete schedule"
-        );
-        let active = strategy
-            .active_connected_obligation(&observation)
-            .expect("the committed package exposes its due and future work");
+    fn flexible_connected_demand_and_lift_share_capacity_without_overlap() {
+        let (observation, _, _) = active_lift_fixture();
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let active = connected_obligation(&mut strategy, &observation);
         let resources = ResourceSnapshot::from_observation(&observation);
-        let (lanes, due_intents) =
-            active_connected_production_context(&resources, &active, 12, observation.tick)
-                .expect("the exact connected lane remains executable");
-        assert!(due_intents.contains(&Intent::TrainAt {
-            building: due.producer(),
-            kind: due.kind(),
-        }));
-        assert!(lanes.jobs().contains(&ReservedProducerJob {
-            producer: expected_later.producer(),
-            kind: expected_later.kind(),
-            enqueued_at: expected_later.timing().enqueued_at(),
-            starts_at: expected_later.timing().starts_at(),
-            ready_at: expected_later.timing().ready_at(),
-            ready_before: expected_later.timing().ready_before(),
-        }));
-
-        let projected = project_producer_intents(&observation, &due_intents);
-        let admission = LiftAdmission {
-            allow_new_commitments: true,
-            spendable_scrap: projected.scrap,
-            core_reservations: &[],
-            minimum_core_equivalents: 0,
-        };
-        let mut unrestricted_lift = lift.clone();
-        let unrestricted = unrestricted_lift.think_with_admission_and_producer_lanes(
-            &projected,
-            HOME,
-            &[],
-            LiftAirSupport::Independent,
-            admission,
-            ProducerLaneReservations::empty(),
-        );
-        assert!(unrestricted.intents.iter().any(|intent| {
-            matches!(
-                intent,
-                Intent::TrainAt {
-                    building,
-                    kind: UnitKind::Skyhook,
-                } if *building == expected_later.producer()
+        let mut allocation = CrossDomainAllocation::new(&resources, active.deadline(), 12).unwrap();
+        allocation.import(active_connected_obligation(&active).unwrap());
+        allocation.import(imported_obligation(
+            ObligationClass::Legacy,
+            observation.tick,
+            ObligationKey::Legacy {
+                channel: LegacyChannel::Lift,
+                sequence: 2,
+            },
+            ClaimBundle::new(
+                0,
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![ProducerJobClaim::flexible(
+                    UnitKind::Skyhook,
+                    observation.tick,
+                    active.deadline(),
+                    vec![
+                        observation
+                            .my_buildings
+                            .iter()
+                            .find(|building| building.kind == BuildingKind::Airworks)
+                            .unwrap()
+                            .id,
+                    ],
+                )],
             )
-        }));
-
-        let mut protected_lift = lift;
-        let protected = protected_lift.think_with_admission_and_producer_lanes(
-            &projected,
-            HOME,
-            &[],
-            LiftAirSupport::Independent,
-            admission,
-            &lanes,
-        );
-        assert!(protected.intents.iter().all(|intent| {
-            !matches!(
-                intent,
-                Intent::TrainAt {
-                    building,
-                    kind: UnitKind::Skyhook,
-                } if *building == expected_later.producer()
-            )
-        }));
-        assert!(lanes.jobs().contains(&ReservedProducerJob {
-            producer: expected_later.producer(),
-            kind: expected_later.kind(),
-            enqueued_at: expected_later.timing().enqueued_at(),
-            starts_at: expected_later.timing().starts_at(),
-            ready_at: expected_later.timing().ready_at(),
-            ready_before: expected_later.timing().ready_before(),
-        }));
+            .unwrap(),
+        ));
+        let settled = allocation
+            .resolve(AllocationPersonality::default(), None)
+            .unwrap();
+        let mut jobs = settled.producer_schedule().to_vec();
+        assert!(jobs.iter().any(|job| job.kind == UnitKind::Skyhook));
+        assert!(jobs.len() > 1);
+        jobs.sort_by_key(|job| (job.producer, job.starts_at));
+        assert!(jobs.windows(2).all(
+            |pair| pair[0].producer != pair[1].producer || pair[0].ready_at < pair[1].starts_at
+        ));
+        assert!(jobs.iter().all(|job| job.ready_at < active.deadline()));
     }
 
     #[test]
     fn destroyed_connected_producer_enters_bounded_recovery() {
         let mut observation = connected_observation(120, 10_000);
-        let (mut planner, assignments) = current_connected_planner(&observation, false);
-        let destroyed = assignments[0].producer();
+        let (mut planner, assignments) = current_connected_planner(&observation);
+        let destroyed = assignments[0].eligible_producers()[0];
         let index = observation
             .my_buildings
             .iter()
@@ -6026,275 +5766,58 @@ mod tests {
     }
 
     #[test]
-    fn blocked_connected_queue_ownership_cannot_resurrect_on_later_ordinary_work() {
-        let issued_at = 120;
-        let mut observation = connected_observation(issued_at, 10_000);
-        observation.enemy_buildings = vec![observed_building(
-            80,
-            1,
-            BuildingKind::Turret,
-            TilePos::new(24, 10),
-        )];
-        observation.my_buildings.pop();
-        observation.my_queues.pop();
-        observation.my_queue_progress.pop();
-        observation.my_buildings.push(observed_building(
-            14,
-            0,
-            BuildingKind::Fabricator,
-            TilePos::new(8, 2),
-        ));
-        observation.my_queues.push(Vec::new());
-        observation.my_queue_progress.push(0);
-        observation.my_units.extend((200..208).map(|id| {
-            owned_unit(
-                id,
-                UnitKind::Condor,
-                TilePos::new(8 + i32::try_from(id % 4).unwrap(), 12),
-            )
-        }));
-        observation.my_units.sort_unstable_by_key(|unit| unit.id);
-
-        let (mut planner, assignments) = current_connected_planner(&observation, false);
-        let bombard = assignments
-            .iter()
-            .copied()
-            .find(|assignment| assignment.kind() == UnitKind::Bombard)
-            .expect("the turret operation buys one suppression Bombard");
-        assert_eq!(
-            assignments
-                .iter()
-                .filter(|assignment| assignment.kind() == UnitKind::Bombard)
-                .count(),
-            1
-        );
-        planner.mark_current_connected_providers_issued(issued_at);
-        let producer_index = observation
-            .my_buildings
-            .iter()
-            .position(|building| building.id == bombard.producer())
-            .expect("the exact Fabricator remains observable");
-        observation.my_queues[producer_index] = std::iter::once(UnitKind::Bombard)
-            .chain(std::iter::repeat_n(
-                UnitKind::Tender,
-                crate::stats::QUEUE_CAP.saturating_sub(1),
-            ))
-            .collect();
-        observation.my_queue_progress[producer_index] = UnitKind::Bombard.stats().train_ticks;
-        observation.tick = bombard.timing().ready_at().saturating_add(1);
-
-        let mut policy = UtilityPolicy::new();
-        let mut strategy = planner;
-        let blocked = run_connected_session(&observation, &mut policy, &mut strategy);
-        assert!(blocked.allocation_ok);
-        assert!(
-            strategy
-                .issued_connected_production_assignments(&observation)
-                .contains(&bombard),
-            "the shipped session must preserve ownership of the blocked paid occurrence"
-        );
-
-        observation.tick = observation.tick.saturating_add(12);
-        observation.my_queues[producer_index] = vec![UnitKind::Bombard];
-        observation.my_queue_progress[producer_index] = 1;
-        policy = UtilityPolicy::new();
-        let mut progressing_trace = AllocationTrace::default();
-        let progressing = run_connected_session_with_team_decision_and_trace(
-            &observation,
-            &mut policy,
-            &mut strategy,
-            StrategicDecision::default(),
-            Some(&mut progressing_trace),
-        );
-        assert!(
-            progressing.allocation_ok,
-            "the progressing queue must allocate cleanly: {progressing_trace:#?}"
-        );
-        assert_eq!(
-            strategy.issued_connected_production_assignments(&observation),
-            vec![bombard],
-            "a delayed paid Bombard remains owned until its queue occurrence disappears"
-        );
-
-        observation.tick = observation.tick.saturating_add(12);
-        observation.my_queues[producer_index].clear();
-        observation.my_queue_progress[producer_index] = 0;
-        assert_eq!(
-            strategy.issued_connected_production_assignments(&observation),
-            Vec::new(),
-            "observing the paid occurrence leave the queue releases its ownership"
-        );
-
-        observation.tick = observation
-            .tick
-            .saturating_add(Tick::from(UnitKind::Bombard.stats().train_ticks));
-        observation.my_queues[producer_index] = vec![UnitKind::Bombard];
-        observation.my_queue_progress[producer_index] = UnitKind::Bombard.stats().train_ticks;
-        policy = UtilityPolicy::new();
-        let later_blocked = run_connected_session(&observation, &mut policy, &mut strategy);
-        assert!(later_blocked.allocation_ok);
-        assert_eq!(
-            strategy.issued_connected_production_assignments(&observation),
-            Vec::new(),
-            "released history cannot reclaim the later blocked ordinary Bombard"
-        );
+    fn committed_connected_purchases_enter_paid_ownership() {
+        let observation = connected_observation(120, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let outcome = run_connected_session(&observation, &mut UtilityPolicy::new(), &mut strategy);
+        assert!(outcome.allocation_ok);
+        let paid = strategy.paid_connected_production(&observation);
+        assert!(!paid.is_empty());
+        for purchase in paid {
+            assert!(
+                outcome
+                    .allocated_producer_intents
+                    .contains(&Intent::TrainAt {
+                        building: purchase.producer(),
+                        kind: purchase.kind(),
+                    })
+            );
+        }
     }
 
     #[test]
     fn lost_forecast_source_recovers_instead_of_spending_unbacked_credit() {
         let mut observation = connected_observation(1_200, 10_000);
-        let mut proposal = current_connected_proposal(&observation);
-        let mut assignments = connected_assignments(&proposal, false);
-        let required_scrap = assignments
-            .iter()
-            .map(|assignment| assignment.kind().stats().cost)
-            .fold(0, u32::saturating_add);
-        let deferred_enqueue = observation.tick.saturating_add(12);
-        let deferred_index = assignments
+        let (mut planner, _) = current_connected_planner(&observation);
+        observation.scrap = 0;
+        let remove = observation
+            .my_buildings
             .iter()
             .enumerate()
-            .rev()
-            .find(|(index, assignment)| {
-                let timing = assignment.timing();
-                let shifted_start = timing.starts_at().max(deferred_enqueue);
-                let delay = shifted_start.saturating_sub(timing.starts_at());
-                timing.ready_at().saturating_add(delay) < timing.ready_before()
-                    && !assignments[index.saturating_add(1)..]
-                        .iter()
-                        .any(|later| later.producer() == assignment.producer())
+            .filter(|(_, building)| {
+                matches!(
+                    building.kind,
+                    BuildingKind::Crucible | BuildingKind::Reclaimer
+                )
             })
             .map(|(index, _)| index)
-            .expect("one last lane job can wait for the next decision boundary");
-        let deferred = assignments[deferred_index];
-        let shifted_start = deferred.timing().starts_at().max(deferred_enqueue);
-        let delay = shifted_start.saturating_sub(deferred.timing().starts_at());
-        assignments[deferred_index] = ConnectedProducerAssignment::new(
-            proposal.identity(),
-            deferred.request_ordinal(),
-            deferred.producer(),
-            deferred.kind(),
-            ConnectedProducerTiming::new(
-                deferred_enqueue,
-                shifted_start,
-                deferred.timing().ready_at().saturating_add(delay),
-                deferred.timing().ready_before(),
-            ),
-            ConnectedProducerFunding::new(deferred.kind().stats().cost - 1, 1),
-        );
-        proposal
-            .bind_producer_assignments(assignments)
-            .expect("one later append can retain a one-scrap forecast promise");
-        let mut planner = StrategicPlanner::new();
-        planner
-            .commit_connected_proposal(proposal)
-            .expect("the exact forecast-funded package commits");
-
-        observation.scrap = required_scrap - 1;
-        let lost_source = BuildingId(200);
-        observation.my_buildings.push(observed_building(
-            lost_source.0,
-            0,
-            BuildingKind::Reclaimer,
-            TilePos::new(12, 14),
-        ));
-        observation.my_queues.push(Vec::new());
-        observation.my_queue_progress.push(0);
-        observation.my_units.extend((300..316).map(|id| {
-            owned_unit(
-                id,
-                UnitKind::Harvester,
-                TilePos::new(2 + i32::try_from(id % 8).unwrap(), 16),
-            )
-        }));
-        observation.my_units.sort_unstable_by_key(|unit| unit.id);
-        let foundry_index = observation
-            .my_buildings
-            .iter()
-            .position(|building| building.id == BuildingId(10))
-            .expect("the home Foundry remains available");
-        observation.my_queues[foundry_index] = vec![UnitKind::Sentinel, UnitKind::Sentinel];
-        let funded_resources = ResourceSnapshot::from_observation(&observation);
-        let funded_obligation = planner
-            .active_connected_obligation(&observation)
-            .expect("the committed operation exposes its retained schedule");
-        assert!(
-            funded_obligation.producer_schedule_is_executable(
-                &funded_resources,
-                12,
-                observation.tick,
-            ),
-            "the delayed append must remain exact before funding is evaluated"
-        );
-        let mut funded_allocation =
-            CrossDomainAllocation::new(&funded_resources, funded_obligation.deadline(), 12)
-                .expect("the connected forecast has a valid horizon");
-        funded_allocation.import(
-            active_connected_obligation(&funded_obligation)
-                .expect("the retained package adapts into one obligation"),
-        );
-        if let Err(error) = funded_allocation.resolve(AllocationPersonality::default(), None) {
-            panic!("the completed Reclaimer must make the retained promise allocatable: {error:?}");
+            .collect::<Vec<_>>();
+        for index in remove.into_iter().rev() {
+            observation.my_buildings.remove(index);
+            observation.my_queues.remove(index);
+            observation.my_queue_progress.remove(index);
         }
-        assert_eq!(
-            funded_resources
-                .planning_projection(deferred_enqueue, 12)
-                .expect("the one-step forecast is bounded")
-                .forecast_through(deferred_enqueue),
-            1,
-            "the completed Reclaimer must supply the exact one-scrap shortfall"
-        );
-        let mut funded_policy = UtilityPolicy::new();
-        let mut funded_strategy = planner.clone();
-        let funded = run_connected_session(&observation, &mut funded_policy, &mut funded_strategy);
-        assert!(funded.allocation_ok);
-        assert!(
-            funded.connected_continues,
-            "the forecast-funded promise must be legitimate while its source exists"
-        );
-        let issued_cost = funded_strategy
-            .active_connected_obligation(&observation)
-            .expect("the funded operation still exposes its accepted current commands")
-            .provider_jobs()
-            .iter()
-            .filter(|assignment| assignment.timing().enqueued_at() == observation.tick)
-            .map(|assignment| assignment.kind().stats().cost)
-            .fold(0, u32::saturating_add);
-        assert!(issued_cost > 0, "the funded pass issues its current prefix");
-        observation.scrap = observation
-            .scrap
-            .checked_sub(issued_cost)
-            .expect("accepted current commands consume only their reserved bank");
-        funded_strategy.mark_current_connected_providers_issued(observation.tick);
-
-        let index = observation
-            .my_buildings
-            .iter()
-            .position(|building| building.id == lost_source)
-            .expect("the marginal completed source remains observable");
-        observation.my_buildings.remove(index);
-        observation.my_queues.remove(index);
-        observation.my_queue_progress.remove(index);
-        observation.tick = observation.tick.saturating_add(12);
-        assert_eq!(
-            ResourceSnapshot::from_observation(&observation)
-                .forecast()
-                .income_through(deferred_enqueue)
-                .amount(),
-            0,
-            "removing that exact Reclaimer must erase the promised income"
-        );
-
-        let mut strategy = funded_strategy;
+        observation.tick += 12;
         assert_connected_enters_bounded_recovery(
             &observation,
             &mut UtilityPolicy::new(),
-            &mut strategy,
-            "lost accepted forecast funding",
+            &mut planner,
+            "the remaining force cannot be funded without completed income",
         );
     }
 
     #[test]
-    fn deferred_mandatory_purchase_still_dispatches_accepted_production() {
+    fn deferred_mandatory_procurement_preserves_ownership_without_spending() {
         assert_deferred_portfolio_preserves_accepted_production(false);
     }
 
@@ -6305,24 +5828,11 @@ mod tests {
 
     fn assert_deferred_portfolio_preserves_accepted_production(revising: bool) {
         let observation = connected_observation(1_200, 10_000);
-        let mut proposal = current_connected_proposal(&observation);
+        let proposal = current_connected_proposal(&observation);
         let revision = revising.then(|| proposal.clone().into_active_revision_fixture());
-        proposal
-            .bind_producer_assignments(connected_assignments(&proposal, false))
-            .unwrap();
         let mut planner = StrategicPlanner::new();
         planner.commit_connected_proposal(proposal).unwrap();
-        let active = planner.active_connected_obligation(&observation).unwrap();
-        let expected: Vec<_> = active
-            .provider_jobs()
-            .iter()
-            .filter(|job| job.timing().enqueued_at() == observation.tick)
-            .map(|job| Intent::TrainAt {
-                building: job.producer(),
-                kind: job.kind(),
-            })
-            .collect();
-        assert!(!expected.is_empty());
+        let active = connected_obligation(&mut planner, &observation);
         let profile = prime_profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let dials = Dials::scripted(&profile, tuning);
@@ -6406,74 +5916,30 @@ mod tests {
                 policy: original_policy.speculative_checkpoint(),
             },
         );
-        assert!(resolved.settlement.is_ok());
-        assert_eq!(resolved.prepared.fresh_lift_producer_jobs, 0);
+        assert!(resolved.settlement.is_err());
         let outcome = session.commit_or_restore(resolved);
-        assert!(outcome.allocation_ok);
-        assert!(!outcome.accepted_connected);
-        assert!(
-            outcome.connected_continues,
-            "the allocator owns due purchases even when their proposed revision yields"
-        );
-        assert_eq!(outcome.allocated_producer_intents.len(), expected.len());
-        for intent in expected {
-            assert!(outcome.allocated_producer_intents.contains(&intent));
-        }
-        let after = strategy.active_connected_obligation(&observation).unwrap();
+        assert!(!outcome.allocation_ok);
+        assert!(outcome.allocated_producer_intents.is_empty());
+        assert_eq!(outcome.budget.utility_spendable, 0);
+        let after = connected_obligation(&mut strategy, &observation);
         assert_eq!(after.provider_jobs(), active.provider_jobs());
         assert_eq!(after.deadline(), active.deadline());
-        assert!(trace.error.is_none());
-        assert!(trace.coordinator_failure.is_none());
         assert_eq!(policy.planning.spent(), 0);
     }
 
     #[test]
-    fn deferred_revision_keeps_accepted_factory_assignments_and_operation() {
-        let mut obs = connected_observation(1_200, 10_000);
-        let mut proposal = current_connected_proposal(&obs);
-        let assignments: Vec<_> = connected_assignments(&proposal, false)
-            .into_iter()
-            .map(|job| {
-                let timing = job.timing();
-                ConnectedProducerAssignment::new(
-                    proposal.identity(),
-                    job.request_ordinal(),
-                    job.producer(),
-                    job.kind(),
-                    ConnectedProducerTiming::new(
-                        timing.enqueued_at() + 24,
-                        timing.starts_at() + 24,
-                        timing.ready_at() + 24,
-                        timing.ready_before(),
-                    ),
-                    ConnectedProducerFunding::new(job.kind().stats().cost, 0),
-                )
-            })
-            .collect();
-        proposal
-            .bind_producer_assignments(assignments.clone())
-            .unwrap();
-        let mut planner = StrategicPlanner::new();
-        planner.commit_connected_proposal(proposal).unwrap();
-        obs.tick += 12;
-        let before = planner.active_connected_obligation(&obs).unwrap();
-        let mut strategy = planner;
+    fn deferred_revision_preserves_the_operation_and_original_deadline() {
+        let mut observation = connected_observation(1_200, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let before = connected_obligation(&mut strategy, &observation);
+        observation.tick += 12;
         let mut policy = UtilityPolicy::new();
         policy.planning = crate::bot::planning::PlanningWork::with_allowance(0);
-        let outcome = run_connected_session(&obs, &mut policy, &mut strategy);
-        assert!(outcome.allocation_ok);
-        assert!(!outcome.accepted_connected);
-        assert!(
-            outcome
-                .rejected_connected_candidate
-                .as_ref()
-                .is_some_and(|rejected| rejected.reason.is_deferred())
-        );
-        let after = strategy
-            .active_connected_obligation(&obs)
-            .expect("pending refinement cannot revoke an accepted operation");
-        assert_eq!(after.provider_jobs(), before.provider_jobs());
+        let _ = run_connected_session(&observation, &mut policy, &mut strategy);
+        let after = connected_obligation(&mut strategy, &observation);
         assert_eq!(after.deadline(), before.deadline());
+        assert_eq!(after.accepted_at(), before.accepted_at());
+        assert_eq!(after.identity(), before.identity());
         assert_eq!(policy.planning.spent(), 0);
     }
 
@@ -7184,159 +6650,169 @@ mod tests {
 
     #[test]
     fn connected_and_lift_keep_one_shared_future_lane_across_the_next_think() {
-        const HOME: TilePos = TilePos::new(3, 10);
-        let mut observation = connected_observation(0, 10_000);
-        observation.known_rock = (0..observation.map_height)
-            .map(|y| TilePos::new(16, y))
-            .collect();
+        for execute_predecessors in [true, false] {
+            const HOME: TilePos = TilePos::new(3, 10);
+            let mut observation = connected_observation(0, 10_000);
+            observation.known_rock = (0..observation.map_height)
+                .map(|y| TilePos::new(16, y))
+                .collect();
 
-        let mut lift = LiftPlanner::new();
-        lift.think_with_admission(
-            &observation,
-            HOME,
-            &[],
-            LiftAirSupport::Independent,
-            LiftAdmission {
-                allow_new_commitments: true,
-                spendable_scrap: observation.scrap,
-                core_reservations: &[],
-                minimum_core_equivalents: 5,
-            },
-        );
-        let lift_operation = lift
-            .operation()
-            .expect("the blocked connected fixture admits a Lift")
-            .clone();
-        assert_eq!(lift_operation.phase, LiftPhase::Provision);
+            let mut lift = LiftPlanner::new();
+            lift.think_with_admission(
+                &observation,
+                HOME,
+                &[],
+                LiftAirSupport::Independent,
+                LiftAdmission {
+                    allow_new_commitments: true,
+                    spendable_scrap: observation.scrap,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 5,
+                },
+            );
+            let lift_operation = lift
+                .operation()
+                .expect("the blocked connected fixture admits a Lift")
+                .clone();
+            assert_eq!(lift_operation.phase, LiftPhase::Provision);
 
-        let mut connected = current_connected_proposal(&observation);
-        let identity = connected.identity();
-        let shift = 24;
-        let connected_assignments = connected_assignments(&connected, false)
-            .into_iter()
-            .map(|assignment| {
-                let timing = assignment.timing();
-                ConnectedProducerAssignment::new(
-                    identity,
-                    assignment.request_ordinal(),
-                    assignment.producer(),
-                    assignment.kind(),
-                    ConnectedProducerTiming::new(
-                        timing.enqueued_at().saturating_add(shift),
-                        timing.starts_at().saturating_add(shift),
-                        timing.ready_at().saturating_add(shift),
-                        timing.ready_before(),
-                    ),
-                    ConnectedProducerFunding::new(assignment.kind().stats().cost, 0),
-                )
-            })
-            .collect::<Vec<_>>();
-        connected
-            .bind_producer_assignments(connected_assignments.clone())
-            .expect("the future connected schedule binds");
-        let mut strategy = StrategicPlanner::new();
-        strategy
-            .commit_connected_proposal(connected)
-            .expect("the connected package commits");
-
-        let airworks = BuildingId(12);
-        let lift_starts_at = connected_assignments
-            .iter()
-            .filter(|assignment| assignment.producer() == airworks)
-            .map(|assignment| assignment.timing().ready_at())
-            .max()
-            .expect("the connected package uses the shared Airworks")
-            .saturating_add(1);
-        let lift_ready_at = lift_starts_at
-            .saturating_add(Tick::from(UnitKind::Skyhook.stats().train_ticks))
-            .saturating_sub(1);
-        assert!(lift_ready_at < lift_operation.deadline);
-        let lift_assignment = LiftProducerAssignment::new(
-            0,
-            airworks,
-            UnitKind::Skyhook,
-            LiftProducerTiming::new(
-                observation.tick.saturating_add(shift),
-                lift_starts_at,
-                lift_ready_at,
+            let connected = current_connected_proposal(&observation);
+            let mut allocation = CrossDomainAllocation::new(
+                &ResourceSnapshot::from_observation(&observation),
+                connected.deadline(),
+                12,
+            )
+            .unwrap();
+            allocation.offer(connected_investment_proposal(connected).unwrap());
+            let settlement = allocation
+                .resolve(AllocationPersonality::default(), None)
+                .unwrap();
+            let connected_assignments = settlement.producer_schedule().to_vec();
+            let mut payloads = settlement.into_payloads();
+            let mut strategy = StrategicPlanner::new();
+            strategy
+                .commit_connected_proposal(payloads.take_connected().unwrap())
+                .unwrap();
+            let shift = 24;
+            let airworks = BuildingId(12);
+            let lift_starts_at = connected_assignments
+                .iter()
+                .filter(|assignment| assignment.producer == airworks)
+                .map(|assignment| assignment.ready_at)
+                .max()
+                .expect("the connected package uses the shared Airworks")
+                .saturating_add(1);
+            let lift_ready_at = lift_starts_at
+                .saturating_add(Tick::from(UnitKind::Skyhook.stats().train_ticks))
+                .saturating_sub(1);
+            assert!(lift_ready_at < lift_operation.deadline);
+            let lift_assignment = LiftProducerAssignment::new(
+                0,
+                airworks,
+                UnitKind::Skyhook,
+                LiftProducerTiming::new(
+                    observation.tick.saturating_add(shift),
+                    lift_starts_at,
+                    lift_ready_at,
+                    lift_operation.deadline,
+                ),
+                LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
+            );
+            lift.bind_producer_assignments(
+                lift_operation.started_at,
                 lift_operation.deadline,
-            ),
-            LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
-        );
-        lift.bind_producer_assignments(
-            lift_operation.started_at,
-            lift_operation.deadline,
-            vec![lift_assignment],
-        )
-        .expect("the later exact Lift assignment binds");
-        let resources = ResourceSnapshot::from_observation(&observation);
-        assert!(
-            !lift
+                vec![lift_assignment],
+            )
+            .expect("the later exact Lift assignment binds");
+            let resources = ResourceSnapshot::from_observation(&observation);
+            assert!(
+                !lift
+                    .active_production_obligation()
+                    .unwrap()
+                    .producer_schedule_is_executable(&resources, 12, observation.tick),
+                "the later retained job is executable only after the preceding connected job"
+            );
+
+            if execute_predecessors {
+                for job in connected_assignments
+                    .iter()
+                    .filter(|job| job.enqueued_at == 0)
+                {
+                    let index = observation
+                        .my_buildings
+                        .iter()
+                        .position(|building| building.id == job.producer)
+                        .unwrap();
+                    observation.my_queues[index].push(job.kind);
+                }
+                observation.my_queue_progress = observation
+                    .my_queues
+                    .iter()
+                    .map(|queue| if queue.is_empty() { 0 } else { 12 })
+                    .collect();
+            }
+            observation.tick = observation.tick.saturating_add(12);
+            let profile = prime_profile();
+            let tuning = DifficultyTuning::for_level(profile.difficulty);
+            let dials = Dials::scripted(&profile, tuning);
+            let briefing = connected_briefing(&observation);
+            let mut intelligence = StrategicIntelligence::new();
+            intelligence.update(&observation);
+            let mut policy = UtilityPolicy::new();
+            let mut lifts = lift;
+            let mut team = TeamReliefPlanner::new();
+            let mut raids = RaidPlanner::new();
+            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+            let mut work = advanced(snapshots);
+            work.lift_was_active = true;
+            work.lift_started_at = lift_operation.started_at;
+            let mut trace = AllocationTrace::default();
+            let outcome = AllocationSession::new(
+                AllocationSessionContext {
+                    evidence: Default::default(),
+                    dials: &dials,
+                    profile: &profile,
+                    tuning,
+                    observation: &observation,
+                    home: HOME,
+                    public_map: &briefing,
+                    orientation: Orientation::for_home(&observation, HOME),
+                    intelligence: &intelligence,
+                    enlisted: &[],
+                    lift_support: None,
+                },
+                AllocationParticipants {
+                    policy: &mut policy,
+                    strategy: &mut strategy,
+                    lifts: &mut lifts,
+                    team: &mut team,
+                    raids: &mut raids,
+                },
+                work,
+                Some(&mut trace),
+            )
+            .run();
+
+            assert!(outcome.allocation_ok, "{trace:#?}");
+            let retained_connected = connected_obligation(&mut strategy, &observation);
+            assert!(retained_connected.deadline() > observation.tick);
+            if !execute_predecessors {
+                assert!(
+                    lifts.active_production_obligation().is_none(),
+                    "a fixed Lift booking whose necessary predecessors never ran must recover instead of freezing every later decision"
+                );
+                continue;
+            }
+            let retained_lift = (lifts)
                 .active_production_obligation()
-                .unwrap()
-                .producer_schedule_is_executable(&resources, 12, observation.tick),
-            "the later retained job is executable only after the preceding connected job"
-        );
-
-        observation.tick = observation.tick.saturating_add(12);
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
-        let briefing = connected_briefing(&observation);
-        let mut intelligence = StrategicIntelligence::new();
-        intelligence.update(&observation);
-        let mut policy = UtilityPolicy::new();
-        let mut lifts = lift;
-        let mut team = TeamReliefPlanner::new();
-        let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut work = advanced(snapshots);
-        work.lift_was_active = true;
-        work.lift_started_at = lift_operation.started_at;
-        let outcome = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: HOME,
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
-            AllocationParticipants {
-                policy: &mut policy,
-                strategy: &mut strategy,
-                lifts: &mut lifts,
-                team: &mut team,
-                raids: &mut raids,
-            },
-            work,
-            None,
-        )
-        .run();
-
-        assert!(outcome.allocation_ok);
-        let retained_connected = strategy
-            .active_connected_obligation(&observation)
-            .expect("the connected revision remains active");
-        assert_eq!(
-            &retained_connected.provider_jobs()[..connected_assignments.len()],
-            connected_assignments,
-            "accepted connected jobs keep their exact identity before new marginal jobs"
-        );
-        let retained_lift = (lifts)
-            .active_production_obligation()
-            .expect("the future Lift assignment remains mandatory");
-        assert_eq!(retained_lift.producer_jobs(), &[lift_assignment]);
-        assert_eq!(
-            lifts.operation().unwrap().phase,
-            LiftPhase::Provision,
-            "accepted unpaid carrier work keeps the Lift in Provision"
-        );
+                .expect("the future Lift assignment remains mandatory");
+            assert_eq!(retained_lift.producer_jobs(), &[lift_assignment]);
+            assert_eq!(
+                lifts.operation().unwrap().phase,
+                LiftPhase::Provision,
+                "accepted unpaid carrier work keeps the Lift in Provision"
+            );
+        }
     }
 
     #[test]
@@ -7495,9 +6971,9 @@ mod tests {
 
         assert!(outcome.accepted_connected, "{richer_trace:#?}");
         assert!(
-            strategy
-                .active_connected_obligation(&observation)
-                .is_some_and(|active| active.units().contains(&UnitId(201))),
+            connected_obligation(&mut strategy, &observation)
+                .units()
+                .contains(&UnitId(201)),
             "the admitted package must own the live Bombard that created replacement demand"
         );
         assert!(

@@ -267,6 +267,12 @@ site, builder, force, route, or other resources required for execution. Later
 windfalls should not continuously rewrite an attack already under way. New
 evidence may still trigger an explicit abort, recovery, or successor plan.
 
+For connected attacks, an unpaid production forecast is not an immutable factory
+booking. Preserve the objective, original priority and preparation deadline, but
+allow outstanding purchases to use an earlier legal slot or another suitable
+factory. Paid queues and assigned forces retain ownership. Replanning cannot
+invent credit, extend the deadline indefinitely or rewrite a launched attack.
+
 Every commitment needs a completion, cancellation, and recovery path. Memory,
 cooldowns, confidence decay, and hysteresis should prevent repeated failed
 orders and rapid oscillation without making the bot permanently afraid of a

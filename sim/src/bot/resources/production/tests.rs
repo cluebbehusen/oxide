@@ -1,12 +1,10 @@
 use super::super::{
-    BuilderResource, CurrentScrap, ProducerLane, RecurringIncomeKind, RecurringIncomeStream,
-    ResourceForecast, UnitResource, producer_preceding_ticks,
+    BuilderResource, CurrentScrap, ProducerLane, ResourceForecast, UnitResource,
+    producer_preceding_ticks,
 };
 use super::*;
-use crate::bot::resources::test_support::{
-    all_producers, count_all_paid_ready, schedule_all_producers,
-};
-use crate::stats::{BuildingKind, QUEUE_CAP};
+use crate::bot::resources::test_support::{all_producers, count_all_paid_ready};
+use crate::stats::BuildingKind;
 
 const OBSERVED_AT: Tick = 100;
 
@@ -133,140 +131,17 @@ fn speculative_capacity_bounds_never_exclude_a_feasible_mixed_roster() {
                         deadline,
                         &all_producers(&resources),
                     );
-                    let exact = complete_horizon_assignment(
+                    let (exact, _) = complete_horizon_fits(
                         &resources,
                         &requested,
                         deadline,
                         &all_producers(&resources),
                     );
-                    assert!(possible || !matches!(exact, HorizonAssignmentResult::Found(_)));
+                    assert!(possible || !exact);
                 }
             }
         }
     }
-}
-
-#[test]
-fn equal_lanes_use_id_then_spread_to_the_earlier_next_completion() {
-    let resources = snapshot(
-        1_000,
-        vec![
-            lane(
-                9,
-                BuildingKind::Foundry,
-                Vec::new(),
-                vec![UnitKind::Sentinel],
-                ProducerEgress::Open,
-            ),
-            lane(
-                3,
-                BuildingKind::Foundry,
-                Vec::new(),
-                vec![UnitKind::Sentinel],
-                ProducerEgress::Open,
-            ),
-        ],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Sentinel, 2)],
-        Tick::MAX,
-        1_000,
-    );
-
-    assert_eq!(
-        schedule
-            .appends
-            .iter()
-            .map(|append| append.producer)
-            .collect::<Vec<_>>(),
-        vec![BuildingId(3), BuildingId(9)]
-    );
-    assert!(
-        schedule
-            .appends
-            .iter()
-            .all(|append| append.kind == UnitKind::Sentinel)
-    );
-}
-
-#[test]
-fn existing_queue_work_redirects_appends_to_the_earliest_lane() {
-    let resources = snapshot(
-        1_000,
-        vec![
-            lane(
-                9,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-            lane(
-                2,
-                BuildingKind::Fabricator,
-                vec![UnitKind::Bombard],
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-        ],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 2)],
-        Tick::MAX,
-        1_000,
-    );
-
-    assert_eq!(
-        schedule
-            .appends
-            .iter()
-            .map(|append| append.producer)
-            .collect::<Vec<_>>(),
-        vec![BuildingId(9), BuildingId(2)]
-    );
-    assert_eq!(
-        schedule.appends[0].timing.no_block_latest_ready_tick,
-        OBSERVED_AT + Tick::from(UnitKind::Bombard.stats().train_ticks) - 1
-    );
-    assert_eq!(
-        schedule.appends[1].timing.no_block_latest_ready_tick,
-        OBSERVED_AT + 2 * Tick::from(UnitKind::Bombard.stats().train_ticks) - 1
-    );
-}
-
-#[test]
-fn later_appends_include_earlier_planned_work_on_the_same_lane() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            4,
-            BuildingKind::Fabricator,
-            Vec::new(),
-            vec![UnitKind::Bombard],
-            ProducerEgress::Open,
-        )],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 2)],
-        Tick::MAX,
-        1_000,
-    );
-
-    assert_eq!(schedule.appends.len(), 2);
-    assert_eq!(
-        schedule.appends[0].timing.no_block_latest_ready_tick,
-        OBSERVED_AT + Tick::from(UnitKind::Bombard.stats().train_ticks) - 1
-    );
-    assert_eq!(
-        schedule.appends[1].timing.no_block_latest_ready_tick,
-        OBSERVED_AT + 2 * Tick::from(UnitKind::Bombard.stats().train_ticks) - 1
-    );
 }
 
 #[test]
@@ -389,241 +264,6 @@ fn horizon_feasibility_backtracks_for_a_cupric_minimum() {
 }
 
 #[test]
-fn complete_lowering_uses_the_horizon_assignment_that_preserves_long_providers() {
-    for (scout, strike, queued) in [
-        (UnitKind::Kestrel, UnitKind::Condor, UnitKind::Talon),
-        (UnitKind::Gnat, UnitKind::Moth, UnitKind::Wisp),
-    ] {
-        let resources = snapshot(
-            scout.stats().cost.saturating_add(strike.stats().cost),
-            vec![
-                lane(
-                    1,
-                    BuildingKind::Airworks,
-                    Vec::new(),
-                    vec![scout, strike],
-                    ProducerEgress::NotRequired,
-                ),
-                lane(
-                    2,
-                    BuildingKind::Airworks,
-                    vec![queued],
-                    vec![scout, strike],
-                    ProducerEgress::NotRequired,
-                ),
-            ],
-        );
-        let deadline = OBSERVED_AT + Tick::from(strike.stats().train_ticks) + 1;
-
-        let schedule = schedule_all_producers(
-            &resources,
-            &[demand(scout, 1), demand(strike, 1)],
-            deadline,
-            u32::MAX,
-        );
-        assert_eq!(
-            schedule
-                .appends
-                .iter()
-                .map(|append| (append.kind, append.producer))
-                .collect::<Vec<_>>(),
-            vec![(scout, BuildingId(2)), (strike, BuildingId(1))]
-        );
-        assert!(
-            schedule
-                .appends
-                .iter()
-                .all(|append| append.timing.no_block_latest_ready_tick < deadline)
-        );
-    }
-}
-
-#[test]
-fn tiered_lane_eligibility_preserves_the_only_heavy_unit_lane() {
-    let resources = snapshot(
-        2_000,
-        vec![
-            lane(
-                1,
-                BuildingKind::Crucible,
-                Vec::new(),
-                vec![UnitKind::Bombard, UnitKind::Avalanche],
-                ProducerEgress::Open,
-            ),
-            lane(
-                2,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-        ],
-    );
-    let deadline = OBSERVED_AT + Tick::from(UnitKind::Avalanche.stats().train_ticks) + 1;
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 1), demand(UnitKind::Avalanche, 1)],
-        deadline,
-        u32::MAX,
-    );
-
-    assert_eq!(
-        schedule
-            .appends
-            .iter()
-            .map(|append| (append.kind, append.producer))
-            .collect::<Vec<_>>(),
-        vec![
-            (UnitKind::Bombard, BuildingId(2)),
-            (UnitKind::Avalanche, BuildingId(1)),
-        ]
-    );
-}
-
-#[test]
-fn an_impossible_tail_preserves_backtracked_higher_priority_work() {
-    let resources = snapshot(
-        5_000,
-        vec![
-            lane(
-                1,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Kestrel, UnitKind::Condor],
-                ProducerEgress::NotRequired,
-            ),
-            lane(
-                2,
-                BuildingKind::Airworks,
-                vec![UnitKind::Talon],
-                vec![UnitKind::Kestrel, UnitKind::Condor],
-                ProducerEgress::NotRequired,
-            ),
-            lane(
-                3,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-        ],
-    );
-    let demands = [
-        demand(UnitKind::Kestrel, 1),
-        demand(UnitKind::Bombard, 1),
-        demand(UnitKind::Condor, 1),
-        demand(UnitKind::Avalanche, 1),
-    ];
-    let deadline = OBSERVED_AT + Tick::from(UnitKind::Condor.stats().train_ticks) + 1;
-
-    let schedule = schedule_all_producers(&resources, &demands, deadline, u32::MAX);
-
-    assert_eq!(
-        schedule
-            .appends
-            .iter()
-            .map(|append| (append.kind, append.producer))
-            .collect::<Vec<_>>(),
-        vec![
-            (UnitKind::Kestrel, BuildingId(2)),
-            (UnitKind::Bombard, BuildingId(3)),
-            (UnitKind::Condor, BuildingId(1)),
-        ]
-    );
-}
-
-#[test]
-fn a_large_symmetric_prefix_survives_a_late_impossible_demand() {
-    let mut producers: Vec<_> = (1..=8)
-        .map(|producer| {
-            lane(
-                producer,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Darter],
-                ProducerEgress::NotRequired,
-            )
-        })
-        .collect();
-    producers.push(lane(
-        20,
-        BuildingKind::Fabricator,
-        Vec::new(),
-        vec![UnitKind::Bombard],
-        ProducerEgress::Open,
-    ));
-    let resources = snapshot(5_000, producers);
-    let demands = [
-        demand(UnitKind::Darter, 12),
-        demand(UnitKind::Avalanche, 1),
-        demand(UnitKind::Bombard, 1),
-    ];
-    let deadline = OBSERVED_AT + 2 * Tick::from(UnitKind::Darter.stats().train_ticks) + 1;
-
-    let first = schedule_all_producers(&resources, &demands, deadline, u32::MAX);
-    let second = schedule_all_producers(&resources, &demands, deadline, u32::MAX);
-
-    assert_eq!(
-        first, second,
-        "the bounded assignment must be deterministic"
-    );
-    assert_eq!(
-        first
-            .appends
-            .iter()
-            .filter(|a| a.kind == UnitKind::Darter)
-            .count(),
-        12
-    );
-    assert_eq!(first.appends.len(), 13);
-    assert_eq!(
-        first.appends.last().map(|append| append.kind),
-        Some(UnitKind::Bombard)
-    );
-}
-
-#[test]
-fn over_capacity_work_retains_its_maximum_priority_prefix() {
-    let mut producers: Vec<_> = (1..=8)
-        .map(|producer| {
-            lane(
-                producer,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Darter],
-                ProducerEgress::NotRequired,
-            )
-        })
-        .collect();
-    producers.push(lane(
-        20,
-        BuildingKind::Fabricator,
-        Vec::new(),
-        vec![UnitKind::Bombard],
-        ProducerEgress::Open,
-    ));
-    let resources = snapshot(5_000, producers);
-    let demands = [demand(UnitKind::Darter, 17), demand(UnitKind::Bombard, 1)];
-    let deadline = OBSERVED_AT + 2 * Tick::from(UnitKind::Darter.stats().train_ticks) + 1;
-
-    let schedule = schedule_all_producers(&resources, &demands, deadline, u32::MAX);
-    assert_eq!(
-        schedule
-            .appends
-            .iter()
-            .filter(|a| a.kind == UnitKind::Darter)
-            .count(),
-        16
-    );
-    assert_eq!(schedule.appends.len(), 17);
-    assert_eq!(
-        schedule.appends.last().map(|append| append.kind),
-        Some(UnitKind::Bombard)
-    );
-}
-
-#[test]
 fn fixed_connected_horizon_handles_sixteen_full_airworks_without_exhaustion() {
     let mut producers: Vec<_> = (1..=16)
         .map(|producer| {
@@ -645,25 +285,13 @@ fn fixed_connected_horizon_handles_sixteen_full_airworks_without_exhaustion() {
     ));
     let resources = snapshot(100_000, producers);
     let mut requested = vec![UnitKind::Kestrel];
-    requested.extend(core::iter::repeat_n(UnitKind::Darter, 256));
+    requested.extend(core::iter::repeat_n(UnitKind::Darter, 255));
     requested.push(UnitKind::Bombard);
     let deadline = OBSERVED_AT + 2_400;
 
-    let assignment =
-        partial_horizon_assignment(&resources, &requested, deadline, &all_producers(&resources));
-
-    assert!(assignment[0].is_some(), "the minimum scout must fit");
-    assert_eq!(
-        assignment[1..=256]
-            .iter()
-            .filter(|assigned| assigned.is_some())
-            .count(),
-        255,
-        "one 120-tick scout leaves room for 255 150-tick Darters across sixteen lanes"
-    );
     assert!(
-        assignment[257].is_some(),
-        "a proven over-capacity air tail must not suppress independent ground work"
+        complete_horizon_fits(&resources, &requested, deadline, &all_producers(&resources)).0,
+        "one scout leaves room for 255 Darters across sixteen lanes, alongside independent ground work"
     );
 }
 
@@ -715,21 +343,11 @@ fn irregular_airworks_loads_do_not_create_a_hidden_package_cap() {
     requested.extend(core::iter::repeat_n(UnitKind::Buzzard, 29));
     let deadline = OBSERVED_AT + 2_400;
 
-    let (result, visited_states) = complete_horizon_assignment_diagnosed(
-        &resources,
-        &requested,
-        deadline,
-        &all_producers(&resources),
-    );
-    let HorizonAssignmentResult::Found(assignment) = result else {
-        panic!("the exact scheduler rejected a feasible connected air package");
-    };
-
-    assert_eq!(assignment.len(), requested.len());
+    let (result, visited_states) =
+        complete_horizon_fits(&resources, &requested, deadline, &all_producers(&resources));
     assert!(
-        assignment
-            .iter()
-            .all(|assigned| assigned.timing.no_block_latest_ready_tick < deadline)
+        result,
+        "the exact capacity check rejected a feasible package"
     );
     assert!(
         visited_states < 1_000,
@@ -747,15 +365,6 @@ fn irregular_airworks_loads_do_not_create_a_hidden_package_cap() {
         deadline,
         &all_producers(&resources),
     ));
-    let first = schedule_all_producers(&resources, &demands, deadline, u32::MAX);
-    let second = schedule_all_producers(&resources, &demands, deadline, u32::MAX);
-    assert_eq!(first, second);
-    assert!(
-        first
-            .appends
-            .iter()
-            .all(|append| append.timing.no_block_latest_ready_tick < deadline)
-    );
 }
 
 #[test]
@@ -782,31 +391,19 @@ fn modular_capacity_rejects_fragmented_partial_eligibility_immediately() {
     let deadline = OBSERVED_AT + 2_400;
 
     let fragmented = snapshot(0, lanes(1_390));
-    let (result, visited_states) = complete_horizon_assignment_diagnosed(
+    let (result, visited_states) = complete_horizon_fits(
         &fragmented,
         &requested,
         deadline,
         &all_producers(&fragmented),
     );
-    assert!(matches!(result, HorizonAssignmentResult::Impossible));
+    assert!(!result);
     assert_eq!(visited_states, 1);
 
     let relaxed = snapshot(0, lanes(1_790));
-    let (result, _) = complete_horizon_assignment_diagnosed(
-        &relaxed,
-        &requested,
-        deadline,
-        &all_producers(&relaxed),
-    );
-    let HorizonAssignmentResult::Found(assignment) = result else {
-        panic!("the modular bound rejected a feasible neighboring fixture");
-    };
-    assert_eq!(assignment.len(), requested.len());
-    assert!(
-        assignment
-            .iter()
-            .all(|assigned| assigned.timing.no_block_latest_ready_tick < deadline)
-    );
+    let (result, _) =
+        complete_horizon_fits(&relaxed, &requested, deadline, &all_producers(&relaxed));
+    assert!(result, "the relaxed neighboring fixture fits");
 }
 
 #[test]
@@ -906,19 +503,9 @@ fn foreign_paid_occurrences_remain_in_the_lane_without_supplying_capability() {
         count_paid_queued_ready_with_access(&resources, scout, first_ready, &access),
         0
     );
-    let append = plan_production_with_access(
-        &resources,
-        &[ProductionDemand {
-            kind: scout,
-            count: 1,
-        }],
-        Tick::MAX,
-        1000,
-        &access,
-    );
-    assert_eq!(append.appends.len(), 1);
+    let timing = resources.producers()[0].horizon_timing(&[scout]).unwrap();
     assert!(
-        append.appends[0].timing.no_block_latest_ready_tick
+        timing.no_block_latest_ready_tick
             > first_ready + u64::from(UnitKind::Condor.stats().train_ticks)
     );
 }
@@ -1150,453 +737,4 @@ fn paid_air_queue_credit_does_not_require_ground_egress() {
         count_all_paid_ready(&resources, UnitKind::Buzzard, Tick::MAX),
         1
     );
-}
-
-#[test]
-fn fixed_deadline_requires_scheduled_work_before_the_deadline_observation() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            4,
-            BuildingKind::Fabricator,
-            Vec::new(),
-            vec![UnitKind::Bombard],
-            ProducerEgress::Open,
-        )],
-    );
-    let first_ready = OBSERVED_AT + Tick::from(UnitKind::Bombard.stats().train_ticks) - 1;
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 2)],
-        first_ready + 1,
-        1_000,
-    );
-
-    assert_eq!(schedule.appends.len(), 1);
-    assert_eq!(schedule.appends[0].kind, UnitKind::Bombard);
-    assert_eq!(schedule.spent, UnitKind::Bombard.stats().cost);
-    assert_eq!(schedule.next_unfunded_cost, None);
-
-    let too_late = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 1)],
-        first_ready,
-        1_000,
-    );
-    assert!(too_late.appends.is_empty());
-}
-
-#[test]
-fn deadline_uses_the_no_block_latest_bound_not_optimistic_front_progress() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            4,
-            BuildingKind::Fabricator,
-            vec![UnitKind::Bombard],
-            vec![UnitKind::Sentinel],
-            ProducerEgress::Open,
-        )],
-    );
-    let optimistic_ready = OBSERVED_AT + Tick::from(UnitKind::Sentinel.stats().train_ticks);
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Sentinel, 1)],
-        optimistic_ready,
-        1_000,
-    );
-
-    assert!(schedule.appends.is_empty());
-    assert_eq!(schedule.next_unfunded_cost, None);
-}
-
-#[test]
-fn ground_requires_proven_egress_but_airworks_air_does_not() {
-    let resources = snapshot(
-        1_000,
-        vec![
-            lane(
-                1,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Blocked,
-            ),
-            lane(
-                2,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Unknown,
-            ),
-            lane(
-                3,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-            lane(
-                4,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Buzzard],
-                ProducerEgress::Unknown,
-            ),
-        ],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 1), demand(UnitKind::Buzzard, 1)],
-        Tick::MAX,
-        1_000,
-    );
-
-    assert_eq!(schedule.appends.len(), 2);
-    assert!(
-        schedule
-            .appends
-            .iter()
-            .any(|append| { append.producer == BuildingId(3) && append.kind == UnitKind::Bombard })
-    );
-    assert!(schedule.appends.iter().any(|append| {
-        append.producer == BuildingId(4)
-            && append.kind == UnitKind::Buzzard
-            && append.timing.current_egress == ProducerEgress::NotRequired
-    }));
-}
-
-#[test]
-fn an_unfunded_selected_append_stops_before_a_cheaper_later_one() {
-    let resources = snapshot(
-        150,
-        vec![
-            lane(
-                1,
-                BuildingKind::Fabricator,
-                Vec::new(),
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-            lane(
-                2,
-                BuildingKind::Foundry,
-                vec![UnitKind::Breaker],
-                vec![UnitKind::Sentinel],
-                ProducerEgress::Open,
-            ),
-        ],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Bombard, 1), demand(UnitKind::Sentinel, 1)],
-        2_000,
-        1_000,
-    );
-
-    assert!(schedule.appends.is_empty());
-    assert_eq!(schedule.spent, 0);
-    assert_eq!(
-        schedule.next_unfunded_cost,
-        Some(UnitKind::Bombard.stats().cost)
-    );
-}
-
-#[test]
-fn a_slot_blocked_priority_demand_stops_before_a_later_open_lane() {
-    let bombard_cost = UnitKind::Bombard.stats().cost;
-    let buzzard_cost = UnitKind::Buzzard.stats().cost;
-    let resources = snapshot(
-        bombard_cost,
-        vec![
-            lane(
-                1,
-                BuildingKind::Fabricator,
-                vec![UnitKind::Lancer; QUEUE_CAP],
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-            lane(
-                2,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Buzzard],
-                ProducerEgress::Unknown,
-            ),
-        ],
-    );
-    let demands = [demand(UnitKind::Bombard, 1), demand(UnitKind::Buzzard, 1)];
-
-    let blocked = schedule_all_producers(&resources, &demands, 4_000, bombard_cost);
-
-    assert!(blocked.appends.is_empty());
-    assert_eq!(blocked.spent, 0);
-    assert_eq!(blocked.deferred_scrap, bombard_cost);
-    assert_eq!(blocked.next_unfunded_cost, Some(buzzard_cost));
-
-    let parallel = snapshot(
-        bombard_cost.saturating_add(buzzard_cost),
-        vec![
-            lane(
-                1,
-                BuildingKind::Fabricator,
-                vec![UnitKind::Lancer; QUEUE_CAP],
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-            lane(
-                2,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Buzzard],
-                ProducerEgress::Unknown,
-            ),
-        ],
-    );
-    let parallel = schedule_all_producers(
-        &parallel,
-        &demands,
-        4_000,
-        bombard_cost.saturating_add(buzzard_cost),
-    );
-
-    assert_eq!(parallel.appends.len(), 1);
-    assert_eq!(parallel.appends[0].kind, UnitKind::Buzzard);
-    assert_eq!(parallel.spent, buzzard_cost);
-    assert_eq!(parallel.deferred_scrap, bombard_cost);
-
-    let released = snapshot(
-        bombard_cost.saturating_add(buzzard_cost),
-        vec![
-            lane(
-                1,
-                BuildingKind::Fabricator,
-                vec![UnitKind::Lancer; QUEUE_CAP - 1],
-                vec![UnitKind::Bombard],
-                ProducerEgress::Open,
-            ),
-            lane(
-                2,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Buzzard],
-                ProducerEgress::Unknown,
-            ),
-        ],
-    );
-    let released = schedule_all_producers(
-        &released,
-        &demands,
-        4_000,
-        bombard_cost.saturating_add(buzzard_cost),
-    );
-
-    assert_eq!(released.appends[0].kind, UnitKind::Bombard);
-    assert_eq!(released.appends[0].producer, BuildingId(1));
-    assert_eq!(released.appends[1].kind, UnitKind::Buzzard);
-    assert_eq!(released.spent, bombard_cost.saturating_add(buzzard_cost));
-    assert_eq!(released.deferred_scrap, 0);
-}
-
-#[test]
-fn current_bank_and_caller_budget_independently_bound_spending() {
-    let producer = || {
-        lane(
-            4,
-            BuildingKind::Airworks,
-            Vec::new(),
-            vec![UnitKind::Kestrel],
-            ProducerEgress::Unknown,
-        )
-    };
-    let cost = UnitKind::Kestrel.stats().cost;
-
-    let bank_limited = schedule_all_producers(
-        &snapshot(cost - 1, vec![producer()]),
-        &[demand(UnitKind::Kestrel, 1)],
-        Tick::MAX,
-        u32::MAX,
-    );
-    let caller_limited = schedule_all_producers(
-        &snapshot(u32::MAX, vec![producer()]),
-        &[demand(UnitKind::Kestrel, 1)],
-        Tick::MAX,
-        cost - 1,
-    );
-
-    for schedule in [bank_limited, caller_limited] {
-        assert!(schedule.appends.is_empty());
-        assert_eq!(schedule.spent, 0);
-        assert_eq!(schedule.next_unfunded_cost, Some(cost));
-    }
-}
-
-#[test]
-fn forecast_income_never_becomes_command_credit() {
-    let mut resources = snapshot(
-        0,
-        vec![lane(
-            4,
-            BuildingKind::Airworks,
-            Vec::new(),
-            vec![UnitKind::Kestrel],
-            ProducerEgress::Unknown,
-        )],
-    );
-    resources.forecast.income.push(RecurringIncomeStream {
-        source: BuildingId(12),
-        kind: RecurringIncomeKind::Reclaimer,
-        amount: 1_000,
-        period: 1,
-        first_payment_tick: OBSERVED_AT,
-    });
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Kestrel, 1)],
-        Tick::MAX,
-        u32::MAX,
-    );
-
-    assert!(schedule.appends.is_empty());
-    assert_eq!(schedule.spent, 0);
-    assert_eq!(
-        schedule.next_unfunded_cost,
-        Some(UnitKind::Kestrel.stats().cost)
-    );
-}
-
-#[test]
-fn exact_demand_is_never_replaced_by_an_available_kind() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            4,
-            BuildingKind::Fabricator,
-            Vec::new(),
-            vec![UnitKind::Bombard],
-            ProducerEgress::Open,
-        )],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Avalanche, 1)],
-        Tick::MAX,
-        1_000,
-    );
-
-    assert!(schedule.appends.is_empty());
-    assert_eq!(schedule.spent, 0);
-    assert_eq!(schedule.next_unfunded_cost, None);
-}
-
-#[test]
-fn caller_order_is_priority_even_when_a_later_kind_would_finish_first() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            5,
-            BuildingKind::Airworks,
-            Vec::new(),
-            vec![UnitKind::Kestrel, UnitKind::Buzzard],
-            ProducerEgress::Unknown,
-        )],
-    );
-
-    let slower_first = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Buzzard, 1), demand(UnitKind::Kestrel, 1)],
-        Tick::MAX,
-        UnitKind::Buzzard.stats().cost,
-    );
-    let faster_first = schedule_all_producers(
-        &resources,
-        &[demand(UnitKind::Kestrel, 1), demand(UnitKind::Buzzard, 1)],
-        Tick::MAX,
-        UnitKind::Buzzard.stats().cost,
-    );
-
-    assert_eq!(
-        slower_first
-            .appends
-            .iter()
-            .map(|append| append.kind)
-            .collect::<Vec<_>>(),
-        vec![UnitKind::Buzzard]
-    );
-    assert_eq!(
-        faster_first
-            .appends
-            .iter()
-            .map(|append| append.kind)
-            .collect::<Vec<_>>(),
-        vec![UnitKind::Kestrel]
-    );
-}
-
-#[test]
-fn repeated_kinds_remain_separate_priority_tranches() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            5,
-            BuildingKind::Airworks,
-            Vec::new(),
-            vec![UnitKind::Kestrel, UnitKind::Buzzard],
-            ProducerEgress::Unknown,
-        )],
-    );
-    let demands = [
-        demand(UnitKind::Buzzard, 1),
-        demand(UnitKind::Kestrel, 1),
-        demand(UnitKind::Buzzard, 1),
-    ];
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &demands,
-        Tick::MAX,
-        UnitKind::Buzzard.stats().cost + UnitKind::Kestrel.stats().cost,
-    );
-
-    assert_eq!(
-        schedule
-            .appends
-            .iter()
-            .map(|append| append.kind)
-            .collect::<Vec<_>>(),
-        vec![UnitKind::Buzzard, UnitKind::Kestrel]
-    );
-}
-
-#[test]
-fn infeasible_priority_demand_does_not_block_independent_work() {
-    let resources = snapshot(
-        1_000,
-        vec![lane(
-            4,
-            BuildingKind::Foundry,
-            Vec::new(),
-            vec![UnitKind::Sentinel],
-            ProducerEgress::Open,
-        )],
-    );
-
-    let schedule = schedule_all_producers(
-        &resources,
-        &[
-            demand(UnitKind::Avalanche, 1),
-            demand(UnitKind::Sentinel, 1),
-        ],
-        Tick::MAX,
-        1_000,
-    );
-
-    assert_eq!(schedule.appends.len(), 1);
-    assert_eq!(schedule.appends[0].kind, UnitKind::Sentinel);
 }

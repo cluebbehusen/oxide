@@ -515,14 +515,6 @@ impl ProducerLaneReservations {
             .max()
     }
 
-    /// Whether the shared allocation retained this exact accepted lane row.
-    pub(crate) fn contains_exact_job(&self, job: ReservedProducerJob) -> bool {
-        self.current_jobs
-            .iter()
-            .chain(&self.jobs)
-            .any(|reserved| *reserved == job)
-    }
-
     /// Exact future jobs retained by the overlay.
     #[cfg(test)]
     pub(crate) fn jobs(&self) -> &[ReservedProducerJob] {
@@ -1217,11 +1209,7 @@ mod current_reserve_tests {
         let reservations = ProducerLaneReservations::from_jobs(&resources, [current, future])
             .expect("the exact two-job lane is valid");
 
-        assert!(reservations.contains_exact_job(current));
-        assert!(reservations.contains_exact_job(future));
-        assert!(!reservations.contains_exact_job(ReservedProducerJob {
-            ready_at: future.ready_at.saturating_sub(1),
-            ..future
-        }));
+        assert_eq!(reservations.current_jobs(), &[current]);
+        assert_eq!(reservations.jobs(), &[future]);
     }
 }

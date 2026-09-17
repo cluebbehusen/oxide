@@ -175,11 +175,6 @@ pub(super) struct ConnectedForcePackage {
     /// New providers whose payment and production timing made this exact
     /// package feasible. Existing live and already-paid providers are omitted.
     pub(super) funded_providers: Vec<FundedProvider>,
-    /// Exact allocator-selected producer/timing evidence. `None` identifies a
-    /// legacy package that still uses local production scheduling; a freshly
-    /// adjudicated package binds this before commitment, including when its
-    /// funded-provider list is empty.
-    pub(super) producer_assignments: Option<Vec<super::ConnectedProducerAssignment>>,
     /// Personality-independent complete repertoire required for admission.
     pub(super) minimum_capability: NormalizedCapability,
     /// Opportunity-scaled ceiling. Production stops here even if scrap remains.
@@ -1179,7 +1174,6 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
             strike: builder.strike,
             provider_priority: builder.provider_priority,
             funded_providers: builder.funded_providers,
-            producer_assignments: None,
             minimum_capability,
             useful_capability,
             useful_bombing: bombing.useful,
@@ -2367,9 +2361,9 @@ mod tests {
     use super::super::super::intelligence::StrategicIntelligence;
     use super::super::super::observation::{BuildingObs, UnitObs};
     use super::super::super::profile::{PersonalityTraits, Specialty};
-    use super::super::super::resources::{ProductionDemand, ResourceSnapshot};
+    use super::super::super::resources::ResourceSnapshot;
     use super::*;
-    use crate::bot::resources::test_support::{all_producers, schedule_all_producers};
+    use crate::bot::resources::test_support::all_producers;
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::state::Faction;
@@ -4788,7 +4782,7 @@ mod tests {
     }
 
     #[test]
-    fn one_lane_can_admit_and_lower_more_than_one_live_queue_of_providers() {
+    fn one_lane_can_admit_more_than_one_live_queue_of_providers() {
         let mut observation = observation(100_000);
         add_producer(
             &mut observation,
@@ -4843,58 +4837,6 @@ mod tests {
             buzzards > QUEUE_CAP,
             "fixture must exercise horizon demand beyond the live queue: {package:?}"
         );
-
-        let demands: Vec<_> = package
-            .provider_priority
-            .iter()
-            .map(|demand| ProductionDemand {
-                kind: demand.kind,
-                count: demand.count,
-            })
-            .collect();
-        let first = schedule_all_producers(&resources, &demands, deadline, observation.scrap);
-        let airworks_appends: Vec<_> = first
-            .appends
-            .iter()
-            .filter(|append| append.producer == BuildingId(12))
-            .collect();
-        assert_eq!(airworks_appends.len(), QUEUE_CAP);
-        assert_eq!(
-            airworks_appends
-                .iter()
-                .filter(|append| append.kind == UnitKind::Buzzard)
-                .count(),
-            QUEUE_CAP - 1,
-            "the scout owns the lane's first slot before strike production"
-        );
-        assert!(
-            airworks_appends
-                .iter()
-                .filter(|a| a.kind == UnitKind::Buzzard)
-                .count()
-                < buzzards
-        );
-
-        let mut refilled = observation.clone();
-        let airworks = refilled
-            .my_buildings
-            .iter()
-            .position(|building| building.id == BuildingId(12))
-            .expect("Airworks remains present");
-        refilled.my_queues[airworks] = vec![UnitKind::Buzzard; QUEUE_CAP - 1];
-        let resources = ResourceSnapshot::from_observation(&refilled);
-        let refill = schedule_all_producers(
-            &resources,
-            &[ProductionDemand {
-                kind: UnitKind::Buzzard,
-                count: buzzards - (QUEUE_CAP - 1),
-            }],
-            deadline,
-            refilled.scrap,
-        );
-        assert_eq!(refill.appends.len(), 1);
-        assert_eq!(refill.appends[0].producer, BuildingId(12));
-        assert_eq!(refill.appends[0].kind, UnitKind::Buzzard);
     }
 
     #[test]
@@ -5405,184 +5347,6 @@ mod tests {
             }
         }
         assert!(nontrivial, "exercise growth beyond one extra provider");
-    }
-
-    #[test]
-    fn lowering_keeps_the_selected_airwork_portfolio_feasible() {
-        let mut observation = observation(940);
-        add_complete_tech(&mut observation);
-        add_producer(
-            &mut observation,
-            14,
-            BuildingKind::Airworks,
-            TilePos::new(14, 2),
-            Vec::new(),
-        );
-        {
-            let observation = &mut *observation;
-            for (building, queue) in observation
-                .my_buildings
-                .iter()
-                .zip(&mut observation.my_queues)
-            {
-                if building.kind == BuildingKind::Airworks {
-                    *queue = vec![UnitKind::Skyhook; 4];
-                }
-            }
-        }
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                40,
-                observation.me.0,
-                UnitKind::Kestrel,
-                TilePos::new(7, 7),
-            ));
-        }
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                41,
-                observation.me.0,
-                UnitKind::Bombard,
-                TilePos::new(8, 7),
-            ));
-        }
-        let (intelligence, target) = intelligence_with_target(&mut observation, 0);
-        let deadline = 2_500;
-        let resources = ResourceSnapshot::from_observation(&observation);
-
-        let package = derive_connected_force_package(
-            &profile(90, 10),
-            &observation,
-            &intelligence,
-            &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
-            &[],
-            constraints(deadline, 0),
-        )
-        .expect("the chosen strike portfolio fits the fixed window");
-
-        let demands: Vec<_> = package
-            .strike
-            .iter()
-            .map(|demand| ProductionDemand {
-                kind: demand.kind,
-                count: demand.count,
-            })
-            .collect();
-        let schedule = schedule_all_producers(&resources, &demands, deadline, observation.scrap);
-
-        assert_eq!(
-            schedule.appends.len(),
-            package.strike.iter().map(|d| d.count).sum::<usize>()
-        );
-        for demand in &package.strike {
-            assert_eq!(
-                schedule
-                    .appends
-                    .iter()
-                    .filter(|append| append.kind == demand.kind)
-                    .count(),
-                demand.count
-            );
-        }
-        assert!(
-            schedule
-                .appends
-                .iter()
-                .all(|append| append.timing.no_block_latest_ready_tick < deadline)
-        );
-    }
-
-    #[test]
-    fn derived_minimum_and_lowering_share_the_same_constrained_lane_assignment() {
-        let mut observation = observation(
-            UnitKind::Kestrel
-                .stats()
-                .cost
-                .saturating_add(UnitKind::Buzzard.stats().cost),
-        );
-        add_complete_tech(&mut observation);
-        add_producer(
-            &mut observation,
-            14,
-            BuildingKind::Airworks,
-            TilePos::new(14, 2),
-            vec![UnitKind::Talon],
-        );
-        observation.my_queue_progress = vec![0; observation.my_buildings.len()];
-        let busy_airworks = observation
-            .my_buildings
-            .iter()
-            .position(|building| building.id == BuildingId(14))
-            .expect("the second Airworks is present");
-        observation.my_queue_progress[busy_airworks] = 30;
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                40,
-                observation.me.0,
-                UnitKind::Bombard,
-                TilePos::new(7, 7),
-            ));
-        }
-        let (intelligence, target) = intelligence_with_target(&mut observation, 0);
-        let deadline = 370;
-        let resources = ResourceSnapshot::from_observation(&observation);
-
-        let package = derive_connected_force_package(
-            &profile(50, 50),
-            &observation,
-            &intelligence,
-            &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
-            &[],
-            constraints(deadline, 0),
-        )
-        .expect("the minimum fits only when the short scout uses the busy lane");
-        let demands: Vec<_> = package
-            .provider_priority
-            .iter()
-            .filter(|demand| demand.family != ForceFamily::Suppression)
-            .map(|demand| ProductionDemand {
-                kind: demand.kind,
-                count: demand.count,
-            })
-            .collect();
-
-        assert_eq!(
-            demands,
-            vec![
-                ProductionDemand {
-                    kind: UnitKind::Kestrel,
-                    count: 1,
-                },
-                ProductionDemand {
-                    kind: UnitKind::Buzzard,
-                    count: 1,
-                },
-            ]
-        );
-        let schedule = schedule_all_producers(&resources, &demands, deadline, observation.scrap);
-
-        assert_eq!(
-            schedule
-                .appends
-                .iter()
-                .map(|append| (append.kind, append.producer))
-                .collect::<Vec<_>>(),
-            vec![
-                (UnitKind::Kestrel, BuildingId(14)),
-                (UnitKind::Buzzard, BuildingId(12)),
-            ]
-        );
-        assert!(
-            schedule
-                .appends
-                .iter()
-                .all(|append| append.timing.no_block_latest_ready_tick < deadline)
-        );
     }
 
     #[test]

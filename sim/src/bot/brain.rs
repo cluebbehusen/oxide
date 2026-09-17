@@ -330,7 +330,7 @@ impl Brain {
                     .min_by_key(|building| building.id)
                     .map(|building| building.anchor)
                     .unwrap_or(TilePos::new(0, 0));
-                strategy.recover_due_connected_for_economy_emergency(
+                strategy.recover_unpaid_connected_for_economy_emergency(
                     profile,
                     DifficultyTuning::for_level(profile.difficulty),
                     &oriented,
@@ -4960,7 +4960,20 @@ mod tests {
             funded_trace.allocation.producer_schedule,
         );
         assert!(
-            funded_trace.channels.connected_air.effects.committed_scrap > 0,
+            funded_trace
+                .allocation
+                .producer_schedule
+                .entries
+                .iter()
+                .any(|job| matches!(
+                    job.owner,
+                    super::super::trace::ClaimOwnerTrace::Obligation {
+                        key: super::super::trace::ObligationKeyTrace::ConnectedOffense { .. },
+                        ..
+                    } | super::super::trace::ClaimOwnerTrace::Proposal {
+                        key: super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+                    }
+                )),
             "connected air may claim the independent excess bank"
         );
         assert!(
@@ -5299,35 +5312,20 @@ mod tests {
             .entries
             .iter()
             .find(|job| {
-                job.producer == residual_buzzard.producer
-                    && job.kind == residual_buzzard.kind
-                    && job.request_ordinal == residual_buzzard.request_ordinal
+                job.producer == residual_buzzard.producer && job.kind == residual_buzzard.kind
             })
-            .expect("the earlier operation retains its exact optional Buzzard schedule");
-        assert_eq!(
-            (
-                retained_buzzard.enqueued_at,
-                retained_buzzard.starts_at,
-                retained_buzzard.ready_at,
-                retained_buzzard.ready_before,
-            ),
-            (
-                residual_buzzard.enqueued_at,
-                residual_buzzard.starts_at,
-                residual_buzzard.ready_at,
-                residual_buzzard.ready_before,
-            )
-        );
+            .expect("the earlier operation retains its optional Buzzard demand");
+        assert_eq!(retained_buzzard.ready_before, residual_buzzard.ready_before);
+        assert!(retained_buzzard.enqueued_at >= later_state.current_tick());
+        assert_eq!(brain.mind().strategy.air_admitted_at(), Some(admitted_at));
         assert!(
             matches!(
                 retained_buzzard.owner,
-                super::super::trace::ClaimOwnerTrace::Obligation {
-                    accepted_at,
-                    key: super::super::trace::ObligationKeyTrace::ConnectedOffense { .. },
-                    ..
-                } if accepted_at == admitted_at
+                super::super::trace::ClaimOwnerTrace::Proposal {
+                    key: super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+                }
             ),
-            "the exact producer assignment must retain the operation's original priority"
+            "optional growth is adjudicated afresh rather than promoted to mandatory debt"
         );
         let matching_commands = later
             .commands
@@ -5343,7 +5341,7 @@ mod tests {
             .count();
         assert_eq!(
             matching_commands,
-            usize::from(residual_buzzard.enqueued_at == later_state.current_tick()),
+            usize::from(retained_buzzard.enqueued_at == later_state.current_tick()),
             "the retained Buzzard must dispatch exactly on its allocated enqueue tick"
         );
         let later_raw = Observation::fog_honest(&later_state, PlayerId(0));
@@ -5519,7 +5517,7 @@ mod tests {
     fn connected_provider_due_next_cadence() -> (
         State,
         Brain,
-        super::super::strategy::ConnectedProducerAssignment,
+        super::super::trace::ScheduledProducerJobTrace,
         super::super::strategy::AirOperation,
     ) {
         let mut scenario = foundry_saving_air_competition_scenario(
@@ -5536,7 +5534,7 @@ mod tests {
                 )
                 .saturating_add(UnitKind::Sentinel.stats().cost),
         );
-        scenario.name = "due connected provider survives same-tick recovery".into();
+        scenario.name = "connected procurement at the next decision".into();
         scenario.buildings.push(BuildingSpec {
             player: 1,
             kind: BuildingKind::Foundry,
@@ -5617,26 +5615,24 @@ mod tests {
             .air_operation()
             .expect("the connected operation is admitted")
             .clone();
-        let raw = Observation::fog_honest(&state, PlayerId(0));
-        let oriented = brain
-            .orientation
-            .expect("the admission latches an orientation")
-            .observe(&raw);
-        let due = brain
-            .mind()
-            .strategy
-            .active_connected_obligation(&oriented)
-            .and_then(|obligation| {
-                obligation
-                    .provider_jobs()
-                    .iter()
-                    .min_by_key(|assignment| assignment.timing().enqueued_at())
-                    .copied()
+        let due = admission_trace
+            .allocation
+            .producer_schedule
+            .entries
+            .iter()
+            .filter(|job| {
+                matches!(
+                    job.owner,
+                    super::super::trace::ClaimOwnerTrace::Proposal {
+                        key: super::super::trace::ProposalKeyTrace::ConnectedOffenseMinimum { .. }
+                    }
+                )
             })
-            .expect("the full queue defers one accepted connected provider");
+            .min_by_key(|job| job.enqueued_at)
+            .cloned()
+            .expect("the full queue defers connected procurement");
         assert_eq!(
-            due.timing().enqueued_at(),
-            brain.dials.cadence,
+            due.enqueued_at, brain.dials.cadence,
             "the nearly complete front item should expose one slot at the next decision"
         );
 
@@ -5648,7 +5644,7 @@ mod tests {
                 ..
             }
         )));
-        while state.current_tick() < due.timing().enqueued_at() {
+        while state.current_tick() < due.enqueued_at {
             state.tick(&[]);
         }
 
@@ -5656,7 +5652,7 @@ mod tests {
     }
 
     #[test]
-    fn due_connected_provider_emits_once_when_post_allocation_tactics_enter_recovery() {
+    fn lost_connected_objective_releases_unpaid_demand_before_purchase() {
         let (mut state, mut brain, due, target) = connected_provider_due_next_cadence();
 
         let target_id = target
@@ -5697,8 +5693,8 @@ mod tests {
             .entries
             .iter()
             .filter(|job| {
-                job.producer == due.producer()
-                    && job.kind == due.kind()
+                job.producer == due.producer
+                    && job.kind == due.kind
                     && job.enqueued_at == state.current_tick()
                     && matches!(
                         job.owner,
@@ -5711,8 +5707,8 @@ mod tests {
             })
             .count();
         assert_eq!(
-            accepted_due, 1,
-            "allocation must retain the exact due connected-provider job"
+            accepted_due, 0,
+            "an obsolete quotation must not buy a provider for a lost objective"
         );
         let emitted_due = recovery
             .commands
@@ -5721,13 +5717,13 @@ mod tests {
                 matches!(
                     command.command,
                     Command::Train { building, kind }
-                        if building == due.producer() && kind == due.kind()
+                        if building == due.producer && kind == due.kind
                 )
             })
             .count();
         assert_eq!(
-            emitted_due, 1,
-            "post-allocation recovery must not discard or duplicate the allocator-owned command: {:?}",
+            emitted_due, 0,
+            "recovery must not turn an old quotation into a new purchase: {:?}",
             recovery.commands
         );
 
@@ -5739,31 +5735,10 @@ mod tests {
                 ..
             }
         )));
-        let queue_index = state
-            .building(due.producer())
-            .expect("the exact producer remains live")
-            .queue
-            .iter()
-            .rposition(|kind| *kind == due.kind())
-            .expect("the accepted provider entered its exact queue");
-        let report = state.tick(&[PlayerCommand {
-            player: PlayerId(0),
-            command: Command::CancelTrain {
-                building: due.producer(),
-                index: u8::try_from(queue_index).expect("production queues are bounded"),
-            },
-        }]);
-        assert!(report.events.iter().all(|event| !matches!(
-            event,
-            crate::event::Event::CommandRejected {
-                player: PlayerId(0),
-                ..
-            }
-        )));
         while !state.current_tick().is_multiple_of(brain.dials.cadence) {
             state.tick(&[]);
         }
-        assert!(state.player(PlayerId(0)).scrap >= due.kind().stats().cost);
+        assert!(state.player(PlayerId(0)).scrap >= due.kind.stats().cost);
 
         let next = brain.act_traced(&state);
         let next_trace = next
@@ -5777,18 +5752,18 @@ mod tests {
                 .entries
                 .iter()
                 .all(|job| {
-                    !(job.producer == due.producer()
-                        && job.kind == due.kind()
-                        && job.request_ordinal == u32::try_from(due.request_ordinal()).unwrap())
+                    !(job.producer == due.producer
+                        && job.kind == due.kind
+                        && job.request_ordinal == due.request_ordinal)
                 })
         );
         assert!(
             next.commands.iter().all(|command| !matches!(
                 command.command,
                 Command::Train { building, kind }
-                    if building == due.producer() && kind == due.kind()
+                    if building == due.producer && kind == due.kind
             )),
-            "the accepted provider must not be retried after recovery, even when cancellation restores its queue slot and scrap: {:?}",
+            "recovery must not retry an unpaid quotation on the next decision: {:?}",
             next.commands
         );
     }
@@ -5796,12 +5771,12 @@ mod tests {
     #[test]
     fn harvester_recovery_cancels_a_due_connected_provider_and_recalls_its_force() {
         let (state, mut brain, due, _) = connected_provider_due_next_cadence();
-        assert_ne!(due.kind(), UnitKind::Harvester);
+        assert_ne!(due.kind, UnitKind::Harvester);
 
         let recovery_bank = UnitKind::Harvester
             .stats()
             .cost
-            .saturating_add(due.kind().stats().cost);
+            .saturating_add(due.kind.stats().cost);
         let mut document = serde_json::to_value(&state).expect("the due state serializes");
         document["players"][0]["scrap"] = serde_json::json!(recovery_bank);
         document["units"]
@@ -5851,14 +5826,15 @@ mod tests {
             .expect("the connected admission latched an orientation");
         assert!(orientation.is_identity());
         let oriented = orientation.observe(&raw);
-        let obligation = brain
-            .mind()
-            .strategy
-            .active_connected_obligation(&oriented)
-            .expect("the connected obligation remains active on its provider tick");
-        assert!(obligation.provider_jobs().contains(&due));
-        assert_eq!(due.timing().enqueued_at(), state.current_tick());
-        let reserved = obligation.units().to_vec();
+        assert!(brain.mind().strategy.air_operation().is_some());
+        assert_eq!(due.enqueued_at, state.current_tick());
+        let operation = brain.mind().strategy.air_operation().unwrap();
+        let reserved = operation
+            .scout
+            .into_iter()
+            .chain(operation.artillery.iter().copied())
+            .chain(operation.strike_aircraft.iter().copied())
+            .collect::<Vec<_>>();
         assert!(!reserved.is_empty());
         let oriented_home = oriented
             .my_buildings
@@ -5908,7 +5884,7 @@ mod tests {
             recovery.commands.iter().all(|command| !matches!(
                 command.command,
                 Command::Train { building, kind }
-                    if building == due.producer() && kind == due.kind()
+                    if building == due.producer && kind == due.kind
             )),
             "the due connected provider must yield to the Harvester: {:?}",
             recovery.commands
@@ -5957,7 +5933,7 @@ mod tests {
             next.commands.iter().all(|command| !matches!(
                 command.command,
                 Command::Train { building, kind }
-                    if building == due.producer() && kind == due.kind()
+                    if building == due.producer && kind == due.kind
             )),
             "the canceled provider must not be retried on the next cadence: {:?}",
             next.commands
@@ -6376,7 +6352,7 @@ mod tests {
         assert!(strategy.air_operation().is_some_and(|operation| {
             operation.assault_admitted && operation.phase == AirOperationPhase::Recon
         }));
-        assert!(strategy.active_connected_obligation(&observed).is_none());
+        assert!(strategy.connected_package_diagnostics().is_none());
         let island_airwork = strategy.remaining_airwork_ticks(&observed);
         assert!(island_airwork > 0);
 
@@ -6408,6 +6384,68 @@ mod tests {
         mind.strategy = strategy;
         mind.lifts = lift;
         brain.orientation = Some(orientation);
+
+        {
+            use super::super::lift::{
+                LiftProducerAssignment, LiftProducerFunding, LiftProducerTiming,
+            };
+
+            let mut cancelled = brain.clone();
+            let operation = cancelled.mind_mut().lifts.operation().unwrap().clone();
+            let starts_at = observed.tick + u64::from(UnitKind::Kestrel.stats().train_ticks);
+            cancelled
+                .mind_mut()
+                .lifts
+                .bind_producer_assignments(
+                    operation.started_at,
+                    operation.deadline,
+                    vec![LiftProducerAssignment::new(
+                        0,
+                        airworks,
+                        UnitKind::Skyhook,
+                        LiftProducerTiming::new(
+                            observed.tick + tuning.cadence,
+                            starts_at,
+                            starts_at + u64::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                            operation.deadline,
+                        ),
+                        LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
+                    )],
+                )
+                .unwrap();
+            assert!(
+                cancelled
+                    .mind_mut()
+                    .lifts
+                    .active_production_obligation()
+                    .unwrap()
+                    .producer_schedule_is_executable(
+                        &ResourceSnapshot::from_observation(&observed),
+                        tuning.cadence,
+                        observed.tick,
+                    )
+            );
+            let mut cancelled_state = state.clone();
+            cancelled_state
+                .building_mut(airworks)
+                .unwrap()
+                .queue
+                .clear();
+            let recovered = cancelled.act_traced(&cancelled_state);
+            let trace = recovered.trace.unwrap();
+            assert!(
+                !trace.budget.as_ref().unwrap().frozen
+                    && trace.allocation.coordinator_failure.is_none(),
+                "cancelling a fixed booking's predecessor must not make earlier island staging roll back Lift recovery: {trace:#?}"
+            );
+            assert!(
+                cancelled
+                    .mind_mut()
+                    .lifts
+                    .active_production_obligation()
+                    .is_none()
+            );
+        }
 
         let first = brain.act_traced(&state);
         let first_trace = first.trace.as_ref().expect("the shared turn is traced");
@@ -6555,7 +6593,7 @@ mod tests {
         assert!(planner.air_operation().is_some_and(|operation| {
             operation.assault_admitted && operation.phase == AirOperationPhase::Recon
         }));
-        assert!(planner.active_connected_obligation(&observed).is_none());
+        assert!(planner.connected_package_diagnostics().is_none());
         assert!(admission.decision.intents.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt {
@@ -6877,7 +6915,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             !connected_jobs.is_empty(),
-            "the promoted operation must retain exact producer work"
+            "the promoted operation must retain its procurement priority"
         );
         assert!(
             connected_jobs
@@ -6894,14 +6932,6 @@ mod tests {
             .filter(|job| job.enqueued_at > visible_state.current_tick())
             .cloned()
             .collect::<Vec<_>>();
-        assert!(
-            due_now.is_empty(),
-            "the older Foundry reserve must defer provider spending while strategic spendable scrap is zero"
-        );
-        assert!(
-            !future.is_empty(),
-            "later retained provider ordinals must remain scheduled"
-        );
         let mut connected_pairs = connected_jobs
             .iter()
             .map(|job| (job.producer, job.kind))
@@ -6938,11 +6968,13 @@ mod tests {
                 ..
             }
         )));
-        let due_at = future
-            .iter()
-            .map(|job| job.enqueued_at)
-            .min()
-            .expect("the retained operation has future producer work");
+        let Some(due_at) = future.iter().map(|job| job.enqueued_at).min() else {
+            assert!(
+                !due_now.is_empty(),
+                "all retained demand was purchased this decision"
+            );
+            return;
+        };
         let future_due = future
             .iter()
             .filter(|job| job.enqueued_at == due_at)
@@ -6951,21 +6983,6 @@ mod tests {
         while visible_state.current_tick() < due_at {
             visible_state.tick(&[]);
         }
-        let due_observation =
-            orientation.observe(&Observation::fog_honest(&visible_state, PlayerId(0)));
-        let due_obligation = brain
-            .mind()
-            .strategy
-            .active_connected_obligation(&due_observation)
-            .expect("the retained schedule reaches its first enqueue boundary");
-        assert!(
-            due_obligation.producer_schedule_is_executable(
-                &ResourceSnapshot::from_observation(&due_observation),
-                brain.dials.cadence,
-                due_observation.tick,
-            ),
-            "the retained schedule must remain executable at its first enqueue boundary"
-        );
         let due = brain.act_traced(&visible_state);
         let due_trace = due.trace.as_ref().expect("the future dispatch is traced");
         for expected in &future_due {
@@ -6979,13 +6996,9 @@ mod tests {
                         job.owner == expected.owner
                             && job.producer == expected.producer
                             && job.kind == expected.kind
-                            && job.request_ordinal == expected.request_ordinal
-                            && job.enqueued_at == expected.enqueued_at
-                            && job.starts_at == expected.starts_at
-                            && job.ready_at == expected.ready_at
                             && job.ready_before == expected.ready_before
                     }),
-                "the future ordinal must retain its original owner and timing"
+                "the retained force remains funded before its original deadline"
             );
         }
         let mut due_pairs = future_due
@@ -6995,9 +7008,16 @@ mod tests {
         due_pairs.sort_unstable();
         due_pairs.dedup();
         for (producer, kind) in due_pairs {
-            let expected = future_due
+            let expected = due_trace
+                .allocation
+                .producer_schedule
+                .entries
                 .iter()
-                .filter(|job| job.producer == producer && job.kind == kind)
+                .filter(|job| {
+                    job.enqueued_at == visible_state.current_tick()
+                        && job.producer == producer
+                        && job.kind == kind
+                })
                 .count();
             let actual = due
                 .commands
@@ -7012,7 +7032,7 @@ mod tests {
                 .count();
             assert_eq!(
                 actual, expected,
-                "each future connected ordinal must emit once on its allocated tick"
+                "each current allocation row must emit once; earlier forecasts may change"
             );
         }
         let report = visible_state.tick(&due.commands);
