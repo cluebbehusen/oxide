@@ -310,6 +310,11 @@ pub struct Unit {
     /// Ground motor speed; overlap corrections do not contribute to it.
     #[serde(default, skip_serializing_if = "is_zero_fx")]
     pub drive_speed: Fx,
+    /// Running ticks in which contact cancelled most of this body's intended
+    /// progress along its route; reaching [`crate::stats::STALL_REPLAN_TICKS`]
+    /// drops the route for a fresh plan.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub stall_ticks: u8,
     /// Independent ground gun bearing; absent mounts follow the hull initially.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_heading: Option<u8>,
@@ -614,6 +619,23 @@ pub struct State {
     /// hottest pair of functions in match profiles.
     #[serde(skip)]
     pub(crate) building_occupancy: Vec<u8>,
+}
+
+/// Tiles under friendly ground bodies standing still, sorted by `(y, x)`.
+/// Route lookahead never cuts through them; routes stay body-blind and the
+/// collision resolver separates whatever bodies meet.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ParkedBodies {
+    tiles: Vec<TilePos>,
+}
+
+impl ParkedBodies {
+    /// Whether a friendly body stands still on `tile`.
+    pub(crate) fn blocks(&self, tile: TilePos) -> bool {
+        self.tiles
+            .binary_search_by_key(&(tile.y, tile.x), |t| (t.y, t.x))
+            .is_ok()
+    }
 }
 
 /// Ground passability for one moment: terrain plus the derived building
@@ -1028,6 +1050,12 @@ impl State {
             {
                 return Err(E::InvalidGroundSpeed(u.id));
             }
+            if u.stall_ticks >= crate::stats::STALL_REPLAN_TICKS
+                || (u.stall_ticks != 0
+                    && (stats.domain != crate::stats::Domain::Ground || u.path.is_none()))
+            {
+                return Err(E::InvalidStallTicks(u.id));
+            }
             if u.turret_heading.is_some() && !u.kind.has_ground_turret() {
                 return Err(E::InvalidTurretHeading(u.id));
             }
@@ -1129,6 +1157,7 @@ impl State {
                     || rider.settled != 0
                     || rider.brace_ticks != 0
                     || rider.drive_speed != Fx::ZERO
+                    || rider.stall_ticks != 0
                     || !rider.cargo.is_empty()
                 {
                     return Err(E::CargoNotDormant(u.id));
@@ -1629,6 +1658,27 @@ impl State {
         GroundTerrain::new(&self.map, &self.building_occupancy)
     }
 
+    /// Friendly ground bodies of `player`'s side that stand still right
+    /// now. Only friendly bodies count: steering around an unseen enemy
+    /// before contact would leak its position.
+    pub(crate) fn parked_bodies(&self, player: PlayerId) -> ParkedBodies {
+        let mut tiles: Vec<TilePos> = self
+            .units
+            .iter()
+            .filter(|u| {
+                u.hp > 0
+                    && u.domain() == crate::stats::Domain::Ground
+                    && u.drive_speed == Fx::ZERO
+                    && u.path.is_none()
+                    && !self.hostile(player, u.player)
+            })
+            .map(Unit::tile)
+            .collect();
+        tiles.sort_unstable_by_key(|t| (t.y, t.x));
+        tiles.dedup();
+        ParkedBodies { tiles }
+    }
+
     /// Marks or clears one building's footprint in the occupancy grid.
     /// Stealthy kinds never mark: a buried charge blocks nothing.
     pub(crate) fn stamp_building_occupancy(&mut self, building_index: usize, present: bool) {
@@ -1751,6 +1801,7 @@ impl State {
             brace_ticks: 0,
             turret_heading: None,
             drive_speed: Fx::ZERO,
+            stall_ticks: 0,
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -2255,6 +2306,10 @@ pub enum StateIntegrityError {
     /// Spade deployment exceeds its range or belongs to a non-siege unit.
     #[error("unit {0} carries invalid spade deployment")]
     InvalidUnitBraces(UnitId),
+    /// A stall counter at or past its replan bound, or on a body that is not
+    /// walking a ground route.
+    #[error("unit {0} carries an invalid stall counter")]
+    InvalidStallTicks(UnitId),
     /// Motor speed exceeds the chassis limit or belongs to a stationary/air body.
     #[error("unit {0} carries invalid ground motor speed")]
     InvalidGroundSpeed(UnitId),

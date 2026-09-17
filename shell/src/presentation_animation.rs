@@ -1514,6 +1514,7 @@ mod tests {
             brace_ticks: 0,
             turret_heading: None,
             drive_speed: chassis::fx::Fx::ZERO,
+            stall_ticks: 0,
             progress: 0,
             order: Order::Build { site: site.id },
             queue: VecDeque::new(),

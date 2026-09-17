@@ -1234,3 +1234,62 @@ fn legacy_harvest_orders_default_the_anchor_to_their_current_node() {
         }
     );
 }
+
+#[test]
+fn stacked_heaps_hand_two_workers_distinct_work_tiles() {
+    // Two heaps one above the other, two workers arriving from the same
+    // side: the second must not steer for the tile the first already
+    // covers and shove it for seconds before it happens to be in reach.
+    let upper = TilePos::new(11, 5);
+    let lower = TilePos::new(11, 6);
+    let mut state = state_with_salvage(
+        24,
+        &[(upper, 100), (lower, 100)],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 6, 5),
+            unit(0, UnitKind::Harvester, 6, 6),
+        ],
+        vec![],
+    );
+    let (a, b) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Harvest {
+                units: vec![a],
+                node: upper,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Harvest {
+                units: vec![b],
+                node: lower,
+                queue: false,
+            },
+        ),
+    ]);
+    let goal = |state: &State, id| state.unit(id).unwrap().path.as_ref().map(|path| path.goal);
+    assert_ne!(
+        goal(&state, a),
+        goal(&state, b),
+        "both workers chose one work tile"
+    );
+    let mut first_scrap = [None, None];
+    for tick in 1..=160u32 {
+        state.tick(&[]);
+        for (slot, id) in [a, b].into_iter().enumerate() {
+            if first_scrap[slot].is_none() && state.unit(id).unwrap().carrying > 0 {
+                first_scrap[slot] = Some(tick);
+            }
+        }
+    }
+    assert!(
+        first_scrap
+            .iter()
+            .all(|first| first.is_some_and(|tick| tick <= 80)),
+        "workers took too long to start extracting: {first_scrap:?}"
+    );
+}

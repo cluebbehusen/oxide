@@ -189,6 +189,7 @@ impl State {
             let travel = movement::run(self);
             let driven: Vec<_> = self.units.iter().map(|unit| unit.pos).collect();
             movement::resolve_collisions(self, &travel, &mut index);
+            movement::note_stalls(self, &travel, &driven);
             motion.extend(self.units.iter().zip(&travel).zip(driven).filter_map(
                 |((unit, &propulsion), driven)| {
                     let correction = unit.pos - driven;

@@ -8,7 +8,7 @@ use super::locomotion::approach_rect;
 use crate::event::{Event, StallReason};
 use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::{Order, PathFollow, State};
-use crate::stats::HARVEST_ZONE_RADIUS;
+use crate::stats::{HARVEST_ZONE_RADIUS, WORK_TILE_CLAIM_REACH};
 use crate::vision::GroundSalvageDanger;
 use chassis::fx::Fx;
 use chassis::grid::TilePos;
@@ -1021,6 +1021,17 @@ fn source_route_avoiding_danger(
                 .filter(|tile| known_ground_passable(state, danger, player, *tile))
                 .filter(|tile| allow_dangerous_goal || !danger.contains(*tile))
                 .collect();
+            // Work tiles other workers hold are last resorts, taken only
+            // when every tile around the source is spoken for.
+            let claimed = claimed_work_tiles(state, player, id);
+            let free: Vec<TilePos> = candidates
+                .iter()
+                .copied()
+                .filter(|tile| !claimed.contains(tile))
+                .collect();
+            if !free.is_empty() {
+                candidates = free;
+            }
             candidates.sort_by_key(|tile| rect_approach_key(from, source.pos, (1, 1), *tile));
             let near = candidates.len().min(4);
             if near > 1 {
@@ -1048,6 +1059,40 @@ fn source_route_avoiding_danger(
             })
         }
     }
+}
+
+/// Work tiles that other friendly workers already hold or are heading for.
+/// A parked worker also claims every tile whose center its hull covers
+/// within [`WORK_TILE_CLAIM_REACH`], so a second worker never steers for a
+/// center it cannot reach and shoves the first one instead.
+fn claimed_work_tiles(state: &State, player: PlayerId, id: UnitId) -> Vec<TilePos> {
+    let reach_sq = WORK_TILE_CLAIM_REACH * WORK_TILE_CLAIM_REACH;
+    let mut claimed = Vec::new();
+    for worker in state.units.iter().filter(|worker| {
+        worker.id != id
+            && worker.hp > 0
+            && !state.hostile(player, worker.player)
+            && worker.kind.stats().harvest.is_some()
+            && matches!(worker.order, Order::Harvest { .. })
+    }) {
+        match &worker.path {
+            Some(path) => claimed.push(path.goal),
+            None => {
+                let tile = worker.tile();
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let near = tile.offset(dx, dy);
+                        if near.center().dist_sq(worker.pos) < reach_sq {
+                            claimed.push(near);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    claimed.sort_unstable_by_key(|tile| (tile.y, tile.x));
+    claimed.dedup();
+    claimed
 }
 
 /// Finds the route-minimal doorstep without running A* after every remaining
