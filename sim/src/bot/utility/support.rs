@@ -19,6 +19,7 @@ impl UtilityPolicy {
             Self::claim_non_preemptible_intent_units(intent, &mut unavailable);
         }
         let context = EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs,
             resources: &resources,
@@ -78,6 +79,8 @@ impl UtilityPolicy {
             self.test_admit_repairs(
                 obs,
                 PolicyMode {
+                    evidence: Default::default(),
+                    ground_missions: None,
                     admit_voluntary_macro: true,
                     unit_contacts: None,
                     building_contacts: None,
@@ -151,6 +154,8 @@ mod tests {
                 &Dials::full(),
                 obs,
                 PolicyMode {
+                    evidence: Default::default(),
+                    ground_missions: None,
                     admit_voluntary_macro: true,
                     unit_contacts: None,
                     building_contacts: None,

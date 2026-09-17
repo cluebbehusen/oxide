@@ -57,7 +57,7 @@ impl UtilityPolicy {
                 .iter()
                 .any(|building| building.built && building.kind == *kind)
         }) && Self::projected_foundries(obs).1 == 0
-            && self.foundry_saving.is_none();
+            && self.state.foundry_saving.is_none();
         let mut sites = BTreeMap::<Vec<usize>, Vec<TilePos>>::new();
         for y in 0..obs.map_height - foundry.size.1 + 1 {
             for x in 0..obs.map_width - foundry.size.0 + 1 {
@@ -286,7 +286,7 @@ impl UtilityPolicy {
                     opportunity,
                     worker.id,
                     &security,
-                    &mut self.expansion_routing_cache.borrow_mut(),
+                    &mut self.queries.expansion_routing_cache.borrow_mut(),
                 );
                 if assessment.disposition != expansion::ExpansionDisposition::Build {
                     continue;

@@ -310,6 +310,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 !self
                     .participants
                     .policy
+                    .state
                     .support_work
                     .repairs
                     .iter()
@@ -364,7 +365,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 ClaimBundle::default().with_paid_queue(planner.paid_claims().to_vec()),
             ));
         }
-        for deployment in &self.participants.policy.support_deployments.active {
+        for deployment in &self.participants.policy.state.support_deployments.active {
             obligations.push(imported_obligation(
                 ObligationClass::PersistentPlan,
                 deployment.accepted_at,
@@ -372,7 +373,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 deployment.claims(),
             ));
         }
-        for (key, work) in &self.participants.policy.reconnaissance.assignments {
+        for (key, work) in &self.participants.policy.state.reconnaissance.assignments {
             if work.unit.is_some() || work.paid_claim.is_some() || work.unpaid {
                 obligations.push(imported_obligation(
                     ObligationClass::PersistentPlan,
@@ -412,6 +413,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             };
             self.participants.policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    evidence: self.context.evidence,
                     obligations: &[],
                     obs: self.context.observation,
                     resources: &resources,
@@ -648,11 +650,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
     ) {
-        let Some(saving) = self.participants.policy.standing_saving.as_ref() else {
+        let Some(saving) = self.participants.policy.state.standing_saving.as_ref() else {
             return;
         };
         if !claims.opening_core.ready {
-            self.participants.policy.standing_saving = None;
+            self.participants.policy.state.standing_saving = None;
             return;
         }
         let targets = standing_force_projection_targets(self.context, self.participants);
@@ -678,7 +680,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             self.context.public_map,
             self.context.orientation,
         ) {
-            self.participants.policy.standing_saving = None;
+            self.participants.policy.state.standing_saving = None;
             return;
         }
         obligations.obligations.push(saving.obligation());
@@ -686,7 +688,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
     }
 
     fn reconcile_standing_saving(&mut self, obligations: &mut ObligationPreparation) {
-        let Some(saving) = self.participants.policy.standing_saving.as_ref() else {
+        let Some(saving) = self.participants.policy.state.standing_saving.as_ref() else {
             return;
         };
         let deadline = obligation_horizon(&obligations.obligations, saving.job.ready_before);
@@ -713,7 +715,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             let key = saving.proposal.key();
             obligations.obligations.retain(|obligation| !matches!(obligation.owner(),
                 ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(found), .. } if found == key));
-            self.participants.policy.standing_saving = None;
+            self.participants.policy.state.standing_saving = None;
         }
     }
 
@@ -1655,6 +1657,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let mut unpaid: Vec<_> = self
             .participants
             .policy
+            .state
             .reconnaissance
             .assignments
             .iter()
@@ -1682,11 +1685,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             } else {
                 break;
             };
-            self.participants.policy.reconnaissance.release_unpaid(
-                key,
-                self.context.observation.tick,
-                reason,
-            );
+            self.participants
+                .policy
+                .state
+                .reconnaissance
+                .release_unpaid(key, self.context.observation.tick, reason);
             obligations
                 .obligations
                 .retain(|obligation| obligation.key != ObligationKey::Reconnaissance(key));

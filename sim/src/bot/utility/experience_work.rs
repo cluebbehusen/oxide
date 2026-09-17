@@ -56,20 +56,20 @@ mod tests {
         policy.record_dispatched_harvest(&obs, UnitId(1), node);
         obs.tick = 124;
         policy.observe_work_experience(&obs);
-        assert!(policy.dead_nodes.contains(&node));
-        assert_eq!(policy.work_experience.pending.len(), 1);
-        assert_eq!(policy.work_experience.pending[0].started_at, 100);
+        assert!(policy.state.dead_nodes.contains(&node));
+        assert_eq!(policy.state.work_experience.pending.len(), 1);
+        assert_eq!(policy.state.work_experience.pending[0].started_at, 100);
         assert_eq!(
-            policy.work_experience.pending[0].reason,
+            policy.state.work_experience.pending[0].reason,
             OutcomeReason::BlockedRoute
         );
         policy.observe_work_experience(&obs);
-        assert_eq!(policy.work_experience.pending.len(), 1);
+        assert_eq!(policy.state.work_experience.pending.len(), 1);
         obs.tick = 424;
         policy.observe_work_experience(&obs);
-        assert!(!policy.dead_nodes.contains(&node));
+        assert!(!policy.state.dead_nodes.contains(&node));
         assert!(
-            policy.last_sent.is_empty(),
+            policy.state.last_sent.is_empty(),
             "retry eligibility must not dispatch work"
         );
     }
@@ -100,10 +100,11 @@ mod tests {
             }
             obs.tick = 124;
             policy.observe_work_experience(&obs);
-            assert!(policy.dead_nodes.is_empty(), "cause {cause}");
-            assert!(policy.dead_anchors.is_empty(), "cause {cause}");
+            assert!(policy.state.dead_nodes.is_empty(), "cause {cause}");
+            assert!(policy.state.dead_anchors.is_empty(), "cause {cause}");
             assert!(
                 policy
+                    .state
                     .work_experience
                     .pending
                     .iter()
@@ -145,18 +146,18 @@ mod tests {
                 obs.tick = 124;
                 policy.observe_work_experience(&obs);
                 assert!(
-                    policy.dead_anchors.is_empty(),
+                    policy.state.dead_anchors.is_empty(),
                     "owner {owner}, built {built}"
                 );
-                assert!(policy.work_experience.builds.is_empty());
-                assert_eq!(policy.work_experience.pending.len(), 1);
-                let report = &policy.work_experience.pending[0];
+                assert!(policy.state.work_experience.builds.is_empty());
+                assert_eq!(policy.state.work_experience.pending.len(), 1);
+                let report = &policy.state.work_experience.pending[0];
                 assert_eq!(report.outcome, Outcome::Invalidated);
                 assert_eq!(report.reason, OutcomeReason::SiteOccupied);
                 assert_eq!(report.own_lost_value, 0);
                 assert!(!report.doctrine_eligible);
                 policy.observe_work_experience(&obs);
-                assert_eq!(policy.work_experience.pending.len(), 1);
+                assert_eq!(policy.state.work_experience.pending.len(), 1);
             }
         }
     }
@@ -182,9 +183,9 @@ mod tests {
             });
             obs.tick = 124;
             policy.observe_work_experience(&obs);
-            assert_eq!(policy.work_experience.pending.len(), 1);
+            assert_eq!(policy.state.work_experience.pending.len(), 1);
             assert_eq!(
-                policy.work_experience.pending[0].reason,
+                policy.state.work_experience.pending[0].reason,
                 OutcomeReason::BlockedRoute
             );
         }
@@ -210,28 +211,31 @@ mod tests {
             tier: 0,
         });
         policy.observe_work_experience(&obs);
-        assert!(policy.work_experience.builds.is_empty());
-        assert_eq!(policy.work_experience.foundations.len(), 1);
-        assert!(policy.work_experience.pending.is_empty());
+        assert!(policy.state.work_experience.builds.is_empty());
+        assert_eq!(policy.state.work_experience.foundations.len(), 1);
+        assert!(policy.state.work_experience.pending.is_empty());
         let mut cancelled = policy.clone();
         cancelled.record_foundation_cancellation(&obs, BuildingId(8));
-        assert!(cancelled.work_experience.foundations.is_empty());
-        let cancellation = &cancelled.work_experience.pending[0];
+        assert!(cancelled.state.work_experience.foundations.is_empty());
+        let cancellation = &cancelled.state.work_experience.pending[0];
         assert_eq!(cancellation.outcome, Outcome::Invalidated);
         assert_eq!(cancellation.reason, OutcomeReason::Preempted);
         assert_eq!(cancellation.own_lost_value, 0);
         cancelled.record_foundation_cancellation(&obs, BuildingId(8));
-        assert_eq!(cancelled.work_experience.pending.len(), 1);
+        assert_eq!(cancelled.state.work_experience.pending.len(), 1);
         policy.record_work_retask(&obs, &[UnitId(1)], None);
         obs.my_units.clear();
         obs.tick = 148;
         obs.my_buildings[0].built = true;
         policy.observe_work_experience(&obs);
-        assert!(policy.dead_anchors.is_empty());
-        assert!(policy.work_experience.foundations.is_empty());
-        assert_eq!(policy.work_experience.pending.len(), 1);
-        assert_eq!(policy.work_experience.pending[0].outcome, Outcome::Complete);
-        assert_eq!(policy.work_experience.pending[0].own_lost_value, 0);
+        assert!(policy.state.dead_anchors.is_empty());
+        assert!(policy.state.work_experience.foundations.is_empty());
+        assert_eq!(policy.state.work_experience.pending.len(), 1);
+        assert_eq!(
+            policy.state.work_experience.pending[0].outcome,
+            Outcome::Complete
+        );
+        assert_eq!(policy.state.work_experience.pending[0].own_lost_value, 0);
     }
 
     #[test]
@@ -245,16 +249,16 @@ mod tests {
         obs.my_units[0].idle = false;
         obs.tick = 400;
         policy.observe_work_experience(&obs);
-        assert!(policy.dead_anchors.is_empty());
-        assert_eq!(policy.work_experience.builds.len(), 1);
+        assert!(policy.state.dead_anchors.is_empty());
+        assert_eq!(policy.state.work_experience.builds.len(), 1);
         obs.my_units[0].founding = None;
         obs.my_units[0].idle = true;
         obs.tick = 424;
         policy.observe_work_experience(&obs);
-        assert!(policy.dead_anchors.contains(&site));
+        assert!(policy.state.dead_anchors.contains(&site));
         obs.tick = 724;
         policy.observe_work_experience(&obs);
-        assert!(policy.dead_anchors.is_empty());
+        assert!(policy.state.dead_anchors.is_empty());
     }
 }
 
@@ -332,16 +336,17 @@ impl WorkExperience {
 
 impl UtilityPolicy {
     pub(in crate::bot) fn observe_work_experience(&mut self, obs: &Observation) {
-        self.work_experience.enabled = true;
+        self.state.work_experience.enabled = true;
         if self
+            .state
             .work_experience
             .observed_at
             .is_some_and(|tick| tick >= obs.tick)
         {
             return;
         }
-        self.work_experience.observed_at = Some(obs.tick);
-        self.work_experience.construction_work_tiles = obs
+        self.state.work_experience.observed_at = Some(obs.tick);
+        self.state.work_experience.construction_work_tiles = obs
             .my_units
             .iter()
             .filter(|unit| unit.hp > 0 && unit.site.is_some())
@@ -352,22 +357,24 @@ impl UtilityPolicy {
                 && obs.tick < failure.failed_at.saturating_add(300)
                 && (failure.visible || !obs.visible(failure.tile))
         };
-        self.work_experience.nodes.retain(retain);
-        self.work_experience.sites.retain(retain);
-        self.dead_nodes = self
+        self.state.work_experience.nodes.retain(retain);
+        self.state.work_experience.sites.retain(retain);
+        self.state.dead_nodes = self
+            .state
             .work_experience
             .nodes
             .iter()
             .map(|failure| failure.tile)
             .collect();
-        self.dead_anchors = self
+        self.state.dead_anchors = self
+            .state
             .work_experience
             .sites
             .iter()
             .map(|failure| failure.tile)
             .collect();
         self.audit_harvests(obs);
-        for (id, mut attempt) in std::mem::take(&mut self.work_experience.harvests) {
+        for (id, mut attempt) in std::mem::take(&mut self.state.work_experience.harvests) {
             let worker = obs
                 .my_units
                 .iter()
@@ -417,7 +424,7 @@ impl UtilityPolicy {
             } else if worker.is_some_and(|unit| unit.harvesting == Some(attempt.node))
                 && obs.tick.saturating_sub(attempt.since) < 1800
             {
-                self.work_experience.harvests.insert(id, attempt);
+                self.state.work_experience.harvests.insert(id, attempt);
                 continue;
             } else {
                 attempt.journal.finish(
@@ -432,9 +439,12 @@ impl UtilityPolicy {
                     false,
                 );
             }
-            self.work_experience.pending.extend(attempt.journal.pending);
+            self.state
+                .work_experience
+                .pending
+                .extend(attempt.journal.pending);
         }
-        for mut attempt in std::mem::take(&mut self.work_experience.builds) {
+        for mut attempt in std::mem::take(&mut self.state.work_experience.builds) {
             let appeared = obs.my_buildings.iter().find(|building| {
                 building.kind == attempt.kind && building.anchor == attempt.anchor
             });
@@ -444,20 +454,23 @@ impl UtilityPolicy {
                 .find(|unit| unit.id == attempt.worker && unit.hp > 0);
             if let Some(building) = appeared {
                 attempt.journal.progress(1);
-                self.work_experience.foundations.push(FoundationWatch {
-                    building: building.id,
-                    cost: attempt
-                        .kind
-                        .base_stats()
-                        .construction
-                        .map_or(0, |cost| cost.cost),
-                    journal: attempt.journal,
-                });
+                self.state
+                    .work_experience
+                    .foundations
+                    .push(FoundationWatch {
+                        building: building.id,
+                        cost: attempt
+                            .kind
+                            .base_stats()
+                            .construction
+                            .map_or(0, |cost| cost.cost),
+                        journal: attempt.journal,
+                    });
                 continue;
             } else if worker
                 .is_some_and(|unit| unit.founding == Some((attempt.kind, attempt.anchor)))
             {
-                self.work_experience.builds.push(attempt);
+                self.state.work_experience.builds.push(attempt);
                 continue;
             } else if worker.is_none() {
                 let carried =
@@ -503,12 +516,12 @@ impl UtilityPolicy {
                     && (unit.tile.chebyshev(attempt.from) <= 1
                         || unit.tile.chebyshev(attempt.anchor) <= 3)
             }) {
-                self.work_experience.sites.push(FailedWork {
+                self.state.work_experience.sites.push(FailedWork {
                     tile: attempt.anchor,
                     failed_at: obs.tick,
                     visible: obs.visible(attempt.anchor),
                 });
-                self.dead_anchors.push(attempt.anchor);
+                self.state.dead_anchors.push(attempt.anchor);
                 attempt.journal.finish(
                     obs,
                     Outcome::Aborted,
@@ -525,15 +538,18 @@ impl UtilityPolicy {
                     false,
                 );
             }
-            self.work_experience.pending.extend(attempt.journal.pending);
+            self.state
+                .work_experience
+                .pending
+                .extend(attempt.journal.pending);
         }
-        for mut foundation in std::mem::take(&mut self.work_experience.foundations) {
+        for mut foundation in std::mem::take(&mut self.state.work_experience.foundations) {
             let building = obs
                 .my_buildings
                 .iter()
                 .find(|building| building.id == foundation.building);
             if building.is_some_and(|building| !building.built && building.hp > 0) {
-                self.work_experience.foundations.push(foundation);
+                self.state.work_experience.foundations.push(foundation);
                 continue;
             }
             let completed = building.is_some_and(|building| building.built && building.hp > 0);
@@ -557,14 +573,15 @@ impl UtilityPolicy {
                 // is not a construction loss.
                 report.own_lost_value = if completed { 0 } else { foundation.cost };
             }
-            self.work_experience
+            self.state
+                .work_experience
                 .pending
                 .extend(foundation.journal.pending);
         }
-        for repair in &self.support_work.repairs {
+        for repair in &self.state.support_work.repairs {
             let key = repair.key;
-            if !self.work_experience.repairs.contains_key(&key) {
-                let id = self.work_experience.id(EpisodeOwner::Support);
+            if !self.state.work_experience.repairs.contains_key(&key) {
+                let id = self.state.work_experience.id(EpisodeOwner::Support);
                 let mut journal = OutcomeJournal::default();
                 let (tile, subject) = match key.patient {
                     Target::Unit(id) => (
@@ -594,10 +611,10 @@ impl UtilityPolicy {
                     &[key.worker],
                     0,
                 );
-                self.work_experience.repairs.insert(key, journal);
+                self.state.work_experience.repairs.insert(key, journal);
             }
         }
-        for (key, mut journal) in std::mem::take(&mut self.work_experience.repairs) {
+        for (key, mut journal) in std::mem::take(&mut self.state.work_experience.repairs) {
             let healthy = match key.patient {
                 Target::Unit(id) => obs
                     .my_units
@@ -627,23 +644,27 @@ impl UtilityPolicy {
                     false,
                 );
             } else {
-                self.work_experience.repairs.insert(key, journal);
+                self.state.work_experience.repairs.insert(key, journal);
                 continue;
             }
-            self.work_experience.pending.append(&mut journal.pending);
+            self.state
+                .work_experience
+                .pending
+                .append(&mut journal.pending);
             if self
+                .state
                 .support_work
                 .repairs
                 .iter()
                 .any(|repair| repair.key == key)
             {
-                self.work_experience.repairs.insert(key, journal);
+                self.state.work_experience.repairs.insert(key, journal);
             }
         }
-        for (key, work) in &self.reconnaissance.assignments {
+        for (key, work) in &self.state.reconnaissance.assignments {
             let Some(unit) = work.unit else { continue };
-            if !self.work_experience.recon.contains_key(key) {
-                let id = self.work_experience.id(EpisodeOwner::Reconnaissance);
+            if !self.state.work_experience.recon.contains_key(key) {
+                let id = self.state.work_experience.id(EpisodeOwner::Reconnaissance);
                 let mut journal = OutcomeJournal::default();
                 journal.watch(
                     obs,
@@ -657,11 +678,11 @@ impl UtilityPolicy {
                     &[unit],
                     0,
                 );
-                self.work_experience.recon.insert(*key, journal);
+                self.state.work_experience.recon.insert(*key, journal);
             }
         }
-        for (key, mut journal) in std::mem::take(&mut self.work_experience.recon) {
-            if let Some(work) = self.reconnaissance.assignments.get(&key) {
+        for (key, mut journal) in std::mem::take(&mut self.state.work_experience.recon) {
+            if let Some(work) = self.state.reconnaissance.assignments.get(&key) {
                 if work
                     .unit
                     .is_some_and(|id| crate::bot::experience::own_unit_health(obs, id).is_none())
@@ -704,7 +725,7 @@ impl UtilityPolicy {
                         false,
                     );
                 } else {
-                    self.work_experience.recon.insert(key, journal);
+                    self.state.work_experience.recon.insert(key, journal);
                     continue;
                 }
             } else {
@@ -716,17 +737,22 @@ impl UtilityPolicy {
                     false,
                 );
             }
-            self.work_experience.pending.append(&mut journal.pending);
-            if self.reconnaissance.assignments.contains_key(&key) {
-                self.work_experience.recon.insert(key, journal);
+            self.state
+                .work_experience
+                .pending
+                .append(&mut journal.pending);
+            if self.state.reconnaissance.assignments.contains_key(&key) {
+                self.state.work_experience.recon.insert(key, journal);
             }
         }
-        self.dead_nodes
+        self.state
+            .dead_nodes
             .sort_unstable_by_key(|tile| (tile.y, tile.x));
-        self.dead_nodes.dedup();
-        self.dead_anchors
+        self.state.dead_nodes.dedup();
+        self.state
+            .dead_anchors
             .sort_unstable_by_key(|tile| (tile.y, tile.x));
-        self.dead_anchors.dedup();
+        self.state.dead_anchors.dedup();
     }
 
     pub(super) fn record_failed_work(
@@ -736,13 +762,14 @@ impl UtilityPolicy {
         tile: TilePos,
         kind: Option<BuildingKind>,
     ) {
-        self.work_experience.nodes.push(FailedWork {
+        self.state.work_experience.nodes.push(FailedWork {
             tile,
             failed_at: obs.tick,
             visible: obs.visible(tile),
         });
-        let id = self.work_experience.id(EpisodeOwner::Harvest);
+        let id = self.state.work_experience.id(EpisodeOwner::Harvest);
         let mut journal = self
+            .state
             .work_experience
             .harvests
             .remove(&worker)
@@ -767,7 +794,7 @@ impl UtilityPolicy {
             750,
             false,
         );
-        self.work_experience.pending.extend(journal.pending);
+        self.state.work_experience.pending.extend(journal.pending);
     }
 
     pub(super) fn record_harvest_episode(
@@ -776,8 +803,9 @@ impl UtilityPolicy {
         worker: UnitId,
         node: TilePos,
     ) {
-        if !self.work_experience.enabled
+        if !self.state.work_experience.enabled
             || self
+                .state
                 .work_experience
                 .harvests
                 .get(&worker)
@@ -788,7 +816,7 @@ impl UtilityPolicy {
         let Some(unit) = obs.my_units.iter().find(|unit| unit.id == worker) else {
             return;
         };
-        let id = self.work_experience.id(EpisodeOwner::Harvest);
+        let id = self.state.work_experience.id(EpisodeOwner::Harvest);
         let mut journal = OutcomeJournal::default();
         journal.watch(
             obs,
@@ -802,7 +830,7 @@ impl UtilityPolicy {
             &[worker],
             0,
         );
-        self.work_experience.harvests.insert(
+        self.state.work_experience.harvests.insert(
             worker,
             HarvestAttempt {
                 node,
@@ -820,6 +848,7 @@ impl UtilityPolicy {
         building: BuildingId,
     ) {
         let Some(index) = self
+            .state
             .work_experience
             .foundations
             .iter()
@@ -827,7 +856,7 @@ impl UtilityPolicy {
         else {
             return;
         };
-        let mut foundation = self.work_experience.foundations.remove(index);
+        let mut foundation = self.state.work_experience.foundations.remove(index);
         foundation.journal.finish(
             obs,
             Outcome::Invalidated,
@@ -838,7 +867,8 @@ impl UtilityPolicy {
         for report in &mut foundation.journal.pending {
             report.own_lost_value = 0;
         }
-        self.work_experience
+        self.state
+            .work_experience
             .pending
             .extend(foundation.journal.pending);
     }
@@ -849,7 +879,7 @@ impl UtilityPolicy {
         units: &[UnitId],
         build: Option<(BuildingKind, TilePos)>,
     ) {
-        for mut attempt in std::mem::take(&mut self.work_experience.builds) {
+        for mut attempt in std::mem::take(&mut self.state.work_experience.builds) {
             if units.contains(&attempt.worker) && build != Some((attempt.kind, attempt.anchor)) {
                 attempt.journal.finish(
                     obs,
@@ -858,13 +888,16 @@ impl UtilityPolicy {
                     1000,
                     false,
                 );
-                self.work_experience.pending.extend(attempt.journal.pending);
+                self.state
+                    .work_experience
+                    .pending
+                    .extend(attempt.journal.pending);
             } else {
-                self.work_experience.builds.push(attempt);
+                self.state.work_experience.builds.push(attempt);
             }
         }
         for id in units {
-            if let Some(mut attempt) = self.work_experience.harvests.remove(id) {
+            if let Some(mut attempt) = self.state.work_experience.harvests.remove(id) {
                 attempt.journal.finish(
                     obs,
                     if attempt.collected > 0 {
@@ -876,7 +909,10 @@ impl UtilityPolicy {
                     1000,
                     false,
                 );
-                self.work_experience.pending.extend(attempt.journal.pending);
+                self.state
+                    .work_experience
+                    .pending
+                    .extend(attempt.journal.pending);
             }
         }
     }
@@ -901,12 +937,12 @@ impl UtilityPolicy {
         else {
             return;
         };
-        if self.work_experience.builds.iter().any(|attempt| {
+        if self.state.work_experience.builds.iter().any(|attempt| {
             attempt.worker == worker.id && attempt.kind == kind && attempt.anchor == anchor
         }) {
             return;
         }
-        let id = self.work_experience.id(EpisodeOwner::Construction);
+        let id = self.state.work_experience.id(EpisodeOwner::Construction);
         let mut journal = OutcomeJournal::default();
         journal.watch(
             obs,
@@ -929,7 +965,7 @@ impl UtilityPolicy {
             &[worker.id],
             0,
         );
-        self.work_experience.builds.push(BuildAttempt {
+        self.state.work_experience.builds.push(BuildAttempt {
             worker: worker.id,
             kind,
             anchor,

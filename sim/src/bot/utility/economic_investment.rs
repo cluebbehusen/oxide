@@ -114,6 +114,7 @@ impl EconomicInvestment {
 
 #[derive(Clone, Copy)]
 pub(in crate::bot) struct EconomicInvestmentContext<'a> {
+    pub(in crate::bot) evidence: crate::bot::utility::DecisionEvidence<'a>,
     pub(in crate::bot) obs: &'a Observation,
     pub(in crate::bot) resources: &'a ResourceSnapshot,
     pub(in crate::bot) profile: &'a ResolvedProfile,
@@ -151,15 +152,15 @@ impl UtilityPolicy {
     }
 
     pub(in crate::bot) fn economic_saving(&self) -> Option<&EconomicInvestment> {
-        self.economic_saving.as_ref()
+        self.state.economic_saving.as_ref()
     }
 
     pub(in crate::bot) fn has_economic_foundation(&self) -> bool {
-        self.economic_foundation.is_some()
+        self.state.economic_foundation.is_some()
     }
 
     pub(in crate::bot) fn economic_foundation(&self) -> Option<&EconomicInvestment> {
-        self.economic_foundation.as_ref()
+        self.state.economic_foundation.as_ref()
     }
 
     pub(in crate::bot) fn commit_economic_investment(
@@ -176,11 +177,11 @@ impl UtilityPolicy {
         if current_funding >= proposal.cost {
             intents.push(proposal.intent());
             if proposal.build().is_some() {
-                self.economic_foundation = Some(proposal);
+                self.state.economic_foundation = Some(proposal);
             }
-            self.economic_saving = None;
+            self.state.economic_saving = None;
         } else {
-            self.economic_saving = Some(proposal);
+            self.state.economic_saving = Some(proposal);
         }
     }
 
@@ -189,7 +190,7 @@ impl UtilityPolicy {
         context: EconomicInvestmentContext<'_>,
         core_ready: bool,
     ) {
-        if let Some(plan) = self.economic_foundation.take()
+        if let Some(plan) = self.state.economic_foundation.take()
             && let Some((kind, anchor, builder)) = plan.build()
         {
             let paid = context
@@ -220,14 +221,14 @@ impl UtilityPolicy {
                         context.briefing,
                     );
                 if valid {
-                    self.economic_foundation = Some(plan);
+                    self.state.economic_foundation = Some(plan);
                 } else {
-                    self.economic_cancelled_founder = Some((builder, kind, anchor));
-                    self.economic_retry_at = context.obs.tick.saturating_add(600);
+                    self.state.economic_cancelled_founder = Some((builder, kind, anchor));
+                    self.state.economic_retry_at = context.obs.tick.saturating_add(600);
                 }
             }
         }
-        let Some(saving) = self.economic_saving.as_ref() else {
+        let Some(saving) = self.state.economic_saving.as_ref() else {
             return;
         };
         let transitioned = saving.build().is_some_and(|(kind, anchor, _)| {
@@ -246,23 +247,23 @@ impl UtilityPolicy {
             _ => false,
         };
         if transitioned {
-            self.economic_saving = None;
+            self.state.economic_saving = None;
             return;
         }
         let now = context.obs.tick;
         if !core_ready || now >= saving.deadline || now > saving.fund_by {
-            self.economic_saving = None;
-            self.economic_retry_at = now.saturating_add(600);
+            self.state.economic_saving = None;
+            self.state.economic_retry_at = now.saturating_add(600);
             return;
         }
         let original = saving.clone();
         let mut refreshed = self.economic_quotes(context).investments();
         if let Some(mut proposal) = refreshed.pop() {
             proposal.observed_at = original.observed_at;
-            self.economic_saving = Some(proposal);
+            self.state.economic_saving = Some(proposal);
         } else {
-            self.economic_saving = None;
-            self.economic_retry_at = now.saturating_add(600);
+            self.state.economic_saving = None;
+            self.state.economic_retry_at = now.saturating_add(600);
         }
     }
 }
@@ -928,6 +929,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(obs);
         policy
             .economic_quotes(EconomicInvestmentContext {
+                evidence: Default::default(),
                 obligations: &[],
                 obs,
                 resources: &resources,
@@ -1053,6 +1055,7 @@ mod tests {
             let dials = Dials::balanced();
             policy
                 .economic_quotes(EconomicInvestmentContext {
+                    evidence: Default::default(),
                     obligations: &[],
                     obs,
                     resources: &resources,
@@ -1123,6 +1126,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&obs);
         let demands = [demand(UnitKind::Sentinel, 1_000)];
         let context = EconomicInvestmentContext {
+            evidence: Default::default(),
             obs: &obs,
             resources: &resources,
             profile: &profile,
@@ -1445,7 +1449,10 @@ mod tests {
                 || alternative.y + height <= saved.y
                 || saved.y + saved_height <= alternative.y
         );
-        assert_eq!(policy.foundry_saving.as_ref().unwrap().plan.anchor, saved);
+        assert_eq!(
+            policy.state.foundry_saving.as_ref().unwrap().plan.anchor,
+            saved
+        );
     }
 
     #[test]
@@ -1495,7 +1502,7 @@ mod tests {
             })
             .expect("a safe supported frame pays for its restoration");
         let mut policy = UtilityPolicy::new();
-        policy.economic_saving = Some(initial);
+        policy.state.economic_saving = Some(initial);
         let retained = quotes(&policy, &obs, &map, &profile, &[]);
         assert_eq!(retained.len(), 1);
         assert_eq!(
@@ -1638,6 +1645,7 @@ mod tests {
             let resources = ResourceSnapshot::from_observation(&obs);
             policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    evidence: Default::default(),
                     obs: &obs,
                     resources: &resources,
                     profile: &profile,
@@ -1872,6 +1880,7 @@ mod tests {
             .unwrap(),
         };
         let mut context = EconomicInvestmentContext {
+            evidence: Default::default(),
             obs: &obs,
             resources: &resources,
             profile: &profile,
@@ -1982,6 +1991,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(obs);
         UtilityPolicy::new()
             .economic_quotes(EconomicInvestmentContext {
+                evidence: Default::default(),
                 obligations,
                 obs,
                 resources: &resources,
@@ -2182,7 +2192,7 @@ mod tests {
                 .unwrap();
             let (kind, anchor, builder) = quote.build().unwrap();
             policy.commit_economic_investment(quote.clone(), quote.cost, &mut Vec::new());
-            policy.pending_sites.push(anchor);
+            policy.state.pending_sites.push(anchor);
             obs.my_units
                 .iter_mut()
                 .find(|unit| unit.id == builder)
@@ -2201,6 +2211,7 @@ mod tests {
             let resources = ResourceSnapshot::from_observation(&obs);
             policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    evidence: Default::default(),
                     obligations: &[],
                     obs: &obs,
                     resources: &resources,
@@ -2220,12 +2231,12 @@ mod tests {
             let retained = !expired && !paid && core_ready;
             assert_eq!(policy.has_economic_foundation(), retained);
             assert_eq!(
-                policy.economic_cancelled_founder,
+                policy.state.economic_cancelled_founder,
                 (!paid && !retained).then_some((builder, kind, anchor))
             );
             if retained {
                 assert_eq!(
-                    policy.economic_foundation.as_ref().unwrap().deadline,
+                    policy.state.economic_foundation.as_ref().unwrap().deadline,
                     quote.deadline
                 );
                 let mut intents = Vec::new();
@@ -2283,6 +2294,7 @@ mod tests {
             let resources = ResourceSnapshot::from_observation(&obs);
             policy.refresh_economic_saving(
                 EconomicInvestmentContext {
+                    evidence: Default::default(),
                     obligations: &[],
                     obs: &obs,
                     resources: &resources,
@@ -2300,7 +2312,7 @@ mod tests {
                 expired || missed_funding,
             );
             assert!(policy.economic_saving().is_none());
-            assert!(policy.economic_retry_at > obs.tick);
+            assert!(policy.state.economic_retry_at > obs.tick);
             assert!(obs.my_buildings.contains(&paid));
         }
     }

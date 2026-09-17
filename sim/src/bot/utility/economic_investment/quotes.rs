@@ -40,7 +40,7 @@ impl<'a> EconomicQuotes<'a> {
 
         let obs = context.obs;
         if !dials.expansion
-            || policy.foundry_saving.is_some()
+            || policy.state.foundry_saving.is_some()
             || foundry_context.available_builders.is_empty()
             || !obs
                 .my_buildings
@@ -120,10 +120,10 @@ impl<'a> EconomicQuotes<'a> {
         let context = self.context;
 
         let obs = context.obs;
-        if obs.tick < policy.economic_retry_at || policy.economic_foundation.is_some() {
+        if obs.tick < policy.state.economic_retry_at || policy.state.economic_foundation.is_some() {
             return Vec::new();
         }
-        let retained = policy.economic_saving.as_ref();
+        let retained = policy.state.economic_saving.as_ref();
         let horizon = retained.map_or_else(
             || {
                 investment_horizon(
@@ -326,7 +326,7 @@ impl<'a> EconomicQuotes<'a> {
             .construction_builders(obs, &[], context.unavailable)
             .into_iter()
             .filter(|unit| {
-                builder_is_free(obs, unit) && !policy.evacuating_workers.contains(&unit.id)
+                builder_is_free(obs, unit) && !policy.state.evacuating_workers.contains(&unit.id)
             })
             .filter(|unit| retained.is_none_or(|saving| saving.builder == Some(unit.id)))
             .collect::<Vec<_>>();
@@ -424,7 +424,7 @@ impl<'a> EconomicQuotes<'a> {
                     }
                     if let Some(anchor) =
                         policy.placement_near_where(obs, kind, home.anchor, |anchor| {
-                            policy.foundry_saving.as_ref().is_none_or(|saving| {
+                            policy.state.foundry_saving.as_ref().is_none_or(|saving| {
                                 let saved = saving.plan.anchor;
                                 let (width, height) = kind.base_stats().size;
                                 let (saved_width, saved_height) =

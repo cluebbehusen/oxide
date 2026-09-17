@@ -346,7 +346,7 @@ impl UtilityPolicy {
         let Some(public_map) = public_map else {
             return false;
         };
-        let held_ground = self.scout.and_then(|scout| {
+        let held_ground = self.state.scout.and_then(|scout| {
             obs.my_units
                 .iter()
                 .find(|unit| unit.id == scout && unit.kind.stats().domain == Domain::Ground)
@@ -383,26 +383,31 @@ impl UtilityPolicy {
     }
 
     pub(super) fn audit_missing_scout(&mut self, obs: &Observation) {
-        let Some(id) = self.scout else { return };
+        let Some(id) = self.state.scout else { return };
         if obs.my_units.iter().any(|unit| unit.id == id) {
             return;
         }
 
-        let lost_dispatch = self.scout_dispatch.filter(|dispatch| dispatch.unit == id);
+        let lost_dispatch = self
+            .state
+            .scout_dispatch
+            .filter(|dispatch| dispatch.unit == id);
         let public_prior_ground_scout_lost = self.active_public_ground_probe(obs, id);
         let contested_scout_lost = self
+            .state
             .contested_scout
             .is_some_and(|(contested, _)| contested == id);
         let dispatched_air_scout_lost = lost_dispatch
             .is_some_and(|dispatch| matches!(dispatch.role, ScoutDispatchRole::SoloAir));
-        self.scout = None;
-        self.scout_dispatch = None;
+        self.state.scout = None;
+        self.state.scout_dispatch = None;
         if contested_scout_lost {
-            self.contested_scout = None;
-            self.contested_recon_retry_at = obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS);
+            self.state.contested_scout = None;
+            self.state.contested_recon_retry_at =
+                obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS);
         }
         if public_prior_ground_scout_lost {
-            self.persistent_air_scout_needed = true;
+            self.state.persistent_air_scout_needed = true;
         }
         if dispatched_air_scout_lost {
             self.suspend_solo_air_scout(obs.tick);
@@ -410,13 +415,13 @@ impl UtilityPolicy {
     }
 
     pub(super) fn suspend_solo_air_scout(&mut self, tick: u64) {
-        self.solo_air_scout_suspended = true;
-        self.solo_air_scout_dark_since = None;
-        self.solo_air_scout_retry_at = tick.saturating_add(SOLO_SCOUT_RETRY_TICKS);
+        self.state.solo_air_scout_suspended = true;
+        self.state.solo_air_scout_dark_since = None;
+        self.state.solo_air_scout_retry_at = tick.saturating_add(SOLO_SCOUT_RETRY_TICKS);
     }
 
     pub(super) fn refresh_solo_air_scout_suspension(&mut self, obs: &Observation) {
-        if !self.solo_air_scout_suspended {
+        if !self.state.solo_air_scout_suspended {
             return;
         }
         let actionable_enemy_sight = obs
@@ -425,17 +430,17 @@ impl UtilityPolicy {
             .any(|unit| unit.kind.role() != crate::stats::Role::Scout)
             || obs.enemy_buildings.iter().any(|building| building.seen);
         if actionable_enemy_sight {
-            if self.solo_air_scout_dark_since.is_some() {
-                self.solo_air_scout_suspended = false;
-                self.solo_air_scout_dark_since = None;
+            if self.state.solo_air_scout_dark_since.is_some() {
+                self.state.solo_air_scout_suspended = false;
+                self.state.solo_air_scout_dark_since = None;
             }
         } else {
-            let dark_since = *self.solo_air_scout_dark_since.get_or_insert(obs.tick);
-            if obs.tick >= self.solo_air_scout_retry_at
+            let dark_since = *self.state.solo_air_scout_dark_since.get_or_insert(obs.tick);
+            if obs.tick >= self.state.solo_air_scout_retry_at
                 && obs.tick.saturating_sub(dark_since) >= SOLO_SCOUT_QUIET_TICKS
             {
-                self.solo_air_scout_suspended = false;
-                self.solo_air_scout_dark_since = None;
+                self.state.solo_air_scout_suspended = false;
+                self.state.solo_air_scout_dark_since = None;
             }
         }
     }
@@ -449,25 +454,26 @@ impl UtilityPolicy {
     ) {
         let (_, known_base, public_start, public_extractor) =
             self.scouting_objectives(obs, home, public_map);
-        let base_recon_due =
-            known_base.is_some() && obs.tick.saturating_sub(self.scout_sent_at) >= SCOUT_REFRESH;
+        let base_recon_due = known_base.is_some()
+            && obs.tick.saturating_sub(self.state.scout_sent_at) >= SCOUT_REFRESH;
         let public_prior = Self::selected_public_scout_prior(
             known_base,
             public_start,
             public_extractor,
             base_recon_due,
         );
-        self.public_prior_air_scout_needed = public_prior.is_some_and(|prior| {
+        self.state.public_prior_air_scout_needed = public_prior.is_some_and(|prior| {
             self.public_prior_requires_air(obs, home, public_map, prior, cancellations)
         });
     }
 
     fn opponent_force_risk(&mut self, dials: &Dials, obs: &Observation) -> u64 {
         if self
+            .state
             .opponent_force_peak
             .is_some_and(|(_, seen)| obs.tick.saturating_sub(seen) > dials.opponent_force_memory)
         {
-            self.opponent_force_peak = None;
+            self.state.opponent_force_peak = None;
         }
 
         let observed = obs
@@ -477,13 +483,14 @@ impl UtilityPolicy {
             .sum::<u64>();
         if observed > 0
             && self
+                .state
                 .opponent_force_peak
                 .is_none_or(|(peak, _)| observed >= peak)
         {
-            self.opponent_force_peak = Some((observed, obs.tick));
+            self.state.opponent_force_peak = Some((observed, obs.tick));
         }
 
-        self.opponent_force_peak.map_or(0, |(strength, _)| {
+        self.state.opponent_force_peak.map_or(0, |(strength, _)| {
             strength.saturating_mul(100 + DEMONSTRATED_FORCE_RESERVE_PERCENT) / 100
         })
     }
@@ -494,6 +501,7 @@ impl UtilityPolicy {
             .opponent_force_memory
             .min(VOLUNTARY_FORCE_RISK_HORIZON);
         if self
+            .state
             .opponent_force_peak
             .is_some_and(|(_, seen)| obs.tick.saturating_sub(seen) <= attack_horizon)
         {
@@ -654,38 +662,38 @@ impl UtilityPolicy {
 
         let (known_foundry, known_base, public_start, public_extractor) =
             self.scouting_objectives(obs, home, public_map);
-        let base_recon_due =
-            known_base.is_some() && obs.tick.saturating_sub(self.scout_sent_at) >= SCOUT_REFRESH;
+        let base_recon_due = known_base.is_some()
+            && obs.tick.saturating_sub(self.state.scout_sent_at) >= SCOUT_REFRESH;
         let public_prior = Self::selected_public_scout_prior(
             known_base,
             public_start,
             public_extractor,
             base_recon_due,
         );
-        let completed_ground_probe = self.scout_dispatch.is_some_and(|dispatch| {
+        let completed_ground_probe = self.state.scout_dispatch.is_some_and(|dispatch| {
             let ScoutDispatchRole::PublicGround(prior) = dispatch.role else {
                 return false;
             };
             !self.public_ground_probe_pending(obs, prior)
         });
-        if completed_ground_probe && let Some(dispatch) = &mut self.scout_dispatch {
+        if completed_ground_probe && let Some(dispatch) = &mut self.state.scout_dispatch {
             dispatch.role = ScoutDispatchRole::Ordinary;
         }
         let public_prior_requires_air = contested_recon.is_none()
             && public_prior.is_some_and(|prior| {
                 self.public_prior_requires_air(obs, home, public_map, prior, cancellations)
             });
-        self.public_prior_air_scout_needed = public_prior_requires_air;
-        self.contested_recon_air_scout_needed = false;
+        self.state.public_prior_air_scout_needed = public_prior_requires_air;
+        self.state.contested_recon_air_scout_needed = false;
         if public_prior_requires_air
-            && self.scout.is_some_and(|id| {
+            && self.state.scout.is_some_and(|id| {
                 obs.my_units
                     .iter()
                     .any(|unit| unit.id == id && unit.kind.stats().domain == Domain::Ground)
             })
         {
-            self.scout = None;
-            self.scout_dispatch = None;
+            self.state.scout = None;
+            self.state.scout_dispatch = None;
         }
         let rear_recon_goal = known_foundry
             .or(match public_prior {
@@ -701,44 +709,46 @@ impl UtilityPolicy {
             })
         });
         if foundry_current && rear_recon_goal.is_some_and(|goal| obs.visible(goal)) {
-            self.scouted_at = obs.tick;
+            self.state.scouted_at = obs.tick;
         }
         let due = contested_recon.is_some()
             || base_recon_due
             || public_prior.is_some()
             || known_base.is_none();
 
-        if self.solo_air_scout_suspended {
+        if self.state.solo_air_scout_suspended {
             return;
         }
-        if let Some(id) = self.scout
+        if let Some(id) = self.state.scout
             && let Some(unit) = obs.my_units.iter().find(|unit| unit.id == id)
             && utility_scout_preference(unit, contested_recon.is_some()).is_none()
         {
             let completed = contested_recon.is_some_and(|recon| {
                 unit.idle
                     && self
+                        .state
                         .scout_dispatch
                         .is_some_and(|dispatch| dispatch.unit == id && dispatch.to == recon.target)
                     && obs.visible(recon.target)
             });
-            self.scout = None;
-            self.scout_dispatch = None;
+            self.state.scout = None;
+            self.state.scout_dispatch = None;
             if self
+                .state
                 .contested_scout
                 .is_some_and(|(contested, _)| contested == id)
             {
-                self.contested_scout = None;
+                self.state.contested_scout = None;
             }
             if completed {
                 return;
             }
         }
-        if let Some(id) = self.scout
+        if let Some(id) = self.state.scout
             && let Some(unit) = obs.my_units.iter().find(|unit| unit.id == id)
             && unit.idle
             && unit.kind.stats().domain == Domain::Ground
-            && let Some(dispatch) = self.scout_dispatch
+            && let Some(dispatch) = self.state.scout_dispatch
             && dispatch.unit == id
             && dispatch.from.chebyshev(dispatch.to) > 1
             && unit.tile.chebyshev(dispatch.from) <= 1
@@ -746,34 +756,35 @@ impl UtilityPolicy {
             // A ground Move with no route goes idle where it started.
             // Stop cycling the same island shoreline and ask production
             // for the faction's dedicated scout flyer.
-            self.scout = None;
-            self.scout_dispatch = None;
+            self.state.scout = None;
+            self.state.scout_dispatch = None;
             if self
+                .state
                 .contested_scout
                 .is_some_and(|(contested, _)| contested == id)
             {
                 self.recall_contested_scout(id);
             }
-            self.persistent_air_scout_needed = true;
+            self.state.persistent_air_scout_needed = true;
         }
         if !due {
             // Between sweeps the scout goes back in the pool.
-            if let Some(id) = self.scout
+            if let Some(id) = self.state.scout
                 && obs.my_units.iter().any(|u| u.id == id && u.idle)
             {
-                self.scout = None;
-                self.scout_dispatch = None;
+                self.state.scout = None;
+                self.state.scout_dispatch = None;
             }
             return;
         }
-        let picked_now = self.scout.is_none();
-        if self.scout.is_none() {
+        let picked_now = self.state.scout.is_none();
+        if self.state.scout.is_none() {
             // A scout-role flyer is the scout of choice: unarmed, wide
             // eyes, and able to cross pits and gulfs. An ordinary sweep may
             // borrow a Harvester; contested work never does. Only the two
             // cheap ground skirmishers are generic combat fallbacks, so this
             // channel cannot consume a strategic or support specialist.
-            self.scout = obs
+            self.state.scout = obs
                 .my_units
                 .iter()
                 // A walking founder (`founding`) is spoken for like a
@@ -789,11 +800,13 @@ impl UtilityPolicy {
                 })
                 .min()
                 .map(|(_, id)| id);
-            if self.scout.is_none() && contested_recon.is_some() {
-                self.contested_recon_air_scout_needed = true;
+            if self.state.scout.is_none() && contested_recon.is_some() {
+                self.state.contested_recon_air_scout_needed = true;
             }
         }
-        let Some(scout) = self.scout else { return };
+        let Some(scout) = self.state.scout else {
+            return;
+        };
         // A fresh pick is dispatched immediately (a working harvester is
         // not idle); an existing scout gets its next leg only once the
         // current one completes.
@@ -809,7 +822,7 @@ impl UtilityPolicy {
         let to = if let Some(recon) = contested_recon {
             recon.target
         } else if base_recon_due && let Some(base) = known_base {
-            self.scout_sent_at = obs.tick;
+            self.state.scout_sent_at = obs.tick;
             if member.kind.role() == crate::stats::Role::Scout
                 && member.kind.stats().domain == Domain::Air
             {
@@ -822,7 +835,7 @@ impl UtilityPolicy {
                 let Some(public_map) = public_map else {
                     return;
                 };
-                let retry = self.scout_dispatch.and_then(|dispatch| {
+                let retry = self.state.scout_dispatch.and_then(|dispatch| {
                     (dispatch.unit == member.id
                         && dispatch.role == ScoutDispatchRole::PublicGround(prior)
                         && member.idle
@@ -853,19 +866,19 @@ impl UtilityPolicy {
                     },
                 );
                 let Some(goal) = goal else {
-                    self.scout = None;
-                    self.scout_dispatch = None;
-                    self.persistent_air_scout_needed = true;
+                    self.state.scout = None;
+                    self.state.scout_dispatch = None;
+                    self.state.persistent_air_scout_needed = true;
                     return;
                 };
                 if matches!(prior, PublicScoutPrior::HostileStart(_)) {
-                    self.scout_sent_at = obs.tick;
+                    self.state.scout_sent_at = obs.tick;
                 }
                 goal
             } else {
                 match prior {
                     PublicScoutPrior::HostileStart(start) => {
-                        self.scout_sent_at = obs.tick;
+                        self.state.scout_sent_at = obs.tick;
                         rear_recon_goal.unwrap_or_else(|| rear_side(home, start.anchor))
                     }
                     PublicScoutPrior::Extractor(frame) => frame,
@@ -887,9 +900,9 @@ impl UtilityPolicy {
                     .next()
                     .is_some()
             });
-            let leg =
-                legs[(self.scout_leg as usize + usize::from(skip_redundant_mirror)) % legs.len()];
-            self.scout_leg += 1;
+            let leg = legs
+                [(self.state.scout_leg as usize + usize::from(skip_redundant_mirror)) % legs.len()];
+            self.state.scout_leg += 1;
             leg
         };
         let public_ground_probe = public_prior.is_some()
@@ -910,23 +923,26 @@ impl UtilityPolicy {
             && member.kind.stats().domain == Domain::Ground
             && member.idle
             && self
+                .state
                 .scout_dispatch
                 .is_some_and(|dispatch| dispatch.unit == scout && dispatch.to == to)
             && member.tile.chebyshev(to) <= 1
             && !obs.visible(recon.target)
         {
-            self.scout = None;
-            self.scout_dispatch = None;
+            self.state.scout = None;
+            self.state.scout_dispatch = None;
             self.recall_contested_scout(scout);
-            self.persistent_air_scout_needed = true;
+            self.state.persistent_air_scout_needed = true;
             return;
         }
         if !picked_now
             && member.idle
             && self
+                .state
                 .scout_dispatch
                 .is_some_and(|dispatch| dispatch.unit == scout && dispatch.to == to)
             && !self
+                .state
                 .scout_dispatch
                 .is_some_and(|dispatch| matches!(dispatch.role, ScoutDispatchRole::PublicGround(_)))
             && (contested_recon.is_some() || member.tile.chebyshev(to) <= 1 || obs.visible(to))
@@ -939,9 +955,9 @@ impl UtilityPolicy {
         }
         let from = member.tile;
         if let Some(recon) = contested_recon {
-            self.contested_scout = Some((scout, recon.region));
+            self.state.contested_scout = Some((scout, recon.region));
         }
-        let retained_solo_air = self.scout_dispatch.is_some_and(|dispatch| {
+        let retained_solo_air = self.state.scout_dispatch.is_some_and(|dispatch| {
             dispatch.unit == scout && matches!(dispatch.role, ScoutDispatchRole::SoloAir)
         });
         let dispatch = if retained_solo_air {
@@ -961,7 +977,7 @@ impl UtilityPolicy {
         } else {
             ScoutDispatch::ordinary(scout, from, to)
         };
-        self.scout_dispatch = Some(dispatch);
+        self.state.scout_dispatch = Some(dispatch);
         intents.push(Intent::Scout { unit: scout, to });
     }
 
@@ -973,6 +989,7 @@ impl UtilityPolicy {
         let foundry_size = BuildingKind::Foundry.base_stats().size;
         for start in public_map.hostile_starting_foundries(obs.me) {
             if self
+                .state
                 .cleared_hostile_starts
                 .binary_search(&start.player)
                 .is_ok()
@@ -990,10 +1007,16 @@ impl UtilityPolicy {
                     && start.anchor.y + foundry_size.1 > building.anchor.y
             });
             if footprint_visible && !hostile_building_present {
-                let Err(index) = self.cleared_hostile_starts.binary_search(&start.player) else {
+                let Err(index) = self
+                    .state
+                    .cleared_hostile_starts
+                    .binary_search(&start.player)
+                else {
                     continue;
                 };
-                self.cleared_hostile_starts.insert(index, start.player);
+                self.state
+                    .cleared_hostile_starts
+                    .insert(index, start.player);
             }
         }
     }
@@ -1073,8 +1096,15 @@ impl UtilityPolicy {
         mode: PolicyMode<'_>,
         intents: &mut Vec<Intent>,
     ) {
-        if self.ground_inputs.is_some() {
-            self.mission_army(dials, obs, armies, home, mode, intents);
+        if let Some(inputs) = mode.ground_missions {
+            self.mission_army(
+                dials,
+                obs,
+                armies,
+                home,
+                missions::MissionContext { mode, inputs },
+                intents,
+            );
             return;
         }
         let opponent_force_risk = { self.voluntary_attack_force_risk(dials, obs) };
@@ -1237,8 +1267,8 @@ impl UtilityPolicy {
         // intel is: a recent peek at their base earns trust in the count,
         // blindness demands mass. Omniscience is permanently fresh.
         let intel_fresh = !dials.fog_honest
-            || (self.scouted_at > 0
-                && obs.tick.saturating_sub(self.scouted_at) < 2 * SCOUT_REFRESH);
+            || (self.state.scouted_at > 0
+                && obs.tick.saturating_sub(self.state.scouted_at) < 2 * SCOUT_REFRESH);
         let sentinel = UnitKind::Sentinel.stats();
         let atk = sentinel.weapons.first().expect("sentinels fight");
         let sentinel_worth =
@@ -1252,7 +1282,7 @@ impl UtilityPolicy {
         // A stalled economy cannot wait for an advantage it has no income
         // to buy. Desperation lowers the margin to an even fight and the
         // blind-mass floor to one Sentinel so scarcity ends the match.
-        let desperate = self.desperate;
+        let desperate = self.state.desperate;
         let (margin_num, margin_den) = if desperate {
             (4, 4u64)
         } else {
@@ -1287,7 +1317,7 @@ impl UtilityPolicy {
             && (army.members.len() >= coherent_size)
             && gate_open
             && let Some(target) = enemy_site.or_else(|| {
-                (desperate && self.desperate_march).then(|| {
+                (desperate && self.state.desperate_march).then(|| {
                     self.passable_near(
                         obs,
                         TilePos::new(obs.map_width - 1 - home.x, obs.map_height - 1 - home.y),
@@ -1494,7 +1524,7 @@ mod tests {
 
     #[test]
     fn pressure_counts_a_corridor_gun_outside_the_objective_radius() {
-        let (mut obs, armies, policy, _) = mission_fixture();
+        let (mut obs, armies, policy, _, _) = mission_fixture();
         let goal = TilePos::new(54, 16);
         obs.enemy_buildings.clear();
         obs.my_units
@@ -1804,6 +1834,8 @@ mod tests {
 
     fn player_mode(building_contacts: Option<&[BuildingContact]>) -> PolicyMode<'_> {
         PolicyMode {
+            evidence: Default::default(),
+            ground_missions: None,
             admit_voluntary_macro: true,
             unit_contacts: None,
             building_contacts,
@@ -1811,7 +1843,46 @@ mod tests {
         }
     }
 
-    fn mission_fixture() -> (Observation, Vec<Army>, UtilityPolicy, Dials) {
+    #[derive(Clone)]
+    struct MissionRoster {
+        missions: Vec<(ArmyId, crate::bot::executive::ArmyMission)>,
+        unavailable: Vec<UnitId>,
+        enlisted: Vec<UnitId>,
+        tuning: DifficultyTuning,
+        relief: Option<(BuildingId, Vec<UnitId>)>,
+    }
+
+    #[derive(Clone)]
+    struct MissionFixture {
+        inputs: MissionRoster,
+        battlefield: crate::bot::battlefield::BattlefieldAssessment,
+        experience: crate::bot::experience::Experience,
+    }
+
+    impl MissionFixture {
+        fn mode(&self) -> PolicyMode<'_> {
+            PolicyMode {
+                evidence: DecisionEvidence {
+                    battlefield: &self.battlefield,
+                    experience: &self.experience,
+                },
+                ground_missions: Some(GroundMissionInputs {
+                    missions: &self.inputs.missions,
+                    unavailable: &self.inputs.unavailable,
+                    enlisted: &self.inputs.enlisted,
+                    tuning: self.inputs.tuning,
+                    relief: self
+                        .inputs
+                        .relief
+                        .as_ref()
+                        .map(|(id, members)| (*id, members.as_slice())),
+                }),
+                ..player_mode(None)
+            }
+        }
+    }
+
+    fn mission_fixture() -> (Observation, Vec<Army>, UtilityPolicy, Dials, MissionFixture) {
         let mut obs = Observation {
             tick: 1200,
             map_width: 64,
@@ -1861,9 +1932,9 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut battlefield = crate::bot::battlefield::Battlefield::default();
         battlefield.observe(&obs, &armies, tuning, None);
-        let policy = UtilityPolicy {
-            battlefield: std::sync::Arc::new(battlefield.assessment().clone()),
-            ground_inputs: Some(GroundMissionInputs {
+        let mission = MissionFixture {
+            battlefield: battlefield.assessment().clone(),
+            inputs: MissionRoster {
                 missions: Vec::new(),
                 unavailable: Vec::new(),
                 enlisted: armies
@@ -1872,18 +1943,59 @@ mod tests {
                     .collect(),
                 tuning,
                 relief: None,
-            }),
-            ..UtilityPolicy::default()
+            },
+            experience: Default::default(),
         };
         let mut dials = Dials::full();
         dials.army_size = 3;
         dials.minimum_core_equivalents = 2;
-        (obs, armies, policy, dials)
+        (obs, armies, UtilityPolicy::new(), dials, mission)
+    }
+
+    #[test]
+    fn consecutive_army_calls_use_only_the_supplied_mission_ownership() {
+        let (obs, armies, mut policy, dials, mut mission) = mission_fixture();
+        let home = TilePos::new(3, 3);
+        let mut assigned = Vec::new();
+        policy.army(&dials, &obs, &armies, home, mission.mode(), &mut assigned);
+        assert!(!assigned.is_empty());
+
+        mission.inputs.unavailable = obs.my_units.iter().map(|unit| unit.id).collect();
+        let mut unavailable = Vec::new();
+        policy.army(
+            &dials,
+            &obs,
+            &armies,
+            home,
+            mission.mode(),
+            &mut unavailable,
+        );
+        assert!(
+            unavailable.is_empty(),
+            "new ownership must replace the previous roster"
+        );
+
+        let mut independent = Vec::new();
+        policy.army(
+            &dials,
+            &obs,
+            &armies,
+            home,
+            player_mode(None),
+            &mut independent,
+        );
+        let mut fresh = Vec::new();
+        UtilityPolicy::new().army(&dials, &obs, &armies, home, player_mode(None), &mut fresh);
+        assert!(!fresh.is_empty());
+        assert_eq!(
+            independent, fresh,
+            "a mission call cannot select a later independent call's mode"
+        );
     }
 
     #[test]
     fn mission_draft_skips_recovering_veterans_before_exact_lowering() {
-        let (mut obs, _, mut policy, dials) = mission_fixture();
+        let (mut obs, _, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         let home = TilePos::new(3, 3);
         let mut executive = crate::bot::executive::Executive::new();
@@ -1909,12 +2021,12 @@ mod tests {
         assert!(executive.enlisted().next().is_none());
         let unavailable: Vec<_> = executive.muster_exclusions().collect();
         assert_eq!(unavailable, veterans);
-        policy.battlefield = Default::default();
-        let inputs = policy.ground_inputs.as_mut().unwrap();
+        mission.battlefield = Default::default();
+        let inputs = &mut mission.inputs;
         inputs.enlisted.clear();
         inputs.unavailable = unavailable;
         let mut intents = Vec::new();
-        policy.mission_army(&dials, &obs, &[], home, player_mode(None), &mut intents);
+        policy.army(&dials, &obs, &[], home, mission.mode(), &mut intents);
         let members = intents
             .iter()
             .find_map(|intent| match intent {
@@ -1935,14 +2047,14 @@ mod tests {
     #[test]
     fn missions_answer_two_fronts_without_redirecting_the_third_body() {
         use crate::bot::executive::ArmyPurpose;
-        let (obs, armies, mut policy, dials) = mission_fixture();
+        let (obs, armies, mut policy, dials, mission) = mission_fixture();
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
-            player_mode(None),
+            mission.mode(),
             &mut intents,
         );
         let defense: Vec<_> = intents
@@ -1987,8 +2099,8 @@ mod tests {
     #[test]
     fn an_accepted_defender_is_credited_before_a_nearer_unassigned_body() {
         use crate::bot::executive::{ArmyMission, ArmyPurpose};
-        let (obs, armies, mut policy, dials) = mission_fixture();
-        policy.ground_inputs.as_mut().unwrap().missions = vec![(
+        let (obs, armies, mut policy, dials, mut mission) = mission_fixture();
+        mission.inputs.missions = vec![(
             ArmyId(2),
             ArmyMission {
                 purpose: ArmyPurpose::Defend(BuildingId(1)),
@@ -1999,12 +2111,12 @@ mod tests {
             },
         )];
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
-            player_mode(None),
+            mission.mode(),
             &mut intents,
         );
         assert!(
@@ -2023,21 +2135,21 @@ mod tests {
     #[test]
     fn an_unreachable_front_does_not_hide_a_reachable_lower_ranked_response() {
         use crate::bot::executive::ArmyPurpose;
-        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         let removed = armies.remove(1);
         obs.my_units
             .retain(|unit| !removed.members.contains(&unit.id));
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(20, y)).collect();
-        let mut assessment = (*policy.battlefield).clone();
+        let mut assessment = mission.battlefield.clone();
         assessment.pressure.reverse();
-        policy.battlefield = std::sync::Arc::new(assessment);
+        mission.battlefield = assessment;
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
-            player_mode(None),
+            mission.mode(),
             &mut intents,
         );
         let responses: Vec<_> = intents
@@ -2060,20 +2172,20 @@ mod tests {
 
     #[test]
     fn mission_ground_response_ignores_air_only_pressure_and_respects_reaction() {
-        let (obs, armies, mut policy, dials) = mission_fixture();
-        let mut assessment = (*policy.battlefield).clone();
+        let (obs, armies, mut policy, dials, mut mission) = mission_fixture();
+        let mut assessment = mission.battlefield.clone();
         assessment.pressure[0].air = assessment.pressure[0].ground;
         assessment.pressure[0].ground = 0;
         assessment.pressure[1].evidence_at = obs.tick;
-        policy.battlefield = std::sync::Arc::new(assessment);
-        policy.ground_inputs.as_mut().unwrap().tuning.reaction_delay = 40;
+        mission.battlefield = assessment;
+        mission.inputs.tuning.reaction_delay = 40;
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
-            player_mode(None),
+            mission.mode(),
             &mut intents,
         );
         assert!(
@@ -2087,9 +2199,9 @@ mod tests {
     #[test]
     fn retained_defense_recalls_after_lost_contact_without_fresh_attention() {
         use crate::bot::executive::{ArmyMission, ArmyPurpose};
-        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
-        let inputs = policy.ground_inputs.as_mut().unwrap();
+        let inputs = &mut mission.inputs;
         inputs.missions.push((
             ArmyId(0),
             ArmyMission {
@@ -2101,17 +2213,17 @@ mod tests {
             },
         ));
         inputs.tuning.attention_slots = 0;
-        policy.battlefield = std::sync::Arc::new(Default::default());
+        mission.battlefield = Default::default();
         armies[0].state = ArmyState::Engaging;
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
             PolicyMode {
                 admit_voluntary_macro: false,
-                ..player_mode(None)
+                ..mission.mode()
             },
             &mut intents,
         );
@@ -2134,10 +2246,10 @@ mod tests {
     #[test]
     fn returned_mission_reopens_reserve_without_fresh_attention() {
         use crate::bot::executive::{ArmyMission, ArmyPurpose};
-        let (mut obs, armies, mut policy, dials) = mission_fixture();
+        let (mut obs, armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
-        policy.battlefield = std::sync::Arc::new(Default::default());
-        let inputs = policy.ground_inputs.as_mut().unwrap();
+        mission.battlefield = Default::default();
+        let inputs = &mut mission.inputs;
         inputs.tuning.attention_slots = 0;
         inputs.missions.push((
             armies[0].id,
@@ -2150,14 +2262,14 @@ mod tests {
             },
         ));
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
             PolicyMode {
                 admit_voluntary_macro: false,
-                ..player_mode(None)
+                ..mission.mode()
             },
             &mut intents,
         );
@@ -2180,12 +2292,12 @@ mod tests {
     #[test]
     fn pressure_survives_reobserving_its_remembered_building() {
         use crate::bot::executive::{ArmyMission, ArmyPurpose};
-        let (mut obs, armies, mut policy, dials) = mission_fixture();
+        let (mut obs, armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         let objective = defense(200, BuildingKind::Foundry, TilePos::new(40, 6));
         obs.enemy_buildings = vec![objective.clone()];
-        policy.battlefield = std::sync::Arc::new(Default::default());
-        policy.ground_inputs.as_mut().unwrap().missions = vec![(
+        mission.battlefield = Default::default();
+        mission.inputs.missions = vec![(
             armies[0].id,
             ArmyMission {
                 purpose: ArmyPurpose::Pressure(
@@ -2203,14 +2315,14 @@ mod tests {
             },
         )];
         let mut intents = Vec::new();
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
             PolicyMode {
                 admit_voluntary_macro: false,
-                ..player_mode(None)
+                ..mission.mode()
             },
             &mut intents,
         );
@@ -2219,32 +2331,32 @@ mod tests {
             "reobserving the objective must retain its mission: {intents:?}"
         );
 
-        let committed = policy.ground_inputs.as_ref().unwrap().missions.clone();
+        let committed = mission.inputs.missions.clone();
         obs.enemy_buildings[0].id = BuildingId(u32::MAX);
         obs.enemy_buildings[0].seen = false;
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
             PolicyMode {
                 admit_voluntary_macro: false,
-                ..player_mode(None)
+                ..mission.mode()
             },
             &mut intents,
         );
         assert!(intents.is_empty(), "the same remembered site remains valid");
-        assert_eq!(policy.ground_inputs.as_ref().unwrap().missions, committed);
+        assert_eq!(mission.inputs.missions, committed);
 
         obs.enemy_buildings[0].anchor.x += 4;
-        policy.mission_army(
+        policy.army(
             &dials,
             &obs,
             &armies,
             TilePos::new(3, 3),
             PolicyMode {
                 admit_voluntary_macro: false,
-                ..player_mode(None)
+                ..mission.mode()
             },
             &mut intents,
         );
@@ -2266,7 +2378,7 @@ mod tests {
     #[test]
     fn valid_pressure_reassignment_requires_hold_and_material_improvement() {
         use crate::bot::executive::{ArmyMission, ArmyPurpose};
-        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         obs.enemy_buildings = vec![
             defense(200, BuildingKind::Foundry, TilePos::new(40, 6)),
@@ -2274,15 +2386,15 @@ mod tests {
         ];
         armies[0].members = obs.my_units.iter().map(|unit| unit.id).collect();
         armies.truncate(1);
-        policy.battlefield = std::sync::Arc::new(Default::default());
-        let choose = |policy: &mut UtilityPolicy| {
+        mission.battlefield = Default::default();
+        let choose = |policy: &mut UtilityPolicy, mission: &MissionFixture| {
             let mut intents = Vec::new();
-            policy.mission_army(
+            policy.army(
                 &dials,
                 &obs,
                 &armies,
                 TilePos::new(3, 3),
-                player_mode(None),
+                mission.mode(),
                 &mut intents,
             );
             intents.into_iter().find_map(|intent| match intent {
@@ -2294,14 +2406,17 @@ mod tests {
                 _ => None,
             })
         };
-        let score = choose(&mut policy).expect("a useful fresh objective").score;
+        let score = choose(&mut policy, &mission)
+            .expect("a useful fresh objective")
+            .score;
         for (age, prior_score, redirect) in [
             (299, 0, false),
             (300, score, false),
             (300, score * 4 / 5, true),
         ] {
             let mut trial = policy.clone();
-            trial.ground_inputs.as_mut().unwrap().missions = vec![(
+            let mut trial_mission = mission.clone();
+            trial_mission.inputs.missions = vec![(
                 armies[0].id,
                 ArmyMission {
                     purpose: ArmyPurpose::Pressure(
@@ -2316,7 +2431,7 @@ mod tests {
                 },
             )];
             assert_eq!(
-                choose(&mut trial).is_some(),
+                choose(&mut trial, &trial_mission).is_some(),
                 redirect,
                 "age={age} score={prior_score}"
             );
@@ -2330,7 +2445,7 @@ mod tests {
             Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, Experience, ExperienceKey, Outcome,
             OutcomeReason,
         };
-        let (mut obs, mut armies, mut policy, dials) = mission_fixture();
+        let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         obs.enemy_buildings = vec![
             defense(200, BuildingKind::Foundry, TilePos::new(40, 6)),
@@ -2338,15 +2453,15 @@ mod tests {
         ];
         armies[0].members = obs.my_units.iter().map(|unit| unit.id).collect();
         armies.truncate(1);
-        policy.battlefield = std::sync::Arc::new(Default::default());
-        let choice = |policy: &mut UtilityPolicy, obs: &Observation| {
+        mission.battlefield = Default::default();
+        let choice = |policy: &mut UtilityPolicy, obs: &Observation, mission: &MissionFixture| {
             let mut intents = Vec::new();
-            policy.mission_army(
+            policy.army(
                 &dials,
                 obs,
                 &armies,
                 TilePos::new(3, 3),
-                player_mode(None),
+                mission.mode(),
                 &mut intents,
             );
             intents.into_iter().find_map(|intent| {
@@ -2358,7 +2473,7 @@ mod tests {
             })
         };
         assert_eq!(
-            choice(&mut policy, &obs),
+            choice(&mut policy, &obs, &mission),
             Some(ArmyPurpose::Pressure(
                 crate::bot::executive::ArmyObjective::from_building(&obs.enemy_buildings[0])
             ))
@@ -2392,18 +2507,18 @@ mod tests {
                 doctrine_eligible: true,
             });
         }
-        policy.experience = std::sync::Arc::new(experience.clone());
+        mission.experience = experience.clone();
         assert_eq!(
-            choice(&mut policy, &obs),
+            choice(&mut policy, &obs, &mission),
             Some(ArmyPurpose::Pressure(
                 crate::bot::executive::ArmyObjective::from_building(&obs.enemy_buildings[1])
             ))
         );
         obs.tick += 6000;
         experience.observe(&obs, 6000);
-        policy.experience = std::sync::Arc::new(experience);
+        mission.experience = experience;
         assert_eq!(
-            choice(&mut policy, &obs),
+            choice(&mut policy, &obs, &mission),
             Some(ArmyPurpose::Pressure(
                 crate::bot::executive::ArmyObjective::from_building(&obs.enemy_buildings[0])
             ))
@@ -2496,13 +2611,13 @@ mod tests {
         );
         obs.enemy_buildings = vec![defense(20, BuildingKind::Extractor, frame)];
         obs.tick += 1;
-        policy.scout_sent_at = obs.tick;
+        policy.state.scout_sent_at = obs.tick;
         intents.clear();
 
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
-        assert!(!policy.public_prior_air_scout_needed);
-        assert_eq!(policy.scout, Some(UnitId(1)));
+        assert!(!policy.state.public_prior_air_scout_needed);
+        assert_eq!(policy.state.scout, Some(UnitId(1)));
         assert_eq!(
             intents,
             vec![Intent::Scout {
@@ -2537,7 +2652,7 @@ mod tests {
             .expect("the movement fixture has a public briefing");
         let mut state = scenario.build().expect("the movement fixture builds");
         let mut policy = UtilityPolicy::new();
-        policy.cleared_hostile_starts.push(PlayerId(1));
+        policy.state.cleared_hostile_starts.push(PlayerId(1));
         let obs = Observation::fog_honest(&state, PlayerId(0));
         let mut intents = Vec::new();
 
@@ -2748,7 +2863,7 @@ mod tests {
         obs.my_units.clear();
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(
-            !policy.persistent_air_scout_needed,
+            !policy.state.persistent_air_scout_needed,
             "a later loss cannot turn the completed frame into no-route evidence"
         );
     }
@@ -2775,7 +2890,7 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(policy.active_public_ground_probe(&obs, UnitId(1)));
         assert!(matches!(
-            policy.scout_dispatch.map(|dispatch| dispatch.role),
+            policy.state.scout_dispatch.map(|dispatch| dispatch.role),
             Some(ScoutDispatchRole::PublicGround(PublicScoutPrior::Extractor(frame)))
                 if frame == pending
         ));
@@ -2784,7 +2899,7 @@ mod tests {
         obs.my_units.clear();
         intents.clear();
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
-        assert!(policy.persistent_air_scout_needed);
+        assert!(policy.state.persistent_air_scout_needed);
     }
 
     #[test]
@@ -2798,8 +2913,8 @@ mod tests {
 
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(intents.is_empty());
-        assert!(policy.public_prior_air_scout_needed);
-        assert!(!policy.persistent_air_scout_needed);
+        assert!(policy.state.public_prior_air_scout_needed);
+        assert!(!policy.state.persistent_air_scout_needed);
 
         for y in 0..obs.map_height {
             set_visible(&mut obs, TilePos::new(20, y), true);
@@ -2825,8 +2940,8 @@ mod tests {
         let mut obs = recon_observation(home, UnitKind::Harvester);
         obs.my_units[0].tile = TilePos::new(22, 12);
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(1));
-        policy.scout_dispatch = Some(ScoutDispatch::public_ground(
+        policy.state.scout = Some(UnitId(1));
+        policy.state.scout_dispatch = Some(ScoutDispatch::public_ground(
             UnitId(1),
             home,
             TilePos::new(23, 12),
@@ -2836,8 +2951,8 @@ mod tests {
 
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
-        assert!(!policy.public_prior_air_scout_needed);
-        assert_eq!(policy.scout, Some(UnitId(1)));
+        assert!(!policy.state.public_prior_air_scout_needed);
+        assert_eq!(policy.state.scout, Some(UnitId(1)));
         assert_eq!(
             intents,
             vec![Intent::Scout {
@@ -2858,7 +2973,7 @@ mod tests {
         let mut intents = Vec::new();
 
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
-        assert!(!policy.public_prior_air_scout_needed);
+        assert!(!policy.state.public_prior_air_scout_needed);
         assert_eq!(
             intents,
             vec![Intent::Scout {
@@ -2877,7 +2992,7 @@ mod tests {
         intents.clear();
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
-        assert!(!policy.public_prior_air_scout_needed);
+        assert!(!policy.state.public_prior_air_scout_needed);
         assert_eq!(
             intents,
             vec![Intent::Scout {
@@ -2900,8 +3015,8 @@ mod tests {
         obs.my_buildings = vec![own_foundry(10, home)];
         obs.my_queues = vec![Vec::new()];
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(1));
-        policy.scout_dispatch = Some(ScoutDispatch::public_ground(
+        policy.state.scout = Some(UnitId(1));
+        policy.state.scout_dispatch = Some(ScoutDispatch::public_ground(
             UnitId(1),
             home,
             TilePos::new(23, 12),
@@ -2911,8 +3026,8 @@ mod tests {
         let intents =
             policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
 
-        assert_eq!(policy.scout, Some(UnitId(1)));
-        assert!(!policy.public_prior_air_scout_needed);
+        assert_eq!(policy.state.scout, Some(UnitId(1)));
+        assert!(!policy.state.public_prior_air_scout_needed);
         assert!(intents.iter().all(|intent| !matches!(
             intent,
             Intent::TrainAt { kind, .. }
@@ -2946,7 +3061,7 @@ mod tests {
         obs.my_queues = vec![Vec::new(), Vec::new()];
         let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
         let mut control = UtilityPolicy::new();
-        control.persistent_air_scout_needed = true;
+        control.state.persistent_air_scout_needed = true;
 
         let control_intents =
             control.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
@@ -2957,16 +3072,17 @@ mod tests {
 
         let missing = UnitId(99);
         let mut policy = UtilityPolicy::new();
-        policy.persistent_air_scout_needed = true;
-        policy.scout = Some(missing);
-        policy.scout_dispatch = Some(ScoutDispatch::solo_air(missing, home, home.offset(8, 0)));
+        policy.state.persistent_air_scout_needed = true;
+        policy.state.scout = Some(missing);
+        policy.state.scout_dispatch =
+            Some(ScoutDispatch::solo_air(missing, home, home.offset(8, 0)));
 
         let intents =
             policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
 
-        assert_eq!(policy.scout, None);
-        assert!(policy.solo_air_scout_suspended);
-        assert_eq!(policy.solo_air_scout_dark_since, None);
+        assert_eq!(policy.state.scout, None);
+        assert!(policy.state.solo_air_scout_suspended);
+        assert_eq!(policy.state.solo_air_scout_dark_since, None);
         assert!(intents.iter().all(|intent| !matches!(
             intent,
             Intent::TrainAt { kind, .. } if *kind == scout_kind
@@ -2975,13 +3091,13 @@ mod tests {
         obs.tick += super::super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
         obs.enemy_buildings[0].seen = false;
         let _ = policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
-        assert_eq!(policy.solo_air_scout_dark_since, Some(obs.tick));
+        assert_eq!(policy.state.solo_air_scout_dark_since, Some(obs.tick));
 
         obs.tick += super::super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
         obs.enemy_buildings[0].seen = true;
         let _ = policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
         assert!(
-            !policy.solo_air_scout_suspended,
+            !policy.state.solo_air_scout_suspended,
             "current sight after a dark interval must rearm scouting even below worker admission"
         );
     }
@@ -3064,9 +3180,9 @@ mod tests {
         obs.my_units = vec![own(2, UnitKind::Harvester, home.offset(1, 0))];
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(intents.is_empty());
-        assert!(policy.persistent_air_scout_needed);
-        assert_eq!(policy.scout, None);
-        assert_eq!(policy.scout_dispatch, None);
+        assert!(policy.state.persistent_air_scout_needed);
+        assert_eq!(policy.state.scout, None);
+        assert_eq!(policy.state.scout_dispatch, None);
     }
 
     #[test]
@@ -3109,7 +3225,7 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(intents.is_empty());
         assert!(
-            !policy.persistent_air_scout_needed,
+            !policy.state.persistent_air_scout_needed,
             "losing a worker after its public reconnaissance job completed must not fund a replacement flyer"
         );
         assert!(!policy.air_scout_needed());
@@ -3142,10 +3258,10 @@ mod tests {
             "equal-distance public starts use canonical position ordering"
         );
         assert_eq!(
-            first_policy.cleared_hostile_starts,
-            second_policy.cleared_hostile_starts
+            first_policy.state.cleared_hostile_starts,
+            second_policy.state.cleared_hostile_starts
         );
-        assert!(first_policy.cleared_hostile_starts.is_empty());
+        assert!(first_policy.state.cleared_hostile_starts.is_empty());
         assert_eq!(UtilityPolicy::enemy_site(&obs, home), None);
     }
 
@@ -3192,9 +3308,9 @@ mod tests {
             intents.is_empty(),
             "danger-triggered recall must not send the next Harvester toward the same public start: {intents:?}"
         );
-        assert_eq!(policy.scout, None);
+        assert_eq!(policy.state.scout, None);
         assert!(
-            policy.persistent_air_scout_needed,
+            policy.state.persistent_air_scout_needed,
             "the interrupted public probe must wait for a dedicated flyer"
         );
     }
@@ -3267,7 +3383,7 @@ mod tests {
                 .uncleared_hostile_starts(&public_map, obs.me)
                 .is_empty()
         );
-        assert_eq!(policy.cleared_hostile_starts, [PlayerId(1)]);
+        assert_eq!(policy.state.cleared_hostile_starts, [PlayerId(1)]);
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert_eq!(
             intents,
@@ -3324,11 +3440,11 @@ mod tests {
         let mut policy = UtilityPolicy::new();
 
         policy.clear_visible_public_starts(&obs, &public_map);
-        assert_eq!(policy.cleared_hostile_starts, [PlayerId(1)]);
+        assert_eq!(policy.state.cleared_hostile_starts, [PlayerId(1)]);
 
         obs.visible.fill(false);
         policy.clear_visible_public_starts(&obs, &public_map);
-        assert_eq!(policy.cleared_hostile_starts, [PlayerId(1)]);
+        assert_eq!(policy.state.cleared_hostile_starts, [PlayerId(1)]);
         assert!(
             policy
                 .uncleared_hostile_starts(&public_map, obs.me)
@@ -3364,7 +3480,7 @@ mod tests {
 
         policy.clear_visible_public_starts(&obs, &public_map);
 
-        assert_eq!(policy.cleared_hostile_starts, [PlayerId(1)]);
+        assert_eq!(policy.state.cleared_hostile_starts, [PlayerId(1)]);
         assert_eq!(
             policy.uncleared_hostile_starts(&public_map, obs.me),
             [StartingFoundry {
@@ -3424,9 +3540,9 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(intents.is_empty());
         assert!(policy.air_scout_needed());
-        assert!(policy.public_prior_air_scout_needed);
-        assert!(!policy.persistent_air_scout_needed);
-        assert_eq!(policy.scout, None);
+        assert!(policy.state.public_prior_air_scout_needed);
+        assert!(!policy.state.persistent_air_scout_needed);
+        assert_eq!(policy.state.scout, None);
 
         obs.my_units = vec![own(2, UnitKind::Kestrel, home)];
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
@@ -3463,7 +3579,7 @@ mod tests {
 
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
         assert!(matches!(
-            policy.scout_dispatch.map(|dispatch| dispatch.role),
+            policy.state.scout_dispatch.map(|dispatch| dispatch.role),
             Some(ScoutDispatchRole::SoloAir)
         ));
 
@@ -3481,7 +3597,7 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
         assert!(matches!(
-            policy.scout_dispatch.map(|dispatch| dispatch.role),
+            policy.state.scout_dispatch.map(|dispatch| dispatch.role),
             Some(ScoutDispatchRole::SoloAir)
         ));
         assert!(matches!(
@@ -3492,7 +3608,7 @@ mod tests {
             }]
         ));
         assert!(
-            !policy.public_prior_air_scout_needed,
+            !policy.state.public_prior_air_scout_needed,
             "the next connected frame deliberately removes current air demand"
         );
 
@@ -3502,7 +3618,7 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.solo_air_scout_suspended);
+        assert!(policy.state.solo_air_scout_suspended);
 
         for dy in 0..2 {
             for dx in 0..2 {
@@ -3514,7 +3630,7 @@ mod tests {
             .push(own(3, UnitKind::Kestrel, home.offset(1, 0)));
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
-        assert!(policy.public_prior_air_scout_needed);
+        assert!(policy.state.public_prior_air_scout_needed);
         assert!(
             intents.is_empty(),
             "the replacement overflight remains suspended"
@@ -3527,7 +3643,7 @@ mod tests {
         let region = TilePos::new(28, 12);
         let mut obs = recon_observation(home, UnitKind::Kestrel);
         let mut policy = UtilityPolicy::new();
-        policy.contested_recon_air_scout_needed = true;
+        policy.state.contested_recon_air_scout_needed = true;
         let mut intents = Vec::new();
 
         policy.scouting_with_public_map(
@@ -3540,7 +3656,7 @@ mod tests {
         );
 
         assert!(matches!(
-            policy.scout_dispatch.map(|dispatch| dispatch.role),
+            policy.state.scout_dispatch.map(|dispatch| dispatch.role),
             Some(ScoutDispatchRole::SoloAir)
         ));
         obs.tick += 1;
@@ -3556,8 +3672,8 @@ mod tests {
             &mut intents,
         );
 
-        assert!(policy.solo_air_scout_suspended);
-        assert_eq!(policy.contested_scout, None);
+        assert!(policy.state.solo_air_scout_suspended);
+        assert_eq!(policy.state.contested_scout, None);
         assert!(intents.is_empty());
     }
 
@@ -3586,7 +3702,7 @@ mod tests {
 
         assert!(policy.active_public_ground_probe(&obs, UnitId(1)));
         assert!(
-            policy.cleared_hostile_starts.is_empty(),
+            policy.state.cleared_hostile_starts.is_empty(),
             "historical exploration is not current evidence that the authored Foundry is absent"
         );
     }
@@ -3609,8 +3725,8 @@ mod tests {
             &mut hidden_intents,
         );
         assert!(hidden_intents.is_empty());
-        assert!(policy.public_prior_air_scout_needed);
-        assert!(!policy.persistent_air_scout_needed);
+        assert!(policy.state.public_prior_air_scout_needed);
+        assert!(!policy.state.persistent_air_scout_needed);
 
         let mut depleted = hidden;
         for y in 0..depleted.map_height {
@@ -3661,13 +3777,13 @@ mod tests {
         policy.scouting_with_public_map(&obs, home, None, Some(&public_map), &[], &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.public_prior_air_scout_needed);
+        assert!(policy.state.public_prior_air_scout_needed);
         assert!(
-            !policy.persistent_air_scout_needed,
+            !policy.state.persistent_air_scout_needed,
             "the completed first look must not be reclassified as a failed ground route"
         );
         assert!(
-            !policy.solo_air_scout_suspended,
+            !policy.state.solo_air_scout_suspended,
             "a missing ground probe may justify a flyer, but it was not a lost dedicated air scout"
         );
     }
@@ -3705,9 +3821,9 @@ mod tests {
             }],
             "a dedicated flyer should look through the Foundry to its defended rear, not stop at the nearer Extractor"
         );
-        assert_eq!(air_policy.scout_sent_at, obs.tick);
+        assert_eq!(air_policy.state.scout_sent_at, obs.tick);
         assert_eq!(
-            air_policy.scouted_at, 0,
+            air_policy.state.scouted_at, 0,
             "issuing a recon order is not proof that the base was observed"
         );
 
@@ -3735,7 +3851,7 @@ mod tests {
         air_intents.clear();
         air_policy.scouting(&obs, home, None, &[], &mut air_intents);
         assert_eq!(
-            air_policy.scouted_at, 0,
+            air_policy.state.scouted_at, 0,
             "seeing only the economic outpost must not certify the enemy base"
         );
 
@@ -3743,7 +3859,7 @@ mod tests {
         obs.enemy_buildings[1].seen = true;
         air_policy.scouting(&obs, home, None, &[], &mut air_intents);
         assert_eq!(
-            air_policy.scouted_at, 0,
+            air_policy.state.scouted_at, 0,
             "seeing the Foundry face while its rear defensive sample stays dark is incomplete intelligence"
         );
 
@@ -3752,7 +3868,7 @@ mod tests {
         let rear_index = usize::try_from(rear_sample.y * obs.map_width + rear_sample.x).unwrap();
         obs.visible[rear_index] = true;
         air_policy.scouting(&obs, home, None, &[], &mut air_intents);
-        assert_eq!(air_policy.scouted_at, obs.tick);
+        assert_eq!(air_policy.state.scouted_at, obs.tick);
     }
 
     #[test]
@@ -3829,9 +3945,9 @@ mod tests {
                 intents.is_empty(),
                 "an idle scout at the accepted terminal must not receive the same Move again while the incomplete fog state is unchanged: {intents:?}"
             );
-            assert_eq!(policy.scout, Some(UnitId(2)));
+            assert_eq!(policy.state.scout, Some(UnitId(2)));
             assert_eq!(
-                policy.scout_dispatch,
+                policy.state.scout_dispatch,
                 Some(ScoutDispatch::solo_air(UnitId(2), dispatch_origin, region))
             );
         }
@@ -3863,8 +3979,8 @@ mod tests {
             },
         ];
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(1));
-        policy.scout_dispatch = Some(ScoutDispatch::ordinary(
+        policy.state.scout = Some(UnitId(1));
+        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(
             UnitId(1),
             home,
             TilePos::new(20, 8),
@@ -3873,7 +3989,7 @@ mod tests {
 
         policy.scouting(&obs, home, Some(region), &[], &mut intents);
 
-        assert_eq!(policy.scout, Some(UnitId(2)));
+        assert_eq!(policy.state.scout, Some(UnitId(2)));
         assert_eq!(
             intents,
             vec![Intent::Scout {
@@ -3927,8 +4043,8 @@ mod tests {
             own(2, UnitKind::Sentinel, home.offset(1, 0)),
         ];
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(1));
-        policy.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(1), home, region));
+        policy.state.scout = Some(UnitId(1));
+        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(1), home, region));
         let mut intents = Vec::new();
 
         policy.scouting(&obs, home, Some(region), &[], &mut intents);
@@ -3938,10 +4054,10 @@ mod tests {
             "the accepted terminal position already supplies the requested sight: {intents:?}"
         );
         assert_eq!(
-            policy.scout, None,
+            policy.state.scout, None,
             "the bomber must return to its real role"
         );
-        assert_eq!(policy.scout_dispatch, None);
+        assert_eq!(policy.state.scout_dispatch, None);
         assert!(
             !policy.air_scout_needed(),
             "completed reconnaissance must not manufacture another scout demand"
@@ -3963,7 +4079,7 @@ mod tests {
 
         policy.scouting(&obs, home, Some(region), &[], &mut intents);
 
-        assert_eq!(policy.scout, Some(UnitId(2)));
+        assert_eq!(policy.state.scout, Some(UnitId(2)));
         assert_eq!(
             intents,
             vec![Intent::Scout {
@@ -4002,12 +4118,12 @@ mod tests {
             intents.is_empty(),
             "no specialist should be drafted: {intents:?}"
         );
-        assert_eq!(policy.scout, None);
+        assert_eq!(policy.state.scout, None);
         assert!(
-            policy.contested_recon_air_scout_needed,
+            policy.state.contested_recon_air_scout_needed,
             "the existing production path needs this signal to fund the faction scout"
         );
-        assert!(!policy.persistent_air_scout_needed);
+        assert!(!policy.state.persistent_air_scout_needed);
 
         obs.my_units
             .push(own(99, UnitKind::Sentinel, home.offset(1, 0)));
@@ -4022,7 +4138,7 @@ mod tests {
             }],
             "a later eligible ground body should replace the temporary dedicated-flyer demand"
         );
-        assert!(!policy.contested_recon_air_scout_needed);
+        assert!(!policy.state.contested_recon_air_scout_needed);
         assert!(!policy.air_scout_needed());
     }
 
@@ -4050,10 +4166,10 @@ mod tests {
         policy.scouting(&obs, home, Some(region), &[], &mut intents);
 
         assert!(intents.is_empty());
-        assert_eq!(policy.scout, None);
-        assert_eq!(policy.scout_dispatch, None);
+        assert_eq!(policy.state.scout, None);
+        assert_eq!(policy.state.scout_dispatch, None);
         assert_eq!(
-            policy.retreating_contested_scout,
+            policy.state.retreating_contested_scout,
             Some(RetreatingContestedScout {
                 unit: UnitId(1),
                 order_dispatched: false,
@@ -4062,7 +4178,7 @@ mod tests {
             "a ground scout stranded inside the recovery region must remain claimed for retreat"
         );
         assert!(
-            policy.persistent_air_scout_needed,
+            policy.state.persistent_air_scout_needed,
             "an idle ground scout still at its dispatch origin proves this look must fly"
         );
 
@@ -4138,7 +4254,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 5;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = obs.tick;
+        policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
 
         policy.army(&dials, &obs, &[army], home, player_mode(None), &mut intents);
@@ -4659,7 +4775,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 4;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = obs.tick;
+        policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
 
         policy.army(
@@ -4680,7 +4796,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 4;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = obs.tick;
+        policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
 
         policy.army(
@@ -4736,7 +4852,7 @@ mod tests {
                     .iter()
                     .map(|dial| {
                         let mut policy = UtilityPolicy::new();
-                        policy.scouted_at = obs.tick;
+                        policy.state.scouted_at = obs.tick;
                         let mut intents = Vec::new();
                         policy.army(
                             dial,
@@ -4783,8 +4899,8 @@ mod tests {
             let mut current = obs.clone();
             current.tick = tick;
             let mut policy = UtilityPolicy::new();
-            policy.scouted_at = tick;
-            policy.opponent_force_peak = Some((six_sentinel_peak, tick));
+            policy.state.scouted_at = tick;
+            policy.state.opponent_force_peak = Some((six_sentinel_peak, tick));
             let mut intents = Vec::new();
             policy.army(
                 &dials,
@@ -4911,7 +5027,7 @@ mod tests {
 
             assert_eq!(policy.opponent_force_risk(&dials, &obs), initial_risk);
             assert_eq!(
-                policy.opponent_force_peak,
+                policy.state.opponent_force_peak,
                 Some((initial_strength, initial_tick)),
                 "{difficulty:?} did not record the observed force"
             );
@@ -4920,7 +5036,7 @@ mod tests {
             obs.enemy_units.truncate(1);
             assert_eq!(policy.opponent_force_risk(&dials, &obs), initial_risk);
             assert_eq!(
-                policy.opponent_force_peak,
+                policy.state.opponent_force_peak,
                 Some((initial_strength, initial_tick)),
                 "{difficulty:?} let a weaker sight replace or refresh the peak"
             );
@@ -4929,7 +5045,7 @@ mod tests {
             obs.enemy_units.clear();
             assert_eq!(policy.opponent_force_risk(&dials, &obs), initial_risk);
             assert_eq!(
-                policy.opponent_force_peak,
+                policy.state.opponent_force_peak,
                 Some((initial_strength, initial_tick)),
                 "{difficulty:?} forgot the force at the exact memory boundary"
             );
@@ -4937,7 +5053,7 @@ mod tests {
             obs.tick += 1;
             assert_eq!(policy.opponent_force_risk(&dials, &obs), 0);
             assert_eq!(
-                policy.opponent_force_peak, None,
+                policy.state.opponent_force_peak, None,
                 "{difficulty:?} retained the force beyond its memory boundary"
             );
 
@@ -4949,7 +5065,7 @@ mod tests {
             ];
             assert_eq!(policy.opponent_force_risk(&dials, &obs), initial_risk);
             assert_eq!(
-                policy.opponent_force_peak,
+                policy.state.opponent_force_peak,
                 Some((initial_strength, replacement_tick))
             );
 
@@ -4957,7 +5073,7 @@ mod tests {
             let equal_tick = obs.tick;
             assert_eq!(policy.opponent_force_risk(&dials, &obs), initial_risk);
             assert_eq!(
-                policy.opponent_force_peak,
+                policy.state.opponent_force_peak,
                 Some((initial_strength, equal_tick)),
                 "{difficulty:?} did not refresh an equally strong sight"
             );
@@ -4971,7 +5087,7 @@ mod tests {
                 stronger_strength * (100 + DEMONSTRATED_FORCE_RESERVE_PERCENT) / 100;
             assert_eq!(policy.opponent_force_risk(&dials, &obs), stronger_risk);
             assert_eq!(
-                policy.opponent_force_peak,
+                policy.state.opponent_force_peak,
                 Some((stronger_strength, stronger_tick)),
                 "{difficulty:?} did not replace the peak with a stronger sight"
             );
@@ -5025,7 +5141,7 @@ mod tests {
                 player_mode(None),
                 &mut intents,
             );
-            assert!(policy.opponent_force_peak.is_some());
+            assert!(policy.state.opponent_force_peak.is_some());
         }
 
         let mut hidden = observed.clone();
@@ -5086,11 +5202,11 @@ mod tests {
             }
 
             if age == VOLUNTARY_FORCE_RISK_HORIZON + 1 {
-                assert_eq!(policies[0].opponent_force_peak, None);
+                assert_eq!(policies[0].state.opponent_force_peak, None);
                 assert!(
                     policies[1..]
                         .iter()
-                        .all(|policy| policy.opponent_force_peak.is_some()),
+                        .all(|policy| policy.state.opponent_force_peak.is_some()),
                     "competent rungs discarded longer-lived intelligence with voluntary risk"
                 );
             }
@@ -5098,7 +5214,7 @@ mod tests {
         assert!(
             policies
                 .iter()
-                .all(|policy| policy.opponent_force_peak.is_none()),
+                .all(|policy| policy.state.opponent_force_peak.is_none()),
             "configured long-term memories did not expire at their own boundaries"
         );
     }
@@ -5131,7 +5247,7 @@ mod tests {
 
             for (difficulty, dial) in BotDifficulty::ALL.into_iter().zip(&dials) {
                 let mut policy = UtilityPolicy::new();
-                policy.scouted_at = baseline.tick;
+                policy.state.scouted_at = baseline.tick;
                 let mut intents = Vec::new();
                 policy.army(
                     dial,
@@ -5164,7 +5280,7 @@ mod tests {
                 .iter()
                 .map(|dial| {
                     let mut policy = UtilityPolicy::new();
-                    policy.scouted_at = reinforced.tick;
+                    policy.state.scouted_at = reinforced.tick;
                     let mut intents = Vec::new();
                     policy.army(
                         dial,
@@ -5218,8 +5334,8 @@ mod tests {
                         bounces: 0,
                     };
                     let mut policy = UtilityPolicy::new();
-                    policy.desperate = true;
-                    policy.scouted_at = obs.tick;
+                    policy.state.desperate = true;
+                    policy.state.scouted_at = obs.tick;
                     let mut intents = Vec::new();
 
                     policy.army(
@@ -5298,9 +5414,9 @@ mod tests {
         let mirror = TilePos::new(open.map_width - 1 - home.x, open.map_height - 1 - home.y);
         let decide = |obs: &Observation| {
             let mut policy = UtilityPolicy::new();
-            policy.desperate = true;
-            policy.desperate_march = true;
-            policy.scouted_at = obs.tick;
+            policy.state.desperate = true;
+            policy.state.desperate_march = true;
+            policy.state.scouted_at = obs.tick;
             let mut intents = Vec::new();
             policy.army(
                 &dials,
@@ -5347,7 +5463,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 4;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = seen.tick;
+        policy.state.scouted_at = seen.tick;
         let mut intents = Vec::new();
 
         policy.army(
@@ -5370,7 +5486,7 @@ mod tests {
                 .iter()
                 .all(|contact| contact.confidence_at(hidden.tick) > 0)
         );
-        policy.scouted_at = hidden.tick;
+        policy.state.scouted_at = hidden.tick;
         intents.clear();
         policy.army(
             &dials,
@@ -5406,7 +5522,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 4;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = hidden.tick;
+        policy.state.scouted_at = hidden.tick;
         let mut intents = Vec::new();
         policy.army(
             &dials,
@@ -5434,7 +5550,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 4;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = seen.tick;
+        policy.state.scouted_at = seen.tick;
         let mut intents = Vec::new();
         policy.army(
             &dials,
@@ -5458,7 +5574,7 @@ mod tests {
             .expect("the observed turret remains in memory");
         assert_eq!(contact.tier, 1);
 
-        policy.scouted_at = hidden.tick;
+        policy.state.scouted_at = hidden.tick;
         intents.clear();
         policy.army(
             &dials,
@@ -5493,7 +5609,7 @@ mod tests {
         dials.army_size = 4;
 
         let mut current_policy = UtilityPolicy::new();
-        current_policy.scouted_at = hidden.tick;
+        current_policy.state.scouted_at = hidden.tick;
         let mut intents = Vec::new();
         current_policy.army(
             &dials,
@@ -5537,7 +5653,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 23;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = obs.tick;
+        policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
 
         policy.army(
@@ -5579,7 +5695,7 @@ mod tests {
         let mut dials = Dials::full();
         dials.army_size = 6;
         let mut policy = UtilityPolicy::new();
-        policy.scouted_at = obs.tick;
+        policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
 
         policy.army(

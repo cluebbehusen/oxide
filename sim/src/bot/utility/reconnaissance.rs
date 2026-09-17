@@ -493,6 +493,7 @@ impl UtilityPolicy {
         let mut add = |consumer, tile, size, confidence, value, urgency| {
             let key = ReconQuestionKey::new(consumer, tile);
             let evidence_at = self
+                .state
                 .reconnaissance
                 .questions
                 .get(&key)
@@ -532,6 +533,7 @@ impl UtilityPolicy {
                             .last_seen
                             .is_some_and(|seen| obs.tick.saturating_sub(seen) < HORIZON)
                         && self
+                            .state
                             .reconnaissance
                             .operational
                             .as_ref()
@@ -582,7 +584,7 @@ impl UtilityPolicy {
             .filter(|unit| {
                 unit.hp > 0
                     && unit.kind.stats().harvest.is_some()
-                    && !self.evacuating_workers.contains(&unit.id)
+                    && !self.state.evacuating_workers.contains(&unit.id)
             })
             .count();
         if harvesters > 0 {
@@ -636,7 +638,7 @@ impl UtilityPolicy {
                 }
             }
         }
-        for region in &self.contested_harvest_regions {
+        for region in &self.state.contested_harvest_regions {
             add(
                 ReconConsumer::HarvestRecovery,
                 region.center,
@@ -663,7 +665,7 @@ impl UtilityPolicy {
                 );
             }
         }
-        for question in &self.battlefield.questions {
+        for question in &context.evidence.battlefield.questions {
             let key = ReconQuestionKey::new(
                 if question.anonymous {
                     ReconConsumer::Defense(question.asset)
@@ -676,6 +678,7 @@ impl UtilityPolicy {
                 key,
                 size: question.size,
                 evidence_at: self
+                    .state
                     .reconnaissance
                     .questions
                     .get(&key)
@@ -696,6 +699,7 @@ impl UtilityPolicy {
         let tile = question.key.tile();
         if question.key.consumer == ReconConsumer::HarvestRecovery {
             return !self
+                .state
                 .contested_harvest_regions
                 .iter()
                 .any(|region| region.center == tile);
@@ -718,13 +722,13 @@ impl UtilityPolicy {
         home: TilePos,
     ) -> Vec<Intent> {
         let obs = context.obs;
-        if self.reconnaissance.observed_at == Some(obs.tick) {
+        if self.state.reconnaissance.observed_at == Some(obs.tick) {
             return vec![];
         }
-        self.reconnaissance.observed_at = Some(obs.tick);
-        self.reconnaissance.released.clear();
+        self.state.reconnaissance.observed_at = Some(obs.tick);
+        self.state.reconnaissance.released.clear();
         let previous_units = core::mem::replace(
-            &mut self.reconnaissance.previous_units,
+            &mut self.state.reconnaissance.previous_units,
             obs.my_units.iter().map(|unit| unit.id).collect(),
         );
         self.clear_visible_public_starts(obs, context.briefing);
@@ -734,7 +738,7 @@ impl UtilityPolicy {
             Some(context.building_contacts),
         );
         let questions = self.recon_questions(context);
-        self.reconnaissance.questions = questions
+        self.state.reconnaissance.questions = questions
             .into_iter()
             .map(|question| (question.key, question))
             .collect();
@@ -746,6 +750,7 @@ impl UtilityPolicy {
         }
         let mut births = BTreeMap::<_, std::collections::BTreeSet<UnitId>>::new();
         for work in self
+            .state
             .reconnaissance
             .assignments
             .values()
@@ -765,10 +770,11 @@ impl UtilityPolicy {
                 );
             }
         }
-        for work in self.reconnaissance.assignments.values_mut() {
+        for work in self.state.reconnaissance.assignments.values_mut() {
             if let Some(claim) = &mut work.paid_claim {
                 let key = (claim.producer, claim.kind);
                 let before = self
+                    .state
                     .reconnaissance
                     .queue_counts
                     .get(&key)
@@ -785,8 +791,8 @@ impl UtilityPolicy {
                 }
             }
         }
-        self.reconnaissance.queue_counts = queue_counts;
-        for (key, recovery) in &mut self.reconnaissance.recovery {
+        self.state.reconnaissance.queue_counts = queue_counts;
+        for (key, recovery) in &mut self.state.reconnaissance.recovery {
             let quiet = !obs
                 .enemy_units
                 .iter()
@@ -801,7 +807,7 @@ impl UtilityPolicy {
                 recovery.quiet_since = None;
             }
         }
-        if self.reconnaissance.assignments.is_empty() {
+        if self.state.reconnaissance.assignments.is_empty() {
             return vec![];
         }
         let danger = self.harvest_danger_projection(
@@ -812,8 +818,8 @@ impl UtilityPolicy {
         let mut routes = ReconRoutes::new(context, &danger);
         let mut intents = Vec::new();
         let return_goal = self.passable_near(obs, home);
-        let mut assigned = self.reconnaissance.reservations();
-        let mut prior: Vec<_> = core::mem::take(&mut self.reconnaissance.assignments)
+        let mut assigned = self.state.reconnaissance.reservations();
+        let mut prior: Vec<_> = core::mem::take(&mut self.state.reconnaissance.assignments)
             .into_iter()
             .collect();
         prior.sort_by_key(|(key, work)| {
@@ -845,7 +851,7 @@ impl UtilityPolicy {
                     work.phase = ReconPhase::Recall;
                 }
             }
-            let useful = self.reconnaissance.questions.contains_key(&key);
+            let useful = self.state.reconnaissance.questions.contains_key(&key);
             if work.phase == ReconPhase::Preparation {
                 if answered
                     || !useful
@@ -859,8 +865,10 @@ impl UtilityPolicy {
                     } else {
                         crate::bot::trace::ReconReleaseReason::DeadlineExpired
                     };
-                    self.reconnaissance.released.push((key, reason));
-                    self.reconnaissance.reconsider_after_quiet(key, obs.tick);
+                    self.state.reconnaissance.released.push((key, reason));
+                    self.state
+                        .reconnaissance
+                        .reconsider_after_quiet(key, obs.tick);
                     continue;
                 }
                 let (ReconObserver::Purchase {
@@ -886,11 +894,13 @@ impl UtilityPolicy {
                                 .command_path_avoids_blocked(building.anchor, work.proposal.goal)
                     })
                 {
-                    self.reconnaissance.released.push((
+                    self.state.reconnaissance.released.push((
                         key,
                         crate::bot::trace::ReconReleaseReason::ProducerOrRouteUnavailable,
                     ));
-                    self.reconnaissance.reconsider_after_quiet(key, obs.tick);
+                    self.state
+                        .reconnaissance
+                        .reconsider_after_quiet(key, obs.tick);
                     continue;
                 }
                 if let Some(unit) = obs
@@ -921,7 +931,7 @@ impl UtilityPolicy {
                         ReconPhase::Recall
                     };
                 } else if !work.unpaid && work.paid_claim.is_none() {
-                    self.reconnaissance.record_loss(key, obs.tick);
+                    self.state.reconnaissance.record_loss(key, obs.tick);
                     continue;
                 } else if !obs
                     .my_buildings
@@ -929,11 +939,13 @@ impl UtilityPolicy {
                     .any(|building| building.id == producer)
                     && obs.tick > ready_at
                 {
-                    self.reconnaissance.released.push((
+                    self.state.reconnaissance.released.push((
                         key,
                         crate::bot::trace::ReconReleaseReason::ProducerOrRouteUnavailable,
                     ));
-                    self.reconnaissance.reconsider_after_quiet(key, obs.tick);
+                    self.state
+                        .reconnaissance
+                        .reconsider_after_quiet(key, obs.tick);
                     continue;
                 }
             }
@@ -943,21 +955,24 @@ impl UtilityPolicy {
                     .iter()
                     .find(|unit| unit.id == id && unit.hp > 0)
                 else {
-                    self.reconnaissance.record_loss(key, obs.tick);
+                    self.state.reconnaissance.record_loss(key, obs.tick);
                     continue;
                 };
                 if answered
                     || !useful
                     || obs.tick >= work.proposal.deadline
                     || (key.consumer == ReconConsumer::HarvestRecovery
-                        && self.contested_recon_blocked.contains(&key.tile()))
+                        && self.state.contested_recon_blocked.contains(&key.tile()))
                 {
                     work.phase = ReconPhase::Recall;
                 }
                 if work.phase == ReconPhase::Recall {
                     if unit.tile.chebyshev(return_goal) <= 1 {
-                        self.reconnaissance.reconsider_after_quiet(key, obs.tick);
-                        self.reconnaissance
+                        self.state
+                            .reconnaissance
+                            .reconsider_after_quiet(key, obs.tick);
+                        self.state
+                            .reconnaissance
                             .released
                             .push((key, crate::bot::trace::ReconReleaseReason::SafeReturn));
                         continue;
@@ -993,6 +1008,7 @@ impl UtilityPolicy {
                         && let Some(tile) = Self::contested_region_tiles(obs, key.tile())
                             .filter(|tile| {
                                 !self
+                                    .state
                                     .contested_harvest_clear_tiles
                                     .contains(&(key.tile(), *tile))
                             })
@@ -1028,9 +1044,12 @@ impl UtilityPolicy {
                     }
                 }
             }
-            self.reconnaissance.assignments.insert(key, work);
+            self.state.reconnaissance.assignments.insert(key, work);
         }
-        self.reconnaissance.released.sort_by_key(|(key, _)| *key);
+        self.state
+            .reconnaissance
+            .released
+            .sort_by_key(|(key, _)| *key);
         intents
     }
 
@@ -1042,23 +1061,29 @@ impl UtilityPolicy {
         allow_paid: bool,
         paid_unavailable: &[crate::bot::allocation::PaidQueueClaim],
     ) -> Vec<ReconProposal> {
-        self.reconnaissance.needs_air = false;
-        self.reconnaissance.capability_demand.clear();
-        self.reconnaissance.covered.clear();
+        self.state.reconnaissance.needs_air = false;
+        self.state.reconnaissance.capability_demand.clear();
+        self.state.reconnaissance.covered.clear();
         if !strategic_admission_tick(context.obs.tick) {
             return vec![];
         }
         let obs = context.obs;
         let mut questions: Vec<_> = self
+            .state
             .reconnaissance
             .questions
             .values()
             .filter(|question| {
-                !self.reconnaissance.assignments.contains_key(&question.key)
+                !self
+                    .state
+                    .reconnaissance
+                    .assignments
+                    .contains_key(&question.key)
                     && !self.recon_answered(obs, question)
                     && (matches!(question.key.consumer, ReconConsumer::HostileStart(_))
                         || obs.tick.saturating_sub(question.evidence_at) >= tuning.reaction_delay)
                     && self
+                        .state
                         .reconnaissance
                         .recovery
                         .get(&question.key)
@@ -1070,7 +1095,10 @@ impl UtilityPolicy {
                                 })
                         })
                     && !(question.key.consumer == ReconConsumer::HarvestRecovery
-                        && self.contested_recon_blocked.contains(&question.key.tile()))
+                        && self
+                            .state
+                            .contested_recon_blocked
+                            .contains(&question.key.tile()))
             })
             .cloned()
             .collect();
@@ -1091,69 +1119,71 @@ impl UtilityPolicy {
             Some(context.building_contacts),
         );
         let mut routes = ReconRoutes::new(context, &danger);
-        let owned = self.reconnaissance.reservations();
+        let owned = self.state.reconnaissance.reservations();
         let mut proposals = Vec::new();
         for question in questions {
             let deadline = obs.tick.saturating_add(HORIZON);
-            let overlapping = self
-                .reconnaissance
-                .assignments
-                .values()
-                .find_map(|assignment| {
-                    if question.key.consumer == ReconConsumer::HarvestRecovery
-                        || assignment.proposal.question.key.consumer
-                            == ReconConsumer::HarvestRecovery
-                        || assignment.phase == ReconPhase::Recall
-                        || assignment.unpaid
-                    {
-                        return None;
-                    }
-                    let (observer, kind, origin, ready_at) = if let Some(id) = assignment.unit {
-                        let unit = obs
-                            .my_units
-                            .iter()
-                            .find(|unit| unit.id == id && unit.hp > 0)?;
-                        (ReconObserver::Live(id), unit.kind, unit.tile, obs.tick)
-                    } else {
-                        let claim = assignment.paid_claim?;
-                        let (_, ready_at) = context
-                            .resources
-                            .producers()
-                            .iter()
-                            .find(|lane| lane.producer == claim.producer)?
-                            .queued_readiness()
-                            .filter(|(kind, _)| *kind == claim.kind)
-                            .nth(claim.occurrence)?;
-                        (
-                            ReconObserver::Queued {
-                                producer: claim.producer,
-                                kind: claim.kind,
-                                occurrence: claim.occurrence,
+            let overlapping =
+                self.state
+                    .reconnaissance
+                    .assignments
+                    .values()
+                    .find_map(|assignment| {
+                        if question.key.consumer == ReconConsumer::HarvestRecovery
+                            || assignment.proposal.question.key.consumer
+                                == ReconConsumer::HarvestRecovery
+                            || assignment.phase == ReconPhase::Recall
+                            || assignment.unpaid
+                        {
+                            return None;
+                        }
+                        let (observer, kind, origin, ready_at) = if let Some(id) = assignment.unit {
+                            let unit = obs
+                                .my_units
+                                .iter()
+                                .find(|unit| unit.id == id && unit.hp > 0)?;
+                            (ReconObserver::Live(id), unit.kind, unit.tile, obs.tick)
+                        } else {
+                            let claim = assignment.paid_claim?;
+                            let (_, ready_at) = context
+                                .resources
+                                .producers()
+                                .iter()
+                                .find(|lane| lane.producer == claim.producer)?
+                                .queued_readiness()
+                                .filter(|(kind, _)| *kind == claim.kind)
+                                .nth(claim.occurrence)?;
+                            (
+                                ReconObserver::Queued {
+                                    producer: claim.producer,
+                                    kind: claim.kind,
+                                    occurrence: claim.occurrence,
+                                    ready_at,
+                                },
+                                claim.kind,
+                                assignment.proposal.origin,
                                 ready_at,
-                            },
-                            claim.kind,
-                            assignment.proposal.origin,
-                            ready_at,
-                        )
-                    };
-                    let goal = assignment.proposal.goal;
-                    let sight = kind.stats().vision;
-                    if !(0..question.size.1).all(|dy| {
-                        (0..question.size.0).all(|dx| {
-                            let tile = question.key.tile().offset(dx, dy);
-                            let dx = tile.x - goal.x;
-                            let dy = tile.y - goal.y;
-                            dx * dx + dy * dy <= sight * sight
-                        })
-                    }) {
-                        return None;
-                    }
-                    let arrival = routes.arrival(ready_at, origin, goal, kind)?;
-                    (arrival < deadline.min(assignment.proposal.deadline))
-                        .then_some((observer, arrival))
-                });
+                            )
+                        };
+                        let goal = assignment.proposal.goal;
+                        let sight = kind.stats().vision;
+                        if !(0..question.size.1).all(|dy| {
+                            (0..question.size.0).all(|dx| {
+                                let tile = question.key.tile().offset(dx, dy);
+                                let dx = tile.x - goal.x;
+                                let dy = tile.y - goal.y;
+                                dx * dx + dy * dy <= sight * sight
+                            })
+                        }) {
+                            return None;
+                        }
+                        let arrival = routes.arrival(ready_at, origin, goal, kind)?;
+                        (arrival < deadline.min(assignment.proposal.deadline))
+                            .then_some((observer, arrival))
+                    });
             if let Some((observer, arrival)) = overlapping {
-                self.reconnaissance
+                self.state
+                    .reconnaissance
                     .covered
                     .push((question.key, observer, arrival));
                 continue;
@@ -1172,13 +1202,14 @@ impl UtilityPolicy {
                     continue;
                 }
             }
-            if let Some(operation) = self
-                .reconnaissance
-                .operational
-                .as_ref()
-                .filter(|operation| {
-                    operation.target == question.key.tile() && operation.deadline > obs.tick
-                })
+            if let Some(operation) =
+                self.state
+                    .reconnaissance
+                    .operational
+                    .as_ref()
+                    .filter(|operation| {
+                        operation.target == question.key.tile() && operation.deadline > obs.tick
+                    })
             {
                 let useful_until = deadline.min(operation.deadline);
                 let live = operation.scout.and_then(|id| {
@@ -1251,7 +1282,8 @@ impl UtilityPolicy {
                         None
                     });
                 if let Some((observer, arrival)) = coverage {
-                    self.reconnaissance
+                    self.state
+                        .reconnaissance
                         .covered
                         .push((question.key, observer, arrival));
                     continue;
@@ -1279,20 +1311,24 @@ impl UtilityPolicy {
                         && !context.unavailable.contains(&unit.id)
                         && !owned.contains(&unit.id)
                         && self
+                            .state
                             .reconnaissance
                             .operational
                             .as_ref()
                             .is_none_or(|operation| operation.scout != Some(unit.id))
                         && self
+                            .state
                             .foundry_saving
                             .as_ref()
                             .is_none_or(|saving| saving.plan.builder != unit.id)
                         && self
+                            .state
                             .economic_saving
                             .as_ref()
                             .is_none_or(|saving| saving.builder != Some(unit.id))
-                        && !self.evacuating_workers.contains(&unit.id)
+                        && !self.state.evacuating_workers.contains(&unit.id)
                         && !self
+                            .state
                             .support_work
                             .repairs
                             .iter()
@@ -1359,7 +1395,7 @@ impl UtilityPolicy {
                         occurrence,
                     };
                     if paid_unavailable.contains(&claim)
-                        || self.reconnaissance.paid_claims().contains(&claim)
+                        || self.state.reconnaissance.paid_claims().contains(&claim)
                     {
                         continue;
                     }
@@ -1463,8 +1499,8 @@ impl UtilityPolicy {
                     && let Some(goal) = routes.approach(home, kind, &question)
                     && routes.air.command_path_avoids_blocked(home, goal)
                 {
-                    self.reconnaissance.needs_air = true;
-                    self.reconnaissance.capability_demand.push(
+                    self.state.reconnaissance.needs_air = true;
+                    self.state.reconnaissance.capability_demand.push(
                         crate::bot::standing_force::CapabilityDemand {
                             kind,
                             service: crate::bot::allocation::StandingForceServiceKey::Point(
@@ -1499,10 +1535,16 @@ impl UtilityPolicy {
         if proposal.observed_at != obs.tick
             || proposal.deadline <= obs.tick
             || self
+                .state
                 .reconnaissance
                 .assignments
                 .contains_key(&proposal.question.key)
-            || self.reconnaissance.questions.get(&proposal.question.key) != Some(&proposal.question)
+            || self
+                .state
+                .reconnaissance
+                .questions
+                .get(&proposal.question.key)
+                != Some(&proposal.question)
         {
             return false;
         }
@@ -1518,7 +1560,7 @@ impl UtilityPolicy {
         let unpaid = funding.is_some_and(|job| job.enqueued_at > obs.tick);
         let (unit, phase, dispatch) = match proposal.observer {
             ReconObserver::Live(id) => {
-                if self.reconnaissance.reservations().contains(&id)
+                if self.state.reconnaissance.reservations().contains(&id)
                     || !obs.my_units.iter().any(|unit| {
                         unit.id == id
                             && unit.hp > 0
@@ -1576,12 +1618,13 @@ impl UtilityPolicy {
             && !unpaid
         {
             *self
+                .state
                 .reconnaissance
                 .queue_counts
                 .entry((producer, kind))
                 .or_insert(0) += 1;
         }
-        self.reconnaissance.assignments.insert(
+        self.state.reconnaissance.assignments.insert(
             proposal.question.key,
             ReconAssignment {
                 proposal,
@@ -1604,7 +1647,7 @@ impl UtilityPolicy {
         job: crate::bot::allocation::ScheduledProducerJob,
         obs: &Observation,
     ) -> bool {
-        let Some(work) = self.reconnaissance.assignments.get_mut(&key) else {
+        let Some(work) = self.state.reconnaissance.assignments.get_mut(&key) else {
             return false;
         };
         let ReconObserver::Purchase { producer, kind, .. } = work.proposal.observer else {
@@ -1635,6 +1678,7 @@ impl UtilityPolicy {
                 occurrence,
             });
             *self
+                .state
                 .reconnaissance
                 .queue_counts
                 .entry((producer, kind))
@@ -1665,7 +1709,9 @@ impl UtilityPolicy {
                 } => Some(key),
                 _ => None,
             };
-            if let Some(work) = key.and_then(|key| self.reconnaissance.assignments.get_mut(&key)) {
+            if let Some(work) =
+                key.and_then(|key| self.state.reconnaissance.assignments.get_mut(&key))
+            {
                 work.paid_claim = Some(crate::bot::allocation::PaidQueueClaim {
                     producer: job.producer,
                     kind: job.kind,
@@ -1674,7 +1720,7 @@ impl UtilityPolicy {
             }
             *occurrence += 1;
         }
-        self.reconnaissance.queue_counts = counts;
+        self.state.reconnaissance.queue_counts = counts;
     }
 }
 
@@ -1778,6 +1824,7 @@ mod tests {
         resources: &'a ResourceSnapshot,
     ) -> EconomicInvestmentContext<'a> {
         EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs,
             resources,
@@ -1819,7 +1866,7 @@ mod tests {
     fn operational_scout_covers_only_its_useful_question_without_transferring_ownership() {
         let (mut obs, map, profile) = fixture();
         let mut policy = UtilityPolicy::new();
-        policy.reconnaissance.operational = Some(OperationalReconWork {
+        policy.state.reconnaissance.operational = Some(OperationalReconWork {
             target: TilePos::new(32, 4),
             scout: Some(UnitId(100)),
             goal: Some(TilePos::new(30, 4)),
@@ -1827,7 +1874,7 @@ mod tests {
             paid: vec![],
         });
         let quoted = proposals(&mut policy, &obs, &map, &profile);
-        assert_eq!(policy.reconnaissance.covered.len(), 1);
+        assert_eq!(policy.state.reconnaissance.covered.len(), 1);
         assert!(
             quoted
                 .iter()
@@ -1838,7 +1885,7 @@ mod tests {
                 .iter()
                 .all(|proposal| proposal.observer != ReconObserver::Live(UnitId(100)))
         );
-        assert!(policy.reconnaissance.assignments.is_empty());
+        assert!(policy.state.reconnaissance.assignments.is_empty());
         assert!(
             quoted
                 .iter()
@@ -1846,9 +1893,15 @@ mod tests {
         );
 
         obs.tick += 24;
-        policy.reconnaissance.operational.as_mut().unwrap().deadline = obs.tick + 1;
+        policy
+            .state
+            .reconnaissance
+            .operational
+            .as_mut()
+            .unwrap()
+            .deadline = obs.tick + 1;
         let quoted = proposals(&mut policy, &obs, &map, &profile);
-        assert!(policy.reconnaissance.covered.is_empty());
+        assert!(policy.state.reconnaissance.covered.is_empty());
         assert!(
             quoted
                 .iter()
@@ -1888,7 +1941,7 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         let first = proposals(&mut policy, &obs, &map, &profile).remove(0);
         assert!(policy.commit_reconnaissance(first, None, &obs, &mut Vec::new()));
-        let reservations = policy.reconnaissance.reservations();
+        let reservations = policy.state.reconnaissance.reservations();
         map.starting_foundries.push(StartingFoundry {
             player: PlayerId(3),
             anchor: TilePos::new(32, 5),
@@ -1896,9 +1949,10 @@ mod tests {
         map.teams.push(None);
         obs.tick += 24;
         let quoted = proposals(&mut policy, &obs, &map, &profile);
-        assert_eq!(policy.reconnaissance.reservations(), reservations);
+        assert_eq!(policy.state.reconnaissance.reservations(), reservations);
         assert!(
             policy
+                .state
                 .reconnaissance
                 .covered
                 .iter()
@@ -1933,7 +1987,7 @@ mod tests {
             context.building_contacts = intelligence.buildings();
             policy.observe_reconnaissance(context, TilePos::new(2, 12));
             assert_eq!(
-                policy.reconnaissance.questions.keys().any(|key| {
+                policy.state.reconnaissance.questions.keys().any(|key| {
                     matches!(key.consumer, ReconConsumer::Objective(PlayerId(1), _))
                 }),
                 expected
@@ -1961,22 +2015,34 @@ mod tests {
         assert_ne!(first_unit, second_unit);
         assert!(policy.commit_reconnaissance(second, None, &obs, &mut Vec::new()));
         assert_eq!(
-            policy.reconnaissance.reservations(),
+            policy.state.reconnaissance.reservations(),
             vec![UnitId(100), UnitId(101)]
         );
         obs.my_units.retain(|unit| unit.id != first_unit);
         obs.tick += 24;
         assert!(proposals(&mut policy, &obs, &map, &profile).is_empty());
-        assert!(!policy.reconnaissance.assignments.contains_key(&first_key));
+        assert!(
+            !policy
+                .state
+                .reconnaissance
+                .assignments
+                .contains_key(&first_key)
+        );
         assert_eq!(
-            policy.reconnaissance.assignments[&second_key].unit,
+            policy.state.reconnaissance.assignments[&second_key].unit,
             Some(second_unit)
         );
         assert_eq!(
-            policy.reconnaissance.recovery[&first_key].retry_at,
+            policy.state.reconnaissance.recovery[&first_key].retry_at,
             obs.tick + LOSS_COOLDOWN
         );
-        assert!(!policy.reconnaissance.recovery.contains_key(&second_key));
+        assert!(
+            !policy
+                .state
+                .reconnaissance
+                .recovery
+                .contains_key(&second_key)
+        );
     }
 
     #[test]
@@ -1992,7 +2058,7 @@ mod tests {
         obs.my_units.retain(|unit| unit.id != id);
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
-        let retry_at = policy.reconnaissance.recovery[&key].retry_at;
+        let retry_at = policy.state.reconnaissance.recovery[&key].retry_at;
         obs.tick += 24;
         assert!(
             !proposals(&mut policy, &obs, &map, &profile)
@@ -2031,11 +2097,13 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            policy.reconnaissance.assignments[&key].phase,
+            policy.state.reconnaissance.assignments[&key].phase,
             ReconPhase::Recall
         );
         assert_eq!(
-            policy.reconnaissance.assignments[&key].proposal.deadline,
+            policy.state.reconnaissance.assignments[&key]
+                .proposal
+                .deadline,
             deadline
         );
         assert!(matches!(commands.as_slice(), [Intent::MoveUnits { .. }]));
@@ -2053,6 +2121,7 @@ mod tests {
         let center = TilePos::new(20, 15);
         let mut policy = UtilityPolicy::new();
         policy
+            .state
             .contested_harvest_regions
             .push(ContestedHarvestRegion {
                 center,
@@ -2079,7 +2148,7 @@ mod tests {
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
         assert_eq!(
-            policy.reconnaissance.assignments[&key].phase,
+            policy.state.reconnaissance.assignments[&key].phase,
             ReconPhase::Recall
         );
         obs.salvage_incidents.clear();
@@ -2090,8 +2159,8 @@ mod tests {
             .tile = TilePos::new(12, 14);
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
-        assert_eq!(policy.reconnaissance.assignments[&key].unit, Some(id));
-        assert!(policy.reconnaissance.reservations().contains(&id));
+        assert_eq!(policy.state.reconnaissance.assignments[&key].unit, Some(id));
+        assert!(policy.state.reconnaissance.reservations().contains(&id));
         obs.my_units
             .iter_mut()
             .find(|unit| unit.id == id)
@@ -2099,7 +2168,7 @@ mod tests {
             .tile = TilePos::new(2, 12);
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
-        assert!(!policy.reconnaissance.assignments.contains_key(&key));
+        assert!(!policy.state.reconnaissance.assignments.contains_key(&key));
         assert!(
             policy.harvest_location_contested(center),
             "return is not evidence that the region is safe"
@@ -2213,11 +2282,15 @@ mod tests {
         );
         assert!(
             !lost_policy
+                .state
                 .reconnaissance
                 .assignments
                 .contains_key(&first_key)
         );
-        assert_eq!(lost_policy.reconnaissance.recovery[&first_key].attempts, 1);
+        assert_eq!(
+            lost_policy.state.reconnaissance.recovery[&first_key].attempts,
+            1
+        );
         lost_obs.tick += u64::from(UnitKind::Kestrel.stats().train_ticks);
         lost_obs.my_queues[1].clear();
         lost_obs.my_units.push(scout.clone());
@@ -2227,7 +2300,7 @@ mod tests {
             TilePos::new(2, 12),
         );
         assert_eq!(
-            lost_policy.reconnaissance.assignments[&second_key].unit,
+            lost_policy.state.reconnaissance.assignments[&second_key].unit,
             Some(scout.id),
             "a lost first occurrence cannot steal the second question's newborn"
         );
@@ -2237,6 +2310,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&obs);
         let mut late_policy = policy.clone();
         late_policy
+            .state
             .reconnaissance
             .assignments
             .get_mut(&first_key)
@@ -2247,7 +2321,7 @@ mod tests {
             context(&obs, &map, &profile, &resources),
             TilePos::new(2, 12),
         );
-        let late = &late_policy.reconnaissance.assignments[&first_key];
+        let late = &late_policy.state.reconnaissance.assignments[&first_key];
         assert_eq!(
             late.unit,
             Some(scout.id),
@@ -2255,24 +2329,33 @@ mod tests {
         );
         assert_eq!(late.phase, ReconPhase::Recall);
         assert_eq!(late.proposal.deadline, obs.tick + 1);
-        assert!(!late_policy.reconnaissance.recovery.contains_key(&first_key));
+        assert!(
+            !late_policy
+                .state
+                .reconnaissance
+                .recovery
+                .contains_key(&first_key)
+        );
         policy.observe_reconnaissance(
             context(&obs, &map, &profile, &resources),
             TilePos::new(2, 12),
         );
         assert_eq!(
-            policy.reconnaissance.assignments[&first_key].unit,
+            policy.state.reconnaissance.assignments[&first_key].unit,
             Some(scout.id)
         );
-        assert_eq!(policy.reconnaissance.assignments[&second_key].unit, None);
         assert_eq!(
-            policy.reconnaissance.assignments[&second_key]
+            policy.state.reconnaissance.assignments[&second_key].unit,
+            None
+        );
+        assert_eq!(
+            policy.state.reconnaissance.assignments[&second_key]
                 .paid_claim
                 .unwrap()
                 .occurrence,
             0
         );
-        assert_eq!(policy.reconnaissance.paid_claims().len(), 1);
+        assert_eq!(policy.state.reconnaissance.paid_claims().len(), 1);
         obs.tick += 24;
         let resources = ResourceSnapshot::from_observation(&obs);
         policy.observe_reconnaissance(
@@ -2280,7 +2363,7 @@ mod tests {
             TilePos::new(2, 12),
         );
         assert_eq!(
-            policy.reconnaissance.assignments[&second_key]
+            policy.state.reconnaissance.assignments[&second_key]
                 .paid_claim
                 .unwrap()
                 .occurrence,
@@ -2336,22 +2419,32 @@ mod tests {
         let mut intents = Vec::new();
         assert!(policy.commit_reconnaissance(proposal.clone(), Some(funding), &obs, &mut intents));
         assert!(intents.is_empty(), "a funded forecast is not a command");
-        assert!(policy.reconnaissance.assignments[&key].unpaid);
-        assert!(policy.reconnaissance.assignments[&key].paid_claim.is_none());
+        assert!(policy.state.reconnaissance.assignments[&key].unpaid);
+        assert!(
+            policy.state.reconnaissance.assignments[&key]
+                .paid_claim
+                .is_none()
+        );
         let mut core_recovery = policy.clone();
-        core_recovery.reconnaissance.release_unpaid(
+        core_recovery.state.reconnaissance.release_unpaid(
             key,
             obs.tick,
             crate::bot::trace::ReconReleaseReason::CoreRecovery,
         );
-        assert!(!core_recovery.reconnaissance.assignments.contains_key(&key));
-        assert!(core_recovery.reconnaissance.recovery[&key].retry_at > obs.tick);
+        assert!(
+            !core_recovery
+                .state
+                .reconnaissance
+                .assignments
+                .contains_key(&key)
+        );
+        assert!(core_recovery.state.reconnaissance.recovery[&key].retry_at > obs.tick);
         obs.tick = funding.enqueued_at;
         obs.scrap = funding.kind.stats().cost;
         let resources = ResourceSnapshot::from_observation(&obs);
         let capacity =
             AllocationCapacity::from_snapshot(&resources, proposal.deadline, 12).unwrap();
-        let work = &policy.reconnaissance.assignments[&key];
+        let work = &policy.state.reconnaissance.assignments[&key];
         let obligation = imported_obligation(
             crate::bot::allocation::ObligationClass::PersistentPlan,
             proposal.observed_at,
@@ -2369,19 +2462,25 @@ mod tests {
         assert_eq!(due.enqueued_at, obs.tick);
         assert_eq!(due.forecast_scrap, 0);
         assert!(policy.bind_reconnaissance_funding(key, due, &obs));
-        assert!(!policy.reconnaissance.assignments[&key].unpaid);
-        assert!(policy.reconnaissance.assignments[&key].paid_claim.is_some());
-        policy.reconnaissance.release_unpaid(
+        assert!(!policy.state.reconnaissance.assignments[&key].unpaid);
+        assert!(
+            policy.state.reconnaissance.assignments[&key]
+                .paid_claim
+                .is_some()
+        );
+        policy.state.reconnaissance.release_unpaid(
             key,
             obs.tick,
             crate::bot::trace::ReconReleaseReason::CoreRecovery,
         );
         assert!(
-            policy.reconnaissance.assignments.contains_key(&key),
+            policy.state.reconnaissance.assignments.contains_key(&key),
             "core recovery never cancels an already-paid observer"
         );
         assert_eq!(
-            policy.reconnaissance.assignments[&key].proposal.deadline,
+            policy.state.reconnaissance.assignments[&key]
+                .proposal
+                .deadline,
             proposal.deadline
         );
     }

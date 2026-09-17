@@ -51,6 +51,8 @@ mod economy;
 mod expansion;
 mod experience_work;
 mod extractor_development;
+#[cfg(test)]
+mod lifecycle_tests;
 mod production;
 mod reconnaissance;
 #[cfg(test)]
@@ -711,25 +713,15 @@ impl Dials {
 /// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtilityPolicy {
+    pub(in crate::bot) state: PolicyState,
     pub(in crate::bot) planning: super::planning::PlanningWork,
-    knowledge_paths: std::cell::RefCell<crate::bot::navigation::paths::PathQueries>,
-    resource_assets: std::cell::RefCell<Option<construction_checks::ResourceAssets>>,
+    queries: PolicyQueries,
+}
+
+/// Decision-relevant memory restored after a rejected allocation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::bot) struct PolicyState {
     pub(in crate::bot) work_experience: experience_work::WorkExperience,
-    pub(in crate::bot) ground_inputs: Option<combat::GroundMissionInputs>,
-    pub(in crate::bot) battlefield: std::sync::Arc<super::battlefield::BattlefieldAssessment>,
-    pub(in crate::bot) experience: std::sync::Arc<super::experience::Experience>,
-    /// Exact placement-egress answers for the current known blocking layout.
-    /// Construction changes far less often than the bot thinks; retaining this
-    /// derived data keeps a fair full-component safety check out of the hot
-    /// path without changing which placements are legal.
-    ground_egress_cache: std::cell::RefCell<Option<super::navigation::egress::GroundEgressCache>>,
-    /// Lazily materialized, immutable worker-danger surface for the latest
-    /// effective fog-honest threat layout.
-    harvest_danger_cache: std::cell::RefCell<danger::HarvestDangerCache>,
-    harvest_geometry_cache: std::cell::RefCell<economic_work::HarvestGeometryCache>,
-    /// Bounded public-terrain route fields shared by expansion economics and
-    /// security across repeated assessments and stationary route sources.
-    expansion_routing_cache: std::cell::RefCell<super::navigation::public_fields::PublicRoutes>,
     /// Largest hostile ground force observed within the difficulty's
     /// strategic memory window. Its exact old position may be stale; voluntary
     /// attack timing consumes only the common recent portion of this fact.
@@ -852,6 +844,49 @@ pub struct UtilityPolicy {
     evacuating_workers: Vec<UnitId>,
 }
 
+/// Recomputable answers; never part of an allocation checkpoint.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PolicyQueries {
+    knowledge_paths: std::cell::RefCell<crate::bot::navigation::paths::PathQueries>,
+    resource_assets: std::cell::RefCell<Option<construction_checks::ResourceAssets>>,
+    /// Exact placement-egress answers for the current known blocking layout.
+    /// Construction changes far less often than the bot thinks; retaining this
+    /// derived data keeps a fair full-component safety check out of the hot
+    /// path without changing which placements are legal.
+    ground_egress_cache: std::cell::RefCell<Option<super::navigation::egress::GroundEgressCache>>,
+    /// Lazily materialized, immutable worker-danger surface for the latest
+    /// effective fog-honest threat layout.
+    harvest_danger_cache: std::cell::RefCell<danger::HarvestDangerCache>,
+    harvest_geometry_cache: std::cell::RefCell<economic_work::HarvestGeometryCache>,
+    /// Bounded public-terrain route fields shared by expansion economics and
+    /// security across repeated assessments and stationary route sources.
+    expansion_routing_cache: std::cell::RefCell<super::navigation::public_fields::PublicRoutes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bot) struct PolicyCheckpoint(PolicyState);
+
+/// Immutable evidence for one decision, owned by the coordinator.
+#[derive(Clone, Copy)]
+pub(in crate::bot) struct DecisionEvidence<'a> {
+    pub(in crate::bot) battlefield: &'a super::battlefield::BattlefieldAssessment,
+    pub(in crate::bot) experience: &'a super::experience::Experience,
+}
+
+#[cfg(test)]
+impl Default for DecisionEvidence<'_> {
+    fn default() -> Self {
+        static BATTLEFIELD: std::sync::LazyLock<super::battlefield::BattlefieldAssessment> =
+            std::sync::LazyLock::new(Default::default);
+        static EXPERIENCE: std::sync::LazyLock<super::experience::Experience> =
+            std::sync::LazyLock::new(Default::default);
+        Self {
+            battlefield: &BATTLEFIELD,
+            experience: &EXPERIENCE,
+        }
+    }
+}
+
 struct ThinkContext<'a> {
     armies: &'a [Army],
     enlisted: &'a [UnitId],
@@ -882,6 +917,8 @@ impl FoundryHandoff {
 
 #[derive(Clone, Copy)]
 struct PolicyMode<'a> {
+    evidence: DecisionEvidence<'a>,
+    ground_missions: Option<GroundMissionInputs<'a>>,
     admit_voluntary_macro: bool,
     unit_contacts: Option<&'a [UnitContact]>,
     building_contacts: Option<&'a [BuildingContact]>,
@@ -890,6 +927,8 @@ struct PolicyMode<'a> {
 }
 
 pub(super) struct StrategicUtilityContext<'a> {
+    evidence: DecisionEvidence<'a>,
+    ground_missions: Option<GroundMissionInputs<'a>>,
     reserved: &'a [UnitId],
     combat_core_exclusions: &'a [UnitId],
     unit_contacts: &'a [UnitContact],
@@ -904,14 +943,22 @@ pub(super) struct StrategicUtilityContext<'a> {
 }
 
 impl<'a> StrategicUtilityContext<'a> {
+    pub(super) fn with_ground_missions(mut self, missions: GroundMissionInputs<'a>) -> Self {
+        self.ground_missions = Some(missions);
+        self
+    }
+
     pub(super) fn new(
         reserved: &'a [UnitId],
         unit_contacts: &'a [UnitContact],
         building_contacts: &'a [BuildingContact],
         public_map: &'a PublicMapBriefing,
         prelude: Vec<Intent>,
+        evidence: DecisionEvidence<'a>,
     ) -> Self {
         Self {
+            evidence,
+            ground_missions: None,
             reserved,
             combat_core_exclusions: reserved,
             unit_contacts,
@@ -969,12 +1016,12 @@ impl<'a> StrategicUtilityContext<'a> {
 }
 
 impl UtilityPolicy {
-    pub(in crate::bot) fn speculative_checkpoint(&mut self) -> Self {
-        // Continuations survive rollback, so the transaction never needs a copy of them.
-        let planning = std::mem::take(&mut self.planning);
-        let checkpoint = self.clone();
-        self.planning = planning;
-        checkpoint
+    pub(in crate::bot) fn speculative_checkpoint(&self) -> PolicyCheckpoint {
+        PolicyCheckpoint(self.state.clone())
+    }
+
+    pub(in crate::bot) fn restore_checkpoint(&mut self, checkpoint: PolicyCheckpoint) {
+        self.state = checkpoint.0;
     }
 
     /// Fresh policy, no memory.
@@ -983,12 +1030,12 @@ impl UtilityPolicy {
     }
 
     fn air_scout_needed(&self) -> bool {
-        if self.reconnaissance.observed_at.is_some() {
-            return self.reconnaissance.needs_air;
+        if self.state.reconnaissance.observed_at.is_some() {
+            return self.state.reconnaissance.needs_air;
         }
-        self.public_prior_air_scout_needed
-            || self.contested_recon_air_scout_needed
-            || self.persistent_air_scout_needed
+        self.state.public_prior_air_scout_needed
+            || self.state.contested_recon_air_scout_needed
+            || self.state.persistent_air_scout_needed
     }
 
     fn public_ground_probe_pending(&self, obs: &Observation, prior: PublicScoutPrior) -> bool {
@@ -997,6 +1044,7 @@ impl UtilityPolicy {
             PublicScoutPrior::HostileStart(start) => {
                 obs.enemy_buildings.is_empty()
                     && self
+                        .state
                         .cleared_hostile_starts
                         .binary_search(&start.player)
                         .is_err()
@@ -1005,7 +1053,7 @@ impl UtilityPolicy {
     }
 
     fn active_public_ground_probe(&self, obs: &Observation, unit: UnitId) -> bool {
-        self.scout_dispatch.is_some_and(|dispatch| {
+        self.state.scout_dispatch.is_some_and(|dispatch| {
             dispatch.unit == unit
                 && match dispatch.role {
                     ScoutDispatchRole::PublicGround(prior) => {
@@ -1028,7 +1076,8 @@ impl UtilityPolicy {
         public_map
             .hostile_starting_foundries(me)
             .filter(|start| {
-                self.cleared_hostile_starts
+                self.state
+                    .cleared_hostile_starts
                     .binary_search(&start.player)
                     .is_err()
             })
@@ -1192,7 +1241,7 @@ impl UtilityPolicy {
 
     /// Workers whose active escape must outrank every implicit utility claim.
     pub(super) fn worker_safety_reservations(&self) -> &[UnitId] {
-        &self.evacuating_workers
+        &self.state.evacuating_workers
     }
 
     /// Refreshes same-observation incident evidence before shared allocation
@@ -1259,8 +1308,9 @@ impl UtilityPolicy {
                                 && !enlisted.contains(&unit.id)
                                 && !reserved.contains(&unit.id)
                                 && !claimed.contains(&unit.id)
-                                && self.scout != Some(unit.id)
+                                && self.state.scout != Some(unit.id)
                                 && self
+                                    .state
                                     .foundry_saving
                                     .as_ref()
                                     .is_none_or(|saving| saving.plan.builder != unit.id)
@@ -1627,7 +1677,7 @@ impl UtilityPolicy {
         let mut kept_ground_emergency = false;
         let mut kept_air_emergency = false;
         for claim @ (kind, anchor) in claims {
-            if self.economic_foundation.as_ref().is_some_and(|plan| {
+            if self.state.economic_foundation.as_ref().is_some_and(|plan| {
                 plan.build()
                     .is_some_and(|(planned_kind, planned_anchor, _)| {
                         (planned_kind, planned_anchor) == claim
@@ -1788,6 +1838,8 @@ impl UtilityPolicy {
         reserved: &[UnitId],
         public_map: &PublicMapBriefing,
     ) -> Vec<Intent> {
+        let battlefield = super::battlefield::BattlefieldAssessment::default();
+        let experience = super::experience::Experience::default();
         self.think_inner(
             dials,
             obs,
@@ -1803,6 +1855,11 @@ impl UtilityPolicy {
                 prelude: Vec::new(),
                 producer_lane_reservations: ProducerLaneReservations::empty(),
                 mode: PolicyMode {
+                    evidence: DecisionEvidence {
+                        battlefield: &battlefield,
+                        experience: &experience,
+                    },
+                    ground_missions: None,
                     admit_voluntary_macro: strategic_admission_tick(obs.tick),
                     unit_contacts: None,
                     building_contacts: None,
@@ -1837,6 +1894,8 @@ impl UtilityPolicy {
                 prelude: context.prelude,
                 producer_lane_reservations: context.producer_lane_reservations,
                 mode: PolicyMode {
+                    evidence: context.evidence,
+                    ground_missions: context.ground_missions,
                     admit_voluntary_macro: strategic_admission_tick(obs.tick),
                     unit_contacts: Some(context.unit_contacts),
                     building_contacts: Some(context.building_contacts),
@@ -1868,7 +1927,7 @@ impl UtilityPolicy {
         let strategic_reserved = reserved;
 
         let mut intents = prelude;
-        if let Some((builder, kind, anchor)) = self.economic_cancelled_founder.take()
+        if let Some((builder, kind, anchor)) = self.state.economic_cancelled_founder.take()
             && obs
                 .my_units
                 .iter()
@@ -1892,14 +1951,14 @@ impl UtilityPolicy {
             obs.map_height - 1 - home_tile.y,
         );
         if obs.enemy_units.iter().any(is_air_threat) {
-            self.seen_air = true;
+            self.state.seen_air = true;
         }
 
         {
             if let Some(public_map) = mode.public_map {
                 self.clear_visible_public_starts(obs, public_map);
             }
-            if self.reconnaissance.observed_at != Some(obs.tick) {
+            if self.state.reconnaissance.observed_at != Some(obs.tick) {
                 self.audit_missing_scout(obs);
                 self.refresh_solo_air_scout_suspension(obs);
                 self.refresh_contested_harvest_regions(
@@ -1919,8 +1978,12 @@ impl UtilityPolicy {
         }
         let mut protected = strategic_reserved.to_vec();
         {
-            protected.extend(self.evacuating_workers.iter().copied());
-            protected.extend(self.retreating_contested_scout.map(|retreat| retreat.unit));
+            protected.extend(self.state.evacuating_workers.iter().copied());
+            protected.extend(
+                self.state
+                    .retreating_contested_scout
+                    .map(|retreat| retreat.unit),
+            );
         }
         protected.sort_unstable();
         protected.dedup();
@@ -1940,18 +2003,18 @@ impl UtilityPolicy {
 
         let utility_admission_scrap = obs.scrap.saturating_sub(prior_scrap_commitment);
 
-        if utility_admission_scrap > self.bank_seen || obs.tick == 0 {
-            self.bank_grew_at = obs.tick;
+        if utility_admission_scrap > self.state.bank_seen || obs.tick == 0 {
+            self.state.bank_grew_at = obs.tick;
         }
-        self.bank_seen = utility_admission_scrap;
+        self.state.bank_seen = utility_admission_scrap;
         // The clock must undercut the liveness gate's stall patience
         // (roughly two thousand ticks): desperation is the designed
         // answer to an economic freeze, so it has to fire before the
         // freeze detector calls the game dead between pushes.
-        self.desperate = obs.tick.saturating_sub(self.bank_grew_at) > 1_600;
-        if self.desperate {
-            self.desperate_march = Self::ground_reaches(obs, home_tile, mirror_site);
-            self.desperate_road = Self::ground_route_known(obs, home_tile, mirror_site);
+        self.state.desperate = obs.tick.saturating_sub(self.state.bank_grew_at) > 1_600;
+        if self.state.desperate {
+            self.state.desperate_march = Self::ground_reaches(obs, home_tile, mirror_site);
+            self.state.desperate_road = Self::ground_route_known(obs, home_tile, mirror_site);
         }
         self.audit_harvests(obs);
         self.audit_sites(obs);
@@ -2022,12 +2085,13 @@ impl UtilityPolicy {
         let scouting_admitted = dials.scouting
             && (harvesters >= immediate_harvester_target(dials) as usize
                 || contested_recon.is_some());
-        if scouting_admitted && self.reconnaissance.observed_at != Some(obs.tick) {
+        if scouting_admitted && self.state.reconnaissance.observed_at != Some(obs.tick) {
             // Exact scout ownership precedes every implicit utility claim.
             let mut unavailable = enlisted.to_vec();
             unavailable.extend_from_slice(reserved);
             unavailable.extend(
-                self.foundry_saving
+                self.state
+                    .foundry_saving
                     .as_ref()
                     .map(|saving| saving.plan.builder),
             );
@@ -2044,10 +2108,10 @@ impl UtilityPolicy {
                 },
                 &mut intents,
             );
-        } else if self.reconnaissance.observed_at != Some(obs.tick) {
+        } else if self.state.reconnaissance.observed_at != Some(obs.tick) {
             // Production still consumes this recomputable demand when the
             // roster is not yet large enough to dispatch the scouting channel.
-            self.contested_recon_air_scout_needed = false;
+            self.state.contested_recon_air_scout_needed = false;
             self.refresh_public_prior_air_scout_demand(
                 obs,
                 home_tile,
@@ -2231,7 +2295,7 @@ impl UtilityPolicy {
     /// already refuses it), and blacklisting it would poison the tile
     /// against every future deposit landing there.
     fn audit_harvests(&mut self, obs: &Observation) {
-        for (id, node, sent_from) in std::mem::take(&mut self.last_sent) {
+        for (id, node, sent_from) in std::mem::take(&mut self.state.last_sent) {
             // Collision separation can nudge a routeless worker one tile
             // from its send point, so exact equality misses a bounce.
             let bounced = obs
@@ -2243,9 +2307,9 @@ impl UtilityPolicy {
                 .iter()
                 .chain(obs.known_wrecks.iter())
                 .any(|(pos, amount)| *pos == node && *amount > 0);
-            if bounced && still_reports && !self.dead_nodes.contains(&node) {
-                self.dead_nodes.push(node);
-                if self.work_experience.enabled {
+            if bounced && still_reports && !self.state.dead_nodes.contains(&node) {
+                self.state.dead_nodes.push(node);
+                if self.state.work_experience.enabled {
                     self.record_failed_work(obs, id, node, None);
                 }
             }
@@ -2271,7 +2335,8 @@ impl UtilityPolicy {
             })
             .collect();
         let incident_matches_worker = |incident: TilePos| {
-            self.harvester_watch
+            self.state
+                .harvester_watch
                 .iter()
                 .filter_map(|previous| {
                     let current = current_harvesters
@@ -2297,33 +2362,37 @@ impl UtilityPolicy {
             .copied()
             .filter(|incident| incident_matches_worker(*incident))
             .collect();
-        self.harvester_watch = current_harvesters;
+        self.state.harvester_watch = current_harvesters;
 
         for incident in worker_incidents {
             if let Some(region) = self
+                .state
                 .contested_harvest_regions
                 .iter_mut()
                 .find(|region| region.center == incident)
             {
                 region.last_evidence = obs.tick;
                 region.sweep_started_at = None;
-                self.contested_harvest_clear_tiles
+                self.state
+                    .contested_harvest_clear_tiles
                     .retain(|(center, _)| *center != region.center);
             } else {
-                self.contested_harvest_regions.push(ContestedHarvestRegion {
-                    center: incident,
-                    last_evidence: obs.tick,
-                    sweep_started_at: None,
-                });
+                self.state
+                    .contested_harvest_regions
+                    .push(ContestedHarvestRegion {
+                        center: incident,
+                        last_evidence: obs.tick,
+                        sweep_started_at: None,
+                    });
             }
         }
 
-        let danger = (!self.contested_harvest_regions.is_empty())
+        let danger = (!self.state.contested_harvest_regions.is_empty())
             .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
-        self.contested_recon_blocked.clear();
+        self.state.contested_recon_blocked.clear();
         let mut cleared_regions = BTreeSet::new();
         let mut timed_out_regions = BTreeSet::new();
-        for region in &mut self.contested_harvest_regions {
+        for region in &mut self.state.contested_harvest_regions {
             let active_incident = obs.salvage_incidents.iter().any(|incident| {
                 incident.chebyshev(region.center) <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
             });
@@ -2334,8 +2403,9 @@ impl UtilityPolicy {
                 .contains_with_margin(region.center, crate::stats::HARVEST_INCIDENT_DANGER_RADIUS);
             if active_incident || currently_dangerous {
                 region.sweep_started_at = None;
-                self.contested_recon_blocked.insert(region.center);
-                self.contested_harvest_clear_tiles
+                self.state.contested_recon_blocked.insert(region.center);
+                self.state
+                    .contested_harvest_clear_tiles
                     .retain(|(center, _)| *center != region.center);
                 if currently_dangerous {
                     region.last_evidence = obs.tick;
@@ -2345,9 +2415,10 @@ impl UtilityPolicy {
                     obs.tick.saturating_sub(started) > CONTESTED_RECON_SWEEP_TICKS
                 }) {
                     region.sweep_started_at = None;
-                    self.contested_harvest_clear_tiles
+                    self.state
+                        .contested_harvest_clear_tiles
                         .retain(|(center, _)| *center != region.center);
-                    self.contested_recon_blocked.insert(region.center);
+                    self.state.contested_recon_blocked.insert(region.center);
                     timed_out_regions.insert(region.center);
                     continue;
                 }
@@ -2360,7 +2431,8 @@ impl UtilityPolicy {
                             .is_ok()
                     {
                         observed_any = true;
-                        self.contested_harvest_clear_tiles
+                        self.state
+                            .contested_harvest_clear_tiles
                             .insert((region.center, tile));
                     }
                 }
@@ -2368,7 +2440,8 @@ impl UtilityPolicy {
                     region.sweep_started_at.get_or_insert(obs.tick);
                 }
                 let complete = Self::contested_region_tiles(obs, region.center).all(|tile| {
-                    self.contested_harvest_clear_tiles
+                    self.state
+                        .contested_harvest_clear_tiles
                         .contains(&(region.center, tile))
                 });
                 if complete {
@@ -2377,51 +2450,59 @@ impl UtilityPolicy {
             }
         }
         if !timed_out_regions.is_empty() {
-            self.contested_recon_retry_at = self
+            self.state.contested_recon_retry_at = self
+                .state
                 .contested_recon_retry_at
                 .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
         }
-        if let Some((scout, region)) = self.contested_scout
-            && self.contested_recon_blocked.contains(&region)
+        if let Some((scout, region)) = self.state.contested_scout
+            && self.state.contested_recon_blocked.contains(&region)
         {
             self.recall_contested_scout(scout);
         }
-        self.contested_harvest_regions
+        self.state
+            .contested_harvest_regions
             .retain(|region| !cleared_regions.contains(&region.center));
-        while self.contested_harvest_regions.len() > crate::stats::HARVEST_INCIDENT_CAP {
+        while self.state.contested_harvest_regions.len() > crate::stats::HARVEST_INCIDENT_CAP {
             let (evict, evicted_center) = self
+                .state
                 .contested_harvest_regions
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, region)| (region.last_evidence, region.center.y, region.center.x))
                 .map(|(index, region)| (index, region.center))
                 .expect("an over-cap contested-region ledger is nonempty");
-            if let Some((scout, region)) = self.contested_scout
+            if let Some((scout, region)) = self.state.contested_scout
                 && region == evicted_center
             {
                 self.recall_contested_scout(scout);
             }
-            self.contested_harvest_regions.remove(evict);
+            self.state.contested_harvest_regions.remove(evict);
         }
-        self.contested_harvest_regions
+        self.state
+            .contested_harvest_regions
             .sort_by_key(|region| (region.center.y, region.center.x));
-        self.contested_harvest_clear_tiles.retain(|(center, _)| {
-            self.contested_harvest_regions
-                .binary_search_by_key(&(center.y, center.x), |region| {
-                    (region.center.y, region.center.x)
-                })
-                .is_ok()
-        });
-        if let Some((scout, region)) = self.contested_scout
+        self.state
+            .contested_harvest_clear_tiles
+            .retain(|(center, _)| {
+                self.state
+                    .contested_harvest_regions
+                    .binary_search_by_key(&(center.y, center.x), |region| {
+                        (region.center.y, region.center.x)
+                    })
+                    .is_ok()
+            });
+        if let Some((scout, region)) = self.state.contested_scout
             && !self
+                .state
                 .contested_harvest_regions
                 .iter()
                 .any(|candidate| candidate.center == region)
         {
-            self.contested_scout = None;
-            if self.scout == Some(scout) {
-                self.scout = None;
-                self.scout_dispatch = None;
+            self.state.contested_scout = None;
+            if self.state.scout == Some(scout) {
+                self.state.scout = None;
+                self.state.scout_dispatch = None;
             }
         }
     }
@@ -2440,7 +2521,7 @@ impl UtilityPolicy {
     }
 
     fn harvest_location_contested(&self, location: TilePos) -> bool {
-        Self::location_in_contested_regions(&self.contested_harvest_regions, location)
+        Self::location_in_contested_regions(&self.state.contested_harvest_regions, location)
     }
 
     fn repair_patient_unsafe(
@@ -2467,12 +2548,15 @@ impl UtilityPolicy {
     }
 
     fn contested_recon_target(&self, obs: &Observation, home: TilePos) -> Option<ContestedRecon> {
-        if obs.tick < self.contested_recon_retry_at || self.retreating_contested_scout.is_some() {
+        if obs.tick < self.state.contested_recon_retry_at
+            || self.state.retreating_contested_scout.is_some()
+        {
             return None;
         }
-        self.contested_harvest_regions
+        self.state
+            .contested_harvest_regions
             .iter()
-            .filter(|region| !self.contested_recon_blocked.contains(&region.center))
+            .filter(|region| !self.state.contested_recon_blocked.contains(&region.center))
             .map(|region| {
                 (
                     region.center.chebyshev(home),
@@ -2486,6 +2570,7 @@ impl UtilityPolicy {
                 let target = Self::contested_region_tiles(obs, region)
                     .filter(|tile| {
                         !self
+                            .state
                             .contested_harvest_clear_tiles
                             .contains(&(region, *tile))
                     })
@@ -2501,13 +2586,14 @@ impl UtilityPolicy {
         home: TilePos,
         intents: &mut Vec<Intent>,
     ) {
-        let Some(retreat) = self.retreating_contested_scout else {
+        let Some(retreat) = self.state.retreating_contested_scout else {
             return;
         };
         let scout = retreat.unit;
         let Some(unit) = obs.my_units.iter().find(|unit| unit.id == scout) else {
-            self.retreating_contested_scout = None;
-            self.contested_recon_retry_at = self
+            self.state.retreating_contested_scout = None;
+            self.state.contested_recon_retry_at = self
+                .state
                 .contested_recon_retry_at
                 .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
             if retreat.suspend_solo_air_on_loss {
@@ -2517,8 +2603,9 @@ impl UtilityPolicy {
         };
         let goal = self.passable_near(obs, home);
         if unit.tile.chebyshev(goal) <= 1 {
-            self.retreating_contested_scout = None;
-            self.contested_recon_retry_at = self
+            self.state.retreating_contested_scout = None;
+            self.state.contested_recon_retry_at = self
+                .state
                 .contested_recon_retry_at
                 .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
         } else if !retreat.order_dispatched || unit.idle {
@@ -2526,7 +2613,7 @@ impl UtilityPolicy {
                 units: vec![scout],
                 goal,
             });
-            self.retreating_contested_scout = Some(RetreatingContestedScout {
+            self.state.retreating_contested_scout = Some(RetreatingContestedScout {
                 unit: scout,
                 order_dispatched: true,
                 suspend_solo_air_on_loss: retreat.suspend_solo_air_on_loss,
@@ -2536,20 +2623,21 @@ impl UtilityPolicy {
 
     fn recall_contested_scout(&mut self, scout: UnitId) {
         if !self
+            .state
             .contested_scout
             .is_some_and(|(assigned, _)| assigned == scout)
         {
             return;
         }
-        self.contested_scout = None;
-        let suspend_solo_air_on_loss = self.scout_dispatch.is_some_and(|dispatch| {
+        self.state.contested_scout = None;
+        let suspend_solo_air_on_loss = self.state.scout_dispatch.is_some_and(|dispatch| {
             dispatch.unit == scout && matches!(dispatch.role, ScoutDispatchRole::SoloAir)
         });
-        if self.scout == Some(scout) {
-            self.scout = None;
-            self.scout_dispatch = None;
+        if self.state.scout == Some(scout) {
+            self.state.scout = None;
+            self.state.scout_dispatch = None;
         }
-        self.retreating_contested_scout = Some(RetreatingContestedScout {
+        self.state.retreating_contested_scout = Some(RetreatingContestedScout {
             unit: scout,
             order_dispatched: false,
             suspend_solo_air_on_loss,
@@ -2564,7 +2652,7 @@ impl UtilityPolicy {
         building_contacts: Option<&[BuildingContact]>,
         intents: &mut Vec<Intent>,
     ) {
-        let needs_danger = !self.evacuating_workers.is_empty()
+        let needs_danger = !self.state.evacuating_workers.is_empty()
             || obs
                 .my_units
                 .iter()
@@ -2573,12 +2661,12 @@ impl UtilityPolicy {
             return;
         }
         let danger = self.harvest_danger_projection(obs, unit_contacts, building_contacts);
-        let contested_regions = &self.contested_harvest_regions;
+        let contested_regions = &self.state.contested_harvest_regions;
         let endangered = |unit: &UnitObs| {
             Self::location_in_contested_regions(contested_regions, unit.tile)
                 || danger.contains(unit.tile)
         };
-        self.evacuating_workers.retain(|id| {
+        self.state.evacuating_workers.retain(|id| {
             obs.my_units.iter().any(|unit| {
                 unit.id == *id && unit.kind.stats().harvest.is_some() && endangered(unit)
             })
@@ -2589,7 +2677,7 @@ impl UtilityPolicy {
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some() && unit.tile.chebyshev(home) > 1 && endangered(unit)
         }) {
-            if (!self.evacuating_workers.contains(&unit.id) || unit.idle)
+            if (!self.state.evacuating_workers.contains(&unit.id) || unit.idle)
                 && let Some(goal) = self.worker_evacuation_goal(
                     obs,
                     unit,
@@ -2612,24 +2700,26 @@ impl UtilityPolicy {
                 } else {
                     evacuations.push((goal, vec![unit.id]));
                 }
-                if !self.evacuating_workers.contains(&unit.id) {
-                    self.evacuating_workers.push(unit.id);
+                if !self.state.evacuating_workers.contains(&unit.id) {
+                    self.state.evacuating_workers.push(unit.id);
                 }
             }
             if let Some((_, anchor)) = unit.founding {
-                self.pending_sites.retain(|pending| *pending != anchor);
+                self.state
+                    .pending_sites
+                    .retain(|pending| *pending != anchor);
             }
-            if self.scout == Some(unit.id) {
+            if self.state.scout == Some(unit.id) {
                 let public_prior_probe = self.active_public_ground_probe(obs, unit.id);
-                self.scout = None;
-                self.scout_dispatch = None;
+                self.state.scout = None;
+                self.state.scout_dispatch = None;
                 if public_prior_probe {
-                    self.persistent_air_scout_needed = true;
+                    self.state.persistent_air_scout_needed = true;
                 }
             }
         }
-        self.evacuating_workers.sort_unstable();
-        self.evacuating_workers.dedup();
+        self.state.evacuating_workers.sort_unstable();
+        self.state.evacuating_workers.dedup();
         evacuations.sort_unstable_by_key(|(goal, _)| (goal.y, goal.x));
         for (goal, mut workers) in evacuations {
             workers.sort_unstable();
@@ -2751,8 +2841,8 @@ impl UtilityPolicy {
         let Some(worker) = obs.my_units.iter().find(|worker| worker.id == unit) else {
             return;
         };
-        self.last_sent.retain(|(sent, _, _)| *sent != unit);
-        self.last_sent.push((unit, node, worker.tile));
+        self.state.last_sent.retain(|(sent, _, _)| *sent != unit);
+        self.state.last_sent.push((unit, node, worker.tile));
         self.record_harvest_episode(obs, unit, node);
     }
 
@@ -2760,7 +2850,9 @@ impl UtilityPolicy {
     /// later dispatched order. Commands are visited in output order, so a
     /// later Harvest can establish a fresh assignment after this reset.
     pub(super) fn record_dispatched_retask(&mut self, units: &[UnitId]) {
-        self.last_sent.retain(|(unit, _, _)| !units.contains(unit));
+        self.state
+            .last_sent
+            .retain(|(unit, _, _)| !units.contains(unit));
     }
 
     /// A site requested last think that never appeared was refused for a
@@ -2772,10 +2864,10 @@ impl UtilityPolicy {
     /// player-facing brain defers claims outside current sight, so a
     /// walking founder remains pending until the ground is actually reached.
     fn audit_sites(&mut self, obs: &Observation) {
-        if self.work_experience.enabled {
+        if self.state.work_experience.enabled {
             return;
         }
-        for anchor in std::mem::take(&mut self.pending_sites) {
+        for anchor in std::mem::take(&mut self.state.pending_sites) {
             let appeared = obs.my_buildings.iter().any(|b| b.anchor == anchor);
             if appeared {
                 continue;
@@ -2785,9 +2877,9 @@ impl UtilityPolicy {
                 .iter()
                 .any(|u| u.founding.is_some_and(|(_, a)| a == anchor));
             if walking {
-                self.pending_sites.push(anchor);
-            } else if !self.dead_anchors.contains(&anchor) {
-                self.dead_anchors.push(anchor);
+                self.state.pending_sites.push(anchor);
+            } else if !self.state.dead_anchors.contains(&anchor) {
+                self.state.dead_anchors.push(anchor);
             }
         }
     }
@@ -2808,9 +2900,9 @@ impl UtilityPolicy {
                 .my_buildings
                 .iter()
                 .any(|building| building.anchor == anchor)
-            && !self.pending_sites.contains(&anchor)
+            && !self.state.pending_sites.contains(&anchor)
         {
-            self.pending_sites.push(anchor);
+            self.state.pending_sites.push(anchor);
         }
     }
 }
@@ -2961,7 +3053,7 @@ mod tests {
         assert!(policy.has_honest_ground_objective(&dials, &obs, home, Some(&scrap_choke)));
 
         let mut cleared = policy;
-        cleared.cleared_hostile_starts.push(PlayerId(1));
+        cleared.state.cleared_hostile_starts.push(PlayerId(1));
         obs.enemy_buildings.push(BuildingObs {
             provisional: false,
             id: BuildingId(20),
@@ -3017,14 +3109,14 @@ mod tests {
         let obs = obs_with(vec![worker]);
         let prior = PublicScoutPrior::Extractor(frame);
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(1));
-        policy.scout_dispatch = Some(ScoutDispatch::public_ground(
+        policy.state.scout = Some(UnitId(1));
+        policy.state.scout_dispatch = Some(ScoutDispatch::public_ground(
             UnitId(1),
             home,
             frame.offset(-4, 0),
             prior,
         ));
-        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+        policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
             center: incident,
             last_evidence: obs.tick,
             sweep_started_at: None,
@@ -3033,10 +3125,10 @@ mod tests {
 
         policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);
 
-        assert_eq!(policy.scout, None);
-        assert_eq!(policy.scout_dispatch, None);
+        assert_eq!(policy.state.scout, None);
+        assert_eq!(policy.state.scout_dispatch, None);
         assert!(
-            !policy.persistent_air_scout_needed,
+            !policy.state.persistent_air_scout_needed,
             "evacuation runs before scouting retirement and must inspect the exact completed assignment"
         );
         assert!(intents.iter().any(|intent| matches!(
@@ -3100,7 +3192,7 @@ mod tests {
         );
 
         let mut contested_policy = UtilityPolicy::new();
-        contested_policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+        contested_policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
             center: frame,
             last_evidence: obs.tick,
             sweep_started_at: None,
@@ -3314,8 +3406,15 @@ mod tests {
             building: BuildingId(11),
             kind: UnitKind::Lancer,
         };
-        let context = StrategicUtilityContext::new(&[], &[], &[], &map, vec![accepted.clone()])
-            .with_prior_scrap_commitment(UnitKind::Lancer.stats().cost);
+        let context = StrategicUtilityContext::new(
+            &[],
+            &[],
+            &[],
+            &map,
+            vec![accepted.clone()],
+            Default::default(),
+        )
+        .with_prior_scrap_commitment(UnitKind::Lancer.stats().cost);
 
         let intents = UtilityPolicy::new().think_with_intelligence(&dials, &obs, &[], &[], context);
         let combat_orders: Vec<_> = intents
@@ -3343,26 +3442,28 @@ mod tests {
         let map = public_map(&obs);
         let dials = Dials::full();
         let mut policy = UtilityPolicy::new();
-        let first = StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
-            .with_prior_scrap_commitment(50);
+        let first =
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new(), Default::default())
+                .with_prior_scrap_commitment(50);
         policy.think_with_intelligence(&dials, &obs, &[], &[], first);
-        assert_eq!(policy.bank_seen, 50);
+        assert_eq!(policy.state.bank_seen, 50);
 
         obs.tick = 1_608;
         obs.scrap = 150;
-        let second = StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
-            .with_prior_scrap_commitment(100);
+        let second =
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new(), Default::default())
+                .with_prior_scrap_commitment(100);
         policy.think_with_intelligence(&dials, &obs, &[], &[], second);
 
-        assert_eq!(policy.bank_seen, 50);
+        assert_eq!(policy.state.bank_seen, 50);
         assert!(
-            policy.desperate,
+            policy.state.desperate,
             "growth already owned by strategy must not reset utility's starvation clock"
         );
 
         let mut uncommitted = UtilityPolicy::new();
         uncommitted.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
-        assert_eq!(uncommitted.bank_seen, obs.scrap);
+        assert_eq!(uncommitted.state.bank_seen, obs.scrap);
     }
 
     #[test]
@@ -3444,7 +3545,7 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, funded_prelude),
+            StrategicUtilityContext::new(&[], &[], &[], &map, funded_prelude, Default::default()),
         );
         assert!(available.iter().any(|intent| matches!(
             intent,
@@ -3462,8 +3563,15 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, vec![accepted.clone()])
-                .with_prior_scrap_commitment(foundry_cost),
+            StrategicUtilityContext::new(
+                &[],
+                &[],
+                &[],
+                &map,
+                vec![accepted.clone()],
+                Default::default(),
+            )
+            .with_prior_scrap_commitment(foundry_cost),
         );
         assert!(
             held.iter()
@@ -3539,7 +3647,7 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, prelude)
+            StrategicUtilityContext::new(&[], &[], &[], &map, prelude, Default::default())
                 .with_prior_scrap_commitment(cost),
         );
 
@@ -3595,7 +3703,7 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new()),
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new(), Default::default()),
         );
         assert!(
             raw.iter()
@@ -3607,7 +3715,7 @@ mod tests {
             &obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new())
+            StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new(), Default::default())
                 .with_prior_scrap_commitment(1),
         );
         assert!(held.contains(&Intent::Salvage {
@@ -3665,7 +3773,7 @@ mod tests {
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
         let scout = crate::stats::Role::Scout.unit_for(obs.faction);
         let mut policy = UtilityPolicy::new();
-        policy.persistent_air_scout_needed = true;
+        policy.state.persistent_air_scout_needed = true;
 
         let intents = policy.think_player_facing(&dials, &obs, &[], &[], &[], &map);
 
@@ -3909,7 +4017,14 @@ mod tests {
                 &obs,
                 std::slice::from_ref(&army),
                 &army.members,
-                StrategicUtilityContext::new(&[], &[], &[], &public_map(&obs), Vec::new()),
+                StrategicUtilityContext::new(
+                    &[],
+                    &[],
+                    &[],
+                    &public_map(&obs),
+                    Vec::new(),
+                    Default::default(),
+                ),
             );
 
             assert!(urgent.iter().any(|intent| matches!(
@@ -3931,16 +4046,16 @@ mod tests {
                 )),
                 "{difficulty:?} admitted voluntary macro between shared boundaries: {urgent:?}"
             );
-            assert_eq!(policy.bank_seen, 0);
-            assert_eq!(policy.bank_grew_at, 0);
-            assert!(!policy.desperate);
-            assert!(policy.last_sent.is_empty());
-            assert!(policy.pending_sites.is_empty());
-            assert!(policy.dead_anchors.is_empty());
-            assert_eq!(policy.scout, None);
-            assert_eq!(policy.scout_leg, 0);
-            assert_eq!(policy.scout_sent_at, 0);
-            assert_eq!(policy.scouted_at, 0);
+            assert_eq!(policy.state.bank_seen, 0);
+            assert_eq!(policy.state.bank_grew_at, 0);
+            assert!(!policy.state.desperate);
+            assert!(policy.state.last_sent.is_empty());
+            assert!(policy.state.pending_sites.is_empty());
+            assert!(policy.state.dead_anchors.is_empty());
+            assert_eq!(policy.state.scout, None);
+            assert_eq!(policy.state.scout_leg, 0);
+            assert_eq!(policy.state.scout_sent_at, 0);
+            assert_eq!(policy.state.scouted_at, 0);
 
             obs.tick = super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
             let admitted = policy.think_with_intelligence(
@@ -3948,7 +4063,14 @@ mod tests {
                 &obs,
                 std::slice::from_ref(&army),
                 &army.members,
-                StrategicUtilityContext::new(&[], &[], &[], &public_map(&obs), Vec::new()),
+                StrategicUtilityContext::new(
+                    &[],
+                    &[],
+                    &[],
+                    &public_map(&obs),
+                    Vec::new(),
+                    Default::default(),
+                ),
             );
             assert!(
                 admitted.iter().any(|intent| matches!(
@@ -4414,7 +4536,7 @@ mod tests {
         obs.salvage_incidents = vec![center];
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert_eq!(
-            policy.contested_harvest_regions,
+            policy.state.contested_harvest_regions,
             vec![ContestedHarvestRegion {
                 center,
                 last_evidence: 100,
@@ -4451,7 +4573,7 @@ mod tests {
             looks += 1;
         }
         assert!(
-            policy.contested_harvest_regions.is_empty(),
+            policy.state.contested_harvest_regions.is_empty(),
             "one recent clean sweep should reopen the region without a second cooldown"
         );
         assert!(looks > 1, "partial sight must not clear the region");
@@ -4539,7 +4661,7 @@ mod tests {
         );
 
         let mut policy = UtilityPolicy::new();
-        policy.contested_harvest_regions = vec![ContestedHarvestRegion {
+        policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
             center,
             last_evidence: 0,
             sweep_started_at: None,
@@ -4592,7 +4714,7 @@ mod tests {
             "the moving Kestrel must establish simultaneous current sight across the whole square"
         );
         assert!(
-            policy.contested_harvest_regions.is_empty(),
+            policy.state.contested_harvest_regions.is_empty(),
             "complete current sight must clear the persistent quarantine"
         );
         assert!(
@@ -4629,18 +4751,18 @@ mod tests {
         let recon = policy
             .contested_recon_target(&obs, home)
             .expect("the quiet region needs a recovery look");
-        policy.scout = Some(UnitId(2));
-        policy.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(2), home, recon.target));
-        policy.contested_scout = Some((UnitId(2), center));
+        policy.state.scout = Some(UnitId(2));
+        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(2), home, recon.target));
+        policy.state.contested_scout = Some((UnitId(2), center));
 
         obs.enemy_units
             .push(fighter(90, PlayerId(1), center.offset(2, 0)));
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
-        assert_eq!(policy.scout, None);
+        assert_eq!(policy.state.scout, None);
         assert_eq!(
-            policy.retreating_contested_scout,
+            policy.state.retreating_contested_scout,
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: false,
@@ -4649,7 +4771,7 @@ mod tests {
         );
         assert_eq!(policy.contested_recon_target(&obs, home), None);
         assert_eq!(
-            policy.contested_recon_retry_at, 0,
+            policy.state.contested_recon_retry_at, 0,
             "the regional retry cooldown starts on safe return, not recall"
         );
         let mut intents = Vec::new();
@@ -4676,7 +4798,7 @@ mod tests {
             "an idle scout still in the field must retry its retreat after any wall-clock delay"
         );
         assert_eq!(
-            policy.retreating_contested_scout,
+            policy.state.retreating_contested_scout,
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: true,
@@ -4690,9 +4812,9 @@ mod tests {
         intents.clear();
         policy.retreat_contested_scout(&obs, home, &mut intents);
         assert!(intents.is_empty());
-        assert_eq!(policy.retreating_contested_scout, None);
+        assert_eq!(policy.state.retreating_contested_scout, None);
         let retry_at = obs.tick + CONTESTED_RECON_RETRY_TICKS;
-        assert_eq!(policy.contested_recon_retry_at, retry_at);
+        assert_eq!(policy.state.contested_recon_retry_at, retry_at);
 
         obs.enemy_units.clear();
         obs.tick = retry_at - 1;
@@ -4716,14 +4838,14 @@ mod tests {
         let mut obs = obs_with(vec![scout]);
         obs.tick = 100;
         let mut policy = UtilityPolicy::new();
-        policy.scout = Some(UnitId(2));
-        policy.scout_dispatch = Some(ScoutDispatch::solo_air(UnitId(2), home, region));
-        policy.contested_scout = Some((UnitId(2), region));
+        policy.state.scout = Some(UnitId(2));
+        policy.state.scout_dispatch = Some(ScoutDispatch::solo_air(UnitId(2), home, region));
+        policy.state.contested_scout = Some((UnitId(2), region));
 
         policy.recall_contested_scout(UnitId(2));
 
         assert_eq!(
-            policy.retreating_contested_scout,
+            policy.state.retreating_contested_scout,
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: false,
@@ -4736,10 +4858,10 @@ mod tests {
         policy.retreat_contested_scout(&obs, home, &mut intents);
 
         assert!(intents.is_empty());
-        assert_eq!(policy.retreating_contested_scout, None);
-        assert!(policy.solo_air_scout_suspended);
+        assert_eq!(policy.state.retreating_contested_scout, None);
+        assert!(policy.state.solo_air_scout_suspended);
         assert_eq!(
-            policy.solo_air_scout_retry_at,
+            policy.state.solo_air_scout_retry_at,
             obs.tick + SOLO_SCOUT_RETRY_TICKS
         );
     }
@@ -4768,7 +4890,7 @@ mod tests {
         obs.salvage_incidents.clear();
         set_visible(&mut obs, center, true);
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        let sweep_started = policy.contested_harvest_regions[0]
+        let sweep_started = policy.state.contested_harvest_regions[0]
             .sweep_started_at
             .expect("the center sight starts a bounded sweep");
         let recon = policy
@@ -4803,10 +4925,10 @@ mod tests {
 
         obs.tick = sweep_started + CONTESTED_RECON_SWEEP_TICKS + 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.scout, None);
-        assert_eq!(policy.contested_scout, None);
+        assert_eq!(policy.state.scout, None);
+        assert_eq!(policy.state.contested_scout, None);
         assert_eq!(
-            policy.retreating_contested_scout,
+            policy.state.retreating_contested_scout,
             Some(RetreatingContestedScout {
                 unit: UnitId(2),
                 order_dispatched: false,
@@ -4836,7 +4958,7 @@ mod tests {
             }],
             "an idle remote scout retries the retreat instead of becoming eligible for other work"
         );
-        assert!(policy.retreating_contested_scout.is_some());
+        assert!(policy.state.retreating_contested_scout.is_some());
 
         obs.my_units[1].tile = home.offset(1, 0);
         obs.tick += 1;
@@ -4846,9 +4968,9 @@ mod tests {
             retreat.is_empty(),
             "arrival inside the home area completes the existing retreat"
         );
-        assert_eq!(policy.retreating_contested_scout, None);
+        assert_eq!(policy.state.retreating_contested_scout, None);
         assert_eq!(
-            policy.contested_recon_retry_at,
+            policy.state.contested_recon_retry_at,
             obs.tick + CONTESTED_RECON_RETRY_TICKS,
             "the bounded retry delay begins only after the scout is safe"
         );
@@ -4896,7 +5018,7 @@ mod tests {
                 &[],
                 &public_map(&observation),
             );
-            assert_eq!(policy.contested_harvest_regions.len(), 2);
+            assert_eq!(policy.state.contested_harvest_regions.len(), 2);
 
             observation.tick = 200;
             observation.my_units[0].hp -= 1;
@@ -4909,7 +5031,7 @@ mod tests {
                 &[],
                 &public_map(&observation),
             );
-            snapshots.push(policy.contested_harvest_regions.clone());
+            snapshots.push(policy.state.contested_harvest_regions.clone());
         }
 
         let expected = vec![
@@ -4961,7 +5083,7 @@ mod tests {
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
         assert_eq!(
-            policy.contested_harvest_regions,
+            policy.state.contested_harvest_regions,
             vec![
                 ContestedHarvestRegion {
                     center: first,
@@ -4996,6 +5118,7 @@ mod tests {
 
         assert_eq!(
             policy
+                .state
                 .contested_harvest_regions
                 .iter()
                 .map(|region| region.center)
@@ -5013,7 +5136,7 @@ mod tests {
         obs.tick += 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
-        assert!(policy.contested_harvest_regions.is_empty());
+        assert!(policy.state.contested_harvest_regions.is_empty());
         assert!(!policy.harvest_location_contested(second));
         assert!(!policy.harvest_location_contested(second_edge));
     }
@@ -5041,7 +5164,7 @@ mod tests {
         obs.tick += crate::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert!(
-            policy.contested_harvest_regions.is_empty(),
+            policy.state.contested_harvest_regions.is_empty(),
             "off-map cells around a corner incident must not become impossible evidence"
         );
     }
@@ -5052,7 +5175,7 @@ mod tests {
         let tied_first = TilePos::new(8, 3);
         let tied_second = TilePos::new(12, 3);
         let mut policy = UtilityPolicy::new();
-        policy.contested_harvest_regions = vec![
+        policy.state.contested_harvest_regions = vec![
             ContestedHarvestRegion {
                 center: strictly_oldest,
                 last_evidence: 4,
@@ -5069,17 +5192,15 @@ mod tests {
                 sweep_started_at: None,
             },
         ];
-        policy
-            .contested_harvest_regions
-            .extend((0..crate::stats::HARVEST_INCIDENT_CAP - 1).map(|index| {
-                ContestedHarvestRegion {
-                    center: TilePos::new(100 + i32::try_from(index).unwrap() * 10, 20),
-                    last_evidence: 6,
-                    sweep_started_at: None,
-                }
-            }));
+        policy.state.contested_harvest_regions.extend(
+            (0..crate::stats::HARVEST_INCIDENT_CAP - 1).map(|index| ContestedHarvestRegion {
+                center: TilePos::new(100 + i32::try_from(index).unwrap() * 10, 20),
+                last_evidence: 6,
+                sweep_started_at: None,
+            }),
+        );
         assert_eq!(
-            policy.contested_harvest_regions.len(),
+            policy.state.contested_harvest_regions.len(),
             crate::stats::HARVEST_INCIDENT_CAP + 2
         );
 
@@ -5092,16 +5213,17 @@ mod tests {
         obs.visible = vec![false; 1_024 * 64];
         obs.explored = vec![true; 1_024 * 64];
         obs.tick = 100;
-        policy.scout = Some(UnitId(50));
-        policy.scout_dispatch = Some(ScoutDispatch::ordinary(
+        policy.state.scout = Some(UnitId(50));
+        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(
             UnitId(50),
             TilePos::new(3, 3),
             strictly_oldest,
         ));
-        policy.contested_scout = Some((UnitId(50), strictly_oldest));
+        policy.state.contested_scout = Some((UnitId(50), strictly_oldest));
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
         let centers: Vec<_> = policy
+            .state
             .contested_harvest_regions
             .iter()
             .map(|region| region.center)
@@ -5114,7 +5236,7 @@ mod tests {
         );
         assert!(centers.contains(&tied_second));
         assert_eq!(
-            policy.retreating_contested_scout,
+            policy.state.retreating_contested_scout,
             Some(RetreatingContestedScout {
                 unit: UnitId(50),
                 order_dispatched: false,
@@ -5135,12 +5257,25 @@ mod tests {
         let buildings = Vec::new();
         let observation = obs_with(Vec::new());
         let public_map = public_map(&observation);
-        let inactive =
-            StrategicUtilityContext::new(&[], &units, &buildings, &public_map, Vec::new());
+        let inactive = StrategicUtilityContext::new(
+            &[],
+            &units,
+            &buildings,
+            &public_map,
+            Vec::new(),
+            Default::default(),
+        );
         assert_eq!(inactive.outstanding_air_production_ticks, None);
 
-        let active = StrategicUtilityContext::new(&[], &units, &buildings, &public_map, Vec::new())
-            .with_outstanding_air_production_ticks(4_801);
+        let active = StrategicUtilityContext::new(
+            &[],
+            &units,
+            &buildings,
+            &public_map,
+            Vec::new(),
+            Default::default(),
+        )
+        .with_outstanding_air_production_ticks(4_801);
         assert_eq!(active.outstanding_air_production_ticks, Some(4_801));
     }
 
@@ -5201,6 +5336,7 @@ mod tests {
         }];
         let quote = policy
             .economic_quotes(EconomicInvestmentContext {
+                evidence: Default::default(),
                 obligations: &[],
                 obs: &obs,
                 resources: &resources,
@@ -5232,8 +5368,15 @@ mod tests {
         let cost = quote.cost;
         policy.commit_economic_investment(quote, cost, &mut prelude);
         let claimed = [UnitId(1)];
-        let context = StrategicUtilityContext::new(&claimed, &[], &[], &public_map, prelude)
-            .with_outstanding_air_production_ticks(30_000);
+        let context = StrategicUtilityContext::new(
+            &claimed,
+            &[],
+            &[],
+            &public_map,
+            prelude,
+            Default::default(),
+        )
+        .with_outstanding_air_production_ticks(30_000);
         let mut intents = policy.think_with_intelligence(&dials, &obs, &[], &[], context);
         policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
 
@@ -5315,6 +5458,7 @@ mod tests {
                     &[],
                     &public_map_with_home_and_frames(&obs, home, &[frame]),
                     Vec::new(),
+                    Default::default(),
                 ),
             );
             assert_eq!(obs.my_units[0].founding, founding);
@@ -5435,6 +5579,7 @@ mod tests {
                 &[],
                 &public_map_with_home_and_frames(&obs, home, &[frame]),
                 Vec::new(),
+                Default::default(),
             ),
         );
         policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
@@ -5476,30 +5621,30 @@ mod tests {
         let anchor = TilePos::new(9, 4);
 
         let mut policy = UtilityPolicy::new();
-        policy.pending_sites.push(anchor);
+        policy.state.pending_sites.push(anchor);
         let walking = obs_with(vec![harvester(0, Some((BuildingKind::Turret, anchor)))]);
         policy.audit_sites(&walking);
         assert!(
-            policy.dead_anchors.is_empty(),
+            policy.state.dead_anchors.is_empty(),
             "the audit blacklisted an anchor whose founder is still walking"
         );
         assert_eq!(
-            policy.pending_sites,
+            policy.state.pending_sites,
             vec![anchor],
             "a walking claim's anchor must stay pending for a later audit"
         );
 
         let mut policy = UtilityPolicy::new();
-        policy.pending_sites.push(anchor);
+        policy.state.pending_sites.push(anchor);
         let refused = obs_with(vec![harvester(0, None)]);
         policy.audit_sites(&refused);
         assert_eq!(
-            policy.dead_anchors,
+            policy.state.dead_anchors,
             vec![anchor],
             "with no founder and no building, the anchor was refused and \
              must be blacklisted exactly as before"
         );
-        assert!(policy.pending_sites.is_empty());
+        assert!(policy.state.pending_sites.is_empty());
     }
 
     #[test]
@@ -5559,12 +5704,12 @@ mod tests {
         let claimed = TilePos::new(9, 4);
         let refused = TilePos::new(15, 8);
         let mut policy = UtilityPolicy::new();
-        policy.pending_sites.push(claimed);
-        policy.pending_sites.push(refused);
+        policy.state.pending_sites.push(claimed);
+        policy.state.pending_sites.push(refused);
         let obs = obs_with(vec![harvester(0, Some((BuildingKind::Turret, claimed)))]);
         policy.audit_sites(&obs);
-        assert_eq!(policy.pending_sites, vec![claimed]);
-        assert_eq!(policy.dead_anchors, vec![refused]);
+        assert_eq!(policy.state.pending_sites, vec![claimed]);
+        assert_eq!(policy.state.dead_anchors, vec![refused]);
     }
 
     #[test]
@@ -5875,8 +6020,14 @@ mod tests {
         dials.minimum_core_equivalents = 8;
         let map = public_map(&obs);
         let decide = |separate_core_exclusions| {
-            let context =
-                StrategicUtilityContext::new(&all_team_reservations, &[], &[], &map, Vec::new());
+            let context = StrategicUtilityContext::new(
+                &all_team_reservations,
+                &[],
+                &[],
+                &map,
+                Vec::new(),
+                Default::default(),
+            );
             let context = if separate_core_exclusions {
                 context.with_combat_core_exclusions(&outbound_relief)
             } else {
@@ -6115,6 +6266,8 @@ mod tests {
             &dials,
             &first_obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -6164,6 +6317,8 @@ mod tests {
             &dials,
             &persistent_obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -6202,6 +6357,8 @@ mod tests {
             &dials,
             &stopped_obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,

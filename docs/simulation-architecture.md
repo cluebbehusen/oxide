@@ -858,6 +858,41 @@ follows reconnaissance and support observation. Restoration retains observed
 outcome journals, unfinished planning, and maintenance commands from that
 observation phase. It does not provide rollback after a panic.
 
+`UtilityPolicy` separates three controller-owned lifetimes. `PolicyState` holds
+decision-relevant memory and commitments, including work history observed before
+allocation and dispatch records written during commitment. A `PolicyCheckpoint`
+captures only that state and restores it at the existing rejection boundary.
+`PlanningWork` owns deterministic allowances, unfinished jobs, and refinement
+cursors; rejection neither refunds work nor discards progress. `PolicyQueries`
+owns recomputable navigation, resource-access, egress, danger, harvest-service,
+and expansion answers. These caches survive rejection; producer-egress answers
+retain at most 256 planned layouts per base geometry, and the other services
+keep their existing bounds. Full-controller cloning still copies all three
+owners.
+
+Retained query answers are keyed by their effective inputs, independently of
+policy checkpoint identity. Resource access includes worker targets and eligible
+resource tiles, with current amounts repriced on retrieval. Path queries include
+the movement surface and hypothetical footprint. Egress includes retained
+foundations after same-decision cancellations. Danger, harvest service, and
+expansion fields distinguish their threat, terrain, drop-off, and source inputs.
+Warm answers after rejected speculation must equal cold answers for both
+restored and newly observed inputs; cache warmth cannot grant additional
+planning work.
+
+Brain lends immutable `DecisionEvidence` to allocation and residual utility from
+its current battlefield assessment and experience. Oriented Executive missions
+are scoped to residual execution; mission, unavailable-unit, enlisted-unit, and
+relief slices are borrowed through `GroundMissionInputs`. Independent utility
+calls explicitly omit mission ownership. No previous decision's stored input
+selects the next call's execution path.
+
+This ownership boundary leaves independent computations able to borrow shared
+evidence and use private scratch. Strategic mutation and planning admission
+still run in deterministic order. Existing parallel seat execution remains
+unchanged; sharing a planning allowance behind a lock would not make same-seat
+scheduling deterministic.
+
 The Foundry commitment component owns accepted identity, fixed funding premises,
 recovery, and dispatch acknowledgement. Allocation validates and funds its exact
 claims and emits construction only from current capital. Its residual handoff

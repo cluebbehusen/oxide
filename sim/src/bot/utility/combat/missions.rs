@@ -3,13 +3,18 @@ use crate::bot::executive::{ArmyId, ArmyMission, ArmyObjective, ArmyPurpose};
 use crate::bot::experience::{Doctrine, ExperienceKey};
 use crate::bot::query_work::QueryPurpose;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::bot) struct GroundMissionInputs {
-    pub(in crate::bot) missions: Vec<(ArmyId, ArmyMission)>,
-    pub(in crate::bot) unavailable: Vec<UnitId>,
-    pub(in crate::bot) enlisted: Vec<UnitId>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bot) struct GroundMissionInputs<'a> {
+    pub(in crate::bot) missions: &'a [(ArmyId, ArmyMission)],
+    pub(in crate::bot) unavailable: &'a [UnitId],
+    pub(in crate::bot) enlisted: &'a [UnitId],
     pub(in crate::bot) tuning: DifficultyTuning,
-    pub(in crate::bot) relief: Option<(BuildingId, Vec<UnitId>)>,
+    pub(in crate::bot) relief: Option<(BuildingId, &'a [UnitId])>,
+}
+
+pub(super) struct MissionContext<'a> {
+    pub(super) mode: PolicyMode<'a>,
+    pub(super) inputs: GroundMissionInputs<'a>,
 }
 
 impl UtilityPolicy {
@@ -76,15 +81,11 @@ impl UtilityPolicy {
         obs: &Observation,
         armies: &[Army],
         home: TilePos,
-        mode: PolicyMode<'_>,
+        context: MissionContext<'_>,
         intents: &mut Vec<Intent>,
     ) {
-        let inputs = self
-            .ground_inputs
-            .as_ref()
-            .expect("ground mission context")
-            .clone();
-        let assessment = self.battlefield.clone();
+        let MissionContext { mode, inputs } = context;
+        let assessment = mode.evidence.battlefield;
         let available_armies: Vec<_> = armies
             .iter()
             .map(|army| {
@@ -284,6 +285,7 @@ impl UtilityPolicy {
                 )
             });
             let external = self
+                .state
                 .support_deployments
                 .active
                 .iter()
@@ -435,7 +437,7 @@ impl UtilityPolicy {
             }
         }
         if strategic_admission_tick(obs.tick) && fresh < inputs.tuning.attention_slots {
-            let mut claimed = inputs.unavailable.clone();
+            let mut claimed = inputs.unavailable.to_vec();
             for intent in intents.iter() {
                 Self::claim_non_preemptible_intent_units(intent, &mut claimed);
             }
@@ -537,7 +539,7 @@ impl UtilityPolicy {
             .iter()
             .filter(|building| building.hp > 0)
             .collect();
-        let experience = self.experience.clone();
+        let experience = mode.evidence.experience;
         let objective_key = |building: &&BuildingObs, doctrine| {
             let context = ExperienceKey {
                 doctrine,
@@ -666,7 +668,7 @@ impl UtilityPolicy {
                     .saturating_mul(u64::from(dials.enemy_strength_scale))
                     / 10_000;
                 let floor = crate::bot::executive::full_ground_strength(UnitKind::Sentinel)
-                    * if self.desperate {
+                    * if self.state.desperate {
                         1
                     } else if objective.seen {
                         3
@@ -676,7 +678,7 @@ impl UtilityPolicy {
                 let strength = crate::bot::executive::marching_strength(&deploying, obs)
                     .saturating_mul(u64::from(dials.own_strength_scale))
                     / 10_000;
-                let margin = if self.desperate {
+                let margin = if self.state.desperate {
                     4
                 } else {
                     8 - (obs.tick / 4000).min(4)
@@ -751,7 +753,7 @@ impl UtilityPolicy {
             .army_size
             .max(minimum as u32)
             .max(count.saturating_add(2) as u32) as usize;
-        let mut claimed = inputs.unavailable.clone();
+        let mut claimed = inputs.unavailable.to_vec();
         for intent in intents.iter() {
             Self::claim_non_preemptible_intent_units(intent, &mut claimed);
         }

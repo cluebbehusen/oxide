@@ -40,8 +40,8 @@ impl UtilityPolicy {
         let has_eligible_worker = obs.my_units.iter().any(|unit| {
             unit.kind.stats().harvest.is_some()
                 && unit.idle
-                && Some(unit.id) != self.scout
-                && !self.evacuating_workers.contains(&unit.id)
+                && Some(unit.id) != self.state.scout
+                && !self.state.evacuating_workers.contains(&unit.id)
         });
         let danger = (has_eligible_worker)
             .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
@@ -55,8 +55,8 @@ impl UtilityPolicy {
         for u in obs.my_units.iter().filter(|u| {
             u.kind.stats().harvest.is_some()
                 && u.idle
-                && Some(u.id) != self.scout
-                && !self.evacuating_workers.contains(&u.id)
+                && Some(u.id) != self.state.scout
+                && !self.state.evacuating_workers.contains(&u.id)
         }) {
             if routes
                 .as_mut()
@@ -70,7 +70,7 @@ impl UtilityPolicy {
                 .chain(obs.known_wrecks.iter())
                 .filter(|(pos, amount)| {
                     *amount > 0
-                        && !self.dead_nodes.contains(pos)
+                        && !self.state.dead_nodes.contains(pos)
                         && (!Self::source_in_salvage_incident(obs, *pos)
                             && !self.harvest_location_contested(*pos)
                             && !danger
@@ -464,7 +464,7 @@ impl UtilityPolicy {
         let want_aa = if enemy_air > 0 {
             enemy_air.div_ceil(2) + 1
         } else {
-            usize::from(self.seen_air)
+            usize::from(self.state.seen_air)
         };
         if dials.aa_response
             && alive(aa_kind) + queued(aa_kind) < want_aa
@@ -564,10 +564,10 @@ impl UtilityPolicy {
         // Current public-map or contested work may require air, while a failed
         // ground look preserves the same demand durably. Keep exactly one
         // faction scout alive or queued once an Airworks can build it.
-        if self.reconnaissance.observed_at.is_none()
+        if self.state.reconnaissance.observed_at.is_none()
             && dials.scouting
             && self.air_scout_needed()
-            && !self.solo_air_scout_suspended
+            && !self.state.solo_air_scout_suspended
         {
             let scout_kind = crate::stats::Role::Scout.unit_for(obs.faction);
             let planned_scouts = intents
@@ -665,7 +665,7 @@ impl UtilityPolicy {
         obs: &Observation,
         home: TilePos,
     ) -> bool {
-        if self.desperate && self.desperate_road {
+        if self.state.desperate && self.state.desperate_road {
             return true;
         }
 
@@ -811,8 +811,8 @@ mod tests {
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some()
                 && unit.idle
-                && Some(unit.id) != policy.scout
-                && !policy.evacuating_workers.contains(&unit.id)
+                && Some(unit.id) != policy.state.scout
+                && !policy.state.evacuating_workers.contains(&unit.id)
         }) {
             if !UtilityPolicy::harvester_reaches_drop_off(obs, unit, &mut routes) {
                 continue;
@@ -823,7 +823,7 @@ mod tests {
                 .chain(obs.known_wrecks.iter())
                 .filter(|(position, amount)| {
                     *amount > 0
-                        && !policy.dead_nodes.contains(position)
+                        && !policy.state.dead_nodes.contains(position)
                         && !UtilityPolicy::source_in_salvage_incident(obs, *position)
                         && !policy.harvest_location_contested(*position)
                         && !UtilityPolicy::source_has_known_danger(
@@ -1309,8 +1309,8 @@ mod tests {
             "a ground army cannot prosecute an aircraft contact"
         );
 
-        policy.desperate = true;
-        policy.desperate_road = true;
+        policy.state.desperate = true;
+        policy.state.desperate_road = true;
         assert!(
             policy.ordinary_ground_has_work(&dials, &island, home),
             "a fully explored mirror road keeps a dark connected endgame live"
@@ -1436,7 +1436,7 @@ mod tests {
             },
         ];
         let mut policy = UtilityPolicy::new();
-        policy.persistent_air_scout_needed = true;
+        policy.state.persistent_air_scout_needed = true;
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
         let mut budget = obs.scrap;
@@ -1493,8 +1493,8 @@ mod tests {
         dials.adaptive_composition = true;
         let decide = |public_start_demand: bool, persistent_demand: bool, scrap: u32| {
             let mut policy = UtilityPolicy::new();
-            policy.public_prior_air_scout_needed = public_start_demand;
-            policy.persistent_air_scout_needed = persistent_demand;
+            policy.state.public_prior_air_scout_needed = public_start_demand;
+            policy.state.persistent_air_scout_needed = persistent_demand;
             let mut current = obs.clone();
             current.scrap = scrap;
             let mut budget = scrap;
@@ -1562,7 +1562,7 @@ mod tests {
             let mut obs = completed_tree();
             obs.scrap = scrap;
             let mut policy = UtilityPolicy::new();
-            policy.persistent_air_scout_needed = true;
+            policy.state.persistent_air_scout_needed = true;
             let mut budget = scrap;
             let mut intents = Vec::new();
             policy.production_with_air_demand(
@@ -1646,15 +1646,15 @@ mod tests {
             .find(|unit| unit.id == ground_scout)
             .expect("the fixture owns a ground scout")
             .tile;
-        policy.scout = Some(ground_scout);
-        policy.scout_dispatch = Some(ScoutDispatch::ordinary(
+        policy.state.scout = Some(ground_scout);
+        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(
             ground_scout,
             ground_start,
             enemy_base,
         ));
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.persistent_air_scout_needed);
-        assert!(!policy.solo_air_scout_suspended);
+        assert!(policy.state.persistent_air_scout_needed);
+        assert!(!policy.state.solo_air_scout_suspended);
         assert_eq!(
             produce(&mut policy, &obs),
             (
@@ -1678,7 +1678,7 @@ mod tests {
                 ..
             }]
         ));
-        assert!(policy.scout_dispatch.is_some());
+        assert!(policy.state.scout_dispatch.is_some());
 
         obs.enemy_units.push(UnitObs {
             id: UnitId(100),
@@ -1701,7 +1701,7 @@ mod tests {
         let mut after_loss = Vec::new();
         policy.scouting(&obs, home, None, &[], &mut after_loss);
         assert!(after_loss.is_empty());
-        assert!(policy.solo_air_scout_suspended);
+        assert!(policy.state.solo_air_scout_suspended);
         assert_eq!(
             produce(&mut policy, &obs),
             (scout_cost, Vec::new()),
@@ -1713,18 +1713,18 @@ mod tests {
         fresh_sight.enemy_units.clear();
         fresh_sight.tick += 1;
         fresh_sight_policy.scouting(&fresh_sight, home, None, &[], &mut Vec::new());
-        assert!(fresh_sight_policy.solo_air_scout_suspended);
+        assert!(fresh_sight_policy.state.solo_air_scout_suspended);
         fresh_sight.tick += 1;
         fresh_sight.enemy_buildings[0].seen = true;
         fresh_sight_policy.scouting(&fresh_sight, home, None, &[], &mut Vec::new());
         assert!(
-            !fresh_sight_policy.solo_air_scout_suspended,
+            !fresh_sight_policy.state.solo_air_scout_suspended,
             "a dark-to-current enemy-base sighting may rearm recon before the timed retry"
         );
 
         obs.tick += 10_000;
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.solo_air_scout_suspended);
+        assert!(policy.state.solo_air_scout_suspended);
         assert_eq!(
             produce(&mut policy, &obs),
             (scout_cost, Vec::new()),
@@ -1733,7 +1733,7 @@ mod tests {
 
         obs.enemy_units.clear();
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.solo_air_scout_suspended);
+        assert!(policy.state.solo_air_scout_suspended);
         let enemy_scout = crate::stats::Role::Scout.unit_for(Faction::Cupric);
         obs.enemy_units.push(UnitObs {
             id: UnitId(101),
@@ -1753,7 +1753,7 @@ mod tests {
         });
         obs.tick += SOLO_SCOUT_QUIET_TICKS - 1;
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.solo_air_scout_suspended);
+        assert!(policy.state.solo_air_scout_suspended);
         assert_eq!(
             produce(&mut policy, &obs),
             (scout_cost, Vec::new()),
@@ -1762,7 +1762,7 @@ mod tests {
 
         obs.tick += 1;
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(!policy.solo_air_scout_suspended);
+        assert!(!policy.state.solo_air_scout_suspended);
         assert_eq!(
             produce(&mut policy, &obs),
             (
@@ -1895,6 +1895,7 @@ mod tests {
         .resolve_profile();
         let mut policy = UtilityPolicy::new();
         let quote = policy.economic_quotes(EconomicInvestmentContext {
+            evidence: Default::default(),
             obligations: &[],
             obs: &obs, resources: &resources, profile: &profile, briefing: &public_map,
             orientation: crate::bot::orient::Orientation::for_home(&obs, home),
@@ -2030,7 +2031,7 @@ mod tests {
             )),
             "residual policy cannot dispatch a fresh adjudicated Foundry"
         );
-        assert!(adjudicated_policy.foundry_saving.is_none());
+        assert!(adjudicated_policy.state.foundry_saving.is_none());
         let mut no_expansion_dials = dials.clone();
         no_expansion_dials.expansion = false;
         let mut no_expansion_policy = UtilityPolicy::new();
@@ -2654,12 +2655,19 @@ mod tests {
         intents.extend(outcome.fresh_economy_intents);
         intents.extend(outcome.fresh_defense_intents);
         intents.extend(outcome.allocated_producer_intents);
-        let context = StrategicUtilityContext::new(&outcome.planner_claims, &[], &[], map, intents)
-            .with_combat_core_exclusions(&outcome.strategic_core_exclusions)
-            .with_prior_scrap_commitment(obs.scrap.saturating_sub(outcome.budget.utility_spendable))
-            .with_foundry_handoff(outcome.foundry_handoff)
-            .with_voluntary_scrap_guard(outcome.budget.voluntary_scrap_guard)
-            .with_producer_lane_reservations(&outcome.producer_lane_reservations);
+        let context = StrategicUtilityContext::new(
+            &outcome.planner_claims,
+            &[],
+            &[],
+            map,
+            intents,
+            Default::default(),
+        )
+        .with_combat_core_exclusions(&outcome.strategic_core_exclusions)
+        .with_prior_scrap_commitment(obs.scrap.saturating_sub(outcome.budget.utility_spendable))
+        .with_foundry_handoff(outcome.foundry_handoff)
+        .with_voluntary_scrap_guard(outcome.budget.voluntary_scrap_guard)
+        .with_producer_lane_reservations(&outcome.producer_lane_reservations);
         policy.think_with_intelligence(dials, obs, &[], enlisted, context)
     }
 
@@ -2719,10 +2727,18 @@ mod tests {
             &fixture.obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, intents)
-                .with_foundry_handoff(policy.foundry_handoff()),
+            StrategicUtilityContext::new(
+                &[],
+                &[],
+                &[],
+                &fixture.public_map,
+                intents,
+                Default::default(),
+            )
+            .with_foundry_handoff(policy.foundry_handoff()),
         );
         let saving = policy
+            .state
             .foundry_saving
             .clone()
             .expect("the accepted partial fund freezes one exact expansion");
@@ -2839,7 +2855,7 @@ mod tests {
             saving.required_scrap,
             "unrelated construction must not release the exact expansion"
         );
-        assert_eq!(control.foundry_saving.as_ref(), Some(&saving));
+        assert_eq!(control.state.foundry_saving.as_ref(), Some(&saving));
         assert!(control.foundry_builder_lease(&unrelated).is_some());
 
         let mut foundry_appeared = fixture.obs.clone();
@@ -2895,7 +2911,7 @@ mod tests {
         builder_acquired_queue.my_queued_units = vec![saving.plan.builder];
 
         let mut blacklisted = policy.clone();
-        blacklisted.dead_anchors.push(saving.plan.anchor);
+        blacklisted.state.dead_anchors.push(saving.plan.anchor);
 
         for (reason, mut candidate, observation) in [
             (
@@ -2944,7 +2960,7 @@ mod tests {
                 0,
                 "{reason}"
             );
-            assert!(candidate.foundry_saving.is_none(), "{reason}");
+            assert!(candidate.state.foundry_saving.is_none(), "{reason}");
             assert!(
                 candidate.foundry_builder_lease(&observation).is_none(),
                 "{reason}"
@@ -2956,7 +2972,7 @@ mod tests {
     fn conflicting_saved_foundry_ownership_freezes_allocation_without_partial_dispatch() {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let before = policy.foundry_saving.clone();
+        let before = policy.state.foundry_saving.clone();
         let outcome = crate::bot::allocation::test_allocate_policy(
             &mut policy,
             &fixture.dials,
@@ -2968,7 +2984,7 @@ mod tests {
         assert!(outcome.fresh_foundry_intents.is_empty());
         assert!(outcome.allocated_producer_intents.is_empty());
         assert_eq!(outcome.budget.utility_spendable, 0);
-        assert_eq!(policy.foundry_saving, before);
+        assert_eq!(policy.state.foundry_saving, before);
     }
 
     #[test]
@@ -3002,7 +3018,11 @@ mod tests {
         assert!(outcome.allocation_ok);
         assert!(outcome.fresh_foundry_intents.is_empty());
         assert_eq!(
-            policy.foundry_saving.as_ref().map(|saved| &saved.plan),
+            policy
+                .state
+                .foundry_saving
+                .as_ref()
+                .map(|saved| &saved.plan),
             Some(&saving.plan)
         );
         assert_eq!(
@@ -3021,7 +3041,7 @@ mod tests {
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut scout_due = fixture.obs.clone();
         scout_due.tick = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
-        let original_dispatch = policy.scout_dispatch;
+        let original_dispatch = policy.state.scout_dispatch;
         let original_anchor = saving.plan.anchor;
         let original_builder = saving.plan.builder;
         let dials = &mut fixture.dials;
@@ -3037,10 +3057,17 @@ mod tests {
             &scout_due,
             &[],
             &unavailable_scouts,
-            StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, Vec::new())
-                .with_foundry_handoff(policy.foundry_handoff()),
+            StrategicUtilityContext::new(
+                &[],
+                &[],
+                &[],
+                &fixture.public_map,
+                Vec::new(),
+                Default::default(),
+            )
+            .with_foundry_handoff(policy.foundry_handoff()),
         );
-        assert_ne!(policy.scout, Some(saving.plan.builder));
+        assert_ne!(policy.state.scout, Some(saving.plan.builder));
         assert!(
             scout_intents.iter().all(|intent| !matches!(
                 intent,
@@ -3048,9 +3075,10 @@ mod tests {
             )),
             "the scouting channel cannot dispatch the saved founder: {scout_intents:?}"
         );
-        assert_eq!(policy.scout_dispatch, original_dispatch);
+        assert_eq!(policy.state.scout_dispatch, original_dispatch);
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .map(|current| (current.plan.anchor, current.plan.builder)),
@@ -3074,7 +3102,7 @@ mod tests {
             &[],
         );
         assert!(
-            policy.foundry_saving.is_some(),
+            policy.state.foundry_saving.is_some(),
             "a funded commitment may clear only after its exact build lowers"
         );
         policy.bind_player_facing_builders(&funded, &[], &[], &[], &[], &mut funded_intents);
@@ -3112,7 +3140,7 @@ mod tests {
         });
         let (builders, anchor) = emitted.expect("the funded frozen plan lowers exactly once");
         policy.record_dispatched_foundry_build(&builders, BuildingKind::Foundry, anchor);
-        assert!(policy.foundry_saving.is_none());
+        assert!(policy.state.foundry_saving.is_none());
     }
 
     #[test]
@@ -3150,6 +3178,7 @@ mod tests {
         assert_eq!(intents, vec![exact]);
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|current| current.blocked_since),
@@ -3164,7 +3193,7 @@ mod tests {
         let mut funded = fixture.obs.clone();
         funded.tick = crate::bot::difficulty::next_strategic_admission_tick(funded.tick);
         funded.scrap = saving.required_scrap;
-        policy.foundry_saving.as_mut().unwrap().blocked_since = Some(fixture.obs.tick);
+        policy.state.foundry_saving.as_mut().unwrap().blocked_since = Some(fixture.obs.tick);
         let mut handoff = policy.foundry_handoff();
         handoff.current_scrap = funded.scrap;
         let mut budget = handoff.spending_after(funded.scrap);
@@ -3188,7 +3217,7 @@ mod tests {
             )
         );
         assert!(intents.is_empty());
-        assert_eq!(policy.foundry_saving.as_ref(), Some(&saving));
+        assert_eq!(policy.state.foundry_saving.as_ref(), Some(&saving));
         assert_eq!(budget, 0);
     }
 
@@ -3228,6 +3257,7 @@ mod tests {
             .commit_adjudicated_foundry(proposal, observation.tick, &mut intents)
             .expect("there is no prior expansion obligation");
         let accepted = policy
+            .state
             .foundry_saving
             .clone()
             .expect("forecast acceptance freezes the exact proposal");
@@ -3252,7 +3282,7 @@ mod tests {
 
         assert!(promised);
         assert!(intents.is_empty());
-        assert_eq!(policy.foundry_saving.as_ref(), Some(&accepted));
+        assert_eq!(policy.state.foundry_saving.as_ref(), Some(&accepted));
         assert_eq!(budget, 0);
     }
 
@@ -3344,6 +3374,7 @@ mod tests {
             .expect("there is no prior expansion obligation");
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .expect("the accepted quote is retained")
@@ -3373,6 +3404,7 @@ mod tests {
         advance(&mut policy, &shortly_after_acceptance);
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|saving| saving.blocked_since),
@@ -3392,6 +3424,7 @@ mod tests {
         advance(&mut intact_policy, &intact);
         assert_eq!(
             intact_policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|saving| saving.blocked_since),
@@ -3418,6 +3451,7 @@ mod tests {
         advance(&mut lost_policy, &lost_sources);
         assert_eq!(
             lost_policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|saving| saving.blocked_since),
@@ -3504,7 +3538,14 @@ mod tests {
             &fixture.obs,
             &[],
             &[],
-            StrategicUtilityContext::new(&[], &[], &[], &fixture.public_map, prelude),
+            StrategicUtilityContext::new(
+                &[],
+                &[],
+                &[],
+                &fixture.public_map,
+                prelude,
+                Default::default(),
+            ),
         );
 
         assert!(intents.iter().any(|intent| matches!(
@@ -3589,7 +3630,7 @@ mod tests {
                 &[],
             );
 
-            assert_eq!(policy.foundry_saving.as_ref(), Some(&saving));
+            assert_eq!(policy.state.foundry_saving.as_ref(), Some(&saving));
             assert!(!intents.iter().any(|intent| matches!(
                 intent,
                 Intent::BuildWith {
@@ -3632,6 +3673,7 @@ mod tests {
             } if *builder == saving.plan.builder && *anchor == saving.plan.anchor
         )));
         let retained = policy
+            .state
             .foundry_saving
             .as_ref()
             .expect("the exact plan remains leased until its command lowers");
@@ -3722,7 +3764,7 @@ mod tests {
                 ..
             }
         )));
-        assert_eq!(policy.foundry_saving, None);
+        assert_eq!(policy.state.foundry_saving, None);
         assert_eq!(policy.foundry_handoff(), FoundryHandoff::default());
     }
 
@@ -3759,6 +3801,7 @@ mod tests {
         );
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|current| current.blocked_since),
@@ -3774,7 +3817,7 @@ mod tests {
             &[],
         );
         assert!(
-            policy.foundry_saving.is_none(),
+            policy.state.foundry_saving.is_none(),
             "a continuously blocked exact plan must release its bank for replanning"
         );
     }
@@ -3812,6 +3855,7 @@ mod tests {
         );
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|current| current.blocked_since),
@@ -3828,6 +3872,7 @@ mod tests {
             &[],
         );
         let refreshed = policy
+            .state
             .foundry_saving
             .as_ref()
             .expect("a valid underfunded reassessment retains the exact plan");
@@ -3847,6 +3892,7 @@ mod tests {
         );
         assert_eq!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .and_then(|current| current.blocked_since),
@@ -3862,6 +3908,7 @@ mod tests {
             &[],
         );
         let retained = policy
+            .state
             .foundry_saving
             .as_ref()
             .expect("the recovered plan must outlive its original recovery deadline");
@@ -3877,7 +3924,7 @@ mod tests {
             &[],
         );
         assert!(
-            policy.foundry_saving.is_none(),
+            policy.state.foundry_saving.is_none(),
             "the second continuous blockage must expire at its own fresh deadline"
         );
     }
@@ -3899,7 +3946,7 @@ mod tests {
                 &fixture.public_map,
                 &[],
             );
-            let retained = policy.foundry_saving.as_ref().unwrap();
+            let retained = policy.state.foundry_saving.as_ref().unwrap();
             assert_eq!(retained.plan, saving.plan);
             assert_eq!(retained.blocked_since, Some(first));
             assert!(!intents.iter().any(|intent| matches!(intent, Intent::BuildWith { kind: BuildingKind::Foundry, anchor, .. } if *anchor == saving.plan.anchor)));
@@ -3914,6 +3961,7 @@ mod tests {
         );
         assert!(
             policy
+                .state
                 .foundry_saving
                 .as_ref()
                 .is_none_or(|current| current.accepted_at != saving.accepted_at)
@@ -3935,7 +3983,7 @@ mod tests {
             &[],
         );
         assert_eq!(
-            policy.foundry_saving.as_ref().unwrap().blocked_since,
+            policy.state.foundry_saving.as_ref().unwrap().blocked_since,
             Some(observation.tick)
         );
         observation.tick = crate::bot::difficulty::next_strategic_admission_tick(observation.tick);
@@ -3950,8 +3998,14 @@ mod tests {
             &fixture.public_map,
             &[],
         );
-        assert_eq!(policy.foundry_saving.as_ref().unwrap().plan, saving.plan);
-        assert_eq!(policy.foundry_saving.as_ref().unwrap().blocked_since, None);
+        assert_eq!(
+            policy.state.foundry_saving.as_ref().unwrap().plan,
+            saving.plan
+        );
+        assert_eq!(
+            policy.state.foundry_saving.as_ref().unwrap().blocked_since,
+            None
+        );
         assert_eq!(intents.iter().filter(|intent| matches!(intent, Intent::BuildWith { kind: BuildingKind::Foundry, builder, anchor } if *builder == saving.plan.builder && *anchor == saving.plan.anchor)).count(), 1);
     }
 
@@ -3977,7 +4031,7 @@ mod tests {
             commands.is_empty(),
             "the lease must refuse the wrong anchor"
         );
-        assert_eq!(policy.foundry_saving.as_ref(), Some(&saving));
+        assert_eq!(policy.state.foundry_saving.as_ref(), Some(&saving));
 
         policy.record_dispatched_foundry_build(
             &[saving.plan.builder],
@@ -3994,7 +4048,7 @@ mod tests {
             BuildingKind::Foundry,
             saving.plan.anchor,
         );
-        assert_eq!(policy.foundry_saving.as_ref(), Some(&saving));
+        assert_eq!(policy.state.foundry_saving.as_ref(), Some(&saving));
     }
 
     #[test]
@@ -4025,7 +4079,7 @@ mod tests {
         );
 
         assert!(
-            policy.foundry_saving.is_none(),
+            policy.state.foundry_saving.is_none(),
             "survival release must persist beyond the current ledger"
         );
         assert!(intents.iter().any(|intent| matches!(
@@ -4075,7 +4129,7 @@ mod tests {
         policy.economy(&obs, TilePos::new(1, 1), None, None, &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.last_sent.is_empty());
+        assert!(policy.state.last_sent.is_empty());
     }
 
     #[test]
@@ -4089,7 +4143,7 @@ mod tests {
         policy.economy(&obs, TilePos::new(1, 1), None, None, &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.last_sent.is_empty());
+        assert!(policy.state.last_sent.is_empty());
     }
 
     #[test]
@@ -4141,7 +4195,7 @@ mod tests {
         obs.salvage_incidents = vec![ordinary_loss];
         policy.refresh_contested_harvest_regions(&obs, None, None);
         assert!(
-            policy.contested_harvest_regions.is_empty(),
+            policy.state.contested_harvest_regions.is_empty(),
             "unchanged worker HP proves the anonymous loss was not a worker-route incident"
         );
 
@@ -4267,7 +4321,7 @@ mod tests {
         );
         assert!(policy.harvest_location_contested(source));
         assert_eq!(
-            policy.contested_harvest_regions,
+            policy.state.contested_harvest_regions,
             vec![ContestedHarvestRegion {
                 center: source,
                 last_evidence: obs.tick,
@@ -4330,7 +4384,7 @@ mod tests {
         obs.my_units[0].tile = source;
         policy.audit_harvests(&obs);
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert!(policy.last_sent.is_empty());
+        assert!(policy.state.last_sent.is_empty());
 
         obs.tick = 80;
         obs.known_scrap = vec![(safe_fallback, 100)];
@@ -4429,17 +4483,17 @@ mod tests {
         let mut policy = UtilityPolicy::new();
 
         policy.record_dispatched_harvest(&obs, UnitId(3), node);
-        assert_eq!(policy.last_sent.len(), 1);
+        assert_eq!(policy.state.last_sent.len(), 1);
 
         // A later queue-replacing Move/Scout owns the worker now. It must not
         // make the old source look like an immediate no-route bounce.
         policy.record_dispatched_retask(&[UnitId(3)]);
-        assert!(policy.last_sent.is_empty());
+        assert!(policy.state.last_sent.is_empty());
         obs.my_units.clear();
         obs.visible.fill(false);
         policy.audit_harvests(&obs);
 
-        assert!(policy.dead_nodes.is_empty());
+        assert!(policy.state.dead_nodes.is_empty());
     }
 
     #[test]
@@ -4450,11 +4504,11 @@ mod tests {
         let mut policy = UtilityPolicy::new();
 
         policy.record_dispatched_harvest(&obs, UnitId(99), node);
-        assert!(policy.last_sent.is_empty());
+        assert!(policy.state.last_sent.is_empty());
 
         obs.visible.fill(false);
         policy.audit_harvests(&obs);
-        assert!(policy.dead_nodes.is_empty());
+        assert!(policy.state.dead_nodes.is_empty());
     }
 
     #[test]
@@ -4733,9 +4787,9 @@ mod tests {
             ..obs.my_units[0].clone()
         });
         let mut policy = UtilityPolicy::new();
-        policy.pending_sites.push(pending);
-        policy.scout = Some(UnitId(3));
-        policy.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(3), incident, pending));
+        policy.state.pending_sites.push(pending);
+        policy.state.scout = Some(UnitId(3));
+        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(3), incident, pending));
         policy.refresh_contested_harvest_regions(&obs, None, None);
         obs.tick += 1;
         obs.my_units[0].hp -= 1;
@@ -4758,8 +4812,8 @@ mod tests {
             ],
             "each worker must leave by its nearest safe edge instead of crossing deeper danger to group up"
         );
-        assert!(policy.pending_sites.is_empty());
-        assert_eq!(policy.scout, None);
+        assert!(policy.state.pending_sites.is_empty());
+        assert_eq!(policy.state.scout, None);
 
         intents.clear();
         policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);
@@ -4787,7 +4841,7 @@ mod tests {
             intents.is_empty(),
             "a worker accepted one tile short of a safe goal must leave the evacuation lifecycle"
         );
-        assert!(!policy.evacuating_workers.contains(&UnitId(3)));
+        assert!(!policy.state.evacuating_workers.contains(&UnitId(3)));
     }
 
     #[test]
@@ -4803,18 +4857,21 @@ mod tests {
         obs.known_rock.clear();
         obs.my_units[0].tile = worker_region;
         let policy = UtilityPolicy {
-            contested_harvest_regions: vec![
-                ContestedHarvestRegion {
-                    center: barrier,
-                    last_evidence: obs.tick,
-                    sweep_started_at: None,
-                },
-                ContestedHarvestRegion {
-                    center: worker_region,
-                    last_evidence: obs.tick,
-                    sweep_started_at: None,
-                },
-            ],
+            state: super::PolicyState {
+                contested_harvest_regions: vec![
+                    ContestedHarvestRegion {
+                        center: barrier,
+                        last_evidence: obs.tick,
+                        sweep_started_at: None,
+                    },
+                    ContestedHarvestRegion {
+                        center: worker_region,
+                        last_evidence: obs.tick,
+                        sweep_started_at: None,
+                    },
+                ],
+                ..super::PolicyState::default()
+            },
             ..UtilityPolicy::new()
         };
         let danger = policy.harvest_danger_projection(&obs, None, None);
@@ -4853,11 +4910,14 @@ mod tests {
         obs.known_rock.clear();
         obs.my_units[0].tile = worker_tile;
         let policy = UtilityPolicy {
-            contested_harvest_regions: vec![ContestedHarvestRegion {
-                center,
-                last_evidence: obs.tick,
-                sweep_started_at: None,
-            }],
+            state: super::PolicyState {
+                contested_harvest_regions: vec![ContestedHarvestRegion {
+                    center,
+                    last_evidence: obs.tick,
+                    sweep_started_at: None,
+                }],
+                ..super::PolicyState::default()
+            },
             ..UtilityPolicy::new()
         };
         let danger = policy.harvest_danger_projection(&obs, None, None);
@@ -4938,6 +4998,8 @@ mod tests {
             &Dials::full(),
             &obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -4959,6 +5021,8 @@ mod tests {
             &Dials::full(),
             &obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -5011,6 +5075,8 @@ mod tests {
             &Dials::full(),
             &obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,
@@ -5028,6 +5094,8 @@ mod tests {
             &Dials::full(),
             &obs,
             PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
                 admit_voluntary_macro: true,
                 unit_contacts: None,
                 building_contacts: None,

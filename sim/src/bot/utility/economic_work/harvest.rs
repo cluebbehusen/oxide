@@ -188,7 +188,7 @@ impl HarvestGeometry<'_, '_> {
         for &(tile, amount) in obs.known_scrap.iter().chain(&obs.known_wrecks) {
             if amount == 0
                 || !obs.visible(tile)
-                || policy.dead_nodes.contains(&tile)
+                || policy.state.dead_nodes.contains(&tile)
                 || UtilityPolicy::source_in_salvage_incident(obs, tile)
                 || danger.contains(tile)
                 || policy.harvest_location_contested(tile)
@@ -264,8 +264,8 @@ impl HarvestGeometry<'_, '_> {
             if unit.kind.stats().harvest.is_none()
                 || unavailable.contains(&unit.id)
                 || !builder_is_free(obs, unit)
-                || policy.scout == Some(unit.id)
-                || policy.evacuating_workers.contains(&unit.id)
+                || policy.state.scout == Some(unit.id)
+                || policy.state.evacuating_workers.contains(&unit.id)
             {
                 continue;
             }
@@ -382,7 +382,7 @@ impl UtilityPolicy {
             orientation,
             |tile| danger.contains(tile) || self.harvest_location_contested(tile),
         );
-        let mut cache = self.harvest_geometry_cache.borrow_mut();
+        let mut cache = self.queries.harvest_geometry_cache.borrow_mut();
         let services = cache.prepare(&commands, briefing, obs);
         let mut geometry = HarvestGeometry { commands, services };
         let mut regions = geometry.value_resources(self, obs, &danger);
@@ -503,7 +503,7 @@ mod tests {
                     .non_ground_terrain
                     .push((TilePos::new(12, 10), crate::map::Terrain::Rock)),
                 4 => obs.blips.push(TilePos::new(28, 12)),
-                5 => policy.contested_harvest_regions.push(
+                5 => policy.state.contested_harvest_regions.push(
                     super::super::super::ContestedHarvestRegion {
                         center: TilePos::new(13, 12),
                         last_evidence: obs.tick,
@@ -514,11 +514,11 @@ mod tests {
                 7 => obs.my_buildings[0].built = false,
                 8 => {
                     obs.my_buildings[0].built = true;
-                    policy.contested_harvest_regions.clear();
+                    policy.state.contested_harvest_regions.clear();
                 }
                 _ => {}
             }
-            let previous = policy.harvest_geometry_cache.borrow().key.clone();
+            let previous = policy.queries.harvest_geometry_cache.borrow().key.clone();
             let resources = ResourceSnapshot::from_observation(&obs);
             let evaluate = |policy: &UtilityPolicy| {
                 policy.economic_harvest_regions(
@@ -531,16 +531,16 @@ mod tests {
                 )
             };
             let mut cold = policy.clone();
-            *cold.harvest_geometry_cache.get_mut() = Default::default();
+            *cold.queries.harvest_geometry_cache.get_mut() = Default::default();
             assert_eq!(evaluate(&policy), evaluate(&cold), "changed input {change}");
             assert_ne!(
                 previous,
-                policy.harvest_geometry_cache.borrow().key,
+                policy.queries.harvest_geometry_cache.borrow().key,
                 "changed input {change}"
             );
         }
-        let key = policy.harvest_geometry_cache.borrow().key.clone();
-        policy.dead_nodes.push(TilePos::new(15, 12));
+        let key = policy.queries.harvest_geometry_cache.borrow().key.clone();
+        policy.state.dead_nodes.push(TilePos::new(15, 12));
         assert!(
             policy
                 .economic_harvest_regions(
@@ -555,7 +555,7 @@ mod tests {
         );
         assert_eq!(
             key,
-            policy.harvest_geometry_cache.borrow().key,
+            policy.queries.harvest_geometry_cache.borrow().key,
             "resource eligibility changes value without changing geometry"
         );
     }

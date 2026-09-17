@@ -683,7 +683,7 @@ impl<'a> GroundKnowledge<'a> {
     }
 
     pub(super) fn retained(mut self, policy: &'a UtilityPolicy, hypothetical: bool) -> Self {
-        self.routing = Some(&policy.knowledge_paths);
+        self.routing = Some(&policy.queries.knowledge_paths);
         self.planning = Some(&policy.planning);
         self.hypothetical = hypothetical;
         self
