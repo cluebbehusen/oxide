@@ -2367,8 +2367,9 @@ mod tests {
     use super::super::super::intelligence::StrategicIntelligence;
     use super::super::super::observation::{BuildingObs, UnitObs};
     use super::super::super::profile::{PersonalityTraits, Specialty};
-    use super::super::super::resources::{ProductionDemand, ResourceSnapshot, plan_production};
+    use super::super::super::resources::{ProductionDemand, ResourceSnapshot};
     use super::*;
+    use crate::bot::resources::test_support::{all_producers, schedule_all_producers};
     use crate::ids::{BuildingId, PlayerId};
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::state::Faction;
@@ -2541,6 +2542,7 @@ mod tests {
                 .iter()
                 .find(|contact| contact.kind == BuildingKind::Crucible)
                 .unwrap();
+            let resources = ResourceSnapshot::from_observation(obs);
             derive_connected_minimum_for_cluster(
                 &profile(50, 50),
                 obs,
@@ -2550,8 +2552,8 @@ mod tests {
                     cluster: &[target],
                 },
                 ProductionEvidence::with_planning(
-                    &ResourceSnapshot::from_observation(obs),
-                    &ProductionAccess::Unrestricted,
+                    &resources,
+                    &all_producers(&resources),
                     Some(planning),
                 ),
                 &[],
@@ -2583,11 +2585,12 @@ mod tests {
             cloned = work.clone();
         }
         let ready = ready.expect("the minimum finishes before its pending work expires");
+        let resources = ResourceSnapshot::from_observation(&obs);
         assert!(funded_providers_fit(
-            &ResourceSnapshot::from_observation(&obs),
+            &resources,
             &ready.funded_providers,
             ready.preparation_deadline,
-            &ProductionAccess::Unrestricted
+            &all_producers(&resources)
         ));
     }
 
@@ -2612,7 +2615,7 @@ mod tests {
                 },
                 ProductionEvidence::with_planning(
                     &resources,
-                    &ProductionAccess::Unrestricted,
+                    &all_producers(&resources),
                     Some(&work),
                 ),
                 &[],
@@ -2626,7 +2629,7 @@ mod tests {
                     &resources,
                     &package.funded_providers,
                     package.preparation_deadline,
-                    &ProductionAccess::Unrestricted
+                    &all_producers(&resources)
                 ));
             }
         }
@@ -2647,7 +2650,7 @@ mod tests {
                 primary: &target,
                 cluster: &[&target],
             },
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(2_500, 0),
         )
@@ -2671,7 +2674,7 @@ mod tests {
             &minimum.minimum.provider_priority,
             observation.tick,
             constraints(2_500, 0),
-            &ProductionAccess::Unrestricted,
+            &all_producers(&resources),
         ));
     }
 
@@ -2738,15 +2741,13 @@ mod tests {
         deadline: Tick,
         protected_forecast_scrap: u32,
     ) -> Result<ConnectedForcePackage, ForcePackageRejection> {
+        let resources = ResourceSnapshot::from_observation(observation);
         derive_connected_force_package(
             profile,
             observation,
             intelligence,
             target,
-            ProductionEvidence::new(
-                &ResourceSnapshot::from_observation(observation),
-                &ProductionAccess::Unrestricted,
-            ),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             unavailable,
             constraints(deadline, protected_forecast_scrap),
         )
@@ -3187,7 +3188,7 @@ mod tests {
                 &observation,
                 &intelligence,
                 &target,
-                ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+                ProductionEvidence::new(&resources, &all_producers(&resources)),
                 &[],
                 PreparationConstraints {
                     deadline: 500,
@@ -3765,7 +3766,7 @@ mod tests {
         }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let resources = ResourceSnapshot::from_observation(&observation);
-        let access = ProductionAccess::Unrestricted;
+        let access = all_producers(&resources);
         let payment_tick = observation.tick.div_ceil(crate::stats::RECLAIMER_PERIOD)
             * crate::stats::RECLAIMER_PERIOD;
         let prime_cadence =
@@ -3912,7 +3913,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(500, 0),
         )
@@ -3927,7 +3928,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(2_000, 0),
         )
@@ -4832,7 +4833,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(deadline, 0),
         )
@@ -4851,7 +4852,7 @@ mod tests {
                 count: demand.count,
             })
             .collect();
-        let first = plan_production(&resources, &demands, deadline, observation.scrap);
+        let first = schedule_all_producers(&resources, &demands, deadline, observation.scrap);
         let airworks_appends: Vec<_> = first
             .appends
             .iter()
@@ -4867,10 +4868,11 @@ mod tests {
             "the scout owns the lane's first slot before strike production"
         );
         assert!(
-            first
-                .unmet
+            airworks_appends
                 .iter()
-                .any(|demand| demand.kind == UnitKind::Buzzard && demand.count > 0)
+                .filter(|a| a.kind == UnitKind::Buzzard)
+                .count()
+                < buzzards
         );
 
         let mut refilled = observation.clone();
@@ -4881,7 +4883,7 @@ mod tests {
             .expect("Airworks remains present");
         refilled.my_queues[airworks] = vec![UnitKind::Buzzard; QUEUE_CAP - 1];
         let resources = ResourceSnapshot::from_observation(&refilled);
-        let refill = plan_production(
+        let refill = schedule_all_producers(
             &resources,
             &[ProductionDemand {
                 kind: UnitKind::Buzzard,
@@ -5376,7 +5378,7 @@ mod tests {
                         primary: &target,
                         cluster: &cluster,
                     },
-                    ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+                    ProductionEvidence::new(&resources, &all_producers(&resources)),
                     &[],
                     constraints(5_000, 0),
                 ) else {
@@ -5397,7 +5399,7 @@ mod tests {
                         &resources,
                         &pair[1].funded_providers,
                         5_000,
-                        &ProductionAccess::Unrestricted
+                        &all_producers(&resources)
                     ));
                 }
             }
@@ -5455,7 +5457,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(deadline, 0),
         )
@@ -5469,9 +5471,8 @@ mod tests {
                 count: demand.count,
             })
             .collect();
-        let schedule = plan_production(&resources, &demands, deadline, observation.scrap);
+        let schedule = schedule_all_producers(&resources, &demands, deadline, observation.scrap);
 
-        assert!(schedule.unmet.is_empty());
         assert_eq!(
             schedule.appends.len(),
             package.strike.iter().map(|d| d.count).sum::<usize>()
@@ -5535,7 +5536,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(deadline, 0),
         )
@@ -5563,9 +5564,8 @@ mod tests {
                 },
             ]
         );
-        let schedule = plan_production(&resources, &demands, deadline, observation.scrap);
+        let schedule = schedule_all_producers(&resources, &demands, deadline, observation.scrap);
 
-        assert!(schedule.unmet.is_empty());
         assert_eq!(
             schedule
                 .appends
@@ -5612,7 +5612,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(2_500, 0),
         )
@@ -5782,7 +5782,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(2_500, 0),
         )
@@ -5792,7 +5792,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(2_500, 0),
         )
@@ -6071,7 +6071,7 @@ mod tests {
             &resources,
             &package.funded_providers,
             1_476,
-            &ProductionAccess::Unrestricted,
+            &all_producers(&resources),
         ));
         let funding = ProviderFundingEvidence {
             observed_at: observation.tick,
@@ -6093,7 +6093,7 @@ mod tests {
             &fully_funded,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &ProductionAccess::Unrestricted),
+            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
             constraints(1_476, 0),
         )
