@@ -978,6 +978,69 @@ mod tests {
         }
     }
 
+    fn head_on_pair() -> (Game, [UnitId; 2]) {
+        let mut map = vec!["........................................"; 24];
+        map[2] = "..1.....................................";
+        let scenario = serde_json::from_value(serde_json::json!({
+            "name": "Head-on pass", "seed": 1, "map": map,
+            "players": [{"name": "You", "faction": "ferrous", "scrap": 0, "bot": false}],
+            "units": [
+                {"player": 0, "kind": "sentinel", "x": 12, "y": 12},
+                {"player": 0, "kind": "sentinel", "x": 22, "y": 12}
+            ],
+            "buildings": []
+        }))
+        .unwrap();
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        let ids = [game.state.units()[0].id, game.state.units()[1].id];
+        game.present_ticks(1);
+        for (id, x) in [(ids[0], 22), (ids[1], 12)] {
+            game.issue(Command::Move {
+                units: vec![id],
+                goal: chassis::grid::TilePos::new(x, 12),
+                queue: false,
+            });
+        }
+        (game, ids)
+    }
+
+    #[test]
+    fn collision_slides_are_drawn_eased_and_leaned_then_settle_on_the_simulation_pose() {
+        let (mut game, ids) = head_on_pair();
+        let (mut widest_lag, mut widest_lean) = (0.0_f32, 0.0_f32);
+        for _ in 0..200 {
+            game.present_ticks(1);
+            for id in ids {
+                let unit = game.state.unit(id).unwrap();
+                let lag = world_vec(unit.pos) - game.presentation.draw_pos(id, unit.pos, 1.0);
+                widest_lag = widest_lag.max(lag.length());
+                widest_lean = widest_lean.max(game.presentation.slide_yaw(id, 1.0).abs());
+            }
+        }
+        assert!(widest_lag > 0.02 && widest_lag <= crate::slide_motion::MAX_LAG + 1e-6);
+        assert!(widest_lean > 0.05 && widest_lean <= crate::slide_motion::MAX_YAW + 1e-6);
+        assert!(game.presentation.slide_motion.is_empty());
+        for id in ids {
+            let unit = game.state.unit(id).unwrap();
+            assert_eq!(
+                game.presentation.draw_pos(id, unit.pos, 1.0),
+                world_vec(unit.pos)
+            );
+            assert_eq!(unit.order, oxide_sim::Order::Idle);
+        }
+    }
+
+    #[test]
+    fn a_bulk_advance_drops_eased_slides() {
+        let (mut game, _) = head_on_pair();
+        while game.presentation.slide_motion.is_empty() {
+            game.present_ticks(1);
+            assert!(game.state.current_tick() < 200, "the pair never touched");
+        }
+        game.advance_ticks(1);
+        assert!(game.presentation.slide_motion.is_empty());
+    }
+
     fn rotor_game(kind: UnitKind) -> Game {
         let mut map = vec!["........................................"; 24];
         map[2] = "..1................................2....";
