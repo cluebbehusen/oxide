@@ -45,6 +45,11 @@ impl UnitBody {
                 .or_else(|| game.facing.get(&unit.id.0).copied())
                 .unwrap_or(0.0)
         };
+        let rotation = if super::rotor_hull_turn_rate(kind).is_some() {
+            rotation
+        } else {
+            rotation + game.slide_yaw(unit.id, 1.0)
+        };
         let velocity = game
             .prev_pos
             .get(&unit.id.0)

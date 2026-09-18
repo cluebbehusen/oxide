@@ -28,6 +28,7 @@ mod render;
 mod rocket_audio;
 mod saves;
 mod screens;
+mod slide_motion;
 mod soundtrack;
 mod strategic_markers;
 mod theme;

@@ -45,6 +45,9 @@ pub struct Presentation {
     /// output events; clearing it never changes simulation truth.
     pub(crate) animations: crate::presentation_animation::AnimationController,
     pub(crate) track_motion: HashMap<u32, crate::track_motion::TrackMotion>,
+    /// Eased collision slides, kept only while a body is drawn off its
+    /// simulation pose.
+    pub(crate) slide_motion: HashMap<u32, crate::slide_motion::SlideMotion>,
     pub(crate) projectile_releases: projectiles::ProjectileReleases,
     pub(super) fx_previous: fx::PreviousEffects,
     /// Live effects.
@@ -162,6 +165,7 @@ impl Presentation {
             aim_building_targets: HashMap::new(),
             animations: crate::presentation_animation::AnimationController::default(),
             track_motion: HashMap::new(),
+            slide_motion: HashMap::new(),
             projectile_releases: projectiles::ProjectileReleases::default(),
             fx_previous: fx::PreviousEffects::default(),
             fx: Vec::new(),
@@ -258,13 +262,25 @@ impl Presentation {
         self.sounds_pending.push((SoundKind::Alert, None));
     }
 
-    /// Interpolated draw position for a unit.
+    /// Interpolated draw position for a unit, trailing a collision slide by
+    /// its eased lag.
     pub fn draw_pos(&self, id: UnitId, current: chassis::fx::Vec2Fx, alpha: f32) -> Vec2 {
         let now = world_vec(current);
+        let lag = self
+            .slide_motion
+            .get(&id.0)
+            .map_or(Vec2::ZERO, |slide| slide.lag(alpha));
         match self.prev_pos.get(&id.0) {
-            Some(prev) => prev.lerp(now, alpha),
-            None => now,
+            Some(prev) => prev.lerp(now, alpha) - lag,
+            None => now - lag,
         }
+    }
+
+    /// Drawn hull lean toward a collision slide, added to the body's rotation.
+    pub(crate) fn slide_yaw(&self, id: UnitId, alpha: f32) -> f32 {
+        self.slide_motion
+            .get(&id.0)
+            .map_or(0.0, |slide| slide.yaw(alpha))
     }
 
     pub fn draw_heading(&self, id: UnitId, current: u8, alpha: f32) -> f32 {
@@ -308,6 +324,7 @@ impl Presentation {
         self.animations.reset_transients();
         self.audio_timeline.clear();
         self.track_motion.clear();
+        self.slide_motion.clear();
     }
 
     /// Sprite rotation for this tick: a heading-first airframe faces where
@@ -315,6 +332,8 @@ impl Presentation {
     /// faces the way it last moved. Live ticks, playback, and seeks all
     /// agree through this one rule.
     pub(super) fn refresh_facing(&mut self, state: &State, movement: &[oxide_sim::GroundMotion]) {
+        let tick = state.current_tick();
+        self.observe_slides(state, movement);
         self.track_motion
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         for unit in state
@@ -322,8 +341,11 @@ impl Presentation {
             .iter()
             .filter(|unit| crate::render::tracks::supported(unit.kind))
         {
-            let tick = state.current_tick();
-            let heading = f32::from(unit.heading) * std::f32::consts::TAU / 256.0;
+            let heading = f32::from(unit.heading) * std::f32::consts::TAU / 256.0
+                + self
+                    .slide_motion
+                    .get(&unit.id.0)
+                    .map_or(0.0, |slide| slide.current_yaw());
             self.track_motion
                 .entry(unit.id.0)
                 .or_insert_with(|| crate::track_motion::TrackMotion::new(tick, heading))
@@ -334,10 +356,14 @@ impl Presentation {
                         unit.kind,
                         crate::render::unit_draw_scale(unit.kind),
                     ),
+                    // A shove along the hull rolls the belts like driving
+                    // does; the part across the hull is a skid.
                     movement
                         .binary_search_by_key(&unit.id, |motion| motion.unit)
                         .ok()
-                        .map_or(Vec2::ZERO, |index| world_vec(movement[index].propulsion)),
+                        .map_or(Vec2::ZERO, |index| {
+                            world_vec(movement[index].propulsion + movement[index].correction)
+                        }),
                 );
         }
 
@@ -390,6 +416,54 @@ impl Presentation {
                 *current += angle_delta(*current, target).clamp(-turn, turn);
             }
         }
+    }
+
+    /// Whether a body's drawn hull may lean away from its simulation heading.
+    /// A fixed weapon's hull is its aim and a body at work faces its work;
+    /// neither may be drawn pointing anywhere else.
+    fn slide_lean_allowed(&self, unit: &oxide_sim::state::Unit, propulsion: Vec2) -> bool {
+        let aiming = !unit.kind.has_ground_turret()
+            && (unit.brace_ticks > 0
+                || self
+                    .aim_units
+                    .get(&unit.id.0)
+                    .is_some_and(|(_, at)| self.fx_clock - at < 1.2));
+        !aiming && (propulsion != Vec2::ZERO || matches!(unit.order, oxide_sim::Order::Idle))
+    }
+
+    /// Eases this tick's collision slides. A body keeps an entry only while
+    /// it is drawn off its simulation pose.
+    fn observe_slides(&mut self, state: &State, movement: &[oxide_sim::GroundMotion]) {
+        let tick = state.current_tick();
+        let mut slides = std::mem::take(&mut self.slide_motion);
+        slides.retain(|id, _| state.unit(UnitId(*id)).is_some());
+        for motion in movement {
+            let sliding = motion.correction != chassis::fx::Vec2Fx::ZERO;
+            if !sliding && !slides.contains_key(&motion.unit.0) {
+                continue;
+            }
+            let Some(unit) = state.unit(motion.unit) else {
+                continue;
+            };
+            let propulsion = world_vec(motion.propulsion);
+            slides
+                .entry(unit.id.0)
+                .or_insert_with(|| crate::slide_motion::SlideMotion::new(tick.wrapping_sub(1)))
+                .observe(
+                    tick,
+                    f32::from(unit.heading) * std::f32::consts::TAU / 256.0,
+                    propulsion,
+                    world_vec(motion.correction),
+                    unit.kind.stats().speed.to_num::<f32>(),
+                    self.slide_lean_allowed(unit, propulsion),
+                );
+        }
+        // A body at rest has no motion record; its lag still has to release.
+        for slide in slides.values_mut() {
+            slide.observe(tick, 0.0, Vec2::ZERO, Vec2::ZERO, 1.0, false);
+        }
+        slides.retain(|_, slide| !slide.settled());
+        self.slide_motion = slides;
     }
 
     /// Records what the next tick's presentation needs to know about
