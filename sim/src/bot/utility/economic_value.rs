@@ -1,5 +1,6 @@
 //! Integer-only marginal economic returns. These quotes never fund commands.
 
+use crate::bot::navigation::travel::travel_ticks;
 use crate::stats::UnitKind;
 
 const BASE_HORIZON_TICKS: u64 = 3_600;
@@ -47,17 +48,6 @@ impl WorkerService {
         let cycles = horizon.saturating_sub(self.ready_after) / cycle;
         cycles.saturating_mul(load).min(work.amount)
     }
-}
-
-/// Route costs use ten for an axial tile and fourteen for a diagonal tile.
-pub(super) fn travel_ticks(kind: UnitKind, route_cost: u32) -> u64 {
-    let speed = kind.stats().speed.to_bits();
-    if speed <= 0 {
-        return u64::MAX;
-    }
-    let distance = u128::from(route_cost) << 32;
-    let ticks = distance.div_ceil((speed as u128).saturating_mul(10));
-    u64::try_from(ticks).unwrap_or(u64::MAX)
 }
 
 pub(super) fn harvest_output(work: HarvestWork, workers: &[WorkerService], horizon: u64) -> u64 {
@@ -202,7 +192,6 @@ mod tests {
                     3_000
                 )
         );
-        assert_eq!(travel_ticks(UnitKind::Harvester, 0), 0);
     }
 
     #[test]
@@ -324,6 +313,5 @@ mod tests {
             investment_horizon(100, 300),
             investment_horizon(100, u32::MAX)
         );
-        assert!(travel_ticks(UnitKind::Harvester, u32::MAX) > 0);
     }
 }

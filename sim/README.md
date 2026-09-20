@@ -47,12 +47,13 @@ roof bay, then obey their ordinary orders from there.
 Its `commands` module projects ordinary movement and Build routes from player
 knowledge; `paths` provides canonical endpoint routes and bounds;
 `public_fields` provides terrain and danger-aware travel distances; `service`
-retains producer and target connectivity; `egress` certifies producer exits; and
-`flood` handles connectivity and placement witnesses. Barricade foothold
-valuation asks for costs instead of full paths. Planners supply knowledge,
-safety rules, and target preferences; navigation preserves command orientation,
-path ties, and search limits. Ground, air, and hypothetical layouts retain
-separate bounded caches.
+retains producer and target connectivity; `egress` certifies producer exits;
+`flood` handles connectivity and placement witnesses; and `travel` converts a
+route cost into free-flow ticks for a unit kind. Barricade foothold valuation
+asks for costs instead of full paths. Planners supply knowledge, safety rules,
+and target preferences; navigation preserves command orientation, path ties, and
+search limits. Ground, air, and hypothetical layouts retain separate bounded
+caches.
 
 Voluntary defense rejects construction kinds that cannot meet the current
 allocation reserve before searching for sites. Final allocation still owns the

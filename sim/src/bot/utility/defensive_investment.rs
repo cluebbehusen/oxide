@@ -1,8 +1,7 @@
 //! Typed voluntary-defense opportunities for cross-domain allocation.
 
 use super::defense::{
-    DefenseOpportunityEvidence, DefenseThinkContext, StrategicDefenseQuote, travel_ticks,
-    unit_threatens_ground,
+    DefenseOpportunityEvidence, DefenseThinkContext, StrategicDefenseQuote, unit_threatens_ground,
 };
 use super::sensor::StrategicArrayQuote;
 use super::{
@@ -13,6 +12,7 @@ use crate::bot::Orientation;
 use crate::bot::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
+use crate::bot::navigation::travel::travel_ticks;
 #[cfg(test)]
 use crate::bot::observation::ObservationData;
 use crate::bot::resources::{ResourceSnapshot, SiteFootprint};
@@ -332,8 +332,8 @@ fn defense_proposal(
     let builder = builders
         .iter()
         .find(|builder| builder.id == quote.placement.builder)?;
-    let ready_ticks = travel_ticks(quote.builder_travel_cost, builder.kind.stats().speed)
-        .saturating_add(u64::from(
+    let ready_ticks =
+        travel_ticks(builder.kind, quote.builder_travel_cost).saturating_add(u64::from(
             construction_stats
                 .build_ticks
                 .div_ceil(builder.kind.stats().build_rate.max(1)),
@@ -422,8 +422,8 @@ fn array_proposal(
     let builder = builders
         .iter()
         .find(|builder| builder.id == quote.builder)?;
-    let ready_ticks = travel_ticks(quote.builder_travel_cost, builder.kind.stats().speed)
-        .saturating_add(u64::from(
+    let ready_ticks =
+        travel_ticks(builder.kind, quote.builder_travel_cost).saturating_add(u64::from(
             construction_stats
                 .build_ticks
                 .div_ceil(builder.kind.stats().build_rate.max(1)),
@@ -614,7 +614,7 @@ fn mobile_reinforcement_ticks(
                     .max(0);
                 dx.max(dy)
             };
-            let lower_bound = travel_ticks(distance as u32 * 10, unit.kind.stats().speed);
+            let lower_bound = travel_ticks(unit.kind, distance as u32 * 10);
             (lower_bound, unit)
         })
         .collect::<Vec<_>>();
@@ -625,7 +625,7 @@ fn mobile_reinforcement_ticks(
             break;
         }
         if let Some(cost) = context.reinforcement_travel_cost(unit, defense, anchor) {
-            let ticks = travel_ticks(cost, unit.kind.stats().speed);
+            let ticks = travel_ticks(unit.kind, cost);
             best = Some(best.map_or(ticks, |prior: u64| prior.min(ticks)));
         }
     }
@@ -1120,8 +1120,8 @@ mod tests {
                 .build_ticks
                 .div_ceil(UnitKind::Harvester.stats().build_rate.max(1)),
         );
-        let exact_travel = travel_ticks(54, UnitKind::Harvester.stats().speed);
-        let globally_shortest_travel = travel_ticks(50, UnitKind::Harvester.stats().speed);
+        let exact_travel = travel_ticks(UnitKind::Harvester, 54);
+        let globally_shortest_travel = travel_ticks(UnitKind::Harvester, 50);
         assert!(exact_travel > globally_shortest_travel);
 
         let proposal = defense_proposal(
@@ -1206,7 +1206,7 @@ mod tests {
                         .filter_map(|unit| {
                             exact
                                 .reinforcement_travel_cost(unit, defense, anchor)
-                                .map(|cost| travel_ticks(cost, unit.kind.stats().speed))
+                                .map(|cost| travel_ticks(unit.kind, cost))
                         })
                         .min();
                     let mut pruned = DefenseThinkContext::new(

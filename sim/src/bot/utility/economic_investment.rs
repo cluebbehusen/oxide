@@ -1,14 +1,13 @@
 //! Exact economic actions derived from finite work and unmet capability demand.
 
-use super::economic_value::{
-    CapacityReturn, RecurringReturn, WorkerService, investment_horizon, travel_ticks,
-};
+use super::economic_value::{CapacityReturn, RecurringReturn, WorkerService, investment_horizon};
 use super::*;
 use crate::bot::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StrategicValue, TimeToImpact, Urgency,
 };
 use crate::bot::intelligence::StrategicIntelligence;
 use crate::bot::navigation::service::ServiceRoutes;
+use crate::bot::navigation::travel::travel_ticks;
 #[cfg(test)]
 use crate::bot::observation::ObservationData;
 use crate::bot::orient::Orientation;

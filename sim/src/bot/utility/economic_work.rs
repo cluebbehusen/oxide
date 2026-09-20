@@ -1,8 +1,9 @@
 //! Safe finite work shared by worker and capital investment quotes.
 
-use super::economic_value::{WorkerService, travel_ticks};
+use super::economic_value::WorkerService;
 use super::*;
 use crate::bot::navigation::public_fields::PublicGroundDistances;
+use crate::bot::navigation::travel::travel_ticks;
 use crate::bot::query_work::QueryPurpose;
 
 mod harvest;
