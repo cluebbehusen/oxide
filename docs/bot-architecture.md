@@ -408,15 +408,18 @@ Worker value is finite harvest output or recovery of orphaned paid construction,
 net of reachable existing and queued workers. Technology and factories serve
 capability demand derived before prerequisite eligibility, with construction and
 production delay, missing-chain costs, and eventual capacity accounted for. Live
-harvest workers pay initial travel to visible work before contributing output.
-Harvest valuation separates drop-off service geometry from finite resource work
-and live or queued worker returns. One fog-honest navigation projection supplies
-connectivity, danger-avoiding distance fields, and bidirectional canonical
-command-route safety. Each source contributes once to its selected service
-region; overlapping work tiles count once. Live workers pay initial travel, and
-paid worker occurrences retain their producer readiness. One controller-local
-cache retains the latest service geometry and at most 4,096 corridor answers per
-service region. Its exact equality key includes ordinary passability, allowed
+harvest workers pay initial travel to visible work before contributing output. A
+harvest cycle is gathering, the haul out and back at full speed, and the
+reversal a ground chassis makes from rest at each end: its half-turn pivot plus
+the motor's ramps, from `UnitKind::ground_reversal_ticks`. Harvest valuation
+separates drop-off service geometry from finite resource work and live or queued
+worker returns. One fog-honest navigation projection supplies connectivity,
+danger-avoiding distance fields, and bidirectional canonical command-route
+safety. Each source contributes once to its selected service region; overlapping
+work tiles count once. Live workers pay initial travel, and paid worker
+occurrences retain their producer readiness. One controller-local cache retains
+the latest service geometry and at most 4,096 corridor answers per service
+region. Its exact equality key includes ordinary passability, allowed
 passability, the danger mask, orientation, public map knowledge, and completed
 drop-offs. Changed blockers or danger discard the old service evidence. Resource
 amounts, visibility, work eligibility, live workers, and producer schedules are

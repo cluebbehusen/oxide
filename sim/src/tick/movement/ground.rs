@@ -4,7 +4,10 @@ use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 
 use crate::state::{GroundTerrain, ParkedBodies, Unit};
-use crate::stats::{GROUND_PIVOT_THRESHOLD, ROUTE_LOOKAHEAD, WAYPOINT_ACCEPT};
+use crate::stats::{
+    GROUND_ACCEL_TICKS, GROUND_ALIGNED_STEPS, GROUND_BRAKE_TICKS, GROUND_PIVOT_THRESHOLD,
+    ROUTE_LOOKAHEAD, WAYPOINT_ACCEPT,
+};
 
 fn increment(speed: Fx, ticks: i64) -> Fx {
     Fx::from_bits((speed.to_bits() + ticks - 1) / ticks)
@@ -77,7 +80,7 @@ fn route_target(
                 .wrapping_sub(unit.heading)
                 .cast_signed()
                 .unsigned_abs()
-                <= 8
+                <= GROUND_ALIGNED_STEPS
         };
         // A friendly body at rest is never steered through: the planned
         // tiles go around it, and a straight leg must too.
@@ -121,7 +124,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
     let target = route_target(unit, terrain, parked);
     let max_speed = unit.kind.stats().speed;
     let turn_rate = unit.kind.ground_turn_rate();
-    let brake = increment(max_speed, 3);
+    let brake = increment(max_speed, i64::from(GROUND_BRAKE_TICKS));
     let offset = target.map(|(point, _, _)| point - unit.pos);
     let desired = offset
         .filter(|v| *v != Vec2Fx::ZERO)
@@ -141,7 +144,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
             .wrapping_add_signed(delta.clamp(-rate, rate) as i8);
     }
     let (_, error) = heading_error(unit.heading);
-    let aligned = error <= 8;
+    let aligned = error <= u16::from(GROUND_ALIGNED_STEPS);
     let distance = offset.map_or(Fx::ZERO, Vec2Fx::length);
     // Inside the last braking step the body lands on the point whatever
     // its bearing; a sub-tick residual must never become something to
@@ -172,7 +175,7 @@ pub(super) fn advance(unit: &mut Unit, terrain: &GroundTerrain, parked: &ParkedB
         demand = demand.min(arrival);
     }
     let rate = if demand > unit.drive_speed {
-        increment(max_speed, 6)
+        increment(max_speed, i64::from(GROUND_ACCEL_TICKS))
     } else {
         brake
     };
@@ -468,6 +471,34 @@ mod tests {
             let stopped = unit.pos;
             advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
             assert_eq!(unit.pos, stopped);
+        }
+    }
+
+    #[test]
+    fn a_reversal_from_rest_costs_the_quoted_ticks_over_free_flow() {
+        for kind in UnitKind::ALL {
+            if kind.stats().domain != crate::stats::Domain::Ground {
+                assert_eq!(kind.ground_reversal_ticks(), 0, "{kind:?}");
+                continue;
+            }
+            let state = scene(kind);
+            let mut unit = state.units()[0].clone();
+            unit.heading = 128;
+            target(&mut unit, TilePos::new(20, 8));
+            let mut ticks = 0u64;
+            while unit.path.is_some() {
+                advance(&mut unit, &state.ground_terrain(), &ParkedBodies::default());
+                ticks += 1;
+                assert!(ticks < 1_000, "{kind:?}");
+            }
+            let free_flow = (Fx::from_num(12) / kind.stats().speed)
+                .ceil()
+                .to_num::<u64>();
+            let quoted = kind.ground_reversal_ticks();
+            assert!(
+                (quoted - 1..=quoted).contains(&(ticks - free_flow)),
+                "{kind:?}: {ticks} against {free_flow} + {quoted}"
+            );
         }
     }
 

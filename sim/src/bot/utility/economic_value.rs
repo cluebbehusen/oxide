@@ -33,20 +33,29 @@ pub(super) struct WorkerService {
 
 impl WorkerService {
     fn output(self, work: HarvestWork, horizon: u64) -> u64 {
-        let stats = self.kind.stats();
-        let Some(harvest) = stats.harvest else {
+        let Some(harvest) = self.kind.stats().harvest else {
             return 0;
         };
         let load = u64::from(harvest.capacity);
         if load == 0 {
             return 0;
         }
-        let travel = travel_ticks(self.kind, work.haul_cost).saturating_mul(2);
-        let cycle = travel
-            .saturating_add(load.saturating_mul(u64::from(harvest.ticks_per_scrap)))
-            .max(1);
-        let cycles = horizon.saturating_sub(self.ready_after) / cycle;
+        let cycles = horizon.saturating_sub(self.ready_after) / self.cycle_ticks(work);
         cycles.saturating_mul(load).min(work.amount)
+    }
+
+    /// One full load: gathering, the haul out and back, and the reversal a
+    /// worker makes from rest at each end.
+    fn cycle_ticks(self, work: HarvestWork) -> u64 {
+        let Some(harvest) = self.kind.stats().harvest else {
+            return u64::MAX;
+        };
+        let gather = u64::from(harvest.capacity).saturating_mul(u64::from(harvest.ticks_per_scrap));
+        travel_ticks(self.kind, work.haul_cost)
+            .saturating_mul(2)
+            .saturating_add(gather)
+            .saturating_add(self.kind.ground_reversal_ticks().saturating_mul(2))
+            .max(1)
     }
 }
 
@@ -313,5 +322,97 @@ mod tests {
             investment_horizon(100, 300),
             investment_horizon(100, u32::MAX)
         );
+    }
+
+    /// Ticks between a lone worker's steady deposits in the real simulation,
+    /// beside the cycle quoted for the same work.
+    fn measured_and_quoted_cycle(kind: UnitKind, node: chassis::grid::TilePos) -> (u64, u64) {
+        use super::super::test_world as world;
+        use super::super::{Observation, PublicMapBriefing, UtilityPolicy};
+        use crate::bot::orient::Orientation;
+        use crate::bot::resources::ResourceSnapshot;
+        use crate::ids::PlayerId;
+        use crate::scenario::UnitSpec;
+        use crate::{Command, Event, PlayerCommand};
+
+        let mut scenario = world::scenario_with(|tile| if tile == node { 'S' } else { '.' });
+        // The second worker only keeps a distant node in sight.
+        scenario.units = vec![
+            UnitSpec {
+                player: 0,
+                kind,
+                x: 7,
+                y: 13,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: node.x + 3,
+                y: node.y + 3,
+            },
+        ];
+        let mut state = scenario.build().unwrap();
+        let id = state.units()[0].id;
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let regions = UtilityPolicy::new().economic_harvest_regions(
+            &obs,
+            &PublicMapBriefing::from_scenario(&scenario).unwrap(),
+            &ResourceSnapshot::from_observation(&obs),
+            Orientation::for_home(&obs, world::LEFT_HOME),
+            &[],
+            (&[], &[]),
+        );
+        assert_eq!(regions.len(), 1);
+        let quoted = worker(kind, 0).cycle_ticks(regions[0].work);
+
+        state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Harvest {
+                units: vec![id],
+                node,
+                queue: false,
+            },
+        }]);
+        let mut deposits = Vec::new();
+        for tick in 1..6_000u64 {
+            let deposited =
+                state.tick(&[]).events.iter().any(
+                    |event| matches!(event, Event::ScrapDeposited { amount, .. } if *amount > 0),
+                );
+            if deposited {
+                deposits.push(tick);
+            }
+            if deposits.len() == 3 {
+                break;
+            }
+        }
+        assert_eq!(deposits.len(), 3, "{kind:?} {node:?}");
+        let measured = deposits[2] - deposits[1];
+        assert_eq!(measured, deposits[1] - deposits[0], "{kind:?} {node:?}");
+        (measured, quoted)
+    }
+
+    #[test]
+    fn a_quoted_cycle_is_never_faster_than_a_real_lone_worker() {
+        use super::super::test_world::LEFT_HOME;
+        use chassis::grid::TilePos;
+
+        for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+            for (reach, row) in [(6, 10), (9, 10), (14, 10), (9, 14), (14, 17)] {
+                let node = TilePos::new(LEFT_HOME.x + reach, row);
+                let (measured, quoted) = measured_and_quoted_cycle(kind, node);
+                assert!(
+                    quoted >= measured,
+                    "{kind:?} {node:?}: {quoted} < {measured}"
+                );
+                // Diagonal hauls run slack: a body drives a straight line
+                // shorter than its octile route cost and pivots less than a
+                // half turn.
+                assert!(
+                    (quoted - measured) * 100 <= measured * 6,
+                    "{kind:?} {node:?}: {quoted} against {measured}"
+                );
+            }
+        }
     }
 }
