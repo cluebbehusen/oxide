@@ -164,9 +164,7 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
     // Status and clock control. Pause up front: tick-exact assertions
     // against a free-running shell would race its wall clock. The previous
     // pause state is restored on the way out.
-    let Reply::Status(status) = client.call(Request::Status)? else {
-        bail!("status returned the wrong reply kind");
-    };
+    let status = client.status()?;
     checks.note(
         "status responds",
         !status.scenario.is_empty(),
@@ -194,23 +192,14 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
 }
 
 fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
-    let Reply::Hash(start) = client.call(Request::StateHash)? else {
-        bail!("state_hash returned the wrong reply kind");
-    };
-    let Reply::Advanced(advanced) = client.call(Request::AdvanceTicks { ticks: 10 })? else {
-        bail!("advance_ticks returned the wrong reply kind");
-    };
+    let start = client.state_hash()?;
+    let advanced = client.advance(10)?;
     checks.note(
         "advance_ticks moves exactly N ticks",
         advanced.tick == start.tick + 10,
         format!("{} -> {}", start.tick, advanced.tick),
     );
-    let Reply::State(view) = client.call(Request::QueryState {
-        filter: StateFilter::default(),
-    })?
-    else {
-        bail!("query_state returned the wrong reply kind");
-    };
+    let view = client.state(StateFilter::default())?;
     let foreign = view
         .units
         .iter()
@@ -223,9 +212,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
             units: vec![UnitId(foreign)],
         },
     })?;
-    let Reply::Presented(presented) = client.call(Request::PresentTicks { ticks: 1 })? else {
-        bail!("present_ticks returned the wrong reply kind");
-    };
+    let presented = client.present(1)?;
     let rejected = presented.events.iter().any(|event| {
         matches!(
             event,
@@ -244,16 +231,12 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     );
 
     // Injected wheel input must reach the camera through the real funnel.
-    let Reply::Camera(before) = client.call(Request::QueryCamera)? else {
-        bail!("query_camera returned the wrong reply kind");
-    };
+    let before = client.camera()?;
     client.call(Request::InjectEvent {
         event: RawEvent::Wheel { delta: 2.0 },
     })?;
     std::thread::sleep(Duration::from_millis(300)); // a few frames
-    let Reply::Camera(after) = client.call(Request::QueryCamera)? else {
-        bail!("query_camera returned the wrong reply kind");
-    };
+    let after = client.camera()?;
     checks.note(
         "wheel zooms the camera in",
         after.zoom > before.zoom,
@@ -261,12 +244,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     );
 
     // A game command through the socket, verified in sim state.
-    let Reply::State(view) = client.call(Request::QueryState {
-        filter: StateFilter::default(),
-    })?
-    else {
-        bail!("query_state returned the wrong reply kind");
-    };
+    let view = client.state(StateFilter::default())?;
     let mover = view
         .units
         .iter()
@@ -282,12 +260,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         },
     })?;
     client.call(Request::AdvanceTicks { ticks: 60 })?;
-    let Reply::State(view) = client.call(Request::QueryState {
-        filter: StateFilter::default(),
-    })?
-    else {
-        bail!("query_state returned the wrong reply kind");
-    };
+    let view = client.state(StateFilter::default())?;
     let moved = view
         .units
         .iter()
@@ -357,9 +330,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     );
 
     // The decisive check: the live session reproduces headless.
-    let Reply::Hash(live) = client.call(Request::StateHash)? else {
-        bail!("state_hash returned the wrong reply kind");
-    };
+    let live = client.state_hash()?;
     let replay_path = std::env::current_dir()?
         .join(format!("replays/smoke-{pid}.json"))
         .to_string_lossy()
@@ -382,9 +353,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     // Continuity setup: run the ORIGINAL session (bots with their genuine
     // memory) past the save point before any reload touches it.
     client.call(Request::AdvanceTicks { ticks: 200 })?;
-    let Reply::Hash(future_live) = client.call(Request::StateHash)? else {
-        bail!("state_hash returned the wrong reply kind");
-    };
+    let future_live = client.state_hash()?;
 
     // Session resume: loading the replay we just saved must land on the
     // same tick and hash, still recording.
@@ -395,9 +364,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         resumed_ok,
         format!("reply {resumed:?}"),
     );
-    let Reply::Hash(after_resume) = client.call(Request::StateHash)? else {
-        bail!("state_hash returned the wrong reply kind");
-    };
+    let after_resume = client.state_hash()?;
     checks.note(
         "resumed session matches the live hash",
         after_resume.hash == live.hash,
@@ -408,9 +375,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     // the unsaved one would have — including the bots, whose memory is
     // rebuilt by watching the replay during the fast-forward.
     client.call(Request::AdvanceTicks { ticks: 200 })?;
-    let Reply::Hash(future_resumed) = client.call(Request::StateHash)? else {
-        bail!("state_hash returned the wrong reply kind");
-    };
+    let future_resumed = client.state_hash()?;
     checks.note(
         "resumed session continues identically to the unsaved one",
         future_resumed.hash == future_live.hash,
@@ -429,15 +394,10 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         path: scenario_path.to_string_lossy().into_owned(),
     })?;
     std::thread::sleep(Duration::from_millis(200));
-    let Reply::State(view) = client.call(Request::QueryState {
-        filter: StateFilter {
-            map: true,
-            ..StateFilter::default()
-        },
-    })?
-    else {
-        bail!("query_state returned the wrong reply kind");
-    };
+    let view = client.state(StateFilter {
+        map: true,
+        ..StateFilter::default()
+    })?;
     let scrap_before = view.players[0].scrap;
     let rows = view.map.as_ref().context("asked for the map")?;
     let harvester = view
@@ -445,9 +405,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         .iter()
         .find(|u| u.player == 0 && u.kind == UnitKind::Harvester)
         .context("no harvester to select")?;
-    let Reply::Camera(cam) = client.call(Request::QueryCamera)? else {
-        bail!("query_camera returned the wrong reply kind");
-    };
+    let cam = client.camera()?;
     let [lo_x, lo_y, hi_x, hi_y] = cam.world_rect;
     // Injected pointer events speak LOGICAL points — the same space the
     // camera reply uses.
@@ -497,9 +455,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     // The minimap rect comes from the shell's published layout — the
     // QueryUi chrome is the same model hit-testing reads, so geometry
     // changes cannot strand this check on a stale copy of the formula.
-    let Reply::Ui(ui) = client.call(Request::QueryUi)? else {
-        bail!("query_ui returned the wrong reply kind");
-    };
+    let ui = client.ui()?;
     let Some(chrome) = ui.chrome else {
         bail!("playing mode reports chrome geometry");
     };
@@ -525,15 +481,8 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         client.call(Request::InjectEvent { event })?;
     }
     std::thread::sleep(Duration::from_millis(200));
-    let Reply::Camera(cam_after) = client.call(Request::QueryCamera)? else {
-        bail!("query_camera returned the wrong reply kind");
-    };
-    let Reply::State(view_after) = client.call(Request::QueryState {
-        filter: StateFilter::default(),
-    })?
-    else {
-        bail!("query_state returned the wrong reply kind");
-    };
+    let cam_after = client.camera()?;
+    let view_after = client.state(StateFilter::default())?;
     checks.note(
         "minimap click while placing jumps the camera and spends nothing",
         view_after.players[0].scrap == scrap_before && cam_after.center != cam.center,
@@ -560,9 +509,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         client.call(Request::InjectEvent { event })?;
     }
     std::thread::sleep(Duration::from_millis(100));
-    let Reply::Camera(cam2) = client.call(Request::QueryCamera)? else {
-        bail!("query_camera returned the wrong reply kind");
-    };
+    let cam2 = client.camera()?;
     let [lo_x2, lo_y2, hi_x2, hi_y2] = cam2.world_rect;
     let to_screen2 = |wx: f64, wy: f64| {
         (
@@ -622,12 +569,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     // The shell is paused: issued commands stage for the NEXT tick, so
     // the world only reflects the click once the sim advances.
     client.call(Request::AdvanceTicks { ticks: 1 })?;
-    let Reply::State(view_committed) = client.call(Request::QueryState {
-        filter: StateFilter::default(),
-    })?
-    else {
-        bail!("query_state returned the wrong reply kind");
-    };
+    let view_committed = client.state(StateFilter::default())?;
     let turret_cost = 100;
     let spent = scrap_before.saturating_sub(view_committed.players[0].scrap);
     let site_up = view_committed

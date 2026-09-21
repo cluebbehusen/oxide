@@ -61,12 +61,7 @@ fn session_client() -> Result<Client> {
 /// units on the march. Unit ids come from the state itself so the script
 /// survives roster edits.
 fn march_command(client: &mut Client, player: u8) -> Result<Command> {
-    let Reply::State(view) = client.call(Request::QueryState {
-        filter: StateFilter::default(),
-    })?
-    else {
-        bail!("expected a state reply");
-    };
+    let view = client.state(StateFilter::default())?;
     let units: Vec<oxide_sim::UnitId> = view
         .units
         .iter()
@@ -107,9 +102,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
     let mut client = session_client()?;
 
     // Status: always driven mode, honestly reported.
-    let Reply::Status(status) = client.call(Request::Status)? else {
-        bail!("expected a status reply");
-    };
+    let status = client.status()?;
     assert_eq!(status.tick, 0);
     assert!(status.paused, "a headless session is always in driven mode");
     assert_eq!(status.scenario, "Skirmish Basin");
@@ -123,26 +116,17 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
         player: PlayerId(0),
         command,
     })?;
-    let Reply::Advanced(advanced) = client.call(Request::AdvanceTicks { ticks: 300 })? else {
-        bail!("expected an advanced reply");
-    };
+    let advanced = client.advance(300)?;
     assert_eq!(advanced.tick, 300);
 
-    let Reply::Presented(presented) = client.call(Request::PresentTicks { ticks: 5 })? else {
-        bail!("expected a presented reply");
-    };
+    let presented = client.present(5)?;
     assert_eq!(presented.tick, 305);
 
     // The omniscient QA view and the fog-honest player view, side by side.
-    let Reply::State(state) = client.call(Request::QueryState {
-        filter: StateFilter {
-            map: true,
-            ..StateFilter::default()
-        },
-    })?
-    else {
-        bail!("expected a state reply");
-    };
+    let state = client.state(StateFilter {
+        map: true,
+        ..StateFilter::default()
+    })?;
     assert!(state.map.is_some());
     let Reply::Fog(fog) = client.call(Request::QueryFogView {
         player: PlayerId(0),
@@ -185,9 +169,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
         bail!("expected a saved reply");
     };
     assert!(saved.commands > 0, "the march and the bot were recorded");
-    let Reply::Hash(live) = client.call(Request::StateHash)? else {
-        bail!("expected a hash reply");
-    };
+    let live = client.state_hash()?;
     let replay = oxide_kit::load_replay(&replay_path)?;
     let replayed = runner::run_replay(&replay, None, false)?;
     assert_eq!(
@@ -201,9 +183,7 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
         bail!("expected a status reply after a replay load");
     };
     assert_eq!(resumed.tick, 305);
-    let Reply::Hash(reloaded) = client.call(Request::StateHash)? else {
-        bail!("expected a hash reply");
-    };
+    let reloaded = client.state_hash()?;
     assert_eq!(reloaded.hash, live.hash);
 
     // Every windowed or wall-clock verb is refused in words, never
