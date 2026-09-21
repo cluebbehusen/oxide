@@ -980,29 +980,22 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             // autosave swallows the quit (prevent_quit is in force) and
             // raises the failure dialog instead of exiting over data loss.
             app.config.save().ok();
-            match autosave::save(&mut app.game) {
-                Ok(_) => {
+            // The dialog's home-vs-match classification must see THROUGH
+            // screens opened from Pause: a quit while Settings or Playback
+            // sits over a paused match still has an unsaved match behind
+            // it, and a Home-classified Cancel would strand it with no
+            // route back.
+            let over_a_match = screen_holds_live_match(&screen);
+            match app.save_before_leaving(screens::pause::LeaveVerb::Quit, !over_a_match) {
+                Ok(()) => {
                     if let Screen::Playback(playback) = &screen {
                         playback.finish_diagnostics();
                     }
                     std::process::exit(0)
                 }
-                Err(err) => {
+                Err(dialog) => {
                     app.game.presentation.paused = true;
-                    // The dialog's home-vs-match classification must
-                    // see THROUGH screens opened from Pause: a quit
-                    // while Settings or Playback sits over a paused
-                    // match still has an unsaved match behind it, and
-                    // a Home-classified Cancel would strand it with no
-                    // route back.
-                    let over_a_match = screen_holds_live_match(&screen);
-                    screen = Screen::Pause(PauseScreen::open_save_failed(
-                        err.player_line(),
-                        screens::pause::LeaveVerb::Quit,
-                        app.game.state.result().is_some(),
-                        can_surrender(&app.game),
-                        !over_a_match,
-                    ));
+                    screen = Screen::Pause(*dialog);
                 }
             }
         }
@@ -1164,6 +1157,39 @@ fn track_pointer_position(mouse: &mut Vec2, event: &RawEvent) {
         | RawEvent::MouseDown { x, y, .. }
         | RawEvent::MouseUp { x, y, .. } => *mouse = vec2(x, y),
         _ => {}
+    }
+}
+
+impl App {
+    /// Swaps in a freshly built match: session toggles carry over from the
+    /// old game, the frame profile and transient input start clean, and the
+    /// tutorial is whatever this session calls for.
+    fn install_session(&mut self, fresh: Game, paused: bool, tutorial: Option<tutorial::Tutorial>) {
+        self.tutorial = tutorial;
+        self.game = keep_flags(fresh, &self.game);
+        self.game.presentation.paused = paused;
+        self.performance.reset();
+        self.input.reset_session();
+    }
+
+    /// Autosaves the live match before the player leaves it. A failed save
+    /// returns the dialog that holds the door instead, because leaving anyway
+    /// would be silent data loss. `cancel_home` says whether Cancel returns
+    /// to Home rather than to the match behind the dialog.
+    fn save_before_leaving(
+        &mut self,
+        verb: screens::pause::LeaveVerb,
+        cancel_home: bool,
+    ) -> Result<(), Box<PauseScreen>> {
+        autosave::save(&mut self.game).map(drop).map_err(|err| {
+            Box::new(PauseScreen::open_save_failed(
+                err.player_line(),
+                verb,
+                self.game.state.result().is_some(),
+                can_surrender(&self.game),
+                cancel_home,
+            ))
+        })
     }
 }
 
