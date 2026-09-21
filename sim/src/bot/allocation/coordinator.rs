@@ -1389,22 +1389,7 @@ mod tests {
     }
 
     fn harvester(id: u32) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(2, 2),
-            hp: UnitKind::Harvester.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), UnitKind::Harvester, TilePos::new(2, 2))
     }
 
     fn connected_case() -> ConnectedOpportunityCase {
@@ -1596,17 +1581,13 @@ mod tests {
         let mut obs = observation();
         obs.tick = 120;
         obs.scrap = 100;
-        obs.my_buildings.push(crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(3, 3),
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.my_buildings
+            .push(crate::bot::observation::BuildingObs::fixture(
+                9,
+                PlayerId(0),
+                BuildingKind::Foundry,
+                TilePos::new(3, 3),
+            ));
         obs.my_queues.push(Vec::new());
         let resources = ResourceSnapshot::from_observation(&obs);
         let decision = StrategicDecision {
@@ -1657,17 +1638,13 @@ mod tests {
             .stats()
             .cost
             .saturating_add(UnitKind::Kestrel.stats().cost);
-        obs.my_buildings.push(crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(0),
-            kind: BuildingKind::Airworks,
-            anchor: TilePos::new(3, 3),
-            hp: BuildingKind::Airworks.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.my_buildings
+            .push(crate::bot::observation::BuildingObs::fixture(
+                9,
+                PlayerId(0),
+                BuildingKind::Airworks,
+                TilePos::new(3, 3),
+            ));
         obs.my_queues.push(Vec::new());
         let resources = ResourceSnapshot::from_observation(&obs);
         let first = StrategicDecision {
@@ -1782,17 +1759,13 @@ mod tests {
         obs.scrap = cost / 3;
         obs.my_units = vec![harvester(3)];
         obs.my_units[0].founding = Some((BuildingKind::Foundry, TilePos::new(8, 9)));
-        obs.my_buildings.push(crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: BuildingId(20),
-            player: PlayerId(0),
-            kind: BuildingKind::Reclaimer,
-            anchor: TilePos::new(1, 1),
-            hp: BuildingKind::Reclaimer.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.my_buildings
+            .push(crate::bot::observation::BuildingObs::fixture(
+                20,
+                PlayerId(0),
+                BuildingKind::Reclaimer,
+                TilePos::new(1, 1),
+            ));
         obs.my_queues.push(Vec::new());
         let resources = ResourceSnapshot::from_observation(&obs);
         let horizon = obs
@@ -1831,29 +1804,21 @@ mod tests {
         obs.scrap = 0;
         obs.my_units = vec![harvester(3)];
         obs.my_units[0].founding = Some((BuildingKind::Foundry, TilePos::new(8, 9)));
-        obs.my_buildings.push(crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(3, 3),
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.my_buildings
+            .push(crate::bot::observation::BuildingObs::fixture(
+                9,
+                PlayerId(0),
+                BuildingKind::Foundry,
+                TilePos::new(3, 3),
+            ));
         for id in 20..70 {
-            obs.my_buildings.push(crate::bot::observation::BuildingObs {
-                provisional: false,
-                id: BuildingId(id),
-                player: PlayerId(0),
-                kind: BuildingKind::Reclaimer,
-                anchor: TilePos::new(12, 12),
-                hp: BuildingKind::Reclaimer.base_stats().max_hp,
-                built: true,
-                seen: true,
-                tier: 0,
-            });
+            obs.my_buildings
+                .push(crate::bot::observation::BuildingObs::fixture(
+                    id,
+                    PlayerId(0),
+                    BuildingKind::Reclaimer,
+                    TilePos::new(12, 12),
+                ));
         }
         obs.my_queues = vec![Vec::new(); obs.my_buildings.len()];
         let resources = ResourceSnapshot::from_observation(&obs);
@@ -2339,17 +2304,13 @@ mod tests {
         obs.tick = 120;
         {
             let obs = &mut *obs;
-            obs.my_buildings.push(crate::bot::observation::BuildingObs {
-                id: BuildingId(1),
-                player: obs.me,
-                kind: BuildingKind::Reclaimer,
-                anchor: TilePos::new(2, 2),
-                hp: BuildingKind::Reclaimer.base_stats().max_hp,
-                built: true,
-                provisional: false,
-                seen: true,
-                tier: 0,
-            });
+            obs.my_buildings
+                .push(crate::bot::observation::BuildingObs::fixture(
+                    1,
+                    obs.me,
+                    BuildingKind::Reclaimer,
+                    TilePos::new(2, 2),
+                ));
         }
         let resources = ResourceSnapshot::from_observation(&obs);
         let kind = UnitKind::Sentinel;

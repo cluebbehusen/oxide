@@ -112,16 +112,13 @@ mod tests {
         });
         obs.my_buildings = [7, 3]
             .into_iter()
-            .map(|id| BuildingObs {
-                id: BuildingId(id),
-                player: obs.me,
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(id as i32 * 4, 4),
-                hp: BuildingKind::Foundry.base_stats().max_hp,
-                built: true,
-                seen: true,
-                provisional: false,
-                tier: 0,
+            .map(|id| {
+                BuildingObs::fixture(
+                    id,
+                    obs.me,
+                    BuildingKind::Foundry,
+                    TilePos::new(id as i32 * 4, 4),
+                )
             })
             .collect();
         obs.my_queues = vec![vec![], vec![]];

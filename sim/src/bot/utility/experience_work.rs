@@ -29,22 +29,12 @@ mod tests {
             explored: vec![true; 600],
             scrap: 1000,
             known_scrap: vec![(TilePos::new(10, 10), 1000)],
-            my_units: vec![UnitObs {
-                id: UnitId(1),
-                player: crate::ids::PlayerId(0),
-                kind: UnitKind::Harvester,
-                tile: TilePos::new(3, 3),
-                hp: UnitKind::Harvester.stats().max_hp,
-                idle: true,
-                carrying: 0,
-                harvesting: None,
-                cargo: 0,
-                site: None,
-                salvaging: None,
-                founding: None,
-                repairing: false,
-                grounded: false,
-            }],
+            my_units: vec![UnitObs::fixture(
+                1,
+                crate::ids::PlayerId(0),
+                UnitKind::Harvester,
+                TilePos::new(3, 3),
+            )],
             ..Default::default()
         })
     }
@@ -130,15 +120,14 @@ mod tests {
                     site,
                 );
                 let occupant = BuildingObs {
-                    provisional: false,
-                    id: BuildingId(8),
-                    player: PlayerId(owner),
-                    kind: BuildingKind::RepairBay,
-                    anchor: site.offset(1, 0),
                     hp: 10,
                     built,
-                    seen: true,
-                    tier: 0,
+                    ..BuildingObs::fixture(
+                        8,
+                        PlayerId(owner),
+                        BuildingKind::RepairBay,
+                        site.offset(1, 0),
+                    )
                 };
                 match owner {
                     0 => obs.my_buildings.push(occupant),
@@ -173,15 +162,14 @@ mod tests {
             policy.observe_work_experience(&obs);
             policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
             obs.enemy_buildings.push(BuildingObs {
-                provisional: false,
-                id: BuildingId(8),
-                player: PlayerId(2),
-                kind: BuildingKind::RepairBay,
-                anchor: site.offset(offset, 0),
                 hp,
-                built: true,
                 seen,
-                tier: 0,
+                ..BuildingObs::fixture(
+                    8,
+                    PlayerId(2),
+                    BuildingKind::RepairBay,
+                    site.offset(offset, 0),
+                )
             });
             obs.tick = 124;
             policy.observe_work_experience(&obs);
@@ -204,15 +192,9 @@ mod tests {
         {
             let obs = &mut *obs;
             obs.my_buildings.push(BuildingObs {
-                provisional: false,
-                id: BuildingId(8),
-                player: obs.me,
-                kind: BuildingKind::Fabricator,
-                anchor: site,
                 hp: 10,
                 built: false,
-                seen: true,
-                tier: 0,
+                ..BuildingObs::fixture(8, obs.me, BuildingKind::Fabricator, site)
             });
         }
         policy.observe_work_experience(&obs);

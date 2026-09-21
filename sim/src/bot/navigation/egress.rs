@@ -635,21 +635,14 @@ mod tests {
     #[test]
     fn hypothetical_layout_eviction_preserves_cold_egress_answers() {
         use crate::bot::observation::BuildingObs;
-        use crate::ids::{BuildingId, PlayerId};
+        use crate::ids::PlayerId;
 
         let obs = Observation::from_data(ObservationData {
             map_width: 32,
             map_height: 32,
             my_buildings: vec![BuildingObs {
-                id: BuildingId(0),
-                player: PlayerId(0),
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(2, 2),
                 hp: 1,
-                built: true,
-                seen: true,
-                tier: 0,
-                provisional: false,
+                ..BuildingObs::fixture(0, PlayerId(0), BuildingKind::Foundry, TilePos::new(2, 2))
             }],
             ..Default::default()
         });
@@ -675,22 +668,20 @@ mod tests {
     fn provisional_sites_preserve_egress_until_activation() {
         use crate::bot::navigation::commands::RouteProjection;
         use crate::bot::observation::BuildingObs;
-        use crate::ids::{BuildingId, PlayerId};
+        use crate::ids::PlayerId;
 
         for owner in 0..3 {
             let mut obs = Observation::from_data(ObservationData {
                 map_width: 16,
                 map_height: 16,
                 my_buildings: vec![BuildingObs {
-                    id: BuildingId(0),
-                    player: PlayerId(0),
-                    kind: BuildingKind::Foundry,
-                    anchor: TilePos::new(2, 2),
                     hp: 1,
-                    built: true,
-                    seen: true,
-                    tier: 0,
-                    provisional: false,
+                    ..BuildingObs::fixture(
+                        0,
+                        PlayerId(0),
+                        BuildingKind::Foundry,
+                        TilePos::new(2, 2),
+                    )
                 }],
                 ..Default::default()
             });
@@ -698,15 +689,15 @@ mod tests {
             GroundEgressCache::prepare(QueryPurpose::NavigationTest, &mut cache, &obs);
             let before = cache.clone().unwrap();
             let site = BuildingObs {
-                id: BuildingId(1),
-                player: PlayerId(owner),
-                kind: BuildingKind::Barricade,
-                anchor: TilePos::new(8, 8),
                 hp: 1,
                 built: false,
-                seen: true,
-                tier: 0,
                 provisional: true,
+                ..BuildingObs::fixture(
+                    1,
+                    PlayerId(owner),
+                    BuildingKind::Barricade,
+                    TilePos::new(8, 8),
+                )
             };
             let buildings = match owner {
                 0 => &mut obs.my_buildings,
@@ -753,15 +744,13 @@ mod tests {
             map_height: 128,
             my_buildings: (0..8)
                 .map(|id| crate::bot::observation::BuildingObs {
-                    id: crate::ids::BuildingId(id),
-                    player: crate::ids::PlayerId(0),
-                    kind: BuildingKind::Foundry,
-                    anchor: TilePos::new(4 + id as i32 * 16, 10),
                     hp: 1,
-                    built: true,
-                    seen: true,
-                    tier: 0,
-                    provisional: false,
+                    ..crate::bot::observation::BuildingObs::fixture(
+                        id,
+                        crate::ids::PlayerId(0),
+                        BuildingKind::Foundry,
+                        TilePos::new(4 + id as i32 * 16, 10),
+                    )
                 })
                 .collect(),
             ..Default::default()

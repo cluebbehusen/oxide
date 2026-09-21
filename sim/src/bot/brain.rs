@@ -3351,15 +3351,15 @@ mod tests {
             let mut prior = raw.clone();
             prior.tick = prior.tick.saturating_sub(100);
             prior.enemy_buildings.push(BuildingObs {
-                provisional: false,
-                id: enemy_foundry.id,
-                player: enemy_foundry.player,
-                kind: enemy_foundry.kind,
-                anchor: enemy_foundry.anchor,
                 hp: enemy_foundry.hp,
                 built: enemy_foundry.built,
-                seen: true,
                 tier: enemy_foundry.tier,
+                ..BuildingObs::fixture(
+                    enemy_foundry.id.0,
+                    enemy_foundry.player,
+                    enemy_foundry.kind,
+                    enemy_foundry.anchor,
+                )
             });
             let prior = orientation.observe(&prior);
             brain.mind_mut().intelligence.update(&prior);
@@ -3736,15 +3736,15 @@ mod tests {
         let mut prior = raw.clone();
         prior.tick = prior.tick.saturating_sub(100);
         prior.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: enemy_foundry.id,
-            player: enemy_foundry.player,
-            kind: enemy_foundry.kind,
-            anchor: enemy_foundry.anchor,
             hp: enemy_foundry.hp,
             built: enemy_foundry.built,
-            seen: true,
             tier: enemy_foundry.tier,
+            ..BuildingObs::fixture(
+                enemy_foundry.id.0,
+                enemy_foundry.player,
+                enemy_foundry.kind,
+                enemy_foundry.anchor,
+            )
         });
         brain
             .mind_mut()
@@ -6787,15 +6787,15 @@ mod tests {
         let mut prior = raw.clone();
         prior.tick = prior.tick.saturating_sub(100);
         prior.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: enemy_foundry.id,
-            player: enemy_foundry.player,
-            kind: enemy_foundry.kind,
-            anchor: enemy_foundry.anchor,
             hp: enemy_foundry.hp,
             built: enemy_foundry.built,
-            seen: true,
             tier: enemy_foundry.tier,
+            ..BuildingObs::fixture(
+                enemy_foundry.id.0,
+                enemy_foundry.player,
+                enemy_foundry.kind,
+                enemy_foundry.anchor,
+            )
         });
         brain
             .mind_mut()
@@ -8267,15 +8267,15 @@ mod tests {
         let mut prior = raw;
         prior.tick = last_seen;
         prior.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: enemy_foundry.id,
-            player: enemy_foundry.player,
-            kind: enemy_foundry.kind,
-            anchor: enemy_foundry.anchor,
             hp: enemy_foundry.hp,
             built: enemy_foundry.built,
-            seen: true,
             tier: enemy_foundry.tier,
+            ..BuildingObs::fixture(
+                enemy_foundry.id.0,
+                enemy_foundry.player,
+                enemy_foundry.kind,
+                enemy_foundry.anchor,
+            )
         });
         brain
             .mind_mut()
@@ -8697,35 +8697,10 @@ mod tests {
     }
 
     fn test_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), kind, tile)
     }
 
     fn test_building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(player),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(player), kind, anchor)
     }
 }

@@ -56,21 +56,15 @@ pub(in crate::bot) fn building_strength(building: &BuildingObs, domain: Domain) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BuildingId, BuildingKind, PlayerId};
+    use crate::{BuildingKind, PlayerId};
 
     #[test]
     fn static_risk_respects_known_cover_domain_and_construction() {
         let mut obs = Observation::default();
         let mut building = BuildingObs {
-            id: BuildingId(1),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor: TilePos::new(4, 4),
             hp: 900,
-            built: true,
-            provisional: false,
-            seen: true,
             tier: 2,
+            ..BuildingObs::fixture(1, PlayerId(1), BuildingKind::Turret, TilePos::new(4, 4))
         };
         let target = TilePos::new(7, 4);
         assert!(building_threatens(&obs, &building, target, Domain::Ground));
@@ -99,15 +93,9 @@ mod tests {
                 obs.known_peaks.push(blocker);
             }
             let gun = BuildingObs {
-                id: BuildingId(1),
-                player: PlayerId(1),
-                kind: BuildingKind::Turret,
-                anchor: TilePos::new(4, 4),
                 hp: 900,
-                built: true,
-                provisional: false,
-                seen: true,
                 tier: 2,
+                ..BuildingObs::fixture(1, PlayerId(1), BuildingKind::Turret, TilePos::new(4, 4))
             };
             assert_eq!(
                 building_threatens(&obs, &gun, TilePos::new(7, 4), Domain::Ground),

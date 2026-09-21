@@ -496,7 +496,7 @@ pub(in crate::bot) fn lift_unavailable(
 mod tests {
     use super::*;
     use crate::bot::observation::{BuildingObs, UnitObs};
-    use crate::ids::{BuildingId, PlayerId};
+    use crate::ids::PlayerId;
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
     use crate::state::Faction;
     use crate::stats::{BuildingKind, UnitKind};
@@ -697,34 +697,12 @@ mod tests {
 
     fn unit(id: u32, player: u8, kind: UnitKind, tile: TilePos) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(player),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
             idle: player == 0,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(player), kind, tile)
         }
     }
 
     fn building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(player),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(player), kind, anchor)
     }
 }

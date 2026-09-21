@@ -740,35 +740,13 @@ mod tests {
     const ENEMY_HOME: TilePos = TilePos::new(34, 10);
 
     fn unit(id: u32, player: PlayerId, kind: UnitKind, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player,
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, player, kind, tile)
     }
 
     fn building(kind: BuildingKind, built: bool) -> BuildingObs {
         BuildingObs {
-            provisional: false,
-            id: BuildingId(1),
-            player: PlayerId(0),
-            kind,
-            anchor: TilePos::new(2, 2),
-            hp: kind.base_stats().max_hp,
             built,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(1, PlayerId(0), kind, TilePos::new(2, 2))
         }
     }
 

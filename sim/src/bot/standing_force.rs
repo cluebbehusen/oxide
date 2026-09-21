@@ -2270,17 +2270,12 @@ mod tests {
     }
 
     fn building(id: u32, kind: BuildingKind) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(0),
+        BuildingObs::fixture(
+            id,
+            PlayerId(0),
             kind,
-            anchor: TilePos::new(2 + i32::try_from(id).unwrap(), 2),
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+            TilePos::new(2 + i32::try_from(id).unwrap(), 2),
+        )
     }
 
     fn add_producer(obs: &mut Observation, id: u32, kind: BuildingKind, queue: Vec<UnitKind>) {
@@ -2290,22 +2285,12 @@ mod tests {
     }
 
     fn unit(id: u32, kind: UnitKind) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
+        UnitObs::fixture(
+            id,
+            PlayerId(0),
             kind,
-            tile: TilePos::new(6 + i32::try_from(id % 8).unwrap(), 8),
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+            TilePos::new(6 + i32::try_from(id % 8).unwrap(), 8),
+        )
     }
 
     fn enemy_unit(id: u32, kind: UnitKind) -> UnitObs {
