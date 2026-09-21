@@ -93,48 +93,77 @@ pub fn run_sweep(
         Ok(m)
     })?;
 
-    let (victories, draws, undecided, seat_wins, median_decision_tick) = tally_outcomes(&matches);
+    let tally = Tally::of(matches.iter().map(|m| (m.outcome, m.ticks)));
     Ok(SweepReport {
         bot_config: config,
         sim_version: oxide_sim::SIM_VERSION.to_string(),
         scenario: base.name,
         seeds,
         max_ticks,
-        victories,
-        draws,
-        undecided,
-        seat_wins,
-        median_decision_tick,
+        victories: tally.victories(),
+        draws: tally.draws,
+        undecided: tally.undecided,
+        seat_wins: tally.seat_wins,
+        median_decision_tick: tally.quantile(1, 2),
         matches,
     })
 }
 
-/// Folds match outcomes into the report counters. Draws count as
-/// decisions for the median — a mutual Foundry death decided the game
-/// on that tick — while undecided caps stay out of the tick pool.
-fn tally_outcomes(matches: &[SweepMatch]) -> (u32, u32, u32, [u32; 2], Option<u64>) {
-    let mut victories = 0u32;
-    let mut draws = 0u32;
-    let mut undecided = 0u32;
-    let mut seat_wins = [0u32; 2];
-    let mut decision_ticks: Vec<u64> = Vec::new();
-    for m in matches {
-        match m.outcome {
-            SweepOutcome::Victory { seat } => {
-                victories += 1;
-                seat_wins[seat as usize] += 1;
-                decision_ticks.push(m.ticks);
+/// The fold every measurement record is read off. Draws count as decisions
+/// for the tick pool, since a mutual Foundry death decided the game on that
+/// tick, while undecided caps stay out of it.
+pub(crate) struct Tally {
+    pub(crate) matches: u32,
+    pub(crate) seat_wins: [u32; 2],
+    pub(crate) draws: u32,
+    pub(crate) undecided: u32,
+    decision_ticks: Vec<u64>,
+}
+
+impl Tally {
+    pub(crate) fn of(played: impl IntoIterator<Item = (SweepOutcome, u64)>) -> Self {
+        let mut tally = Tally {
+            matches: 0,
+            seat_wins: [0; 2],
+            draws: 0,
+            undecided: 0,
+            decision_ticks: Vec::new(),
+        };
+        for (outcome, ticks) in played {
+            tally.matches += 1;
+            match outcome {
+                SweepOutcome::Victory { seat } => {
+                    tally.seat_wins[usize::from(seat)] += 1;
+                    tally.decision_ticks.push(ticks);
+                }
+                SweepOutcome::Draw => {
+                    tally.draws += 1;
+                    tally.decision_ticks.push(ticks);
+                }
+                SweepOutcome::Undecided => tally.undecided += 1,
             }
-            SweepOutcome::Draw => {
-                draws += 1;
-                decision_ticks.push(m.ticks);
-            }
-            SweepOutcome::Undecided => undecided += 1,
+        }
+        tally.decision_ticks.sort_unstable();
+        tally
+    }
+
+    pub(crate) fn victories(&self) -> u32 {
+        self.seat_wins[0] + self.seat_wins[1]
+    }
+
+    /// Undecided share, in percent.
+    pub(crate) fn censored_percent(&self) -> f64 {
+        if self.matches == 0 {
+            0.0
+        } else {
+            100.0 * f64::from(self.undecided) / f64::from(self.matches)
         }
     }
-    decision_ticks.sort_unstable();
-    let median = (!decision_ticks.is_empty()).then(|| decision_ticks[decision_ticks.len() / 2]);
-    (victories, draws, undecided, seat_wins, median)
+
+    /// Nearest-rank quantile of the decision ticks.
+    pub(crate) fn quantile(&self, num: usize, den: usize) -> Option<u64> {
+        quantile(&self.decision_ticks, num, den)
+    }
 }
 
 /// Runs the sweep, prints the verdict, and optionally lands the raw
@@ -183,20 +212,42 @@ fn play(
 ) -> Result<SweepMatch> {
     let mut sc = base.clone();
     sc.seed = seed;
-    oxide_kit::bench::all_bots_with_config(&mut sc, config);
-    let mut state: State = sc.build().context("building scenario")?;
-    let mut bots = seat_bots(&sc)?;
+    let state = play_mirror(sc, config, max_ticks, [0, 1])?;
+    Ok(SweepMatch {
+        seed,
+        ticks: state.current_tick(),
+        outcome: outcome_of(&state),
+    })
+}
+
+/// Seats the configured bot in both seats of a 1v1 and steps to the decision
+/// or the cap. `command_order` is the seat order commands are staged in each
+/// tick.
+pub(crate) fn play_mirror(
+    mut scenario: Scenario,
+    config: oxide_sim::scenario::BotConfig,
+    max_ticks: u64,
+    command_order: [usize; 2],
+) -> Result<State> {
+    oxide_kit::bench::all_bots_with_config(&mut scenario, config);
+    let mut state = scenario.build().context("building scenario")?;
+    let mut bots = seat_bots(&scenario)?;
     for _ in 0..max_ticks {
         let mut commands = Vec::new();
-        for bot in &mut bots {
-            commands.extend(bot.act(&state));
+        for seat in command_order {
+            commands.extend(bots[seat].act(&state));
         }
         state.tick(&commands);
         if state.result().is_some() {
             break;
         }
     }
-    let outcome = match state.result() {
+    Ok(state)
+}
+
+/// How a finished 1v1 mirror ended.
+pub(crate) fn outcome_of(state: &State) -> SweepOutcome {
+    match state.result() {
         Some(GameResult::Victory { .. }) => SweepOutcome::Victory {
             seat: state
                 .winners()
@@ -206,12 +257,7 @@ fn play(
         },
         Some(GameResult::Draw) => SweepOutcome::Draw,
         None => SweepOutcome::Undecided,
-    };
-    Ok(SweepMatch {
-        seed,
-        ticks: state.current_tick(),
-        outcome,
-    })
+    }
 }
 
 /// Nearest-rank quantile over an already-sorted series.
@@ -245,25 +291,25 @@ mod tests {
             ticks,
             outcome,
         };
-        let matches = vec![
+        let matches = [
             m(1, 300, SweepOutcome::Victory { seat: 0 }),
             m(2, 100, SweepOutcome::Victory { seat: 0 }),
             m(3, 400, SweepOutcome::Victory { seat: 1 }),
             m(4, 250, SweepOutcome::Draw),
             m(5, 999, SweepOutcome::Undecided),
         ];
-        let (victories, draws, undecided, seat_wins, median) = tally_outcomes(&matches);
-        assert_eq!(victories, 3);
-        assert_eq!(draws, 1);
-        assert_eq!(undecided, 1);
-        assert_eq!(seat_wins, [2, 1]);
+        let tally = Tally::of(matches.iter().map(|m| (m.outcome, m.ticks)));
+        assert_eq!(tally.victories(), 3);
+        assert_eq!(tally.draws, 1);
+        assert_eq!(tally.undecided, 1);
+        assert_eq!(tally.seat_wins, [2, 1]);
         // Decision ticks sorted: 100, 250, 300, 400 -> median index 2.
         assert_eq!(
-            median,
+            tally.quantile(1, 2),
             Some(300),
             "the draw's tick joins the pool; the cap's does not"
         );
-        assert_eq!(tally_outcomes(&[]).4, None);
+        assert_eq!(Tally::of([]).quantile(1, 2), None);
     }
 
     /// Two seeds and a cap far too small to decide: the plumbing must
