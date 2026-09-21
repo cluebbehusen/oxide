@@ -11,7 +11,7 @@ use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
 use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
-use crate::state::{Order, State};
+use crate::state::{Order, State, Unit};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
 
@@ -466,12 +466,16 @@ fn split_domains(state: &State, ids: Vec<UnitId>) -> [(Vec<UnitId>, Domain); 2] 
     [(ground, Domain::Ground), (air, Domain::Air)]
 }
 
-fn apply_move(
+/// Sends a group toward one clicked tile: each movement domain snaps the goal
+/// to ground it can stand on and spreads its units around it, and `order_for`
+/// picks the order each unit takes to its own tile.
+fn apply_group_goal(
     state: &mut State,
     player: PlayerId,
     units: &[UnitId],
     goal: TilePos,
     queue: bool,
+    order_for: impl Fn(&Unit, TilePos) -> Order,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, goal) {
         return Err(RejectReason::OutOfBounds);
@@ -494,7 +498,8 @@ fn apply_move(
         let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
         for (id, goal) in ids.into_iter().zip(goals) {
             let unit = state.unit_mut(id).expect("filtered above");
-            if assign(unit, Order::Move { goal }, queue) {
+            let order = order_for(unit, goal);
+            if assign(unit, order, queue) {
                 landed += 1;
             }
         }
@@ -503,6 +508,18 @@ fn apply_move(
         return Err(RejectReason::UnreachableGoal);
     }
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+fn apply_move(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    goal: TilePos,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    apply_group_goal(state, player, units, goal, queue, |_, goal| Order::Move {
+        goal,
+    })
 }
 
 fn apply_attack(
@@ -566,41 +583,13 @@ fn apply_attack_move(
     goal: TilePos,
     queue: bool,
 ) -> Result<(), RejectReason> {
-    if !in_envelope(state, goal) {
-        return Err(RejectReason::OutOfBounds);
-    }
-    let accepted = accepted_units(state, player, units);
-    if accepted.is_empty() {
-        return Err(RejectReason::NoValidUnits);
-    }
-    let mut landed = 0;
-    let mut routed = false;
-    for (ids, domain) in split_domains(state, accepted) {
-        if ids.is_empty() {
-            continue;
+    apply_group_goal(state, player, units, goal, queue, |unit, goal| {
+        if unit.kind.stats().can_fight() {
+            Order::AttackMove { goal }
+        } else {
+            Order::Move { goal }
         }
-        let reverse = spread_scan_reversed(state, goal, &ids);
-        let Some(snapped) = group_domain_goal(state, goal, domain, reverse) else {
-            continue;
-        };
-        routed = true;
-        let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
-        for (id, goal) in ids.into_iter().zip(goals) {
-            let unit = state.unit_mut(id).expect("filtered above");
-            let order = if unit.kind.stats().can_fight() {
-                Order::AttackMove { goal }
-            } else {
-                Order::Move { goal }
-            };
-            if assign(unit, order, queue) {
-                landed += 1;
-            }
-        }
-    }
-    if !routed {
-        return Err(RejectReason::UnreachableGoal);
-    }
-    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+    })
 }
 
 fn apply_advance(
@@ -610,41 +599,13 @@ fn apply_advance(
     goal: TilePos,
     queue: bool,
 ) -> Result<(), RejectReason> {
-    if !in_envelope(state, goal) {
-        return Err(RejectReason::OutOfBounds);
-    }
-    let accepted = accepted_units(state, player, units);
-    if accepted.is_empty() {
-        return Err(RejectReason::NoValidUnits);
-    }
-    let mut landed = 0;
-    let mut routed = false;
-    for (ids, domain) in split_domains(state, accepted) {
-        if ids.is_empty() {
-            continue;
+    apply_group_goal(state, player, units, goal, queue, |unit, goal| {
+        if unit.kind.stats().can_fight() {
+            Order::Advance { goal }
+        } else {
+            Order::Move { goal }
         }
-        let reverse = spread_scan_reversed(state, goal, &ids);
-        let Some(snapped) = group_domain_goal(state, goal, domain, reverse) else {
-            continue;
-        };
-        routed = true;
-        let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
-        for (id, goal) in ids.into_iter().zip(goals) {
-            let unit = state.unit_mut(id).expect("filtered above");
-            let order = if unit.kind.stats().can_fight() {
-                Order::Advance { goal }
-            } else {
-                Order::Move { goal }
-            };
-            if assign(unit, order, queue) {
-                landed += 1;
-            }
-        }
-    }
-    if !routed {
-        return Err(RejectReason::UnreachableGoal);
-    }
-    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+    })
 }
 
 fn apply_harvest(
