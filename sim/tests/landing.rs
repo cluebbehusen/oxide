@@ -2,37 +2,17 @@
 //! the parked airframe as a ground body, auto-land, and the ways a landing
 //! goes around or lifts off again.
 
+mod common;
+use common::{building, cmd, players, unit};
+
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::state::Order;
 use oxide_sim::stats::{AUTO_LAND_IDLE_TICKS, BuildingKind};
-use oxide_sim::{
-    Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind,
-};
+use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind};
 
 use chassis::fx::{Fx, HALF};
 use chassis::grid::TilePos;
-
-fn players(scrap: u32) -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
 
 /// A 24x16 open field with a rock rim: the east wall is at x = 24 and the
 /// south wall at y = 16, so wall-side and corner tiles are within reach.
@@ -77,21 +57,6 @@ fn arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     scenario.map[12] = "#......................#".into();
     scenario.players.truncate(1);
     scenario
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
 }
 
 fn land(player: u8, unit: oxide_sim::ids::UnitId, x: i32, y: i32) -> PlayerCommand {

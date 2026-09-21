@@ -6,6 +6,7 @@
 //! winning the tick.
 
 mod common;
+use common::{cmd, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
@@ -79,19 +80,8 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
     }
 }
 
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
 fn structure(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
     BuildingSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
 }
 
 fn walk(player: u8, units: Vec<UnitId>, goal: TilePos) -> PlayerCommand {
@@ -103,23 +93,6 @@ fn walk(player: u8, units: Vec<UnitId>, goal: TilePos) -> PlayerCommand {
             queue: false,
         },
     )
-}
-
-fn run_until(
-    state: &mut State,
-    max_ticks: u64,
-    mut stop: impl FnMut(&State, &[Event]) -> bool,
-) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..max_ticks {
-        let report = state.tick(&[]);
-        let done = stop(state, &report.events);
-        all.extend(report.events);
-        if done {
-            return all;
-        }
-    }
-    panic!("condition not reached within {max_ticks} ticks");
 }
 
 /// Walks the raider beside the patient at FAR, lets auto-acquire gnaw to

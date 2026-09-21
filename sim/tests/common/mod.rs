@@ -1,8 +1,10 @@
 //! Shared scaffolding used by the focused behavior suites.
 #![allow(dead_code)]
 
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
-use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::{
+    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind,
+};
 
 /// A small arena: two Foundries in opposite corners, open ground between.
 pub fn arena(units: Vec<UnitSpec>) -> Scenario {
@@ -20,32 +22,41 @@ pub fn arena(units: Vec<UnitSpec>) -> Scenario {
             "#..............#".into(),
             "################".into(),
         ],
-        players: vec![
-            PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
-                team: None,
-                scrap: 200,
-                bot: false,
-                bot_config: None,
-            },
-            PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
-                team: None,
-                scrap: 200,
-                bot: false,
-                bot_config: None,
-            },
-        ],
+        players: players(200),
         units,
         buildings: Vec::new(),
         meta: None,
     }
 }
 
+/// Two human seats, Ferrous then Cupric, each banking `scrap`.
+pub fn players(scrap: u32) -> Vec<PlayerSpec> {
+    vec![
+        PlayerSpec {
+            name: "Ferrous".into(),
+            faction: Faction::Ferrous,
+            team: None,
+            scrap,
+            bot: false,
+            bot_config: None,
+        },
+        PlayerSpec {
+            name: "Cupric".into(),
+            faction: Faction::Cupric,
+            team: None,
+            scrap,
+            bot: false,
+            bot_config: None,
+        },
+    ]
+}
+
 pub fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
     UnitSpec { player, kind, x, y }
+}
+
+pub fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
+    BuildingSpec { player, kind, x, y }
 }
 
 /// A wide open arena — Foundries tucked into opposite corners, out of
@@ -105,6 +116,15 @@ pub fn cmd(player: u8, command: Command) -> PlayerCommand {
         player: PlayerId(player),
         command,
     }
+}
+
+/// Runs exactly `ticks` idle ticks, collecting every event.
+pub fn run(state: &mut State, ticks: u64) -> Vec<Event> {
+    let mut all = Vec::new();
+    for _ in 0..ticks {
+        all.extend(state.tick(&[]).events);
+    }
+    all
 }
 
 /// Runs until `stop` returns true or `max_ticks` elapse, collecting every
