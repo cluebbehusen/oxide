@@ -151,99 +151,151 @@ fn control_rows() -> Vec<Option<Action>> {
         .collect()
 }
 
-fn settings_menu(config: &Config) -> Menu {
-    let pct = |v: f32| format!("{}%", (v * 100.0).round());
-    let onoff = |v: bool| if v { "on" } else { "off" };
-    Menu::new(
-        "SETTINGS",
-        vec![
-            format!("Master volume: {}", pct(config.volumes.master)),
-            format!("Effects volume: {}", pct(config.volumes.effects)),
-            format!("UI volume: {}", pct(config.volumes.ui)),
-            format!("Music volume: {}", pct(config.volumes.music)),
-            format!("UI scale: {}", pct(config.ui_scale)),
-            format!("Edge pan: {}", onoff(config.camera.edge_pan)),
-            format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
-            format!("Reduced motion: {}", onoff(config.reduced_motion)),
-            format!("Colorblind accents: {}", onoff(config.colorblind)),
-            format!(
+/// One settings row. Rows are values, not indices: the label, the cycle
+/// step, and the activation route all key off the row itself, so inserting a
+/// row cannot leave a stale index pointing at its neighbour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    MasterVolume,
+    EffectsVolume,
+    UiVolume,
+    MusicVolume,
+    UiScale,
+    EdgePan,
+    InvertZoom,
+    ReducedMotion,
+    Colorblind,
+    PerformanceDisplay,
+    MarkerTiming,
+    MarkerSize,
+    LeftHandedPreset,
+    Controls,
+    Diagnostics,
+    OpenDiagnostics,
+    ExportDiagnostics,
+    Back,
+}
+
+impl Row {
+    /// Every row, in the order the menu shows them.
+    const ALL: [Row; 18] = [
+        Row::MasterVolume,
+        Row::EffectsVolume,
+        Row::UiVolume,
+        Row::MusicVolume,
+        Row::UiScale,
+        Row::EdgePan,
+        Row::InvertZoom,
+        Row::ReducedMotion,
+        Row::Colorblind,
+        Row::PerformanceDisplay,
+        Row::MarkerTiming,
+        Row::MarkerSize,
+        Row::LeftHandedPreset,
+        Row::Controls,
+        Row::Diagnostics,
+        Row::OpenDiagnostics,
+        Row::ExportDiagnostics,
+        Row::Back,
+    ];
+
+    /// Where this row sits in the menu.
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|row| *row == self)
+            .expect("every row is listed")
+    }
+
+    fn label(self, config: &Config) -> String {
+        let pct = |v: f32| format!("{}%", (v * 100.0).round());
+        let onoff = |v: bool| if v { "on" } else { "off" };
+        match self {
+            Row::MasterVolume => format!("Master volume: {}", pct(config.volumes.master)),
+            Row::EffectsVolume => format!("Effects volume: {}", pct(config.volumes.effects)),
+            Row::UiVolume => format!("UI volume: {}", pct(config.volumes.ui)),
+            Row::MusicVolume => format!("Music volume: {}", pct(config.volumes.music)),
+            Row::UiScale => format!("UI scale: {}", pct(config.ui_scale)),
+            Row::EdgePan => format!("Edge pan: {}", onoff(config.camera.edge_pan)),
+            Row::InvertZoom => format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
+            Row::ReducedMotion => format!("Reduced motion: {}", onoff(config.reduced_motion)),
+            Row::Colorblind => format!("Colorblind accents: {}", onoff(config.colorblind)),
+            Row::PerformanceDisplay => format!(
                 "Performance display: {}",
                 config.performance_display.label()
             ),
-            format!("Show strategic markers: {}", config.markers.timing_label()),
-            format!("Strategic marker size: {}", pct(config.markers.scale)),
-            "Apply left-handed bindings".to_string(),
-            "Controls...".to_string(),
-            format!("Diagnostics: {}", onoff(config.diagnostics)),
-            "Open diagnostics folder".to_string(),
-            "Export diagnostic report".to_string(),
-            "Back".to_string(),
-        ],
+            Row::MarkerTiming => {
+                format!("Show strategic markers: {}", config.markers.timing_label())
+            }
+            Row::MarkerSize => format!("Strategic marker size: {}", pct(config.markers.scale)),
+            Row::LeftHandedPreset => "Apply left-handed bindings".to_string(),
+            Row::Controls => "Controls...".to_string(),
+            Row::Diagnostics => format!("Diagnostics: {}", onoff(config.diagnostics)),
+            Row::OpenDiagnostics => "Open diagnostics folder".to_string(),
+            Row::ExportDiagnostics => "Export diagnostic report".to_string(),
+            Row::Back => "Back".to_string(),
+        }
+    }
+}
+
+fn settings_menu(config: &Config) -> Menu {
+    Menu::new(
+        "SETTINGS",
+        Row::ALL.iter().map(|row| row.label(config)).collect(),
     )
 }
 
-/// The "Controls..." row's index in [`settings_menu`] — the exit paths
-/// from the Controls face re-select it, and a stale literal here once
-/// left the cursor on Colorblind accents after two rows were inserted
-/// above (a test pins the label to this index).
-const PERFORMANCE_ROW: usize = 9;
-const MARKER_TIMING_ROW: usize = 10;
-const MARKER_SIZE_ROW: usize = 11;
-const PRESET_ROW: usize = 12;
-const CONTROLS_ROW: usize = 13;
-const DIAGNOSTICS_ROW: usize = 14;
-const OPEN_DIAGNOSTICS_ROW: usize = 15;
-const EXPORT_DIAGNOSTICS_ROW: usize = 16;
-
 /// Advances one settings row to its next value step. Returns false on
 /// rows that navigate instead of cycling.
-fn cycle_setting(config: &mut Config, row: usize) -> bool {
+fn cycle_setting(config: &mut Config, row: Row) -> bool {
     let step = |v: f32| {
         // 0 -> 25 -> 50 -> 75 -> 100 -> 0, tolerant of odd stored values.
         let next = ((v * 4.0).round() as u32 + 1) % 5;
         next as f32 / 4.0
     };
+    // 75 -> 100 -> 125 -> 150 -> 75.
+    let scale_step = |v: f32| match (v * 100.0).round() as u32 {
+        75 => 1.0,
+        100 => 1.25,
+        125 => 1.5,
+        _ => 0.75,
+    };
     match row {
-        0 => config.volumes.master = step(config.volumes.master),
-        1 => config.volumes.effects = step(config.volumes.effects),
-        2 => config.volumes.ui = step(config.volumes.ui),
-        3 => config.volumes.music = step(config.volumes.music),
-        4 => {
-            // 75 -> 100 -> 125 -> 150 -> 75.
-            config.ui_scale = match (config.ui_scale * 100.0).round() as u32 {
-                75 => 1.0,
-                100 => 1.25,
-                125 => 1.5,
-                _ => 0.75,
-            };
+        Row::MasterVolume => config.volumes.master = step(config.volumes.master),
+        Row::EffectsVolume => config.volumes.effects = step(config.volumes.effects),
+        Row::UiVolume => config.volumes.ui = step(config.volumes.ui),
+        Row::MusicVolume => config.volumes.music = step(config.volumes.music),
+        Row::UiScale => {
+            config.ui_scale = scale_step(config.ui_scale);
             render::set_user_scale(config.ui_scale);
         }
-        5 => config.camera.edge_pan = !config.camera.edge_pan,
-        6 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
-        7 => {
+        Row::EdgePan => config.camera.edge_pan = !config.camera.edge_pan,
+        Row::InvertZoom => config.camera.zoom_inverted = !config.camera.zoom_inverted,
+        Row::ReducedMotion => {
             config.reduced_motion = !config.reduced_motion;
             render::set_reduced_motion(config.reduced_motion);
         }
-        8 => {
+        Row::Colorblind => {
             config.colorblind = !config.colorblind;
             render::set_colorblind(config.colorblind);
         }
-        PERFORMANCE_ROW => config.performance_display = config.performance_display.next(),
-        DIAGNOSTICS_ROW => config.diagnostics = !config.diagnostics,
-        MARKER_TIMING_ROW => {
+        Row::PerformanceDisplay => {
+            config.performance_display = config.performance_display.next();
+        }
+        Row::Diagnostics => config.diagnostics = !config.diagnostics,
+        Row::MarkerTiming => {
             config.markers.cycle_timing();
             crate::strategic_markers::set_prefs(config.markers);
         }
-        MARKER_SIZE_ROW => {
-            config.markers.scale = match (config.markers.scale * 100.0).round() as u32 {
-                75 => 1.0,
-                100 => 1.25,
-                125 => 1.5,
-                _ => 0.75,
-            };
+        Row::MarkerSize => {
+            config.markers.scale = scale_step(config.markers.scale);
             crate::strategic_markers::set_prefs(config.markers);
         }
-        _ => return false, // preset, Controls..., and Back route in update
+        Row::LeftHandedPreset
+        | Row::Controls
+        | Row::OpenDiagnostics
+        | Row::ExportDiagnostics
+        | Row::Back => return false,
     }
     true
 }
@@ -377,7 +429,8 @@ impl SettingsScreen {
             Face::Settings => {
                 if escaped {
                     update.out = Out::Leave;
-                } else if let Some(row) = self.menu.handle(events, mouse) {
+                } else if let Some(index) = self.menu.handle(events, mouse) {
+                    let row = Row::ALL[index];
                     sounds.push((SoundKind::Click, None));
                     // Any activation is "the next action": the standing
                     // notice has had its say.
@@ -389,7 +442,7 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
-                    } else if row == PRESET_ROW {
+                    } else if row == Row::LeftHandedPreset {
                         // The left-handed preset replaces the whole
                         // profile (custom rebinds included — Controls'
                         // Reset row walks back to Classic).
@@ -404,11 +457,11 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
-                    } else if row == OPEN_DIAGNOSTICS_ROW {
+                    } else if row == Row::OpenDiagnostics {
                         update.out = Out::OpenDiagnostics;
-                    } else if row == EXPORT_DIAGNOSTICS_ROW {
+                    } else if row == Row::ExportDiagnostics {
                         update.out = Out::ExportDiagnostics;
-                    } else if row == CONTROLS_ROW {
+                    } else if row == Row::Controls {
                         self.goto_controls(config, 0);
                     } else {
                         update.out = Out::Leave;
@@ -502,7 +555,7 @@ impl SettingsScreen {
                 } else if escaped {
                     self.face = Face::Settings;
                     self.menu = settings_menu(config);
-                    self.menu.select(CONTROLS_ROW);
+                    self.menu.select(Row::Controls.index());
                     self.notice = None;
                 } else if x_pressed
                     && control_rows()
@@ -552,7 +605,7 @@ impl SettingsScreen {
                     } else {
                         self.face = Face::Settings;
                         self.menu = settings_menu(config);
-                        self.menu.select(CONTROLS_ROW);
+                        self.menu.select(Row::Controls.index());
                     }
                 }
             }
@@ -573,7 +626,7 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut screen = SettingsScreen::open(&config);
-        screen.menu.select(MARKER_TIMING_ROW);
+        screen.menu.select(Row::MarkerTiming.index());
         for (label, midpoint) in [("Earlier", 26.0), ("Later", 14.0), ("Standard", 20.0)] {
             let update = drive(
                 &mut screen,
@@ -583,14 +636,14 @@ mod tests {
                 false,
             );
             assert!(update.dirty);
-            assert!(screen.menu.items[MARKER_TIMING_ROW].ends_with(label));
+            assert!(screen.menu.items[Row::MarkerTiming.index()].ends_with(label));
             assert_eq!(crate::strategic_markers::marker_alpha(midpoint), 0.5);
         }
-        screen.menu.select(MARKER_SIZE_ROW);
+        screen.menu.select(Row::MarkerSize.index());
         for size in [1.25, 1.5, 0.75, 1.0] {
             let rect = screen
                 .menu
-                .item_rect(MARKER_SIZE_ROW)
+                .item_rect(Row::MarkerSize.index())
                 .expect("selected size row visible");
             let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
             let update = drive(
@@ -632,13 +685,17 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        for _ in 0..7 {
+        for _ in 0..Row::ReducedMotion.index() {
             drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
         }
         let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
-        assert!(config.reduced_motion, "row seven toggles reduced motion");
+        assert!(config.reduced_motion);
         assert!(up.dirty, "the caller is told to persist");
-        assert_eq!(s.menu.selected, 7, "the cursor stays on the tuned row");
+        assert_eq!(
+            s.menu.selected,
+            Row::ReducedMotion.index(),
+            "the cursor stays on the tuned row"
+        );
     }
 
     #[test]
@@ -646,7 +703,8 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut screen = SettingsScreen::open(&config);
-        for _ in 0..3 {
+        let music = Row::MusicVolume.index();
+        for _ in 0..music {
             drive(
                 &mut screen,
                 &mut config,
@@ -664,8 +722,8 @@ mod tests {
         );
         assert!(update.dirty);
         assert_eq!(config.volumes.music, 0.0);
-        assert_eq!(screen.menu.selected, 3);
-        assert_eq!(screen.menu.items[3], "Music volume: 0%");
+        assert_eq!(screen.menu.selected, music);
+        assert_eq!(screen.menu.items[music], "Music volume: 0%");
     }
 
     #[test]
@@ -707,7 +765,7 @@ mod tests {
             let mut config = Config::default();
             let mut live = config.bindings.clone();
             let mut screen = SettingsScreen::open(&config);
-            for _ in 0..PERFORMANCE_ROW {
+            for _ in 0..Row::PerformanceDisplay.index() {
                 drive(
                     &mut screen,
                     &mut config,
@@ -723,7 +781,7 @@ mod tests {
             ] {
                 let rect = screen
                     .menu
-                    .item_rect(PERFORMANCE_ROW)
+                    .item_rect(Row::PerformanceDisplay.index())
                     .expect("selected row visible");
                 let (x, y) = (rect.center().x, rect.center().y);
                 let events = match mode {
@@ -748,14 +806,17 @@ mod tests {
                 let update = drive(&mut screen, &mut config, &mut live, &events, false);
                 assert!(update.dirty);
                 assert_eq!(config.performance_display, mode);
-                assert_eq!(screen.menu.selected, PERFORMANCE_ROW);
+                assert_eq!(screen.menu.selected, Row::PerformanceDisplay.index());
                 assert_eq!(
-                    screen.menu.items[PERFORMANCE_ROW],
+                    screen.menu.items[Row::PerformanceDisplay.index()],
                     format!("Performance display: {}", mode.label())
                 );
             }
-            assert_eq!(screen.menu.items[PRESET_ROW], "Apply left-handed bindings");
-            assert_eq!(screen.menu.items[CONTROLS_ROW], "Controls...");
+            assert_eq!(
+                screen.menu.items[Row::LeftHandedPreset.index()],
+                "Apply left-handed bindings"
+            );
+            assert_eq!(screen.menu.items[Row::Controls.index()], "Controls...");
         }
     }
 
@@ -909,7 +970,7 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        for _ in 0..PRESET_ROW {
+        for _ in 0..Row::LeftHandedPreset.index() {
             drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
         }
         let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
@@ -969,11 +1030,11 @@ mod tests {
         let mut live = config.bindings.clone();
         let mut screen = SettingsScreen::open(&config);
         assert_eq!(
-            settings_menu(&config).items[CONTROLS_ROW],
+            settings_menu(&config).items[Row::Controls.index()],
             "Controls...",
             "the derived index names the row it claims"
         );
-        screen.menu.select(CONTROLS_ROW);
+        screen.menu.select(Row::Controls.index());
         drive(
             &mut screen,
             &mut config,
@@ -991,7 +1052,8 @@ mod tests {
         );
         assert!(matches!(screen.face, Face::Settings));
         assert_eq!(
-            screen.menu.selected, CONTROLS_ROW,
+            screen.menu.selected,
+            Row::Controls.index(),
             "the cursor comes back to the row that was activated"
         );
     }
@@ -1083,24 +1145,27 @@ mod tests {
         let mut config = Config::default();
         assert!(!config.diagnostics);
         assert_eq!(
-            settings_menu(&config).items[DIAGNOSTICS_ROW],
+            settings_menu(&config).items[Row::Diagnostics.index()],
             "Diagnostics: off"
         );
-        assert!(cycle_setting(&mut config, DIAGNOSTICS_ROW));
+        assert!(cycle_setting(&mut config, Row::Diagnostics));
         assert!(config.diagnostics);
         assert_eq!(
-            settings_menu(&config).items[DIAGNOSTICS_ROW],
+            settings_menu(&config).items[Row::Diagnostics.index()],
             "Diagnostics: on"
         );
         assert_eq!(
-            settings_menu(&config).items[OPEN_DIAGNOSTICS_ROW],
+            settings_menu(&config).items[Row::OpenDiagnostics.index()],
             "Open diagnostics folder"
         );
         assert_eq!(
-            settings_menu(&config).items[EXPORT_DIAGNOSTICS_ROW],
+            settings_menu(&config).items[Row::ExportDiagnostics.index()],
             "Export diagnostic report"
         );
-        assert_eq!(settings_menu(&config).items[CONTROLS_ROW], "Controls...");
+        assert_eq!(
+            settings_menu(&config).items[Row::Controls.index()],
+            "Controls..."
+        );
         let mut old = serde_json::to_value(&config).unwrap();
         old.as_object_mut().unwrap().remove("diagnostics");
         assert!(!serde_json::from_value::<Config>(old).unwrap().diagnostics);
