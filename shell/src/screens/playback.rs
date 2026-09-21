@@ -4,6 +4,7 @@
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
 use crate::game::{self, GameReplay, Presentation, Scene};
 use crate::render;
+use crate::render::prim::{fill_rect, stroke_rect};
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
 #[cfg(test)]
@@ -204,13 +205,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
     // The timeline: played track, live position, and the ghost of a
     // seek in flight.
     let bar = scrub_rect(&pb.view(), viewport);
-    draw_rectangle(
-        bar.x,
-        bar.y,
-        bar.w,
-        bar.h,
-        Color::from_rgba(15, 15, 18, 235),
-    );
+    fill_rect(bar, Color::from_rgba(15, 15, 18, 235));
     let total = pb.engine.total().max(1) as f32;
     let frac = pb.engine.position() as f32 / total;
     draw_rectangle(
@@ -230,14 +225,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
             Color::new(0.92, 0.5, 0.45, 1.0),
         );
     }
-    draw_rectangle_lines(
-        bar.x,
-        bar.y,
-        bar.w,
-        bar.h,
-        1.2 * s,
-        Color::new(0.45, 0.45, 0.52, 0.8),
-    );
+    stroke_rect(bar, 1.2 * s, Color::new(0.45, 0.45, 0.52, 0.8));
     if pb.show_stats
         && let Some(stats) = &pb.stats
     {
@@ -344,13 +332,7 @@ fn composition_band(
     let named: Vec<&'static str> = ranked.iter().take(8).map(|(kind, _)| *kind).collect();
 
     let band = macroquad::prelude::Rect::new(bar.x, bar.y - 96.0 * s, bar.w, 72.0 * s);
-    draw_rectangle(
-        band.x,
-        band.y,
-        band.w,
-        band.h,
-        Color::from_rgba(15, 15, 18, 220),
-    );
+    fill_rect(band, Color::from_rgba(15, 15, 18, 220));
     let column_w = band.w / columns as f32;
     for (column, counts) in pooled.iter().enumerate() {
         let total: u32 = counts.values().sum();
@@ -397,14 +379,7 @@ fn composition_band(
         draw_text(&label, x, band.y - 4.0 * s, size, BAND_COLORS[index]);
         x += measure_text(&label, None, size as u16, 1.0).width + 6.0 * s;
     }
-    draw_rectangle_lines(
-        band.x,
-        band.y,
-        band.w,
-        band.h,
-        1.2 * s,
-        Color::new(0.45, 0.45, 0.52, 0.8),
-    );
+    stroke_rect(band, 1.2 * s, Color::new(0.45, 0.45, 0.52, 0.8));
 }
 
 impl PlaybackSession {

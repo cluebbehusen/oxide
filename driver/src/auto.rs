@@ -6,7 +6,7 @@
 
 use crate::client::Client;
 use anyhow::{Context, Result, bail};
-use oxide_protocol::{Key, RawEvent, Reply, Request, UiView};
+use oxide_protocol::{Key, RawEvent, Request, UiView};
 use std::path::PathBuf;
 
 /// A shell child killed on drop, so a failing walk never strands a
@@ -153,10 +153,7 @@ pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
 
 /// The shell's own report of what screen it shows.
 pub fn ui(client: &mut Client) -> Result<UiView> {
-    match client.call(Request::QueryUi)? {
-        Reply::Ui(view) => Ok(view),
-        other => bail!("expected a ui reply, got {other:?}"),
-    }
+    client.ui()
 }
 
 /// Injects one raw event into the real input funnel.

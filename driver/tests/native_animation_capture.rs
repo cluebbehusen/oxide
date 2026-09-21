@@ -104,12 +104,7 @@ impl NativeCapture {
     }
 
     fn state(&mut self) -> Result<StateView> {
-        match self.client.call(Request::QueryState {
-            filter: StateFilter::default(),
-        })? {
-            Reply::State(view) => Ok(view),
-            other => bail!("query_state returned {other:?}"),
-        }
+        self.client.state(StateFilter::default())
     }
 
     fn command(&mut self, player: u8, command: Command) -> Result<()> {

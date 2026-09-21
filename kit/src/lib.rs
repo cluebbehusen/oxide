@@ -22,7 +22,7 @@ pub const MAX_REPLAY_TICKS: u64 = 2_000_000;
 /// saves, and replays.
 pub type GameReplay = chassis::replay::Replay<Scenario, PlayerCommand>;
 
-pub use replay::load_replay;
+pub use replay::{ReplayPlayback, bounded_replay_duration, load_replay, replay_duration};
 
 pub mod recovery;
 

@@ -5,12 +5,12 @@
 //! [`oxide_sim::State::current_tick`] is exactly `N`: commands stamped `N`
 //! have not executed yet.
 
-use crate::runner::{GameReplay, MAX_REPLAY_TICKS};
+use crate::runner::GameReplay;
 use anyhow::{Context, Result};
 use chassis::replay::ReplayMeta;
 use oxide_protocol::{FogView, StateFilter, StateView, hash_hex};
 use oxide_sim::scenario::BotConfig;
-use oxide_sim::{Command, Faction, GameResult, PlayerCommand, PlayerId, SIM_VERSION};
+use oxide_sim::{Command, Faction, GameResult, PlayerId, SIM_VERSION};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -162,11 +162,7 @@ pub fn inspect(
     include_map: bool,
 ) -> Result<ReplayInspection> {
     replay.validate(Some(SIM_VERSION))?;
-    let total = replay_duration(replay);
-    anyhow::ensure!(
-        total <= MAX_REPLAY_TICKS,
-        "replay spans {total} ticks, beyond the {MAX_REPLAY_TICKS}-tick bound"
-    );
+    let total = oxide_kit::bounded_replay_duration(replay)?;
 
     let mut state = replay.setup.build().context("building replay setup")?;
     if let Some(seat) = fog_seat {
@@ -198,21 +194,16 @@ pub fn inspect(
         next_snapshot = 1;
     }
 
-    let mut cursor = replay.cursor();
-    for tick in 0..total {
-        let commands: Vec<PlayerCommand> = cursor
-            .take_tick(tick)
-            .iter()
-            .map(|timed| timed.command.clone())
-            .collect();
-        state.tick(&commands);
+    let mut playback = oxide_kit::ReplayPlayback::new(replay);
+    for _ in 0..total {
+        playback.step(&mut state);
         if ticks.get(next_snapshot) == Some(&state.current_tick()) {
             snapshots.push(capture_snapshot(&state, fog_seat, include_map));
             next_snapshot += 1;
         }
     }
     anyhow::ensure!(
-        cursor.is_finished(),
+        playback.is_finished(),
         "playback of {total} ticks left recorded commands unconsumed"
     );
     debug_assert_eq!(next_snapshot, ticks.len());
@@ -235,13 +226,6 @@ pub fn inspect(
         command_activity,
         snapshots,
     })
-}
-
-fn replay_duration(replay: &GameReplay) -> u64 {
-    replay
-        .meta
-        .ticks
-        .unwrap_or_else(|| replay.commands.last().map_or(0, |command| command.tick + 1))
 }
 
 fn scenario_summary(replay: &GameReplay, initial_state: &oxide_sim::State) -> ScenarioSummary {

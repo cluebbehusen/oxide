@@ -205,6 +205,7 @@ mod panel_draw;
 mod panel_layout;
 mod performance;
 mod pits;
+pub(crate) mod prim;
 mod support_brackets;
 mod world;
 use chrome::*;

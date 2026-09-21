@@ -4,7 +4,7 @@ use crate::auto::{ShellGuard, build_shell_executable_for};
 use crate::client::Client;
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::runner::GameReplay;
-use oxide_protocol::{FrameProfileView, Reply, Request, StatusView, UiView};
+use oxide_protocol::{FrameProfileView, Reply, Request};
 use oxide_sim::TICKS_PER_SECOND;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -108,13 +108,13 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
     let _guard = ShellGuard::new(child);
     let mut client = connect(options.port)?;
 
-    let actual_from = status(&mut client)?.tick;
+    let actual_from = client.status()?.tick;
     ensure!(
         actual_from == options.from,
         "shell stopped at tick {actual_from} while seeking to {}",
         options.from
     );
-    let ui = ui(&mut client)?;
+    let ui = client.ui()?;
     ensure!(
         ui.mode == "playing",
         "profiled shell opened in {:?}, not the live Playing screen",
@@ -145,7 +145,7 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
     let deadline = started + expected.saturating_mul(8) + Duration::from_secs(30);
     loop {
         std::thread::sleep(Duration::from_millis(250));
-        let current = status(&mut client)?;
+        let current = client.status()?;
         if current.result.is_some() && current.tick <= options.to {
             bail!(
                 "live continuation ended at tick {} at or before profile end {}; choose an earlier gameplay-only window",
@@ -170,7 +170,7 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
             );
         }
     }
-    let actual_to = status(&mut client)?.tick;
+    let actual_to = client.status()?.tick;
     let frames = expect_performance(
         client.call(Request::QueryPerformance { reset: false })?,
         "read frame profile",
@@ -294,20 +294,6 @@ fn connect(port: u16) -> Result<Client> {
         std::thread::sleep(Duration::from_millis(250));
     }
     bail!("profiled shell never came up on {address}")
-}
-
-fn status(client: &mut Client) -> Result<StatusView> {
-    match client.call(Request::Status)? {
-        Reply::Status(status) => Ok(status),
-        other => bail!("expected status reply, got {other:?}"),
-    }
-}
-
-fn ui(client: &mut Client) -> Result<UiView> {
-    match client.call(Request::QueryUi)? {
-        Reply::Ui(ui) => Ok(ui),
-        other => bail!("expected ui reply, got {other:?}"),
-    }
 }
 
 fn expect_ok(reply: Reply, operation: &str) -> Result<()> {
