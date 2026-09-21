@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use oxide_protocol::{Key, MouseButton};
-use oxide_sim::UnitKind;
+use oxide_sim::{BuildingKind, UnitKind};
 
 pub(crate) fn parse_tile(s: &str) -> Result<chassis::grid::TilePos> {
     let (x, y) = s
@@ -36,104 +36,40 @@ pub(crate) fn parse_mouse_button(s: &str) -> Result<MouseButton> {
     })
 }
 
-/// Clap-native unit kinds — typos die in argument parsing with the full
-/// list of choices, before anything touches the socket.
-#[derive(Clone, Copy, clap::ValueEnum)]
-pub(crate) enum UnitKindArg {
-    Harvester,
-    Sentinel,
-    Scuttler,
-    Lancer,
-    Bombard,
-    Flakhound,
-    Stinger,
-    Buzzard,
-    Darter,
-    Talon,
-    Wisp,
-    Warden,
-    Tender,
-    Excavator,
-    Kestrel,
-    Gnat,
-    Shrike,
-    Sylph,
-    Condor,
-    Moth,
-    Breaker,
-    Avalanche,
-    Skyhook,
-    Sapper,
+/// Resolves a kind by its sim name, ignoring case and word separators, so
+/// `flak-turret`, `flak_turret`, and `"flak turret"` all name one building.
+/// A typo dies in argument parsing with the full list of choices, before
+/// anything touches the socket.
+fn kind_named<K: Copy>(what: &str, all: &[K], name: fn(K) -> &'static str, s: &str) -> Result<K> {
+    let squash = |text: &str| {
+        text.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+    };
+    all.iter()
+        .copied()
+        .find(|kind| squash(name(*kind)) == squash(s))
+        .with_context(|| {
+            let choices: Vec<_> = all
+                .iter()
+                .map(|kind| name(*kind).replace(' ', "-"))
+                .collect();
+            format!(
+                "unknown {what} {s:?}; expected one of: {}",
+                choices.join(", ")
+            )
+        })
 }
 
-impl From<UnitKindArg> for UnitKind {
-    fn from(k: UnitKindArg) -> Self {
-        match k {
-            UnitKindArg::Harvester => UnitKind::Harvester,
-            UnitKindArg::Sentinel => UnitKind::Sentinel,
-            UnitKindArg::Scuttler => UnitKind::Scuttler,
-            UnitKindArg::Lancer => UnitKind::Lancer,
-            UnitKindArg::Bombard => UnitKind::Bombard,
-            UnitKindArg::Flakhound => UnitKind::Flakhound,
-            UnitKindArg::Stinger => UnitKind::Stinger,
-            UnitKindArg::Buzzard => UnitKind::Buzzard,
-            UnitKindArg::Darter => UnitKind::Darter,
-            UnitKindArg::Talon => UnitKind::Talon,
-            UnitKindArg::Wisp => UnitKind::Wisp,
-            UnitKindArg::Warden => UnitKind::Warden,
-            UnitKindArg::Tender => UnitKind::Tender,
-            UnitKindArg::Excavator => UnitKind::Excavator,
-            UnitKindArg::Kestrel => UnitKind::Kestrel,
-            UnitKindArg::Gnat => UnitKind::Gnat,
-            UnitKindArg::Shrike => UnitKind::Shrike,
-            UnitKindArg::Sylph => UnitKind::Sylph,
-            UnitKindArg::Condor => UnitKind::Condor,
-            UnitKindArg::Moth => UnitKind::Moth,
-            UnitKindArg::Breaker => UnitKind::Breaker,
-            UnitKindArg::Avalanche => UnitKind::Avalanche,
-            UnitKindArg::Skyhook => UnitKind::Skyhook,
-            UnitKindArg::Sapper => UnitKind::Sapper,
-        }
-    }
+pub(crate) fn parse_unit_kind(s: &str) -> Result<UnitKind> {
+    kind_named("unit kind", &UnitKind::ALL, UnitKind::name, s)
 }
 
-/// Every player-buildable kind. The simulation's placement rules remain
-/// the authority on where each may stand.
-#[derive(Clone, Copy, clap::ValueEnum)]
-pub(crate) enum BuildingKindArg {
-    Turret,
-    Fabricator,
-    FlakTurret,
-    Bastion,
-    Array,
-    Reclaimer,
-    RepairBay,
-    Airworks,
-    Crucible,
-    Foundry,
-    Extractor,
-    Barricade,
-    ScuttleCharge,
-}
-
-impl From<BuildingKindArg> for oxide_sim::BuildingKind {
-    fn from(k: BuildingKindArg) -> Self {
-        match k {
-            BuildingKindArg::Turret => oxide_sim::BuildingKind::Turret,
-            BuildingKindArg::Fabricator => oxide_sim::BuildingKind::Fabricator,
-            BuildingKindArg::FlakTurret => oxide_sim::BuildingKind::FlakTurret,
-            BuildingKindArg::Bastion => oxide_sim::BuildingKind::Bastion,
-            BuildingKindArg::Array => oxide_sim::BuildingKind::Array,
-            BuildingKindArg::Reclaimer => oxide_sim::BuildingKind::Reclaimer,
-            BuildingKindArg::RepairBay => oxide_sim::BuildingKind::RepairBay,
-            BuildingKindArg::Airworks => oxide_sim::BuildingKind::Airworks,
-            BuildingKindArg::Crucible => oxide_sim::BuildingKind::Crucible,
-            BuildingKindArg::Foundry => oxide_sim::BuildingKind::Foundry,
-            BuildingKindArg::Extractor => oxide_sim::BuildingKind::Extractor,
-            BuildingKindArg::Barricade => oxide_sim::BuildingKind::Barricade,
-            BuildingKindArg::ScuttleCharge => oxide_sim::BuildingKind::ScuttleCharge,
-        }
-    }
+/// Every building kind parses. The simulation's placement rules remain the
+/// authority on where each may stand.
+pub(crate) fn parse_building_kind(s: &str) -> Result<BuildingKind> {
+    kind_named("building kind", &BuildingKind::ALL, BuildingKind::name, s)
 }
 
 pub(crate) fn parse_key(s: &str) -> Result<Key> {
@@ -200,7 +136,6 @@ pub(crate) fn parse_key(s: &str) -> Result<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::ValueEnum as _;
 
     #[test]
     fn coordinate_parsers_trim_input_and_reject_invalid_shapes() {
@@ -239,25 +174,20 @@ mod tests {
     }
 
     #[test]
-    fn cli_kind_catalogs_cover_every_sim_kind_exactly_once() {
-        let mut cli_units: Vec<_> = UnitKindArg::value_variants()
-            .iter()
-            .copied()
-            .map(UnitKind::from)
-            .collect();
-        let mut sim_units = UnitKind::ALL.to_vec();
-        cli_units.sort_unstable();
-        sim_units.sort_unstable();
-        assert_eq!(cli_units, sim_units);
-
-        let mut cli_buildings: Vec<_> = BuildingKindArg::value_variants()
-            .iter()
-            .copied()
-            .map(oxide_sim::BuildingKind::from)
-            .collect();
-        let mut sim_buildings = oxide_sim::BuildingKind::ALL.to_vec();
-        cli_buildings.sort_unstable();
-        sim_buildings.sort_unstable();
-        assert_eq!(cli_buildings, sim_buildings);
+    fn kinds_parse_by_sim_name_across_separator_styles() {
+        for kind in UnitKind::ALL {
+            assert_eq!(parse_unit_kind(kind.name()).unwrap(), kind);
+        }
+        for kind in BuildingKind::ALL {
+            assert_eq!(parse_building_kind(kind.name()).unwrap(), kind);
+        }
+        for spelling in ["flak-turret", "flak_turret", "Flak Turret", "FlakTurret"] {
+            assert_eq!(
+                parse_building_kind(spelling).unwrap(),
+                BuildingKind::FlakTurret
+            );
+        }
+        let error = parse_unit_kind("sentinal").unwrap_err().to_string();
+        assert!(error.contains("sentinel"), "{error}");
     }
 }
