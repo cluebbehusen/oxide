@@ -11,6 +11,7 @@
 use crate::bot_label::{difficulty_name, stance_name};
 use crate::game::SoundKind;
 use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
+use crate::press::Press;
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
 use macroquad::prelude::{
@@ -245,10 +246,7 @@ pub struct Wizard {
     /// Setup zone armed by a press: (row, cell); activation on
     /// release inside the same zone. Rows after Start are compact-page
     /// navigation controls.
-    setup_pressed: Option<(usize, usize)>,
-    /// Finger and setup zone armed by a touch. Other fingers are ignored
-    /// until the owner releases, matching the shared menu gesture contract.
-    setup_pressed_touch: Option<(u64, usize, usize)>,
+    setup_press: Press<(usize, usize)>,
     /// Compact setup page. Full-height layouts always clamp this to zero.
     setup_page: usize,
 }
@@ -692,8 +690,7 @@ impl Wizard {
             browser,
             setup_sel: 0,
             setup_cell: 0,
-            setup_pressed: None,
-            setup_pressed_touch: None,
+            setup_press: Press::default(),
             setup_page: 0,
         }
     }
@@ -722,8 +719,7 @@ impl Wizard {
                 self.setup_sel = draft.seats.len();
                 self.setup_page = self.setup_sel / COMPACT_PAGE_ITEMS;
                 self.setup_cell = 0;
-                self.setup_pressed = None;
-                self.setup_pressed_touch = None;
+                self.setup_press.cancel();
             }
         }
     }
@@ -877,7 +873,7 @@ impl Wizard {
                     x,
                     y,
                 } => {
-                    self.setup_pressed = zone_at(vec2(x, y), false);
+                    self.setup_press.mouse_down(zone_at(vec2(x, y), false));
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -885,10 +881,7 @@ impl Wizard {
                     y,
                 } => {
                     let released = zone_at(vec2(x, y), false);
-                    let armed = self.setup_pressed.take();
-                    if let (Some(a), Some(r)) = (armed, released)
-                        && a == r
-                    {
+                    if let Some(a) = self.setup_press.mouse_up(released) {
                         if a.0 <= start_index {
                             self.setup_sel = a.0;
                             if cell_live(a.0, a.1) {
@@ -899,31 +892,18 @@ impl Wizard {
                         break;
                     }
                 }
-                RawEvent::TouchDown { id, x, y } if self.setup_pressed_touch.is_none() => {
+                RawEvent::TouchDown { id, x, y } if self.setup_press.touch_free() => {
                     *mouse = vec2(x, y);
-                    self.setup_pressed_touch =
-                        zone_at(*mouse, true).map(|(row, cell)| (id, row, cell));
+                    self.setup_press.touch_down(id, zone_at(*mouse, true));
                 }
-                RawEvent::TouchMove { id, x, y }
-                    if self
-                        .setup_pressed_touch
-                        .is_some_and(|(finger, _, _)| finger == id) =>
-                {
+                RawEvent::TouchMove { id, x, y } if self.setup_press.owns(id) => {
                     *mouse = vec2(x, y);
                 }
-                RawEvent::TouchUp { id, x, y }
-                    if self
-                        .setup_pressed_touch
-                        .is_some_and(|(finger, _, _)| finger == id) =>
-                {
+                RawEvent::TouchUp { id, x, y } if self.setup_press.owns(id) => {
                     *mouse = vec2(x, y);
                     let released = zone_at(*mouse, true);
-                    let (_, row, cell) = self
-                        .setup_pressed_touch
-                        .take()
-                        .expect("matching touch is armed");
-                    let armed = (row, cell);
-                    if released == Some(armed) {
+                    if let Some(armed) = self.setup_press.touch_up(released) {
+                        let (row, cell) = armed;
                         if row <= start_index {
                             self.setup_sel = row;
                             if cell_live(row, cell) {
@@ -938,8 +918,7 @@ impl Wizard {
             }
         }
         if let Some((row, cell)) = activate {
-            self.setup_pressed = None;
-            self.setup_pressed_touch = None;
+            self.setup_press.cancel();
             if row == previous_page_index {
                 self.setup_page = self.setup_page.saturating_sub(1);
                 self.setup_sel = self.setup_page * COMPACT_PAGE_ITEMS;
@@ -2306,7 +2285,7 @@ mod tests {
                 &mut sounds,
             )
             .expect("update");
-        assert_eq!(wizard.setup_pressed_touch, Some((7, row, 3)));
+        assert_eq!(wizard.setup_press.armed_touch(), Some((7, (row, 3))));
         assert_eq!(mouse, faction_at);
 
         // A second finger cannot steal or resolve the first finger's press.
@@ -2329,7 +2308,7 @@ mod tests {
                 &mut sounds,
             )
             .expect("update");
-        assert_eq!(wizard.setup_pressed_touch, Some((7, row, 3)));
+        assert_eq!(wizard.setup_press.armed_touch(), Some((7, (row, 3))));
         assert_eq!(mouse, faction_at);
 
         // The owner releases over another cell, so the gesture cancels.
@@ -2352,7 +2331,7 @@ mod tests {
                 &mut sounds,
             )
             .expect("update");
-        assert_eq!(wizard.setup_pressed_touch, None);
+        assert_eq!(wizard.setup_press.armed_touch(), None);
         assert_eq!(draft.seats[seat].faction_choice, 0);
         assert!(sounds.is_empty());
 
