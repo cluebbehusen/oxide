@@ -185,6 +185,63 @@ pub(crate) fn deserialize_replay<'de, D: serde::Deserializer<'de>>(
     })
 }
 
+/// How many ticks a replay runs: its recorded duration, or one past its last
+/// command when the metadata omits it.
+pub fn replay_duration(replay: &GameReplay) -> u64 {
+    replay.meta.ticks.unwrap_or_else(|| {
+        replay
+            .commands
+            .last()
+            .map_or(0, |command| command.tick.saturating_add(1))
+    })
+}
+
+/// [`replay_duration`], refused beyond [`crate::MAX_REPLAY_TICKS`]. The bound
+/// is on the effective duration: with the metadata absent the length falls
+/// back to the final command's tick, and a single command stamped at a
+/// billion once slipped past a metadata-only guard.
+pub fn bounded_replay_duration(replay: &GameReplay) -> anyhow::Result<u64> {
+    let total = replay_duration(replay);
+    anyhow::ensure!(
+        total <= crate::MAX_REPLAY_TICKS,
+        "replay spans {total} ticks, beyond the {}-tick bound",
+        crate::MAX_REPLAY_TICKS
+    );
+    Ok(total)
+}
+
+/// Feeds a replay's recorded commands back into a state one tick at a time.
+pub struct ReplayPlayback<'a> {
+    cursor: chassis::replay::ReplayCursor<'a, PlayerCommand>,
+}
+
+impl<'a> ReplayPlayback<'a> {
+    /// Starts at the replay's first recorded command.
+    pub fn new(replay: &'a GameReplay) -> Self {
+        Self {
+            cursor: replay.cursor(),
+        }
+    }
+
+    /// Runs the state's current tick with the commands recorded for it.
+    pub fn step(&mut self, state: &mut oxide_sim::State) -> oxide_sim::TickReport {
+        let commands: Vec<PlayerCommand> = self
+            .cursor
+            .take_tick(state.current_tick())
+            .iter()
+            .map(|timed| timed.command.clone())
+            .collect();
+        state.tick(&commands)
+    }
+
+    /// Whether every recorded command has been played. A full-length
+    /// playback that leaves commands behind means the replay's duration
+    /// metadata is wrong.
+    pub fn is_finished(&self) -> bool {
+        self.cursor.is_finished()
+    }
+}
+
 /// Loads an Oxide replay from disk.
 ///
 /// Current-version setup data uses the same strict [`Scenario`] schema as an

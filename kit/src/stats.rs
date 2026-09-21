@@ -198,33 +198,16 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .validate(Some(oxide_sim::SIM_VERSION))
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     let every = every.max(1);
-    // Bound the EFFECTIVE duration: with meta.ticks absent the run
-    // length falls back to the final command's tick, and a single
-    // command stamped at a billion once slipped past a meta-only guard.
-    let total = replay
-        .meta
-        .ticks
-        .or_else(|| replay.commands.last().map(|c| c.tick + 1))
-        .unwrap_or(0);
-    anyhow::ensure!(
-        total <= crate::MAX_REPLAY_TICKS,
-        "replay spans {total} ticks, beyond the {}-tick bound",
-        crate::MAX_REPLAY_TICKS
-    );
+    let total = crate::bounded_replay_duration(replay)?;
     let mut state = replay.setup.build().context("building scenario")?;
-    let mut cursor = replay.cursor();
+    let mut playback = crate::ReplayPlayback::new(replay);
 
     let mut stats = blank_players(state.players().len());
     let mut sample_ticks = Vec::new();
 
     sample(&state, &mut stats, &mut sample_ticks);
-    for tick in 0..total {
-        let commands: Vec<_> = cursor
-            .take_tick(tick)
-            .iter()
-            .map(|t| t.command.clone())
-            .collect();
-        let report = state.tick(&commands);
+    for _ in 0..total {
+        let report = playback.step(&mut state);
         accumulate_events(&mut stats, &report.events);
         if state.current_tick().is_multiple_of(every) {
             sample(&state, &mut stats, &mut sample_ticks);
