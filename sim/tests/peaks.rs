@@ -3,45 +3,14 @@
 //! pairing, and artillery arcs break on the ridge. Vision deliberately
 //! ignores it — cover is a firing rule, not a stealth system.
 
+mod common;
+use common::{cmd, players, run, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::map::Terrain;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::UnitSpec;
 use oxide_sim::stats::Domain;
-use oxide_sim::{
-    Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind,
-};
-
-fn players() -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap: 300,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap: 300,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
+use oxide_sim::{Command, Event, PlayerId, Scenario, Target, UnitKind};
 
 /// A ridge wall at x=12. `gap` opens one corridor at y=2; without it the
 /// two halves share a map and nothing else. Both foundries sit west —
@@ -71,19 +40,11 @@ fn ridge(gap: bool, units: Vec<UnitSpec>) -> Scenario {
         name: "ridge".into(),
         seed: 9,
         map,
-        players: players(),
+        players: players(300),
         units,
         buildings: Vec::new(),
         meta: None,
     }
-}
-
-fn run(state: &mut State, ticks: u64) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..ticks {
-        all.extend(state.tick(&[]).events);
-    }
-    all
 }
 
 #[test]
@@ -402,7 +363,7 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
         name: "flush".into(),
         seed: 9,
         map,
-        players: players(),
+        players: players(300),
         units: vec![unit(0, UnitKind::Lancer, 14, 5)],
         buildings: Vec::new(),
         meta: None,

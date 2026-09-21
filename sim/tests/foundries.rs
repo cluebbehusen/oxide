@@ -3,32 +3,14 @@
 //! like standing works, abandoned scaffolds rust away, and every
 //! completed Foundry smelts the transparent drip.
 
+mod common;
+use common::{cmd, players};
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK};
-use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
-
-fn players(scrap: u32) -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
+use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State, UnitKind};
 
 fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     let mut buildings = Vec::new();
@@ -59,13 +41,6 @@ fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
         units,
         buildings,
         meta: None,
-    }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
     }
 }
 

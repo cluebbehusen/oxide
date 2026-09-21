@@ -6,88 +6,12 @@
 //! ring's exact detection boundary. Public API only, like `domains.rs`.
 
 mod common;
-use common::face_target;
+use common::{arena, cmd, face_target, players, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
 use oxide_sim::stats::BuildingKind;
-use oxide_sim::{
-    Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind,
-};
-
-fn players() -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap: 200,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap: 200,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn run_until(
-    state: &mut State,
-    max_ticks: u64,
-    mut stop: impl FnMut(&State, &[Event]) -> bool,
-) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..max_ticks {
-        let report = state.tick(&[]);
-        let done = stop(state, &report.events);
-        all.extend(report.events);
-        if done {
-            return all;
-        }
-    }
-    panic!("condition not reached within {max_ticks} ticks");
-}
-
-/// The 16x9 arena `domains.rs` uses: a rock block at (6,3)-(7,4) and a
-/// two-scrap column at (11,4)-(11,5).
-fn arena(units: Vec<UnitSpec>) -> Scenario {
-    Scenario {
-        name: "edge-arena".into(),
-        seed: 42,
-        map: vec![
-            "################".into(),
-            "#1.............#".into(),
-            "#..............#".into(),
-            "#.....##.......#".into(),
-            "#.....##...s...#".into(),
-            "#..........s...#".into(),
-            "#............2.#".into(),
-            "#..............#".into(),
-            "################".into(),
-        ],
-        players: players(),
-        units,
-        buildings: Vec::new(),
-        meta: None,
-    }
-}
+use oxide_sim::{Command, Event, Order, PlayerId, Scenario, Target, UnitKind};
 
 #[test]
 fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
@@ -123,7 +47,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
             "#...................#".into(),
             "#####################".into(),
         ],
-        players: players(),
+        players: players(200),
         units: vec![
             unit(0, UnitKind::Flakhound, 4, 8),
             unit(1, UnitKind::Wisp, 10, 1),
@@ -222,7 +146,7 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
             "#........................#".into(),
             "##########################".into(),
         ],
-        players: players(),
+        players: players(200),
         units: vec![
             unit(0, UnitKind::Flakhound, 4, 2),
             unit(1, UnitKind::Wisp, 10, 2),
@@ -434,7 +358,7 @@ fn a_dead_attacker_draws_no_answer() {
             "#..............#".into(),
             "################".into(),
         ],
-        players: players(),
+        players: players(200),
         units: vec![
             unit(0, UnitKind::Bombard, 10, 10), // victim (survives one rail)
             unit(1, UnitKind::Lancer, 5, 9),    // attacker: dies this tick
@@ -532,7 +456,7 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
             "#......................#".into(),
             "########################".into(),
         ],
-        players: players(),
+        players: players(200),
         units: vec![
             unit(0, UnitKind::Bombard, 10, 10),  // victim: fires one shell
             unit(1, UnitKind::Scuttler, 18, 10), // dist 8: stands (aggro 5)
@@ -690,7 +614,7 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
             "#..........................#".into(),
             "############################".into(),
         ],
-        players: players(),
+        players: players(200),
         units: vec![
             unit(0, UnitKind::Harvester, 4, 2),  // builder
             unit(1, UnitKind::Harvester, 24, 4), // on the ring: dx20 dy0
@@ -768,7 +692,7 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
             "#..............#".into(),
             "################".into(),
         ],
-        players: players(),
+        players: players(200),
         units: vec![
             unit(0, UnitKind::Flakhound, 1, 6),
             unit(1, UnitKind::Wisp, 7, 1),

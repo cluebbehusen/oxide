@@ -4,6 +4,7 @@
 //! loyal to no one once launched. Public API only, like `domains.rs`.
 
 mod common;
+use common::{cmd, open_arena, players, run, unit};
 
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
@@ -13,70 +14,12 @@ use oxide_sim::{
     State, Target, UnitKind,
 };
 
-fn players() -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap: 300,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap: 300,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
 /// A long open range: bombard work needs distance.
 fn range(units: Vec<UnitSpec>) -> Scenario {
     Scenario {
-        name: "shell-range".into(),
-        seed: 42,
-        map: vec![
-            "########################".into(),
-            "#1.....................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#....................2.#".into(),
-            "#......................#".into(),
-            "########################".into(),
-        ],
-        players: players(),
-        units,
-        buildings: Vec::new(),
-        meta: None,
+        players: players(300),
+        ..open_arena(24, 12, units)
     }
-}
-
-fn run(state: &mut State, ticks: u64) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..ticks {
-        all.extend(state.tick(&[]).events);
-    }
-    all
 }
 
 fn unit_launch(
@@ -945,7 +888,7 @@ fn peak_prediction_range() -> Scenario {
             "#......................#".into(),
             "########################".into(),
         ],
-        players: players(),
+        players: players(300),
         units: vec![
             unit(1, UnitKind::Scuttler, 11, 8),
             unit(0, UnitKind::Bombard, 5, 8),

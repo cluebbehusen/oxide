@@ -4,45 +4,14 @@
 //! shots over a void neither can walk. Wrecks that fall in are gone.
 //! Vision deliberately ignores it, like all terrain.
 
+mod common;
+use common::{cmd, players, run, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::map::Terrain;
-use oxide_sim::scenario::{PlayerSpec, ScenarioError, UnitSpec};
+use oxide_sim::scenario::{ScenarioError, UnitSpec};
 use oxide_sim::stats::Domain;
-use oxide_sim::{
-    Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind,
-};
-
-fn players() -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap: 300,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap: 300,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
+use oxide_sim::{Command, Event, PlayerId, Scenario, State, Target, UnitKind};
 
 /// A chasm at x=`wall_x` (default 12) severing east from west on the
 /// ground. Both Foundries sit west — the build gate requires the seats
@@ -68,19 +37,11 @@ fn chasm(width: i32, units: Vec<UnitSpec>) -> Scenario {
         name: "chasm".into(),
         seed: 9,
         map,
-        players: players(),
+        players: players(300),
         units,
         buildings: Vec::new(),
         meta: None,
     }
-}
-
-fn run(state: &mut State, ticks: u64) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..ticks {
-        all.extend(state.tick(&[]).events);
-    }
-    all
 }
 
 #[test]
@@ -384,7 +345,7 @@ fn a_chasm_severs_ground_but_the_sky_keeps_the_map_legal() {
         name: "severed".into(),
         seed: 9,
         map,
-        players: players(),
+        players: players(300),
         units: Vec::new(),
         buildings: Vec::new(),
         meta: None,
@@ -419,7 +380,7 @@ fn a_mesa_seal_still_refuses_to_build() {
         name: "sealed".into(),
         seed: 9,
         map,
-        players: players(),
+        players: players(300),
         units: Vec::new(),
         buildings: Vec::new(),
         meta: None,

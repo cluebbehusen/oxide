@@ -1,13 +1,13 @@
 //! Teams: shared sight, unattackable allies, team-scoped victory, and
 //! spectating seats. Headless scenarios through the public API only.
 
+mod common;
+use common::{cmd, run_until, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{PlayerSpec, ScenarioError, UnitSpec};
-use oxide_sim::{
-    Command, Event, Faction, GameResult, Order, PlayerCommand, PlayerId, Scenario, State, Target,
-    UnitKind,
-};
+use oxide_sim::{Command, Event, Faction, GameResult, Order, PlayerId, Scenario, Target, UnitKind};
 
 /// A 2v2 arena: west team (seats 0, 1) against east team (seats 2, 3).
 fn arena4(units: Vec<UnitSpec>) -> Scenario {
@@ -48,34 +48,6 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
         buildings: Vec::new(),
         meta: None,
     }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn run_until(
-    state: &mut State,
-    max_ticks: u64,
-    mut stop: impl FnMut(&State, &[Event]) -> bool,
-) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..max_ticks {
-        let report = state.tick(&[]);
-        let done = stop(state, &report.events);
-        all.extend(report.events);
-        if done {
-            return all;
-        }
-    }
-    panic!("condition not reached within {max_ticks} ticks");
 }
 
 #[test]

@@ -4,35 +4,17 @@
 //! Foundry support improves, and its death re-derelicts the frame for
 //! whoever holds the ground next.
 
+mod common;
+use common::{cmd, players};
+
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::stats::{
     BuildingKind, EXTRACTOR_REMOTE_INCOME_PER_MINUTE, EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE,
 };
 use oxide_sim::{
-    Command, Event, ExtractorIncome, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind,
+    Command, Event, ExtractorIncome, PlayerCommand, PlayerId, Scenario, State, UnitKind,
 };
-
-fn players(scrap: u32) -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
 
 /// A 20x10 arena with one frame mid-field ('E' anchor at (9, 4)).
 fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
@@ -55,13 +37,6 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
         units,
         buildings,
         meta: None,
-    }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
     }
 }
 

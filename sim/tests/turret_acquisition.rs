@@ -3,14 +3,9 @@
 mod common;
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::{BuildingId, BuildingKind, Command, Event, PlayerId, State, Target, UnitKind};
 
-use common::{cmd, open_arena, open_arena_with, run_until, unit};
-
-fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
-}
+use common::{building, cmd, open_arena, open_arena_with, run_until, unit};
 
 fn id(state: &State, kind: BuildingKind) -> BuildingId {
     state

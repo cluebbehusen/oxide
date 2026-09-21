@@ -2,19 +2,15 @@
 //! command gate and counted by the team-scoped victory check. Headless
 //! scenarios through the public API only.
 
+mod common;
+use common::cmd;
+
 use chassis::replay::Replay;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::{
     Command, Event, Faction, GameResult, Player, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
 };
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
 
 /// A 2v2 of bare Foundries: west team (seats 0, 1) against east
 /// (seats 2, 3). No armies — concession is the only way anyone here
