@@ -10,6 +10,7 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::path::PathBuf;
 
+use crate::press::Press;
 use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 const ITEM_HEIGHT: f32 = 44.0;
@@ -69,12 +70,8 @@ pub struct Menu {
     /// Fractional wheel accumulation: trackpads deliver hundredths per
     /// frame, and treating each as a full row made scrolling frantic.
     wheel_accum: f32,
-    /// Row armed by a press; activation happens on release inside the
-    /// same row, so dragging away cancels.
-    pressed: Option<usize>,
-    /// Finger and row armed by a touch; a second finger is ignored until
-    /// the first resolves.
-    pressed_touch: Option<(u64, usize)>,
+    /// Row armed by a mouse press or the owning finger.
+    press: Press<usize>,
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
     /// activated — the map browser's format headings.
     headers: Vec<usize>,
@@ -108,8 +105,7 @@ impl Menu {
             scroll: 0,
             hover: None,
             wheel_accum: 0.0,
-            pressed: None,
-            pressed_touch: None,
+            press: Press::default(),
             headers,
             shift: 0.0,
         };
@@ -289,7 +285,8 @@ impl Menu {
                     y,
                 } => {
                     *mouse = vec2(x, y);
-                    self.pressed = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
+                    let row = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
+                    self.press.mouse_down(row);
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -298,36 +295,26 @@ impl Menu {
                 } => {
                     *mouse = vec2(x, y);
                     let released_on = self.row_at(vec2(x, y));
-                    let armed = self.pressed.take();
-                    if let (Some(a), Some(r)) = (armed, released_on)
-                        && a == r
-                    {
-                        // A press commits only when it releases inside
-                        // the same row.
-                        self.selected = a;
-                        return Some(a);
+                    if let Some(row) = self.press.mouse_up(released_on) {
+                        self.selected = row;
+                        return Some(row);
                     }
                 }
-                RawEvent::TouchDown { id, x, y } if self.pressed_touch.is_none() => {
+                RawEvent::TouchDown { id, x, y } if self.press.touch_free() => {
                     *mouse = vec2(x, y);
                     self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
-                    self.pressed_touch = self.hover.map(|row| (id, row));
+                    self.press.touch_down(id, self.hover);
                 }
-                RawEvent::TouchMove { id, x, y }
-                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
-                {
+                RawEvent::TouchMove { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
                     self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
-                RawEvent::TouchUp { id, x, y }
-                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
-                {
+                RawEvent::TouchUp { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
                     let released_on = self.row_at(*mouse);
-                    let (_, armed) = self.pressed_touch.take().expect("matching touch is armed");
-                    if released_on == Some(armed) {
-                        self.selected = armed;
-                        return Some(armed);
+                    if let Some(row) = self.press.touch_up(released_on) {
+                        self.selected = row;
+                        return Some(row);
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
@@ -673,7 +660,7 @@ mod empty_tests {
             ),
             None
         );
-        assert_eq!(menu.pressed_touch, Some((7, 1)));
+        assert_eq!(menu.press.armed_touch(), Some((7, 1)));
 
         // A second finger cannot steal or resolve the first finger's press.
         assert_eq!(
@@ -694,7 +681,7 @@ mod empty_tests {
             ),
             None
         );
-        assert_eq!(menu.pressed_touch, Some((7, 1)));
+        assert_eq!(menu.press.armed_touch(), Some((7, 1)));
         assert_eq!(menu.selected, 0);
 
         // The owning finger resolves on another row, so the gesture cancels.
@@ -716,7 +703,7 @@ mod empty_tests {
             ),
             None
         );
-        assert_eq!(menu.pressed_touch, None);
+        assert_eq!(menu.press.armed_touch(), None);
         assert_eq!(menu.selected, 0);
     }
 }

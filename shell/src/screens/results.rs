@@ -5,6 +5,7 @@
 
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::{Game, SoundKind};
+use crate::press::Press;
 use crate::{render, theme};
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
@@ -276,8 +277,7 @@ fn fitted_player_name_with_controller(
 pub struct ResultsScreen {
     selected: usize,
     hover: Option<usize>,
-    pressed: Option<usize>,
-    pressed_touch: Option<(u64, usize)>,
+    press: Press<usize>,
 }
 
 impl ResultsScreen {
@@ -286,8 +286,7 @@ impl ResultsScreen {
         Self {
             selected: 0,
             hover: None,
-            pressed: None,
-            pressed_touch: None,
+            press: Press::default(),
         }
     }
 
@@ -326,7 +325,8 @@ impl ResultsScreen {
                     x,
                     y,
                 } => {
-                    self.pressed = action_at(vec2(x, y), viewport, scale);
+                    self.press
+                        .mouse_down(action_at(vec2(x, y), viewport, scale));
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -334,33 +334,25 @@ impl ResultsScreen {
                     y,
                 } => {
                     let released = action_at(vec2(x, y), viewport, scale);
-                    let armed = self.pressed.take();
-                    if let Some(index) = armed
-                        && Some(index) == released
-                    {
+                    if let Some(index) = self.press.mouse_up(released) {
                         self.selected = index;
                         sounds.push((SoundKind::Click, None));
                         return out_for(index);
                     }
                 }
-                RawEvent::TouchDown { id, x, y } if self.pressed_touch.is_none() => {
+                RawEvent::TouchDown { id, x, y } if self.press.touch_free() => {
                     *mouse = vec2(x, y);
                     self.hover = action_at(*mouse, viewport, scale);
-                    self.pressed_touch = self.hover.map(|index| (id, index));
+                    self.press.touch_down(id, self.hover);
                 }
-                RawEvent::TouchMove { id, x, y }
-                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
-                {
+                RawEvent::TouchMove { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
                     self.hover = action_at(*mouse, viewport, scale);
                 }
-                RawEvent::TouchUp { id, x, y }
-                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
-                {
+                RawEvent::TouchUp { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
                     let released = action_at(*mouse, viewport, scale);
-                    let (_, armed) = self.pressed_touch.take().expect("matching touch");
-                    if released == Some(armed) {
+                    if let Some(armed) = self.press.touch_up(released) {
                         self.selected = armed;
                         sounds.push((SoundKind::Click, None));
                         return out_for(armed);
@@ -1250,7 +1242,7 @@ mod tests {
             ),
             Out::Stay
         );
-        assert_eq!(screen.pressed_touch, Some((7, 1)));
+        assert_eq!(screen.press.armed_touch(), Some((7, 1)));
 
         // A second finger cannot move or resolve the first finger's gesture.
         assert_eq!(
@@ -1274,7 +1266,7 @@ mod tests {
             ),
             Out::Stay
         );
-        assert_eq!(screen.pressed_touch, Some((7, 1)));
+        assert_eq!(screen.press.armed_touch(), Some((7, 1)));
         assert_eq!(mouse, watch);
 
         // The owning finger releases on another action, canceling the press.
@@ -1299,7 +1291,7 @@ mod tests {
             ),
             Out::Stay
         );
-        assert_eq!(screen.pressed_touch, None);
+        assert_eq!(screen.press.armed_touch(), None);
         assert_eq!(screen.selected(), 0);
         assert!(sounds.is_empty(), "a canceled touch is silent");
 
