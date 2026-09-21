@@ -11,35 +11,13 @@ use crate::state::{ExtractorIncome, Faction};
 const ME: PlayerId = PlayerId(0);
 
 fn unit(id: u32, kind: UnitKind) -> UnitObs {
-    UnitObs {
-        id: UnitId(id),
-        player: ME,
-        kind,
-        tile: TilePos::new(id as i32, 1),
-        hp: kind.stats().max_hp,
-        idle: true,
-        carrying: 0,
-        harvesting: None,
-        cargo: 0,
-        site: None,
-        salvaging: None,
-        founding: None,
-        repairing: false,
-        grounded: false,
-    }
+    UnitObs::fixture(id, ME, kind, TilePos::new(id as i32, 1))
 }
 
 fn building(id: u32, kind: BuildingKind, anchor: TilePos, built: bool) -> BuildingObs {
     BuildingObs {
-        provisional: false,
-        id: BuildingId(id),
-        player: ME,
-        kind,
-        anchor,
-        hp: kind.base_stats().max_hp,
         built,
-        seen: true,
-        tier: 0,
+        ..BuildingObs::fixture(id, ME, kind, anchor)
     }
 }
 

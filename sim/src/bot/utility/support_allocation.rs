@@ -1027,15 +1027,8 @@ mod tests {
         };
         let mut covered = obs.clone();
         covered.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(100),
-            player: obs.me,
-            kind: BuildingKind::RepairBay,
-            anchor,
-            hp: BuildingKind::RepairBay.base_stats().max_hp,
             built: false,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(100, obs.me, BuildingKind::RepairBay, anchor)
         });
         covered.my_queues.push(vec![]);
         covered.my_queue_progress.push(0);

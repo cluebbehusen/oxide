@@ -104,20 +104,8 @@ mod tests {
 
     fn unit(id: u32, kind: UnitKind, tile: TilePos, hp: u32) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile,
             hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(0), kind, tile)
         }
     }
 

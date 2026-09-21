@@ -6499,36 +6499,11 @@ mod tests {
     }
 
     fn own(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), kind, tile)
     }
 
     fn building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(player),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(player), kind, anchor)
     }
 
     fn remembered_target(last_seen: Tick) -> BuildingContact {

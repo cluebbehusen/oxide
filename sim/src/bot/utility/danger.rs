@@ -516,20 +516,8 @@ mod tests {
 
     fn enemy_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(1),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(1), kind, tile)
         }
     }
 
@@ -614,15 +602,8 @@ mod tests {
         obs.blips.clear();
         let anchor = TilePos::new(15, 0);
         obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(u32::MAX),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor,
-            hp: BuildingKind::Turret.base_stats().max_hp,
-            built: true,
             seen: false,
-            tier: 0,
+            ..BuildingObs::fixture(u32::MAX, PlayerId(1), BuildingKind::Turret, anchor)
         });
         let upgraded_ghost = BuildingContact {
             id: Some(BuildingId(7)),

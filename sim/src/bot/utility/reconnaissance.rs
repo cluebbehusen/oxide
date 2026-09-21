@@ -2249,17 +2249,12 @@ mod tests {
         let factory = BuildingId(10);
         {
             let obs = &mut *obs;
-            obs.my_buildings.push(BuildingObs {
-                provisional: false,
-                id: factory,
-                player: obs.me,
-                kind: BuildingKind::Airworks,
-                anchor: TilePos::new(6, 13),
-                hp: BuildingKind::Airworks.base_stats().max_hp,
-                built: true,
-                seen: true,
-                tier: 0,
-            });
+            obs.my_buildings.push(BuildingObs::fixture(
+                factory.0,
+                obs.me,
+                BuildingKind::Airworks,
+                TilePos::new(6, 13),
+            ));
         }
         obs.my_queues
             .push(vec![UnitKind::Kestrel, UnitKind::Kestrel]);
@@ -2408,17 +2403,12 @@ mod tests {
         obs.scrap = UnitKind::Kestrel.stats().cost - 5;
         {
             let obs = &mut *obs;
-            obs.my_buildings.push(BuildingObs {
-                provisional: false,
-                id: BuildingId(10),
-                player: obs.me,
-                kind: BuildingKind::Airworks,
-                anchor: TilePos::new(6, 13),
-                hp: BuildingKind::Airworks.base_stats().max_hp,
-                built: true,
-                seen: true,
-                tier: 0,
-            });
+            obs.my_buildings.push(BuildingObs::fixture(
+                10,
+                obs.me,
+                BuildingKind::Airworks,
+                TilePos::new(6, 13),
+            ));
         }
         obs.my_queues.push(vec![]);
         obs.my_queue_progress.push(0);

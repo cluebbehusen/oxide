@@ -848,36 +848,11 @@ mod tests {
     use crate::scenario::{BotConfig, BotDifficulty, BotStance};
 
     fn building(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(0),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(0), kind, anchor)
     }
 
     fn worker(id: u32, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile,
-            hp: UnitKind::Harvester.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), UnitKind::Harvester, tile)
     }
 
     fn fixture() -> (Observation, PublicMapBriefing, ResolvedProfile) {

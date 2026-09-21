@@ -1533,15 +1533,9 @@ mod tests {
             .iter_mut()
             .for_each(|unit| unit.tile = TilePos::new(8, 16));
         let gun = BuildingObs {
-            id: BuildingId(99),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor: TilePos::new(28, 18),
             hp: BuildingKind::Turret.tier_stats(2).max_hp,
-            built: true,
-            provisional: false,
-            seen: true,
             tier: 2,
+            ..BuildingObs::fixture(99, PlayerId(1), BuildingKind::Turret, TilePos::new(28, 18))
         };
         obs.enemy_buildings.push(gun.clone());
         let risk = policy
@@ -1582,22 +1576,7 @@ mod tests {
     }
 
     fn fighter(id: u32, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Lancer,
-            tile,
-            hp: UnitKind::Lancer.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), UnitKind::Lancer, tile)
     }
 
     fn bombard(id: u32, tile: TilePos) -> UnitObs {
@@ -1617,22 +1596,7 @@ mod tests {
     }
 
     fn hostile(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(1),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(1), kind, tile)
     }
 
     fn own(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
@@ -1657,31 +1621,11 @@ mod tests {
     }
 
     fn own_foundry(id: u32, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor,
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(0), BuildingKind::Foundry, anchor)
     }
 
     fn defense(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(1),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(1), kind, anchor)
     }
 
     fn offensive_position(remote_defense: TilePos) -> (Observation, Army) {
@@ -3047,17 +2991,7 @@ mod tests {
         obs.scrap = 1_000;
         obs.my_buildings = vec![
             own_foundry(10, home),
-            BuildingObs {
-                provisional: false,
-                id: BuildingId(11),
-                player: PlayerId(0),
-                kind: BuildingKind::Airworks,
-                anchor: home.offset(0, -5),
-                hp: BuildingKind::Airworks.base_stats().max_hp,
-                built: true,
-                seen: true,
-                tier: 0,
-            },
+            BuildingObs::fixture(11, PlayerId(0), BuildingKind::Airworks, home.offset(0, -5)),
         ];
         obs.enemy_buildings = vec![defense(20, BuildingKind::Foundry, TilePos::new(28, 12))];
         obs.my_queues = vec![Vec::new(), Vec::new()];
@@ -4939,15 +4873,9 @@ mod tests {
         obs.visible.fill(false);
         obs.enemy_units.clear();
         obs.enemy_buildings = vec![BuildingObs {
-            provisional: false,
-            id: BuildingId(u32::MAX),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: objective,
-            hp: BuildingKind::Foundry.base_stats().max_hp,
             built: false,
             seen: false,
-            tier: 0,
+            ..BuildingObs::fixture(u32::MAX, PlayerId(1), BuildingKind::Foundry, objective)
         }];
         obs.my_units = (0..5)
             .map(|index| {
@@ -5159,15 +5087,9 @@ mod tests {
         hidden.visible.fill(false);
         hidden.enemy_units.clear();
         hidden.enemy_buildings = vec![BuildingObs {
-            provisional: false,
-            id: BuildingId(u32::MAX),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: objective,
-            hp: BuildingKind::Foundry.base_stats().max_hp,
             built: false,
             seen: false,
-            tier: 0,
+            ..BuildingObs::fixture(u32::MAX, PlayerId(1), BuildingKind::Foundry, objective)
         }];
 
         let probe_ages = [

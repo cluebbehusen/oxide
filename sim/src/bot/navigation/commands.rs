@@ -2361,22 +2361,7 @@ mod tests {
             Domain::Ground => UnitKind::Sentinel,
             Domain::Air => UnitKind::Buzzard,
         };
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile: TilePos::new(2, 3 + id as i32 - 1),
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), kind, TilePos::new(2, 3 + id as i32 - 1))
     }
 
     fn building(
@@ -2387,15 +2372,8 @@ mod tests {
         seen: bool,
     ) -> BuildingObs {
         BuildingObs {
-            provisional: false,
-            id: crate::ids::BuildingId(id),
-            player: PlayerId(player),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
             seen,
-            tier: 0,
+            ..BuildingObs::fixture(id, PlayerId(player), kind, anchor)
         }
     }
 

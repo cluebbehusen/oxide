@@ -3056,17 +3056,12 @@ mod tests {
 
         let mut cleared = policy;
         cleared.state.cleared_hostile_starts.push(PlayerId(1));
-        obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(20),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: enemy_start.offset(-4, 0),
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.enemy_buildings.push(BuildingObs::fixture(
+            20,
+            PlayerId(1),
+            BuildingKind::Foundry,
+            enemy_start.offset(-4, 0),
+        ));
         assert!(!cleared.ordinary_ground_has_work(&dials, &obs, home));
         assert!(
             cleared.has_honest_ground_objective(&dials, &obs, home, Some(&scrap_choke)),
@@ -3082,20 +3077,9 @@ mod tests {
 
     fn harvester(id: u32, founding: Option<(BuildingKind, TilePos)>) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(5, 5),
-            hp: UnitKind::Harvester.stats().max_hp,
             idle: founding.is_none(),
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
             founding,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(0), UnitKind::Harvester, TilePos::new(5, 5))
         }
     }
 
@@ -3243,22 +3227,7 @@ mod tests {
         obs.my_queues = vec![Vec::new()];
         obs.enemy_units = vec![
             fighter(20, PlayerId(1), TilePos::new(9, 10)),
-            UnitObs {
-                id: UnitId(21),
-                player: PlayerId(1),
-                kind: UnitKind::Condor,
-                tile: TilePos::new(9, 9),
-                hp: UnitKind::Condor.stats().max_hp,
-                idle: true,
-                carrying: 0,
-                harvesting: None,
-                cargo: 0,
-                site: None,
-                salvaging: None,
-                founding: None,
-                repairing: false,
-                grounded: false,
-            },
+            UnitObs::fixture(21, PlayerId(1), UnitKind::Condor, TilePos::new(9, 9)),
         ];
         let map = public_map_with_home_and_frames(&obs, home, &[]);
         let dials = Dials::full();
@@ -3471,37 +3440,10 @@ mod tests {
     #[test]
     fn typed_capital_ownership_blocks_residual_paid_sustain() {
         let home = TilePos::new(3, 3);
-        let tender = UnitObs {
-            id: UnitId(1),
-            player: PlayerId(0),
-            kind: UnitKind::Tender,
-            tile: TilePos::new(5, 5),
-            hp: UnitKind::Tender.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        };
+        let tender = UnitObs::fixture(1, PlayerId(0), UnitKind::Tender, TilePos::new(5, 5));
         let patient = UnitObs {
-            id: UnitId(2),
-            player: PlayerId(0),
-            kind: UnitKind::Sentinel,
-            tile: TilePos::new(6, 5),
             hp: UnitKind::Sentinel.stats().max_hp / 4,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(2, PlayerId(0), UnitKind::Sentinel, TilePos::new(6, 5))
         };
         let builder = harvester(3, None);
         let mut obs = obs_with(vec![tender, patient, builder]);
@@ -3820,21 +3762,13 @@ mod tests {
         let target = TilePos::new(20, 8);
         let wing_kind = crate::stats::Role::AirGround.unit_for(crate::Faction::Ferrous);
         let mut units: Vec<_> = (1..=4).map(|id| harvester(id, None)).collect();
-        units.extend((10..12).map(|id| UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: wing_kind,
-            tile: home.offset(i32::try_from(id - 9).expect("small fixture id"), 4),
-            hp: wing_kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+        units.extend((10..12).map(|id| {
+            UnitObs::fixture(
+                id,
+                PlayerId(0),
+                wing_kind,
+                home.offset(i32::try_from(id - 9).expect("small fixture id"), 4),
+            )
         }));
         let mut obs = obs_with(units);
         obs.my_buildings = vec![standing_building(1, BuildingKind::Foundry, home)];
@@ -3873,36 +3807,11 @@ mod tests {
     }
 
     fn fighter(id: u32, player: PlayerId, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player,
-            kind: UnitKind::Sentinel,
-            tile,
-            hp: UnitKind::Sentinel.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, player, UnitKind::Sentinel, tile)
     }
 
     fn standing_building(id: u32, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(0),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(0), kind, anchor)
     }
 
     fn standing_force_residual_fixture() -> (Observation, Dials) {
@@ -5654,15 +5563,9 @@ mod tests {
         let anchor = TilePos::new(9, 4);
         let mut obs = obs_with(vec![harvester(0, None)]);
         obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(7),
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor,
             hp: 1,
             built: false,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(7, PlayerId(0), BuildingKind::Foundry, anchor)
         });
         obs.my_queues.push(Vec::new());
 
@@ -5719,15 +5622,10 @@ mod tests {
         let mut obs = obs_with(Vec::new());
         let anchor = TilePos::new(9, 4);
         obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(7),
-            player: PlayerId(0),
-            kind: BuildingKind::Turret,
-            anchor,
             hp: 100,
             built: false,
-            seen: true,
             tier: 1,
+            ..BuildingObs::fixture(7, PlayerId(0), BuildingKind::Turret, anchor)
         });
         obs.my_queues.push(Vec::new());
         let mut policy = UtilityPolicy::new();
@@ -5840,21 +5738,13 @@ mod tests {
         let home = TilePos::new(2, 8);
         let mut obs = obs_with((1..=7).map(|id| harvester(id, None)).collect());
         obs.tick = 6_000;
-        obs.my_units.extend((20..=23).map(|id| UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Sentinel,
-            tile: home.offset(i32::try_from(id - 20).unwrap(), 4),
-            hp: UnitKind::Sentinel.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+        obs.my_units.extend((20..=23).map(|id| {
+            UnitObs::fixture(
+                id,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                home.offset(i32::try_from(id - 20).unwrap(), 4),
+            )
         }));
         for (id, kind, anchor) in [
             (30, BuildingKind::Foundry, home),
@@ -6072,20 +5962,10 @@ mod tests {
         worker_repairer.idle = false;
         worker_repairer.repairing = true;
         let ground_unit = |id, kind: UnitKind, tile, hp, idle, repairing| UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile,
             hp,
             idle,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
             repairing,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(0), kind, tile)
         };
         let active_tender = ground_unit(
             3,
@@ -6388,15 +6268,8 @@ mod tests {
             harvester(4, Some((BuildingKind::Fabricator, TilePos::new(18, 4)))),
         ]);
         obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(7),
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor: already_paid,
-            hp: BuildingKind::Foundry.base_stats().max_hp,
             built: false,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(7, PlayerId(0), BuildingKind::Foundry, already_paid)
         });
         obs.my_queues.push(Vec::new());
         let price = BuildingKind::Foundry

@@ -574,17 +574,8 @@ mod tests {
 
     fn add_building(obs: &mut Observation, kind: BuildingKind, anchor: TilePos) {
         let id = BuildingId(obs.my_buildings.len() as u32);
-        obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id,
-            player: PlayerId(0),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.my_buildings
+            .push(BuildingObs::fixture(id.0, PlayerId(0), kind, anchor));
         obs.my_queues.push(Vec::new());
     }
 
@@ -606,20 +597,8 @@ mod tests {
         obs.explored[0] = false;
         add_building(&mut obs, BuildingKind::ScuttleCharge, TilePos::new(5, 5));
         obs.enemy_units.push(UnitObs {
-            id: UnitId(90),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: TilePos::new(10, 10),
             hp: 60,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(90, PlayerId(1), UnitKind::Sentinel, TilePos::new(10, 10))
         });
         let mut founder = obs.enemy_units[0].clone();
         founder.id = UnitId(91);
@@ -670,20 +649,10 @@ mod tests {
         {
             let obs = &mut *obs;
             obs.my_units.push(UnitObs {
-                id: UnitId(70),
-                player: obs.me,
-                kind: UnitKind::Harvester,
-                tile: TilePos::new(12, 10),
                 hp: 60,
                 idle: false,
-                carrying: 0,
-                harvesting: None,
-                cargo: 0,
-                site: None,
-                salvaging: None,
                 founding: Some((BuildingKind::Fabricator, anchor)),
-                repairing: false,
-                grounded: false,
+                ..UnitObs::fixture(70, obs.me, UnitKind::Harvester, TilePos::new(12, 10))
             });
         }
         assert!(!placement_valid(
@@ -752,20 +721,10 @@ mod tests {
         {
             let obs = &mut *obs;
             obs.my_units.push(UnitObs {
-                id: UnitId(70),
-                player: obs.me,
-                kind: UnitKind::Harvester,
-                tile: work,
                 hp: 60,
                 idle: false,
-                carrying: 0,
-                harvesting: None,
-                cargo: 0,
                 site: Some(obs.my_buildings[1].id),
-                salvaging: None,
-                founding: None,
-                repairing: false,
-                grounded: false,
+                ..UnitObs::fixture(70, obs.me, UnitKind::Harvester, work)
             });
         }
         let unobserved = UtilityPolicy::new();
@@ -843,20 +802,8 @@ mod tests {
             })
             .expect("the fixture has open ground");
         obs.enemy_units.push(UnitObs {
-            id: UnitId(90),
-            player: PlayerId(1),
-            kind: UnitKind::Condor,
-            tile,
-            hp: UnitKind::Condor.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
             grounded: true,
+            ..UnitObs::fixture(90, PlayerId(1), UnitKind::Condor, tile)
         });
         assert!(
             !policy.placement_tile_open_except(
@@ -902,20 +849,9 @@ mod tests {
                 .expect("the open Foundry has a canonical spawn");
         let mut with_mine = obs.clone();
         with_mine.my_units.push(UnitObs {
-            id: UnitId(100),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(2, 2),
-            hp: UnitKind::Harvester.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
             founding: Some((BuildingKind::ScuttleCharge, mine_anchor)),
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(100, PlayerId(0), UnitKind::Harvester, TilePos::new(2, 2))
         });
         assert!(
             GroundEgressCache::same_layout(&with_mine, &obs),
@@ -1232,32 +1168,16 @@ mod tests {
         let mut obs = observation();
         obs.known_rock.push(TilePos::new(1, 1));
         obs.known_scrap.push((TilePos::new(2, 2), 10));
-        obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(100),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor: TilePos::new(3, 3),
-            hp: BuildingKind::Turret.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        obs.enemy_buildings.push(BuildingObs::fixture(
+            100,
+            PlayerId(1),
+            BuildingKind::Turret,
+            TilePos::new(3, 3),
+        ));
         obs.my_units.push(UnitObs {
-            id: UnitId(100),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(1, 2),
-            hp: UnitKind::Harvester.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
             founding: Some((BuildingKind::RepairBay, TilePos::new(12, 2))),
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(100, PlayerId(0), UnitKind::Harvester, TilePos::new(1, 2))
         });
         let open =
             GroundEgressCache::ground_egress_base_open(&obs, FoundationCancellations::default());
@@ -1396,35 +1316,19 @@ mod tests {
         assert!(!GroundEgressCache::same_layout(&obs, &with_scrap));
 
         let mut with_building = obs.clone();
-        with_building.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(100),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor: TilePos::new(1, 1),
-            hp: BuildingKind::Turret.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        });
+        with_building.enemy_buildings.push(BuildingObs::fixture(
+            100,
+            PlayerId(1),
+            BuildingKind::Turret,
+            TilePos::new(1, 1),
+        ));
         assert!(!GroundEgressCache::same_layout(&obs, &with_building));
 
         let mut with_founding = obs.clone();
         with_founding.my_units.push(UnitObs {
-            id: UnitId(100),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(1, 1),
-            hp: UnitKind::Harvester.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
             founding: Some((BuildingKind::Turret, TilePos::new(2, 2))),
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(100, PlayerId(0), UnitKind::Harvester, TilePos::new(1, 1))
         });
         assert!(!GroundEgressCache::same_layout(&obs, &with_founding));
 

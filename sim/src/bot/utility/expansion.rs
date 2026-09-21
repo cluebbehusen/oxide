@@ -1734,17 +1734,12 @@ mod tests {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> crate::bot::observation::BuildingObs {
-        crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: crate::ids::BuildingId(id),
-            player: crate::ids::PlayerId(player),
+        crate::bot::observation::BuildingObs::fixture(
+            id,
+            crate::ids::PlayerId(player),
             kind,
             anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        )
     }
 
     #[test]
@@ -1817,20 +1812,13 @@ mod tests {
         hp: u32,
     ) -> crate::bot::observation::UnitObs {
         crate::bot::observation::UnitObs {
-            id: UnitId(id),
-            player: crate::ids::PlayerId(player),
-            kind,
-            tile,
             hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..crate::bot::observation::UnitObs::fixture(
+                id,
+                crate::ids::PlayerId(player),
+                kind,
+                tile,
+            )
         }
     }
 
