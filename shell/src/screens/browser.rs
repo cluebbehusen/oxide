@@ -496,7 +496,7 @@ impl Browser {
                 rect.w - 8.0 * ui,
                 rect.h - label_h - 8.0 * ui,
             );
-            if let Some(tex) = previews.get(*entry_idx, entry) {
+            if let Some(tex) = previews.get(entry) {
                 let scale = (thumb.w / tex.width()).min(thumb.h / tex.height());
                 let (pw, ph) = (tex.width() * scale, tex.height() * scale);
                 draw_texture_ex(

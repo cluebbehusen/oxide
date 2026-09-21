@@ -1291,8 +1291,8 @@ impl Wizard {
             );
         }
 
-        if let Some((idx, entry)) = self.picked_entry(draft)
-            && let Some(tex) = previews.get(idx, entry)
+        if let Some((_, entry)) = self.picked_entry(draft)
+            && let Some(tex) = previews.get(entry)
         {
             let scale = (layout.preview.w / tex.width()).min(layout.preview.h / tex.height());
             let (pw, ph) = (tex.width() * scale, tex.height() * scale);
