@@ -50,19 +50,80 @@ fn contested_producer_game() -> Game {
     Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("contested fixture builds")
 }
 
+/// A 1280x800 layout with a panel band and no other chrome; each test
+/// places the one rect it exercises.
+fn bare_layout(panel_top: f32, panel_right: f32) -> crate::layout::LayoutModel {
+    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
+    let none = (zero, crate::panel::CardAction::None);
+    crate::layout::LayoutModel::compute(
+        vec2(1280.0, 800.0),
+        1.0,
+        panel_top,
+        panel_right,
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        [none; 8],
+        0,
+        [none; 16],
+        0,
+        [none; 8],
+        0,
+    )
+}
+
+fn left_down(p: Vec2) -> RawEvent {
+    RawEvent::MouseDown {
+        button: MouseButton::Left,
+        x: p.x,
+        y: p.y,
+    }
+}
+
+fn left_up(p: Vec2) -> RawEvent {
+    RawEvent::MouseUp {
+        button: MouseButton::Left,
+        x: p.x,
+        y: p.y,
+    }
+}
+
+fn right_down(p: Vec2) -> RawEvent {
+    RawEvent::MouseDown {
+        button: MouseButton::Right,
+        x: p.x,
+        y: p.y,
+    }
+}
+
+fn mouse_move(p: Vec2) -> RawEvent {
+    RawEvent::MouseMove { x: p.x, y: p.y }
+}
+
+fn touch_down(id: u64, p: Vec2) -> RawEvent {
+    RawEvent::TouchDown { id, x: p.x, y: p.y }
+}
+
+fn touch_move(id: u64, p: Vec2) -> RawEvent {
+    RawEvent::TouchMove { id, x: p.x, y: p.y }
+}
+
+fn touch_up(id: u64, p: Vec2) -> RawEvent {
+    RawEvent::TouchUp { id, x: p.x, y: p.y }
+}
+
+fn key_down(key: Key) -> RawEvent {
+    RawEvent::KeyDown { key }
+}
+
+fn key_up(key: Key) -> RawEvent {
+    RawEvent::KeyUp { key }
+}
+
 fn click(x: f32, y: f32) -> [RawEvent; 2] {
-    [
-        RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x,
-            y,
-        },
-        RawEvent::MouseUp {
-            button: MouseButton::Left,
-            x,
-            y,
-        },
-    ]
+    [left_down(vec2(x, y)), left_up(vec2(x, y))]
 }
 
 #[test]
@@ -84,23 +145,8 @@ fn performance_panel_swallows_orders_and_selection_without_revealing_fog() {
     let before = game.state.hash();
     for events in [
         click(pos.x, pos.y).to_vec(),
-        vec![RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: pos.x,
-            y: pos.y,
-        }],
-        vec![
-            RawEvent::TouchDown {
-                id: 23,
-                x: pos.x,
-                y: pos.y,
-            },
-            RawEvent::TouchUp {
-                id: 23,
-                x: pos.x,
-                y: pos.y,
-            },
-        ],
+        vec![right_down(pos)],
+        vec![touch_down(23, pos), touch_up(23, pos)],
     ] {
         apply_events(&mut game, &mut input, &events);
         assert_eq!(game.presentation.selection.units, vec![unit]);
@@ -186,15 +232,7 @@ fn skyhook_visible_edge_accepts_a_load_order() {
     game.presentation.selection.units = vec![sentinel];
     let edge = game.presentation.camera.to_screen(center + vec2(0.9, 0.0));
 
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: edge.x,
-            y: edge.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(edge)]);
 
     assert!(game.pending.iter().any(|command| matches!(
         command.command,
@@ -226,15 +264,7 @@ fn hostile_skyhook_visible_edge_accepts_an_attack_order() {
     game.presentation.selection.units = vec![sentinel];
     let edge = game.presentation.camera.to_screen(center + vec2(0.9, 0.0));
 
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: edge.x,
-            y: edge.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(edge)]);
 
     assert!(game.pending.iter().any(|command| matches!(
         command.command,
@@ -276,18 +306,10 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: second.x,
-                y: second.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: second.x,
-                y: second.y,
-            },
-            RawEvent::KeyUp { key: Key::Shift },
+            key_down(Key::Shift),
+            left_down(second),
+            left_up(second),
+            key_up(Key::Shift),
         ],
     );
     assert_eq!(game.presentation.selection.buildings, own);
@@ -296,18 +318,10 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: first.x,
-                y: first.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: first.x,
-                y: first.y,
-            },
-            RawEvent::KeyUp { key: Key::Shift },
+            key_down(Key::Shift),
+            left_down(first),
+            left_up(first),
+            key_up(Key::Shift),
         ],
     );
     assert_eq!(game.presentation.selection.buildings, vec![own[1]]);
@@ -633,15 +647,7 @@ fn every_tile_of_a_known_extractor_frame_places_the_same_site() {
             let world = vec2(clicked.x as f32 + 0.5, clicked.y as f32 + 0.5);
             let point = game.presentation.camera.to_screen(world);
 
-            apply_events(
-                &mut game,
-                &mut input,
-                &[RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x: point.x,
-                    y: point.y,
-                }],
-            );
+            apply_events(&mut game, &mut input, &[left_down(point)]);
 
             assert!(matches!(
                 game.pending.as_slice(),
@@ -682,12 +688,12 @@ fn bookmarks_remember_and_recall_camera_ground() {
     let chord = |game: &mut Game, input: &mut InputState, ctrl: bool, key: Key| {
         let mut ev = Vec::new();
         if ctrl {
-            ev.push(RawEvent::KeyDown { key: Key::Ctrl });
+            ev.push(key_down(Key::Ctrl));
         }
-        ev.push(RawEvent::KeyDown { key });
-        ev.push(RawEvent::KeyUp { key });
+        ev.push(key_down(key));
+        ev.push(key_up(key));
         if ctrl {
-            ev.push(RawEvent::KeyUp { key: Key::Ctrl });
+            ev.push(key_up(Key::Ctrl));
         }
         apply_events(game, input, &ev);
     };
@@ -712,14 +718,7 @@ fn the_cycle_key_walks_idle_harvesters_in_id_order() {
     let idle = idle_harvesters(&game.view());
     assert!(idle.len() >= 2, "premise: skirmish opens with idle workers");
     let press = |game: &mut Game, input: &mut InputState| {
-        apply_events(
-            game,
-            input,
-            &[
-                RawEvent::KeyDown { key: Key::N },
-                RawEvent::KeyUp { key: Key::N },
-            ],
-        );
+        apply_events(game, input, &[key_down(Key::N), key_up(Key::N)]);
     };
     press(&mut game, &mut input);
     assert_eq!(game.presentation.selection.units, vec![idle[0]]);
@@ -761,15 +760,7 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
         .presentation
         .camera
         .to_screen(vec2(foundry.x as f32 + 0.5, foundry.y as f32 + 0.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: bad.x,
-            y: bad.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[left_down(bad)]);
     assert!(input.placing.is_some(), "a misclick must not disarm");
     assert!(game.pending.is_empty(), "and must spend nothing");
 
@@ -781,19 +772,7 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: open.x,
-                y: open.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: open.x,
-                y: open.y,
-            },
-        ],
+        &[key_down(Key::Shift), left_down(open), left_up(open)],
     );
     assert_eq!(game.pending.len(), 1, "legal ground stages the site");
     assert!(input.placing.is_some(), "shift keeps the wall going up");
@@ -818,16 +797,8 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
         &mut game,
         &mut input,
         &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: open.x + 96.0,
-                y: open.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: open.x + 96.0,
-                y: open.y,
-            },
+            left_down(vec2(open.x + 96.0, open.y)),
+            left_up(vec2(open.x + 96.0, open.y)),
         ],
     );
     assert_eq!(game.pending.len(), 1, "the plain click stages its site");
@@ -864,15 +835,7 @@ fn a_right_click_on_ground_stages_an_advance() {
         pos.x.to_num::<f32>() + 4.0,
         pos.y.to_num::<f32>() + 2.0,
     ));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: mid.x,
-            y: mid.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(mid)]);
     assert!(
         game.pending
             .iter()
@@ -936,15 +899,7 @@ fn a_context_order_cancels_placement_and_every_deferred_build_ghost() {
         .presentation
         .camera
         .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: point.x,
-            y: point.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(point)]);
 
     assert!(
         input.placing.is_none(),
@@ -994,44 +949,18 @@ fn the_rally_card_arms_a_touchable_world_target() {
     game.presentation.selection.buildings = vec![foundry];
 
     let card = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
-    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut cards = [(zero, crate::panel::CardAction::None); 16];
-    cards[0] = (card, crate::panel::CardAction::ArmRally);
-    game.presentation
-        .layout
-        .set(crate::layout::LayoutModel::compute(
-            vec2(1280.0, 800.0),
-            1.0,
-            680.0,
-            500.0,
-            zero,
-            zero,
-            zero,
-            zero,
-            zero,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-            cards,
-            1,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-        ));
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[0] = (card, crate::panel::CardAction::ArmRally);
+    layout.card_count = 1;
+    game.presentation.layout.set(layout);
 
     input.now = 1.0;
     apply_events(
         &mut game,
         &mut input,
         &[
-            RawEvent::TouchDown {
-                id: 1,
-                x: card.x + 20.0,
-                y: card.y + 20.0,
-            },
-            RawEvent::TouchUp {
-                id: 1,
-                x: card.x + 20.0,
-                y: card.y + 20.0,
-            },
+            touch_down(1, vec2(card.x + 20.0, card.y + 20.0)),
+            touch_up(1, vec2(card.x + 20.0, card.y + 20.0)),
         ],
     );
     assert_eq!(input.rallying, vec![foundry]);
@@ -1045,18 +974,7 @@ fn the_rally_card_arms_a_touchable_world_target() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::TouchDown {
-                id: 2,
-                x: point.x,
-                y: point.y,
-            },
-            RawEvent::TouchUp {
-                id: 2,
-                x: point.x,
-                y: point.y,
-            },
-        ],
+        &[touch_down(2, point), touch_up(2, point)],
     );
 
     assert!(matches!(
@@ -1082,43 +1000,16 @@ fn the_armed_mode_ribbon_cancel_is_a_real_touch_action() {
     input.attacking = true;
     let ribbon = macroquad::math::Rect::new(220.0, 620.0, 280.0, 44.0);
     let cancel = macroquad::math::Rect::new(456.0, 620.0, 44.0, 44.0);
-    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
-    game.presentation
-        .layout
-        .set(crate::layout::LayoutModel::compute(
-            vec2(1280.0, 800.0),
-            1.0,
-            f32::INFINITY,
-            0.0,
-            zero,
-            zero,
-            zero,
-            ribbon,
-            cancel,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-            [(zero, crate::panel::CardAction::None); 16],
-            0,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-        ));
+    let mut layout = bare_layout(f32::INFINITY, 0.0);
+    layout.mode_ribbon = ribbon;
+    layout.mode_cancel = cancel;
+    game.presentation.layout.set(layout);
     let at = cancel.center();
     input.now = 1.0;
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::TouchDown {
-                id: 11,
-                x: at.x,
-                y: at.y,
-            },
-            RawEvent::TouchUp {
-                id: 11,
-                x: at.x,
-                y: at.y,
-            },
-        ],
+        &[touch_down(11, at), touch_up(11, at)],
     );
     assert_eq!(input.armed_mode(), None);
     assert!(game.pending.is_empty(), "cancel emits no gameplay command");
@@ -1311,15 +1202,7 @@ fn a_right_click_anywhere_on_an_own_site_resumes_it() {
         .presentation
         .camera
         .to_screen(vec2(anchor.x as f32 + 1.5, anchor.y as f32 + 1.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: corner.x,
-            y: corner.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(corner)]);
     assert!(
         game.pending.iter().any(|c| matches!(
             &c.command,
@@ -1434,14 +1317,7 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Right,
-                x: screen.x,
-                y: screen.y,
-            },
-        ],
+        &[key_down(Key::Shift), right_down(screen)],
     );
     assert!(
         game.pending.iter().any(|c| matches!(
@@ -1487,14 +1363,7 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
         .id;
     game.presentation.selection.units = vec![harvester];
     // Arm with the hotkey, exactly as a player would.
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::V },
-            RawEvent::KeyUp { key: Key::V },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::V), key_up(Key::V)]);
     assert!(input.salvaging, "V arms the wrecking crew");
 
     // A click on the Foundry refuses and stays armed.
@@ -1503,29 +1372,13 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
         .presentation
         .camera
         .to_screen(vec2(foundry.x as f32 + 0.5, foundry.y as f32 + 0.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: on_foundry.x,
-            y: on_foundry.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[left_down(on_foundry)]);
     assert!(game.pending.is_empty(), "the victory token refuses");
     assert!(input.salvaging, "a misclick keeps the mode armed");
 
     // A click on the turret stages the teardown and stands down.
     let on_turret = game.presentation.camera.to_screen(vec2(9.5, 5.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: on_turret.x,
-            y: on_turret.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[left_down(on_turret)]);
     assert!(
         game.pending.iter().any(|c| matches!(
             &c.command,
@@ -1550,14 +1403,7 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
         .id;
     game.presentation.selection.units = vec![fighter];
     // Arm with the classic hotkey, exactly as a player would.
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::M },
-            RawEvent::KeyUp { key: Key::M },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::M), key_up(Key::M)]);
     assert!(input.running, "M arms the recall");
 
     // The click sends a plain Move — the OBLIVIOUS walk, not the
@@ -1568,22 +1414,7 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
         .presentation
         .camera
         .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[left_down(p), left_up(p)]);
     assert!(
         game.pending.iter().any(|c| matches!(
             &c.command,
@@ -1618,14 +1449,7 @@ fn arming_run_stands_the_other_verbs_down() {
     // armed_click resolves placement before run, so both live at once
     // would stamp a building under a "run" toast.
     input.placing = Some(oxide_sim::BuildingKind::Turret);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::M },
-            RawEvent::KeyUp { key: Key::M },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::M), key_up(Key::M)]);
     assert!(input.running, "M arms the recall");
     assert!(input.placing.is_none(), "and placement stood down");
     let home = game.state.unit(harvester).unwrap().tile();
@@ -1633,22 +1457,7 @@ fn arming_run_stands_the_other_verbs_down() {
         .presentation
         .camera
         .to_screen(vec2(home.x as f32 + 2.5, home.y as f32 + 0.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[left_down(p), left_up(p)]);
     assert!(
         game.pending
             .iter()
@@ -1667,10 +1476,10 @@ fn arming_run_stands_the_other_verbs_down() {
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyDown { key: Key::M },
-            RawEvent::KeyUp { key: Key::M },
-            RawEvent::KeyDown { key: Key::V },
-            RawEvent::KeyUp { key: Key::V },
+            key_down(Key::M),
+            key_up(Key::M),
+            key_down(Key::V),
+            key_up(Key::V),
         ],
     );
     assert!(input.salvaging, "V arms salvage");
@@ -1689,14 +1498,7 @@ fn f_arms_explicit_attack_move_and_the_click_consumes_it() {
         .expect("a starting combat unit")
         .id;
     game.presentation.selection.units = vec![fighter];
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::F },
-            RawEvent::KeyUp { key: Key::F },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::F), key_up(Key::F)]);
     assert!(input.attacking, "F arms the fighting march");
     assert!(!input.running, "attack-move and run are mutually exclusive");
 
@@ -1732,48 +1534,22 @@ fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
     game.presentation.selection.units = vec![fighter];
 
     let card = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
-    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut cards = [(zero, crate::panel::CardAction::None); 16];
-    cards[0] = (card, crate::panel::CardAction::Dispatch(Action::AttackMove));
-    game.presentation
-        .layout
-        .set(crate::layout::LayoutModel::compute(
-            vec2(1280.0, 800.0),
-            1.0,
-            680.0,
-            500.0,
-            zero,
-            zero,
-            zero,
-            zero,
-            zero,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-            cards,
-            1,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-        ));
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[0] = (card, crate::panel::CardAction::Dispatch(Action::AttackMove));
+    layout.card_count = 1;
+    game.presentation.layout.set(layout);
 
     input.now = 2.0;
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: card.x + 20.0,
-            y: card.y + 20.0,
-        }],
+        &[touch_down(1, vec2(card.x + 20.0, card.y + 20.0))],
     );
     input.now = 2.1;
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: card.x + 20.0,
-            y: card.y + 20.0,
-        }],
+        &[touch_up(1, vec2(card.x + 20.0, card.y + 20.0))],
     );
     assert!(input.attacking, "the fingertip arms the panel verb");
 
@@ -1783,25 +1559,9 @@ fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
         .camera
         .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
     input.now = 3.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 2,
-            x: point.x,
-            y: point.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(2, point)]);
     input.now = 3.1;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 2,
-            x: point.x,
-            y: point.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(2, point)]);
 
     assert!(game.pending.iter().any(|command| matches!(
         command.command,
@@ -1829,41 +1589,14 @@ fn a_paused_stroke_bills_each_kind_at_its_own_price() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-        ],
+        &[key_down(Key::Shift), left_down(p), left_up(p)],
     );
     assert_eq!(staged_builds(&game), 1, "the turret staged");
     // The clock never ran (paused shell): the turret is still pending
     // when the palette switches kinds.
     input.placing = Some(oxide_sim::BuildingKind::Bastion);
     let p2 = game.presentation.camera.to_screen(vec2(9.5, 2.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p2.x,
-                y: p2.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p2.x,
-                y: p2.y,
-            },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[left_down(p2), left_up(p2)]);
     assert_eq!(
         staged_builds(&game),
         2,
@@ -1884,39 +1617,12 @@ fn a_paused_stroke_refuses_ground_an_earlier_stroke_spoke_for() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-        ],
+        &[key_down(Key::Shift), left_down(p), left_up(p)],
     );
     assert_eq!(staged_builds(&game), 1, "stroke A staged its site");
     // Stroke B opens on the same tile: the ground is spoken for, and
     // acknowledging the stamp would hand the sim a doomed command.
-    apply_events(
-        &mut game,
-        &mut input,
-        &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-        ],
-    );
+    apply_events(&mut game, &mut input, &[left_down(p), left_up(p)]);
     assert_eq!(
         staged_builds(&game),
         1,
@@ -1954,11 +1660,7 @@ fn queued_orders_count_against_the_stroke_prediction() {
             }
         }
     }
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyDown { key: Key::Shift }],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
     drag_over(&mut game, &mut input, &tiles);
     assert_eq!(
         staged_builds(&game),
@@ -1991,7 +1693,7 @@ fn paused_strokes_share_one_queue_prediction() {
             }
         }
     }
-    let shift = [RawEvent::KeyDown { key: Key::Shift }];
+    let shift = [key_down(Key::Shift)];
     apply_events(&mut game, &mut input, &shift);
     drag_over(&mut game, &mut input, &tiles_a);
     apply_events(&mut game, &mut input, &shift);
@@ -2037,35 +1739,16 @@ fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
     game.state.tick(&fill);
 
     input.placing = Some(oxide_sim::BuildingKind::Turret);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyDown { key: Key::Shift }],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
     let first = game.presentation.camera.to_screen(vec2(4.5, 2.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: first.x,
-            y: first.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[left_down(first)]);
     assert_eq!(staged_builds(&game), 1, "the last free slot was used");
 
     game.issue(Command::Stop {
         units: vec![builder],
     });
     let second = game.presentation.camera.to_screen(vec2(6.5, 2.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseMove {
-            x: second.x,
-            y: second.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[mouse_move(second)]);
     assert_eq!(
         staged_builds(&game),
         2,
@@ -2080,15 +1763,7 @@ fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
     game.presentation.selection.units = vec![builder];
     input.placing = Some(oxide_sim::BuildingKind::Turret);
     let first = game.presentation.camera.to_screen(vec2(4.5, 2.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: first.x,
-            y: first.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[left_down(first)]);
     for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
         game.issue(Command::Move {
             units: vec![builder],
@@ -2097,14 +1772,7 @@ fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
         });
     }
     let second = game.presentation.camera.to_screen(vec2(6.5, 2.5));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseMove {
-            x: second.x,
-            y: second.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[mouse_move(second)]);
     assert_eq!(
         staged_builds(&game),
         1,
@@ -2204,11 +1872,7 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: screen.x + 60.0,
-            y: screen.y,
-        }],
+        &[right_down(vec2(screen.x + 60.0, screen.y))],
     );
     assert!(game.pending.is_empty(), "ally units take no orders");
     // …and group assignment drops the foreign pick.
@@ -2216,10 +1880,10 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyDown { key: Key::Ctrl },
-            RawEvent::KeyDown { key: Key::Num1 },
-            RawEvent::KeyUp { key: Key::Num1 },
-            RawEvent::KeyUp { key: Key::Ctrl },
+            key_down(Key::Ctrl),
+            key_down(Key::Num1),
+            key_up(Key::Num1),
+            key_up(Key::Ctrl),
         ],
     );
     assert!(input.groups[0].is_empty(), "no ally in a control group");
@@ -2311,18 +1975,10 @@ fn a_selection_never_mixes_allegiances() {
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: ally_screen.x,
-                y: ally_screen.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: ally_screen.x,
-                y: ally_screen.y,
-            },
-            RawEvent::KeyUp { key: Key::Shift },
+            key_down(Key::Shift),
+            left_down(ally_screen),
+            left_up(ally_screen),
+            key_up(Key::Shift),
         ],
     );
     assert_eq!(
@@ -2336,19 +1992,7 @@ fn a_selection_never_mixes_allegiances() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: a.x,
-                y: a.y,
-            },
-            RawEvent::MouseMove { x: b.x, y: b.y },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: b.x,
-                y: b.y,
-            },
-        ],
+        &[left_down(a), mouse_move(b), left_up(b)],
     );
     assert_eq!(
         game.presentation.selection.units,
@@ -2369,25 +2013,9 @@ fn touch_taps_select_and_a_still_hold_orders() {
         .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
     // A short still touch is a tap: select.
     input.now = 5.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: screen.x,
-            y: screen.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, screen)]);
     input.now = 5.1;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: screen.x,
-            y: screen.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(1, screen)]);
     assert_eq!(
         game.presentation.selection.units,
         vec![unit],
@@ -2401,15 +2029,7 @@ fn touch_taps_select_and_a_still_hold_orders() {
         pos.y.to_num::<f32>() + 2.0,
     ));
     input.now = 6.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 2,
-            x: ground.x,
-            y: ground.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(2, ground)]);
     input.now = 6.2;
     update_touch(&mut game, &mut input);
     assert!(game.pending.is_empty(), "0.2s is not a long-press yet");
@@ -2447,25 +2067,9 @@ fn an_armed_build_completes_on_a_tap() {
         .camera
         .to_screen(vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5));
     input.now = 5.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: open.x,
-            y: open.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, open)]);
     input.now = 5.1;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: open.x,
-            y: open.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(1, open)]);
     assert!(
         game.pending
             .iter()
@@ -2515,15 +2119,7 @@ fn a_fogged_hostile_never_steers_the_long_press() {
     game.presentation.camera.center = center;
     let screen = game.presentation.camera.to_screen(center);
     input.now = 9.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 7,
-            x: screen.x,
-            y: screen.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(7, screen)]);
     input.now = 9.9;
     update_touch(&mut game, &mut input);
     assert_eq!(
@@ -2546,37 +2142,13 @@ fn one_finger_drags_the_camera_and_two_box_select() {
     let mut input = InputState::new();
     let before = game.presentation.camera.center;
     // One moved finger pans the world under the hand.
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: 400.0,
-            y: 300.0,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchMove {
-            id: 1,
-            x: 340.0,
-            y: 300.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, vec2(400.0, 300.0))]);
+    apply_events(&mut game, &mut input, &[touch_move(1, vec2(340.0, 300.0))]);
     assert!(
         game.presentation.camera.center.x > before.x,
         "dragging left shows ground to the east"
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: 340.0,
-            y: 300.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(1, vec2(340.0, 300.0))]);
     assert!(
         game.presentation.selection.units.is_empty(),
         "a drag is never a tap-select"
@@ -2585,33 +2157,9 @@ fn one_finger_drags_the_camera_and_two_box_select() {
     // Two steady fingers box-select everything between them.
     let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
     let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: a.x,
-            y: a.y,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 2,
-            x: b.x,
-            y: b.y,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 2,
-            x: b.x,
-            y: b.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, b)]);
     assert!(
         !game.presentation.selection.units.is_empty(),
         "the finger-box swept the base"
@@ -2832,19 +2380,7 @@ fn a_foreign_box_never_reaches_through_fog() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: a.x,
-                y: a.y,
-            },
-            RawEvent::MouseMove { x: b.x, y: b.y },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: b.x,
-                y: b.y,
-            },
-        ],
+        &[left_down(a), mouse_move(b), left_up(b)],
     );
     assert_eq!(
         game.presentation.selection.units,
@@ -2928,26 +2464,9 @@ fn a_selected_hostile_drops_when_fog_recovers_it() {
 /// renderer would publish them.
 fn publish_minimap(game: &Game) -> macroquad::math::Rect {
     let minimap = macroquad::math::Rect::new(1060.0, 590.0, 200.0, 190.0);
-    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
-    game.presentation
-        .layout
-        .set(crate::layout::LayoutModel::compute(
-            vec2(1280.0, 800.0),
-            1.0,
-            f32::INFINITY,
-            0.0,
-            zero,
-            minimap,
-            zero,
-            zero,
-            zero,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-            [(zero, crate::panel::CardAction::None); 16],
-            0,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-        ));
+    let mut layout = bare_layout(f32::INFINITY, 0.0);
+    layout.minimap = minimap;
+    game.presentation.layout.set(layout);
     minimap
 }
 
@@ -2995,67 +2514,23 @@ fn chrome_born_touches_never_drive_world_gestures() {
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: minimap.x + 20.0,
-            y: minimap.y + 20.0,
-        }],
+        &[touch_down(1, vec2(minimap.x + 20.0, minimap.y + 20.0))],
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchMove {
-            id: 1,
-            x: 400.0,
-            y: 300.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_move(1, vec2(400.0, 300.0))]);
     assert_eq!(
         game.presentation.camera.center, center_before,
         "a chrome-born swipe keeps its hands off the camera"
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: 400.0,
-            y: 300.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(1, vec2(400.0, 300.0))]);
 
     // The same swipe born on open ground pans.
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 2,
-            x: 400.0,
-            y: 300.0,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchMove {
-            id: 2,
-            x: 300.0,
-            y: 260.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(2, vec2(400.0, 300.0))]);
+    apply_events(&mut game, &mut input, &[touch_move(2, vec2(300.0, 260.0))]);
     assert_ne!(
         game.presentation.camera.center, center_before,
         "a world-born swipe still drags the world"
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 2,
-            x: 300.0,
-            y: 260.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(2, vec2(300.0, 260.0))]);
 
     // A two-finger box with one chrome-born corner selects nothing —
     // even when the pair spans the whole own base.
@@ -3068,29 +2543,17 @@ fn chrome_born_touches_never_drive_world_gestures() {
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchDown {
-            id: 3,
-            x: minimap.x + 30.0,
-            y: minimap.y + 30.0,
-        }],
+        &[touch_down(3, vec2(minimap.x + 30.0, minimap.y + 30.0))],
     );
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchDown {
-            id: 4,
-            x: base.x - 80.0,
-            y: base.y - 80.0,
-        }],
+        &[touch_down(4, vec2(base.x - 80.0, base.y - 80.0))],
     );
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchUp {
-            id: 4,
-            x: base.x - 80.0,
-            y: base.y - 80.0,
-        }],
+        &[touch_up(4, vec2(base.x - 80.0, base.y - 80.0))],
     );
     assert!(
         game.presentation.selection.units.is_empty(),
@@ -3107,46 +2570,21 @@ fn a_tap_on_the_idle_badge_cycles_workers() {
     // bare-chrome swallow used to eat fingertip taps on it while the
     // mouse path cycled workers.
     let badge = macroquad::math::Rect::new(200.0, 4.0, 60.0, 24.0);
-    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
-    game.presentation
-        .layout
-        .set(crate::layout::LayoutModel::compute(
-            vec2(1280.0, 800.0),
-            1.0,
-            f32::INFINITY,
-            0.0,
-            zero,
-            zero,
-            badge,
-            zero,
-            zero,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-            [(zero, crate::panel::CardAction::None); 16],
-            0,
-            [(zero, crate::panel::CardAction::None); 8],
-            0,
-        ));
+    let mut layout = bare_layout(f32::INFINITY, 0.0);
+    layout.idle_badge = badge;
+    game.presentation.layout.set(layout);
     let before = game.presentation.camera.center;
     input.now = 3.0;
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: badge.x + 10.0,
-            y: badge.y + 10.0,
-        }],
+        &[touch_down(1, vec2(badge.x + 10.0, badge.y + 10.0))],
     );
     input.now = 3.1;
     apply_events(
         &mut game,
         &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: badge.x + 10.0,
-            y: badge.y + 10.0,
-        }],
+        &[touch_up(1, vec2(badge.x + 10.0, badge.y + 10.0))],
     );
     // Cycling an idle worker selects it and jumps the camera to it —
     // either effect proves the badge answered the fingertip.
@@ -3169,11 +2607,7 @@ fn a_minimap_right_click_never_commands_a_foreign_selection() {
         .unwrap()
         .id;
     game.presentation.selection.units = vec![foe];
-    let right = |x: f32, y: f32| RawEvent::MouseDown {
-        button: MouseButton::Right,
-        x,
-        y,
-    };
+    let right = |x: f32, y: f32| right_down(vec2(x, y));
     apply_events(
         &mut game,
         &mut input,
@@ -3227,15 +2661,7 @@ fn a_minimap_right_click_sets_every_selected_producer_rally() {
     producers.sort_unstable();
     game.presentation.selection.buildings = producers.clone();
 
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: at.x,
-            y: at.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(at)]);
 
     let staged: Vec<_> = game
         .pending
@@ -3275,25 +2701,9 @@ fn touch_respects_chrome_ownership() {
     game.presentation.selection.units = vec![game.state.units()[0].id];
     let selected = game.presentation.selection.units.clone();
     input.now = 3.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 9,
-            x: mx,
-            y: my,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(9, vec2(mx, my))]);
     input.now = 3.1;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 9,
-            x: mx,
-            y: my,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(9, vec2(mx, my))]);
     assert_ne!(
         game.presentation.camera.center, before,
         "the tap steered the camera"
@@ -3306,15 +2716,7 @@ fn touch_respects_chrome_ownership() {
     // A long-press there orders nothing: chrome owns its ground for
     // the held finger too.
     input.now = 4.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 10,
-            x: mx,
-            y: my,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(10, vec2(mx, my))]);
     input.now = 4.6;
     update_touch(&mut game, &mut input);
     assert!(
@@ -3331,33 +2733,13 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
     game.presentation.selection.units = vec![game.state.units()[0].id];
     let keep = game.presentation.selection.units.clone();
     let zoom_before = game.presentation.camera.zoom;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 1,
-            x: 600.0,
-            y: 400.0,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 2,
-            x: 640.0,
-            y: 400.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, vec2(600.0, 400.0))]);
+    apply_events(&mut game, &mut input, &[touch_down(2, vec2(640.0, 400.0))]);
     // Sub-pixel-per-event spread: forty gentle half-pixel steps sum to
     // a real pinch even though no single event crosses a threshold.
     for i in 0..40 {
         let x = 640.0 + (i as f32) * 0.9;
-        apply_events(
-            &mut game,
-            &mut input,
-            &[RawEvent::TouchMove { id: 2, x, y: 400.0 }],
-        );
+        apply_events(&mut game, &mut input, &[touch_move(2, vec2(x, 400.0))]);
     }
     assert!(input.pinching, "the cumulative spread reads as a pinch");
     game.presentation.camera.update(1.0); // land the glide: headless has no frames
@@ -3365,24 +2747,8 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
         game.presentation.camera.zoom > zoom_before,
         "and it zoomed in"
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 2,
-            x: 676.0,
-            y: 400.0,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 1,
-            x: 600.0,
-            y: 400.0,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_up(2, vec2(676.0, 400.0))]);
+    apply_events(&mut game, &mut input, &[touch_up(1, vec2(600.0, 400.0))]);
     assert_eq!(
         game.presentation.selection.units, keep,
         "a pinch's release never box-selects"
@@ -3392,33 +2758,9 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
     // commits its box (pinch state must not outlive its fingers).
     let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
     let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 3,
-            x: a.x,
-            y: a.y,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchDown {
-            id: 4,
-            x: b.x,
-            y: b.y,
-        }],
-    );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::TouchUp {
-            id: 4,
-            x: b.x,
-            y: b.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(3, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(4, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(4, b)]);
     assert!(
         !game.presentation.selection.units.is_empty(),
         "the fresh pair's box landed"
@@ -3465,18 +2807,10 @@ fn a_placement_drag_stamps_a_row_of_queued_builds() {
             .to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5))
     };
     let (a, b, c) = (at(7, 3), at(8, 3), at(9, 3));
-    let mut events = vec![RawEvent::MouseDown {
-        button: MouseButton::Left,
-        x: a.x,
-        y: a.y,
-    }];
-    events.push(RawEvent::MouseMove { x: b.x, y: b.y });
-    events.push(RawEvent::MouseMove { x: c.x, y: c.y });
-    events.push(RawEvent::MouseUp {
-        button: MouseButton::Left,
-        x: c.x,
-        y: c.y,
-    });
+    let mut events = vec![left_down(a)];
+    events.push(mouse_move(b));
+    events.push(mouse_move(c));
+    events.push(left_up(c));
     apply_events(&mut game, &mut input, &events);
 
     let builds: Vec<_> = game
@@ -3552,11 +2886,7 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
     );
 
     // Ctrl-click drops the kind...
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyDown { key: Key::Ctrl }],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::Ctrl)]);
     activate_card(
         &mut game,
         &mut input,
@@ -3572,7 +2902,7 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
                 != UnitKind::Harvester),
         "Ctrl cuts the named kind out"
     );
-    apply_events(&mut game, &mut input, &[RawEvent::KeyUp { key: Key::Ctrl }]);
+    apply_events(&mut game, &mut input, &[key_up(Key::Ctrl)]);
 
     // ...and the plain click keeps only the named kind.
     game.presentation.selection.units = mine;
@@ -3682,15 +3012,11 @@ fn a_press_mid_flight_anchors_the_box_where_it_landed() {
     assert_eq!(
         stream.events,
         vec![
-            RawEvent::MouseMove { x: 300.0, y: 200.0 },
-            RawEvent::MouseMove { x: 380.0, y: 200.0 },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: 384.0,
-                y: 200.0
-            },
-            RawEvent::MouseMove { x: 450.0, y: 200.0 },
-            RawEvent::MouseMove { x: 500.0, y: 200.0 },
+            mouse_move(vec2(300.0, 200.0)),
+            mouse_move(vec2(380.0, 200.0)),
+            left_down(vec2(384.0, 200.0)),
+            mouse_move(vec2(450.0, 200.0)),
+            mouse_move(vec2(500.0, 200.0)),
         ],
         "every event keeps its own position, in arrival order"
     );
@@ -3729,14 +3055,7 @@ fn the_hardware_stream_preserves_backspace_repeat_only_when_requested() {
     stream.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, true);
     assert_eq!(
         stream.events,
-        vec![
-            RawEvent::KeyDown {
-                key: Key::Backspace
-            },
-            RawEvent::KeyDown {
-                key: Key::Backspace
-            },
-        ],
+        vec![key_down(Key::Backspace), key_down(Key::Backspace),],
         "the initial edge still comes from polling; only repeat edges use the subscriber"
     );
 }
@@ -3788,19 +3107,7 @@ fn the_stretch_between_press_and_frame_end_still_selects() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::MouseMove { x: b.x, y: b.y },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: b.x,
-                y: b.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: b.x,
-                y: b.y,
-            },
-        ],
+        &[mouse_move(b), left_down(b), left_up(b)],
     );
     assert_ne!(
         game.presentation.selection.units, want,
@@ -3849,46 +3156,42 @@ fn staged_builds(game: &Game) -> usize {
         .count()
 }
 
-fn drag_over(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) {
-    let at = |game: &Game, x: i32, y: i32| {
+/// Drags the left button across `tiles`, running `after_event` once each
+/// pointer event has been applied.
+fn drag_with(
+    game: &mut Game,
+    input: &mut InputState,
+    tiles: &[(i32, i32)],
+    mut after_event: impl FnMut(&mut Game),
+) {
+    let at = |game: &Game, (x, y): (i32, i32)| {
         game.presentation
             .camera
             .to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5))
     };
-    let first = at(game, tiles[0].0, tiles[0].1);
-    let mut events = vec![RawEvent::MouseDown {
-        button: MouseButton::Left,
-        x: first.x,
-        y: first.y,
-    }];
-    apply_events(game, input, &events);
-    events.clear();
-    for &(x, y) in &tiles[1..] {
-        let p = at(game, x, y);
-        apply_events(game, input, &[RawEvent::MouseMove { x: p.x, y: p.y }]);
+    let mut deliver = |game: &mut Game, event: RawEvent| {
+        apply_events(game, input, &[event]);
+        after_event(game);
+    };
+    let first = at(game, tiles[0]);
+    deliver(game, left_down(first));
+    for &tile in &tiles[1..] {
+        let p = at(game, tile);
+        deliver(game, mouse_move(p));
     }
-    let last = at(game, tiles[tiles.len() - 1].0, tiles[tiles.len() - 1].1);
-    apply_events(
-        game,
-        input,
-        &[RawEvent::MouseUp {
-            button: MouseButton::Left,
-            x: last.x,
-            y: last.y,
-        }],
-    );
+    let last = at(game, tiles[tiles.len() - 1]);
+    deliver(game, left_up(last));
+}
+
+fn drag_over(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) {
+    drag_with(game, input, tiles, |_| {});
 }
 
 /// `drag_over` with the frame loop's heartbeat: pending drains into
 /// the sim between pointer events, the way real drags actually run.
 fn drag_over_ticking(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) -> usize {
-    let at = |game: &Game, x: i32, y: i32| {
-        game.presentation
-            .camera
-            .to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5))
-    };
     let mut rejections = 0;
-    let mut drain = |game: &mut Game| {
+    drag_with(game, input, tiles, |game| {
         let commands = std::mem::take(&mut game.pending);
         let report = game.state.tick(&commands);
         rejections += report
@@ -3896,34 +3199,7 @@ fn drag_over_ticking(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32
             .iter()
             .filter(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
             .count();
-    };
-    let first = at(game, tiles[0].0, tiles[0].1);
-    apply_events(
-        game,
-        input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: first.x,
-            y: first.y,
-        }],
-    );
-    drain(game);
-    for &(x, y) in &tiles[1..] {
-        let p = at(game, x, y);
-        apply_events(game, input, &[RawEvent::MouseMove { x: p.x, y: p.y }]);
-        drain(game);
-    }
-    let last = at(game, tiles[tiles.len() - 1].0, tiles[tiles.len() - 1].1);
-    apply_events(
-        game,
-        input,
-        &[RawEvent::MouseUp {
-            button: MouseButton::Left,
-            x: last.x,
-            y: last.y,
-        }],
-    );
-    drain(game);
+    });
     rejections
 }
 
@@ -4039,11 +3315,7 @@ fn a_shift_stroke_spends_only_the_builders_headroom() {
     assert_eq!(game.state.unit(builder).unwrap().queue.len(), 30);
 
     input.placing = Some(oxide_sim::BuildingKind::Turret);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyDown { key: Key::Shift }],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
     drag_over(
         &mut game,
         &mut input,
@@ -4146,19 +3418,7 @@ fn a_full_queue_refuses_the_opening_shift_stamp() {
     apply_events(
         &mut game,
         &mut input,
-        &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-        ],
+        &[key_down(Key::Shift), left_down(p), left_up(p)],
     );
     assert!(
         game.pending.is_empty(),
@@ -4333,24 +3593,9 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     let mut input = InputState::new();
     let mut t = Tutorial::new();
     game.presentation.camera.center = vec2(8.0, 5.0);
-    let key = |game: &mut Game, input: &mut InputState, key: Key| {
-        apply_events(
-            game,
-            input,
-            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
-        );
-    };
     let right_click = |game: &mut Game, input: &mut InputState, world: Vec2| {
         let p = game.presentation.camera.to_screen(world);
-        apply_events(
-            game,
-            input,
-            &[RawEvent::MouseDown {
-                button: MouseButton::Right,
-                x: p.x,
-                y: p.y,
-            }],
-        );
+        apply_events(game, input, &[right_down(p)]);
     };
     let bank = |game: &Game| game.state.player(game.presentation.human).scrap;
 
@@ -4364,7 +3609,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         .camera
         .to_screen(vec2(home.x.to_num::<f32>(), home.y.to_num::<f32>()));
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
-    key(&mut game, &mut input, Key::Q);
+    controls_key(&mut game, &mut input, Key::Q);
     game.do_tick();
     assert!(t.advance(&game.demo));
     assert_eq!(t.step, 1, "training graduates lesson 1");
@@ -4437,9 +3682,9 @@ fn the_tutorial_survives_its_own_literal_instructions() {
             .is_some_and(|u| !matches!(u.order, oxide_sim::Order::Harvest { .. })),
         "the literal reading leaves the hauler hauling"
     );
-    key(&mut game, &mut input, Key::B);
-    key(&mut game, &mut input, Key::R);
-    key(&mut game, &mut input, Key::Q);
+    controls_key(&mut game, &mut input, Key::B);
+    controls_key(&mut game, &mut input, Key::R);
+    controls_key(&mut game, &mut input, Key::Q);
     let ground = game.presentation.camera.to_screen(vec2(10.5, 4.5));
     apply_events(&mut game, &mut input, &click(ground.x, ground.y));
     assert!(
@@ -4474,7 +3719,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
         .camera
         .to_screen(vec2(home.x.to_num::<f32>(), home.y.to_num::<f32>()));
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
-    key(&mut game, &mut input, Key::E);
+    controls_key(&mut game, &mut input, Key::E);
     game.do_tick();
     assert!(t.advance(&game.demo));
     assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
@@ -5096,20 +4341,12 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
         affordable(&game, &input),
         "replacement cards can use the unstarted site's refund"
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyDown { key: Key::Shift }],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
     assert!(
         !affordable(&game, &input),
         "queued construction cannot spend a retained site's refund"
     );
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyUp { key: Key::Shift }],
-    );
+    apply_events(&mut game, &mut input, &[key_up(Key::Shift)]);
     input.placing = Some(kind);
     game.presentation.camera.center = vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5);
     game.presentation.camera.pan(Vec2::ZERO);
@@ -5127,18 +4364,10 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyDown { key: Key::Shift },
-            RawEvent::MouseDown {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::MouseUp {
-                button: MouseButton::Left,
-                x: p.x,
-                y: p.y,
-            },
-            RawEvent::KeyUp { key: Key::Shift },
+            key_down(Key::Shift),
+            left_down(p),
+            left_up(p),
+            key_up(Key::Shift),
         ],
     );
     assert!(
@@ -5260,15 +4489,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
         .presentation
         .camera
         .to_screen(vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>()));
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::MouseDown {
-            button: MouseButton::Right,
-            x: screen.x,
-            y: screen.y,
-        }],
-    );
+    apply_events(&mut game, &mut input, &[right_down(screen)]);
     assert!(
         game.pending.is_empty(),
         "right-click must not draft a worker"
@@ -5304,13 +4525,6 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     let mut input = InputState::new();
     input.bindings = crate::action::BindingMap::classic();
     let keys = [Key::Q, Key::E, Key::R, Key::T];
-    let key = |game: &mut Game, input: &mut InputState, key| {
-        apply_events(
-            game,
-            input,
-            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
-        )
-    };
     dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
     let panel = crate::panel::build_for_input(&game.view(), &input).unwrap();
     assert_eq!(panel.cards.len(), 13);
@@ -5319,27 +4533,19 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
             panic!("build card");
         };
         input.close_construction();
-        key(&mut game, &mut input, Key::B);
+        controls_key(&mut game, &mut input, Key::B);
         let category = building_category(kind) as usize;
         let index = BUILD_CATEGORIES[category]
             .1
             .iter()
             .position(|k| *k == kind)
             .unwrap();
-        key(&mut game, &mut input, keys[category]);
+        controls_key(&mut game, &mut input, keys[category]);
         assert_eq!(input.build_category, Some(category as u8));
         // Shift remains queue semantics, never a different building.
-        apply_events(
-            &mut game,
-            &mut input,
-            &[RawEvent::KeyDown { key: Key::Shift }],
-        );
-        key(&mut game, &mut input, keys[index]);
-        apply_events(
-            &mut game,
-            &mut input,
-            &[RawEvent::KeyUp { key: Key::Shift }],
-        );
+        apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
+        controls_key(&mut game, &mut input, keys[index]);
+        apply_events(&mut game, &mut input, &[key_up(Key::Shift)]);
         assert_eq!(
             input.placing,
             card.enabled.then_some(kind),
@@ -5349,8 +4555,8 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
         assert!(game.pending.is_empty(), "arming never spends scrap");
     }
     input.close_construction();
-    key(&mut game, &mut input, Key::B);
-    key(&mut game, &mut input, Key::B);
+    controls_key(&mut game, &mut input, Key::B);
+    controls_key(&mut game, &mut input, Key::B);
     assert!(!input.construction_open());
 }
 
@@ -5383,10 +4589,7 @@ fn mouse_and_touch_switch_construction_without_cancelling_or_placing_in_the_worl
         let hash = game.state.hash();
         for x in [340.0, 450.0] {
             let events = if touch {
-                vec![
-                    RawEvent::TouchDown { id: 1, x, y: 740.0 },
-                    RawEvent::TouchUp { id: 1, x, y: 740.0 },
-                ]
+                vec![touch_down(1, vec2(x, 740.0)), touch_up(1, vec2(x, 740.0))]
             } else {
                 click(x, 740.0).to_vec()
             };
@@ -5638,15 +4841,7 @@ fn a_hidden_mine_does_not_change_placement_selection_or_resume_input() {
         assert_eq!(game.presentation.selection.buildings, vec![site]);
         game.presentation.selection.buildings.clear();
         game.presentation.selection.units = vec![worker];
-        apply_events(
-            &mut game,
-            &mut input,
-            &[RawEvent::MouseDown {
-                button: MouseButton::Right,
-                x: point.x,
-                y: point.y,
-            }],
-        );
+        apply_events(&mut game, &mut input, &[right_down(point)]);
         assert!(
             matches!(game.pending.last().unwrap().command,Command::Build{anchor:a,..} if a==anchor)
         );
@@ -5703,11 +4898,7 @@ fn selecting_an_unfinished_mine_does_not_reveal_its_condition_after_concealment(
 }
 
 fn controls_key(game: &mut Game, input: &mut InputState, key: Key) {
-    apply_events(
-        game,
-        input,
-        &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
-    );
+    apply_events(game, input, &[key_down(key), key_up(key)]);
 }
 
 #[test]
@@ -5723,13 +4914,9 @@ fn group_recall_from_production_or_construction_never_purchases_anything() {
         .unwrap()
         .id;
     game.presentation.selection.units = vec![worker];
-    apply_events(
-        &mut game,
-        &mut input,
-        &[RawEvent::KeyDown { key: Key::Ctrl }],
-    );
+    apply_events(&mut game, &mut input, &[key_down(Key::Ctrl)]);
     controls_key(&mut game, &mut input, Key::Num1);
-    apply_events(&mut game, &mut input, &[RawEvent::KeyUp { key: Key::Ctrl }]);
+    apply_events(&mut game, &mut input, &[key_up(Key::Ctrl)]);
     game.presentation.selection.units.clear();
     game.presentation.selection.buildings = vec![game.home_foundry().unwrap().id];
     controls_key(&mut game, &mut input, Key::Num1);
@@ -5779,10 +4966,7 @@ fn remapped_construction_sequence_arms_every_enabled_card_without_shift_changing
             apply_events(
                 &mut game,
                 &mut input,
-                &[
-                    RawEvent::KeyDown { key: Key::Ctrl },
-                    RawEvent::KeyDown { key: Key::Shift },
-                ],
+                &[key_down(Key::Ctrl), key_down(Key::Shift)],
             );
             controls_key(
                 &mut game,
@@ -5802,10 +4986,7 @@ fn remapped_construction_sequence_arms_every_enabled_card_without_shift_changing
             apply_events(
                 &mut game,
                 &mut input,
-                &[
-                    RawEvent::KeyUp { key: Key::Ctrl },
-                    RawEvent::KeyUp { key: Key::Shift },
-                ],
+                &[key_up(Key::Ctrl), key_up(Key::Shift)],
             );
         }
     }
@@ -5961,10 +5142,7 @@ fn grouped_production_clicks_and_shortcuts_stage_the_same_batch() {
         apply_events(
             &mut key_game,
             &mut key_input,
-            &[
-                RawEvent::KeyDown { key: Key::Q },
-                RawEvent::KeyUp { key: Key::Q },
-            ],
+            &[key_down(Key::Q), key_up(Key::Q)],
         );
     }
     assert_eq!(
@@ -6013,16 +5191,8 @@ fn grouped_upgrade_mouse_touch_and_remapped_keys_share_pending_eligibility() {
                     &mut game,
                     &mut input,
                     &[
-                        RawEvent::TouchDown {
-                            id: 1,
-                            x: 260.0,
-                            y: 740.0,
-                        },
-                        RawEvent::TouchUp {
-                            id: 1,
-                            x: 260.0,
-                            y: 740.0,
-                        },
+                        touch_down(1, vec2(260.0, 740.0)),
+                        touch_up(1, vec2(260.0, 740.0)),
                     ],
                 ),
                 _ => controls_key(
@@ -6147,7 +5317,7 @@ fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
             if via_card {
                 activate_card(&mut game, &mut input, card.action);
             } else {
-                apply_events(&mut game, &mut input, &[RawEvent::KeyDown { key: Key::U }]);
+                apply_events(&mut game, &mut input, &[key_down(Key::U)]);
             }
             assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::ReturnCargo { units, foundry: None, repair: false } if units == &[worker])));
             let pending = std::mem::take(&mut game.pending);
@@ -6206,15 +5376,7 @@ fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
             .camera
             .to_screen(vec2(b.anchor.x as f32 + 0.5, b.anchor.y as f32 + 0.5));
         let mut input = InputState::new();
-        apply_events(
-            &mut game,
-            &mut input,
-            &[RawEvent::MouseDown {
-                button: MouseButton::Right,
-                x: screen.x,
-                y: screen.y,
-            }],
-        );
+        apply_events(&mut game, &mut input, &[right_down(screen)]);
         assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::ReturnCargo { units, foundry: Some(f), repair } if units == &[workers[0]] && *f == foundry && *repair == damaged)));
         if damaged {
             assert!(game.pending.iter().any(|pc| matches!(&pc.command, Command::Repair { units, building, queue: false } if *building == foundry && !units.contains(&workers[0]) && units.contains(&workers[1]))));
@@ -6244,7 +5406,7 @@ fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
             .unwrap()
             .enabled
     );
-    apply_events(&mut game, &mut input, &[RawEvent::KeyDown { key: Key::U }]);
+    apply_events(&mut game, &mut input, &[key_down(Key::U)]);
     assert!(game.pending.is_empty());
 }
 
