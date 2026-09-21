@@ -3,6 +3,7 @@
 //! placement ghost, and the drag rectangle.
 
 use super::*;
+use crate::render::prim::{fill_circle, line_between, stroke_circle};
 
 /// The armed building follows the cursor as a translucent footprint —
 /// the tint and the command share the shell's queue-aware placement
@@ -188,7 +189,7 @@ pub(crate) fn decor_units(game: &crate::game::Scene<'_>) -> Vec<oxide_sim::UnitI
 }
 
 pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState) {
-    let dot = |p: Vec2, color: Color| draw_circle(p.x, p.y, 3.0, color);
+    let dot = |p: Vec2, color: Color| fill_circle(p, 3.0, color);
     if let Some(route) = &input.patrol_route {
         let mut prev: Option<Vec2> = None;
         for tile in route {
@@ -197,7 +198,7 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
                 .camera
                 .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
             if let Some(a) = prev {
-                draw_line(a.x, a.y, p.x, p.y, 1.5, SCRAP_COLOR);
+                line_between(a, p, 1.5, SCRAP_COLOR);
             }
             dot(p, SCRAP_COLOR);
             prev = Some(p);
@@ -236,7 +237,7 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
         let mut prev = start;
         for (idx, p, color) in &points {
             let color = fade(*color);
-            draw_line(prev.x, prev.y, p.x, p.y, 1.0, color);
+            line_between(prev, *p, 1.0, color);
             dot(*p, color);
             if numbered {
                 draw_text(
@@ -253,7 +254,7 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
         if unit.looping && points.len() > 1 {
             let (_, first, color) = points[0];
             let color = fade(color);
-            draw_line(prev.x, prev.y, first.x, first.y, 1.0, color);
+            line_between(prev, first, 1.0, color);
         }
     }
 }
@@ -789,19 +790,10 @@ fn draw_bomber_bombs(game: &crate::game::Scene<'_>) {
             scale * 0.065,
             Color::new(0.02, 0.02, 0.03, 0.35),
         );
-        draw_line(
-            back.x,
-            back.y,
-            nose.x,
-            nose.y,
-            scale * 0.15,
-            Color::from_rgba(12, 13, 17, 255),
-        );
-        draw_line(
-            back.x,
-            back.y,
-            nose.x,
-            nose.y,
+        line_between(back, nose, scale * 0.15, Color::from_rgba(12, 13, 17, 255));
+        line_between(
+            back,
+            nose,
             scale * 0.095,
             Color::from_rgba(151, 146, 134, 255),
         );
@@ -1153,39 +1145,31 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         * game.presentation.camera.zoom
                         * motor
                         * (0.16 + 0.025 * (t * 97.0).sin());
-                draw_line(
-                    exhaust.x,
-                    exhaust.y,
-                    back.x,
-                    back.y,
+                line_between(
+                    exhaust,
+                    back,
                     width * 0.60,
                     Color::from_rgba(182, 83, 35, 180),
                 );
                 let core = back - direction * game.presentation.camera.zoom * 0.08 * motor;
-                draw_line(
-                    core.x,
-                    core.y,
-                    back.x,
-                    back.y,
+                line_between(
+                    core,
+                    back,
                     width * 0.30,
                     Color::from_rgba(246, 199, 116, 255),
                 );
                 if (exhaust - tail).dot(direction) > 0.0 {
-                    draw_line(
-                        tail.x,
-                        tail.y,
-                        exhaust.x,
-                        exhaust.y,
+                    line_between(
+                        tail,
+                        exhaust,
                         width * 0.70,
                         Color::from_rgba(112, 103, 90, 85),
                     );
                 }
             }
-            draw_line(
-                back.x,
-                back.y,
-                nose.x,
-                nose.y,
+            line_between(
+                back,
+                nose,
                 width
                     + if missile {
                         game.presentation.camera.zoom * 0.035
@@ -1195,14 +1179,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 Color::from_rgba(12, 13, 17, 255),
             );
             let shoulder = nose - direction * length * 0.18;
-            draw_line(
-                back.x,
-                back.y,
-                shoulder.x,
-                shoulder.y,
-                width,
-                Color::from_rgba(151, 146, 134, 255),
-            );
+            line_between(back, shoulder, width, Color::from_rgba(151, 146, 134, 255));
             draw_triangle(
                 nose,
                 shoulder + normal * width * 0.5,
@@ -1241,22 +1218,13 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 game.presentation.camera.zoom * (0.10 + 0.03 * height),
                 Color::new(0.02, 0.02, 0.025, 0.34 - 0.16 * height),
             );
-            draw_line(
-                back.x,
-                back.y,
-                shoulder.x,
-                shoulder.y,
+            line_between(
+                back,
+                shoulder,
                 width + game.presentation.camera.zoom * 0.035,
                 Color::from_rgba(14, 15, 18, 255),
             );
-            draw_line(
-                back.x,
-                back.y,
-                shoulder.x,
-                shoulder.y,
-                width,
-                Color::from_rgba(123, 128, 127, 255),
-            );
+            line_between(back, shoulder, width, Color::from_rgba(123, 128, 127, 255));
             draw_triangle(
                 nose,
                 shoulder + normal * width * 0.5,
@@ -1277,12 +1245,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         let radius = (game.presentation.camera.zoom * 0.075).clamp(2.2, 4.0);
         // The tiny flat-path shadow makes the restrained lift legible
         // without restoring the old launch-to-impact glowing arc.
-        draw_circle(
-            flat.x,
-            flat.y,
-            radius * 0.7,
-            Color::new(0.03, 0.03, 0.04, 0.35),
-        );
+        fill_circle(flat, radius * 0.7, Color::new(0.03, 0.03, 0.04, 0.35));
         if game.presentation.all_seeing() || mine || flat_seen(tail_t) {
             let before = at((t - 0.01).max(0.0));
             let after = at((t + 0.01).min(1.0));
@@ -1297,19 +1260,15 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             let tail_end = shell_at - travel * radius * 0.78 + offset;
             let tail_start = tail + offset;
             let warm_start = tail_start.lerp(tail_end, 0.50);
-            draw_line(
-                tail_start.x,
-                tail_start.y,
-                tail_end.x,
-                tail_end.y,
+            line_between(
+                tail_start,
+                tail_end,
                 radius * 0.56,
                 Color::new(0.52, 0.18, 0.09, 0.92),
             );
-            draw_line(
-                warm_start.x,
-                warm_start.y,
-                tail_end.x,
-                tail_end.y,
+            line_between(
+                warm_start,
+                tail_end,
                 radius * 0.28,
                 Color::new(0.98, 0.53, 0.18, 0.88),
             );
@@ -1322,29 +1281,17 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
         } else {
             travel
         };
-        draw_circle(
-            shell_at.x,
-            shell_at.y,
-            radius * 1.35,
-            Color::new(0.96, 0.42, 0.12, 0.16),
-        );
+        fill_circle(shell_at, radius * 1.35, Color::new(0.96, 0.42, 0.12, 0.16));
         let body_start = shell_at - travel * radius * 0.80;
         let body_end = shell_at + travel * radius * 0.36;
-        draw_line(
-            body_start.x,
-            body_start.y,
-            body_end.x,
-            body_end.y,
+        line_between(
+            body_start,
+            body_end,
             radius * 1.28,
             Color::new(0.10, 0.09, 0.09, 1.0),
         );
         let nose = body_end;
-        draw_circle(
-            nose.x,
-            nose.y,
-            radius * 0.54,
-            Color::new(1.0, 0.82, 0.48, 1.0),
-        );
+        fill_circle(nose, radius * 0.54, Color::new(1.0, 0.82, 0.48, 1.0));
     }
     for fx in &game.presentation.fx {
         // A visible impact may always spark so incoming damage reads.
@@ -1419,14 +1366,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         let angle = seed + i as f32 * 2.1;
                         let reach = game.presentation.camera.zoom * (0.08 + impact * 0.12);
                         let tip = b + vec2(angle.cos(), angle.sin()) * reach;
-                        draw_line(
-                            b.x,
-                            b.y,
-                            tip.x,
-                            tip.y,
-                            1.5,
-                            Color::new(0.95, 0.67, 0.34, 1.0 - impact),
-                        );
+                        line_between(b, tip, 1.5, Color::new(0.95, 0.67, 0.34, 1.0 - impact));
                     }
                     continue;
                 }
@@ -1448,11 +1388,9 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         let length = zoom * if heavy { 0.19 } else { 0.09 };
                         let tail = round - direction * length.min(round.distance(a));
                         let alpha = 1.0 - impact;
-                        draw_line(
-                            tail.x,
-                            tail.y,
-                            round.x,
-                            round.y,
+                        line_between(
+                            tail,
+                            round,
                             (zoom * if heavy { 0.065 } else { 0.03 }).max(1.0),
                             Color::new(0.91, 0.79, 0.57, alpha),
                         );
@@ -1464,14 +1402,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                                     zoom * (0.05 + impact * if heavy { 0.25 } else { 0.16 });
                                 let start = b + spread * reach * 0.55;
                                 let end = b + spread * reach;
-                                draw_line(
-                                    start.x,
-                                    start.y,
-                                    end.x,
-                                    end.y,
-                                    1.0,
-                                    Color::new(0.84, 0.66, 0.41, alpha),
-                                );
+                                line_between(start, end, 1.0, Color::new(0.84, 0.66, 0.41, alpha));
                             }
                         }
                     }
@@ -1479,29 +1410,13 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         let (travel, impact) = forge_spot_phases(progress);
                         let round = a.lerp(b, travel);
                         let round_alpha = 1.0 - impact;
-                        draw_circle(
-                            round.x,
-                            round.y,
-                            3.8,
-                            Color::new(1.0, 0.38, 0.10, 0.20 * round_alpha),
-                        );
-                        draw_circle(
-                            round.x,
-                            round.y,
-                            2.3,
-                            Color::new(0.42, 0.19, 0.09, round_alpha),
-                        );
-                        draw_circle(
-                            round.x,
-                            round.y,
-                            1.35,
-                            Color::new(1.0, 0.85, 0.52, round_alpha),
-                        );
+                        fill_circle(round, 3.8, Color::new(1.0, 0.38, 0.10, 0.20 * round_alpha));
+                        fill_circle(round, 2.3, Color::new(0.42, 0.19, 0.09, round_alpha));
+                        fill_circle(round, 1.35, Color::new(1.0, 0.85, 0.52, round_alpha));
                         if impact > 0.0 {
                             let radius = game.presentation.camera.zoom * (0.05 + impact * 0.18);
-                            draw_circle_lines(
-                                b.x,
-                                b.y,
+                            stroke_circle(
+                                b,
                                 radius,
                                 1.5,
                                 Color::new(1.0, 0.62, 0.22, 1.0 - impact),
@@ -1509,19 +1424,15 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                         }
                     }
                     ShotStyle::Rail => {
-                        draw_line(
-                            a.x,
-                            a.y,
-                            b.x,
-                            b.y,
+                        line_between(
+                            a,
+                            b,
                             game.presentation.camera.zoom * 0.10 * fade.max(0.25),
                             Color::new(0.70, 0.76, 0.80, 0.18 * fade * fade),
                         );
-                        draw_line(
-                            a.x,
-                            a.y,
-                            b.x,
-                            b.y,
+                        line_between(
+                            a,
+                            b,
                             (game.presentation.camera.zoom * 0.038).max(0.8),
                             Color::new(0.89, 0.89, 0.80, fade * fade),
                         );
@@ -1539,18 +1450,17 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                             let offset = normal * barrel * game.presentation.camera.zoom;
                             let end = b + offset;
                             let at = (a + offset).lerp(end, round);
-                            draw_circle(at.x, at.y, 3.4, Color::new(0.98, 0.43, 0.12, 0.18));
-                            draw_circle(at.x, at.y, 2.0, Color::new(0.33, 0.24, 0.13, 1.0));
-                            draw_circle(at.x, at.y, 1.2, Color::new(1.0, 0.84, 0.48, 1.0));
+                            fill_circle(at, 3.4, Color::new(0.98, 0.43, 0.12, 0.18));
+                            fill_circle(at, 2.0, Color::new(0.33, 0.24, 0.13, 1.0));
+                            fill_circle(at, 1.2, Color::new(1.0, 0.84, 0.48, 1.0));
                         }
                         let seed = (to.x * 31.7 + to.y * 17.3).abs();
                         for i in 0..3 {
                             let angle = seed + i as f32 * 2.1;
                             let reach = impact * game.presentation.camera.zoom * 0.28;
                             let puff = b + vec2(angle.cos(), angle.sin()) * reach;
-                            draw_circle(
-                                puff.x,
-                                puff.y,
+                            fill_circle(
+                                puff,
                                 game.presentation.camera.zoom * 0.07 * (1.0 - progress * 0.45),
                                 Color::new(0.66, 0.65, 0.58, 0.42 * impact * fade),
                             );
@@ -1704,9 +1614,9 @@ pub(crate) fn draw_blips(game: &crate::game::Scene<'_>) {
         for i in 0..4 {
             let a = pts[i];
             let b = pts[(i + 1) % 4];
-            draw_line(a.x, a.y, b.x, b.y, 2.0, BONE_FAINT);
+            line_between(a, b, 2.0, BONE_FAINT);
         }
-        draw_circle(center.x, center.y, 2.0, BONE_FAINT);
+        fill_circle(center, 2.0, BONE_FAINT);
     }
 }
 
@@ -1832,7 +1742,7 @@ fn stroke_patterned_path(
     let mut clipper = RangeClipper::new(points, occluders);
     visit_stroke_segments(points, stroke, scale, |a, b| {
         clipper.visit_visible(a, b, |from, to| {
-            draw_line(from.x, from.y, to.x, to.y, thickness, color);
+            line_between(from, to, thickness, color);
         });
     });
 }
@@ -2273,7 +2183,7 @@ fn draw_economy_support_links(
         if let Some([a, b]) = footprint_link(extractor, foundry, 3.0 * scale) {
             let mut clipper = RangeClipper::new(&[a, b], occluders);
             clipper.visit_visible(a, b, |from, to| {
-                draw_line(from.x, from.y, to.x, to.y, 1.2 * scale, color);
+                line_between(from, to, 1.2 * scale, color);
             });
         }
     }
@@ -2294,7 +2204,7 @@ fn draw_economy_support_links(
             .camera
             .to_screen(vec2(bracket.corner.x as f32, bracket.corner.y as f32));
         for [from, to] in bracket.segments(origin) {
-            draw_line(from.x, from.y, to.x, to.y, scale, color);
+            line_between(from, to, scale, color);
         }
     }
 }
@@ -2464,7 +2374,7 @@ pub(crate) fn draw_range_ground(game: &crate::game::Scene<'_>, input: &InputStat
         if indicator.range.kind == BuildingRangeKind::DeadZone
             && let BuildingRangeShape::Circle { center, radius } = shape
         {
-            draw_circle(center.x, center.y, radius, dead_zone_fill(indicator.color));
+            fill_circle(center, radius, dead_zone_fill(indicator.color));
         }
         draw_mesh(&range_fade_mesh(shape, 10.0 * ui_scale(), indicator.color));
     });
@@ -2542,7 +2452,7 @@ pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
             crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
         };
         let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
-        draw_circle_lines(center.x, center.y, radius, 2.5, color);
+        stroke_circle(center, radius, 2.5, color);
     }
 }
 
@@ -2571,7 +2481,7 @@ pub(crate) fn draw_rally_marker(game: &crate::game::Scene<'_>) {
             .presentation
             .camera
             .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
-        draw_line(a.x, a.y, b.x, b.y, 1.5, Color::new(0.91, 0.89, 0.85, 0.35));
+        line_between(a, b, 1.5, Color::new(0.91, 0.89, 0.85, 0.35));
     }
     for rally in game
         .presentation
@@ -2618,9 +2528,8 @@ pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) 
         let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
             let screen = game.presentation.camera.to_screen(p);
-            draw_circle_lines(
-                screen.x,
-                screen.y,
+            stroke_circle(
+                screen,
                 unit.kind.stats().radius.to_num::<f32>() * game.presentation.camera.zoom + 3.0,
                 1.5,
                 BONE_FAINT,

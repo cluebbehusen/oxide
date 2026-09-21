@@ -8,9 +8,10 @@
 //! rects it publishes.
 
 use crate::menu::{PreviewCache, ScenarioEntry};
+use crate::render::prim::{fill_rect, stroke_rect};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text,
-    draw_texture_ex, measure_text, vec2,
+    Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_text, draw_texture_ex, measure_text,
+    vec2,
 };
 use oxide_protocol::{Key, MouseButton, RawEvent};
 
@@ -487,7 +488,7 @@ impl Browser {
             let entry = &entries[*entry_idx];
             let selected = *entry_idx == self.selected;
             let hovered = self.hover == Some(*entry_idx);
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
+            fill_rect(*rect, SURFACE_MENU);
             let label_h = 30.0 * ui;
             let thumb = Rect::new(
                 rect.x + 4.0 * ui,
@@ -516,14 +517,7 @@ impl Browser {
             } else {
                 Color::new(0.6, 0.6, 0.65, 0.25)
             };
-            draw_rectangle_lines(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                if selected { 3.0 } else { 1.5 },
-                border,
-            );
+            stroke_rect(*rect, if selected { 3.0 } else { 1.5 }, border);
             let name_size = 17.0 * ui;
             let name = measure_text(&entry.label, None, name_size as u16, 1.0);
             draw_text(

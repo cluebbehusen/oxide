@@ -4,6 +4,7 @@
 //! so drawn and clickable can never disagree.
 
 use super::*;
+use crate::render::prim::{fill_rect, line_between, stroke_rect};
 
 /// Hovered salvage says what it holds: live amounts on visible ground,
 /// remembered amounts under the dim — the same memory rule as every
@@ -55,7 +56,7 @@ pub(crate) fn draw_overlay(game: &crate::game::Scene<'_>, alpha: f32) {
             .presentation
             .camera
             .to_screen(vec2(x as f32, max.y as f32));
-        draw_line(a.x, a.y, b.x, b.y, 1.0, BONE_FAINT);
+        line_between(a, b, 1.0, BONE_FAINT);
     }
     for y in min.y..=max.y {
         let a = game
@@ -66,7 +67,7 @@ pub(crate) fn draw_overlay(game: &crate::game::Scene<'_>, alpha: f32) {
             .presentation
             .camera
             .to_screen(vec2(max.x as f32, y as f32));
-        draw_line(a.x, a.y, b.x, b.y, 1.0, BONE_FAINT);
+        line_between(a, b, 1.0, BONE_FAINT);
     }
     for unit in game.state.units() {
         let pos = game.presentation.draw_pos(unit.id, unit.pos, alpha);
@@ -85,7 +86,7 @@ pub(crate) fn draw_overlay(game: &crate::game::Scene<'_>, alpha: f32) {
                     .presentation
                     .camera
                     .to_screen(vec2(waypoint.x as f32 + 0.5, waypoint.y as f32 + 0.5));
-                draw_line(previous.x, previous.y, next.x, next.y, 1.0, BONE_FAINT);
+                line_between(previous, next, 1.0, BONE_FAINT);
                 previous = next;
             }
         }
@@ -168,14 +169,8 @@ fn draw_mode_ribbon(input: &InputState, regions: &[Rect; 2]) -> (Rect, Rect) {
         .fold(f32::INFINITY, f32::min);
     let (ribbon, cancel) =
         mode_ribbon_geometry(vec2(screen_width(), screen_height()), s, width, panel_top);
-    draw_rectangle(
-        ribbon.x,
-        ribbon.y,
-        ribbon.w,
-        ribbon.h,
-        Color::from_rgba(20, 20, 24, 248),
-    );
-    draw_rectangle_lines(ribbon.x, ribbon.y, ribbon.w, ribbon.h, 1.5 * s, SCRAP_COLOR);
+    fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
+    stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
     draw_rectangle(ribbon.x, ribbon.y, 4.0 * s, ribbon.h, SCRAP_COLOR);
     draw_text(
         &label,
@@ -184,14 +179,8 @@ fn draw_mode_ribbon(input: &InputState, regions: &[Rect; 2]) -> (Rect, Rect) {
         size,
         TEXT_PRIMARY,
     );
-    draw_rectangle(
-        cancel.x,
-        cancel.y,
-        cancel.w,
-        cancel.h,
-        Color::new(0.25, 0.10, 0.11, 1.0),
-    );
-    draw_rectangle_lines(cancel.x, cancel.y, cancel.w, cancel.h, 1.5 * s, DANGER);
+    fill_rect(cancel, Color::new(0.25, 0.10, 0.11, 1.0));
+    stroke_rect(cancel, 1.5 * s, DANGER);
     let cancel_label = "CANCEL";
     let cancel_size = 9.0 * s;
     let dims = measure_text(cancel_label, None, cancel_size as u16, 1.0);
