@@ -217,6 +217,7 @@ impl State {
             if charges::cancel_discovered(self, &mut events) {
                 self.reconcile_attack_knowledge();
             }
+            movement::forget_stalls_without_routes(self);
             victory(self, &mut events);
         }
         self.tick += 1;

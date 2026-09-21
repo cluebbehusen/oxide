@@ -256,6 +256,18 @@ pub(super) fn note_stalls(state: &mut State, travel: &[Vec2Fx], driven: &[Vec2Fx
     }
 }
 
+/// A stall count describes the route being walked. Construction, site
+/// cancellation and cleanup run after [`note_stalls`] and may drop that route,
+/// so the count goes with it before the tick ends; otherwise the state fails
+/// its own invariants and the next route inherits a stale count.
+pub(super) fn forget_stalls_without_routes(state: &mut State) {
+    for unit in &mut state.units {
+        if unit.path.is_none() {
+            unit.stall_ticks = 0;
+        }
+    }
+}
+
 /// Advances every unit along its path by its speed, returning each
 /// unit's displacement this tick (indexed like `state.units`) — the
 /// collision resolver reads travel to slide movers around each other
@@ -1003,6 +1015,44 @@ mod tests {
             "the stalled route was kept"
         );
         assert_eq!(state.units[slot].stall_ticks, 0);
+    }
+
+    #[test]
+    fn a_route_dropped_after_stalls_were_noted_takes_its_count_with_it() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        let waypoint = TilePos::new(20, 12);
+        let slot = 0;
+        state.units[slot].path = Some(PathFollow {
+            goal: waypoint,
+            waypoints: vec![waypoint],
+            next: 0,
+        });
+        let mut travel = vec![Vec2Fx::ZERO; state.units.len()];
+        travel[slot] = Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO);
+        let driven: Vec<Vec2Fx> = state
+            .units
+            .iter()
+            .zip(&travel)
+            .map(|(unit, &step)| unit.pos + step)
+            .collect();
+        note_stalls(&mut state, &travel, &driven);
+        assert_eq!(state.units[slot].stall_ticks, 1);
+        state
+            .validate_invariants()
+            .expect("a stalled walker is valid");
+
+        // A late phase, such as revealing the site a builder is walking to,
+        // retargets the unit after the stalls were noted.
+        state.units[slot].path = None;
+        assert!(matches!(
+            state.validate_invariants(),
+            Err(crate::state::StateIntegrityError::InvalidStallTicks(_))
+        ));
+        forget_stalls_without_routes(&mut state);
+        assert_eq!(state.units[slot].stall_ticks, 0);
+        state
+            .validate_invariants()
+            .expect("the count left with the route");
     }
 
     #[test]
