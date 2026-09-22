@@ -4,6 +4,9 @@
 `oxide-sim`; the simulation never depends on controller policy. Bots issue
 ordinary commands and receive no special costs, information, or rules.
 
+The [architecture map](../docs/bot-architecture.md) identifies owners,
+transaction boundaries, execution, and focused domain references.
+
 ## Boundary and responsibilities
 
 - `Brain` decides from an `Observation`. It cannot inspect authoritative state.
