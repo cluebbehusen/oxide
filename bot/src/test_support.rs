@@ -170,3 +170,26 @@ impl crate::UtilityPolicy {
         )
     }
 }
+
+pub(crate) fn briefing(
+    width: i32,
+    height: i32,
+    walls: impl IntoIterator<Item = TilePos>,
+    starts: Vec<crate::StartingFoundry>,
+) -> crate::PublicMapBriefing {
+    let mut non_ground_terrain = walls
+        .into_iter()
+        .map(|tile| (tile, oxide_sim::map::Terrain::Rock))
+        .collect::<Vec<_>>();
+    non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
+    crate::PublicMapBriefing {
+        regions: Default::default(),
+        map_width: width,
+        map_height: height,
+        starting_foundries: starts,
+        teams: vec![Some(0), Some(1)],
+        non_ground_terrain,
+        extractor_frames: Vec::new(),
+        initial_scrap: Vec::new(),
+    }
+}

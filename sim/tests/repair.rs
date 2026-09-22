@@ -6,7 +6,6 @@ use common::{arena, cmd, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD};
 use oxide_sim::{Command, Event, Order, PlayerId, State, UnitKind};
 
@@ -256,12 +255,9 @@ fn a_free_stepping_welder_still_consumes_the_room() {
         unit(0, UnitKind::Harvester, 2, 4),
         unit(0, UnitKind::Harvester, 4, 4),
     ]);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Turret,
-        x: 3,
-        y: 3,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Turret, 3, 3));
     let state = scenario.build().unwrap();
     let turret = state
         .buildings()

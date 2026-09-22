@@ -19,3 +19,6 @@ pub mod sweep;
 // public surface (and its own `crate::render`-style paths) survive
 // the split unchanged.
 pub use oxide_kit::{playback, render, runner, stats};
+
+#[cfg(test)]
+mod test_support;

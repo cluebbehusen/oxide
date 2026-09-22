@@ -485,7 +485,7 @@ use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::stats::SALVAGE_REFUND_PERMILLE;
 
 fn standing(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
+    common::building(player, kind, x, y)
 }
 
 /// Foundry drip credits earned between `from_tick` and `state`'s current

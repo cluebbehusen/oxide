@@ -189,7 +189,6 @@ fn forged_provisional_scaffolds_cannot_hold_progress_or_physical_state() {
 
 #[test]
 fn a_provisional_site_cannot_shield_a_physical_building_from_blind_fire() {
-    use oxide_sim::scenario::BuildingSpec;
     use oxide_sim::{AttackTarget, GhostBuilding, RememberedBuilding};
 
     let anchor = TilePos::new(15, 8);
@@ -207,18 +206,8 @@ fn a_provisional_site_cannot_shield_a_physical_building_from_blind_fire() {
     third.name = "Third".into();
     scenario.players.push(third);
     scenario.buildings.extend([
-        BuildingSpec {
-            player: 1,
-            kind: BuildingKind::Barricade,
-            x: 15,
-            y: 8,
-        },
-        BuildingSpec {
-            player: 2,
-            kind: BuildingKind::Barricade,
-            x: 16,
-            y: 8,
-        },
+        common::building(1, BuildingKind::Barricade, 15, 8),
+        common::building(2, BuildingKind::Barricade, 16, 8),
     ]);
     let state = scenario.build().unwrap();
     let shooter = state.units()[0].id;

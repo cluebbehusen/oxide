@@ -24,12 +24,9 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
             vec![unit(0, kind, 6, 8), unit(0, UnitKind::Kestrel, 12, 6)],
             |_| {},
         );
-        scenario.buildings.push(BuildingSpec {
-            player: 1,
-            kind: BuildingKind::Fabricator,
-            x: target_x,
-            y: 8,
-        });
+        scenario
+            .buildings
+            .push(common::building(1, BuildingKind::Fabricator, target_x, 8));
         let mut state = scenario.build().unwrap();
         let mut document = serde_json::to_value(&state).unwrap();
         document["units"][0]["heading"] = serde_json::json!(128);
@@ -137,12 +134,9 @@ fn turn_limited_weapons_align_before_firing_and_resume_identically() {
 fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
     let mut scenario = open_arena_with(28, 24, vec![unit(0, UnitKind::Bombard, 8, 10)], |_| {});
     for (x, y) in [(11, 10), (7, 7)] {
-        scenario.buildings.push(BuildingSpec {
-            player: 1,
-            kind: BuildingKind::Fabricator,
-            x,
-            y,
-        });
+        scenario
+            .buildings
+            .push(common::building(1, BuildingKind::Fabricator, x, y));
     }
     let mut state = scenario.build().unwrap();
     let id = state.units()[0].id;
@@ -261,12 +255,9 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
 #[test]
 fn bombard_cannot_fire_unbraced_advance_potshots() {
     let mut scenario = open_arena_with(28, 18, vec![unit(0, UnitKind::Bombard, 8, 8)], |_| {});
-    scenario.buildings.push(BuildingSpec {
-        player: 1,
-        kind: BuildingKind::Fabricator,
-        x: 11,
-        y: 8,
-    });
+    scenario
+        .buildings
+        .push(common::building(1, BuildingKind::Fabricator, 11, 8));
     let mut state = scenario.build().unwrap();
     let id = state.units()[0].id;
     let start = state.unit(id).unwrap().pos;
@@ -299,12 +290,9 @@ fn bombard_cannot_fire_unbraced_advance_potshots() {
 fn buzzard_tracks_a_new_target_during_reload_without_spending_another_shot() {
     let mut scenario = open_arena_with(26, 18, vec![unit(0, UnitKind::Buzzard, 6, 8)], |_| {});
     for (x, y) in [(9, 8), (5, 5)] {
-        scenario.buildings.push(BuildingSpec {
-            player: 1,
-            kind: BuildingKind::Fabricator,
-            x,
-            y,
-        });
+        scenario
+            .buildings
+            .push(common::building(1, BuildingKind::Fabricator, x, y));
     }
     let mut state = scenario.build().unwrap();
     let id = state.units()[0].id;
@@ -367,12 +355,9 @@ fn buzzard_tracks_a_new_target_during_reload_without_spending_another_shot() {
 fn advancing_buzzard_traverses_independently_and_does_not_track_hidden_charges() {
     for target_kind in [BuildingKind::Fabricator, BuildingKind::ScuttleCharge] {
         let mut scenario = open_arena_with(26, 20, vec![unit(0, UnitKind::Buzzard, 7, 8)], |_| {});
-        scenario.buildings.push(BuildingSpec {
-            player: 1,
-            kind: target_kind,
-            x: 9,
-            y: 8,
-        });
+        scenario
+            .buildings
+            .push(common::building(1, target_kind, 9, 8));
         let mut state = scenario.build().unwrap();
         let id = state.units()[0].id;
         let initial = state.unit(id).unwrap().pos;
