@@ -1745,17 +1745,16 @@ fn provision(
             .map(|(index, building)| (index, building.id));
         let cost = UnitKind::Skyhook.stats().cost;
         let Some((index, building)) = producer else {
-            decision.committed_scrap = decision.committed_scrap.saturating_add(bank.min(cost));
+            decision.reserved_scrap = decision.reserved_scrap.saturating_add(bank.min(cost));
             break;
         };
         if bank < cost {
-            decision.committed_scrap = decision.committed_scrap.saturating_add(bank);
+            decision.reserved_scrap = decision.reserved_scrap.saturating_add(bank);
             break;
         }
         bank -= cost;
         added[index] += 1;
         missing -= 1;
-        decision.committed_scrap = decision.committed_scrap.saturating_add(cost);
         decision.intents.push(Intent::TrainAt {
             building,
             kind: UnitKind::Skyhook,
@@ -3236,7 +3235,7 @@ mod tests {
                 BuildingId(11)
             ]
         );
-        assert_eq!(decision.committed_scrap, 1_000);
+        assert_eq!(decision.committed_scrap(), 1_000);
     }
 
     #[test]
@@ -3324,7 +3323,7 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(decision.committed_scrap, 500);
+        assert_eq!(decision.committed_scrap(), 500);
     }
 
     #[test]
@@ -3387,7 +3386,7 @@ mod tests {
                 ..
             }
         )));
-        assert_eq!(decision.committed_scrap, kind.stats().cost);
+        assert_eq!(decision.committed_scrap(), kind.stats().cost);
     }
 
     #[test]
@@ -3402,7 +3401,7 @@ mod tests {
 
         assert_eq!(planner.operation().unwrap().desired_carriers, 4);
         assert!(waiting.intents.is_empty());
-        assert_eq!(waiting.committed_scrap, UnitKind::Skyhook.stats().cost);
+        assert_eq!(waiting.committed_scrap(), UnitKind::Skyhook.stats().cost);
     }
 
     #[test]
@@ -3415,7 +3414,7 @@ mod tests {
         let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(decision.intents.is_empty());
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
         assert!(decision.reservations.is_empty());
         assert!(planner.operation().is_none());
     }
@@ -3442,7 +3441,7 @@ mod tests {
 
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
         assert!(waiting.intents.is_empty());
-        assert_eq!(waiting.committed_scrap, 0);
+        assert_eq!(waiting.committed_scrap(), 0);
         assert!(!waiting.reservations.is_empty());
     }
 
@@ -3538,7 +3537,7 @@ mod tests {
             active.operation().map(|operation| operation.phase),
             Some(LiftPhase::Provision)
         );
-        assert_eq!(paused.committed_scrap, 0);
+        assert_eq!(paused.committed_scrap(), 0);
         assert!(
             paused
                 .intents
@@ -3570,7 +3569,7 @@ mod tests {
             .expect("closed admission preserves the in-flight lift");
         assert_eq!(operation.phase, LiftPhase::Boarding);
         assert_eq!(operation.manifests.len(), operation.desired_carriers);
-        assert_eq!(continued.committed_scrap, 0);
+        assert_eq!(continued.committed_scrap(), 0);
         assert!(
             continued
                 .intents

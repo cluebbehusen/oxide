@@ -101,6 +101,14 @@ settlement, lower-priority operation admission, and final utility grant. `Brain`
 supplies oriented evidence and lowers the admitted intents without
 reconstructing funding policy.
 
+Planner decisions keep held scrap separate from immediate producer requests;
+their current commitment is the reserve plus the ordinary purchase costs.
+Allocation projects those exact requests after previously accepted producer
+commands. Admission freezes the operation's charged capital before combining its
+commands with purchases funded by other portfolio owners, so command insertion
+or replacement cannot charge the operation twice. Queue timing stays with the
+shared resource projection rather than a second planner-side schedule.
+
 The portfolio remains one `AllocationSession` transaction. Subsequent lift and
 raid admission preserves the existing priority tiers and uses explicit remaining
 actor, capital, and producer access. Fresh lift work is prepared on a candidate,

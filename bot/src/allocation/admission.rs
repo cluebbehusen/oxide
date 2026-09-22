@@ -366,7 +366,7 @@ pub(crate) fn admit_decision(
         rejected_connected_candidate = strategic_result.rejected_connected_candidate;
     }
     let air_decision_for_trace = strategic_result.decision.clone();
-    let mut strategic = strategic_result.decision;
+    let mut strategic = strategic_result.decision.into();
     if strategic_was_staged || connected_continues || accepted_connected {
         remove_producer_intents(&mut strategic);
     }
@@ -548,7 +548,7 @@ fn channel_trace(
         effects: channel_effects(
             decision.intents.len(),
             &decision.reservations,
-            decision.committed_scrap,
+            decision.committed_scrap(),
         ),
     }
 }

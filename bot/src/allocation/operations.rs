@@ -2,8 +2,8 @@
 //! Grants are consumed in stable order after portfolio settlement.
 
 use crate::allocation::{
-    ClaimBundle, LegacyChannel, LegacyDecisionRequest, PlannerClaims, legacy_decision_obligation,
-    lift_air_support, prior_planner_claims,
+    ClaimBundle, LegacyChannel, OperationProductionRequest, PlannerClaims, lift_air_support,
+    operation_production_obligation, prior_planner_claims,
 };
 use crate::difficulty::DifficultyTuning;
 use crate::executive::{Army, ArmyState, Intent};
@@ -49,8 +49,27 @@ pub(super) struct OperationParticipants<'a> {
     pub(super) raids: &'a mut RaidPlanner,
 }
 
+/// Commands after admission may include purchases funded by other portfolio owners.
+/// Their cost must not be charged to the operation again.
+pub(super) struct AdmittedDecision {
+    pub(super) intents: Vec<Intent>,
+    pub(super) reservations: Vec<UnitId>,
+    pub(super) committed_scrap: u32,
+}
+
+impl From<StrategicDecision> for AdmittedDecision {
+    fn from(decision: StrategicDecision) -> Self {
+        let committed_scrap = decision.committed_scrap();
+        Self {
+            intents: decision.intents,
+            reservations: decision.reservations,
+            committed_scrap,
+        }
+    }
+}
+
 pub(super) struct RetainedDecisions {
-    pub(super) strategic: StrategicDecision,
+    pub(super) strategic: AdmittedDecision,
     pub(super) team_decision: StrategicDecision,
     pub(super) lift_decision: StrategicDecision,
     pub(super) raid_decision: StrategicDecision,
@@ -68,7 +87,7 @@ pub(super) struct RaidAttentionDecision {
 }
 
 pub(super) struct OperationSettlement {
-    pub(super) strategic: StrategicDecision,
+    pub(super) strategic: AdmittedDecision,
     pub(super) team_decision: StrategicDecision,
     pub(super) lift_decision: StrategicDecision,
     pub(super) raid_decision: StrategicDecision,
@@ -119,7 +138,7 @@ pub(super) fn settle_operations(
         },
     };
     for decision in [&team_decision, &lift_decision, &raid_decision] {
-        let mut allocated = decision.clone();
+        let mut allocated = decision.clone().into();
         remove_producer_intents(&mut allocated);
         merge_strategic(&mut strategic, allocated);
     }
@@ -186,8 +205,8 @@ pub(super) fn settle_operations(
                 lift_decision = StrategicDecision::default();
             }
         }
-        funds.commit(lift_decision.committed_scrap);
-        merge_strategic(&mut strategic, lift_decision.clone());
+        funds.commit(lift_decision.committed_scrap());
+        merge_strategic(&mut strategic, lift_decision.clone().into());
     }
 
     let air_active = strategy.air_operation().is_some();
@@ -218,8 +237,8 @@ pub(super) fn settle_operations(
             .with_admission(can_begin_raid),
         );
 
-        funds.commit(raid_decision.committed_scrap);
-        merge_strategic(&mut strategic, raid_decision.clone());
+        funds.commit(raid_decision.committed_scrap());
+        merge_strategic(&mut strategic, raid_decision.clone().into());
     }
 
     let claims_after_raid = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
@@ -294,7 +313,7 @@ pub(super) fn settle_operations(
     }
 }
 
-fn merge_strategic(into: &mut StrategicDecision, mut additional: StrategicDecision) {
+fn merge_strategic(into: &mut AdmittedDecision, mut additional: AdmittedDecision) {
     into.intents.append(&mut additional.intents);
     into.reservations.append(&mut additional.reservations);
     into.reservations.sort_unstable();
@@ -304,7 +323,7 @@ fn merge_strategic(into: &mut StrategicDecision, mut additional: StrategicDecisi
         .saturating_add(additional.committed_scrap);
 }
 
-pub(super) fn remove_producer_intents(decision: &mut StrategicDecision) {
+pub(super) fn remove_producer_intents(decision: &mut AdmittedDecision) {
     decision
         .intents
         .retain(|intent| !matches!(intent, Intent::TrainAt { .. }));
@@ -351,25 +370,12 @@ struct LiftGrant<'a> {
 struct AdmittedLift {
     planner: LiftPlanner,
     decision: StrategicDecision,
-    claims: ClaimBundle,
 }
 
 impl AdmittedLift {
     fn commit(self, planner: &mut LiftPlanner) -> StrategicDecision {
-        let Self {
-            planner: accepted,
-            mut decision,
-            claims,
-        } = self;
-        *planner = accepted;
-        decision.committed_scrap = claims.current_scrap().saturating_add(
-            claims
-                .producer_jobs()
-                .iter()
-                .map(|job| job.kind().stats().cost)
-                .fold(0, u32::saturating_add),
-        );
-        decision
+        *planner = self.planner;
+        self.decision
     }
 }
 
@@ -406,15 +412,16 @@ impl LiftGrant<'_> {
                 return None;
             }
         }
-        let mut claims = if decision
+        let claims = if decision
             .intents
             .iter()
             .any(|intent| matches!(intent, Intent::TrainAt { .. }))
         {
             let operation = candidate.operation()?;
-            legacy_decision_obligation(
+            operation_production_obligation(
                 &ResourceSnapshot::from_observation(observation),
-                LegacyDecisionRequest {
+                OperationProductionRequest {
+                    protect_reserve: true,
                     cadence,
                     accepted_at: operation.started_at,
                     decision_tick: observation.tick,
@@ -429,7 +436,7 @@ impl LiftGrant<'_> {
             .claims
         } else {
             ClaimBundle::new(
-                decision.committed_scrap,
+                decision.reserved_scrap,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -445,11 +452,9 @@ impl LiftGrant<'_> {
         {
             return None;
         }
-        claims.units = units;
         Some(AdmittedLift {
             planner: candidate,
             decision,
-            claims,
         })
     }
 }
@@ -494,6 +499,35 @@ pub(crate) fn lift_unavailable(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admitted_operation_capital_is_independent_of_portfolio_command_insertion() {
+        let decision = StrategicDecision {
+            intents: vec![Intent::TrainAt {
+                building: oxide_sim::BuildingId(7),
+                kind: UnitKind::Skyhook,
+            }],
+            reserved_scrap: 17,
+            ..StrategicDecision::default()
+        };
+        let expected = UnitKind::Skyhook.stats().cost + 17;
+        assert_eq!(decision.committed_scrap(), expected);
+        let mut admitted = AdmittedDecision::from(decision);
+        remove_producer_intents(&mut admitted);
+        admitted.intents.push(Intent::TrainAt {
+            building: oxide_sim::BuildingId(3),
+            kind: UnitKind::Sentinel,
+        });
+        assert_eq!(admitted.committed_scrap, expected);
+        let mut funds = OperationFunds {
+            unguarded: expected + 100,
+            spendable: expected + 100,
+            prior_utility: 0,
+            committed: 0,
+        };
+        funds.commit(admitted.committed_scrap);
+        assert_eq!(funds.available(), 100);
+    }
+
     use super::*;
     use crate::observation::{BuildingObs, UnitObs};
     use oxide_sim::ids::PlayerId;
@@ -547,19 +581,20 @@ mod tests {
             },
             RetainedDecisions {
                 strategic: StrategicDecision {
-                    committed_scrap: 7,
+                    reserved_scrap: 7,
                     ..StrategicDecision::default()
-                },
+                }
+                .into(),
                 team_decision: StrategicDecision {
-                    committed_scrap: 10,
+                    reserved_scrap: 10,
                     ..StrategicDecision::default()
                 },
                 lift_decision: StrategicDecision {
-                    committed_scrap: 11,
+                    reserved_scrap: 11,
                     ..StrategicDecision::default()
                 },
                 raid_decision: StrategicDecision {
-                    committed_scrap: 9,
+                    reserved_scrap: 9,
                     ..StrategicDecision::default()
                 },
                 team_was_active: true,
@@ -607,13 +642,13 @@ mod tests {
             .prepare(&obs, HOME, 20, LiftAirSupport::Independent, &planner)
             .expect("the island has a funded lift");
         assert!(planner.operation().is_none());
-        assert!(!accepted.claims.units().is_empty());
-        assert!(accepted.claims.claimed_capital() <= u128::from(obs.scrap));
-        assert!(!accepted.claims.producer_jobs().is_empty());
+        assert!(!accepted.planner.operation().unwrap().payload.is_empty());
+        assert!(accepted.decision.committed_scrap() <= obs.scrap);
+        assert!(accepted.decision.production().next().is_some());
         let expected = accepted.planner.clone();
         let decision = accepted.commit(&mut planner);
         assert_eq!(planner, expected);
-        assert!(decision.committed_scrap > 0);
+        assert!(decision.committed_scrap() > 0);
     }
 
     #[test]
@@ -632,9 +667,8 @@ mod tests {
         let accepted = grant
             .prepare(&obs, HOME, 20, LiftAirSupport::Independent, &planner)
             .expect("declining a fresh lift still admits idle planner maintenance");
-        assert_eq!(accepted.claims.claimed_capital(), 0);
+        assert_eq!(accepted.decision.committed_scrap(), 0);
         assert!(accepted.planner.operation().is_none());
-        assert!(accepted.claims.units().is_empty());
         assert_eq!(planner, LiftPlanner::new());
     }
 
