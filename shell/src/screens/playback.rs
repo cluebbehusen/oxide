@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn the_viewer_answers_the_shared_surface_exactly_like_a_resumed_live_session() {
-        // The invariant the save-is-a-replay design rests on: a replayed
+        // Playback and legacy live reconstruction must agree: a replayed
         // world and a live world resumed from the same record answer the
         // protocol identically. Both go through the one shared
         // dispatcher, so agreement here is agreement on the wire.

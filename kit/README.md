@@ -21,7 +21,9 @@ while reusable game-independent primitives stay in `chassis`.
   alongside this core so current hosts can continue exporting complete legacy
   replays. Recorder setup and duration are checked; restoration does not
   re-execute the log to prove its correspondence to the world. This internal
-  contract does not change ordinary saves, Continue, or recovery.
+  contract remains useful for headless session adapters. Player saves use the
+  core checkpoint without historical commands; recovery pairs it with a world
+  origin and a completed command suffix.
 
 - `bot_execution` collects commands in input seat order, using a shared pool of
   up to four workers when multiple bots are due. A busy or unavailable pool uses

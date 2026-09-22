@@ -1,14 +1,14 @@
-//! Checkpoint adapter. Save menus and replay files continue to use GameReplay.
+//! Self-contained shell continuation; historical commands belong to recordings.
 
 use super::*;
-use oxide_kit::checkpoint::{RecordedCheckpoint, SessionCheckpoint};
+use oxide_kit::checkpoint::SessionCheckpoint;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GameCheckpoint {
     version: u32,
-    recorded: RecordedCheckpoint,
+    session: SessionCheckpoint,
     human: PlayerId,
     demo: crate::tutorial::Demo,
     concede_stats: Option<oxide_kit::stats::MatchStats>,
@@ -24,11 +24,10 @@ impl Serialize for Game {
             &self.pending,
             Some(&self.live_stats),
         )
-        .and_then(|session| RecordedCheckpoint::capture(session, &self.recorder))
         .map_err(serde::ser::Error::custom)?;
         GameCheckpoint {
-            version: 1,
-            recorded: core,
+            version: 2,
+            session: core,
             human: self.presentation.human,
             demo: self.demo,
             concede_stats: self.concede_stats.clone(),
@@ -47,10 +46,11 @@ impl<'de> Deserialize<'de> for Game {
 
 fn restore(checkpoint: GameCheckpoint) -> Result<Game> {
     anyhow::ensure!(
-        checkpoint.version == 1,
+        checkpoint.version == 2,
         "unsupported shell checkpoint version"
     );
-    let (core, recorder) = checkpoint.recorded.restore()?;
+    let recorder = checkpoint.session.recording()?;
+    let core = checkpoint.session.restore()?;
     anyhow::ensure!(
         checkpoint.human == Game::human_seat(&core.scenario)?,
         "invalid local seat"
@@ -166,11 +166,22 @@ mod tests {
         assert_eq!(before, restored.state.hash());
         assert_eq!(*original.pending, *restored.pending);
         assert!(restored.presentation.paused);
+        let start = restored.state.current_tick();
+        assert_eq!(restored.recorder.start_tick(), start);
+        assert!(restored.recorder.commands.is_empty());
         for _ in 0..240 {
             assert_eq!(original.do_tick().events, restored.do_tick().events);
             assert_eq!(original.state.hash(), restored.state.hash());
             assert_eq!(
-                serde_json::to_vec(&original.recorder.commands).unwrap(),
+                serde_json::to_vec(
+                    &original
+                        .recorder
+                        .commands
+                        .iter()
+                        .filter(|c| c.tick >= start)
+                        .collect::<Vec<_>>()
+                )
+                .unwrap(),
                 serde_json::to_vec(&restored.recorder.commands).unwrap()
             );
             assert_eq!(
@@ -197,7 +208,7 @@ mod tests {
         let game = Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 720.0)).unwrap();
         let original = serde_json::to_value(&game).unwrap();
         for (key, value) in [
-            ("version", serde_json::json!(2)),
+            ("version", serde_json::json!(3)),
             ("human", serde_json::json!(255)),
         ] {
             let mut bad = original.clone();
@@ -239,12 +250,8 @@ mod tests {
             let session =
                 SessionCheckpoint::capture(&scenario, &state, &[], &[], Some(&stats)).unwrap();
             let checkpoint = GameCheckpoint {
-                version: 1,
-                recorded: RecordedCheckpoint::capture(
-                    session,
-                    &GameReplay::new(SIM_VERSION, scenario),
-                )
-                .unwrap(),
+                version: 2,
+                session,
                 human: PlayerId(0),
                 demo: Default::default(),
                 concede_stats: None,
