@@ -891,7 +891,7 @@ impl UtilityPolicy {
             .filter(|(tile, amount)| {
                 *amount > 0
                     && obs.visible(*tile)
-                    && !self.state.dead_nodes.contains(tile)
+                    && !self.state.work_experience.dead_nodes.contains(tile)
                     && !self.harvest_location_contested(*tile)
                     && road_reach
                         .get_or_insert_with(|| Self::known_road_reach(obs, home))
@@ -2437,8 +2437,8 @@ mod tests {
         );
         assert!(first.projected_return() > 0);
         assert!(policy.state.foundry_saving.is_none());
-        assert!(policy.state.pending_sites.is_empty());
-        assert!(policy.state.dead_anchors.is_empty());
+        assert_eq!(policy.state.work_experience, Default::default());
+        assert!(policy.state.work_experience.dead_anchors.is_empty());
     }
 
     #[test]
@@ -3448,7 +3448,7 @@ mod tests {
             "player-facing Foundries must enter through the shared proposal path"
         );
         let residual =
-            UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map);
+            UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &public_map);
         assert!(
             residual.iter().all(|intent| !matches!(
                 intent,
@@ -3914,7 +3914,7 @@ mod tests {
         for radius in [2, 8] {
             let expected = frontier.offset(-radius, 0);
             let mut policy = UtilityPolicy::new();
-            policy.state.dead_anchors = (0..obs.map_height)
+            policy.state.work_experience.dead_anchors = (0..obs.map_height)
                 .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
                 .filter(|anchor| *anchor != expected)
                 .collect();
@@ -3981,7 +3981,7 @@ mod tests {
             .collect();
 
         let mut blocked_policy = UtilityPolicy::new();
-        blocked_policy.state.dead_anchors = (0..ready.map_height)
+        blocked_policy.state.work_experience.dead_anchors = (0..ready.map_height)
             .flat_map(|y| (0..ready.map_width).map(move |x| TilePos::new(x, y)))
             .collect();
 

@@ -2,106 +2,21 @@
 //! standoff, air defense, repair audits, wreck salvage, raid discipline,
 //! and the orientation involution that keeps observations seat-fair.
 
+use super::tests::public_map;
+use crate::observation::ObservationData;
+use crate::{BuildingObs, Intent, Observation, Orientation, UnitObs};
 use chassis::grid::TilePos;
-use oxide_bot::observation::OBSERVATION_VERSION;
-use oxide_bot::observation::ObservationData;
-use oxide_bot::{BuildingObs, Intent, Observation, Orientation, PublicMapBriefing, UnitObs};
-use oxide_sim::scenario::PlayerSpec;
 use oxide_sim::stats::BuildingKind;
-use oxide_sim::{BuildingId, Command, Faction, PlayerId, Scenario, Target, UnitId, UnitKind};
+use oxide_sim::{BuildingId, Command, Faction, PlayerId, Target, UnitId, UnitKind};
 
 fn obs_base() -> Observation {
     Observation::from_data(ObservationData {
-        version: OBSERVATION_VERSION,
-        tick: 0,
-        me: PlayerId(0),
-        scrap: 0,
         map_width: 24,
         map_height: 13,
-        my_units: Vec::new(),
-        my_carried_units: Vec::new(),
-        my_buildings: Vec::new(),
-        my_queues: Vec::new(),
-        my_queue_progress: Vec::new(),
-        my_queued_units: Vec::new(),
-        my_repair_targets: Vec::new(),
-        ally_units: Vec::new(),
-        ally_buildings: Vec::new(),
-        enemy_units: Vec::new(),
-        enemy_buildings: Vec::new(),
         visible: vec![true; 24 * 13],
         explored: vec![true; 24 * 13],
-        known_scrap: Vec::new(),
-        known_rock: Vec::new(),
-        known_pits: Vec::new(),
-        known_frames: Vec::new(),
-        known_peaks: Vec::new(),
-        known_wrecks: Vec::new(),
-        salvage_incidents: Vec::new(),
-        blips: Vec::new(),
-        contact_tracks: Vec::new(),
-        faction: Faction::Ferrous,
-        my_shells: 0,
-        incoming_shells: Vec::new(),
+        ..crate::test_support::observation_data()
     })
-}
-
-fn public_map(obs: &Observation) -> PublicMapBriefing {
-    let width = usize::try_from(obs.map_width).expect("the test map has a positive width");
-    let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
-    assert!(width >= 2 && height >= 2);
-    let mut map = vec![".".repeat(width); height];
-    map[0].replace_range(..1, "1");
-    PublicMapBriefing::from_scenario(&Scenario {
-        name: "doctrine test map".into(),
-        seed: 0,
-        map,
-        players: vec![PlayerSpec {
-            name: "test seat".into(),
-            faction: obs.faction,
-            team: None,
-            scrap: 0,
-            bot: false,
-            bot_config: None,
-        }],
-        units: Vec::new(),
-        buildings: Vec::new(),
-        meta: None,
-    })
-    .expect("the focused observation has a matching public map")
-}
-
-fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
-    UnitObs {
-        id: UnitId(id),
-        player: PlayerId(player),
-        kind,
-        tile: TilePos::new(x, y),
-        hp: kind.stats().max_hp,
-        idle: true,
-        carrying: 0,
-        harvesting: None,
-        cargo: 0,
-        site: None,
-        salvaging: None,
-        founding: None,
-        repairing: false,
-        grounded: false,
-    }
-}
-
-fn building_obs(id: u32, player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingObs {
-    BuildingObs {
-        provisional: false,
-        id: BuildingId(id),
-        player: PlayerId(player),
-        kind,
-        anchor: TilePos::new(x, y),
-        hp: kind.base_stats().max_hp,
-        built: true,
-        seen: true,
-        tier: 0,
-    }
 }
 
 /// A fully-populated observation: every positioned field carries data,
@@ -293,7 +208,7 @@ fn positioned_intents_flip_and_positionless_ones_pass() {
 
 // --- channel tests: drive the utility policy on synthetic worlds -----
 
-use oxide_bot::{Dials, UtilityPolicy};
+use crate::{Dials, UtilityPolicy};
 
 /// A base observation with a built home Foundry (the policy's anchor).
 fn obs_with_home() -> Observation {
@@ -305,11 +220,11 @@ fn obs_with_home() -> Observation {
 }
 
 fn think(policy: &mut UtilityPolicy, obs: &Observation) -> Vec<Intent> {
-    policy.think_player_facing(&Dials::full(), obs, &[], &[], &[], &public_map(obs))
+    policy.think_residual(&Dials::full(), obs, &[], &[], &[], &public_map(obs))
 }
 
 fn player_think(policy: &mut UtilityPolicy, dials: &Dials, obs: &Observation) -> Vec<Intent> {
-    policy.think_player_facing(dials, obs, &[], &[], &[], &public_map(obs))
+    policy.think_residual(dials, obs, &[], &[], &[], &public_map(obs))
 }
 
 #[test]
@@ -454,7 +369,7 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
     let mut dials = Dials::full();
     dials.air_wing = 2;
 
-    let reserved = UtilityPolicy::new().think_player_facing(
+    let reserved = UtilityPolicy::new().think_residual(
         &dials,
         &obs,
         &[],
@@ -469,8 +384,7 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
         "one reserved bomber plus one free bomber is not a utility wing: {reserved:?}"
     );
 
-    let free =
-        UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let free = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         free.iter().any(|intent| matches!(
             intent,
@@ -482,7 +396,7 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
 
 #[test]
 fn a_pushed_army_holds_its_artillery_at_standoff() {
-    use oxide_bot::Executive;
+    use crate::Executive;
     let mut obs = obs_base();
     obs.my_units = vec![
         unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
@@ -550,7 +464,7 @@ fn a_pushed_army_holds_its_artillery_at_standoff() {
 
 #[test]
 fn air_superiority_mass_does_not_rout_a_ground_only_engagement() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let mut obs = obs_base();
     obs.my_units = vec![unit_obs(0, 0, UnitKind::Warden, 6, 5)];
@@ -596,7 +510,7 @@ fn island_obs() -> Observation {
 }
 
 fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
-    use oxide_bot::{Army, ArmyId, ArmyState};
+    use crate::{Army, ArmyId, ArmyState};
 
     let members: Vec<UnitId> = obs.my_units.iter().map(|unit| unit.id).collect();
     let army = Army {
@@ -613,12 +527,12 @@ fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
     let mut dials = Dials::balanced();
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
-    UtilityPolicy::new().think_player_facing(&dials, obs, &[army], &[], &[], &public_map(obs))
+    UtilityPolicy::new().think_residual(&dials, obs, &[army], &[], &[], &public_map(obs))
 }
 
 #[test]
 fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
-    use oxide_bot::{Army, ArmyId, ArmyState};
+    use crate::{Army, ArmyId, ArmyState};
 
     let army = |members: Vec<UnitId>, staging: TilePos| Army {
         id: ArmyId(7),
@@ -641,7 +555,7 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
         .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32, 6))
         .collect();
 
-    let blocked = UtilityPolicy::new().think_player_facing(
+    let blocked = UtilityPolicy::new().think_residual(
         &dials,
         &home_side,
         &[army(ids.clone(), TilePos::new(7, 6))],
@@ -668,7 +582,7 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
             )
         })
         .collect();
-    let local = UtilityPolicy::new().think_player_facing(
+    let local = UtilityPolicy::new().think_residual(
         &dials,
         &landed,
         &[army(ids, TilePos::new(16, 7))],
@@ -736,7 +650,7 @@ fn ground_armies_do_not_invent_a_road_through_an_unexplored_gulf() {
 
 #[test]
 fn only_the_player_facing_controller_route_checks_defensive_retargets() {
-    use oxide_bot::{Army, ArmyId, ArmyState};
+    use crate::{Army, ArmyId, ArmyState};
 
     let mut obs = island_obs();
     obs.my_units = (1..=3)
@@ -756,14 +670,8 @@ fn only_the_player_facing_controller_route_checks_defensive_retargets() {
     };
     let dials = Dials::balanced();
 
-    let player_facing = UtilityPolicy::new().think_player_facing(
-        &dials,
-        &obs,
-        &[army],
-        &[],
-        &[],
-        &public_map(&obs),
-    );
+    let player_facing =
+        UtilityPolicy::new().think_residual(&dials, &obs, &[army], &[], &[], &public_map(&obs));
     assert!(
         player_facing
             .iter()
@@ -774,7 +682,7 @@ fn only_the_player_facing_controller_route_checks_defensive_retargets() {
 
 #[test]
 fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
-    use oxide_bot::{ArmyState, Dials, Executive};
+    use crate::{ArmyState, Dials, Executive};
 
     let mut obs = obs_with_home();
     obs.my_units = vec![unit_obs(1, 0, UnitKind::Flakhound, 8, 4)];
@@ -800,7 +708,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     ));
 
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let intents = UtilityPolicy::new().think_player_facing(
+    let intents = UtilityPolicy::new().think_residual(
         &Dials::balanced(),
         &obs,
         exec.armies(),
@@ -824,7 +732,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert!(settled.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let player_facing = UtilityPolicy::new().think_player_facing(
+    let player_facing = UtilityPolicy::new().think_residual(
         &Dials::balanced(),
         &obs,
         exec.armies(),
@@ -879,7 +787,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert!(contact.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let engaged = UtilityPolicy::new().think_player_facing(
+    let engaged = UtilityPolicy::new().think_residual(
         &Dials::balanced(),
         &obs,
         exec.armies(),
@@ -904,7 +812,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
 
 #[test]
 fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
-    use oxide_bot::{ArmyState, Dials, Executive};
+    use crate::{ArmyState, Dials, Executive};
 
     let home = TilePos::new(2, 2);
     let staging = TilePos::new(4, 4);
@@ -965,7 +873,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
     );
 
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let outmatched = UtilityPolicy::new().think_player_facing(
+    let outmatched = UtilityPolicy::new().think_residual(
         &Dials::balanced(),
         &obs,
         exec.armies(),
@@ -1008,7 +916,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
         .expect("fresh production musters separately from the routed body")
         .id;
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let reinforced = UtilityPolicy::new().think_player_facing(
+    let reinforced = UtilityPolicy::new().think_residual(
         &Dials::balanced(),
         &obs,
         exec.armies(),
@@ -1032,7 +940,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
 
 #[test]
 fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
-    use oxide_bot::{ArmyState, Dials, Executive};
+    use crate::{ArmyState, Dials, Executive};
 
     let target = TilePos::new(18, 8);
     let staging = TilePos::new(5, 4);
@@ -1079,7 +987,7 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
     dials.own_strength_scale = u16::MAX;
     dials.enemy_strength_scale = 0;
     let enlisted: Vec<_> = exec.enlisted().collect();
-    let player_facing = UtilityPolicy::new().think_player_facing(
+    let player_facing = UtilityPolicy::new().think_residual(
         &dials,
         &obs,
         exec.armies(),
@@ -1099,7 +1007,7 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
 
 #[test]
 fn player_facing_completed_forward_army_rejoins_the_safe_muster() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let target = TilePos::new(18, 8);
     let forward_staging = TilePos::new(6, 4);
@@ -1198,7 +1106,7 @@ fn player_facing_completed_forward_army_rejoins_the_safe_muster() {
 
 #[test]
 fn player_facing_refused_forward_army_cannot_mask_a_reachable_muster() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let left = TilePos::new(5, 4);
     let right = TilePos::new(7, 4);
@@ -1272,7 +1180,7 @@ fn player_facing_refused_forward_army_cannot_mask_a_reachable_muster() {
 
 #[test]
 fn player_facing_army_finishes_a_harmless_target_without_restarting_its_march() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let mut obs = obs_with_home();
     obs.my_units = vec![
@@ -1321,7 +1229,7 @@ fn player_facing_army_finishes_a_harmless_target_without_restarting_its_march() 
 
 #[test]
 fn player_facing_ground_armies_do_not_pursue_aircraft_over_unstandable_ground() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let mut obs = obs_with_home();
     obs.my_units = (1..=7)
@@ -1427,7 +1335,7 @@ fn a_known_building_wall_suppresses_an_impossible_ground_push() {
 
 #[test]
 fn the_army_draft_never_conscripts_the_air_wing() {
-    use oxide_bot::Executive;
+    use crate::Executive;
     let mut obs = obs_base();
     obs.my_units = vec![
         unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
@@ -1454,7 +1362,7 @@ fn the_army_draft_never_conscripts_the_air_wing() {
 
 #[test]
 fn player_facing_muster_drafts_only_fighters_with_a_known_ground_route() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -1485,7 +1393,7 @@ fn player_facing_muster_drafts_only_fighters_with_a_known_ground_route() {
 
 #[test]
 fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.explored.fill(false);
@@ -1557,7 +1465,7 @@ fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
 
 #[test]
 fn muster_extends_a_nearby_staged_body() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = (0..4)
@@ -1588,7 +1496,7 @@ fn muster_extends_a_nearby_staged_body() {
 
 #[test]
 fn player_facing_muster_does_not_consolidate_bodies_across_a_known_wall() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -1641,7 +1549,7 @@ fn player_facing_muster_does_not_consolidate_bodies_across_a_known_wall() {
 
 #[test]
 fn player_facing_rear_wait_keeps_unrepaired_units_out_of_voluntary_musters() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -1702,7 +1610,7 @@ fn player_facing_rear_wait_keeps_unrepaired_units_out_of_voluntary_musters() {
 
 #[test]
 fn exact_group_intents_lower_canonical_live_owned_members_only() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -1801,7 +1709,7 @@ fn exact_group_intents_lower_canonical_live_owned_members_only() {
 
 #[test]
 fn exact_reservations_survive_an_earlier_army_draft_and_transfer_ownership() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -1861,7 +1769,7 @@ fn exact_reservations_survive_an_earlier_army_draft_and_transfer_ownership() {
 
 #[test]
 fn one_worker_cannot_be_promised_to_two_jobs_in_one_think() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![unit_obs(0, 0, UnitKind::Harvester, 5, 4)];
@@ -1928,7 +1836,7 @@ fn one_worker_cannot_be_promised_to_two_jobs_in_one_think() {
 
 #[test]
 fn boarding_riders_leave_the_army_before_its_next_order() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -1970,7 +1878,7 @@ fn boarding_riders_leave_the_army_before_its_next_order() {
 
 #[test]
 fn exact_loading_uses_its_reservations_without_stealing_same_think_claims() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -2053,7 +1961,7 @@ fn exact_loading_uses_its_reservations_without_stealing_same_think_claims() {
 
 #[test]
 fn repeated_refused_marches_release_even_when_the_target_changes() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -2100,7 +2008,7 @@ fn repeated_refused_marches_release_even_when_the_target_changes() {
 
 #[test]
 fn a_march_that_started_but_stopped_eventually_releases_the_army() {
-    use oxide_bot::{ArmyState, Executive};
+    use crate::{ArmyState, Executive};
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -2188,7 +2096,7 @@ fn an_unreachable_paid_site_does_not_starve_reachable_construction() {
 
 #[test]
 fn executive_defers_a_build_claim_outside_current_sight() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![unit_obs(1, 0, UnitKind::Harvester, 3, 3)];
@@ -2241,7 +2149,7 @@ fn executive_defers_a_build_claim_outside_current_sight() {
 
 #[test]
 fn player_facing_builds_choose_a_reachable_worker() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_base();
     obs.my_units = vec![
@@ -2416,7 +2324,7 @@ fn a_walking_extractor_claims_its_fixed_frame_once() {
 
 #[test]
 fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_with_home();
     obs.scrap = 1_000;
@@ -2578,7 +2486,7 @@ fn an_underfunded_foundry_promise_escrows_every_player_facing_spend() {
 
 #[test]
 fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
-    use oxide_bot::Executive;
+    use crate::Executive;
 
     let mut obs = obs_with_home();
     obs.scrap = 1_000;
@@ -2677,7 +2585,7 @@ fn a_complete_tree_uses_the_crucible_and_airworks_for_its_heaviest_roster() {
             .map(|id| unit_obs(id, 0, UnitKind::Warden, 3 + id as i32, 5))
             .collect();
 
-        let intents = UtilityPolicy::new().think_player_facing(
+        let intents = UtilityPolicy::new().think_residual(
             &Dials::balanced(),
             &obs,
             &[],
@@ -2696,4 +2604,12 @@ fn a_complete_tree_uses_the_crucible_and_airworks_for_its_heaviest_roster() {
                 if *building == BuildingId(2) && *kind == bomber
         )));
     }
+}
+
+fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
+    crate::test_support::unit(id, PlayerId(player), kind, TilePos::new(x, y))
+}
+
+fn building_obs(id: u32, player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingObs {
+    crate::test_support::building(id, PlayerId(player), kind, TilePos::new(x, y))
 }

@@ -1,14 +1,12 @@
 //! Utility-policy contracts: deterministic thinking and budget honesty.
 
-use chassis::grid::TilePos;
-use oxide_bot::observation::ObservationData;
-use oxide_bot::trace::{
-    ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace,
-};
-use oxide_bot::{
+use crate::observation::ObservationData;
+use crate::trace::{ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace};
+use crate::{
     BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, Orientation,
     PublicMapBriefing, SeatBot as Brain, UnitObs, UtilityPolicy,
 };
+use chassis::grid::TilePos;
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
 };
@@ -17,7 +15,7 @@ use oxide_sim::{BuildingId, Command, Event, Faction, PlayerId, Scenario, UnitId,
 use std::sync::Arc;
 
 fn standard_dials() -> Dials {
-    let profile = oxide_bot::ResolvedProfile::resolve(BotConfig::scripted(
+    let profile = crate::ResolvedProfile::resolve(BotConfig::scripted(
         BotDifficulty::Standard,
         BotStance::Balanced,
         0x5eed_0a16,
@@ -35,35 +33,13 @@ fn standard_dials_without_opening_core_floor() -> Dials {
 }
 
 fn observed_unit(id: u32, kind: UnitKind, tile: TilePos) -> UnitObs {
-    UnitObs {
-        id: UnitId(id),
-        player: PlayerId(0),
-        kind,
-        tile,
-        hp: kind.stats().max_hp,
-        idle: true,
-        carrying: 0,
-        harvesting: None,
-        cargo: 0,
-        site: None,
-        salvaging: None,
-        founding: None,
-        repairing: false,
-        grounded: false,
-    }
+    crate::test_support::unit(id, PlayerId(0), kind, tile)
 }
 
 fn observed_building(id: u32, kind: BuildingKind, anchor: TilePos, built: bool) -> BuildingObs {
     BuildingObs {
-        provisional: false,
-        id: BuildingId(id),
-        player: PlayerId(0),
-        kind,
-        anchor,
-        hp: kind.base_stats().max_hp,
         built,
-        seen: true,
-        tier: 0,
+        ..crate::test_support::building(id, PlayerId(0), kind, anchor)
     }
 }
 
@@ -90,37 +66,14 @@ fn construction_observation(scrap: u32) -> Observation {
         )
     }));
     Observation::from_data(ObservationData {
-        version: oxide_bot::observation::OBSERVATION_VERSION,
         tick: 2_016,
-        me: PlayerId(0),
         scrap,
         map_width,
         map_height,
         my_units: units,
-        my_carried_units: Vec::new(),
-        my_buildings: Vec::new(),
-        my_queues: Vec::new(),
-        my_queue_progress: Vec::new(),
-        my_queued_units: Vec::new(),
-        my_repair_targets: Vec::new(),
-        ally_units: Vec::new(),
-        ally_buildings: Vec::new(),
-        enemy_units: Vec::new(),
-        enemy_buildings: Vec::new(),
         visible: vec![true; usize::try_from(map_width * map_height).unwrap()],
         explored: vec![true; usize::try_from(map_width * map_height).unwrap()],
-        known_scrap: Vec::new(),
-        known_rock: Vec::new(),
-        known_pits: Vec::new(),
-        known_frames: Vec::new(),
-        known_peaks: Vec::new(),
-        known_wrecks: Vec::new(),
-        salvage_incidents: Vec::new(),
-        blips: Vec::new(),
-        contact_tracks: Vec::new(),
-        faction: Faction::Ferrous,
-        my_shells: 0,
-        incoming_shells: Vec::new(),
+        ..crate::test_support::observation_data()
     })
 }
 
@@ -163,7 +116,7 @@ fn add_building(obs: &mut Observation, building: BuildingObs) {
 }
 
 fn player_facing_intents(dials: &Dials, obs: &Observation) -> Vec<Intent> {
-    UtilityPolicy::new().think_player_facing(dials, obs, &[], &[], &[], &public_map(obs))
+    UtilityPolicy::new().think_residual(dials, obs, &[], &[], &[], &public_map(obs))
 }
 
 fn planned_cost(intent: &Intent) -> u32 {
@@ -366,8 +319,8 @@ fn identical_inputs_think_identical_intents() {
     let mut first = UtilityPolicy::new();
     let mut second = UtilityPolicy::new();
     assert_eq!(
-        first.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs)),
-        second.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs)),
+        first.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs)),
+        second.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs)),
         "a policy is a function of (dials, observation, executive)"
     );
 }
@@ -380,8 +333,7 @@ fn a_think_never_plans_past_the_bank() {
         let me = PlayerId(player);
         let obs = Observation::omniscient(&state, me);
         let mut policy = UtilityPolicy::new();
-        let intents =
-            policy.think_player_facing(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
+        let intents = policy.think_residual(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
         let planned: u32 = intents.iter().map(planned_cost).sum();
         assert!(
             planned <= obs.scrap,
@@ -624,8 +576,7 @@ fn a_starved_commander_liquidates_its_walls_for_one_more_wave() {
     let state = scenario.build().unwrap();
     let obs = Observation::fog_honest(&state, PlayerId(0));
     let mut policy = UtilityPolicy::new();
-    let intents =
-        policy.think_player_facing(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
+    let intents = policy.think_residual(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
     let turret = state
         .buildings()
         .iter()
@@ -652,7 +603,7 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
 
     let first_obs = Observation::fog_honest(&state, me);
     assert_eq!(first_obs.scrap, 150);
-    let first_intents = policy.think_player_facing(&dials, &first_obs, &[], &[], &[], &briefing);
+    let first_intents = policy.think_residual(&dials, &first_obs, &[], &[], &[], &briefing);
     assert!(
         first_intents.iter().any(|intent| matches!(
             intent,
@@ -695,12 +646,11 @@ fn standard_opening_can_train_and_restore_its_supported_frame_from_150_scrap() {
         // worker during the first lowering. Their persistent work makes one
         // available to construction on the next think without changing the
         // economic choice or spending another scrap.
-        while !oxide_bot::difficulty::strategic_admission_tick(state.current_tick()) {
+        while !crate::difficulty::strategic_admission_tick(state.current_tick()) {
             state.tick(&[]);
         }
         let second_obs = Observation::fog_honest(&state, me);
-        let second_intents =
-            policy.think_player_facing(&dials, &second_obs, &[], &[], &[], &briefing);
+        let second_intents = policy.think_residual(&dials, &second_obs, &[], &[], &[], &briefing);
         let second_commands =
             executive.apply_with_reservations(me, &second_obs, &second_intents, &[]);
         assert!(second_commands.iter().any(|command| matches!(
@@ -855,7 +805,7 @@ fn assert_current_emergency_defense_preserves_opening_escrow(
     let mut extractor_advanced = false;
 
     for _ in 0..4_000 {
-        let commands = if oxide_bot::difficulty::strategic_admission_tick(state.current_tick()) {
+        let commands = if crate::difficulty::strategic_admission_tick(state.current_tick()) {
             let observation = Observation::fog_honest(&state, me);
             if extractor_site.is_none() {
                 assert!(
@@ -1004,7 +954,7 @@ fn noncurrent_air_evidence_cannot_spend_below_floor_opening_escrow() {
 
     let dials = standard_dials();
     let mut policy = UtilityPolicy::new();
-    let intents = policy.think_player_facing(&dials, &observation, &[], &[], &[], &briefing);
+    let intents = policy.think_residual(&dials, &observation, &[], &[], &[], &briefing);
     assert!(
         intents.iter().all(|intent| !matches!(
             intent,
@@ -1079,7 +1029,7 @@ fn prime_residual_policy_recovers_the_core_without_originating_optional_capital(
         &mut obs,
         observed_building(0, BuildingKind::Foundry, home, true),
     );
-    let profile = oxide_bot::ResolvedProfile::resolve(BotConfig::scripted(
+    let profile = crate::ResolvedProfile::resolve(BotConfig::scripted(
         BotDifficulty::Prime,
         BotStance::Balanced,
         0x5eed_0a16,
@@ -1087,7 +1037,7 @@ fn prime_residual_policy_recovers_the_core_without_originating_optional_capital(
     let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
 
     let mut policy = UtilityPolicy::new();
-    let deficient = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let deficient = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert_eq!(
         deficient
             .iter()
@@ -1115,8 +1065,7 @@ fn prime_residual_policy_recovers_the_core_without_originating_optional_capital(
         )
     }));
     obs.my_units.sort_unstable_by_key(|unit| unit.id);
-    let ready =
-        UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let ready = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         ready.iter().all(|intent| !matches!(
             intent,
@@ -1155,7 +1104,7 @@ fn reaching_the_core_floor_after_cancelling_an_unsafe_site_does_not_cancel_twice
     obs.enemy_units.push(threat);
     obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
-    let profile = oxide_bot::ResolvedProfile::resolve(BotConfig::scripted(
+    let profile = crate::ResolvedProfile::resolve(BotConfig::scripted(
         BotDifficulty::Prime,
         BotStance::Balanced,
         0x5eed_0a16,
@@ -1426,22 +1375,22 @@ fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage(
     let mut policy = UtilityPolicy::new();
     let restores_frame = |intents: &[Intent]| plans_build(intents, BuildingKind::Extractor, frame);
 
-    let _ = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
-    obs.tick = oxide_bot::difficulty::strategic_admission_at_or_after(obs.tick + 1);
+    let _ = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    obs.tick = crate::difficulty::strategic_admission_at_or_after(obs.tick + 1);
     obs.my_units[5].hp -= 1;
     obs.salvage_incidents.push(incident);
-    let warned = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let warned = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         !restores_frame(&warned),
         "a nearby worker hit pauses both restoration and its capital claim: {warned:?}"
     );
 
-    obs.tick = oxide_bot::difficulty::strategic_admission_at_or_after(
+    obs.tick = crate::difficulty::strategic_admission_at_or_after(
         obs.tick + oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1,
     );
     obs.salvage_incidents.clear();
     obs.visible.fill(false);
-    let expired_in_fog = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let expired_in_fog = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         !restores_frame(&expired_in_fog),
         "warning expiry in fog must not send another builder into the contested frame: \
@@ -1451,17 +1400,16 @@ fn player_facing_restoration_requires_a_clean_bounded_sweep_after_worker_damage(
     obs.visible.fill(true);
     let hidden_index = usize::try_from(hidden_corner.y * obs.map_width + hidden_corner.x).unwrap();
     obs.visible[hidden_index] = false;
-    obs.tick = oxide_bot::difficulty::strategic_admission_at_or_after(obs.tick + 1);
-    let partial_sweep = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    obs.tick = crate::difficulty::strategic_admission_at_or_after(obs.tick + 1);
+    let partial_sweep = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert!(
         !restores_frame(&partial_sweep),
         "partial current sight cannot reopen a worker kill zone: {partial_sweep:?}"
     );
 
     obs.visible[hidden_index] = true;
-    obs.tick = oxide_bot::difficulty::strategic_admission_at_or_after(obs.tick + 1);
-    let completed_sweep =
-        policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    obs.tick = crate::difficulty::strategic_admission_at_or_after(obs.tick + 1);
+    let completed_sweep = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
     assert_eq!(
         exact_builder_for(&completed_sweep, BuildingKind::Extractor, frame),
         Some(UnitId(5)),

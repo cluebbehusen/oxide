@@ -44,7 +44,7 @@ exact funding and compatibility decision.
 
 ```sh
 cargo test -p oxide-bot --locked
-cargo test -p oxide-bot --test bot_policy --locked
+cargo test -p oxide-bot --lib utility::policy_tests --locked
 cargo clippy -p oxide-bot --all-targets --locked -- -D warnings
 ```
 

@@ -460,9 +460,9 @@ fn resource_access_evidence_is_shared_and_invalidates_on_effective_inputs() {
     assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
     assert!(scrap_assets(&policy, &ground, &[]).is_empty());
     assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
-    policy.state.dead_nodes.push(node);
+    policy.state.work_experience.dead_nodes.push(node);
     assert!(scrap_assets(&policy, &ground, &[LEFT_HOME]).is_empty());
-    policy.state.dead_nodes.clear();
+    policy.state.work_experience.dead_nodes.clear();
     assert_eq!(scrap_assets(&policy, &ground, &[LEFT_HOME]), baseline);
     let mut idle = obs.clone();
     idle.my_units[0].harvesting = None;

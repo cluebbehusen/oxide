@@ -709,23 +709,7 @@ impl UtilityPolicy {
     }
 
     pub(super) fn recon_answered(&self, obs: &Observation, question: &ReconQuestion) -> bool {
-        let tile = question.key.tile();
-        if question.key.consumer == ReconConsumer::HarvestRecovery {
-            return !self
-                .state
-                .contested_harvest_regions
-                .iter()
-                .any(|region| region.center == tile);
-        }
-        (0..question.size.1)
-            .all(|dy| (0..question.size.0).all(|dx| obs.visible(tile.offset(dx, dy))))
-            || (matches!(
-                question.key.consumer,
-                ReconConsumer::Objective(..) | ReconConsumer::HostileStart(_)
-            ) && obs
-                .enemy_buildings
-                .iter()
-                .any(|building| building.seen && building.anchor == tile))
+        question.answered(obs, &self.state.contested_harvest_regions)
     }
 
     /// Reconcile every retained assignment, even when no discretionary attention remains.
@@ -1732,6 +1716,27 @@ impl UtilityPolicy {
             *occurrence += 1;
         }
         self.state.reconnaissance.queue_counts = counts;
+    }
+}
+
+impl ReconQuestion {
+    pub(super) fn answered(
+        &self,
+        obs: &Observation,
+        contested_regions: &[ContestedHarvestRegion],
+    ) -> bool {
+        let tile = self.key.tile();
+        if self.key.consumer == ReconConsumer::HarvestRecovery {
+            return !contested_regions.iter().any(|region| region.center == tile);
+        }
+        (0..self.size.1).all(|dy| (0..self.size.0).all(|dx| obs.visible(tile.offset(dx, dy))))
+            || (matches!(
+                self.key.consumer,
+                ReconConsumer::Objective(..) | ReconConsumer::HostileStart(_)
+            ) && obs
+                .enemy_buildings
+                .iter()
+                .any(|building| building.seen && building.anchor == tile))
     }
 }
 

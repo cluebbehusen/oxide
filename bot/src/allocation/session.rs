@@ -4967,7 +4967,10 @@ mod tests {
 
     #[test]
     fn successful_commit_retains_speculative_planners_and_prepared_output() {
-        let observation = observation();
+        let mut observation = observation();
+        observation
+            .my_units
+            .push(owned_unit(1, UnitKind::Harvester, TilePos::new(2, 2)));
         let briefing = briefing();
         let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
             BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
@@ -4975,7 +4978,12 @@ mod tests {
         let intelligence = StrategicIntelligence::new();
         let original_policy = UtilityPolicy::new();
         let mut policy = original_policy.clone();
-        policy.record_dispatched_build(&observation, BuildingKind::Turret, TilePos::new(4, 4));
+        policy.state.work_experience.record_exact_build_attempt(
+            &observation,
+            &[UnitId(1)],
+            BuildingKind::Turret,
+            TilePos::new(4, 4),
+        );
         assert_ne!(policy, original_policy);
         let committed_policy = policy.clone();
         let original_strategy = StrategicPlanner::new();
@@ -5342,7 +5350,10 @@ mod tests {
 
     #[test]
     fn rejected_allocation_restores_participants_and_preserves_maintenance() {
-        let observation = observation();
+        let mut observation = observation();
+        observation
+            .my_units
+            .push(owned_unit(1, UnitKind::Harvester, TilePos::new(2, 2)));
         let briefing = briefing();
         let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
             BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
@@ -5369,7 +5380,12 @@ mod tests {
         let checkpoint = policy.speculative_checkpoint();
         assert_eq!(policy.planning, pending);
         assert_eq!(checkpoint, original_policy.speculative_checkpoint());
-        policy.record_dispatched_build(&observation, BuildingKind::Turret, TilePos::new(4, 4));
+        policy.state.work_experience.record_exact_build_attempt(
+            &observation,
+            &[UnitId(1)],
+            BuildingKind::Turret,
+            TilePos::new(4, 4),
+        );
         let original_strategy = StrategicPlanner::new();
         let mut strategy = StrategicPlanner::new();
         let original_team = TeamReliefPlanner::new();

@@ -190,7 +190,7 @@ impl HarvestGeometry<'_, '_> {
         for &(tile, amount) in obs.known_scrap.iter().chain(&obs.known_wrecks) {
             if amount == 0
                 || !obs.visible(tile)
-                || policy.state.dead_nodes.contains(&tile)
+                || policy.state.work_experience.dead_nodes.contains(&tile)
                 || UtilityPolicy::source_in_salvage_incident(obs, tile)
                 || danger.contains(tile)
                 || policy.harvest_location_contested(tile)
@@ -548,7 +548,11 @@ mod tests {
             );
         }
         let key = policy.queries.harvest_geometry_cache.borrow().key.clone();
-        policy.state.dead_nodes.push(TilePos::new(15, 12));
+        policy
+            .state
+            .work_experience
+            .dead_nodes
+            .push(TilePos::new(15, 12));
         assert!(
             policy
                 .economic_harvest_regions(

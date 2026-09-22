@@ -6,6 +6,7 @@ use crate::experience::{
 #[cfg(test)]
 use crate::observation::ObservationData;
 use chassis::Tick;
+use oxide_sim::Command;
 use oxide_sim::ids::Target;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,6 +20,105 @@ struct FailedWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emitted_command_order_controls_bounce_attribution_in_both_orientations() {
+        for home in [TilePos::new(0, 0), TilePos::new(29, 19)] {
+            for (harvest_first, queued_move) in [(true, false), (false, false), (true, true)] {
+                let mut obs = observation();
+                let node = obs.known_scrap[0].0;
+                let orientation = crate::Orientation::for_home(&obs, home);
+                let harvest = Command::Harvest {
+                    units: vec![UnitId(1)],
+                    node: orientation.tile(node),
+                    queue: false,
+                };
+                let movement = Command::Move {
+                    units: vec![UnitId(1)],
+                    goal: orientation.tile(TilePos::new(7, 3)),
+                    queue: queued_move,
+                };
+                let commands = if harvest_first {
+                    [harvest, movement]
+                } else {
+                    [movement, harvest]
+                }
+                .map(|command| oxide_sim::PlayerCommand {
+                    player: obs.me,
+                    command,
+                });
+                let mut policy = UtilityPolicy::new();
+                policy.observe_work_experience(&obs);
+                policy.record_dispatched_work(&obs, orientation, &commands);
+                obs.tick += 24;
+                obs.my_units[0].tile.x += 1;
+                policy.observe_work_experience(&obs);
+                let work = &policy.state.work_experience;
+                let expected_bounce = !harvest_first || queued_move;
+                assert_eq!(work.dead_nodes.contains(&node), expected_bounce);
+                assert_eq!(work.pending.len(), 1);
+                assert_eq!(
+                    work.pending[0].reason,
+                    if expected_bounce {
+                        OutcomeReason::BlockedRoute
+                    } else {
+                        OutcomeReason::Preempted
+                    }
+                );
+                let observed = work.clone();
+                policy.observe_work_experience(&obs);
+                assert_eq!(policy.state.work_experience, observed);
+            }
+        }
+    }
+
+    #[test]
+    fn emitted_build_tracks_its_oriented_footprint_and_retask_releases_it() {
+        let mut obs = observation();
+        let anchor = TilePos::new(9, 4);
+        let kind = BuildingKind::Fabricator;
+        let orientation = crate::Orientation::for_home(&obs, TilePos::new(29, 19));
+        let build = oxide_sim::PlayerCommand {
+            player: obs.me,
+            command: Command::Build {
+                units: vec![UnitId(1)],
+                kind,
+                anchor: orientation.anchor(anchor, kind.base_stats().size),
+                queue: false,
+                defer: true,
+            },
+        };
+        let mut policy = UtilityPolicy::new();
+        policy.observe_work_experience(&obs);
+        policy.record_dispatched_work(&obs, orientation, &[build]);
+        assert_eq!(policy.state.work_experience.builds[0].anchor, anchor);
+        obs.my_units[0].founding = Some((kind, anchor));
+        obs.my_units[0].idle = false;
+        obs.tick += 24;
+        policy.observe_work_experience(&obs);
+        assert_eq!(policy.state.work_experience.builds.len(), 1);
+        policy.record_dispatched_work(
+            &obs,
+            orientation,
+            &[oxide_sim::PlayerCommand {
+                player: obs.me,
+                command: Command::Stop {
+                    units: vec![UnitId(1)],
+                },
+            }],
+        );
+        obs.my_units[0].founding = None;
+        obs.my_units[0].idle = true;
+        obs.tick += 24;
+        policy.observe_work_experience(&obs);
+        assert!(policy.state.work_experience.builds.is_empty());
+        assert!(policy.state.work_experience.dead_anchors.is_empty());
+        assert_eq!(policy.state.work_experience.pending.len(), 1);
+        assert_eq!(
+            policy.state.work_experience.pending[0].reason,
+            OutcomeReason::Preempted
+        );
+    }
 
     fn observation() -> Observation {
         Observation::from_data(ObservationData {
@@ -40,15 +140,91 @@ mod tests {
     }
 
     #[test]
+    fn a_walking_founder_defers_the_site_audits_verdict() {
+        let site = TilePos::new(10, 10);
+        for walking in [false, true] {
+            let mut obs = observation();
+            let mut policy = UtilityPolicy::new();
+            policy.observe_work_experience(&obs);
+            policy.state.work_experience.record_exact_build_attempt(
+                &obs,
+                &[UnitId(1)],
+                BuildingKind::Fabricator,
+                site,
+            );
+            if walking {
+                obs.my_units[0].founding = Some((BuildingKind::Fabricator, site));
+                obs.my_units[0].idle = false;
+            }
+            obs.tick += 24;
+            policy.observe_work_experience(&obs);
+            assert_eq!(
+                policy.state.work_experience.builds.len(),
+                usize::from(walking)
+            );
+            assert_eq!(
+                policy.state.work_experience.dead_anchors.contains(&site),
+                !walking
+            );
+            assert_eq!(
+                policy.state.work_experience.pending.len(),
+                usize::from(!walking)
+            );
+        }
+    }
+
+    #[test]
+    fn the_founder_shields_only_its_own_anchor() {
+        let mut obs = observation();
+        let claimed = TilePos::new(9, 4);
+        let refused = TilePos::new(15, 8);
+        obs.my_units.push(crate::test_support::unit(
+            2,
+            PlayerId(0),
+            UnitKind::Harvester,
+            TilePos::new(4, 3),
+        ));
+        let mut policy = UtilityPolicy::new();
+        policy.observe_work_experience(&obs);
+        policy.state.work_experience.record_exact_build_attempt(
+            &obs,
+            &[UnitId(1)],
+            BuildingKind::Fabricator,
+            claimed,
+        );
+        policy.state.work_experience.record_exact_build_attempt(
+            &obs,
+            &[UnitId(2)],
+            BuildingKind::Fabricator,
+            refused,
+        );
+        obs.my_units[0].founding = Some((BuildingKind::Fabricator, claimed));
+        obs.my_units[0].idle = false;
+        obs.tick += 24;
+        policy.observe_work_experience(&obs);
+        assert_eq!(policy.state.work_experience.builds.len(), 1);
+        assert_eq!(policy.state.work_experience.builds[0].anchor, claimed);
+        assert_eq!(policy.state.work_experience.dead_anchors, [refused]);
+        assert_eq!(policy.state.work_experience.pending.len(), 1);
+        assert_eq!(
+            policy.state.work_experience.pending[0].reason,
+            OutcomeReason::BlockedRoute
+        );
+    }
+
+    #[test]
     fn harvest_bounce_has_one_exact_episode_and_bounded_retry() {
         let mut obs = observation();
         let node = TilePos::new(10, 10);
         let mut policy = UtilityPolicy::default();
         policy.observe_work_experience(&obs);
-        policy.record_dispatched_harvest(&obs, UnitId(1), node);
+        policy
+            .state
+            .work_experience
+            .record_dispatched_harvest(&obs, UnitId(1), node);
         obs.tick = 124;
         policy.observe_work_experience(&obs);
-        assert!(policy.state.dead_nodes.contains(&node));
+        assert!(policy.state.work_experience.dead_nodes.contains(&node));
         assert_eq!(policy.state.work_experience.pending.len(), 1);
         assert_eq!(policy.state.work_experience.pending[0].started_at, 100);
         assert_eq!(
@@ -59,9 +235,9 @@ mod tests {
         assert_eq!(policy.state.work_experience.pending.len(), 1);
         obs.tick = 424;
         policy.observe_work_experience(&obs);
-        assert!(!policy.state.dead_nodes.contains(&node));
+        assert!(!policy.state.work_experience.dead_nodes.contains(&node));
         assert!(
-            policy.state.last_sent.is_empty(),
+            policy.state.work_experience.last_sent.is_empty(),
             "retry eligibility must not dispatch work"
         );
     }
@@ -73,12 +249,22 @@ mod tests {
             let mut obs = observation();
             let mut policy = UtilityPolicy::default();
             policy.observe_work_experience(&obs);
-            policy.record_dispatched_harvest(&obs, UnitId(1), node);
-            policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, node);
+            policy
+                .state
+                .work_experience
+                .record_dispatched_harvest(&obs, UnitId(1), node);
+            policy.state.work_experience.record_exact_build_attempt(
+                &obs,
+                &[UnitId(1)],
+                BuildingKind::Fabricator,
+                node,
+            );
             match cause {
                 0 => {
-                    policy.record_dispatched_retask(&[UnitId(1)]);
-                    policy.record_work_retask(&obs, &[UnitId(1)], None);
+                    policy
+                        .state
+                        .work_experience
+                        .record_work_retask(&obs, &[UnitId(1)], None);
                 }
                 1 => obs.my_units.clear(),
                 2 => {
@@ -92,8 +278,14 @@ mod tests {
             }
             obs.tick = 124;
             policy.observe_work_experience(&obs);
-            assert!(policy.state.dead_nodes.is_empty(), "cause {cause}");
-            assert!(policy.state.dead_anchors.is_empty(), "cause {cause}");
+            assert!(
+                policy.state.work_experience.dead_nodes.is_empty(),
+                "cause {cause}"
+            );
+            assert!(
+                policy.state.work_experience.dead_anchors.is_empty(),
+                "cause {cause}"
+            );
             assert!(
                 policy
                     .state
@@ -113,7 +305,7 @@ mod tests {
                 let mut policy = UtilityPolicy::default();
                 let site = TilePos::new(10, 10);
                 policy.observe_work_experience(&obs);
-                policy.record_exact_build_attempt(
+                policy.state.work_experience.record_exact_build_attempt(
                     &obs,
                     &[UnitId(1)],
                     BuildingKind::Fabricator,
@@ -137,7 +329,7 @@ mod tests {
                 obs.tick = 124;
                 policy.observe_work_experience(&obs);
                 assert!(
-                    policy.state.dead_anchors.is_empty(),
+                    policy.state.work_experience.dead_anchors.is_empty(),
                     "owner {owner}, built {built}"
                 );
                 assert!(policy.state.work_experience.builds.is_empty());
@@ -160,7 +352,12 @@ mod tests {
             let mut policy = UtilityPolicy::default();
             let site = TilePos::new(10, 10);
             policy.observe_work_experience(&obs);
-            policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
+            policy.state.work_experience.record_exact_build_attempt(
+                &obs,
+                &[UnitId(1)],
+                BuildingKind::Fabricator,
+                site,
+            );
             obs.enemy_buildings.push(BuildingObs {
                 hp,
                 seen,
@@ -187,7 +384,12 @@ mod tests {
         let mut policy = UtilityPolicy::default();
         let site = TilePos::new(10, 10);
         policy.observe_work_experience(&obs);
-        policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
+        policy.state.work_experience.record_exact_build_attempt(
+            &obs,
+            &[UnitId(1)],
+            BuildingKind::Fabricator,
+            site,
+        );
         obs.tick = 124;
         {
             let obs = &mut *obs;
@@ -202,20 +404,29 @@ mod tests {
         assert_eq!(policy.state.work_experience.foundations.len(), 1);
         assert!(policy.state.work_experience.pending.is_empty());
         let mut cancelled = policy.clone();
-        cancelled.record_foundation_cancellation(&obs, BuildingId(8));
+        cancelled
+            .state
+            .work_experience
+            .record_foundation_cancellation(&obs, BuildingId(8));
         assert!(cancelled.state.work_experience.foundations.is_empty());
         let cancellation = &cancelled.state.work_experience.pending[0];
         assert_eq!(cancellation.outcome, Outcome::Invalidated);
         assert_eq!(cancellation.reason, OutcomeReason::Preempted);
         assert_eq!(cancellation.own_lost_value, 0);
-        cancelled.record_foundation_cancellation(&obs, BuildingId(8));
+        cancelled
+            .state
+            .work_experience
+            .record_foundation_cancellation(&obs, BuildingId(8));
         assert_eq!(cancelled.state.work_experience.pending.len(), 1);
-        policy.record_work_retask(&obs, &[UnitId(1)], None);
+        policy
+            .state
+            .work_experience
+            .record_work_retask(&obs, &[UnitId(1)], None);
         obs.my_units.clear();
         obs.tick = 148;
         obs.my_buildings[0].built = true;
         policy.observe_work_experience(&obs);
-        assert!(policy.state.dead_anchors.is_empty());
+        assert!(policy.state.work_experience.dead_anchors.is_empty());
         assert!(policy.state.work_experience.foundations.is_empty());
         assert_eq!(policy.state.work_experience.pending.len(), 1);
         assert_eq!(
@@ -231,21 +442,110 @@ mod tests {
         let site = TilePos::new(10, 10);
         let mut policy = UtilityPolicy::default();
         policy.observe_work_experience(&obs);
-        policy.record_exact_build_attempt(&obs, &[UnitId(1)], BuildingKind::Fabricator, site);
+        policy.state.work_experience.record_exact_build_attempt(
+            &obs,
+            &[UnitId(1)],
+            BuildingKind::Fabricator,
+            site,
+        );
         obs.my_units[0].founding = Some((BuildingKind::Fabricator, site));
         obs.my_units[0].idle = false;
         obs.tick = 400;
         policy.observe_work_experience(&obs);
-        assert!(policy.state.dead_anchors.is_empty());
+        assert!(policy.state.work_experience.dead_anchors.is_empty());
         assert_eq!(policy.state.work_experience.builds.len(), 1);
         obs.my_units[0].founding = None;
         obs.my_units[0].idle = true;
         obs.tick = 424;
         policy.observe_work_experience(&obs);
-        assert!(policy.state.dead_anchors.contains(&site));
+        assert!(policy.state.work_experience.dead_anchors.contains(&site));
         obs.tick = 724;
         policy.observe_work_experience(&obs);
-        assert!(policy.state.dead_anchors.is_empty());
+        assert!(policy.state.work_experience.dead_anchors.is_empty());
+    }
+
+    #[test]
+    fn dispatched_move_replaces_harvest_memory_but_queued_move_does_not() {
+        let unit = UnitId(3);
+        let immediate = Command::Move {
+            units: vec![unit],
+            goal: TilePos::new(8, 5),
+            queue: false,
+        };
+        let queued = Command::Move {
+            units: vec![unit],
+            goal: TilePos::new(8, 5),
+            queue: true,
+        };
+        let harvest = Command::Harvest {
+            units: vec![unit],
+            node: TilePos::new(6, 5),
+            queue: false,
+        };
+
+        assert_eq!(
+            queue_replacing_non_harvest_units(&immediate),
+            Some(&[unit][..])
+        );
+        assert_eq!(queue_replacing_non_harvest_units(&queued), None);
+        assert_eq!(queue_replacing_non_harvest_units(&harvest), None);
+    }
+    #[test]
+    fn every_nonqueued_worker_retask_clears_its_harvest_assignment() {
+        let unit = UnitId(3);
+        let commands = [
+            Command::Repair {
+                units: vec![unit],
+                building: BuildingId(9),
+                queue: false,
+            },
+            Command::RepairUnit {
+                units: vec![unit],
+                target: UnitId(4),
+                queue: false,
+            },
+            Command::Advance {
+                units: vec![unit],
+                goal: TilePos::new(8, 5),
+                queue: false,
+            },
+            Command::Patrol {
+                units: vec![unit],
+                waypoints: vec![TilePos::new(8, 5), TilePos::new(9, 5)],
+            },
+        ];
+
+        for command in &commands {
+            assert_eq!(
+                queue_replacing_non_harvest_units(command),
+                Some(&[unit][..]),
+                "{command:?} replaces the worker's current Harvest program"
+            );
+        }
+
+        for command in [
+            Command::Repair {
+                units: vec![unit],
+                building: BuildingId(9),
+                queue: true,
+            },
+            Command::RepairUnit {
+                units: vec![unit],
+                target: UnitId(4),
+                queue: true,
+            },
+            Command::Advance {
+                units: vec![unit],
+                goal: TilePos::new(8, 5),
+                queue: true,
+            },
+        ] {
+            assert_eq!(
+                queue_replacing_non_harvest_units(&command),
+                None,
+                "{command:?} preserves the active Harvest until the queue advances"
+            );
+        }
     }
 }
 
@@ -296,7 +596,9 @@ struct HarvestAttempt {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WorkExperience {
-    pub(super) enabled: bool,
+    pub(super) dead_nodes: Vec<TilePos>,
+    pub(super) dead_anchors: Vec<TilePos>,
+    pub(super) last_sent: Vec<(UnitId, TilePos, TilePos)>,
     pub(super) construction_work_tiles: BTreeSet<TilePos>,
     observed_at: Option<Tick>,
     serial: u64,
@@ -311,29 +613,18 @@ pub(crate) struct WorkExperience {
 }
 
 impl WorkExperience {
-    fn id(&mut self, owner: EpisodeOwner) -> EpisodeId {
-        let id = EpisodeId {
-            owner,
-            serial: self.serial,
-        };
-        self.serial = self.serial.saturating_add(1);
-        id
-    }
-}
-
-impl UtilityPolicy {
-    pub(crate) fn observe_work_experience(&mut self, obs: &Observation) {
-        self.state.work_experience.enabled = true;
-        if self
-            .state
-            .work_experience
-            .observed_at
-            .is_some_and(|tick| tick >= obs.tick)
-        {
+    fn observe(
+        &mut self,
+        obs: &Observation,
+        support: &super::support_allocation::SupportWork,
+        reconnaissance: &super::reconnaissance::Reconnaissance,
+        contested_regions: &[ContestedHarvestRegion],
+    ) {
+        if self.observed_at.is_some_and(|tick| tick >= obs.tick) {
             return;
         }
-        self.state.work_experience.observed_at = Some(obs.tick);
-        self.state.work_experience.construction_work_tiles = obs
+        self.observed_at = Some(obs.tick);
+        self.construction_work_tiles = obs
             .my_units
             .iter()
             .filter(|unit| unit.hp > 0 && unit.site.is_some())
@@ -344,24 +635,12 @@ impl UtilityPolicy {
                 && obs.tick < failure.failed_at.saturating_add(300)
                 && (failure.visible || !obs.visible(failure.tile))
         };
-        self.state.work_experience.nodes.retain(retain);
-        self.state.work_experience.sites.retain(retain);
-        self.state.dead_nodes = self
-            .state
-            .work_experience
-            .nodes
-            .iter()
-            .map(|failure| failure.tile)
-            .collect();
-        self.state.dead_anchors = self
-            .state
-            .work_experience
-            .sites
-            .iter()
-            .map(|failure| failure.tile)
-            .collect();
+        self.nodes.retain(retain);
+        self.sites.retain(retain);
+        self.dead_nodes = self.nodes.iter().map(|failure| failure.tile).collect();
+        self.dead_anchors = self.sites.iter().map(|failure| failure.tile).collect();
         self.audit_harvests(obs);
-        for (id, mut attempt) in std::mem::take(&mut self.state.work_experience.harvests) {
+        for (id, mut attempt) in std::mem::take(&mut self.harvests) {
             let worker = obs
                 .my_units
                 .iter()
@@ -411,7 +690,7 @@ impl UtilityPolicy {
             } else if worker.is_some_and(|unit| unit.harvesting == Some(attempt.node))
                 && obs.tick.saturating_sub(attempt.since) < 1800
             {
-                self.state.work_experience.harvests.insert(id, attempt);
+                self.harvests.insert(id, attempt);
                 continue;
             } else {
                 attempt.journal.finish(
@@ -426,12 +705,9 @@ impl UtilityPolicy {
                     false,
                 );
             }
-            self.state
-                .work_experience
-                .pending
-                .extend(attempt.journal.pending);
+            self.pending.extend(attempt.journal.pending);
         }
-        for mut attempt in std::mem::take(&mut self.state.work_experience.builds) {
+        for mut attempt in std::mem::take(&mut self.builds) {
             let appeared = obs.my_buildings.iter().find(|building| {
                 building.kind == attempt.kind && building.anchor == attempt.anchor
             });
@@ -441,23 +717,20 @@ impl UtilityPolicy {
                 .find(|unit| unit.id == attempt.worker && unit.hp > 0);
             if let Some(building) = appeared {
                 attempt.journal.progress(1);
-                self.state
-                    .work_experience
-                    .foundations
-                    .push(FoundationWatch {
-                        building: building.id,
-                        cost: attempt
-                            .kind
-                            .base_stats()
-                            .construction
-                            .map_or(0, |cost| cost.cost),
-                        journal: attempt.journal,
-                    });
+                self.foundations.push(FoundationWatch {
+                    building: building.id,
+                    cost: attempt
+                        .kind
+                        .base_stats()
+                        .construction
+                        .map_or(0, |cost| cost.cost),
+                    journal: attempt.journal,
+                });
                 continue;
             } else if worker
                 .is_some_and(|unit| unit.founding == Some((attempt.kind, attempt.anchor)))
             {
-                self.state.work_experience.builds.push(attempt);
+                self.builds.push(attempt);
                 continue;
             } else if worker.is_none() {
                 let carried = crate::experience::own_unit_health(obs, attempt.worker).is_some();
@@ -502,12 +775,12 @@ impl UtilityPolicy {
                     && (unit.tile.chebyshev(attempt.from) <= 1
                         || unit.tile.chebyshev(attempt.anchor) <= 3)
             }) {
-                self.state.work_experience.sites.push(FailedWork {
+                self.sites.push(FailedWork {
                     tile: attempt.anchor,
                     failed_at: obs.tick,
                     visible: obs.visible(attempt.anchor),
                 });
-                self.state.dead_anchors.push(attempt.anchor);
+                self.dead_anchors.push(attempt.anchor);
                 attempt.journal.finish(
                     obs,
                     Outcome::Aborted,
@@ -524,18 +797,15 @@ impl UtilityPolicy {
                     false,
                 );
             }
-            self.state
-                .work_experience
-                .pending
-                .extend(attempt.journal.pending);
+            self.pending.extend(attempt.journal.pending);
         }
-        for mut foundation in std::mem::take(&mut self.state.work_experience.foundations) {
+        for mut foundation in std::mem::take(&mut self.foundations) {
             let building = obs
                 .my_buildings
                 .iter()
                 .find(|building| building.id == foundation.building);
             if building.is_some_and(|building| !building.built && building.hp > 0) {
-                self.state.work_experience.foundations.push(foundation);
+                self.foundations.push(foundation);
                 continue;
             }
             let completed = building.is_some_and(|building| building.built && building.hp > 0);
@@ -559,15 +829,12 @@ impl UtilityPolicy {
                 // is not a construction loss.
                 report.own_lost_value = if completed { 0 } else { foundation.cost };
             }
-            self.state
-                .work_experience
-                .pending
-                .extend(foundation.journal.pending);
+            self.pending.extend(foundation.journal.pending);
         }
-        for repair in &self.state.support_work.repairs {
+        for repair in &support.repairs {
             let key = repair.key;
-            if !self.state.work_experience.repairs.contains_key(&key) {
-                let id = self.state.work_experience.id(EpisodeOwner::Support);
+            if !self.repairs.contains_key(&key) {
+                let id = self.id(EpisodeOwner::Support);
                 let mut journal = OutcomeJournal::default();
                 let (tile, subject) = match key.patient {
                     Target::Unit(id) => (
@@ -597,10 +864,10 @@ impl UtilityPolicy {
                     &[key.worker],
                     0,
                 );
-                self.state.work_experience.repairs.insert(key, journal);
+                self.repairs.insert(key, journal);
             }
         }
-        for (key, mut journal) in std::mem::take(&mut self.state.work_experience.repairs) {
+        for (key, mut journal) in std::mem::take(&mut self.repairs) {
             let healthy = match key.patient {
                 Target::Unit(id) => obs
                     .my_units
@@ -630,27 +897,18 @@ impl UtilityPolicy {
                     false,
                 );
             } else {
-                self.state.work_experience.repairs.insert(key, journal);
+                self.repairs.insert(key, journal);
                 continue;
             }
-            self.state
-                .work_experience
-                .pending
-                .append(&mut journal.pending);
-            if self
-                .state
-                .support_work
-                .repairs
-                .iter()
-                .any(|repair| repair.key == key)
-            {
-                self.state.work_experience.repairs.insert(key, journal);
+            self.pending.append(&mut journal.pending);
+            if support.repairs.iter().any(|repair| repair.key == key) {
+                self.repairs.insert(key, journal);
             }
         }
-        for (key, work) in &self.state.reconnaissance.assignments {
+        for (key, work) in &reconnaissance.assignments {
             let Some(unit) = work.unit else { continue };
-            if !self.state.work_experience.recon.contains_key(key) {
-                let id = self.state.work_experience.id(EpisodeOwner::Reconnaissance);
+            if !self.recon.contains_key(key) {
+                let id = self.id(EpisodeOwner::Reconnaissance);
                 let mut journal = OutcomeJournal::default();
                 journal.watch(
                     obs,
@@ -664,11 +922,11 @@ impl UtilityPolicy {
                     &[unit],
                     0,
                 );
-                self.state.work_experience.recon.insert(*key, journal);
+                self.recon.insert(*key, journal);
             }
         }
-        for (key, mut journal) in std::mem::take(&mut self.state.work_experience.recon) {
-            if let Some(work) = self.state.reconnaissance.assignments.get(&key) {
+        for (key, mut journal) in std::mem::take(&mut self.recon) {
+            if let Some(work) = reconnaissance.assignments.get(&key) {
                 if work
                     .unit
                     .is_some_and(|id| crate::experience::own_unit_health(obs, id).is_none())
@@ -680,7 +938,7 @@ impl UtilityPolicy {
                         1000,
                         false,
                     );
-                } else if self.recon_answered(obs, &work.proposal.question) {
+                } else if work.proposal.question.answered(obs, contested_regions) {
                     journal.finish(
                         obs,
                         Outcome::Complete,
@@ -711,7 +969,7 @@ impl UtilityPolicy {
                         false,
                     );
                 } else {
-                    self.state.work_experience.recon.insert(key, journal);
+                    self.recon.insert(key, journal);
                     continue;
                 }
             } else {
@@ -723,40 +981,215 @@ impl UtilityPolicy {
                     false,
                 );
             }
-            self.state
-                .work_experience
-                .pending
-                .append(&mut journal.pending);
-            if self.state.reconnaissance.assignments.contains_key(&key) {
-                self.state.work_experience.recon.insert(key, journal);
+            self.pending.append(&mut journal.pending);
+            if reconnaissance.assignments.contains_key(&key) {
+                self.recon.insert(key, journal);
             }
         }
-        self.state
-            .dead_nodes
+        self.dead_nodes
             .sort_unstable_by_key(|tile| (tile.y, tile.x));
-        self.state.dead_nodes.dedup();
-        self.state
-            .dead_anchors
+        self.dead_nodes.dedup();
+        self.dead_anchors
             .sort_unstable_by_key(|tile| (tile.y, tile.x));
-        self.state.dead_anchors.dedup();
+        self.dead_anchors.dedup();
     }
+    fn id(&mut self, owner: EpisodeOwner) -> EpisodeId {
+        let id = EpisodeId {
+            owner,
+            serial: self.serial,
+        };
+        self.serial = self.serial.saturating_add(1);
+        id
+    }
+}
 
-    pub(super) fn record_failed_work(
+impl UtilityPolicy {
+    pub(crate) fn record_dispatched_work(
         &mut self,
         obs: &Observation,
-        worker: UnitId,
-        tile: TilePos,
-        kind: Option<BuildingKind>,
+        orientation: crate::Orientation,
+        commands: &[oxide_sim::PlayerCommand],
     ) {
-        self.state.work_experience.nodes.push(FailedWork {
+        for command in commands {
+            if let Some(units) = queue_replacing_non_harvest_units(&command.command) {
+                let build = if let Command::Build { kind, anchor, .. } = command.command {
+                    Some((kind, orientation.anchor(anchor, kind.base_stats().size)))
+                } else {
+                    None
+                };
+                self.state
+                    .work_experience
+                    .record_work_retask(obs, units, build);
+            }
+            match &command.command {
+                Command::Build {
+                    units,
+                    kind,
+                    anchor,
+                    ..
+                } => {
+                    let oriented_anchor = orientation.anchor(*anchor, kind.base_stats().size);
+                    self.record_dispatched_foundry_build(units, *kind, oriented_anchor);
+                    self.state.work_experience.record_exact_build_attempt(
+                        obs,
+                        units,
+                        *kind,
+                        oriented_anchor,
+                    );
+                }
+                Command::Harvest { units, node, .. } => {
+                    let oriented_node = orientation.tile(*node);
+                    for &unit in units {
+                        self.state.work_experience.record_dispatched_harvest(
+                            obs,
+                            unit,
+                            oriented_node,
+                        );
+                    }
+                }
+                Command::Cancel { building } => {
+                    self.state
+                        .work_experience
+                        .record_foundation_cancellation(obs, *building);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn observe_work_experience(&mut self, obs: &Observation) {
+        self.state.work_experience.observe(
+            obs,
+            &self.state.support_work,
+            &self.state.reconnaissance,
+            &self.state.contested_harvest_regions,
+        );
+    }
+}
+
+/// Unit orders that replace a worker's current Harvest program. Keeping this
+/// match exhaustive makes a future command variant choose its bookkeeping
+/// semantics explicitly.
+fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
+    match command {
+        Command::Move {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::Attack {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::AttackMove {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::Build {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::Repair {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::Salvage {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::RepairUnit {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::Advance {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::Load {
+            units,
+            queue: false,
+            ..
+        }
+        | Command::ReturnCargo { units, .. }
+        | Command::Patrol { units, .. }
+        | Command::Stop { units } => Some(units),
+        Command::Move { queue: true, .. }
+        | Command::Attack { queue: true, .. }
+        | Command::AttackMove { queue: true, .. }
+        | Command::Harvest { .. }
+        | Command::Build { queue: true, .. }
+        | Command::Repair { queue: true, .. }
+        | Command::Salvage { queue: true, .. }
+        | Command::RepairUnit { queue: true, .. }
+        | Command::Advance { queue: true, .. }
+        | Command::Load { queue: true, .. }
+        | Command::Train { .. }
+        | Command::Cancel { .. }
+        | Command::CancelTrain { .. }
+        | Command::SetRally { .. }
+        | Command::Surrender
+        | Command::FocusFire { .. }
+        | Command::CancelFound { .. }
+        | Command::UpgradeBuilding { .. }
+        | Command::Unload { .. }
+        | Command::ClearFocus { .. } => None,
+    }
+}
+
+impl WorkExperience {
+    /// Only a still-valued source can prove a route bounce. Exhaustion must
+    /// not exclude future deposits at the same tile.
+    fn audit_harvests(&mut self, obs: &Observation) {
+        for (id, node, sent_from) in std::mem::take(&mut self.last_sent) {
+            // Collision separation can nudge a routeless worker one tile
+            // from its send point, so exact equality misses a bounce.
+            let bounced = obs
+                .my_units
+                .iter()
+                .any(|u| u.id == id && u.idle && u.hp > 0 && u.tile.chebyshev(sent_from) <= 1);
+            let still_reports = obs
+                .known_scrap
+                .iter()
+                .chain(obs.known_wrecks.iter())
+                .any(|(pos, amount)| *pos == node && *amount > 0);
+            if bounced && still_reports && !self.dead_nodes.contains(&node) {
+                self.dead_nodes.push(node);
+                self.record_failed_harvest(obs, id, node);
+            }
+        }
+    }
+
+    /// Remember a Harvest command that survived intent lowering long enough
+    /// to audit an immediate no-route bounce on the next think.
+    pub(super) fn record_dispatched_harvest(
+        &mut self,
+        obs: &Observation,
+        unit: UnitId,
+        node: TilePos,
+    ) {
+        let Some(worker) = obs.my_units.iter().find(|worker| worker.id == unit) else {
+            return;
+        };
+        self.last_sent.retain(|(sent, _, _)| *sent != unit);
+        self.last_sent.push((unit, node, worker.tile));
+        self.record_harvest_episode(obs, unit, node);
+    }
+
+    fn record_failed_harvest(&mut self, obs: &Observation, worker: UnitId, tile: TilePos) {
+        self.nodes.push(FailedWork {
             tile,
             failed_at: obs.tick,
             visible: obs.visible(tile),
         });
-        let id = self.state.work_experience.id(EpisodeOwner::Harvest);
+        let id = self.id(EpisodeOwner::Harvest);
         let mut journal = self
-            .state
-            .work_experience
             .harvests
             .remove(&worker)
             .map_or_else(OutcomeJournal::default, |attempt| attempt.journal);
@@ -768,7 +1201,7 @@ impl UtilityPolicy {
                 doctrine: Doctrine::Expansion,
                 x: tile.x,
                 y: tile.y,
-                subject: kind.map_or(0, |kind| kind as u64),
+                subject: 0,
             },
             &[worker],
             0,
@@ -780,29 +1213,21 @@ impl UtilityPolicy {
             750,
             false,
         );
-        self.state.work_experience.pending.extend(journal.pending);
+        self.pending.extend(journal.pending);
     }
 
-    pub(super) fn record_harvest_episode(
-        &mut self,
-        obs: &Observation,
-        worker: UnitId,
-        node: TilePos,
-    ) {
-        if !self.state.work_experience.enabled
-            || self
-                .state
-                .work_experience
-                .harvests
-                .get(&worker)
-                .is_some_and(|attempt| attempt.node == node)
+    fn record_harvest_episode(&mut self, obs: &Observation, worker: UnitId, node: TilePos) {
+        if self
+            .harvests
+            .get(&worker)
+            .is_some_and(|attempt| attempt.node == node)
         {
             return;
         }
         let Some(unit) = obs.my_units.iter().find(|unit| unit.id == worker) else {
             return;
         };
-        let id = self.state.work_experience.id(EpisodeOwner::Harvest);
+        let id = self.id(EpisodeOwner::Harvest);
         let mut journal = OutcomeJournal::default();
         journal.watch(
             obs,
@@ -816,7 +1241,7 @@ impl UtilityPolicy {
             &[worker],
             0,
         );
-        self.state.work_experience.harvests.insert(
+        self.harvests.insert(
             worker,
             HarvestAttempt {
                 node,
@@ -834,15 +1259,13 @@ impl UtilityPolicy {
         building: BuildingId,
     ) {
         let Some(index) = self
-            .state
-            .work_experience
             .foundations
             .iter()
             .position(|foundation| foundation.building == building)
         else {
             return;
         };
-        let mut foundation = self.state.work_experience.foundations.remove(index);
+        let mut foundation = self.foundations.remove(index);
         foundation.journal.finish(
             obs,
             Outcome::Invalidated,
@@ -853,10 +1276,7 @@ impl UtilityPolicy {
         for report in &mut foundation.journal.pending {
             report.own_lost_value = 0;
         }
-        self.state
-            .work_experience
-            .pending
-            .extend(foundation.journal.pending);
+        self.pending.extend(foundation.journal.pending);
     }
 
     pub(crate) fn record_work_retask(
@@ -865,7 +1285,8 @@ impl UtilityPolicy {
         units: &[UnitId],
         build: Option<(BuildingKind, TilePos)>,
     ) {
-        for mut attempt in std::mem::take(&mut self.state.work_experience.builds) {
+        self.last_sent.retain(|(unit, _, _)| !units.contains(unit));
+        for mut attempt in std::mem::take(&mut self.builds) {
             if units.contains(&attempt.worker) && build != Some((attempt.kind, attempt.anchor)) {
                 attempt.journal.finish(
                     obs,
@@ -874,16 +1295,13 @@ impl UtilityPolicy {
                     1000,
                     false,
                 );
-                self.state
-                    .work_experience
-                    .pending
-                    .extend(attempt.journal.pending);
+                self.pending.extend(attempt.journal.pending);
             } else {
-                self.state.work_experience.builds.push(attempt);
+                self.builds.push(attempt);
             }
         }
         for id in units {
-            if let Some(mut attempt) = self.state.work_experience.harvests.remove(id) {
+            if let Some(mut attempt) = self.harvests.remove(id) {
                 attempt.journal.finish(
                     obs,
                     if attempt.collected > 0 {
@@ -895,10 +1313,7 @@ impl UtilityPolicy {
                     1000,
                     false,
                 );
-                self.state
-                    .work_experience
-                    .pending
-                    .extend(attempt.journal.pending);
+                self.pending.extend(attempt.journal.pending);
             }
         }
     }
@@ -923,12 +1338,12 @@ impl UtilityPolicy {
         else {
             return;
         };
-        if self.state.work_experience.builds.iter().any(|attempt| {
+        if self.builds.iter().any(|attempt| {
             attempt.worker == worker.id && attempt.kind == kind && attempt.anchor == anchor
         }) {
             return;
         }
-        let id = self.state.work_experience.id(EpisodeOwner::Construction);
+        let id = self.id(EpisodeOwner::Construction);
         let mut journal = OutcomeJournal::default();
         journal.watch(
             obs,
@@ -951,7 +1366,7 @@ impl UtilityPolicy {
             &[worker.id],
             0,
         );
-        self.state.work_experience.builds.push(BuildAttempt {
+        self.builds.push(BuildAttempt {
             worker: worker.id,
             kind,
             anchor,

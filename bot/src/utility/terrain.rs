@@ -94,7 +94,6 @@ impl<'a> PlacementGeometry<'a> {
             self.obs,
             kind,
             anchor,
-            None,
             |tile| self.open[index(tile)],
             |tile| self.unclaimed[index(tile)],
         )
@@ -226,7 +225,7 @@ impl UtilityPolicy {
     /// First anchor for `kind` ring-scanned outward from `near` whose
     /// footprint and doorstep ring are clear of everything the
     /// observation knows about — the sim's `can_place` still has the
-    /// final word, and refusals land in [`Self::dead_anchors`].
+    /// final word; work observation records evidenced route failures.
     pub(super) fn placement_near(
         &self,
         obs: &Observation,
@@ -307,7 +306,6 @@ impl UtilityPolicy {
             obs,
             kind,
             anchor,
-            retained,
             |tile| self.tile_open(obs, tile),
             |tile| self.placement_tile_open_except(obs, tile, retained, cancellations),
         )
@@ -318,13 +316,10 @@ impl UtilityPolicy {
         obs: &Observation,
         kind: BuildingKind,
         anchor: TilePos,
-        retained: Option<(BuildingKind, TilePos)>,
         open: impl Fn(TilePos) -> bool,
         unclaimed: impl Fn(TilePos) -> bool,
     ) -> bool {
-        if self.state.dead_anchors.contains(&anchor)
-            || (retained != Some((kind, anchor)) && self.state.pending_sites.contains(&anchor))
-        {
+        if self.state.work_experience.dead_anchors.contains(&anchor) {
             return false;
         }
         if kind == BuildingKind::Extractor
@@ -612,8 +607,16 @@ mod tests {
         obs.my_units.push(founder);
         let geometry = PlacementGeometry::new(&obs);
         let mut policy = UtilityPolicy::new();
-        policy.state.pending_sites.push(TilePos::new(8, 10));
-        policy.state.dead_anchors.push(TilePos::new(10, 2));
+        policy
+            .state
+            .work_experience
+            .dead_anchors
+            .push(TilePos::new(8, 10));
+        policy
+            .state
+            .work_experience
+            .dead_anchors
+            .push(TilePos::new(10, 2));
         policy
             .state
             .work_experience

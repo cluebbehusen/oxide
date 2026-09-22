@@ -2974,8 +2974,7 @@ mod tests {
             PublicScoutPrior::Extractor(frame),
         ));
 
-        let intents =
-            policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let intents = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
 
         assert_eq!(policy.state.scout, Some(UnitId(1)));
         assert!(!policy.state.public_prior_air_scout_needed);
@@ -3010,7 +3009,7 @@ mod tests {
         control.state.persistent_air_scout_needed = true;
 
         let control_intents =
-            control.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+            control.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
         assert!(control_intents.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt { kind, .. } if *kind == scout_kind
@@ -3023,8 +3022,7 @@ mod tests {
         policy.state.scout_dispatch =
             Some(ScoutDispatch::solo_air(missing, home, home.offset(8, 0)));
 
-        let intents =
-            policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let intents = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
 
         assert_eq!(policy.state.scout, None);
         assert!(policy.state.solo_air_scout_suspended);
@@ -3036,12 +3034,12 @@ mod tests {
 
         obs.tick += super::super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
         obs.enemy_buildings[0].seen = false;
-        let _ = policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let _ = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
         assert_eq!(policy.state.solo_air_scout_dark_since, Some(obs.tick));
 
         obs.tick += super::super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
         obs.enemy_buildings[0].seen = true;
-        let _ = policy.think_player_facing(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let _ = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
         assert!(
             !policy.state.solo_air_scout_suspended,
             "current sight after a dark interval must rearm scouting even below worker admission"
@@ -3464,7 +3462,7 @@ mod tests {
         dials.scouting = false;
         let mut policy = UtilityPolicy::new();
 
-        let _ = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map);
+        let _ = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map);
 
         assert!(
             policy

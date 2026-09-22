@@ -72,7 +72,7 @@ impl UtilityPolicy {
                 .chain(obs.known_wrecks.iter())
                 .filter(|(pos, amount)| {
                     *amount > 0
-                        && !self.state.dead_nodes.contains(pos)
+                        && !self.state.work_experience.dead_nodes.contains(pos)
                         && (!Self::source_in_salvage_incident(obs, *pos)
                             && !self.harvest_location_contested(*pos)
                             && !danger
@@ -806,7 +806,7 @@ mod tests {
                 .chain(obs.known_wrecks.iter())
                 .filter(|(position, amount)| {
                     *amount > 0
-                        && !policy.state.dead_nodes.contains(position)
+                        && !policy.state.work_experience.dead_nodes.contains(position)
                         && !UtilityPolicy::source_in_salvage_incident(obs, *position)
                         && !policy.harvest_location_contested(*position)
                         && !UtilityPolicy::source_has_known_danger(
@@ -2852,7 +2852,11 @@ mod tests {
         builder_acquired_queue.my_queued_units = vec![saving.plan.builder];
 
         let mut blacklisted = policy.clone();
-        blacklisted.state.dead_anchors.push(saving.plan.anchor);
+        blacklisted
+            .state
+            .work_experience
+            .dead_anchors
+            .push(saving.plan.anchor);
 
         for (reason, mut candidate, observation) in [
             (
@@ -4052,7 +4056,7 @@ mod tests {
         policy.economy(&obs, TilePos::new(1, 1), None, None, &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.state.last_sent.is_empty());
+        assert!(policy.state.work_experience.last_sent.is_empty());
     }
 
     #[test]
@@ -4066,7 +4070,7 @@ mod tests {
         policy.economy(&obs, TilePos::new(1, 1), None, None, &mut intents);
 
         assert!(intents.is_empty());
-        assert!(policy.state.last_sent.is_empty());
+        assert!(policy.state.work_experience.last_sent.is_empty());
     }
 
     #[test]
@@ -4297,13 +4301,16 @@ mod tests {
         // autonomously. Its immediate dispatch audit is long gone by the time
         // a later trip is hit; authoritative incident memory must carry the
         // warning instead of controller bookkeeping around the first load.
-        policy.record_dispatched_harvest(&obs, UnitId(3), source);
+        policy
+            .state
+            .work_experience
+            .record_dispatched_harvest(&obs, UnitId(3), source);
         obs.tick = 8;
         obs.my_units[0].idle = false;
         obs.my_units[0].tile = source;
-        policy.audit_harvests(&obs);
+        policy.observe_work_experience(&obs);
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert!(policy.state.last_sent.is_empty());
+        assert!(policy.state.work_experience.last_sent.is_empty());
 
         obs.tick = 80;
         obs.known_scrap = vec![(safe_fallback, 100)];
@@ -4401,18 +4408,24 @@ mod tests {
         obs.known_wrecks = vec![(node, 100)];
         let mut policy = UtilityPolicy::new();
 
-        policy.record_dispatched_harvest(&obs, UnitId(3), node);
-        assert_eq!(policy.state.last_sent.len(), 1);
+        policy
+            .state
+            .work_experience
+            .record_dispatched_harvest(&obs, UnitId(3), node);
+        assert_eq!(policy.state.work_experience.last_sent.len(), 1);
 
         // A later queue-replacing Move/Scout owns the worker now. It must not
         // make the old source look like an immediate no-route bounce.
-        policy.record_dispatched_retask(&[UnitId(3)]);
-        assert!(policy.state.last_sent.is_empty());
+        policy
+            .state
+            .work_experience
+            .record_work_retask(&obs, &[UnitId(3)], None);
+        assert!(policy.state.work_experience.last_sent.is_empty());
         obs.my_units.clear();
         obs.visible.fill(false);
-        policy.audit_harvests(&obs);
+        policy.observe_work_experience(&obs);
 
-        assert!(policy.state.dead_nodes.is_empty());
+        assert!(policy.state.work_experience.dead_nodes.is_empty());
     }
 
     #[test]
@@ -4422,12 +4435,15 @@ mod tests {
         obs.known_wrecks = vec![(node, 100)];
         let mut policy = UtilityPolicy::new();
 
-        policy.record_dispatched_harvest(&obs, UnitId(99), node);
-        assert!(policy.state.last_sent.is_empty());
+        policy
+            .state
+            .work_experience
+            .record_dispatched_harvest(&obs, UnitId(99), node);
+        assert!(policy.state.work_experience.last_sent.is_empty());
 
         obs.visible.fill(false);
-        policy.audit_harvests(&obs);
-        assert!(policy.state.dead_nodes.is_empty());
+        policy.observe_work_experience(&obs);
+        assert!(policy.state.work_experience.dead_nodes.is_empty());
     }
 
     #[test]
@@ -4679,7 +4695,6 @@ mod tests {
             });
         }
         let mut policy = UtilityPolicy::new();
-        policy.state.pending_sites.push(pending);
         policy.state.scout = Some(UnitId(3));
         policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(3), incident, pending));
         policy.refresh_contested_harvest_regions(&obs, None, None);
@@ -4704,7 +4719,6 @@ mod tests {
             ],
             "each worker must leave by its nearest safe edge instead of crossing deeper danger to group up"
         );
-        assert!(policy.state.pending_sites.is_empty());
         assert_eq!(policy.state.scout, None);
 
         intents.clear();

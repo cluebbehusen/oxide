@@ -90,7 +90,7 @@ Start with the affected module and integration suite. Common controller seams:
 
 ```sh
 cargo test -p oxide-bot --test bot_brain --locked
-cargo test -p oxide-bot --test bot_policy --locked
+cargo test -p oxide-bot --lib utility::policy_tests --locked
 cargo test -p oxide-bot --test scripted_bot --locked
 cargo test -p oxide-bot --test bot_frames --locked
 ```
