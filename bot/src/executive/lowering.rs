@@ -106,10 +106,9 @@ impl Executive {
         lease: Option<BuilderLease>,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
-        let centroid_frame = true
-            .then(|| self.player_frame.as_ref().map(|tactics| tactics.frame))
-            .flatten();
-        let reserved = canonical_owned_units(me, obs, reservations, &[]);
+        let centroid_frame = self.player_frame.as_ref().map(|tactics| tactics.frame);
+        let owned = OwnedUnits::new(me, obs);
+        let reserved = owned.select(reservations, &[]);
         let mut implicit_reserved = reserved.clone();
         if let Some(lease) = lease
             && !implicit_reserved.contains(&lease.builder())
@@ -130,7 +129,7 @@ impl Executive {
                     },
                 }),
                 Intent::StopUnits { units } => {
-                    let units = canonical_owned_units(me, obs, units, &[]);
+                    let units = owned.select(units, &[]);
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
@@ -462,7 +461,7 @@ impl Executive {
                     }
                 }
                 Intent::MoveUnits { units, goal } => {
-                    let units = self.claim_exact_units(me, obs, units, &mut claimed);
+                    let units = self.claim_exact_units(&owned, units, &mut claimed);
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
@@ -475,7 +474,7 @@ impl Executive {
                     }
                 }
                 Intent::AttackMoveUnits { units, goal } => {
-                    let units = self.claim_exact_units(me, obs, units, &mut claimed);
+                    let units = self.claim_exact_units(&owned, units, &mut claimed);
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
@@ -488,7 +487,7 @@ impl Executive {
                     }
                 }
                 Intent::AttackUnits { units, target } => {
-                    let units = self.claim_exact_units(me, obs, units, &mut claimed);
+                    let units = self.claim_exact_units(&owned, units, &mut claimed);
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
@@ -522,7 +521,7 @@ impl Executive {
                                     .any(|unit| unit.id == *id && unit.kind.stats().welder)
                         })
                         .collect();
-                    let welders = self.claim_exact_units(me, obs, &eligible, &mut claimed);
+                    let welders = self.claim_exact_units(&owned, &eligible, &mut claimed);
                     if !welders.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
@@ -592,7 +591,7 @@ impl Executive {
                     {
                         continue;
                     }
-                    let units = self.claim_exact_units(me, obs, &[*worker], &mut claimed);
+                    let units = self.claim_exact_units(&owned, &[*worker], &mut claimed);
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
@@ -652,13 +651,13 @@ impl Executive {
                                     })
                             })
                             .collect();
-                        let riders = canonical_owned_units(me, obs, &requested, &claimed);
+                        let riders = owned.select(&requested, &claimed);
                         if riders.is_empty() {
                             continue;
                         }
                         let mut members = riders.clone();
                         members.push(*transport);
-                        self.claim_exact_units(me, obs, &members, &mut claimed);
+                        self.claim_exact_units(&owned, &members, &mut claimed);
                         riders
                     };
                     // A boarding rider leaves the world at the sling, and
@@ -684,7 +683,7 @@ impl Executive {
                         });
                         if !transport_is_valid
                             || self
-                                .claim_exact_units(me, obs, &[*transport], &mut claimed)
+                                .claim_exact_units(&owned, &[*transport], &mut claimed)
                                 .is_empty()
                         {
                             continue;
@@ -929,18 +928,18 @@ impl Executive {
 
     fn claim_exact_units(
         &mut self,
-        me: PlayerId,
-        obs: &Observation,
+        owned: &OwnedUnits<'_>,
         requested: &[UnitId],
         claimed: &mut Vec<UnitId>,
     ) -> Vec<UnitId> {
-        let units = canonical_owned_units(me, obs, requested, claimed);
+        let units = owned.select(requested, claimed);
         if units.is_empty() {
             return units;
         }
 
         for army in &mut self.armies {
-            army.members.retain(|member| !units.contains(member));
+            army.members
+                .retain(|member| units.binary_search(member).is_err());
         }
         self.armies.retain(|army| !army.members.is_empty());
         claimed.extend(units.iter().copied());
@@ -948,23 +947,53 @@ impl Executive {
     }
 }
 
-fn canonical_owned_units(
+struct OwnedUnits<'a> {
     me: PlayerId,
-    obs: &Observation,
-    requested: &[UnitId],
-    unavailable: &[UnitId],
-) -> Vec<UnitId> {
-    let mut units = requested.to_vec();
-    units.sort_unstable();
-    units.dedup();
-    units.retain(|id| {
-        !unavailable.contains(id)
-            && obs
+    observation: &'a Observation,
+    ids: std::cell::OnceCell<Vec<UnitId>>,
+}
+
+impl<'a> OwnedUnits<'a> {
+    fn new(me: PlayerId, observation: &'a Observation) -> Self {
+        Self {
+            me,
+            observation,
+            ids: Default::default(),
+        }
+    }
+
+    fn select(&self, requested: &[UnitId], unavailable: &[UnitId]) -> Vec<UnitId> {
+        let mut units = requested.to_vec();
+        units.sort_unstable();
+        units.dedup();
+        let eligible = || {
+            self.observation
                 .my_units
                 .iter()
-                .any(|unit| unit.id == *id && unit.player == me && unit.hp > 0)
-    });
-    units
+                .filter(|unit| unit.player == self.me && unit.hp > 0)
+                .map(|unit| unit.id)
+        };
+        // One-off single-unit orders need no roster allocation.
+        let indexed = if units.len() > 1 {
+            Some(self.ids.get_or_init(|| {
+                let mut ids = Vec::with_capacity(self.observation.my_units.len());
+                ids.extend(eligible());
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            }))
+        } else {
+            self.ids.get()
+        };
+        units.retain(|id| {
+            !unavailable.contains(id)
+                && match indexed {
+                    Some(ids) => ids.binary_search(id).is_ok(),
+                    None => eligible().any(|owned| owned == *id),
+                }
+        });
+        units
+    }
 }
 
 #[cfg(test)]
@@ -984,6 +1013,84 @@ mod tests {
         UnitObs {
             hp,
             ..crate::test_support::unit(id, PlayerId(player), kind, TilePos::new(4 + id as i32, 4))
+        }
+    }
+
+    #[test]
+    fn exact_selection_preserves_linear_ownership_and_ordered_claims_on_unsorted_input() {
+        let mut obs = Observation::from_data(crate::test_support::observation_data());
+        obs.my_units = [
+            (7, 0, 200),
+            (1, 0, 200),
+            (2, 0, 0),
+            (3, 1, 200),
+            (1, 1, 200),
+            (4, 0, 200),
+            (4, 0, 0),
+        ]
+        .map(|(id, owner, hp)| unit(id, owner, UnitKind::Sentinel, hp))
+        .into();
+        let requested = [7, 4, 4, 1, 999, 3, 2].map(UnitId);
+        let unavailable = [UnitId(7), UnitId(2)];
+        for _ in 0..obs.my_units.len() {
+            obs.my_units.rotate_left(1);
+            for me in [PlayerId(0), PlayerId(1)] {
+                let owned = OwnedUnits::new(me, &obs);
+                for ids in [&[][..], &requested[..1], &requested[..]] {
+                    let mut expected = ids.to_vec();
+                    expected.sort_unstable();
+                    expected.dedup();
+                    expected.retain(|id| {
+                        !unavailable.contains(id)
+                            && obs
+                                .my_units
+                                .iter()
+                                .any(|unit| unit.id == *id && unit.player == me && unit.hp > 0)
+                    });
+                    assert_eq!(owned.select(ids, &unavailable), expected);
+                }
+                assert_eq!(owned.select(&[UnitId(999)], &[]), []);
+            }
+            let goal = TilePos::new(8, 8);
+            let commands = Executive::new().apply(
+                PlayerId(0),
+                &obs,
+                &[
+                    Intent::MoveUnits {
+                        units: [3, 1, 2, 1, 999].map(UnitId).into(),
+                        goal,
+                    },
+                    Intent::AttackMoveUnits {
+                        units: [4, 1, 7, 4].map(UnitId).into(),
+                        goal,
+                    },
+                    Intent::MoveUnits {
+                        units: [1, 4, 7].map(UnitId).into(),
+                        goal,
+                    },
+                ],
+            );
+            assert_eq!(
+                commands,
+                [
+                    PlayerCommand {
+                        player: PlayerId(0),
+                        command: Command::Move {
+                            units: vec![UnitId(1)],
+                            goal,
+                            queue: false
+                        }
+                    },
+                    PlayerCommand {
+                        player: PlayerId(0),
+                        command: Command::AttackMove {
+                            units: vec![UnitId(4), UnitId(7)],
+                            goal,
+                            queue: false
+                        }
+                    },
+                ]
+            );
         }
     }
 
