@@ -167,10 +167,9 @@ revision 2 requires the fingerprint and rejects revision 1 checkpoints.
 Simulation serialization and hashes are unchanged.
 
 The shell and headless session serde adapters use `RecordedCheckpoint`, which
-retains the existing full recorder as a companion. The core checkpoint requires
-no command history; the companion preserves legacy replay export until replay
-origins can carry checkpoints. Its setup and duration must agree with the core,
-but loading does not verify the entire history against the snapshot. Shell
+retains the current recorder as a companion. The core checkpoint requires no
+command history. The recorder's setup and end tick must agree with the core, but
+loading does not verify the entire history against the snapshot. Shell
 checkpoints additionally retain tutorial progress, concession statistics, and
 decorative boundary exploration. Camera, selection, effects, and interpolation
 rebuild, the wall clock starts paused, and recovery/diagnostic workers are not
@@ -183,6 +182,15 @@ version, and metadata. There is no independent mutable snapshot format. The live
 replay recorder is always active. Autosaves represent resumable sessions;
 decided matches are watchable records. Named saves persist until explicitly
 deleted, while autosaves and finished matches rotate separately.
+
+Recordings can additionally start from a versioned world checkpoint. Its
+scenario and world fingerprint are validated, and commands cannot precede its
+absolute start tick. Playback, inspection, and statistics execute only the
+available suffix. Home and backward seeks stop at the recording origin; the
+scrub bar spans that origin through the absolute end tick. Segment statistics
+cannot reconstruct earlier events and explicitly describe only available
+history. World-only recordings cannot resume live play because they lack
+controller memory.
 
 Save publication reserves a collision-free destination and uses the chassis
 atomic-write path. Failures are reported to the player. Shelf discovery skips
@@ -198,6 +206,17 @@ Ordinary play also keeps an incremental recovery journal through
 boundaries to a persistence worker. Only a contiguous, validated completed
 prefix can be recovered; an unfinished tick is diagnostic evidence. Recovered
 matches start paused.
+
+Recovery journals may pair a world-origin recording with a separate session
+checkpoint. Restoration validates that both describe the same initial world,
+restores controllers and live statistics, then observes only completed suffix
+ticks. Recorded commands remain authoritative. Pending checkpoint inputs must
+prefix the first journal batch: they survive when no tick completed and are
+consumed exactly once when that batch completed. An unfinished prepared batch
+remains diagnostic evidence. Exports retain the controller origin separately
+from the watchable replay. Replacement journals must retain both origins before
+retiring a recovered source. Ordinary new matches still start recovery from
+their existing scenario-backed recorder; Continue and named saves are unchanged.
 
 The worker publishes durable progress separately from live progress. Storage
 failure or queue exhaustion stops capture with a visible warning while gameplay

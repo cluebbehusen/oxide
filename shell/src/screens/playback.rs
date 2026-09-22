@@ -172,7 +172,7 @@ impl PlaybackSession {
     fn toggle_stats(&mut self) {
         self.show_stats = !self.show_stats;
         if self.show_stats && self.stats.is_none() {
-            let every = (self.engine.total() / 240).max(50);
+            let every = ((self.engine.total() - self.engine.start()) / 240).max(50);
             self.stats = oxide_kit::stats::compute(&self.replay, every).ok();
         }
     }
@@ -206,8 +206,8 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
     // seek in flight.
     let bar = scrub_rect(&pb.view(), viewport);
     fill_rect(bar, Color::from_rgba(15, 15, 18, 235));
-    let total = pb.engine.total().max(1) as f32;
-    let frac = pb.engine.position() as f32 / total;
+    let total = (pb.engine.total() - pb.engine.start()).max(1) as f32;
+    let frac = (pb.engine.position() - pb.engine.start()) as f32 / total;
     draw_rectangle(
         bar.x,
         bar.y,
@@ -216,7 +216,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         Color::new(0.55, 0.55, 0.62, 0.9),
     );
     if let Some(target) = pb.seeking {
-        let tfrac = target as f32 / total;
+        let tfrac = target.saturating_sub(pb.engine.start()) as f32 / total;
         draw_rectangle(
             bar.x + bar.w * tfrac - 1.5 * s,
             bar.y - 2.0 * s,
@@ -363,7 +363,8 @@ fn composition_band(
         }
     }
     // Transport cursor.
-    let frac = pb.engine.position() as f32 / pb.engine.total().max(1) as f32;
+    let frac = (pb.engine.position() - pb.engine.start()) as f32
+        / (pb.engine.total() - pb.engine.start()).max(1) as f32;
     draw_rectangle(
         band.x + band.w * frac - 1.0 * s,
         band.y,
@@ -386,7 +387,8 @@ impl PlaybackSession {
     /// The tick a scrub-bar x position means.
     fn tick_at(&self, bar: macroquad::prelude::Rect, x: f32) -> u64 {
         let frac = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
-        (frac * self.engine.total() as f32).round() as u64
+        self.engine.start()
+            + (frac * (self.engine.total() - self.engine.start()) as f32).round() as u64
     }
 
     /// Applies transport input without advancing replay time.
@@ -472,7 +474,7 @@ impl PlaybackSession {
                                 seek_to = Some(self.engine.position().saturating_sub(500))
                             }
                             Action::ReplayForward => seek_to = Some(self.engine.position() + 500),
-                            Action::ReplayStart => seek_to = Some(0),
+                            Action::ReplayStart => seek_to = Some(self.engine.start()),
                             Action::ReplayEnd => seek_to = Some(self.engine.total()),
                             Action::ReplaySpeed(n) => self.speed = 0.5 * 2_f32.powi(i32::from(n)),
                             Action::ReplayStats => self.toggle_stats(),
@@ -520,7 +522,7 @@ impl PlaybackSession {
         }
         if let Some(target) = seek_to {
             // A fresh transport command replaces any seek in flight.
-            self.seeking = Some(target);
+            self.seeking = Some(target.clamp(self.engine.start(), self.engine.total()));
             self.accum = 0.0;
         }
         false
@@ -692,6 +694,30 @@ mod tests {
 
     fn session() -> PlaybackSession {
         PlaybackSession::from_replay(replay()).expect("session opens")
+    }
+
+    #[test]
+    fn checkpoint_origin_transport_starts_and_scrubs_at_the_available_boundary() {
+        let scenario = oxide_sim::Scenario::skirmish();
+        let mut state = scenario.build().unwrap();
+        for _ in 0..37 {
+            state.tick(&[]);
+        }
+        let origin = oxide_kit::recording::WorldOrigin::capture(&scenario, &state).unwrap();
+        let mut replay = GameReplay::with_origin(SIM_VERSION, scenario, origin).unwrap();
+        replay.meta.ticks = Some(97);
+        assert!(game::Game::from_replay(replay.clone()).is_err());
+        let mut pb = PlaybackSession::from_replay(replay).unwrap();
+        assert_eq!(pb.engine.position(), 37);
+        let bar = macroquad::prelude::Rect::new(10.0, 10.0, 100.0, 10.0);
+        assert_eq!(pb.tick_at(bar, 10.0), 37);
+        assert_eq!(pb.tick_at(bar, 60.0), 67);
+        assert_eq!(pb.tick_at(bar, 110.0), 97);
+        key(&mut pb, Key::End);
+        assert_eq!(pb.engine.position(), 97);
+        key(&mut pb, Key::Home);
+        assert_eq!(pb.engine.position(), 37);
+        assert_eq!(pb.engine.state.hash(), state.hash());
     }
 
     fn long_session(ticks: u64) -> PlaybackSession {

@@ -15,7 +15,7 @@
 //! would narrate a divergent ghost game, so it is refused instead.
 
 use crate::runner::GameReplay;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chassis::grid::TilePos;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{
@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// Version of the serialized [`SummaryReport`] contract.
-pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 3;
+pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 4;
 
 /// Space gate: a loss joins an active battle when within this many tiles of
 /// its running centroid. Above the longest direct-fire range in the game
@@ -105,6 +105,8 @@ pub struct SummaryReport {
 /// Scenario facts useful when orienting a summary.
 #[derive(Debug, Serialize)]
 pub struct ScenarioLine {
+    /// First absolute tick available; statistics describe this segment only.
+    pub start_tick: u64,
     /// Scenario display name.
     pub name: String,
     /// Deterministic scenario seed.
@@ -113,9 +115,9 @@ pub struct ScenarioLine {
     pub map_width: i32,
     /// Map height in tiles.
     pub map_height: i32,
-    /// Ticks the summary executed (after any `--until` clamp).
+    /// Absolute end tick summarized (after any `--until` clamp).
     pub effective_ticks: u64,
-    /// Ticks the replay records in total.
+    /// Absolute end tick recorded.
     pub total_ticks: u64,
     /// Digest cadence in ticks after defaulting.
     pub every: u64,
@@ -636,13 +638,15 @@ struct SeatWindow {
 pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryReport> {
     replay.validate(Some(SIM_VERSION))?;
     let total = oxide_kit::bounded_replay_duration(replay)?;
-    let effective = opts.until.map_or(total, |until| until.min(total));
+    let effective = opts
+        .until
+        .map_or(total, |until| until.clamp(replay.start_tick(), total));
     let every = opts
         .every
-        .unwrap_or_else(|| (effective / 16).clamp(2_000, 10_000))
+        .unwrap_or_else(|| ((effective - replay.start_tick()) / 16).clamp(2_000, 10_000))
         .max(1);
 
-    let mut state = replay.setup.build().context("building replay setup")?;
+    let mut state = oxide_kit::recording::initial_state(replay)?;
     let seats: Vec<SeatLine> = replay
         .setup
         .players
@@ -700,8 +704,8 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 .map(|name| TechFirstRecord {
                     name: name.to_owned(),
                     starting: true,
-                    tick: 0,
-                    clock: clock(0),
+                    tick: replay.start_tick(),
+                    clock: clock(replay.start_tick()),
                 })
                 .collect();
             starting.sort_by(|a, b| a.name.cmp(&b.name));
@@ -717,12 +721,12 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     let mut prev_explored: Vec<u64> = vec![0; seat_count];
     let mut window_combat: u64 = 0;
     let mut quiet_run: Option<QuietRun> = None;
-    let mut prev_boundary: u64 = 0;
+    let mut prev_boundary = replay.start_tick();
 
     let mut game_over_tick: Option<u64> = None;
 
     let mut playback = oxide_kit::ReplayPlayback::new(replay);
-    for _ in 0..effective {
+    for _ in state.current_tick()..effective {
         let report = playback.step(&mut state);
         let now = state.current_tick();
 
@@ -1046,6 +1050,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     Ok(SummaryReport {
         schema_version: REPLAY_SUMMARY_SCHEMA_VERSION,
         scenario: ScenarioLine {
+            start_tick: replay.start_tick(),
             name: replay.setup.name.clone(),
             seed: replay.setup.seed,
             map_width: state.map().width(),
@@ -1434,6 +1439,13 @@ impl SummaryReport {
             scenario.every,
             clock(scenario.every),
         );
+        if scenario.start_tick > 0 {
+            let _ = writeln!(
+                out,
+                "  recording starts at tick {}; earlier history is unavailable",
+                scenario.start_tick
+            );
+        }
         if scenario.effective_ticks < scenario.total_ticks {
             let _ = writeln!(
                 out,

@@ -177,9 +177,7 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
                 .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
-                .and_then(|record| {
-                    Game::from_replay_observed(record.replay, app.game.diagnostics.as_ref())
-                });
+                .and_then(|record| Game::from_recovery(record, app.game.diagnostics.as_ref()));
             match recovered {
                 Ok(fresh) => {
                     app.install_session(fresh, true, None);

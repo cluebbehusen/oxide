@@ -21,7 +21,10 @@ automated players use the same command path as every other player.
   verifies an interrupted journal and exports its completed replay prefix plus
   available diagnostic sidecars without needing a responsive shell.
 - `replay_inspect` and `replay_summary` provide exact snapshots and compact
-  match narratives.
+  match narratives. Checkpoint-origin recordings report their first available
+  absolute tick, and summaries and inactivity windows cover only that segment.
+  Inspection schema 2 and summary schema 4 expose this boundary; inspection
+  rejects requests for unavailable earlier ticks.
 - `bot_eval` runs the player-facing controller to a decision, tick ceiling, or
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
   tick-ceiling, exact-profile, and anomaly provenance. It can exchange complete

@@ -102,6 +102,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checkpoint_recovery_restores_the_shell_without_replaying_the_opening() {
+        let mut original = Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 720.0)).unwrap();
+        original.advance_ticks(37);
+        original.issue(Command::Train {
+            building: oxide_sim::BuildingId(0),
+            kind: oxide_sim::UnitKind::Harvester,
+        });
+        let checkpoint = SessionCheckpoint::capture(
+            &original.scenario,
+            &original.state,
+            &original.bots,
+            &original.pending,
+            Some(&original.live_stats),
+        )
+        .unwrap();
+        original.recorder = checkpoint.recording().unwrap();
+        original.do_tick();
+        let mut replay = original.recorder.clone();
+        replay.meta.ticks = Some(original.state.current_tick());
+        let record = oxide_kit::recovery::Inspection {
+            kind: oxide_kit::recovery::RecordingKind::LiveMatch,
+            build: Default::default(),
+            session: "test".into(),
+            replay,
+            checkpoint: Some(checkpoint),
+            prepared: None,
+            issue: None,
+            clean: false,
+        };
+        let mut restored = Game::from_recovery(record, None).unwrap();
+        assert!(restored.presentation.paused);
+        assert!(restored.pending.is_empty());
+        assert_eq!(restored.state.hash(), original.state.hash());
+        for _ in 0..24 {
+            assert_eq!(original.do_tick().events, restored.do_tick().events);
+            assert_eq!(original.state.hash(), restored.state.hash());
+        }
+        assert_eq!(
+            original.live_stats.snapshot(&original.state),
+            restored.live_stats.snapshot(&restored.state)
+        );
+        assert_eq!(
+            serde_json::to_vec(&original.recorder.commands).unwrap(),
+            serde_json::to_vec(&restored.recorder.commands).unwrap()
+        );
+    }
+
+    #[test]
     fn checkpoint_preserves_pending_input_memory_and_statistics() {
         let mut scenario = Scenario::skirmish();
         scenario.players[1].bot = true;

@@ -7,11 +7,184 @@ fn base() -> GameReplay {
     replay.meta.ticks = Some(0);
     replay
 }
+
+#[test]
+fn checkpoint_recovery_consumes_pending_input_once_and_preserves_controller_future() {
+    use crate::checkpoint::SessionCheckpoint;
+    let scenario = Scenario::skirmish();
+    let mut state = scenario.build().unwrap();
+    let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let mut stats = crate::stats::LiveMatchStats::new(&state);
+    for _ in 0..37 {
+        let report = crate::runner::step(&mut state, &mut bots, None);
+        stats.observe(&state, &report.events);
+    }
+    let pending = vec![command()];
+    let checkpoint =
+        SessionCheckpoint::capture(&scenario, &state, &bots, &pending, Some(&stats)).unwrap();
+    let root = temp();
+    let writer = RecoveryWriter::start_checkpoint(root.clone(), checkpoint.clone()).unwrap();
+    wait(&writer, |status| status.ready || status.error.is_some());
+    assert!(writer.status().error.is_none());
+    let original_boundary = inspect(writer.directory()).unwrap();
+    let restored = original_boundary
+        .checkpoint
+        .unwrap()
+        .resume_recording(&original_boundary.replay)
+        .unwrap();
+    assert_eq!(restored.pending, pending);
+    assert_eq!(restored.state.hash(), state.hash());
+    let mut commands = pending;
+    commands.extend(crate::bot_execution::commands(&state, &mut bots));
+    writer.prepared(37, &commands);
+    let report = state.tick(&commands);
+    stats.observe(&state, &report.events);
+    writer.completed(38);
+    writer.prepared(38, &[command()]);
+    let directory = writer.directory().to_owned();
+    drop_and_wait(writer);
+    let record = inspect(&directory).unwrap();
+    assert_eq!(record.prepared, Some(vec![command()]));
+    assert_eq!(record.replay.start_tick(), 37);
+    assert_eq!(record.replay.meta.ticks, Some(38));
+    assert_eq!(record.replay.commands.len(), commands.len());
+    let mut restored = record
+        .checkpoint
+        .clone()
+        .unwrap()
+        .resume_recording(&record.replay)
+        .unwrap();
+    assert!(restored.pending.is_empty());
+    assert_eq!(restored.state.hash(), state.hash());
+    assert_eq!(
+        restored.stats.as_ref().unwrap().snapshot(&restored.state),
+        stats.snapshot(&state)
+    );
+    for _ in 0..24 {
+        let commands = crate::bot_execution::commands(&state, &mut bots);
+        let resumed = crate::bot_execution::commands(&restored.state, &mut restored.bots);
+        assert_eq!(commands, resumed);
+        assert_eq!(
+            state.tick(&commands).events,
+            restored.state.tick(&resumed).events
+        );
+        assert_eq!(state.hash(), restored.state.hash());
+    }
+    let report_dir = root.join("export");
+    export(&directory, &report_dir).unwrap();
+    let exported = inspect(&report_dir).unwrap();
+    assert!(exported.checkpoint.is_some());
+    let replacement = RecoveryWriter::start_recovered_checkpoint(
+        root.clone(),
+        record.replay,
+        38,
+        checkpoint,
+        Some(directory.clone()),
+    )
+    .unwrap();
+    wait(&replacement, |status| {
+        status.ready || status.error.is_some()
+    });
+    assert!(
+        replacement.status().error.is_none(),
+        "{:?}",
+        replacement.status()
+    );
+    assert!(directory.join("superseded.json").exists());
+    drop_and_wait(replacement);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn checkpoint_recovery_rejects_missing_pending_inputs_and_truncated_completion() {
+    let scenario = Scenario::skirmish();
+    let mut state = scenario.build().unwrap();
+    state.tick(&[]);
+    let bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let checkpoint =
+        crate::checkpoint::SessionCheckpoint::capture(&scenario, &state, &bots, &[command()], None)
+            .unwrap();
+    let mut bytes = MAGIC.to_vec();
+    write_frame(
+        &mut bytes,
+        &Header {
+            kind: RecordingKind::LiveMatch,
+            session: "origin".into(),
+            build: Default::default(),
+            base: checkpoint.recording().unwrap(),
+            checkpoint: Some(checkpoint.clone()),
+        },
+    )
+    .unwrap();
+    let header_end = bytes.len();
+    write_frame(
+        &mut bytes,
+        &Record {
+            session: "origin".into(),
+            sequence: 0,
+            event: Event::Prepared {
+                tick: 1,
+                commands: vec![command()],
+            },
+        },
+    )
+    .unwrap();
+    let prepared_end = bytes.len();
+    write_frame(
+        &mut bytes,
+        &Record {
+            session: "origin".into(),
+            sequence: 1,
+            event: Event::Completed { tick: 2 },
+        },
+    )
+    .unwrap();
+    for end in [
+        header_end,
+        prepared_end - 1,
+        prepared_end,
+        bytes.len() - 1,
+        bytes.len(),
+    ] {
+        let record = inspect_reader(&mut &bytes[..end]).unwrap();
+        let restored = record
+            .checkpoint
+            .unwrap()
+            .resume_recording(&record.replay)
+            .unwrap();
+        assert_eq!(
+            restored.state.current_tick(),
+            if end == bytes.len() { 2 } else { 1 }
+        );
+        assert_eq!(restored.pending.is_empty(), end == bytes.len());
+    }
+    bytes.truncate(header_end);
+    write_frame(
+        &mut bytes,
+        &Record {
+            session: "origin".into(),
+            sequence: 0,
+            event: Event::Prepared {
+                tick: 1,
+                commands: vec![],
+            },
+        },
+    )
+    .unwrap();
+    let record = inspect_reader(&mut bytes.as_slice()).unwrap();
+    assert!(record.issue.unwrap().contains("omits pending"));
+    assert_eq!(record.replay.meta.ticks, Some(1));
+    let mut bad_base = checkpoint.recording().unwrap();
+    bad_base.meta.ticks = Some(2);
+    assert!(checkpoint.clone().resume_recording(&bad_base).is_err());
+    assert!(validate_origin(RecordingKind::LiveMatch, &bad_base, Some(&checkpoint)).is_err());
+}
 fn encoded(events: Vec<Event>) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
     write_frame(
         &mut bytes,
         &Header {
+            checkpoint: None,
             kind: RecordingKind::LiveMatch,
             session: "test".into(),
             build: BuildIdentity::default(),
@@ -177,6 +350,7 @@ fn empty_ticks_and_resumed_prefixes_retain_their_duration() {
     write_frame(
         &mut bytes,
         &Header {
+            checkpoint: None,
             kind: RecordingKind::LiveMatch,
             session: "resume".into(),
             build: BuildIdentity::default(),
@@ -637,6 +811,7 @@ fn playback_recordings_export_the_full_source_but_never_offer_live_recovery() {
 #[test]
 fn recording_kind_defaults_for_legacy_headers_and_rejects_unknown_or_mutating_playback() {
     let header = Header {
+        checkpoint: None,
         kind: RecordingKind::LiveMatch,
         session: "legacy".into(),
         build: BuildIdentity::default(),

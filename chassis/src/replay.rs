@@ -1,7 +1,7 @@
 //! Replays: the complete input record of a deterministic run.
 //!
-//! A replay is `setup + tick-stamped commands` — with a deterministic sim,
-//! that *is* the run. Any live session (human, bot, or agent over the debug
+//! A replay is setup, an optional game-owned origin, and tick-stamped commands.
+//! With a deterministic sim, that is the available run. Any live session (human, bot, or agent over the debug
 //! socket) can be saved and later re-executed headless, bit for bit, which
 //! turns every play session into a potential regression test.
 //!
@@ -22,15 +22,36 @@ pub const MAX_REPLAY_BYTES: usize = 64 << 20;
 /// Most commands accepted in a loaded replay.
 pub const MAX_REPLAY_COMMANDS: usize = 1_000_000;
 
-/// A recorded run: metadata, initial setup, and every command ever issued.
+/// A recorded segment: metadata, setup, optional origin, and recorded commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Replay<S, C> {
+#[serde(bound(deserialize = "S: Deserialize<'de>, C: Deserialize<'de>, O: Deserialize<'de>"))]
+pub struct Replay<S, C, O = ()> {
     /// Provenance and context for the run.
     pub meta: ReplayMeta,
     /// Everything needed to construct the initial state (scenario, seed…).
     pub setup: S,
     /// All commands, in nondecreasing tick order.
     pub commands: Vec<TimedCommand<C>>,
+    /// Optional game-owned snapshot from which this segment starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<O>,
+}
+
+/// Game-specific validation for a recording that starts after setup.
+pub trait RecordingOrigin<S> {
+    /// Absolute tick of the saved state, before commands at this tick execute.
+    fn start_tick(&self) -> Tick;
+    /// Validate the snapshot and its relationship to the authored setup.
+    fn validate(&self, setup: &S) -> Result<(), ReplayError>;
+}
+
+impl<S> RecordingOrigin<S> for () {
+    fn start_tick(&self) -> Tick {
+        0
+    }
+    fn validate(&self, _setup: &S) -> Result<(), ReplayError> {
+        Ok(())
+    }
 }
 
 /// Provenance carried alongside a replay.
@@ -42,8 +63,8 @@ pub struct ReplayMeta {
     /// Free-form context (who played, what was being tested).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Total ticks the recorded session ran, so playback knows when the
-    /// run is fully reproduced (commands alone only bound it from below).
+    /// Absolute end tick, so playback knows when the segment is fully
+    /// reproduced (commands alone only bound it from below).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks: Option<Tick>,
     /// What kind of record this is. Chassis assigns no meaning — games
@@ -91,7 +112,7 @@ pub enum ReplayError {
     },
 }
 
-impl<S, C> Replay<S, C> {
+impl<S, C, O: RecordingOrigin<S>> Replay<S, C, O> {
     /// Starts an empty replay for a run of `setup`.
     pub fn new(sim_version: impl Into<String>, setup: S) -> Self {
         Self {
@@ -104,12 +125,35 @@ impl<S, C> Replay<S, C> {
             },
             setup,
             commands: Vec::new(),
+            origin: None,
         }
+    }
+
+    /// Starts a segment at a validated snapshot, keeping absolute command ticks.
+    pub fn with_origin(
+        sim_version: impl Into<String>,
+        setup: S,
+        origin: O,
+    ) -> Result<Self, ReplayError> {
+        let mut replay = Self::new(sim_version, setup);
+        replay.meta.ticks = Some(origin.start_tick());
+        replay.origin = Some(origin);
+        replay.validate(None)?;
+        Ok(replay)
+    }
+
+    /// First absolute tick available in this recording.
+    pub fn start_tick(&self) -> Tick {
+        self.origin.as_ref().map_or(0, RecordingOrigin::start_tick)
     }
 
     /// Appends a command. Panics if `tick` precedes the last recorded tick —
     /// a replay that is not in tick order is corrupt by definition.
     pub fn record(&mut self, tick: Tick, command: C) {
+        assert!(
+            tick >= self.start_tick(),
+            "command precedes recording origin"
+        );
         if let Some(last) = self.commands.last() {
             assert!(
                 tick >= last.tick,
@@ -133,6 +177,21 @@ impl<S, C> Replay<S, C> {
     /// world, or panic the recorder later.
     pub fn validate(&self, expected_version: Option<&str>) -> Result<(), ReplayError> {
         self.validate_command_count(MAX_REPLAY_COMMANDS)?;
+        if let Some(origin) = &self.origin {
+            origin.validate(&self.setup)?;
+        }
+        let start = self.start_tick();
+        if start == u64::MAX
+            || self.meta.ticks.is_some_and(|end| end < start)
+            || self
+                .commands
+                .first()
+                .is_some_and(|command| command.tick < start)
+        {
+            return Err(ReplayError::Invalid(
+                "recording precedes its origin or has no tick headroom".into(),
+            ));
+        }
         for pair in self.commands.windows(2) {
             if pair[1].tick < pair[0].tick {
                 return Err(ReplayError::Invalid(format!(
@@ -186,6 +245,7 @@ impl<S, C> Replay<S, C> {
     where
         S: Serialize,
         C: Serialize,
+        O: Serialize,
     {
         crate::fsx::write_atomic(path, |writer| {
             serde_json::to_writer_pretty(&mut *writer, self)?;
@@ -198,6 +258,7 @@ impl<S, C> Replay<S, C> {
     where
         S: DeserializeOwned,
         C: DeserializeOwned,
+        O: DeserializeOwned,
     {
         Self::load_with_limits(path, MAX_REPLAY_BYTES, MAX_REPLAY_COMMANDS)
     }
@@ -224,6 +285,7 @@ impl<S, C> Replay<S, C> {
     where
         S: DeserializeOwned,
         C: DeserializeOwned,
+        O: DeserializeOwned,
     {
         Self::load_with_limits_and_decoder(path, max_bytes, max_commands, |bytes| {
             Ok(serde_json::from_slice(bytes)?)

@@ -99,6 +99,10 @@ impl Session {
         replay
             .validate(Some(SIM_VERSION))
             .map_err(|err| anyhow::anyhow!("{err}"))?;
+        anyhow::ensure!(
+            replay.origin.is_none(),
+            "live continuation requires a session checkpoint for this replay origin"
+        );
         let scenario = replay.setup.clone();
         let mut state = scenario.build().context("building replay setup")?;
         let total = replay.meta.ticks.unwrap_or_else(|| {
