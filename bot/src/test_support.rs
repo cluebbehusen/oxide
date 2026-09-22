@@ -140,3 +140,33 @@ pub(crate) fn edit_player(
         data["players"][usize::from(id.0)] = serde_json::to_value(player).unwrap();
     });
 }
+
+impl crate::UtilityPolicy {
+    pub(crate) fn think_residual(
+        &mut self,
+        dials: &crate::Dials,
+        obs: &crate::Observation,
+        armies: &[crate::Army],
+        enlisted: &[UnitId],
+        reserved: &[UnitId],
+        public_map: &crate::PublicMapBriefing,
+    ) -> Vec<crate::Intent> {
+        let mut intelligence = crate::StrategicIntelligence::new();
+        intelligence.update(obs);
+        self.observe_work_experience(obs);
+        self.think_with_intelligence(
+            dials,
+            obs,
+            armies,
+            enlisted,
+            crate::utility::StrategicUtilityContext::new(
+                reserved,
+                intelligence.units(),
+                intelligence.buildings(),
+                public_map,
+                Vec::new(),
+                Default::default(),
+            ),
+        )
+    }
+}

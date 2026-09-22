@@ -58,8 +58,12 @@ use super::utility::{Dials, UtilityPolicy};
 #[cfg(test)]
 use crate::observation::ObservationData;
 use chassis::grid::TilePos;
-use oxide_sim::command::{Command, PlayerCommand};
-use oxide_sim::ids::{PlayerId, UnitId};
+#[cfg(test)]
+use oxide_sim::command::Command;
+use oxide_sim::command::PlayerCommand;
+use oxide_sim::ids::PlayerId;
+#[cfg(test)]
+use oxide_sim::ids::UnitId;
 use oxide_sim::scenario::BotConfig;
 use std::sync::Arc;
 
@@ -93,7 +97,7 @@ pub struct Brain {
     exec: Executive,
     /// The seat's frame of reference, latched at the first act and
     /// kept for the match — the policy's bot-local tile memory
-    /// (blacklists, pending sites, scout rotation) lives in oriented
+    /// (work attempts, failure exclusions, scout rotation) lives in oriented
     /// space, and a mid-game flip when the home Foundry changes would
     /// silently mirror all of it.
     orientation: Option<Orientation>,
@@ -505,47 +509,8 @@ impl Brain {
             journal.link_handoff(&lifts.outcomes);
         }
 
-        for command in &lowered {
-            if let Some(units) = queue_replacing_non_harvest_units(&command.command) {
-                self.policy.record_dispatched_retask(units);
-                let build = if let Command::Build { kind, anchor, .. } = command.command {
-                    Some((kind, orientation.anchor(anchor, kind.base_stats().size)))
-                } else {
-                    None
-                };
-                self.policy.record_work_retask(&oriented, units, build);
-            }
-            match &command.command {
-                Command::Build {
-                    units,
-                    kind,
-                    anchor,
-                    ..
-                } => {
-                    let oriented_anchor = orientation.anchor(*anchor, kind.base_stats().size);
-                    self.policy
-                        .record_dispatched_foundry_build(units, *kind, oriented_anchor);
-                    self.policy.record_exact_build_attempt(
-                        &oriented,
-                        units,
-                        *kind,
-                        oriented_anchor,
-                    );
-                }
-                Command::Harvest { units, node, .. } => {
-                    let oriented_node = orientation.tile(*node);
-                    for &unit in units {
-                        self.policy
-                            .record_dispatched_harvest(&oriented, unit, oriented_node);
-                    }
-                }
-                Command::Cancel { building } => {
-                    self.policy
-                        .record_foundation_cancellation(&oriented, *building);
-                }
-                _ => {}
-            }
-        }
+        self.policy
+            .record_dispatched_work(&oriented, orientation, &lowered);
         if let Some(recorder) = recorder {
             recorder.trace_mut().mission_decisions = self.exec.mission_decisions.clone();
             recorder.trace_mut().lowering = LoweringTrace {
@@ -570,82 +535,6 @@ impl Brain {
 /// keeping both inside their Foundries.
 fn player_facing_rear_tile(orientation: Orientation, anchor: TilePos, size: (i32, i32)) -> TilePos {
     orientation.tile(orientation.anchor(anchor, size))
-}
-
-/// Unit orders that replace a worker's current Harvest program. Keeping this
-/// match exhaustive makes a future command variant choose its bookkeeping
-/// semantics explicitly.
-fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
-    match command {
-        Command::Move {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::Attack {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::AttackMove {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::Build {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::Repair {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::Salvage {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::RepairUnit {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::Advance {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::Load {
-            units,
-            queue: false,
-            ..
-        }
-        | Command::ReturnCargo { units, .. }
-        | Command::Patrol { units, .. }
-        | Command::Stop { units } => Some(units),
-        Command::Move { queue: true, .. }
-        | Command::Attack { queue: true, .. }
-        | Command::AttackMove { queue: true, .. }
-        | Command::Harvest { .. }
-        | Command::Build { queue: true, .. }
-        | Command::Repair { queue: true, .. }
-        | Command::Salvage { queue: true, .. }
-        | Command::RepairUnit { queue: true, .. }
-        | Command::Advance { queue: true, .. }
-        | Command::Load { queue: true, .. }
-        | Command::Train { .. }
-        | Command::Cancel { .. }
-        | Command::CancelTrain { .. }
-        | Command::SetRally { .. }
-        | Command::Surrender
-        | Command::FocusFire { .. }
-        | Command::CancelFound { .. }
-        | Command::UpgradeBuilding { .. }
-        | Command::Unload { .. }
-        | Command::ClearFocus { .. } => None,
-    }
 }
 
 #[cfg(test)]
@@ -2011,91 +1900,6 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert!(core_at_fabricator.iter().all(Option::is_some));
-    }
-
-    #[test]
-    fn dispatched_move_replaces_harvest_memory_but_queued_move_does_not() {
-        let unit = UnitId(3);
-        let immediate = Command::Move {
-            units: vec![unit],
-            goal: TilePos::new(8, 5),
-            queue: false,
-        };
-        let queued = Command::Move {
-            units: vec![unit],
-            goal: TilePos::new(8, 5),
-            queue: true,
-        };
-        let harvest = Command::Harvest {
-            units: vec![unit],
-            node: TilePos::new(6, 5),
-            queue: false,
-        };
-
-        assert_eq!(
-            queue_replacing_non_harvest_units(&immediate),
-            Some(&[unit][..])
-        );
-        assert_eq!(queue_replacing_non_harvest_units(&queued), None);
-        assert_eq!(queue_replacing_non_harvest_units(&harvest), None);
-    }
-
-    #[test]
-    fn every_nonqueued_worker_retask_clears_its_harvest_assignment() {
-        let unit = UnitId(3);
-        let commands = [
-            Command::Repair {
-                units: vec![unit],
-                building: BuildingId(9),
-                queue: false,
-            },
-            Command::RepairUnit {
-                units: vec![unit],
-                target: UnitId(4),
-                queue: false,
-            },
-            Command::Advance {
-                units: vec![unit],
-                goal: TilePos::new(8, 5),
-                queue: false,
-            },
-            Command::Patrol {
-                units: vec![unit],
-                waypoints: vec![TilePos::new(8, 5), TilePos::new(9, 5)],
-            },
-        ];
-
-        for command in &commands {
-            assert_eq!(
-                queue_replacing_non_harvest_units(command),
-                Some(&[unit][..]),
-                "{command:?} replaces the worker's current Harvest program"
-            );
-        }
-
-        for command in [
-            Command::Repair {
-                units: vec![unit],
-                building: BuildingId(9),
-                queue: true,
-            },
-            Command::RepairUnit {
-                units: vec![unit],
-                target: UnitId(4),
-                queue: true,
-            },
-            Command::Advance {
-                units: vec![unit],
-                goal: TilePos::new(8, 5),
-                queue: true,
-            },
-        ] {
-            assert_eq!(
-                queue_replacing_non_harvest_units(&command),
-                None,
-                "{command:?} preserves the active Harvest until the queue advances"
-            );
-        }
     }
 
     #[test]
@@ -7835,7 +7639,7 @@ mod tests {
         assert_eq!(army.target, None);
         let enlisted: Vec<_> = brain.exec.enlisted().collect();
         let mut policy_probe = brain.policy.clone();
-        let unreserved = policy_probe.think_player_facing(
+        let unreserved = policy_probe.think_residual(
             brain.dials(),
             &obs,
             std::slice::from_ref(&army),

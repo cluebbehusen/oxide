@@ -75,7 +75,7 @@ fn rejected_policy_state_keeps_queries_correct_for_restored_and_changed_inputs()
         Default::default()
     );
     let checkpoint = policy.speculative_checkpoint();
-    policy.state.dead_nodes.push(node);
+    policy.state.work_experience.dead_nodes.push(node);
     policy
         .state
         .contested_harvest_regions
@@ -139,7 +139,7 @@ fn checkpoint_preserves_planning_allowance_continuations_and_eventual_results() 
     policy.planning.begin(1);
     assert_eq!(request(&policy, 1), Progress::Deferred);
     let control = policy.clone();
-    policy.state.dead_nodes.push(source);
+    policy.state.work_experience.dead_nodes.push(source);
     policy.restore_checkpoint(checkpoint);
     assert_eq!(policy.state, control.state);
     assert_eq!(policy.planning, control.planning);

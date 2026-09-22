@@ -1157,6 +1157,17 @@ two actual observations and their ticks, never an extrapolated position. Radar
 contributes unresolved regions rather than identified units. Reachable local
 service is credited once when describing uncovered asset pressure.
 
+Utility work journals own dispatched harvest probes, construction attempts,
+foundation watches and bounded failure exclusions. After lowering, the
+controller records emitted commands in output order, converting their positions
+back into the policy's orientation. An immediate retask clears the superseded
+harvest probe and closes affected attempts; queued movement preserves the
+current assignment. Observation advances this work once per tick before
+allocation checkpoints. Residual utility planning does not repeat the audit or
+maintain a separate pending-site lifecycle. Focused policy tests use this
+maintained preparation and utility context inside the bot crate; controller
+integration tests use `Brain` or `SeatBot`.
+
 The immutable assessment feeds reconnaissance, protective support, Array
 coverage, and general ground-mission selection. Fresh deployments are finalized
 after allocation, against its exact reservations. Army responsibilities belong

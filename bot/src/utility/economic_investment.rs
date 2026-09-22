@@ -2181,7 +2181,6 @@ mod tests {
                 .unwrap();
             let (kind, anchor, builder) = quote.build().unwrap();
             policy.commit_economic_investment(quote.clone(), quote.cost, &mut Vec::new());
-            policy.state.pending_sites.push(anchor);
             obs.my_units
                 .iter_mut()
                 .find(|unit| unit.id == builder)

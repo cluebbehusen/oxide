@@ -178,7 +178,10 @@ impl UtilityPolicy {
     }
 
     fn foundry_saving_invalid(&self, obs: &Observation, saving: &FoundrySavingCommitment) -> bool {
-        self.state.dead_anchors.contains(&saving.plan.anchor)
+        self.state
+            .work_experience
+            .dead_anchors
+            .contains(&saving.plan.anchor)
             || obs
                 .my_units
                 .iter()

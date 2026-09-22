@@ -45,6 +45,8 @@ mod construction_checks;
 mod danger;
 mod defense;
 mod defensive_investment;
+#[cfg(test)]
+mod doctrine_tests;
 mod economic_capacity;
 mod economic_investment;
 pub(crate) mod economic_value;
@@ -55,6 +57,8 @@ mod experience_work;
 mod extractor_development;
 #[cfg(test)]
 mod lifecycle_tests;
+#[cfg(test)]
+mod policy_tests;
 mod production;
 mod reconnaissance;
 #[cfg(test)]
@@ -729,14 +733,6 @@ pub(crate) struct PolicyState {
     /// strategic memory window. Its exact old position may be stale; voluntary
     /// attack timing consumes only the common recent portion of this fact.
     opponent_force_peak: Option<(u64, u64)>,
-    /// Harvest assignments from the last think: worker, node, and where
-    /// the worker stood when sent. A unit idle again right after being
-    /// sent AND still standing where it started bounced off an
-    /// unreachable node; an idle unit that moved (or was re-tasked by
-    /// the scout press mid-walk) proves nothing about the node.
-    last_sent: Vec<(UnitId, TilePos, TilePos)>,
-    /// Nodes that bounced a harvester back.
-    dead_nodes: Vec<TilePos>,
 
     /// Bank reading at the last think and the last tick it grew — the
     /// starvation clock behind the desperation endgame. A bank that has
@@ -759,12 +755,6 @@ pub(crate) struct PolicyState {
     desperate_march: bool,
     desperate_road: bool,
 
-    /// Build commands dispatched last think, by anchor — one that never
-    /// appeared was rejected by ground truth the observation lacks
-    /// (an unseen unit in the footprint, say); blacklist the anchor.
-    pending_sites: Vec<TilePos>,
-    /// Anchors the sim refused.
-    dead_anchors: Vec<TilePos>,
     /// Player-facing expansion whose exact site and builder own the partial
     /// fund while current scrap accumulates to its admission threshold.
     foundry_saving: Option<construction::FoundrySavingCommitment>,
@@ -1799,52 +1789,6 @@ impl UtilityPolicy {
                 .count()
     }
 
-    /// One player-facing residual-utility think without controller-level
-    /// strategic intelligence or higher-level planner intents.
-    ///
-    /// Fresh Foundry and emergency-defense work must enter through the shared
-    /// proposal and allocation path. This facade exists for tests of the
-    /// remaining utility channels and cannot originate either investment.
-    pub fn think_player_facing(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        armies: &[Army],
-        enlisted: &[UnitId],
-        reserved: &[UnitId],
-        public_map: &PublicMapBriefing,
-    ) -> Vec<Intent> {
-        let battlefield = super::battlefield::BattlefieldAssessment::default();
-        let experience = super::experience::Experience::default();
-        self.think_inner(
-            dials,
-            obs,
-            ThinkContext {
-                armies,
-                enlisted,
-                reserved,
-                combat_core_exclusions: reserved,
-                outstanding_air_production_ticks: None,
-                prior_scrap_commitment: 0,
-                foundry: FoundryHandoff::default(),
-                voluntary_scrap_guard: None,
-                prelude: Vec::new(),
-                producer_lane_reservations: ProducerLaneReservations::empty(),
-                mode: PolicyMode {
-                    evidence: DecisionEvidence {
-                        battlefield: &battlefield,
-                        experience: &experience,
-                    },
-                    ground_missions: None,
-                    admit_voluntary_macro: strategic_admission_tick(obs.tick),
-                    unit_contacts: None,
-                    building_contacts: None,
-                    public_map: Some(public_map),
-                },
-            },
-        )
-    }
-
     /// The maintained player-facing path, including confidence-bearing
     /// strategic memory for remembered defenses.
     pub(super) fn think_with_intelligence(
@@ -1992,8 +1936,6 @@ impl UtilityPolicy {
             self.state.desperate_march = Self::ground_reaches(obs, home_tile, mirror_site);
             self.state.desperate_road = Self::ground_route_known(obs, home_tile, mirror_site);
         }
-        self.audit_harvests(obs);
-        self.audit_sites(obs);
 
         let has_ground_objective = dials.minimum_core_equivalents > 0
             && self.has_honest_ground_objective(dials, obs, home_tile, mode.public_map);
@@ -2262,34 +2204,6 @@ impl UtilityPolicy {
         }
         self.stop_unfunded_repairs(obs, &mut intents);
         intents
-    }
-
-    /// A harvester sent last think and idle again now bounced off an
-    /// unreachable node — never ask twice. Only a node still reporting
-    /// value earns the blacklist: a source the harvester honestly
-    /// drained reads as empty and needs no entry (the amount filter
-    /// already refuses it), and blacklisting it would poison the tile
-    /// against every future deposit landing there.
-    fn audit_harvests(&mut self, obs: &Observation) {
-        for (id, node, sent_from) in std::mem::take(&mut self.state.last_sent) {
-            // Collision separation can nudge a routeless worker one tile
-            // from its send point, so exact equality misses a bounce.
-            let bounced = obs
-                .my_units
-                .iter()
-                .any(|u| u.id == id && u.idle && u.hp > 0 && u.tile.chebyshev(sent_from) <= 1);
-            let still_reports = obs
-                .known_scrap
-                .iter()
-                .chain(obs.known_wrecks.iter())
-                .any(|(pos, amount)| *pos == node && *amount > 0);
-            if bounced && still_reports && !self.state.dead_nodes.contains(&node) {
-                self.state.dead_nodes.push(node);
-                if self.state.work_experience.enabled {
-                    self.record_failed_work(obs, id, node, None);
-                }
-            }
-        }
     }
 
     fn refresh_contested_harvest_regions(
@@ -2683,11 +2597,6 @@ impl UtilityPolicy {
                     self.state.evacuating_workers.push(unit.id);
                 }
             }
-            if let Some((_, anchor)) = unit.founding {
-                self.state
-                    .pending_sites
-                    .retain(|pending| *pending != anchor);
-            }
             if self.state.scout == Some(unit.id) {
                 let public_prior_probe = self.active_public_ground_probe(obs, unit.id);
                 self.state.scout = None;
@@ -2807,82 +2716,6 @@ impl UtilityPolicy {
         building_contacts: Option<&[BuildingContact]>,
     ) -> bool {
         danger::direct_location_has_known_danger(obs, node, 0, unit_contacts, building_contacts)
-    }
-
-    /// Remember a Harvest command that survived intent lowering long enough
-    /// to audit an immediate no-route bounce on the next think.
-    pub(super) fn record_dispatched_harvest(
-        &mut self,
-        obs: &Observation,
-        unit: UnitId,
-        node: TilePos,
-    ) {
-        let Some(worker) = obs.my_units.iter().find(|worker| worker.id == unit) else {
-            return;
-        };
-        self.state.last_sent.retain(|(sent, _, _)| *sent != unit);
-        self.state.last_sent.push((unit, node, worker.tile));
-        self.record_harvest_episode(obs, unit, node);
-    }
-
-    /// Forget source evidence for workers whose Harvest was replaced by a
-    /// later dispatched order. Commands are visited in output order, so a
-    /// later Harvest can establish a fresh assignment after this reset.
-    pub(super) fn record_dispatched_retask(&mut self, units: &[UnitId]) {
-        self.state
-            .last_sent
-            .retain(|(unit, _, _)| !units.contains(unit));
-    }
-
-    /// A site requested last think that never appeared was refused for a
-    /// reason the observation can't see; stop asking for that anchor.
-    /// A pending deferred found is a site on its way, not a refusal:
-    /// the founder pays on arrival, so while one is still walking the
-    /// anchor stays pending for a later audit to judge (blacklisting
-    /// it would poison ground the claim is about to prove). The
-    /// player-facing brain defers claims outside current sight, so a
-    /// walking founder remains pending until the ground is actually reached.
-    fn audit_sites(&mut self, obs: &Observation) {
-        if self.state.work_experience.enabled {
-            return;
-        }
-        for anchor in std::mem::take(&mut self.state.pending_sites) {
-            let appeared = obs.my_buildings.iter().any(|b| b.anchor == anchor);
-            if appeared {
-                continue;
-            }
-            let walking = obs
-                .my_units
-                .iter()
-                .any(|u| u.founding.is_some_and(|(_, a)| a == anchor));
-            if walking {
-                self.state.pending_sites.push(anchor);
-            } else if !self.state.dead_anchors.contains(&anchor) {
-                self.state.dead_anchors.push(anchor);
-            }
-        }
-    }
-
-    /// Remember a newly dispatched construction command for next
-    /// think's refusal audit. Existing sites are orphan relief, and an
-    /// Extractor frame has only one legal anchor, so neither may enter
-    /// the site blacklist.
-    #[cfg(test)]
-    pub(super) fn record_dispatched_build(
-        &mut self,
-        obs: &Observation,
-        kind: BuildingKind,
-        anchor: TilePos,
-    ) {
-        if kind != BuildingKind::Extractor
-            && !obs
-                .my_buildings
-                .iter()
-                .any(|building| building.anchor == anchor)
-            && !self.state.pending_sites.contains(&anchor)
-        {
-            self.state.pending_sites.push(anchor);
-        }
     }
 }
 
@@ -3334,7 +3167,7 @@ mod tests {
         let (obs, dials) = standing_force_residual_fixture();
         let map = public_map(&obs);
 
-        let intents = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        let intents = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &map);
 
         assert!(
             intents.iter().all(|intent| !matches!(
@@ -3410,7 +3243,7 @@ mod tests {
         );
 
         let mut uncommitted = UtilityPolicy::new();
-        uncommitted.think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+        uncommitted.think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
         assert_eq!(uncommitted.state.bank_seen, obs.scrap);
     }
 
@@ -3528,7 +3361,7 @@ mod tests {
         dials.expansion = false;
         dials.mines = false;
 
-        let residual = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        let residual = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &map);
         assert!(
             residual.iter().all(|intent| !matches!(
                 intent,
@@ -3698,7 +3531,7 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         policy.state.persistent_air_scout_needed = true;
 
-        let intents = policy.think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        let intents = policy.think_residual(&dials, &obs, &[], &[], &[], &map);
 
         assert!(intents.iter().any(|intent| matches!(
             intent,
@@ -3769,7 +3602,7 @@ mod tests {
         dials.air_wing = 2;
         dials.extractors = false;
 
-        let blocked = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        let blocked = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &map);
         assert!(
             blocked
                 .iter()
@@ -3784,7 +3617,7 @@ mod tests {
             )
         }));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
-        let admitted = UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &map);
+        let admitted = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &map);
         assert!(admitted.contains(&Intent::RaidAir { target }));
     }
 
@@ -3948,9 +3781,9 @@ mod tests {
             assert_eq!(policy.state.bank_seen, 0);
             assert_eq!(policy.state.bank_grew_at, 0);
             assert!(!policy.state.desperate);
-            assert!(policy.state.last_sent.is_empty());
-            assert!(policy.state.pending_sites.is_empty());
-            assert!(policy.state.dead_anchors.is_empty());
+            assert!(policy.state.work_experience.last_sent.is_empty());
+            assert_eq!(policy.state.work_experience, Default::default());
+            assert!(policy.state.work_experience.dead_anchors.is_empty());
             assert_eq!(policy.state.scout, None);
             assert_eq!(policy.state.scout_leg, 0);
             assert_eq!(policy.state.scout_sent_at, 0);
@@ -4584,7 +4417,7 @@ mod tests {
             let obs = Observation::fog_honest(&state, me);
             moved |= state.unit(kestrel).unwrap().tile() != starting_tile;
             stamped_both_corners |= opposite_corners.iter().all(|tile| obs.visible(*tile));
-            let intents = policy.think_player_facing(&dials, &obs, &[], &[], &[], &public_map);
+            let intents = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map);
             let commands = executive.apply_with_reservations(me, &obs, &intents, &[]);
             harvest_dispatched |= commands.iter().any(|command| {
                 matches!(
@@ -4909,7 +4742,7 @@ mod tests {
             observation.my_units[0].hp -= 1;
             observation.my_units[1].hp -= 1;
             observation.salvage_incidents = initial;
-            policy.think_player_facing(
+            policy.think_residual(
                 &Dials::full(),
                 &observation,
                 &[],
@@ -4922,7 +4755,7 @@ mod tests {
             observation.tick = 200;
             observation.my_units[0].hp -= 1;
             observation.salvage_incidents = vec![left];
-            policy.think_player_facing(
+            policy.think_residual(
                 &Dials::full(),
                 &observation,
                 &[],
@@ -5513,42 +5346,6 @@ mod tests {
         )));
     }
 
-    /// The site audit's deferred-found contract (fog placement Part
-    /// B): an anchor whose founder is still walking is a site on its
-    /// way — kept pending, never blacklisted — while the same anchor
-    /// with no founder and no building is a refusal and earns the
-    /// blacklist as it always did.
-    #[test]
-    fn a_walking_founder_defers_the_site_audits_verdict() {
-        let anchor = TilePos::new(9, 4);
-
-        let mut policy = UtilityPolicy::new();
-        policy.state.pending_sites.push(anchor);
-        let walking = obs_with(vec![harvester(0, Some((BuildingKind::Turret, anchor)))]);
-        policy.audit_sites(&walking);
-        assert!(
-            policy.state.dead_anchors.is_empty(),
-            "the audit blacklisted an anchor whose founder is still walking"
-        );
-        assert_eq!(
-            policy.state.pending_sites,
-            vec![anchor],
-            "a walking claim's anchor must stay pending for a later audit"
-        );
-
-        let mut policy = UtilityPolicy::new();
-        policy.state.pending_sites.push(anchor);
-        let refused = obs_with(vec![harvester(0, None)]);
-        policy.audit_sites(&refused);
-        assert_eq!(
-            policy.state.dead_anchors,
-            vec![anchor],
-            "with no founder and no building, the anchor was refused and \
-             must be blacklisted exactly as before"
-        );
-        assert!(policy.state.pending_sites.is_empty());
-    }
-
     #[test]
     fn an_unfinished_foundry_site_keeps_orphan_relief_alive() {
         let anchor = TilePos::new(9, 4);
@@ -5560,7 +5357,7 @@ mod tests {
         });
         obs.my_queues.push(Vec::new());
 
-        let intents = UtilityPolicy::new().think_player_facing(
+        let intents = UtilityPolicy::new().think_residual(
             &Dials::full(),
             &obs,
             &[],
@@ -5580,7 +5377,7 @@ mod tests {
         let eliminated = obs_with(vec![harvester(0, None)]);
         assert!(
             UtilityPolicy::new()
-                .think_player_facing(
+                .think_residual(
                     &Dials::full(),
                     &eliminated,
                     &[],
@@ -5591,21 +5388,6 @@ mod tests {
                 .is_empty(),
             "a seat with no completed or unfinished Foundry remains eliminated"
         );
-    }
-
-    /// A founder walking toward one anchor must not shield a different
-    /// pending anchor from the audit.
-    #[test]
-    fn the_founder_shields_only_its_own_anchor() {
-        let claimed = TilePos::new(9, 4);
-        let refused = TilePos::new(15, 8);
-        let mut policy = UtilityPolicy::new();
-        policy.state.pending_sites.push(claimed);
-        policy.state.pending_sites.push(refused);
-        let obs = obs_with(vec![harvester(0, Some((BuildingKind::Turret, claimed)))]);
-        policy.audit_sites(&obs);
-        assert_eq!(policy.state.pending_sites, vec![claimed]);
-        assert_eq!(policy.state.dead_anchors, vec![refused]);
     }
 
     #[test]
@@ -5772,14 +5554,8 @@ mod tests {
                 20_042,
             ));
             let dials = Dials::scripted(&profile, DifficultyTuning::for_level(difficulty));
-            let intents = UtilityPolicy::new().think_player_facing(
-                &dials,
-                &obs,
-                &[],
-                &[],
-                &[],
-                &public_map(&obs),
-            );
+            let intents =
+                UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
             let ready_at_start =
                 combat_core_status(&obs, &[], &[], u64::from(dials.minimum_core_equivalents)).ready;
             let support_committed = intents.iter().any(|intent| {
@@ -5845,7 +5621,7 @@ mod tests {
                         .expect("the recovery order names a standing producer");
                     next.my_queues[index].push(*kind);
                 }
-                let continued = UtilityPolicy::new().think_player_facing(
+                let continued = UtilityPolicy::new().think_residual(
                     &dials,
                     &next,
                     &[],
@@ -6023,14 +5799,7 @@ mod tests {
             .expect("Foundries have a construction price")
             .cost;
         let run = |world: &Observation| {
-            UtilityPolicy::new().think_player_facing(
-                &dials,
-                world,
-                &[],
-                &[],
-                &[],
-                &public_map(world),
-            )
+            UtilityPolicy::new().think_residual(&dials, world, &[], &[], &[], &public_map(world))
         };
 
         obs.scrap = foundry_cost + UnitKind::Sentinel.stats().cost + 1_000;
@@ -6080,8 +5849,7 @@ mod tests {
             &mut Vec::new(),
         );
         ready.my_repair_targets = vec![(UnitId(3), oxide_sim::ids::Target::Unit(UnitId(5)))];
-        let intents =
-            policy.think_player_facing(&dials, &ready, &[], &[], &[], &public_map(&ready));
+        let intents = policy.think_residual(&dials, &ready, &[], &[], &[], &public_map(&ready));
         let preemption = intents
             .iter()
             .position(|intent| match intent {

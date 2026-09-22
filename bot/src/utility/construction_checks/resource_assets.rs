@@ -35,7 +35,9 @@ pub(in crate::utility) fn scrap_assets(
         nodes: ground
             .scrap
             .iter()
-            .filter(|(tile, amount)| **amount > 0 && !policy.state.dead_nodes.contains(tile))
+            .filter(|(tile, amount)| {
+                **amount > 0 && !policy.state.work_experience.dead_nodes.contains(tile)
+            })
             .map(|(tile, _)| *tile)
             .collect(),
         harvest_targets: sorted_tiles(
@@ -73,7 +75,9 @@ fn collect_assets(
     let mut remaining: BTreeSet<_> = ground
         .scrap
         .iter()
-        .filter(|(tile, amount)| **amount > 0 && !policy.state.dead_nodes.contains(tile))
+        .filter(|(tile, amount)| {
+            **amount > 0 && !policy.state.work_experience.dead_nodes.contains(tile)
+        })
         .map(|(tile, _)| *tile)
         .collect();
     let mut clusters = Vec::new();

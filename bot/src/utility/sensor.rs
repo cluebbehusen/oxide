@@ -912,7 +912,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        policy.state.dead_anchors = (0..obs.map_height)
+        policy.state.work_experience.dead_anchors = (0..obs.map_height)
             .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
             .filter(|anchor| *anchor != distant && *anchor != timely)
             .collect();
@@ -940,7 +940,7 @@ mod tests {
         assert_eq!(quote.strategic_radar, 5);
         assert_eq!(quote.builder_travel_cost, 250);
 
-        policy.state.dead_anchors.clear();
+        policy.state.work_experience.dead_anchors.clear();
         battlefield = Default::default();
         let mut quoted = 0;
         assert!(

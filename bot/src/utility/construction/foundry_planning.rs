@@ -42,7 +42,7 @@ impl UtilityPolicy {
             .filter(|(tile, amount)| {
                 *amount > 0
                     && obs.visible(*tile)
-                    && !self.state.dead_nodes.contains(tile)
+                    && !self.state.work_experience.dead_nodes.contains(tile)
                     && !self.harvest_location_contested(*tile)
                     && road_reach
                         .get_or_insert_with(|| Self::known_road_reach(obs, home))
