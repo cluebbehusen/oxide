@@ -4,7 +4,6 @@ mod common;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
 use oxide_sim::{BuildingKind, Command, Event, Order, PlayerId, UnitKind};
 use serde_json::json;
@@ -81,12 +80,9 @@ fn train_costs_scrap_and_spawns_after_build_time() {
 #[test]
 fn airworks_spawns_aircraft_above_its_roof_bay() {
     let mut scenario = arena(vec![]);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Airworks,
-        x: 8,
-        y: 2,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Airworks, 8, 2));
     let mut state = scenario.build().unwrap();
     let airworks = state
         .buildings()
@@ -139,22 +135,6 @@ fn airworks_spawns_aircraft_above_its_roof_bay() {
             .unwrap()
             .contains(aircraft.tile())
     );
-}
-
-/// Foundry drip credits a single-Foundry seat has earned by `state`'s
-/// current tick — recovery-flow assertions add or subtract this so the
-/// always-on floor and the finite fast flows stay separately testable.
-fn drip_credits(state: &oxide_sim::State) -> u32 {
-    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
-    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
-    let credits_by = |tick: u64| {
-        if tick < start {
-            0
-        } else {
-            tick / period - (start / period - 1)
-        }
-    };
-    u32::try_from(credits_by(state.current_tick())).unwrap()
 }
 
 #[test]
@@ -610,12 +590,9 @@ fn rally_on_foreign_building_is_rejected() {
 #[test]
 fn rally_rejects_non_producers_and_unfinished_producers() {
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 5)]);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Turret,
-        x: 8,
-        y: 2,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Turret, 8, 2));
     let mut state = scenario.build().unwrap();
     let worker = state.units()[0].id;
     let turret = state

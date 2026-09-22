@@ -1062,6 +1062,12 @@ impl State {
             if u.turret_heading.is_some() && !u.kind.has_ground_turret() {
                 return Err(E::InvalidTurretHeading(u.id));
             }
+            if u.leash.is_some_and(|leash| {
+                leash.patience > crate::stats::LEASH_PATIENCE
+                    || leash.cooldown > crate::stats::LEASH_REACQUIRE_COOLDOWN
+            }) {
+                return Err(E::InvalidLeashClock(u.id));
+            }
             if !unit_inside_envelope(u) {
                 return Err(E::UnitOutsideEnvelope(u.id));
             }
@@ -1164,6 +1170,7 @@ impl State {
                     || rider.brace_ticks != 0
                     || rider.drive_speed != Fx::ZERO
                     || rider.stall_ticks != 0
+                    || rider.landed
                     || !rider.cargo.is_empty()
                 {
                     return Err(E::CargoNotDormant(u.id));
@@ -2319,6 +2326,9 @@ pub enum StateIntegrityError {
     /// walking a ground route.
     #[error("unit {0} carries an invalid stall counter")]
     InvalidStallTicks(UnitId),
+    /// A chase allowance or reacquisition cooldown exceeds its legal bound.
+    #[error("unit {0} carries an invalid leash clock")]
+    InvalidLeashClock(UnitId),
     /// Motor speed exceeds the chassis limit or belongs to a stationary/air body.
     #[error("unit {0} carries invalid ground motor speed")]
     InvalidGroundSpeed(UnitId),

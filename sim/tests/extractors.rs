@@ -59,12 +59,7 @@ fn build(
 }
 
 fn harvester(player: u8, x: i32, y: i32) -> UnitSpec {
-    UnitSpec {
-        player,
-        kind: UnitKind::Harvester,
-        x,
-        y,
-    }
+    common::unit(player, UnitKind::Harvester, x, y)
 }
 
 const FRAME: TilePos = TilePos { x: 9, y: 4 };
@@ -95,12 +90,7 @@ fn support_arena(
     units.push(harvester(0, 10, 4));
     buildings.insert(
         0,
-        BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Extractor,
-            x: SUPPORT_FRAME.x,
-            y: SUPPORT_FRAME.y,
-        },
+        common::building(0, BuildingKind::Extractor, SUPPORT_FRAME.x, SUPPORT_FRAME.y),
     );
     Scenario {
         name: "extractor-support-arena".into(),
@@ -117,12 +107,7 @@ fn support_arena(
 }
 
 fn building(player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingSpec {
-    BuildingSpec {
-        player,
-        kind,
-        x: anchor.x,
-        y: anchor.y,
-    }
+    common::building(player, kind, anchor.x, anchor.y)
 }
 
 fn extractor_id(state: &State) -> oxide_sim::BuildingId {
@@ -609,18 +594,8 @@ fn an_unfinished_foundry_does_not_support_until_construction_completes() {
 #[test]
 fn destroying_the_supporting_foundry_returns_the_extractor_to_remote_yield() {
     let attackers = (0..3)
-        .map(|offset| UnitSpec {
-            player: 1,
-            kind: UnitKind::Avalanche,
-            x: 25,
-            y: 4 + offset,
-        })
-        .chain(std::iter::once(UnitSpec {
-            player: 1,
-            kind: UnitKind::Wisp,
-            x: 15,
-            y: 5,
-        }))
+        .map(|offset| common::unit(1, UnitKind::Avalanche, 25, 4 + offset))
+        .chain(std::iter::once(common::unit(1, UnitKind::Wisp, 15, 5)))
         .collect();
     let mut state = support_arena(
         0,
@@ -686,12 +661,12 @@ fn the_contest_cycle_re_derelicts_and_rebuilds() {
         ],
         vec![],
     );
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Extractor,
-        x: FRAME.x,
-        y: FRAME.y,
-    });
+    scenario.buildings.push(common::building(
+        0,
+        BuildingKind::Extractor,
+        FRAME.x,
+        FRAME.y,
+    ));
     let mut state = scenario.build().unwrap();
     let machine = state
         .buildings()

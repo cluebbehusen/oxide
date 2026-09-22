@@ -25,7 +25,7 @@ use chassis::grid::TilePos;
 use oxide_sim::stats::BuildingKind;
 
 /// Which axes a brain flips to think in home-in-the-northwest space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Orientation {
     flip_x: bool,
     flip_y: bool,
@@ -34,6 +34,9 @@ pub struct Orientation {
 }
 
 impl Orientation {
+    pub(crate) fn checkpoint_dimensions(&self) -> (i32, i32) {
+        (self.width, self.height)
+    }
     /// Orientation for a brain whose home footprint anchors at `home`
     /// on a `width` × `height` map: flip whichever axes put home in the
     /// southeast, so the policy always reasons from the northwest.

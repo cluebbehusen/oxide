@@ -65,8 +65,9 @@ state on every run and platform.**
   serialized field needs validation and an adversarial integrity test.
 - Rejected commands leave authoritative state unchanged. Preserve set semantics
   by sorting and deduplicating id lists at dispatch.
-- Saves are replays. Replay tick `N` is the state before commands stamped `N`
-  execute. Never add a hidden resume mutation.
+- Player saves restore validated session checkpoints without executing history.
+  Replays retain world origins and commands. Tick `N` is the state before
+  commands stamped `N` execute; restoration never adds a hidden mutation.
 - `FogView` is the canonical player-knowledge surface. Omniscient QA views must
   never feed a bot or player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.

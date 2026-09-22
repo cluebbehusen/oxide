@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const PREPARATION_HORIZON: Tick = 1_800;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RaidProcurementRequest {
     pub(crate) observed_at: Tick,
     pub(crate) deadline: Tick,
@@ -29,7 +29,7 @@ pub(crate) struct RaidProcurementRequest {
     retained_paid: Vec<PaidQueueClaim>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct RaidPaidWork {
     claims: Vec<PaidQueueClaim>,
     counts: BTreeMap<BuildingId, usize>,

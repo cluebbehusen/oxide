@@ -8,7 +8,7 @@ use common::{cmd, open_arena, players, run, unit};
 
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{PlayerSpec, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Event, Faction, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario,
     State, Target, UnitKind,
@@ -772,12 +772,9 @@ fn team_building_range(with_spotter: bool) -> Scenario {
     let mut scenario = team_range(UnitKind::Avalanche, with_spotter);
     scenario.name = "team-shell-building-range".into();
     scenario.units.retain(|unit| unit.player != 1);
-    scenario.buildings.push(BuildingSpec {
-        player: 1,
-        kind: BuildingKind::Turret,
-        x: 12,
-        y: 6,
-    });
+    scenario
+        .buildings
+        .push(common::building(1, BuildingKind::Turret, 12, 6));
     scenario
 }
 

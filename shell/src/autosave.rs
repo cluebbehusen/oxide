@@ -1,14 +1,13 @@
-//! Autosaves: the recorder is always on, so quitting mid-match costs a
-//! file write, and Continue is a replay load. Save-is-a-replay means an
-//! autosave can never desync from its history — the whole 0.4 design
-//! paying off as a feature.
+//! Atomic player checkpoints and finished-match recordings.
 //!
 //! Failure is a first-class outcome here: a quit path that cannot
 //! write its record must be able to say so before the process exits,
 //! which is why [`save`] reports [`SaveOutcome`] and [`SaveError`]
 //! instead of a bool.
 
-use crate::game::{Game, GameReplay};
+use crate::game::Game;
+#[cfg(test)]
+use crate::game::GameReplay;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,7 +20,7 @@ const KEEP_MATCHES: usize = 20;
 /// A temp older than this is an orphan from a crashed save, not a
 /// write in flight.
 const TEMP_ORPHAN_AGE: Duration = Duration::from_secs(3600);
-/// Invalid-JSON ownership marker held at a destination until its replay
+/// Invalid-JSON ownership marker held at a destination until its record
 /// atomically replaces it.
 const RESERVATION_MARKER_PREFIX: &str = "oxide-save-reservation:";
 
@@ -58,8 +57,8 @@ pub enum SaveError {
     Write {
         /// The record that failed.
         path: PathBuf,
-        /// The underlying replay-save error.
-        source: chassis::replay::ReplayError,
+        /// The underlying checkpoint or recording error.
+        source: anyhow::Error,
     },
 }
 
@@ -86,7 +85,7 @@ pub fn save(game: &mut Game) -> Result<SaveOutcome, SaveError> {
     let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
     // The nothing-to-do gates come before directory resolution so a
     // cold quit on a machine with no data dir stays a quiet success.
-    if game.state.current_tick() == 0 {
+    if game.state.current_tick() == 0 && game.pending.is_empty() {
         game.finish_recovery();
         return Ok(SaveOutcome::NothingToSave);
     }
@@ -103,15 +102,21 @@ pub fn save(game: &mut Game) -> Result<SaveOutcome, SaveError> {
 /// The testable core: the gates, the name walk, the write, the
 /// rotation — everything but the platform directory lookup.
 fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
-    write_record_with(game, dir, |record, path| record.save(path))
+    write_record_with(game, dir, |game, path| {
+        if game.state.result().is_some() {
+            game.recorder.save(path).map_err(Into::into)
+        } else {
+            crate::saved_game::write(game, game.recorder.meta.clone(), path)
+        }
+    })
 }
 
 fn write_record_with(
     game: &mut Game,
     dir: &Path,
-    save_replay: impl FnOnce(&GameReplay, &Path) -> Result<(), chassis::replay::ReplayError>,
+    save_record: impl FnOnce(&Game, &Path) -> anyhow::Result<()>,
 ) -> Result<SaveOutcome, SaveError> {
-    if game.state.current_tick() == 0 {
+    if game.state.current_tick() == 0 && game.pending.is_empty() {
         game.finish_recovery();
         return Ok(SaveOutcome::NothingToSave);
     }
@@ -137,7 +142,7 @@ fn write_record_with(
     // tick); walk a counter until a free name turns up so rotation
     // always keeps the newest sessions instead of overwriting one.
     let path = free_path(dir, prefix, tick, game.scenario.seed)?
-        .publish(|path| save_replay(&game.recorder, path))
+        .publish(|path| save_record(game, path))
         .map_err(|(path, source)| SaveError::Write { path, source })?;
     game.finish_recovery();
     game.autosave_done = true;
@@ -165,19 +170,19 @@ fn write_named(game: &Game, name: &str, dir: &Path, saved_at: u64) -> Result<Pat
         path: dir.to_path_buf(),
         source,
     })?;
-    let mut record = game.recorder.clone();
-    record.meta.ticks = Some(game.state.current_tick());
-    record.meta.description = Some(name.to_string());
-    record.meta.kind = Some("save".to_string());
-    record.meta.saved_at = Some(saved_at);
+    let mut meta = game.recorder.meta.clone();
+    meta.ticks = Some(game.state.current_tick());
+    meta.description = Some(name.to_string());
+    meta.kind = Some("save".to_string());
+    meta.saved_at = Some(saved_at);
     free_path(dir, "save", game.state.current_tick(), game.scenario.seed)?
-        .publish(|path| record.save(path))
+        .publish(|path| crate::saved_game::write(game, meta, path))
         .map_err(|(path, source)| SaveError::Write { path, source })
 }
 
 /// Owns an exclusively-created path until an atomic write replaces its
 /// marker. A failed write removes the marker, while an error reported
-/// after rename leaves the published replay intact.
+/// after rename leaves the published record intact.
 struct PathReservation {
     path: PathBuf,
     marker: Vec<u8>,
@@ -323,9 +328,8 @@ fn is_reservation_marker(path: &Path) -> bool {
     file.read_exact(&mut prefix).is_ok() && prefix == RESERVATION_MARKER_PREFIX.as_bytes()
 }
 
-/// The newest autosave this sim version can honestly resume, if any.
-/// Version-mismatched files stay on disk (archaeology) but never offer
-/// themselves — replays reproduce only on the sim that wrote them.
+/// The newest compatible autosave. Unavailable formats and corrupt sessions
+/// remain on disk but are never offered for Continue.
 pub fn latest_compatible() -> Option<PathBuf> {
     latest_compatible_in(&crate::paths::autosave_dir()?)
 }
@@ -354,8 +358,12 @@ fn latest_compatible_in(dir: &std::path::Path) -> Option<PathBuf> {
         path.file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("autosave-"))
-            && oxide_kit::load_replay(path)
-                .map(|r| r.meta.sim_version == oxide_sim::SIM_VERSION)
+            && crate::saved_game::inspect(path)
+                .map(|r| {
+                    r.problem.is_none()
+                        && crate::saves::record_kind(&r.meta, path)
+                            == crate::saves::RecordKind::Autosave
+                })
                 .unwrap_or(false)
     })
 }
@@ -431,6 +439,80 @@ mod tests {
             "removing the newest falls back to the older compatible record"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn continue_skips_invalid_checkpoints_and_can_fall_back_to_a_legacy_save() {
+        let dir = scratch("continue-formats");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut game = Game::new(oxide_sim::Scenario::skirmish()).unwrap();
+        game.advance_ticks(37);
+        let legacy = dir.join("autosave-legacy.json");
+        game.recorder.meta.ticks = Some(37);
+        game.recorder.save(&legacy).unwrap();
+        let Ok(SaveOutcome::Wrote(checkpoint)) = write_record(&mut game, &dir) else {
+            panic!("checkpoint writes")
+        };
+        // Explicit timestamps make newest-first selection independent of filesystem granularity.
+        for (path, secs) in [(&legacy, 1), (&checkpoint, 2)] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        }
+        let original: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+        for (index, pointer) in [
+            "/save/version",
+            "/game/session/version",
+            "/game/session/bots/0/version",
+            "/game/human",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut bad = original.clone();
+            *bad.pointer_mut(pointer).unwrap() = serde_json::json!(999);
+            std::fs::write(
+                dir.join(format!("autosave-invalid-{index}.json")),
+                serde_json::to_vec(&bad).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(latest_compatible_in(&dir), Some(checkpoint.clone()));
+        std::fs::remove_file(checkpoint).unwrap();
+        assert_eq!(latest_compatible_in(&dir), Some(legacy));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pending_tick_zero_input_is_saved_and_finished_matches_remain_recordings() {
+        let dir = scratch("pending-and-finished");
+        let mut game = Game::new(oxide_sim::Scenario::skirmish()).unwrap();
+        game.issue(oxide_sim::Command::Train {
+            building: oxide_sim::BuildingId(0),
+            kind: oxide_sim::UnitKind::Harvester,
+        });
+        let Ok(SaveOutcome::Wrote(path)) = write_record(&mut game, &dir) else {
+            panic!("pending input must not be discarded")
+        };
+        let mut restored = crate::saved_game::load(&path, None).unwrap();
+        assert_eq!(*restored.pending, *game.pending);
+        assert_eq!(restored.state.current_tick(), 0);
+        assert_eq!(restored.do_tick().events, game.do_tick().events);
+        restored.issue(oxide_sim::Command::Surrender);
+        restored.do_tick();
+        let Ok(SaveOutcome::Wrote(finished)) = write_record(&mut restored, &dir) else {
+            panic!("finished record writes")
+        };
+        let record = oxide_kit::load_replay(&finished).unwrap();
+        assert_eq!(record.meta.kind.as_deref(), Some("match"));
+        let mut playback = oxide_kit::playback::Playback::load(record).unwrap();
+        playback.seek(restored.state.current_tick());
+        assert_eq!(playback.state.hash(), restored.state.hash());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -537,7 +619,7 @@ mod tests {
         game.advance_ticks(1);
         let saved = write_named(&game, "before the big push", &dir, 1_784_721_600)
             .expect("a named save lands");
-        let record = oxide_kit::load_replay(&saved).expect("loads back");
+        let record = crate::saved_game::inspect(&saved).expect("loads back");
         assert_eq!(record.meta.kind.as_deref(), Some("save"));
         assert_eq!(
             record.meta.description.as_deref(),
@@ -561,7 +643,7 @@ mod tests {
         let Ok(SaveOutcome::Wrote(auto_path)) = write_record(&mut game, &dir) else {
             panic!("the quit record lands");
         };
-        let auto = oxide_kit::load_replay(&auto_path).expect("loads back");
+        let auto = crate::saved_game::inspect(&auto_path).expect("loads back");
         assert_eq!(auto.meta.kind.as_deref(), Some("autosave"));
         assert!(auto.meta.description.is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -603,14 +685,15 @@ mod tests {
         assert!(!game.autosave_done, "the session still owes a save");
 
         let err = write_record_with(&mut game, &dir, |record, path| {
-            record.save(path)?;
+            crate::saved_game::write(record, record.recorder.meta.clone(), path)?;
             Err(std::io::Error::other("late durability failure").into())
         })
         .expect_err("a post-rename failure still reports");
         let SaveError::Write { path, .. } = err else {
             panic!("the late failure keeps its path");
         };
-        oxide_kit::load_replay(&path).expect("a published replay is not mistaken for the marker");
+        crate::saved_game::inspect(&path)
+            .expect("a published replay is not mistaken for the marker");
         assert!(!game.autosave_done, "durability was not confirmed");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -638,7 +721,7 @@ mod tests {
             .expect("the next high-collision save lands");
         assert_ne!(first, second, "each save owns a distinct destination");
         assert_eq!(
-            oxide_kit::load_replay(&first)
+            crate::saved_game::inspect(&first)
                 .unwrap()
                 .meta
                 .description
@@ -646,7 +729,7 @@ mod tests {
             Some("first beyond the cutoff")
         );
         assert_eq!(
-            oxide_kit::load_replay(&second)
+            crate::saved_game::inspect(&second)
                 .unwrap()
                 .meta
                 .description
@@ -667,7 +750,7 @@ mod tests {
             let Ok(SaveOutcome::Wrote(path)) = write_record(&mut game, &dir) else {
                 panic!("completed autosave lands");
             };
-            oxide_kit::load_replay(path).expect("completed autosave loads");
+            crate::saved_game::inspect(&path).expect("completed autosave loads");
         }
 
         let mut game = Game::new(scenario).expect("game");
@@ -688,7 +771,7 @@ mod tests {
             .unwrap()
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
-            .filter(|path| oxide_kit::load_replay(path).is_ok())
+            .filter(|path| crate::saved_game::inspect(path).is_ok())
             .collect();
         assert_eq!(
             completed.len(),

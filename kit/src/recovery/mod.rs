@@ -74,6 +74,8 @@ pub(crate) struct Header {
     build: BuildIdentity,
     #[serde(deserialize_with = "crate::replay::deserialize_replay")]
     base: GameReplay,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<crate::checkpoint::SessionCheckpoint>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +109,9 @@ pub struct Inspection {
     pub session: String,
     /// Only commands belonging to verified completed ticks.
     pub replay: GameReplay,
+    /// Live controller/session origin, separate from the world-only replay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<crate::checkpoint::SessionCheckpoint>,
     /// A prepared but uncompleted command batch, never replayed implicitly.
     pub prepared: Option<Vec<PlayerCommand>>,
     /// Corrupt or truncated tail, if any; preceding complete records remain usable.
@@ -229,16 +234,25 @@ fn inspect_report(directory: &Path) -> Result<Inspection> {
         prepared.is_none() || manifest["prepared_tick"].as_u64() == replay.meta.ticks,
         "invalid report prepared tick"
     );
+    let checkpoint = manifest
+        .get("checkpoint")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .flatten();
+    let kind = manifest
+        .get("kind")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default();
+    validate_origin(kind, &replay, checkpoint.as_ref())?;
     Ok(Inspection {
-        kind: manifest
-            .get("kind")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default(),
+        kind,
         build: serde_json::from_value(manifest["build"].clone())?,
         session,
         replay,
+        checkpoint,
         prepared,
         issue: serde_json::from_value(manifest["issue"].clone())?,
         clean: manifest["clean"]
@@ -257,12 +271,7 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
         !header.session.is_empty() && header.session.len() <= 128,
         "invalid session identity"
     );
-    header.base.validate(Some(SIM_VERSION))?;
-    header
-        .base
-        .setup
-        .build()
-        .context("invalid recovery scenario")?;
+    validate_origin(header.kind, &header.base, header.checkpoint.as_ref())?;
     let mut tick = header
         .base
         .meta
@@ -278,6 +287,7 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
         build: header.build,
         session: header.session,
         replay: header.base,
+        checkpoint: header.checkpoint,
         prepared: None,
         issue: None,
         clean: false,
@@ -318,6 +328,11 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
                             <= chassis::replay::MAX_REPLAY_COMMANDS,
                         "recovery command limit"
                     );
+                    if *at == result.replay.start_tick()
+                        && let Some(checkpoint) = &result.checkpoint
+                    {
+                        checkpoint.validate_first_batch(commands)?;
+                    }
                 }
                 Event::Completed { tick: at } => ensure!(
                     *at == tick + 1 && result.prepared.is_some(),
@@ -352,6 +367,29 @@ fn inspect_reader(reader: &mut impl Read) -> Result<Inspection> {
     }
     result.replay.validate(Some(SIM_VERSION))?;
     Ok(result)
+}
+
+pub(crate) fn validate_origin(
+    kind: RecordingKind,
+    replay: &GameReplay,
+    checkpoint: Option<&crate::checkpoint::SessionCheckpoint>,
+) -> Result<()> {
+    replay.validate(Some(SIM_VERSION))?;
+    crate::recording::initial_state(replay)?;
+    match checkpoint {
+        Some(checkpoint) => {
+            ensure!(
+                kind == RecordingKind::LiveMatch,
+                "playback must not carry controller state"
+            );
+            checkpoint.validate_origin(replay)?;
+        }
+        None => ensure!(
+            kind == RecordingKind::Playback || replay.origin.is_none(),
+            "live recovery origin requires a session checkpoint"
+        ),
+    }
+    Ok(())
 }
 
 /// An inactive interrupted recording and its completed duration.
@@ -464,6 +502,14 @@ pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentit
         #[cfg(test)]
         tests::fault("export");
         let manifest = serde_json::json!({ "format": 1, "complete": true, "kind": record.kind, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": running_build, "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
+        let mut manifest = manifest;
+        if let Some(checkpoint) = &record.checkpoint {
+            manifest["checkpoint"] = serde_json::to_value(checkpoint)?;
+        }
+        ensure!(
+            pretty_size(&manifest)? <= MAX_BYTES as usize,
+            "report manifest too large"
+        );
         for name in [
             "timings.json",
             "watchdog.json",

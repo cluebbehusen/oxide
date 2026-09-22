@@ -15,7 +15,8 @@ algorithms whose behavior cannot change with a dependency's implementation.
 - `rng` and `hash` provide frozen random streams and canonical fingerprints.
 - `path` implements deterministic tile routing and line-of-travel checks.
 - `replay` records a generic setup plus tick-stamped commands and bounds
-  untrusted files before they enter a game-specific loader.
+  untrusted files before they enter a game-specific loader. An optional
+  game-validated origin supports segments beginning at a nonzero absolute tick.
 - `fsx` is the shared boundary for atomic, durable writes.
 
 ## Development

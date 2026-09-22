@@ -12,13 +12,13 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND};
 
 const ACTIONS: [&str; 4] = ["REMATCH", "WATCH REPLAY", "VIEW FINAL MAP", "HOME"];
-const WIDE_STAT_HEADERS: [&str; 6] = [
-    "PEAK ARMY VALUE",
-    "UNITS BUILT",
-    "BUILDINGS BUILT",
-    "UNITS LOST",
-    "BUILDINGS LOST",
-    "SCRAP COLLECTED",
+const WIDE_STAT_HEADERS: [[&str; 2]; 6] = [
+    ["PEAK ARMY", "VALUE"],
+    ["UNITS", "BUILT"],
+    ["BUILDINGS", "BUILT"],
+    ["UNITS", "LOST"],
+    ["BUILDINGS", "LOST"],
+    ["SCRAP", "COLLECTED"],
 ];
 
 /// What a result frame decided.
@@ -126,11 +126,17 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
             5.0,
         )
     };
+    let rule_offset = rule_offset + if wide_table { header_size } else { 0.0 };
+    let actions_y = action_rects(viewport, scale)[0].y / scale;
+    let row_height = f32::min(
+        row_height,
+        (actions_y - header_y - rule_offset - 8.0) / player_count.max(1) as f32,
+    );
     let graph_top = header_y
         + rule_offset
         + (player_count as f32 + graph_row_padding) * row_height
         + graph_padding;
-    let graph_bottom = action_rects(viewport, scale)[0].y / scale - 25.0;
+    let graph_bottom = actions_y - 25.0;
 
     ResultsLayout {
         compact_roster,
@@ -458,13 +464,15 @@ impl ResultsScreen {
                 .into_iter()
                 .zip(columns[1..].iter().copied())
             {
-                draw_centered_text(
-                    label,
-                    x,
-                    header_y,
-                    layout.header_size,
-                    theme::TEXT_SECONDARY,
-                );
+                for (line, text) in label.into_iter().enumerate() {
+                    draw_centered_text(
+                        text,
+                        x,
+                        header_y + line as f32 * layout.header_size,
+                        layout.header_size,
+                        theme::TEXT_SECONDARY,
+                    );
+                }
             }
         } else {
             draw_text(
@@ -1047,17 +1055,25 @@ mod tests {
         assert_eq!(layout.graph_label_size, 16.0);
         assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(columns[6] < 1248.0);
-        assert_eq!(
-            WIDE_STAT_HEADERS,
-            [
-                "PEAK ARMY VALUE",
-                "UNITS BUILT",
-                "BUILDINGS BUILT",
-                "UNITS LOST",
-                "BUILDINGS LOST",
-                "SCRAP COLLECTED",
-            ]
-        );
+        assert!(layout.rule_offset > layout.header_size * 1.5);
+    }
+
+    #[test]
+    fn maximum_roster_stays_readable_above_the_actions() {
+        for viewport in [vec2(640.0, 400.0), vec2(1100.0, 481.0), vec2(1100.0, 720.0)] {
+            for scale in [1.0, 2.0] {
+                let viewport = viewport * scale;
+                let count = oxide_sim::scenario::MAX_PLAYERS;
+                let layout = results_layout(viewport, scale, count);
+                let last_baseline = layout.header_y
+                    + layout.rule_offset
+                    + (count as f32 - 1.0 + layout.row_baseline) * layout.row_height;
+                assert!(layout.row_height >= layout.row_size);
+                assert!(
+                    last_baseline + layout.row_size * 0.25 < action_rects(viewport, scale)[0].y
+                );
+            }
+        }
     }
 
     #[test]

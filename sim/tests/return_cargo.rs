@@ -3,7 +3,6 @@ mod common;
 
 use chassis::grid::TilePos;
 use common::{cmd, open_arena, open_arena_with, run_until, unit};
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::{
     BuildingId, BuildingKind, Command, Event, Order, PlayerId, State, UnitId, UnitKind,
 };
@@ -197,12 +196,9 @@ fn return_cargo_skips_a_sealed_near_foundry_and_honors_explicit_destinations() {
             *cell = '#';
         }
     });
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Foundry,
-        x: 16,
-        y: 4,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Foundry, 16, 4));
     let state = scenario.build().unwrap();
     let worker = state.units()[0].id;
     let near = state
@@ -344,12 +340,9 @@ fn return_cargo_cancels_a_partial_harvest_and_can_be_overridden_by_move() {
 #[test]
 fn return_cargo_honors_a_far_explicit_foundry_and_saturates_the_bank() {
     let mut scenario = open_arena(24, 16, vec![unit(0, UnitKind::Excavator, 3, 3)]);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Foundry,
-        x: 16,
-        y: 4,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Foundry, 16, 4));
     let state = scenario.build().unwrap();
     let far = state
         .buildings()

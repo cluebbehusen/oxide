@@ -1026,15 +1026,12 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
 /// Loads a record back into a live session — the one loader behind both
 /// Home's Continue and the shelf's Load, so the two verbs cannot drift.
-/// A resume IS a replay load; validation and the tick-count cap live in
-/// [`Game::from_replay`].
+/// Checkpoints restore directly; compatible legacy saves reconstruct once.
 fn resume(
     path: &std::path::Path,
     diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
 ) -> Result<Game> {
-    let replay = oxide_kit::load_replay(path)
-        .with_context(|| format!("loading record {}", path.display()))?;
-    Game::from_replay_observed(replay, diagnostics)
+    crate::saved_game::load(path, diagnostics)
 }
 
 /// Whether the human's seat can still concede: it holds a Foundry and

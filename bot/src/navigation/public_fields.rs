@@ -6,7 +6,7 @@ use chassis::grid::TilePos;
 use oxide_sim::stats::BuildingKind;
 use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PublicGroundDistances {
     width: i32,
     height: i32,
@@ -14,7 +14,7 @@ pub(crate) struct PublicGroundDistances {
 }
 
 /// An owned field job, including the passability preparation before traversal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PublicFieldWork {
     width: i32,
     height: i32,
@@ -25,6 +25,24 @@ pub(crate) struct PublicFieldWork {
 }
 
 impl PublicFieldWork {
+    pub(crate) fn valid_checkpoint(&self, map: &PublicMapBriefing, sources: &[TilePos]) -> bool {
+        let (width, height) = (map.map_width(), map.map_height());
+        let cells = width as usize * height as usize;
+        self.width == width
+            && self.height == height
+            && self.sources == sources
+            && self.open.len() <= cells
+            && self.traversal.as_ref().is_none_or(|work| {
+                self.open.is_empty() && self.ready.is_none() && work.valid_checkpoint(width, height)
+            })
+            && self.ready.as_ref().is_none_or(|field| {
+                self.open.is_empty()
+                    && field.width == width
+                    && field.height == height
+                    && field.distances.len() == cells
+            })
+    }
+
     pub(crate) fn new(map: &PublicMapBriefing, sources: Vec<TilePos>) -> Self {
         Self {
             width: map.map_width().max(0),
@@ -101,11 +119,19 @@ impl PublicFieldWork {
 /// The dense membership form makes every Dijkstra edge check constant-time,
 /// while equality remains an exact invalidation key for both projected danger
 /// and the policy's independently retained contested-work regions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BlockedGroundLayout {
     width: i32,
     height: i32,
     blocked: Vec<bool>,
+}
+
+impl BlockedGroundLayout {
+    pub(crate) fn valid_checkpoint(&self, map: &PublicMapBriefing) -> bool {
+        self.width == map.map_width()
+            && self.height == map.map_height()
+            && self.blocked.len() == self.width as usize * self.height as usize
+    }
 }
 
 impl BlockedGroundLayout {
@@ -569,6 +595,7 @@ impl<'a, 'b> WorkRoutes<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::briefing;
     #[test]
     fn batched_footprint_distances_match_scalar_edges_and_unreachable_tiles() {
         for width in 1..9 {
@@ -660,29 +687,6 @@ mod tests {
                     }
                 }
             }
-        }
-    }
-
-    fn briefing(
-        width: i32,
-        height: i32,
-        walls: impl IntoIterator<Item = TilePos>,
-        starts: Vec<crate::StartingFoundry>,
-    ) -> PublicMapBriefing {
-        let mut non_ground_terrain = walls
-            .into_iter()
-            .map(|tile| (tile, oxide_sim::map::Terrain::Rock))
-            .collect::<Vec<_>>();
-        non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
-        PublicMapBriefing {
-            regions: Default::default(),
-            map_width: width,
-            map_height: height,
-            starting_foundries: starts,
-            teams: vec![Some(0), Some(1)],
-            non_ground_terrain,
-            extractor_frames: Vec::new(),
-            initial_scrap: Vec::new(),
         }
     }
 

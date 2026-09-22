@@ -40,14 +40,14 @@ pub(crate) use session::*;
 const BASE_PERSONALITY_WEIGHT: u128 = 100;
 
 /// Stable identity of one fresh Foundry opportunity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FoundryExpansionKey {
     /// Exact proposed Foundry anchor.
     pub(crate) anchor: TilePos,
 }
 
 /// Stable identity of one exact defensive construction opportunity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DefenseInvestmentKey {
     /// Exact defensive structure selected by the domain.
     pub(crate) kind: BuildingKind,
@@ -80,7 +80,7 @@ impl PartialOrd for FoundryExpansionKey {
 }
 
 /// Stable identity of one connected-offense opportunity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ConnectedOffenseKey {
     /// Current primary building that anchors the admitted target cluster.
     pub(crate) objective: BuildingId,
@@ -118,7 +118,9 @@ impl ConnectedPortfolioContext {
 pub(crate) use super::navigation::ServiceTarget as StandingForceServiceKey;
 
 /// Stable identity of one repeatable standing-force purchase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct StandingForceKey {
     /// Exact unit kind selected to answer the current standing-force demand.
     pub(crate) kind: UnitKind,
@@ -149,7 +151,9 @@ impl PartialOrd for ConnectedOffenseKey {
 }
 
 /// Stable identity used for canonical proposal order and decision traces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum ProposalKey {
     /// One fresh Foundry opportunity.
     FoundryExpansion(FoundryExpansionKey),
@@ -234,7 +238,7 @@ impl ProposalKey {
 }
 
 /// How soon the observed situation calls for a decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Urgency {
     /// Useful long-term development with no immediate pressure.
     Developmental,
@@ -245,7 +249,7 @@ pub(crate) enum Urgency {
 }
 
 /// Strength of the fog-honest evidence behind a proposal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Confidence {
     /// Public-map knowledge or a remembered prior supports the proposal.
     Prior,
@@ -256,7 +260,7 @@ pub(crate) enum Confidence {
 }
 
 /// Strategic consequence if the proposal succeeds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum StrategicValue {
     /// Improves the position without changing its basic shape.
     Incremental,
@@ -267,7 +271,7 @@ pub(crate) enum StrategicValue {
 }
 
 /// Delay before the proposal can materially affect the match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TimeToImpact {
     /// Pays off beyond the allocator's immediate tactical window.
     Patient,
@@ -278,7 +282,7 @@ pub(crate) enum TimeToImpact {
 }
 
 /// Confidence that the proposal can be executed without losing its investment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ExecutionSafety {
     /// Material route, exposure, or counterplay risks remain unresolved.
     Speculative,
@@ -294,7 +298,7 @@ pub(crate) enum ExecutionSafety {
 /// yield and target hit points therefore never masquerade as comparable units.
 /// Personality may decide only when the complete semantic investment cases tie; those
 /// deliberately coarse ties are the allocator's explicit near-tie boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProposalCase {
     /// Time pressure behind the proposal.
     pub(crate) urgency: Urgency,
@@ -342,7 +346,7 @@ impl AllocationPersonality {
 }
 
 /// Non-production capital that must be fundable by one fixed deadline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ForecastClaim {
     /// Fixed deadline that bounded the owning proposal.
     pub(crate) through: Tick,
@@ -356,7 +360,7 @@ pub(crate) struct ForecastClaim {
 /// The owning domain has already frozen the total amount and last safe
 /// deadline. Allocation may only choose which part comes from the observed
 /// bank and which part comes from conservative income through that deadline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DeferrableCapitalClaim {
     /// Fixed last tick by which the capital must be available.
     pub(crate) through: Tick,
@@ -375,7 +379,7 @@ pub(crate) struct DeferrableCapitalClaim {
 /// timing were already accepted. A persistent operation may instead retain an
 /// exact unpaid unit demand through [`Self::flexible`], leaving only the future
 /// producer assignment to this joint allocator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProducerJobClaim {
     kind: UnitKind,
     enqueue_not_before: Tick,
@@ -386,7 +390,7 @@ pub(crate) struct ProducerJobClaim {
 }
 
 /// Whether one production request may wait for completed-source income.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ProducerJobFunding {
     /// The persistent request may use current bank or later completed income.
     CurrentOrForecast,
@@ -395,7 +399,7 @@ enum ProducerJobFunding {
 }
 
 /// Whether allocation may choose a lane or must preserve an accepted one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ProducerJobAccess {
     /// Canonical producer set that passed fresh proposal preflight.
     Flexible(Vec<BuildingId>),
@@ -403,7 +407,7 @@ enum ProducerJobAccess {
     Fixed(FixedProducerJob),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FixedProducerJob {
     producer: BuildingId,
     enqueued_at: Tick,
@@ -558,7 +562,7 @@ impl ProducerJobClaim {
 }
 
 /// Canonical resources against which obligations and proposals compete.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AllocationCapacity {
     resources: ResourcePlanningProjection,
     buildings: Vec<BuildingId>,
@@ -635,7 +639,9 @@ pub(crate) enum ClaimBundleError {
 /// residual policy. Every producer job is charged exactly once from
 /// [`UnitKind`] by the joint scheduler and must not be duplicated in a capital
 /// field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct PaidQueueClaim {
     pub(crate) producer: BuildingId,
     pub(crate) kind: UnitKind,
@@ -1170,7 +1176,9 @@ pub(crate) enum AllocationConflict {
 }
 
 /// Priority class of already-accepted work imported before fresh selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum ObligationClass {
     /// Immediate survival or protected ordinary-core work.
     Survival,
@@ -1183,7 +1191,9 @@ pub(crate) enum ObligationClass {
 }
 
 /// Unmigrated controller channel protected by an explicit adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum LegacyChannel {
     /// Units already enlisted by the Executive's standing army.
     StandingArmy,
@@ -1210,7 +1220,7 @@ impl LegacyChannel {
 }
 
 /// Stable typed identity of one imported obligation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ObligationKey {
     /// One exact opening defense selected before ordinary core recovery.
     EmergencyDefense {
@@ -1317,7 +1327,15 @@ impl Ord for ObligationKey {
         if let (Self::SavedEconomy(left), Self::SavedEconomy(right)) = (self, other) {
             return left.cmp(right);
         }
-        self.sort_key().cmp(&other.sort_key())
+        self.sort_key()
+            .cmp(&other.sort_key())
+            .then_with(|| match (self, other) {
+                (
+                    Self::EmergencyDefense { kind: left, .. },
+                    Self::EmergencyDefense { kind: right, .. },
+                ) => left.cmp(right),
+                _ => Ordering::Equal,
+            })
     }
 }
 
@@ -1328,7 +1346,7 @@ impl PartialOrd for ObligationKey {
 }
 
 /// Stable owner identity retained in conflicts and production schedules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ClaimOwner {
     /// Mandatory work accepted before this allocation pass.
     Obligation {
@@ -1491,7 +1509,9 @@ pub(crate) struct ProposalDecision {
 }
 
 /// One exact producer job in the selected deterministic lane order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct ScheduledProducerJob {
     /// Owner whose payload contains this job.
     pub(crate) owner: ClaimOwner,
@@ -1516,7 +1536,9 @@ pub(crate) struct ScheduledProducerJob {
 }
 
 /// Final observation-relative funding split for one flexible capital claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct CapitalFundingAssignment {
     /// Exact owner whose capital was assigned.
     pub(crate) owner: ClaimOwner,
@@ -2440,19 +2462,19 @@ enum ActorRole {
     Unit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct OwnedActor {
     unit: UnitId,
     owner: ClaimOwner,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct OwnedSite {
     site: SiteFootprint,
     owner: ClaimOwner,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct OwnedProducerJob {
     claim: ProducerJobClaim,
     owner: ClaimOwner,
@@ -2460,7 +2482,9 @@ struct OwnedProducerJob {
     funding_priority: FundingPriority,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 struct FundingPriority {
     tier: u8,
     accepted_at: Tick,
@@ -2542,14 +2566,14 @@ impl FundingPriority {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct OwnedDeferrableCapital {
     claim: DeferrableCapitalClaim,
     owner: ClaimOwner,
     funding_priority: FundingPriority,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ClaimState {
     current_scrap: u64,
     minimum_residual_scrap: u32,
@@ -2572,13 +2596,13 @@ pub(crate) struct ResolvedClaimState {
     memo_hits: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 struct PortfolioVoluntaryScrapGuard {
     amount: u32,
     satisfier: Option<VoluntaryScrapGuardSatisfier>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct VoluntaryScrapGuardSatisfier {
     owner: ClaimOwner,
     queue_depth: usize,
@@ -3136,7 +3160,7 @@ fn optimistic_funding_schedule(jobs: &[OwnedProducerJob]) -> Option<Vec<Schedule
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 struct ProductionSearchState {
     remaining: Vec<bool>,
     producers: Vec<ProducerPlanningProjection>,
@@ -3643,7 +3667,7 @@ fn owner_enqueue_floors(schedule: &[ScheduledProducerJob]) -> Vec<(ClaimOwner, T
     result
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ProductionPlacement {
     job_index: usize,
     lane_index: usize,
@@ -3882,7 +3906,7 @@ struct FundingSplit {
     forecast: u128,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum JointFundingMode {
     PreferPriority,
     PreserveCompatiblePortfolio,
@@ -4121,6 +4145,42 @@ mod tests {
     use super::*;
     use crate::resources::{BuilderResource, ForecastAvailability, ResourcePlanningFixture};
     use oxide_sim::stats::QUEUE_CAP;
+
+    #[test]
+    fn emergency_obligation_order_preserves_every_building_identity() {
+        let keys: Vec<_> = [TilePos::new(2, 3), TilePos::new(3, 3)]
+            .into_iter()
+            .flat_map(|anchor| {
+                BuildingKind::ALL.map(|kind| ObligationKey::EmergencyDefense { kind, anchor })
+            })
+            .collect();
+        for left in &keys {
+            for right in &keys {
+                assert_eq!(left.cmp(right) == Ordering::Equal, left == right);
+                assert_eq!(left.cmp(right), right.cmp(left).reverse());
+            }
+        }
+        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
+        let ordered: Vec<_> = keys
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(matches!(
+            ordered[0],
+            ObligationKey::EmergencyDefense {
+                kind: BuildingKind::Turret,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ordered[1],
+            ObligationKey::EmergencyDefense {
+                kind: BuildingKind::FlakTurret,
+                ..
+            }
+        ));
+    }
 
     fn site(x: i32, y: i32) -> SiteFootprint {
         SiteFootprint::new(TilePos::new(x, y), (2, 2)).expect("the fixture site is positive")

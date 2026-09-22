@@ -103,7 +103,7 @@ impl ExpansionEconomy {
 }
 
 /// The deterministic payback quote for one exact candidate site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct FoundryOpportunity {
     pub(super) anchor: TilePos,
     horizon_ticks: u64,
@@ -1161,6 +1161,7 @@ pub(super) fn assess_foundry_expansions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::briefing;
 
     const TICKS_PER_MINUTE: u64 = 1_200;
     const FOUNDRY_COST: u32 = 300;
@@ -1704,29 +1705,6 @@ mod tests {
             expansion_disposition(empty, &safe_quote, 0, 100, FOUNDRY_COST),
             ExpansionDisposition::Reject
         );
-    }
-
-    fn briefing(
-        width: i32,
-        height: i32,
-        walls: impl IntoIterator<Item = TilePos>,
-        starts: Vec<crate::StartingFoundry>,
-    ) -> PublicMapBriefing {
-        let mut non_ground_terrain = walls
-            .into_iter()
-            .map(|tile| (tile, oxide_sim::map::Terrain::Rock))
-            .collect::<Vec<_>>();
-        non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
-        PublicMapBriefing {
-            regions: Default::default(),
-            map_width: width,
-            map_height: height,
-            starting_foundries: starts,
-            teams: vec![Some(0), Some(1)],
-            non_ground_terrain,
-            extractor_frames: Vec::new(),
-            initial_scrap: Vec::new(),
-        }
     }
 
     fn building(
