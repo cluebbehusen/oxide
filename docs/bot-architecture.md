@@ -178,9 +178,15 @@ financially feasible portfolios receive exact combined-layout checks. Those
 checks retain full multi-foundation egress and builder safety, remember rejected
 sets, and share results across connected-force contexts in the same decision;
 unused construction combinations are not enumerated in advance. Production
-search and candidate enumeration can yield deterministic work slices; the
-current synchronous scheduling adapter still drains them to a decision, so this
-alone does not bound a controller tick.
+search runs through retained deterministic work slices. Connected package
+feasibility uses that same funded FIFO service, without a separate unbounded
+structural assignment search. Cheap necessary capacity bounds screen speculative
+rosters; passing them is not a schedule witness. A depleted allowance defers
+work rather than proving infeasibility or cancelling an existing package.
+Producer eligibility is prepared once per distinct unit kind in each preflight.
+Input projection, claim construction and window-bound preparation are
+synchronous, so the search allowance alone is not a wall-clock bound on a
+controller tick.
 
 Mandatory claims are staged together before validating their complete producer
 schedule. A fixed job may depend on an earlier job owned by another obligation;

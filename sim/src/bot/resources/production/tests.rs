@@ -69,10 +69,6 @@ fn snapshot(scrap: u32, producers: Vec<ProducerLane>) -> ResourceSnapshot {
     }
 }
 
-fn demand(kind: UnitKind, count: usize) -> ProductionDemand {
-    ProductionDemand { kind, count }
-}
-
 fn lane_with_horizon_capacity(
     producer: u32,
     capacity: Tick,
@@ -93,6 +89,40 @@ fn lane_with_horizon_capacity(
         Some(progress),
         trainable,
         ProducerEgress::NotRequired,
+    )
+}
+
+fn brute_horizon_fits(
+    resources: &ResourceSnapshot,
+    requested: &[UnitKind],
+    deadline: Tick,
+) -> bool {
+    fn place(
+        resources: &ResourceSnapshot,
+        remaining: &[UnitKind],
+        deadline: Tick,
+        lanes: &mut [Vec<UnitKind>],
+    ) -> bool {
+        let Some((&kind, later)) = remaining.split_first() else {
+            return true;
+        };
+        for index in 0..lanes.len() {
+            lanes[index].push(kind);
+            let fits = resources.producers()[index]
+                .horizon_timing(&lanes[index])
+                .is_some_and(|timing| timing.no_block_latest_ready_tick < deadline);
+            if fits && place(resources, later, deadline, lanes) {
+                return true;
+            }
+            lanes[index].pop();
+        }
+        false
+    }
+    place(
+        resources,
+        requested,
+        deadline,
+        &mut vec![Vec::new(); resources.producers().len()],
     )
 }
 
@@ -131,12 +161,7 @@ fn speculative_capacity_bounds_never_exclude_a_feasible_mixed_roster() {
                         deadline,
                         &all_producers(&resources),
                     );
-                    let (exact, _) = complete_horizon_fits(
-                        &resources,
-                        &requested,
-                        deadline,
-                        &all_producers(&resources),
-                    );
+                    let exact = brute_horizon_fits(&resources, &requested, deadline);
                     assert!(possible || !exact);
                 }
             }
@@ -202,173 +227,7 @@ fn horizon_timing_does_not_cap_lifetime_throughput_at_queue_depth() {
 }
 
 #[test]
-fn horizon_feasibility_backtracks_for_a_ferrous_minimum() {
-    let resources = snapshot(
-        0,
-        vec![
-            lane(
-                1,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Kestrel, UnitKind::Condor],
-                ProducerEgress::NotRequired,
-            ),
-            lane(
-                2,
-                BuildingKind::Airworks,
-                vec![UnitKind::Talon],
-                vec![UnitKind::Kestrel, UnitKind::Condor],
-                ProducerEgress::NotRequired,
-            ),
-        ],
-    );
-    let deadline = OBSERVED_AT + Tick::from(UnitKind::Condor.stats().train_ticks) + 1;
-
-    assert!(production_demands_fit_horizon_with_access(
-        &resources,
-        &[demand(UnitKind::Kestrel, 1), demand(UnitKind::Condor, 1),],
-        deadline,
-        &all_producers(&resources),
-    ));
-}
-
-#[test]
-fn horizon_feasibility_backtracks_for_a_cupric_minimum() {
-    let resources = snapshot(
-        0,
-        vec![
-            lane(
-                1,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Gnat, UnitKind::Moth],
-                ProducerEgress::NotRequired,
-            ),
-            lane(
-                2,
-                BuildingKind::Airworks,
-                vec![UnitKind::Wisp],
-                vec![UnitKind::Gnat, UnitKind::Moth],
-                ProducerEgress::NotRequired,
-            ),
-        ],
-    );
-    let deadline = OBSERVED_AT + Tick::from(UnitKind::Moth.stats().train_ticks) + 1;
-
-    assert!(production_demands_fit_horizon_with_access(
-        &resources,
-        &[demand(UnitKind::Gnat, 1), demand(UnitKind::Moth, 1)],
-        deadline,
-        &all_producers(&resources),
-    ));
-}
-
-#[test]
-fn fixed_connected_horizon_handles_sixteen_full_airworks_without_exhaustion() {
-    let mut producers: Vec<_> = (1..=16)
-        .map(|producer| {
-            lane(
-                producer,
-                BuildingKind::Airworks,
-                Vec::new(),
-                vec![UnitKind::Kestrel, UnitKind::Darter],
-                ProducerEgress::NotRequired,
-            )
-        })
-        .collect();
-    producers.push(lane(
-        20,
-        BuildingKind::Fabricator,
-        Vec::new(),
-        vec![UnitKind::Bombard],
-        ProducerEgress::Open,
-    ));
-    let resources = snapshot(100_000, producers);
-    let mut requested = vec![UnitKind::Kestrel];
-    requested.extend(core::iter::repeat_n(UnitKind::Darter, 255));
-    requested.push(UnitKind::Bombard);
-    let deadline = OBSERVED_AT + 2_400;
-
-    assert!(
-        complete_horizon_fits(&resources, &requested, deadline, &all_producers(&resources)).0,
-        "one scout leaves room for 255 Darters across sixteen lanes, alongside independent ground work"
-    );
-}
-
-#[test]
-fn irregular_airworks_loads_do_not_create_a_hidden_package_cap() {
-    let trainable = vec![UnitKind::Kestrel, UnitKind::Buzzard, UnitKind::Condor];
-    let resources = snapshot(
-        100_000,
-        vec![
-            lane_at(
-                OBSERVED_AT,
-                1,
-                BuildingKind::Airworks,
-                vec![UnitKind::Buzzard, UnitKind::Buzzard],
-                Some(19),
-                trainable.clone(),
-                ProducerEgress::NotRequired,
-            ),
-            lane_at(
-                OBSERVED_AT,
-                2,
-                BuildingKind::Airworks,
-                vec![UnitKind::Kestrel],
-                Some(103),
-                trainable.clone(),
-                ProducerEgress::NotRequired,
-            ),
-            lane(
-                3,
-                BuildingKind::Airworks,
-                Vec::new(),
-                trainable.clone(),
-                ProducerEgress::NotRequired,
-            ),
-            lane_at(
-                OBSERVED_AT,
-                4,
-                BuildingKind::Airworks,
-                vec![UnitKind::Condor],
-                Some(157),
-                trainable,
-                ProducerEgress::NotRequired,
-            ),
-        ],
-    );
-    let mut requested = vec![UnitKind::Kestrel];
-    requested.extend(core::iter::repeat_n(UnitKind::Buzzard, 4));
-    requested.extend(core::iter::repeat_n(UnitKind::Condor, 3));
-    requested.extend(core::iter::repeat_n(UnitKind::Buzzard, 29));
-    let deadline = OBSERVED_AT + 2_400;
-
-    let (result, visited_states) =
-        complete_horizon_fits(&resources, &requested, deadline, &all_producers(&resources));
-    assert!(
-        result,
-        "the exact capacity check rejected a feasible package"
-    );
-    assert!(
-        visited_states < 1_000,
-        "canonical capacity search visited {visited_states} states"
-    );
-    let demands = [
-        demand(UnitKind::Kestrel, 1),
-        demand(UnitKind::Buzzard, 4),
-        demand(UnitKind::Condor, 3),
-        demand(UnitKind::Buzzard, 29),
-    ];
-    assert!(production_demands_fit_horizon_with_access(
-        &resources,
-        &demands,
-        deadline,
-        &all_producers(&resources),
-    ));
-}
-
-#[test]
-fn modular_capacity_rejects_fragmented_partial_eligibility_immediately() {
+fn modular_capacity_rejects_fragmented_partial_eligibility() {
     let all = vec![UnitKind::Kestrel, UnitKind::Buzzard, UnitKind::Condor];
     let air_ground_and_bomber = vec![UnitKind::Buzzard, UnitKind::Condor];
     let scout_and_air_ground = vec![UnitKind::Kestrel, UnitKind::Buzzard];
@@ -391,23 +250,23 @@ fn modular_capacity_rejects_fragmented_partial_eligibility_immediately() {
     let deadline = OBSERVED_AT + 2_400;
 
     let fragmented = snapshot(0, lanes(1_390));
-    let (result, visited_states) = complete_horizon_fits(
+    assert!(!production_may_fit_horizon(
         &fragmented,
         &requested,
         deadline,
-        &all_producers(&fragmented),
-    );
-    assert!(!result);
-    assert_eq!(visited_states, 1);
-
+        &all_producers(&fragmented)
+    ));
     let relaxed = snapshot(0, lanes(1_790));
-    let (result, _) =
-        complete_horizon_fits(&relaxed, &requested, deadline, &all_producers(&relaxed));
-    assert!(result, "the relaxed neighboring fixture fits");
+    assert!(production_may_fit_horizon(
+        &relaxed,
+        &requested,
+        deadline,
+        &all_producers(&relaxed)
+    ));
 }
 
 #[test]
-fn horizon_feasibility_preserves_deadline_access_and_egress_bounds() {
+fn capacity_bounds_preserve_deadline_access_and_egress() {
     let air = snapshot(
         0,
         vec![
@@ -428,21 +287,21 @@ fn horizon_feasibility_preserves_deadline_access_and_egress_bounds() {
         ],
     );
     let ready = OBSERVED_AT + Tick::from(UnitKind::Kestrel.stats().train_ticks) - 1;
-    assert!(!production_demands_fit_horizon_with_access(
+    assert!(!production_may_fit_horizon(
         &air,
-        &[demand(UnitKind::Kestrel, 1)],
+        &[UnitKind::Kestrel],
         ready,
         &all_producers(&air),
     ));
-    assert!(production_demands_fit_horizon_with_access(
+    assert!(production_may_fit_horizon(
         &air,
-        &[demand(UnitKind::Kestrel, 1)],
+        &[UnitKind::Kestrel],
         ready + 1,
         &all_producers(&air),
     ));
-    assert!(!production_demands_fit_horizon_with_access(
+    assert!(!production_may_fit_horizon(
         &air,
-        &[demand(UnitKind::Kestrel, 1)],
+        &[UnitKind::Kestrel],
         ready + 1,
         &ProductionAccess::restricted_kinds(vec![(BuildingId(2), UnitKind::Kestrel)]),
     ));
@@ -457,9 +316,9 @@ fn horizon_feasibility_preserves_deadline_access_and_egress_bounds() {
             ProducerEgress::Blocked,
         )],
     );
-    assert!(!production_demands_fit_horizon_with_access(
+    assert!(!production_may_fit_horizon(
         &blocked_ground,
-        &[demand(UnitKind::Bombard, 1)],
+        &[UnitKind::Bombard],
         Tick::MAX,
         &all_producers(&blocked_ground),
     ));
