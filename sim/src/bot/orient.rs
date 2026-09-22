@@ -367,35 +367,13 @@ mod tests {
         founding: Option<(BuildingKind, TilePos)>,
     ) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(player),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
             founding,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(player), kind, tile)
         }
     }
 
     fn building(id: u32, player: u8, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(player),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, PlayerId(player), kind, anchor)
     }
 
     fn observation() -> Observation {

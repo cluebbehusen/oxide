@@ -716,22 +716,7 @@ mod tests {
     }
 
     fn unit(id: u32, player: u8, kind: UnitKind, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(player),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(player), kind, tile)
     }
 
     fn building(
@@ -742,15 +727,8 @@ mod tests {
         built: bool,
     ) -> BuildingObs {
         BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(player),
-            kind,
-            anchor,
-            hp: kind.tier_stats(0).max_hp,
             built,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(id, PlayerId(player), kind, anchor)
         }
     }
 

@@ -342,6 +342,50 @@ impl Default for ObservationData {
 }
 
 #[cfg(test)]
+impl UnitObs {
+    /// An idle, undamaged unit with no cargo, work, or orders: the shared
+    /// base every test fixture spreads over, for the same reason
+    /// [`ObservationData`] has a test default.
+    pub(crate) fn fixture(id: u32, player: PlayerId, kind: UnitKind, tile: TilePos) -> Self {
+        Self {
+            id: UnitId(id),
+            player,
+            kind,
+            tile,
+            hp: kind.stats().max_hp,
+            idle: true,
+            carrying: 0,
+            harvesting: None,
+            cargo: 0,
+            site: None,
+            salvaging: None,
+            founding: None,
+            repairing: false,
+            grounded: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl BuildingObs {
+    /// A finished, undamaged, base-tier building in live sight: the
+    /// building counterpart of [`UnitObs::fixture`].
+    pub(crate) fn fixture(id: u32, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> Self {
+        Self {
+            provisional: false,
+            id: BuildingId(id),
+            player,
+            kind,
+            anchor,
+            hp: kind.base_stats().max_hp,
+            built: true,
+            seen: true,
+            tier: 0,
+        }
+    }
+}
+
+#[cfg(test)]
 impl Default for Observation {
     fn default() -> Self {
         Self::from_data(ObservationData::default())

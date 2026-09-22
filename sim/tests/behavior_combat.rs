@@ -620,29 +620,15 @@ fn attack_move_engages_on_the_way_then_resumes() {
     // aggro range of the march route, or the marcher will (correctly)
     // besiege it instead of arriving.
     let scenario = Scenario {
-        name: "attack-move-lane".into(),
-        seed: 42,
-        map: vec![
-            "####################".into(),
-            "#1.................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#................2.#".into(),
-            "#..................#".into(),
-            "####################".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![
-            unit(0, UnitKind::Sentinel, 2, 4),
-            unit(1, UnitKind::Harvester, 8, 6),
-        ],
-        buildings: Vec::new(),
-        meta: None,
+        players: players(200),
+        ..open_arena(
+            20,
+            12,
+            vec![
+                unit(0, UnitKind::Sentinel, 2, 4),
+                unit(1, UnitKind::Harvester, 8, 6),
+            ],
+        )
     };
     let mut state = scenario.build().unwrap();
     let (marcher, bystander) = (state.units()[0].id, state.units()[1].id);
@@ -1153,30 +1139,21 @@ fn buildings_are_not_cover_only_terrain_is() {
     // but the wall is a building. Buildings block movement, never bullets,
     // so the first shot lands on the command tick from the starting tile.
     let scenario = Scenario {
-        name: "building-no-cover".into(),
-        seed: 42,
-        map: vec![
-            "############".into(),
-            "#1.........#".into(),
-            "#..........#".into(),
-            "#..........#".into(),
-            "#..........#".into(),
-            "#........2.#".into(),
-            "#..........#".into(),
-            "############".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![
-            unit(0, UnitKind::Sentinel, 4, 3),
-            unit(1, UnitKind::Harvester, 6, 3),
-        ],
+        players: players(200),
         buildings: vec![BuildingSpec {
             player: 1,
             kind: BuildingKind::Array,
             x: 5,
             y: 3,
         }],
-        meta: None,
+        ..open_arena(
+            12,
+            8,
+            vec![
+                unit(0, UnitKind::Sentinel, 4, 3),
+                unit(1, UnitKind::Harvester, 6, 3),
+            ],
+        )
     };
     let mut state = scenario.build().unwrap();
     let (attacker, victim) = (state.units()[0].id, state.units()[1].id);
@@ -1211,20 +1188,7 @@ fn a_turret_fires_past_the_building_flush_against_it() {
     // fallback — it just went quiet. Terrain-only cover: the turret fires
     // straight through its neighbor.
     let scenario = Scenario {
-        name: "turret-past-neighbor".into(),
-        seed: 42,
-        map: vec![
-            "############".into(),
-            "#1.........#".into(),
-            "#..........#".into(),
-            "#..........#".into(),
-            "#..........#".into(),
-            "#........2.#".into(),
-            "#..........#".into(),
-            "############".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![unit(1, UnitKind::Harvester, 6, 3)],
+        players: players(200),
         buildings: vec![
             BuildingSpec {
                 player: 0,
@@ -1239,7 +1203,7 @@ fn a_turret_fires_past_the_building_flush_against_it() {
                 y: 3,
             },
         ],
-        meta: None,
+        ..open_arena(12, 8, vec![unit(1, UnitKind::Harvester, 6, 3)])
     };
     let mut state = scenario.build().unwrap();
     let victim = state.units()[0].id;
@@ -1254,26 +1218,16 @@ fn an_unbuilt_site_is_no_sandbag() {
     // is a slab, not a wall. Dropping a site on the fire line must not buy
     // instant hard cover.
     let scenario = Scenario {
-        name: "site-no-sandbag".into(),
-        seed: 42,
-        map: vec![
-            "############".into(),
-            "#1.........#".into(),
-            "#..........#".into(),
-            "#..........#".into(),
-            "#..........#".into(),
-            "#........2.#".into(),
-            "#..........#".into(),
-            "############".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![
-            unit(0, UnitKind::Sentinel, 4, 3),
-            unit(1, UnitKind::Harvester, 6, 3),
-            unit(1, UnitKind::Harvester, 5, 5),
-        ],
-        buildings: Vec::new(),
-        meta: None,
+        players: players(200),
+        ..open_arena(
+            12,
+            8,
+            vec![
+                unit(0, UnitKind::Sentinel, 4, 3),
+                unit(1, UnitKind::Harvester, 6, 3),
+                unit(1, UnitKind::Harvester, 5, 5),
+            ],
+        )
     };
     let mut state = scenario.build().unwrap();
     let (attacker, victim, builder) = (
@@ -1408,30 +1362,16 @@ fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
     // covered by the bombard tests; fight-then-win-then-resume by
     // attack_move_engages_on_the_way_then_resumes.)
     let scenario = Scenario {
-        name: "retaliation-lane".into(),
-        seed: 42,
-        map: vec![
-            "####################".into(),
-            "#1.................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#................2.#".into(),
-            "#..................#".into(),
-            "####################".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![
-            unit(0, UnitKind::Sentinel, 3, 2),
-            unit(0, UnitKind::Sentinel, 4, 1),
-            unit(1, UnitKind::Lancer, 9, 7),
-        ],
-        buildings: Vec::new(),
-        meta: None,
+        players: players(200),
+        ..open_arena(
+            20,
+            12,
+            vec![
+                unit(0, UnitKind::Sentinel, 3, 2),
+                unit(0, UnitKind::Sentinel, 4, 1),
+                unit(1, UnitKind::Lancer, 9, 7),
+            ],
+        )
     };
     let mut state = scenario.build().unwrap();
     let (marcher, rearguard, lancer) = (
@@ -1538,29 +1478,15 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     // A finished enemy turret vs a scuttler rush: the rush loses. Then a
     // lancer sieges from beyond turret range and wins untouched.
     let scenario = Scenario {
-        name: "turret-duel".into(),
-        seed: 42,
-        map: vec![
-            "####################".into(),
-            "#1.................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#................2.#".into(),
-            "#..................#".into(),
-            "####################".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![
-            unit(0, UnitKind::Harvester, 3, 2),
-            unit(1, UnitKind::Scuttler, 16, 5),
-        ],
-        buildings: Vec::new(),
-        meta: None,
+        players: players(200),
+        ..open_arena(
+            20,
+            12,
+            vec![
+                unit(0, UnitKind::Harvester, 3, 2),
+                unit(1, UnitKind::Scuttler, 16, 5),
+            ],
+        )
     };
     let mut state = scenario.build().unwrap();
     let (builder, rat) = (state.units()[0].id, state.units()[1].id);
@@ -1615,29 +1541,16 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     // Now the siege, in a fresh world: a lancer at range 5.5 > turret 5.0
     // grinds it down without ever taking return fire.
     let scenario = Scenario {
-        name: "lancer-siege".into(),
         seed: 43,
-        map: vec![
-            "####################".into(),
-            "#1.................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#................2.#".into(),
-            "#..................#".into(),
-            "####################".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![
-            unit(0, UnitKind::Harvester, 3, 2),
-            unit(1, UnitKind::Lancer, 16, 5),
-        ],
-        buildings: Vec::new(),
-        meta: None,
+        players: players(200),
+        ..open_arena(
+            20,
+            12,
+            vec![
+                unit(0, UnitKind::Harvester, 3, 2),
+                unit(1, UnitKind::Lancer, 16, 5),
+            ],
+        )
     };
     let mut state = scenario.build().unwrap();
     let (builder, lancer) = (state.units()[0].id, state.units()[1].id);
@@ -1769,31 +1682,15 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
     );
 
     let scenario = Scenario {
-        name: "bastion-dead-zone".into(),
         seed: 44,
-        map: vec![
-            "####################".into(),
-            "#1.................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#................2.#".into(),
-            "#..................#".into(),
-            "####################".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![unit(1, UnitKind::Scuttler, 9, 6)],
+        players: players(200),
         buildings: vec![BuildingSpec {
             player: 0,
             kind: BuildingKind::Bastion,
             x: 7,
             y: 5,
         }],
-        meta: None,
+        ..open_arena(20, 12, vec![unit(1, UnitKind::Scuttler, 9, 6)])
     };
     let mut state = scenario.build().unwrap();
     let bastion = state
@@ -1837,31 +1734,15 @@ fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
 #[test]
 fn bastion_opens_fire_beyond_its_dead_zone() {
     let scenario = Scenario {
-        name: "bastion-open-fire".into(),
         seed: 45,
-        map: vec![
-            "####################".into(),
-            "#1.................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#..................#".into(),
-            "#................2.#".into(),
-            "#..................#".into(),
-            "####################".into(),
-        ],
-        players: arena(vec![]).players,
-        units: vec![unit(1, UnitKind::Harvester, 13, 6)],
+        players: players(200),
         buildings: vec![BuildingSpec {
             player: 0,
             kind: BuildingKind::Bastion,
             x: 7,
             y: 5,
         }],
-        meta: None,
+        ..open_arena(20, 12, vec![unit(1, UnitKind::Harvester, 13, 6)])
     };
     let mut state = scenario.build().unwrap();
     let bastion = state

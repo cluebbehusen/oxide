@@ -1,6 +1,9 @@
 //! Bot observation honesty and executive army-lifecycle contracts,
 //! driven through the public API.
 
+mod common;
+use common::{cmd, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::bot::observation::ObservationData;
 use oxide_sim::bot::{
@@ -21,74 +24,19 @@ fn public_map(scenario: &Scenario) -> Arc<PublicMapBriefing> {
     )
 }
 
-fn open_arena(units: Vec<UnitSpec>) -> Scenario {
+fn arena_sized(width: usize, height: usize, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
-        name: "brain-arena".into(),
-        seed: 42,
-        map: vec![
-            "########################".into(),
-            "#1.....................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#......................#".into(),
-            "#....................2.#".into(),
-            "#......................#".into(),
-            "########################".into(),
-        ],
-        players: vec![
-            PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
-                team: None,
-                scrap: 500,
-                bot: false,
-                bot_config: None,
-            },
-            PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
-                team: None,
-                scrap: 500,
-                bot: false,
-                bot_config: None,
-            },
-        ],
-        units,
-        buildings: Vec::new(),
-        meta: None,
+        players: common::players(500),
+        ..common::open_arena(width, height, units)
     }
+}
+
+fn open_arena(units: Vec<UnitSpec>) -> Scenario {
+    arena_sized(24, 13, units)
 }
 
 fn large_open_arena(units: Vec<UnitSpec>) -> Scenario {
-    let width = 40usize;
-    let height = 24usize;
-    let mut map = vec![format!("#{}#", ".".repeat(width - 2)); height];
-    map[0] = "#".repeat(width);
-    map[height - 1] = "#".repeat(width);
-    for (x, y, marker) in [(1usize, 1usize, b'1'), (width - 3, height - 3, b'2')] {
-        let mut row = map[y].as_bytes().to_vec();
-        row[x] = marker;
-        map[y] = String::from_utf8(row).unwrap();
-    }
-    let mut scenario = open_arena(units);
-    scenario.map = map;
-    scenario
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
+    arena_sized(40, 24, units)
 }
 
 #[test]

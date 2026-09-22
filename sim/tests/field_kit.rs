@@ -1,34 +1,14 @@
 //! The field kit: buried Scuttle Charges (the game's only
 //! stealth), the Sapper's one-way demolition, and Barricade walls.
 
+mod common;
+use common::{building, cmd, players, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS};
-use oxide_sim::{
-    Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind,
-};
-
-fn players(scrap: u32) -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
+use oxide_sim::{Command, Event, PlayerId, Scenario, State, Target, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
@@ -74,21 +54,6 @@ fn radar_map() -> Vec<String> {
         "#......................................#".into(),
         "########################################".into(),
     ]
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
 }
 
 #[test]

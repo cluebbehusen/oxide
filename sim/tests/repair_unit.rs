@@ -4,80 +4,16 @@
 //! chase-not-weld rule for walking patients, fire winning ties, and the
 //! command validation ring.
 
+mod common;
+use common::{arena, cmd, run_until, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, Target,
-    UnitId, UnitKind, UnitRepairSource,
+    BuildingKind, Command, Event, Order, PlayerCommand, PlayerId, State, Target, UnitId, UnitKind,
+    UnitRepairSource,
 };
-
-fn arena(units: Vec<UnitSpec>) -> Scenario {
-    Scenario {
-        name: "weld-arena".into(),
-        seed: 42,
-        map: vec![
-            "################".into(),
-            "#1.............#".into(),
-            "#..............#".into(),
-            "#.....##.......#".into(),
-            "#.....##...s...#".into(),
-            "#..........s...#".into(),
-            "#............2.#".into(),
-            "#..............#".into(),
-            "################".into(),
-        ],
-        players: vec![
-            PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
-                team: None,
-                scrap: 200,
-                bot: false,
-                bot_config: None,
-            },
-            PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
-                team: None,
-                scrap: 200,
-                bot: false,
-                bot_config: None,
-            },
-        ],
-        units,
-        buildings: Vec::new(),
-        meta: None,
-    }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn run_until(
-    state: &mut State,
-    max_ticks: u64,
-    mut stop: impl FnMut(&State, &[Event]) -> bool,
-) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..max_ticks {
-        let report = state.tick(&[]);
-        let done = stop(state, &report.events);
-        all.extend(report.events);
-        if done {
-            return all;
-        }
-    }
-    panic!("condition not reached within {max_ticks} ticks");
-}
 
 const PATIENT_MAX: u32 = 60; // harvester max_hp, the suite's patient
 

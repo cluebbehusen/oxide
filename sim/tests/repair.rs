@@ -1,80 +1,14 @@
 //! Repair welding and Reclaimer trickle income. Headless scenarios
 //! through the public API only, like `behavior.rs`.
 
+mod common;
+use common::{arena, cmd, run_until, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD};
-use oxide_sim::{
-    Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, UnitKind,
-};
-
-fn arena(units: Vec<UnitSpec>) -> Scenario {
-    Scenario {
-        name: "repair-arena".into(),
-        seed: 42,
-        map: vec![
-            "################".into(),
-            "#1.............#".into(),
-            "#..............#".into(),
-            "#.....##.......#".into(),
-            "#.....##...s...#".into(),
-            "#..........s...#".into(),
-            "#............2.#".into(),
-            "#..............#".into(),
-            "################".into(),
-        ],
-        players: vec![
-            PlayerSpec {
-                name: "Ferrous".into(),
-                faction: Faction::Ferrous,
-                team: None,
-                scrap: 200,
-                bot: false,
-                bot_config: None,
-            },
-            PlayerSpec {
-                name: "Cupric".into(),
-                faction: Faction::Cupric,
-                team: None,
-                scrap: 200,
-                bot: false,
-                bot_config: None,
-            },
-        ],
-        units,
-        buildings: Vec::new(),
-        meta: None,
-    }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn run_until(
-    state: &mut State,
-    max_ticks: u64,
-    mut stop: impl FnMut(&State, &[Event]) -> bool,
-) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..max_ticks {
-        let report = state.tick(&[]);
-        let done = stop(state, &report.events);
-        all.extend(report.events);
-        if done {
-            return all;
-        }
-    }
-    panic!("condition not reached within {max_ticks} ticks");
-}
+use oxide_sim::{Command, Event, Order, PlayerId, State, UnitKind};
 
 /// Builds a turret at (3,3), lets an enemy ranged raid wound it (the
 /// builder is an accepted casualty; the turret wins), then trains a

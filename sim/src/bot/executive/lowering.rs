@@ -975,39 +975,15 @@ mod tests {
 
     fn fighter(id: u32, tile: TilePos, idle: bool) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Lancer,
-            tile,
-            hp: UnitKind::Lancer.stats().max_hp,
             idle,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(0), UnitKind::Lancer, tile)
         }
     }
 
     fn unit(id: u32, player: u8, kind: UnitKind, hp: u32) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(player),
-            kind,
-            tile: TilePos::new(4 + id as i32, 4),
             hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(player), kind, TilePos::new(4 + id as i32, 4))
         }
     }
 
@@ -1167,15 +1143,8 @@ mod tests {
     #[test]
     fn pressure_objective_identity_preserves_fog_but_refuses_observed_replacements() {
         let current = BuildingObs {
-            provisional: false,
-            id: BuildingId(900),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(25, 9),
             hp: 1000,
-            built: true,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(900, PlayerId(1), BuildingKind::Foundry, TilePos::new(25, 9))
         };
         let target = ArmyObjective::from_building(&current);
         let ghost = BuildingObs {
@@ -1215,15 +1184,14 @@ mod tests {
         use crate::bot::experience::Outcome;
         let (mut obs, mut executive) = target_holding_position();
         let mut building = BuildingObs {
-            provisional: false,
-            id: BuildingId(u32::MAX),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(25, 9),
             hp: 1000,
-            built: true,
             seen: false,
-            tier: 0,
+            ..BuildingObs::fixture(
+                u32::MAX,
+                PlayerId(1),
+                BuildingKind::Foundry,
+                TilePos::new(25, 9),
+            )
         };
         let mission = ArmyMission {
             purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(&building)),
@@ -1387,15 +1355,8 @@ mod tests {
             {
                 let obs = &mut *obs;
                 obs.my_buildings.push(BuildingObs {
-                    provisional: false,
-                    id: BuildingId(900),
-                    player: obs.me,
-                    kind: BuildingKind::Foundry,
-                    anchor: TilePos::new(20, 8),
                     hp: 100,
-                    built: true,
-                    seen: true,
-                    tier: 0,
+                    ..BuildingObs::fixture(900, obs.me, BuildingKind::Foundry, TilePos::new(20, 8))
                 });
             }
             let mut mission = ArmyMission {
@@ -1969,15 +1930,13 @@ mod tests {
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(10, y)).collect();
         let building = BuildingId(9);
         obs.my_buildings = vec![BuildingObs {
-            provisional: false,
-            id: building,
-            player: PlayerId(0),
-            kind: BuildingKind::Turret,
-            anchor: TilePos::new(11, 8),
             hp: 1,
-            built: true,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(
+                building.0,
+                PlayerId(0),
+                BuildingKind::Turret,
+                TilePos::new(11, 8),
+            )
         }];
         let repair = Executive::new().apply(PlayerId(0), &obs, &[Intent::Repair { building }]);
         assert!(matches!(repair.as_slice(), [PlayerCommand {
@@ -2000,15 +1959,13 @@ mod tests {
             UnitKind::Harvester.stats().max_hp,
         )];
         obs.my_buildings = vec![crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(0),
-            kind: BuildingKind::Turret,
-            anchor: TilePos::new(8, 8),
             hp: 1,
-            built: true,
-            seen: true,
-            tier: 0,
+            ..crate::bot::observation::BuildingObs::fixture(
+                9,
+                PlayerId(0),
+                BuildingKind::Turret,
+                TilePos::new(8, 8),
+            )
         }];
         obs.my_queues = vec![Vec::new()];
         let lease = BuilderLease::new(builder, BuildingKind::Foundry, TilePos::new(12, 8));
@@ -2106,15 +2063,13 @@ mod tests {
         ];
         let building = BuildingId(9);
         obs.my_buildings = vec![crate::bot::observation::BuildingObs {
-            provisional: false,
-            id: building,
-            player: PlayerId(0),
-            kind: BuildingKind::Foundry,
-            anchor: TilePos::new(2, 2),
             hp: 100,
-            built: true,
-            seen: true,
-            tier: 0,
+            ..crate::bot::observation::BuildingObs::fixture(
+                building.0,
+                PlayerId(0),
+                BuildingKind::Foundry,
+                TilePos::new(2, 2),
+            )
         }];
         let goal = TilePos::new(14, 8);
         let commands = Executive::new().apply_with_reservations(

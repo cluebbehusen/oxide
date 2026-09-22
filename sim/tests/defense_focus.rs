@@ -4,16 +4,11 @@ mod common;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::{
     BuildingId, BuildingKind, Command, Event, PlayerId, State, Target, UnitId, UnitKind,
 };
 
-use common::{cmd, open_arena, open_arena_with, run_until, unit};
-
-fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
-}
+use common::{building, cmd, open_arena, open_arena_with, run_until, unit};
 
 fn building_id(state: &State, player: u8, kind: BuildingKind, nth: usize) -> BuildingId {
     state

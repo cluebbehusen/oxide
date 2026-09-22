@@ -102,781 +102,789 @@ pub(super) fn update_and_draw(
     // presenting, so the frame shows the destination.
     let mut rerun = false;
     screen = match screen {
-        Screen::Home(mut home) => {
-            // The title scene: a cold front door drifts its camera
-            // slowly across the backdrop world instead of freezing
-            // a frame — presentation only, and only while nothing
-            // is at stake (a resumable match keeps its exact view).
-            if app.game.state.current_tick() == 0 && !render::reduced_motion() {
-                app.game.presentation.camera.pan(vec2(dt * 0.55, dt * 0.22));
-                let (_, hi) = app.game.presentation.camera.world_rect();
-                if hi.x >= app.game.state.map().width() as f32 + 1.9 {
-                    app.game.presentation.camera.center = vec2(0.0, 0.0);
-                    app.game.presentation.camera.pan(vec2(0.0, 0.0)); // re-clamp home
-                }
-            }
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = home.update(
-                &events,
-                &mut app.input.mouse,
-                &mut app.game.presentation.sounds_pending,
-            );
-            drop(input_scope);
-            // Session verbs first — Continue and Tutorial swap the
-            // game this frame then draws under the menu. The menu
-            // draw needs `home`, so verbs that displace it (only
-            // Settings) build their screen after the draw below.
-            let mut next: Option<Screen> = None;
-            match out {
-                screens::home::Out::Stay
-                | screens::home::Out::Settings
-                | screens::home::Out::Roster => {}
-                screens::home::Out::Recover => {
-                    let _scope = app
-                        .game
-                        .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
-                    let recovered = home
-                        .recovery
-                        .as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
-                        .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
-                        .and_then(|record| {
-                            Game::from_replay_observed(record.replay, app.game.diagnostics.as_ref())
-                        });
-                    match recovered {
-                        Ok(fresh) => {
-                            app.tutorial = None;
-                            app.game = keep_flags(fresh, &app.game);
-                            app.game.presentation.paused = true;
-                            app.game.recovery_source = home
-                                .recovery
-                                .as_ref()
-                                .map(|record| record.directory.clone());
-                            app.game.start_recovery();
-                            app.game
-                                .presentation
-                                .toast("Recovered match is paused. Resume when ready.");
-                            app.performance.reset();
-                            app.input.reset_session();
-                            next = Some(Screen::Playing);
-                        }
-                        Err(error) => {
-                            app.menu_notice = Some((
-                                format!("Recovery unavailable: {error:#}"),
-                                get_time() + 8.0,
-                            ));
-                        }
-                    }
-                }
-                screens::home::Out::Continue => {
-                    let _scope = app
-                        .game
-                        .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
-                    // Resume the newest autosave — a replay load, so
-                    // it cannot desync from its own history.
-                    if let Some(fresh) = autosave::latest_compatible()
-                        .and_then(|path| resume(&path, app.game.diagnostics.as_ref()).ok())
-                    {
-                        app.tutorial = None;
-                        app.game = keep_flags(fresh, &app.game);
-                        app.performance.reset();
-                        app.game.presentation.paused = app.args.paused;
-                        app.input.reset_session();
-                        next = Some(Screen::Playing);
-                    } else {
-                        app.game.presentation.toast("that save no longer loads");
-                    }
-                }
-                screens::home::Out::Play => {
-                    next = Some(Screen::Wizard(Wizard::open(&app.draft)));
-                }
-                screens::home::Out::Tutorial => {
-                    // The tutorial is a gentle real match with the
-                    // lesson cards riding on top.
-                    let fresh = Game::new(tutorial::tutorial_scenario())?;
-                    app.game = keep_flags(fresh, &app.game);
-                    app.performance.reset();
-                    app.game.presentation.paused = app.args.paused;
-                    app.tutorial = Some(tutorial::Tutorial::new());
-                    app.input.reset_session();
-                    next = Some(Screen::Playing);
-                }
-                screens::home::Out::Replays => {
-                    next = Some(Screen::Replays(Shelf::open()));
-                }
-                screens::home::Out::Quit => match autosave::save(&mut app.game) {
-                    Ok(_) => std::process::exit(0),
-                    Err(err) => {
-                        // Exiting anyway would be silent data loss:
-                        // the failure dialog holds the door.
-                        next = Some(Screen::Pause(PauseScreen::open_save_failed(
-                            err.player_line(),
-                            screens::pause::LeaveVerb::Quit,
-                            app.game.state.result().is_some(),
-                            can_surrender(&app.game),
-                            true,
-                        )));
-                    }
-                },
-            }
-            render::draw(&app.game.view(), &app.sprites, &app.input);
-            veil();
-            home.menu.draw(home.subtitle());
-            if out == screens::home::Out::Settings {
-                Screen::Settings {
-                    screen: SettingsScreen::open(&app.config),
-                    back: Box::new(Screen::Home(home)),
-                }
-            } else if out == screens::home::Out::Roster {
-                Screen::Codex {
-                    screen: CodexScreen::open(),
-                    back: Box::new(Screen::Home(home)),
-                }
-            } else {
-                next.unwrap_or(Screen::Home(home))
-            }
-        }
-        Screen::Settings {
-            screen: mut sc,
+        Screen::Home(home) => home_frame(app, home, &events, dt)?,
+        Screen::Settings { screen: sc, back } => settings_frame(
+            app,
+            sc,
             back,
-        } => {
-            if sc.notice.is_none()
-                && let Some(error) = app
-                    .game
-                    .recovery
-                    .as_ref()
-                    .and_then(|writer| writer.status().error)
-            {
-                sc.notice = Some(screens::settings::Notice {
-                    text: format!("Recovery stopped: {error}"),
-                    danger: true,
-                });
-            }
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let up = sc.update(
-                &events,
-                &mut app.input.mouse,
-                &mut app.game.presentation.sounds_pending,
-                &mut app.config,
-                &mut app.input.bindings,
-                ctrl_at_frame_start,
-                shift_at_frame_start,
-            );
-            drop(input_scope);
-            match up.out {
-                screens::settings::Out::OpenDiagnostics => {
-                    if let Err(error) = app.report_job.open_folder() {
-                        sc.notice = Some(screens::settings::Notice {
-                            text: error.to_string(),
-                            danger: true,
-                        });
-                    }
-                }
-                screens::settings::Out::ExportDiagnostics => {
-                    sc.notice = Some(match app.report_job.start(&app.game) {
-                        Ok(()) => screens::settings::Notice {
-                            text: "Exporting diagnostic report...".into(),
-                            danger: false,
-                        },
-                        Err(error) => screens::settings::Notice {
-                            text: error.to_string(),
-                            danger: true,
-                        },
-                    });
-                }
-                _ => {}
-            }
-            if up.dirty
-                && let Err(err) = app.config.save()
-            {
-                app.menu_notice =
-                    Some((format!("could not save settings: {err}"), get_time() + 5.0));
-            }
-            render::draw(&app.game.view(), &app.sprites, &app.input);
-            veil();
-            sc.draw();
-            if up.out == screens::settings::Out::Leave {
-                // Back to wherever this screen displaced: Home, or
-                // the untouched pause menu still waiting on its
-                // Settings row.
-                *back
-            } else {
-                Screen::Settings { screen: sc, back }
-            }
-        }
+            &events,
+            ctrl_at_frame_start,
+            shift_at_frame_start,
+        ),
         Screen::Codex {
-            screen: mut codex,
+            screen: codex,
             back,
-        } => {
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = codex.update(
-                &events,
-                &mut app.input.mouse,
-                &mut app.game.presentation.sounds_pending,
-            );
-            drop(input_scope);
-            render::draw(&app.game.view(), &app.sprites, &app.input);
-            veil();
-            let viewer = app.game.state.player(app.game.presentation.human).faction;
-            codex.draw(&app.sprites, viewer);
-            if out == screens::codex::Out::Leave {
-                *back
-            } else {
-                Screen::Codex {
-                    screen: codex,
-                    back,
-                }
-            }
-        }
-        Screen::Wizard(mut w) => {
-            // Wizard trouble — an unreadable map file, a scenario
-            // that fails validation — is a dialog problem, never a
-            // process abort: report and stay on the menu.
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = match w.update(
-                &events,
-                &mut app.input.mouse,
-                &mut app.draft,
-                &mut app.game.presentation.sounds_pending,
-            ) {
-                Ok(out) => out,
-                Err(err) => {
-                    app.menu_notice =
-                        Some((format!("can't open that map: {err:#}"), get_time() + 5.0));
-                    WizardOut::Stay
-                }
-            };
-            let mut next: Option<Screen> = None;
-            drop(input_scope);
-            let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds);
-            match out {
-                WizardOut::Home => {
-                    let home = HomeScreen::open();
-                    render::draw(&app.game.view(), &app.sprites, &app.input);
-                    veil();
-                    home.menu.draw(home.subtitle());
-                    rerun = true;
-                    next = Some(Screen::Home(home));
-                }
-                WizardOut::Launch => match launch_result.expect("launch outcome has a result") {
-                    Ok(fresh) => {
-                        app.tutorial = None;
-                        app.game = keep_flags(fresh, &app.game);
-                        app.performance.reset();
-                        app.game.presentation.paused = app.args.paused;
-                        app.input.reset_session();
-                        render::draw(&app.game.view(), &app.sprites, &app.input);
-                        rerun = true;
-                        next = Some(Screen::Playing);
-                    }
-                    Err(err) => {
-                        app.menu_notice =
-                            Some((format!("can't start that match: {err:#}"), get_time() + 5.0));
-                    }
-                },
-                WizardOut::Stay => {}
-            }
-            if let Some(next) = next {
-                next
-            } else {
-                render::draw(&app.game.view(), &app.sprites, &app.input);
-                veil();
-                match w.step {
-                    WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
-                    WizardStep::Setup => w.draw_setup(&app.draft, &mut app.previews),
-                }
-                Screen::Wizard(w)
-            }
-        }
-        Screen::Playing => {
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            // The tutorial card is chrome; clicks on it must not reach the
-            // world or consume an armed gameplay action.
-            if let Some(t) = &app.tutorial {
-                let dismiss = render::tutorial_dismiss_rect();
-                let card = render::tutorial_card_rect(t);
-                if events.iter().any(|e| {
-                    matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
-                        if dismiss.contains(vec2(*x, *y)))
-                }) {
-                    app.tutorial = None;
-                }
-                // Swallowing a release whose press began in the world must
-                // also end that drag, or a later release completes it.
-                let swallowed_up = events.iter().any(|e| {
-                    matches!(e, RawEvent::MouseUp { x, y, .. }
-                        if card.contains(vec2(*x, *y)))
-                });
-                events.retain(|e| {
-                    !matches!(e,
-                        RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
-                            if card.contains(vec2(*x, *y)))
-                });
-                if swallowed_up {
-                    app.input.drag_origin = None;
-                }
-            }
-            let had_selection = !app.game.presentation.selection.units.is_empty()
-                || !app.game.presentation.selection.buildings.is_empty();
-            let mut ctrl = ctrl_at_frame_start;
-            let mut shift = shift_at_frame_start;
-            let escape_pressed = events.iter().any(|event| {
-                match event {
-                    RawEvent::KeyDown { key: Key::Ctrl } => ctrl = true,
-                    RawEvent::KeyUp { key: Key::Ctrl } => ctrl = false,
-                    RawEvent::KeyDown { key: Key::Shift } => shift = true,
-                    RawEvent::KeyUp { key: Key::Shift } => shift = false,
-                    RawEvent::KeyDown { key } => {
-                        return app.input.bindings.resolve_in(
-                            *key,
-                            ctrl,
-                            shift,
-                            app.input.context(&app.game),
-                        ) == Some(crate::action::Action::Back);
-                    }
-                    _ => {}
-                }
-                false
-            });
-            app.input.ui = render::ui_scale();
-            app.input.now = get_time();
-            app.input.camera_prefs = app.config.camera;
-            app.input.touch_prefs = app.config.touch;
-            input::apply_events(&mut app.game, &mut app.input, &events);
-            input::update_held(&mut app.game, &app.input, dt);
-            input::update_touch(&mut app.game, &mut app.input);
-            // The cursor telegraphs the verb: crosshair while
-            // placing or plotting, pointer over chrome.
-            macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(
-                &app.game, &app.input,
-            ));
-            // Escape walks outward: deselect first, then the menu —
-            // except over a decided match (or the concede overlay),
-            // where the banner promises 'Press Esc to continue' and
-            // must mean it even with a selection still alive.
-            let mut next: Option<Screen> = None;
-            if playing_escape_opens_pause(
-                escape_pressed,
-                had_selection,
-                app.game.state.result().is_some(),
-                app.game.presentation.conceded_banner,
-            ) {
-                // Opening the menu dismisses the concede overlay for
-                // good — Resume from here is clean spectating.
-                app.game.presentation.conceded_banner = false;
-                app.game.presentation.paused = true;
-                app.game.demo.paused_menu = true;
-                next = Some(Screen::Pause(PauseScreen::open(
-                    app.game.state.result().is_some(),
-                    can_surrender(&app.game),
-                )));
-            }
-            if let Some(t) = app.tutorial.as_mut() {
-                if !t.advance(&app.game.demo) {
-                    app.tutorial = None;
-                } else {
-                    // A click on the card's dismiss box ends school.
-                    let dismiss = render::tutorial_dismiss_rect();
-                    if events.iter().any(|e| {
-                        matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
-                            if dismiss.contains(vec2(*x, *y)))
-                    }) {
-                        app.tutorial = None;
-                    }
-                }
-            }
-            drop(input_scope);
-            let profile_barrier =
-                !app.game.presentation.paused && app.frame_profiler.take_start_barrier();
-            profile_frame_active = !app.game.presentation.paused && !profile_barrier;
-            let profile_stopped = if profile_barrier {
-                false
-            } else {
-                let stopped = app
-                    .game
-                    .advance_wall_clock(dt, app.frame_profiler.stop_tick());
-                app.game.update_wall_clock_fx(dt);
-                stopped
-            };
-            if profile_stopped {
-                app.game.presentation.paused = true;
-            }
-            if app.game.state.result().is_some() && app.game.end_stats.is_some() {
-                next = Some(Screen::Results(ResultsScreen::open()));
-                // Re-enter immediately so the first decided frame is
-                // the report, not a bare frozen battlefield.
-                rerun = true;
-            }
-            render::draw_with_performance(
-                &app.game.view(),
-                &app.sprites,
-                &app.input,
-                Some(app.performance.view()),
-            );
-            if let Some(t) = &app.tutorial {
-                render::draw_tutorial(t, &app.game, &app.input.bindings);
-            }
-            next.unwrap_or(Screen::Playing)
-        }
-        Screen::Playback(mut pb) => {
-            pb.bindings.clone_from(&app.input.bindings);
-            let input_scope = pb.diagnostics.as_ref().and_then(|recorder| {
-                recorder.span(oxide_kit::diagnostics::Phase::Input, pb.engine.position())
-            });
-            let leave = pb.apply_input(
-                &events,
-                dt,
-                vec2(screen_width(), screen_height()),
-                app.config.camera.zoom_inverted,
-                app.config.camera.pan_speed,
-                &mut app.input.mouse,
-            );
-            drop(input_scope);
-            if leave {
-                pb.finish_diagnostics();
-                rerun = true;
-                match pb.return_to {
-                    PlaybackReturn::Pause => Screen::Pause(PauseScreen::open(
-                        app.game.state.result().is_some(),
-                        can_surrender(&app.game),
-                    )),
-                    PlaybackReturn::Results => Screen::Results(ResultsScreen::open()),
-                    PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
-                }
-            } else {
-                pb.advance_frame(dt, vec2(screen_width(), screen_height()));
-                render::draw_with_performance(
-                    &pb.view(),
-                    &app.sprites,
-                    &app.input,
-                    Some(app.performance.view()),
-                );
-                screens::playback::playback_hud(&pb, vec2(screen_width(), screen_height()));
-                Screen::Playback(pb)
-            }
-        }
-        Screen::FinalMap(mut final_map) => {
-            final_map.bindings.clone_from(&app.input.bindings);
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let leave = final_map.update(
-                &events,
-                dt,
-                vec2(screen_width(), screen_height()),
-                app.config.camera,
-                &mut app.input.mouse,
-                &mut app.game,
-            );
-            drop(input_scope);
-            render::draw_with_performance(
-                &app.game.view(),
-                &app.sprites,
-                &app.input,
-                Some(app.performance.view()),
-            );
-            final_map.draw_hud();
-            if leave {
-                app.game.presentation.spectate = false;
-                rerun = true;
-                Screen::Results(ResultsScreen::open())
-            } else {
-                Screen::FinalMap(final_map)
-            }
-        }
-        Screen::Results(mut results) => {
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = results.update(
-                &events,
-                &mut app.input.mouse,
-                vec2(screen_width(), screen_height()),
-                render::ui_scale(),
-                &mut app.game.presentation.sounds_pending,
-            );
-            drop(input_scope);
-            render::draw(&app.game.view(), &app.sprites, &app.input);
-            results.draw(&app.game);
-            match out {
-                screens::results::Out::Stay => Screen::Results(results),
-                screens::results::Out::Rematch => match autosave::save(&mut app.game) {
-                    Ok(_) => {
-                        let fresh = rebuild_match(&app.game)?;
-                        app.game = keep_flags(fresh, &app.game);
-                        app.performance.reset();
-                        app.game.presentation.paused = app.args.paused;
-                        app.tutorial = None;
-                        app.input.reset_session();
-                        rerun = true;
-                        Screen::Playing
-                    }
-                    Err(err) => {
-                        app.menu_notice = Some((
-                            format!("cannot save result: {}", err.player_line()),
-                            get_time() + 5.0,
-                        ));
-                        Screen::Results(results)
-                    }
-                },
-                screens::results::Out::Watch => match result_playback(&app.game) {
-                    Ok(session) => {
-                        rerun = true;
-                        Screen::Playback(Box::new(session))
-                    }
-                    Err(err) => {
-                        app.menu_notice =
-                            Some((format!("cannot open playback: {err}"), get_time() + 5.0));
-                        Screen::Results(results)
-                    }
-                },
-                screens::results::Out::ViewFinalMap => {
-                    app.game.presentation.paused = true;
-                    app.game.presentation.spectate = true;
-                    app.game.presentation.selection.units.clear();
-                    app.game.presentation.selection.buildings.clear();
-                    rerun = true;
-                    Screen::FinalMap(FinalMapScreen::open())
-                }
-                screens::results::Out::Home => match autosave::save(&mut app.game) {
-                    Ok(_) => {
-                        rerun = true;
-                        Screen::Home(HomeScreen::open())
-                    }
-                    Err(err) => Screen::Pause(PauseScreen::open_save_failed(
-                        err.player_line(),
-                        screens::pause::LeaveVerb::MainMenu,
-                        true,
-                        false,
-                        false,
-                    )),
-                },
-            }
-        }
-        Screen::Replays(mut shelf) => {
-            let mut leave: Option<Screen> = None;
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = shelf.update(
-                &events,
-                &mut app.input.mouse,
-                &mut app.game.presentation.sounds_pending,
-            );
-            drop(input_scope);
-            match out {
-                screens::shelf::Out::Home => {
-                    let home = HomeScreen::open();
-                    render::draw(&app.game.view(), &app.sprites, &app.input);
-                    veil();
-                    home.menu.draw(home.subtitle());
-                    rerun = true;
-                    leave = Some(Screen::Home(home));
-                }
-                screens::shelf::Out::Watch(path) => {
-                    match PlaybackSession::open(&path.to_string_lossy()) {
-                        Ok(session) => {
-                            render::draw(&app.game.view(), &app.sprites, &app.input);
-                            rerun = true;
-                            leave = Some(Screen::Playback(Box::new(session)));
-                        }
-                        Err(_) => {
-                            app.game
-                                .presentation
-                                .sounds_pending
-                                .push((SoundKind::Denied, None));
-                        }
-                    }
-                }
-                screens::shelf::Out::Load(path) => {
-                    match resume(&path, app.game.diagnostics.as_ref()) {
-                        // The same loader Continue uses, so the two
-                        // verbs cannot drift apart.
-                        Ok(fresh) => {
-                            app.tutorial = None;
-                            app.game = keep_flags(fresh, &app.game);
-                            app.performance.reset();
-                            app.game.presentation.paused = app.args.paused;
-                            app.input.reset_session();
-                            render::draw(&app.game.view(), &app.sprites, &app.input);
-                            rerun = true;
-                            leave = Some(Screen::Playing);
-                        }
-                        Err(_) => {
-                            app.game
-                                .presentation
-                                .sounds_pending
-                                .push((SoundKind::Denied, None));
-                        }
-                    }
-                }
-                screens::shelf::Out::Deleted => {
-                    // Re-list; Home re-evaluates its Continue row on
-                    // the way out, since every exit rebuilds it.
-                    shelf = Shelf::open();
-                }
-                screens::shelf::Out::Stay => {}
-            }
-            if let Some(next) = leave {
-                next
-            } else {
-                render::draw(&app.game.view(), &app.sprites, &app.input);
-                veil();
-                shelf.menu.draw(&shelf.subtitle());
-                Screen::Replays(shelf)
-            }
-        }
-        Screen::Pause(mut ps) => {
-            let input_scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-            let out = ps.update(
-                &events,
-                &mut app.input.mouse,
-                &mut app.game.presentation.sounds_pending,
-            );
-            drop(input_scope);
-            render::draw(&app.game.view(), &app.sprites, &app.input);
-            veil();
-            ps.menu.draw(ps.subtitle(&app.game.scenario.name));
-            match out {
-                screens::pause::Out::Stay => Screen::Pause(ps),
-                screens::pause::Out::Resume => {
-                    app.game.presentation.paused = false;
-                    Screen::Playing
-                }
-                screens::pause::Out::SaveGame => {
-                    // Only the session knows its map and tick; the
-                    // screen just edits the string.
-                    let suggested = format!(
-                        "{} | t{}",
-                        app.game.scenario.name,
-                        app.game.state.current_tick()
-                    );
-                    ps.begin_naming(suggested);
-                    Screen::Pause(ps)
-                }
-                screens::pause::Out::Save(name) => {
-                    // Stay paused either way: the player may want to
-                    // save and then quit.
-                    let verdict = match autosave::save_named(&app.game, &name) {
-                        Ok(_) => format!("saved: {name}"),
-                        Err(err) => err.player_line(),
-                    };
-                    ps.end_naming(verdict);
-                    Screen::Pause(ps)
-                }
-                screens::pause::Out::Settings => {
-                    // The pause payload rides along intact: leaving
-                    // Settings lands back on this exact menu, cursor
-                    // still on the row that opened it. The sim stays
-                    // frozen — neither screen ever advances the wall
-                    // clock.
-                    Screen::Settings {
-                        screen: SettingsScreen::open(&app.config),
-                        back: Box::new(Screen::Pause(ps)),
-                    }
-                }
-                screens::pause::Out::Roster => Screen::Codex {
-                    screen: CodexScreen::open(),
-                    back: Box::new(Screen::Pause(ps)),
-                },
-                screens::pause::Out::Surrender => {
-                    // The command lands on the next tick like any
-                    // other. A 1v1 decides on the spot and the
-                    // normal result flow takes over; in a team game
-                    // the concede overlay meets the player back in
-                    // the match while the ally plays on.
-                    app.game.issue(oxide_sim::Command::Surrender);
-                    app.game.presentation.paused = false;
-                    Screen::Playing
-                }
-                screens::pause::Out::WatchReplay => {
-                    // The recorder IS the record — clone it, stamp
-                    // its length, play it back. Non-destructive; the
-                    // live match waits.
-                    let mut replay = app.game.recorder.clone();
-                    replay.meta.ticks = Some(app.game.state.current_tick());
-                    match PlaybackSession::from_replay(replay) {
-                        Ok(mut session) => {
-                            session.return_to = PlaybackReturn::Pause;
-                            Screen::Playback(Box::new(session))
-                        }
-                        Err(err) => {
-                            app.game
-                                .presentation
-                                .toast(format!("cannot open playback: {err}"));
-                            Screen::Pause(ps)
-                        }
-                    }
-                }
-                screens::pause::Out::Restart => {
-                    let fresh = rebuild_match(&app.game)?;
-                    // Restarting a tutorial also restarts its lesson state.
-                    if app.tutorial.is_some() {
-                        app.tutorial = Some(tutorial::Tutorial::new());
-                    }
-                    app.game = keep_flags(fresh, &app.game);
-                    app.performance.reset();
-                    app.game.presentation.paused = app.args.paused;
-                    app.input.reset_session();
-                    Screen::Playing
-                }
-                screens::pause::Out::MainMenu => match autosave::save(&mut app.game) {
-                    Ok(_) => Screen::Home(HomeScreen::open()),
-                    Err(err) => Screen::Pause(PauseScreen::open_save_failed(
-                        err.player_line(),
-                        screens::pause::LeaveVerb::MainMenu,
-                        app.game.state.result().is_some(),
-                        can_surrender(&app.game),
-                        false,
-                    )),
-                },
-                screens::pause::Out::Quit => match autosave::save(&mut app.game) {
-                    Ok(_) => std::process::exit(0),
-                    Err(err) => Screen::Pause(PauseScreen::open_save_failed(
-                        err.player_line(),
-                        screens::pause::LeaveVerb::Quit,
-                        app.game.state.result().is_some(),
-                        can_surrender(&app.game),
-                        false,
-                    )),
-                },
-                screens::pause::Out::RetrySave(verb) => match autosave::save(&mut app.game) {
-                    Ok(_) => match verb {
-                        screens::pause::LeaveVerb::MainMenu => Screen::Home(HomeScreen::open()),
-                        screens::pause::LeaveVerb::Quit => std::process::exit(0),
-                    },
-                    Err(err) => {
-                        // The dialog stays up; only the reason may
-                        // have changed.
-                        ps.set_save_failure_line(err.player_line());
-                        Screen::Pause(ps)
-                    }
-                },
-                screens::pause::Out::LeaveUnsaved(verb) => match verb {
-                    screens::pause::LeaveVerb::MainMenu => Screen::Home(HomeScreen::open()),
-                    screens::pause::LeaveVerb::Quit => std::process::exit(0),
-                },
-                screens::pause::Out::Home => Screen::Home(HomeScreen::open()),
-            }
-        }
+        } => codex_frame(app, codex, back, &events),
+        Screen::Wizard(w) => wizard_frame(app, w, &events, &mut rerun),
+        Screen::Playing => playing_frame(
+            app,
+            &mut events,
+            dt,
+            &mut rerun,
+            &mut profile_frame_active,
+            ctrl_at_frame_start,
+            shift_at_frame_start,
+        ),
+        Screen::Playback(pb) => playback_frame(app, pb, &events, dt, &mut rerun),
+        Screen::FinalMap(final_map) => final_map_frame(app, final_map, &events, dt, &mut rerun),
+        Screen::Results(results) => results_frame(app, results, &events, &mut rerun)?,
+        Screen::Replays(shelf) => replays_frame(app, shelf, &events, &mut rerun),
+        Screen::Pause(ps) => pause_frame(app, ps, &events)?,
     };
 
     Ok(ScreenFrame {
         screen,
         rerun,
         profile_frame_active,
+    })
+}
+
+fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32) -> Result<Screen> {
+    // The title scene: a cold front door drifts its camera
+    // slowly across the backdrop world instead of freezing
+    // a frame — presentation only, and only while nothing
+    // is at stake (a resumable match keeps its exact view).
+    if app.game.state.current_tick() == 0 && !render::reduced_motion() {
+        app.game.presentation.camera.pan(vec2(dt * 0.55, dt * 0.22));
+        let (_, hi) = app.game.presentation.camera.world_rect();
+        if hi.x >= app.game.state.map().width() as f32 + 1.9 {
+            app.game.presentation.camera.center = vec2(0.0, 0.0);
+            app.game.presentation.camera.pan(vec2(0.0, 0.0)); // re-clamp home
+        }
+    }
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let out = home.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.game.presentation.sounds_pending,
+    );
+    drop(input_scope);
+    // Session verbs first — Continue and Tutorial swap the
+    // game this frame then draws under the menu. The menu
+    // draw needs `home`, so verbs that displace it (only
+    // Settings) build their screen after the draw below.
+    let mut next: Option<Screen> = None;
+    match out {
+        screens::home::Out::Stay | screens::home::Out::Settings | screens::home::Out::Roster => {}
+        screens::home::Out::Recover => {
+            let _scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
+            let recovered = home
+                .recovery
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
+                .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
+                .and_then(|record| {
+                    Game::from_replay_observed(record.replay, app.game.diagnostics.as_ref())
+                });
+            match recovered {
+                Ok(fresh) => {
+                    app.install_session(fresh, true, None);
+                    app.game.recovery_source = home
+                        .recovery
+                        .as_ref()
+                        .map(|record| record.directory.clone());
+                    app.game.start_recovery();
+                    app.game
+                        .presentation
+                        .toast("Recovered match is paused. Resume when ready.");
+                    next = Some(Screen::Playing);
+                }
+                Err(error) => {
+                    app.menu_notice =
+                        Some((format!("Recovery unavailable: {error:#}"), get_time() + 8.0));
+                }
+            }
+        }
+        screens::home::Out::Continue => {
+            let _scope = app
+                .game
+                .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
+            // Resume the newest autosave — a replay load, so
+            // it cannot desync from its own history.
+            if let Some(fresh) = autosave::latest_compatible()
+                .and_then(|path| resume(&path, app.game.diagnostics.as_ref()).ok())
+            {
+                app.install_session(fresh, app.args.paused, None);
+                next = Some(Screen::Playing);
+            } else {
+                app.game.presentation.toast("that save no longer loads");
+            }
+        }
+        screens::home::Out::Play => {
+            next = Some(Screen::Wizard(Wizard::open(&app.draft)));
+        }
+        screens::home::Out::Tutorial => {
+            // The tutorial is a gentle real match with the
+            // lesson cards riding on top.
+            let fresh = Game::new(tutorial::tutorial_scenario())?;
+            app.install_session(fresh, app.args.paused, Some(tutorial::Tutorial::new()));
+            next = Some(Screen::Playing);
+        }
+        screens::home::Out::Replays => {
+            next = Some(Screen::Replays(Shelf::open()));
+        }
+        screens::home::Out::Quit => {
+            match app.save_before_leaving(screens::pause::LeaveVerb::Quit, true) {
+                Ok(()) => std::process::exit(0),
+                Err(dialog) => next = Some(Screen::Pause(*dialog)),
+            }
+        }
+    }
+    render::draw(&app.game.view(), &app.sprites, &app.input);
+    veil();
+    home.menu.draw(home.subtitle());
+    Ok(if out == screens::home::Out::Settings {
+        Screen::Settings {
+            screen: SettingsScreen::open(&app.config),
+            back: Box::new(Screen::Home(home)),
+        }
+    } else if out == screens::home::Out::Roster {
+        Screen::Codex {
+            screen: CodexScreen::open(),
+            back: Box::new(Screen::Home(home)),
+        }
+    } else {
+        next.unwrap_or(Screen::Home(home))
+    })
+}
+
+fn settings_frame(
+    app: &mut App,
+    mut sc: SettingsScreen,
+    back: Box<Screen>,
+    events: &[RawEvent],
+    ctrl_at_frame_start: bool,
+    shift_at_frame_start: bool,
+) -> Screen {
+    if sc.notice.is_none()
+        && let Some(error) = app
+            .game
+            .recovery
+            .as_ref()
+            .and_then(|writer| writer.status().error)
+    {
+        sc.notice = Some(screens::settings::Notice {
+            text: format!("Recovery stopped: {error}"),
+            danger: true,
+        });
+    }
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let up = sc.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.game.presentation.sounds_pending,
+        &mut app.config,
+        &mut app.input.bindings,
+        ctrl_at_frame_start,
+        shift_at_frame_start,
+    );
+    drop(input_scope);
+    match up.out {
+        screens::settings::Out::OpenDiagnostics => {
+            if let Err(error) = app.report_job.open_folder() {
+                sc.notice = Some(screens::settings::Notice {
+                    text: error.to_string(),
+                    danger: true,
+                });
+            }
+        }
+        screens::settings::Out::ExportDiagnostics => {
+            sc.notice = Some(match app.report_job.start(&app.game) {
+                Ok(()) => screens::settings::Notice {
+                    text: "Exporting diagnostic report...".into(),
+                    danger: false,
+                },
+                Err(error) => screens::settings::Notice {
+                    text: error.to_string(),
+                    danger: true,
+                },
+            });
+        }
+        _ => {}
+    }
+    if up.dirty
+        && let Err(err) = app.config.save()
+    {
+        app.menu_notice = Some((format!("could not save settings: {err}"), get_time() + 5.0));
+    }
+    render::draw(&app.game.view(), &app.sprites, &app.input);
+    veil();
+    sc.draw();
+    if up.out == screens::settings::Out::Leave {
+        // Back to wherever this screen displaced: Home, or
+        // the untouched pause menu still waiting on its
+        // Settings row.
+        *back
+    } else {
+        Screen::Settings { screen: sc, back }
+    }
+}
+
+fn codex_frame(
+    app: &mut App,
+    mut codex: CodexScreen,
+    back: Box<Screen>,
+    events: &[RawEvent],
+) -> Screen {
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let out = codex.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.game.presentation.sounds_pending,
+    );
+    drop(input_scope);
+    render::draw(&app.game.view(), &app.sprites, &app.input);
+    veil();
+    let viewer = app.game.state.player(app.game.presentation.human).faction;
+    codex.draw(&app.sprites, viewer);
+    if out == screens::codex::Out::Leave {
+        *back
+    } else {
+        Screen::Codex {
+            screen: codex,
+            back,
+        }
+    }
+}
+
+fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut bool) -> Screen {
+    // Wizard trouble — an unreadable map file, a scenario
+    // that fails validation — is a dialog problem, never a
+    // process abort: report and stay on the menu.
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let out = match w.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.draft,
+        &mut app.game.presentation.sounds_pending,
+    ) {
+        Ok(out) => out,
+        Err(err) => {
+            app.menu_notice = Some((format!("can't open that map: {err:#}"), get_time() + 5.0));
+            WizardOut::Stay
+        }
+    };
+    let mut next: Option<Screen> = None;
+    drop(input_scope);
+    let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds);
+    match out {
+        WizardOut::Home => {
+            let home = HomeScreen::open();
+            render::draw(&app.game.view(), &app.sprites, &app.input);
+            veil();
+            home.menu.draw(home.subtitle());
+            *rerun = true;
+            next = Some(Screen::Home(home));
+        }
+        WizardOut::Launch => match launch_result.expect("launch outcome has a result") {
+            Ok(fresh) => {
+                app.install_session(fresh, app.args.paused, None);
+                render::draw(&app.game.view(), &app.sprites, &app.input);
+                *rerun = true;
+                next = Some(Screen::Playing);
+            }
+            Err(err) => {
+                app.menu_notice =
+                    Some((format!("can't start that match: {err:#}"), get_time() + 5.0));
+            }
+        },
+        WizardOut::Stay => {}
+    }
+    if let Some(next) = next {
+        next
+    } else {
+        render::draw(&app.game.view(), &app.sprites, &app.input);
+        veil();
+        match w.step {
+            WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
+            WizardStep::Setup => w.draw_setup(&app.draft, &mut app.previews),
+        }
+        Screen::Wizard(w)
+    }
+}
+
+fn playing_frame(
+    app: &mut App,
+    events: &mut Vec<RawEvent>,
+    dt: f32,
+    rerun: &mut bool,
+    profile_frame_active: &mut bool,
+    ctrl_at_frame_start: bool,
+    shift_at_frame_start: bool,
+) -> Screen {
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    // The tutorial card is chrome; clicks on it must not reach the
+    // world or consume an armed gameplay action.
+    if let Some(t) = &app.tutorial {
+        let dismiss = render::tutorial_dismiss_rect();
+        let card = render::tutorial_card_rect(t);
+        if events.iter().any(|e| {
+            matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
+                if dismiss.contains(vec2(*x, *y)))
+        }) {
+            app.tutorial = None;
+        }
+        // Swallowing a release whose press began in the world must
+        // also end that drag, or a later release completes it.
+        let swallowed_up = events.iter().any(|e| {
+            matches!(e, RawEvent::MouseUp { x, y, .. }
+                if card.contains(vec2(*x, *y)))
+        });
+        events.retain(|e| {
+            !matches!(e,
+                RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
+                    if card.contains(vec2(*x, *y)))
+        });
+        if swallowed_up {
+            app.input.drag_origin = None;
+        }
+    }
+    let had_selection = !app.game.presentation.selection.units.is_empty()
+        || !app.game.presentation.selection.buildings.is_empty();
+    let mut ctrl = ctrl_at_frame_start;
+    let mut shift = shift_at_frame_start;
+    let escape_pressed = events.iter().any(|event| {
+        match event {
+            RawEvent::KeyDown { key: Key::Ctrl } => ctrl = true,
+            RawEvent::KeyUp { key: Key::Ctrl } => ctrl = false,
+            RawEvent::KeyDown { key: Key::Shift } => shift = true,
+            RawEvent::KeyUp { key: Key::Shift } => shift = false,
+            RawEvent::KeyDown { key } => {
+                return app.input.bindings.resolve_in(
+                    *key,
+                    ctrl,
+                    shift,
+                    app.input.context(&app.game),
+                ) == Some(crate::action::Action::Back);
+            }
+            _ => {}
+        }
+        false
+    });
+    app.input.ui = render::ui_scale();
+    app.input.now = get_time();
+    app.input.camera_prefs = app.config.camera;
+    app.input.touch_prefs = app.config.touch;
+    input::apply_events(&mut app.game, &mut app.input, events);
+    input::update_held(&mut app.game, &app.input, dt);
+    input::update_touch(&mut app.game, &mut app.input);
+    // The cursor telegraphs the verb: crosshair while
+    // placing or plotting, pointer over chrome.
+    macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&app.game, &app.input));
+    // Escape walks outward: deselect first, then the menu —
+    // except over a decided match (or the concede overlay),
+    // where the banner promises 'Press Esc to continue' and
+    // must mean it even with a selection still alive.
+    let mut next: Option<Screen> = None;
+    if playing_escape_opens_pause(
+        escape_pressed,
+        had_selection,
+        app.game.state.result().is_some(),
+        app.game.presentation.conceded_banner,
+    ) {
+        // Opening the menu dismisses the concede overlay for
+        // good — Resume from here is clean spectating.
+        app.game.presentation.conceded_banner = false;
+        app.game.presentation.paused = true;
+        app.game.demo.paused_menu = true;
+        next = Some(Screen::Pause(PauseScreen::open(
+            app.game.state.result().is_some(),
+            can_surrender(&app.game),
+        )));
+    }
+    if let Some(t) = app.tutorial.as_mut() {
+        if !t.advance(&app.game.demo) {
+            app.tutorial = None;
+        } else {
+            // A click on the card's dismiss box ends school.
+            let dismiss = render::tutorial_dismiss_rect();
+            if events.iter().any(|e| {
+                matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
+                    if dismiss.contains(vec2(*x, *y)))
+            }) {
+                app.tutorial = None;
+            }
+        }
+    }
+    drop(input_scope);
+    let profile_barrier = !app.game.presentation.paused && app.frame_profiler.take_start_barrier();
+    *profile_frame_active = !app.game.presentation.paused && !profile_barrier;
+    let profile_stopped = if profile_barrier {
+        false
+    } else {
+        let stopped = app
+            .game
+            .advance_wall_clock(dt, app.frame_profiler.stop_tick());
+        app.game.update_wall_clock_fx(dt);
+        stopped
+    };
+    if profile_stopped {
+        app.game.presentation.paused = true;
+    }
+    if app.game.state.result().is_some() && app.game.end_stats.is_some() {
+        next = Some(Screen::Results(ResultsScreen::open()));
+        // Re-enter immediately so the first decided frame is
+        // the report, not a bare frozen battlefield.
+        *rerun = true;
+    }
+    render::draw_with_performance(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        Some(app.performance.view()),
+    );
+    if let Some(t) = &app.tutorial {
+        render::draw_tutorial(t, &app.game, &app.input.bindings);
+    }
+    next.unwrap_or(Screen::Playing)
+}
+
+fn playback_frame(
+    app: &mut App,
+    mut pb: Box<PlaybackSession>,
+    events: &[RawEvent],
+    dt: f32,
+    rerun: &mut bool,
+) -> Screen {
+    pb.bindings.clone_from(&app.input.bindings);
+    let input_scope = pb.diagnostics.as_ref().and_then(|recorder| {
+        recorder.span(oxide_kit::diagnostics::Phase::Input, pb.engine.position())
+    });
+    let leave = pb.apply_input(
+        events,
+        dt,
+        vec2(screen_width(), screen_height()),
+        app.config.camera.zoom_inverted,
+        app.config.camera.pan_speed,
+        &mut app.input.mouse,
+    );
+    drop(input_scope);
+    if leave {
+        pb.finish_diagnostics();
+        *rerun = true;
+        match pb.return_to {
+            PlaybackReturn::Pause => Screen::Pause(PauseScreen::open(
+                app.game.state.result().is_some(),
+                can_surrender(&app.game),
+            )),
+            PlaybackReturn::Results => Screen::Results(ResultsScreen::open()),
+            PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
+        }
+    } else {
+        pb.advance_frame(dt, vec2(screen_width(), screen_height()));
+        render::draw_with_performance(
+            &pb.view(),
+            &app.sprites,
+            &app.input,
+            Some(app.performance.view()),
+        );
+        screens::playback::playback_hud(&pb, vec2(screen_width(), screen_height()));
+        Screen::Playback(pb)
+    }
+}
+
+fn final_map_frame(
+    app: &mut App,
+    mut final_map: FinalMapScreen,
+    events: &[RawEvent],
+    dt: f32,
+    rerun: &mut bool,
+) -> Screen {
+    final_map.bindings.clone_from(&app.input.bindings);
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let leave = final_map.update(
+        events,
+        dt,
+        vec2(screen_width(), screen_height()),
+        app.config.camera,
+        &mut app.input.mouse,
+        &mut app.game,
+    );
+    drop(input_scope);
+    render::draw_with_performance(
+        &app.game.view(),
+        &app.sprites,
+        &app.input,
+        Some(app.performance.view()),
+    );
+    final_map.draw_hud();
+    if leave {
+        app.game.presentation.spectate = false;
+        *rerun = true;
+        Screen::Results(ResultsScreen::open())
+    } else {
+        Screen::FinalMap(final_map)
+    }
+}
+
+fn results_frame(
+    app: &mut App,
+    mut results: ResultsScreen,
+    events: &[RawEvent],
+    rerun: &mut bool,
+) -> Result<Screen> {
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let out = results.update(
+        events,
+        &mut app.input.mouse,
+        vec2(screen_width(), screen_height()),
+        render::ui_scale(),
+        &mut app.game.presentation.sounds_pending,
+    );
+    drop(input_scope);
+    render::draw(&app.game.view(), &app.sprites, &app.input);
+    results.draw(&app.game);
+    Ok(match out {
+        screens::results::Out::Stay => Screen::Results(results),
+        screens::results::Out::Rematch => match autosave::save(&mut app.game) {
+            Ok(_) => {
+                let fresh = rebuild_match(&app.game)?;
+                app.install_session(fresh, app.args.paused, None);
+                *rerun = true;
+                Screen::Playing
+            }
+            Err(err) => {
+                app.menu_notice = Some((
+                    format!("cannot save result: {}", err.player_line()),
+                    get_time() + 5.0,
+                ));
+                Screen::Results(results)
+            }
+        },
+        screens::results::Out::Watch => match result_playback(&app.game) {
+            Ok(session) => {
+                *rerun = true;
+                Screen::Playback(Box::new(session))
+            }
+            Err(err) => {
+                app.menu_notice = Some((format!("cannot open playback: {err}"), get_time() + 5.0));
+                Screen::Results(results)
+            }
+        },
+        screens::results::Out::ViewFinalMap => {
+            app.game.presentation.paused = true;
+            app.game.presentation.spectate = true;
+            app.game.presentation.selection.units.clear();
+            app.game.presentation.selection.buildings.clear();
+            *rerun = true;
+            Screen::FinalMap(FinalMapScreen::open())
+        }
+        screens::results::Out::Home => {
+            match app.save_before_leaving(screens::pause::LeaveVerb::MainMenu, false) {
+                Ok(()) => {
+                    *rerun = true;
+                    Screen::Home(HomeScreen::open())
+                }
+                Err(dialog) => Screen::Pause(*dialog),
+            }
+        }
+    })
+}
+
+fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &mut bool) -> Screen {
+    let mut leave: Option<Screen> = None;
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let out = shelf.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.game.presentation.sounds_pending,
+    );
+    drop(input_scope);
+    match out {
+        screens::shelf::Out::Home => {
+            let home = HomeScreen::open();
+            render::draw(&app.game.view(), &app.sprites, &app.input);
+            veil();
+            home.menu.draw(home.subtitle());
+            *rerun = true;
+            leave = Some(Screen::Home(home));
+        }
+        screens::shelf::Out::Watch(path) => match PlaybackSession::open(&path.to_string_lossy()) {
+            Ok(session) => {
+                render::draw(&app.game.view(), &app.sprites, &app.input);
+                *rerun = true;
+                leave = Some(Screen::Playback(Box::new(session)));
+            }
+            Err(_) => {
+                app.game
+                    .presentation
+                    .sounds_pending
+                    .push((SoundKind::Denied, None));
+            }
+        },
+        screens::shelf::Out::Load(path) => {
+            match resume(&path, app.game.diagnostics.as_ref()) {
+                // The same loader Continue uses, so the two
+                // verbs cannot drift apart.
+                Ok(fresh) => {
+                    app.install_session(fresh, app.args.paused, None);
+                    render::draw(&app.game.view(), &app.sprites, &app.input);
+                    *rerun = true;
+                    leave = Some(Screen::Playing);
+                }
+                Err(_) => {
+                    app.game
+                        .presentation
+                        .sounds_pending
+                        .push((SoundKind::Denied, None));
+                }
+            }
+        }
+        screens::shelf::Out::Deleted => {
+            // Re-list; Home re-evaluates its Continue row on
+            // the way out, since every exit rebuilds it.
+            shelf = Shelf::open();
+        }
+        screens::shelf::Out::Stay => {}
+    }
+    if let Some(next) = leave {
+        next
+    } else {
+        render::draw(&app.game.view(), &app.sprites, &app.input);
+        veil();
+        shelf.menu.draw(&shelf.subtitle());
+        Screen::Replays(shelf)
+    }
+}
+
+fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Result<Screen> {
+    let input_scope = app
+        .game
+        .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
+    let out = ps.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.game.presentation.sounds_pending,
+    );
+    drop(input_scope);
+    render::draw(&app.game.view(), &app.sprites, &app.input);
+    veil();
+    ps.menu.draw(ps.subtitle(&app.game.scenario.name));
+    Ok(match out {
+        screens::pause::Out::Stay => Screen::Pause(ps),
+        screens::pause::Out::Resume => {
+            app.game.presentation.paused = false;
+            Screen::Playing
+        }
+        screens::pause::Out::SaveGame => {
+            // Only the session knows its map and tick; the
+            // screen just edits the string.
+            let suggested = format!(
+                "{} | t{}",
+                app.game.scenario.name,
+                app.game.state.current_tick()
+            );
+            ps.begin_naming(suggested);
+            Screen::Pause(ps)
+        }
+        screens::pause::Out::Save(name) => {
+            // Stay paused either way: the player may want to
+            // save and then quit.
+            let verdict = match autosave::save_named(&app.game, &name) {
+                Ok(_) => format!("saved: {name}"),
+                Err(err) => err.player_line(),
+            };
+            ps.end_naming(verdict);
+            Screen::Pause(ps)
+        }
+        screens::pause::Out::Settings => {
+            // The pause payload rides along intact: leaving
+            // Settings lands back on this exact menu, cursor
+            // still on the row that opened it. The sim stays
+            // frozen — neither screen ever advances the wall
+            // clock.
+            Screen::Settings {
+                screen: SettingsScreen::open(&app.config),
+                back: Box::new(Screen::Pause(ps)),
+            }
+        }
+        screens::pause::Out::Roster => Screen::Codex {
+            screen: CodexScreen::open(),
+            back: Box::new(Screen::Pause(ps)),
+        },
+        screens::pause::Out::Surrender => {
+            // The command lands on the next tick like any
+            // other. A 1v1 decides on the spot and the
+            // normal result flow takes over; in a team game
+            // the concede overlay meets the player back in
+            // the match while the ally plays on.
+            app.game.issue(oxide_sim::Command::Surrender);
+            app.game.presentation.paused = false;
+            Screen::Playing
+        }
+        screens::pause::Out::WatchReplay => {
+            // The recorder IS the record — clone it, stamp
+            // its length, play it back. Non-destructive; the
+            // live match waits.
+            let mut replay = app.game.recorder.clone();
+            replay.meta.ticks = Some(app.game.state.current_tick());
+            match PlaybackSession::from_replay(replay) {
+                Ok(mut session) => {
+                    session.return_to = PlaybackReturn::Pause;
+                    Screen::Playback(Box::new(session))
+                }
+                Err(err) => {
+                    app.game
+                        .presentation
+                        .toast(format!("cannot open playback: {err}"));
+                    Screen::Pause(ps)
+                }
+            }
+        }
+        screens::pause::Out::Restart => {
+            let fresh = rebuild_match(&app.game)?;
+            // Restarting a tutorial also restarts its lesson state.
+            let tutorial = app.tutorial.is_some().then(tutorial::Tutorial::new);
+            app.install_session(fresh, app.args.paused, tutorial);
+            Screen::Playing
+        }
+        screens::pause::Out::MainMenu => {
+            match app.save_before_leaving(screens::pause::LeaveVerb::MainMenu, false) {
+                Ok(()) => Screen::Home(HomeScreen::open()),
+                Err(dialog) => Screen::Pause(*dialog),
+            }
+        }
+        screens::pause::Out::Quit => {
+            match app.save_before_leaving(screens::pause::LeaveVerb::Quit, false) {
+                Ok(()) => std::process::exit(0),
+                Err(dialog) => Screen::Pause(*dialog),
+            }
+        }
+        screens::pause::Out::RetrySave(verb) => match autosave::save(&mut app.game) {
+            Ok(_) => match verb {
+                screens::pause::LeaveVerb::MainMenu => Screen::Home(HomeScreen::open()),
+                screens::pause::LeaveVerb::Quit => std::process::exit(0),
+            },
+            Err(err) => {
+                // The dialog stays up; only the reason may
+                // have changed.
+                ps.set_save_failure_line(err.player_line());
+                Screen::Pause(ps)
+            }
+        },
+        screens::pause::Out::LeaveUnsaved(verb) => match verb {
+            screens::pause::LeaveVerb::MainMenu => Screen::Home(HomeScreen::open()),
+            screens::pause::LeaveVerb::Quit => std::process::exit(0),
+        },
+        screens::pause::Out::Home => Screen::Home(HomeScreen::open()),
     })
 }
 

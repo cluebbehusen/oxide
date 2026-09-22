@@ -334,7 +334,6 @@ fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
 #[test]
 #[ignore = "spawns a real window; run explicitly in the phase battery"]
 fn controls_persist_secondary_bindings_and_keep_camera_keys_live_in_construction() -> Result<()> {
-    use oxide_protocol::Reply;
     let (mut guard, mut client) = spawn(4159)?;
     activate_labeled(&mut client, "settings")?;
     activate_labeled(&mut client, "controls")?;
@@ -405,9 +404,7 @@ fn controls_persist_secondary_bindings_and_keep_camera_keys_live_in_construction
         })?;
         std::thread::sleep(std::time::Duration::from_secs(1));
         let camera = |client: &mut Client| -> Result<[f64; 2]> {
-            let Reply::Camera(camera) = client.call(Request::QueryCamera)? else {
-                bail!("camera reply");
-            };
+            let camera = client.camera()?;
             Ok(camera.center)
         };
         let before = camera(&mut client)?;

@@ -10,6 +10,7 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::path::PathBuf;
 
+use crate::press::Press;
 use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 const ITEM_HEIGHT: f32 = 44.0;
@@ -69,12 +70,8 @@ pub struct Menu {
     /// Fractional wheel accumulation: trackpads deliver hundredths per
     /// frame, and treating each as a full row made scrolling frantic.
     wheel_accum: f32,
-    /// Row armed by a press; activation happens on release inside the
-    /// same row, so dragging away cancels.
-    pressed: Option<usize>,
-    /// Finger and row armed by a touch; a second finger is ignored until
-    /// the first resolves.
-    pressed_touch: Option<(u64, usize)>,
+    /// Row armed by a mouse press or the owning finger.
+    press: Press<usize>,
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
     /// activated — the map browser's format headings.
     headers: Vec<usize>,
@@ -108,8 +105,7 @@ impl Menu {
             scroll: 0,
             hover: None,
             wheel_accum: 0.0,
-            pressed: None,
-            pressed_touch: None,
+            press: Press::default(),
             headers,
             shift: 0.0,
         };
@@ -289,7 +285,8 @@ impl Menu {
                     y,
                 } => {
                     *mouse = vec2(x, y);
-                    self.pressed = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
+                    let row = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
+                    self.press.mouse_down(row);
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -298,36 +295,26 @@ impl Menu {
                 } => {
                     *mouse = vec2(x, y);
                     let released_on = self.row_at(vec2(x, y));
-                    let armed = self.pressed.take();
-                    if let (Some(a), Some(r)) = (armed, released_on)
-                        && a == r
-                    {
-                        // A press commits only when it releases inside
-                        // the same row.
-                        self.selected = a;
-                        return Some(a);
+                    if let Some(row) = self.press.mouse_up(released_on) {
+                        self.selected = row;
+                        return Some(row);
                     }
                 }
-                RawEvent::TouchDown { id, x, y } if self.pressed_touch.is_none() => {
+                RawEvent::TouchDown { id, x, y } if self.press.touch_free() => {
                     *mouse = vec2(x, y);
                     self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
-                    self.pressed_touch = self.hover.map(|row| (id, row));
+                    self.press.touch_down(id, self.hover);
                 }
-                RawEvent::TouchMove { id, x, y }
-                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
-                {
+                RawEvent::TouchMove { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
                     self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
-                RawEvent::TouchUp { id, x, y }
-                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
-                {
+                RawEvent::TouchUp { id, x, y } if self.press.owns(id) => {
                     *mouse = vec2(x, y);
                     let released_on = self.row_at(*mouse);
-                    let (_, armed) = self.pressed_touch.take().expect("matching touch is armed");
-                    if released_on == Some(armed) {
-                        self.selected = armed;
-                        return Some(armed);
+                    if let Some(row) = self.press.touch_up(released_on) {
+                        self.selected = row;
+                        return Some(row);
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
@@ -498,39 +485,92 @@ impl Menu {
     }
 }
 
-/// Lazily rendered fog-free map previews, one per scenario row. The
-/// driver's software rasterizer draws the built state (the same pixels
-/// the golden tests pin), uploaded once as a texture and kept for the
-/// session.
-#[derive(Default)]
+/// Fog-free map previews, one per scenario. The driver's software
+/// rasterizer draws the built state (the same pixels the golden tests pin).
+/// Loading, building, and rasterizing a map takes long enough to hitch a
+/// frame, so that runs on a worker; only the texture upload, which must stay
+/// on the window thread, happens here. Entries are keyed by scenario path
+/// because the discovery list can be rebuilt while the cache lives on.
 pub struct PreviewCache {
-    slots: std::collections::HashMap<usize, Option<Texture2D>>,
+    /// Present once requested: `None` while the worker is still drawing it,
+    /// and for a scenario that failed to load or build.
+    slots: std::collections::HashMap<Option<PathBuf>, Option<Texture2D>>,
+    worker: PreviewWorker,
+}
+
+impl Default for PreviewCache {
+    fn default() -> Self {
+        Self {
+            slots: Default::default(),
+            worker: PreviewWorker::spawn(),
+        }
+    }
 }
 
 impl PreviewCache {
-    /// The preview for a row, rendering on first request. `None` when
-    /// the scenario fails to load or build — the browser just shows no
-    /// panel for it.
-    pub fn get(&mut self, index: usize, entry: &ScenarioEntry) -> Option<&Texture2D> {
-        self.slots
-            .entry(index)
-            .or_insert_with(|| {
-                let scenario = match &entry.path {
-                    Some(path) => Scenario::load(path).ok()?,
-                    None => Scenario::skirmish(),
-                };
-                let state = scenario.build().ok()?;
-                let pixmap = oxide_kit::render::render_state(&state);
-                let texture = Texture2D::from_rgba8(
-                    pixmap.width() as u16,
-                    pixmap.height() as u16,
-                    pixmap.data(),
-                );
+    /// The preview for a scenario, requesting it on first sight. `None`
+    /// until it is drawn, and for good when it cannot be: the browser just
+    /// shows no panel for it.
+    pub fn get(&mut self, entry: &ScenarioEntry) -> Option<&Texture2D> {
+        for (path, pixels) in self.worker.finished.try_iter() {
+            let texture = pixels.map(|pixels| {
+                let texture = Texture2D::from_rgba8(pixels.width, pixels.height, &pixels.rgba);
                 texture.set_filter(FilterMode::Nearest);
-                Some(texture)
-            })
-            .as_ref()
+                texture
+            });
+            self.slots.insert(path, texture);
+        }
+        if !self.slots.contains_key(&entry.path) {
+            self.slots.insert(entry.path.clone(), None);
+            // A dead worker leaves the slot empty, which draws as no panel.
+            self.worker.requests.send(entry.path.clone()).ok();
+        }
+        self.slots.get(&entry.path)?.as_ref()
     }
+}
+
+/// Rasterized preview bytes, ready for the window thread to upload.
+struct PreviewPixels {
+    width: u16,
+    height: u16,
+    rgba: Vec<u8>,
+}
+
+/// The thread that draws previews. It exits when the cache drops its sender.
+struct PreviewWorker {
+    requests: std::sync::mpsc::Sender<Option<PathBuf>>,
+    finished: std::sync::mpsc::Receiver<(Option<PathBuf>, Option<PreviewPixels>)>,
+}
+
+impl PreviewWorker {
+    fn spawn() -> Self {
+        let (requests, queue) = std::sync::mpsc::channel::<Option<PathBuf>>();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for path in queue {
+                let pixels = render_preview(path.as_deref());
+                if done.send((path, pixels)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { requests, finished }
+    }
+}
+
+/// Draws one scenario's preview; `None` means the embedded skirmish.
+fn render_preview(path: Option<&std::path::Path>) -> Option<PreviewPixels> {
+    let scenario = match path {
+        Some(path) => Scenario::load(path).ok()?,
+        None => Scenario::skirmish(),
+    };
+    let state = scenario.build().ok()?;
+    let pixmap = oxide_kit::render::render_state(&state);
+    Some(PreviewPixels {
+        width: pixmap.width() as u16,
+        height: pixmap.height() as u16,
+        rgba: pixmap.data().to_vec(),
+    })
 }
 
 /// A startable entry on the main menu.
@@ -613,6 +653,41 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
 }
 
 #[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_preview_worker_draws_a_scenario_off_the_calling_thread() {
+        let worker = PreviewWorker::spawn();
+        worker.requests.send(None).unwrap();
+        let (path, pixels) = worker
+            .finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the worker answers");
+        assert_eq!(path, None, "the answer names the scenario it drew");
+        let pixels = pixels.expect("the embedded skirmish draws");
+        assert_eq!(
+            pixels.rgba.len(),
+            usize::from(pixels.width) * usize::from(pixels.height) * 4
+        );
+    }
+
+    #[test]
+    fn an_unreadable_scenario_answers_with_no_preview() {
+        let worker = PreviewWorker::spawn();
+        let missing = PathBuf::from("/nonexistent/oxide-preview.json");
+        worker.requests.send(Some(missing.clone())).unwrap();
+        let (path, pixels) = worker
+            .finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the worker answers");
+        assert_eq!(path, Some(missing));
+        assert!(pixels.is_none());
+    }
+}
+
+#[cfg(test)]
 mod empty_tests {
     use super::*;
     use macroquad::prelude::vec2;
@@ -673,7 +748,7 @@ mod empty_tests {
             ),
             None
         );
-        assert_eq!(menu.pressed_touch, Some((7, 1)));
+        assert_eq!(menu.press.armed_touch(), Some((7, 1)));
 
         // A second finger cannot steal or resolve the first finger's press.
         assert_eq!(
@@ -694,7 +769,7 @@ mod empty_tests {
             ),
             None
         );
-        assert_eq!(menu.pressed_touch, Some((7, 1)));
+        assert_eq!(menu.press.armed_touch(), Some((7, 1)));
         assert_eq!(menu.selected, 0);
 
         // The owning finger resolves on another row, so the gesture cancels.
@@ -716,7 +791,7 @@ mod empty_tests {
             ),
             None
         );
-        assert_eq!(menu.pressed_touch, None);
+        assert_eq!(menu.press.armed_touch(), None);
         assert_eq!(menu.selected, 0);
     }
 }

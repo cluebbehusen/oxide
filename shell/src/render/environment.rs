@@ -2,6 +2,7 @@
 //! away from the battlefield floor.
 
 use crate::game::Scene;
+use crate::render::prim::{fill_rect, line_between};
 use macroquad::prelude::*;
 
 const SALT: u32 = 347;
@@ -318,8 +319,8 @@ pub(super) fn draw_strata(rect: Rect, edge: (i32, i32), layer: Layer, token: u32
         let end = origin + tangent * 0.94 + inward * 0.43;
         let tone = mixed(layer.riser, layer.lip, 0.30);
         let width = (rect.w * 0.08).max(1.0);
-        draw_line(start.x, start.y, middle.x, middle.y, width, tone);
-        draw_line(middle.x, middle.y, end.x, end.y, width, tone);
+        line_between(start, middle, width, tone);
+        line_between(middle, end, width, tone);
     }
     if token.is_multiple_of(7) {
         let start = origin + tangent * 0.32;
@@ -436,13 +437,7 @@ fn draw_boundary_terraces(frame: MapFrame, fractured: bool) {
                 continue;
             };
             let rect = field.rect(ix, iy);
-            draw_rectangle(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                quarry_color(color, material, fractured),
-            );
+            fill_rect(rect, quarry_color(color, material, fractured));
         }
     }
 

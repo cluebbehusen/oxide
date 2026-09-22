@@ -12,13 +12,12 @@
 //! all-baseline cell reproduces a direct configured-bot mirror run bit
 //! for bit (a test pins that against the sim stepped by hand).
 
-use crate::sweep::SweepOutcome;
+use crate::sweep::{SweepOutcome, Tally, outcome_of, play_mirror};
 use anyhow::{Context, Result};
 #[cfg(test)]
 use oxide_sim::PlayerId;
-use oxide_sim::bot::seat_bots;
 use oxide_sim::scenario::Scenario;
-use oxide_sim::{BuildingKind, Faction, GameResult, State};
+use oxide_sim::{BuildingKind, Faction};
 use serde::Serialize;
 
 /// How many levers the design carries.
@@ -482,7 +481,7 @@ pub fn run_factorial(
                 .iter()
                 .filter(|m| m.cell == cell.as_slice())
                 .collect();
-            let tally = Tally::of(&played);
+            let tally = tally(&played);
             CellRecord {
                 levels: labels(enabled, cell),
                 matches: tally.matches,
@@ -490,12 +489,12 @@ pub fn run_factorial(
                 draws: tally.draws,
                 undecided: tally.undecided,
                 censored_percent: tally.censored_percent(),
-                median_decision_tick: tally.quartiles().map(|q| q.median),
+                median_decision_tick: tally.quantile(1, 2),
             }
         })
         .collect();
 
-    let overall = Tally::of(&matches.iter().collect::<Vec<_>>());
+    let overall = tally(&matches.iter().collect::<Vec<_>>());
     Ok(FactorialReport {
         bot_config: config,
         sim_version: oxide_sim::SIM_VERSION.to_string(),
@@ -506,7 +505,7 @@ pub fn run_factorial(
         factors: enabled.iter().map(|f| f.key().to_string()).collect(),
         cells: cells.len(),
         matches_played: overall.matches,
-        victories: overall.seat_wins[0] + overall.seat_wins[1],
+        victories: overall.victories(),
         draws: overall.draws,
         undecided: overall.undecided,
         censored_percent: overall.censored_percent(),
@@ -517,64 +516,21 @@ pub fn run_factorial(
     })
 }
 
-/// The fold every record is read off: outcomes counted, decision ticks
-/// collected.
-struct Tally {
-    matches: u32,
-    seat_wins: [u32; 2],
-    draws: u32,
-    undecided: u32,
-    decision_ticks: Vec<u64>,
+fn tally(played: &[&FactorialMatch]) -> Tally {
+    Tally::of(played.iter().map(|m| (m.outcome, m.ticks)))
 }
 
-impl Tally {
-    fn of(played: &[&FactorialMatch]) -> Self {
-        let mut tally = Tally {
-            matches: 0,
-            seat_wins: [0; 2],
-            draws: 0,
-            undecided: 0,
-            decision_ticks: Vec::new(),
-        };
-        for m in played {
-            tally.matches += 1;
-            match m.outcome {
-                SweepOutcome::Victory { seat } => {
-                    tally.seat_wins[usize::from(seat)] += 1;
-                    tally.decision_ticks.push(m.ticks);
-                }
-                SweepOutcome::Draw => {
-                    tally.draws += 1;
-                    tally.decision_ticks.push(m.ticks);
-                }
-                SweepOutcome::Undecided => tally.undecided += 1,
-            }
-        }
-        tally.decision_ticks.sort_unstable();
-        tally
-    }
-
-    fn censored_percent(&self) -> f64 {
-        if self.matches == 0 {
-            0.0
-        } else {
-            100.0 * f64::from(self.undecided) / f64::from(self.matches)
-        }
-    }
-
-    fn quartiles(&self) -> Option<Quartiles> {
-        let ticks = &self.decision_ticks;
-        (!ticks.is_empty()).then(|| Quartiles {
-            p25: ticks[ticks.len() / 4],
-            median: ticks[ticks.len() / 2],
-            p75: ticks[ticks.len() * 3 / 4],
-        })
-    }
+fn quartiles(tally: &Tally) -> Option<Quartiles> {
+    Some(Quartiles {
+        p25: tally.quantile(1, 4)?,
+        median: tally.quantile(1, 2)?,
+        p75: tally.quantile(3, 4)?,
+    })
 }
 
 fn level_record(label: &str, played: &[&FactorialMatch]) -> LevelRecord {
-    let tally = Tally::of(played);
-    let victories = tally.seat_wins[0] + tally.seat_wins[1];
+    let tally = tally(played);
+    let victories = tally.victories();
     LevelRecord {
         level: label.to_string(),
         matches: tally.matches,
@@ -586,7 +542,7 @@ fn level_record(label: &str, played: &[&FactorialMatch]) -> LevelRecord {
         seat0_win_rate: (victories > 0)
             .then(|| f64::from(tally.seat_wins[0]) / f64::from(victories)),
         wilson: (victories > 0).then(|| wilson(tally.seat_wins[0], victories)),
-        decision_ticks: tally.quartiles(),
+        decision_ticks: quartiles(&tally),
     }
 }
 
@@ -645,42 +601,19 @@ fn play(
     }
     permute_spawn_order(&mut sc, cell[Factor::Spawn.index()]);
 
-    oxide_kit::bench::all_bots_with_config(&mut sc, config);
-    let mut state: State = sc.build().context("building scenario")?;
-    let mut bots = seat_bots(&sc)?;
-    let order: [usize; 2] = if cell[Factor::Command.index()] == 1 {
+    let command_order = if cell[Factor::Command.index()] == 1 {
         [1, 0]
     } else {
         [0, 1]
     };
-    for _ in 0..max_ticks {
-        let mut commands = Vec::new();
-        for &seat in &order {
-            commands.extend(bots[seat].act(&state));
-        }
-        state.tick(&commands);
-        if state.result().is_some() {
-            break;
-        }
-    }
-    let outcome = match state.result() {
-        Some(GameResult::Victory { .. }) => SweepOutcome::Victory {
-            seat: state
-                .winners()
-                .first()
-                .expect("a 1v1 victory names its seat")
-                .0,
-        },
-        Some(GameResult::Draw) => SweepOutcome::Draw,
-        None => SweepOutcome::Undecided,
-    };
+    let state = play_mirror(sc, config, max_ticks, command_order)?;
     Ok(FactorialMatch {
         seed,
         cell: cell.to_vec(),
         levels: Vec::new(),
         factions: factions.map(|f| roster(f).to_string()),
         ticks: state.current_tick(),
-        outcome,
+        outcome: outcome_of(&state),
         hash: state.hash(),
     })
 }
@@ -792,6 +725,8 @@ pub fn factorial_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::State;
+    use oxide_sim::bot::seat_bots;
 
     fn synthetic(factions: [&str; 2], outcome: SweepOutcome, ticks: u64) -> FactorialMatch {
         FactorialMatch {

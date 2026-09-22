@@ -14,7 +14,7 @@
 //! strict to the current [`oxide_sim::SIM_VERSION`] — a cross-version replay
 //! would narrate a divergent ghost game, so it is refused instead.
 
-use crate::runner::{GameReplay, MAX_REPLAY_TICKS};
+use crate::runner::GameReplay;
 use anyhow::{Context, Result};
 use chassis::grid::TilePos;
 use oxide_sim::scenario::BotConfig;
@@ -635,11 +635,7 @@ struct SeatWindow {
 /// replay and options yield the same report, byte for byte.
 pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryReport> {
     replay.validate(Some(SIM_VERSION))?;
-    let total = replay_duration(replay);
-    anyhow::ensure!(
-        total <= MAX_REPLAY_TICKS,
-        "replay spans {total} ticks, beyond the {MAX_REPLAY_TICKS}-tick bound"
-    );
+    let total = oxide_kit::bounded_replay_duration(replay)?;
     let effective = opts.until.map_or(total, |until| until.min(total));
     let every = opts
         .every
@@ -725,14 +721,9 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
 
     let mut game_over_tick: Option<u64> = None;
 
-    let mut cursor = replay.cursor();
-    for tick in 0..effective {
-        let commands: Vec<oxide_sim::PlayerCommand> = cursor
-            .take_tick(tick)
-            .iter()
-            .map(|timed| timed.command.clone())
-            .collect();
-        let report = state.tick(&commands);
+    let mut playback = oxide_kit::ReplayPlayback::new(replay);
+    for _ in 0..effective {
+        let report = playback.step(&mut state);
         let now = state.current_tick();
 
         for event in &report.events {
@@ -990,7 +981,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     }
     if effective == total {
         anyhow::ensure!(
-            cursor.is_finished(),
+            playback.is_finished(),
             "playback of {total} ticks left recorded commands unconsumed"
         );
     }
@@ -1403,13 +1394,6 @@ fn minimap(state: &State) -> Vec<String> {
                 .collect()
         })
         .collect()
-}
-
-fn replay_duration(replay: &GameReplay) -> u64 {
-    replay
-        .meta
-        .ticks
-        .unwrap_or_else(|| replay.commands.last().map_or(0, |command| command.tick + 1))
 }
 
 /// Ticks as a `m:ss` clock (minutes roll past 59 rather than into hours).

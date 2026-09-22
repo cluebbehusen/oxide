@@ -736,38 +736,18 @@ mod tests {
     use crate::state::Faction;
 
     fn observation() -> Observation {
-        let harvester = UnitObs {
-            id: UnitId(3),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile: TilePos::new(3, 4),
-            hp: UnitKind::Harvester.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        };
+        let harvester = UnitObs::fixture(3, PlayerId(0), UnitKind::Harvester, TilePos::new(3, 4));
         Observation::from_data(ObservationData {
             tick: 0,
             map_width: 16,
             map_height: 10,
             my_units: vec![harvester],
-            my_buildings: vec![BuildingObs {
-                provisional: false,
-                id: BuildingId(0),
-                player: PlayerId(0),
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(1, 1),
-                hp: BuildingKind::Foundry.base_stats().max_hp,
-                built: true,
-                seen: true,
-                tier: 0,
-            }],
+            my_buildings: vec![BuildingObs::fixture(
+                0,
+                PlayerId(0),
+                BuildingKind::Foundry,
+                TilePos::new(1, 1),
+            )],
             my_queues: vec![Vec::new()],
             visible: vec![true; 16 * 10],
             explored: vec![true; 16 * 10],
@@ -927,15 +907,8 @@ mod tests {
         };
         let ghost_anchor = TilePos::new(27, 16);
         obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(u32::MAX),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor: ghost_anchor,
-            hp: BuildingKind::Turret.base_stats().max_hp,
-            built: true,
             seen: false,
-            tier: 0,
+            ..BuildingObs::fixture(u32::MAX, PlayerId(1), BuildingKind::Turret, ghost_anchor)
         });
         let ghost = BuildingContact {
             id: Some(BuildingId(91)),
@@ -979,36 +952,15 @@ mod tests {
         built: bool,
     ) {
         obs.my_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(0),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
             built,
-            seen: true,
-            tier: 0,
+            ..BuildingObs::fixture(id, PlayerId(0), kind, anchor)
         });
         obs.my_queues.push(Vec::new());
     }
 
     fn add_unit(obs: &mut Observation, id: u32, kind: UnitKind, tile: TilePos) {
-        obs.my_units.push(UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind,
-            tile,
-            hp: kind.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        });
+        obs.my_units
+            .push(UnitObs::fixture(id, PlayerId(0), kind, tile));
     }
 
     fn add_enemy_building(
@@ -1019,15 +971,8 @@ mod tests {
         seen: bool,
     ) {
         obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player: PlayerId(1),
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
             seen,
-            tier: 0,
+            ..BuildingObs::fixture(id, PlayerId(1), kind, anchor)
         });
     }
 
@@ -1298,20 +1243,8 @@ mod tests {
 
         island.enemy_buildings.clear();
         island.enemy_units.push(UnitObs {
-            id: UnitId(90),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: TilePos::new(4, 5),
-            hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(90, PlayerId(1), UnitKind::Sentinel, TilePos::new(4, 5))
         });
         assert!(policy.ordinary_ground_has_work(&dials, &island, home));
         island.enemy_units[0].kind = crate::stats::Role::Scout.unit_for(island.faction);
@@ -1620,15 +1553,8 @@ mod tests {
         obs.tick = 2_000;
         obs.scrap = scout_cost;
         obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(u32::MAX),
-            player: PlayerId(1),
-            kind: BuildingKind::Foundry,
-            anchor: enemy_base,
-            hp: BuildingKind::Foundry.base_stats().max_hp,
-            built: true,
             seen: false,
-            tier: 0,
+            ..BuildingObs::fixture(u32::MAX, PlayerId(1), BuildingKind::Foundry, enemy_base)
         });
         let mut dials = Dials::balanced();
         dials.adaptive_composition = true;
@@ -1695,20 +1621,8 @@ mod tests {
         assert!(policy.state.scout_dispatch.is_some());
 
         obs.enemy_units.push(UnitObs {
-            id: UnitId(100),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: TilePos::new(8, 4),
-            hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(100, PlayerId(1), UnitKind::Sentinel, TilePos::new(8, 4))
         });
         obs.my_units.retain(|unit| unit.id != UnitId(99));
         obs.tick += 1;
@@ -1750,20 +1664,8 @@ mod tests {
         assert!(policy.state.solo_air_scout_suspended);
         let enemy_scout = crate::stats::Role::Scout.unit_for(Faction::Cupric);
         obs.enemy_units.push(UnitObs {
-            id: UnitId(101),
-            player: PlayerId(1),
-            kind: enemy_scout,
-            tile: TilePos::new(8, 4),
-            hp: enemy_scout.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(101, PlayerId(1), enemy_scout, TilePos::new(8, 4))
         });
         obs.tick += SOLO_SCOUT_QUIET_TICKS - 1;
         policy.scouting(&obs, home, None, &[], &mut Vec::new());
@@ -3790,22 +3692,12 @@ mod tests {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut blocked = fixture.obs.clone();
-        blocked.enemy_units.push(UnitObs {
-            id: UnitId(900),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: saving.plan.anchor,
-            hp: UnitKind::Sentinel.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        });
+        blocked.enemy_units.push(UnitObs::fixture(
+            900,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            saving.plan.anchor,
+        ));
         let first_blocked = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
 
         blocked.tick = first_blocked;
@@ -3844,22 +3736,12 @@ mod tests {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut blocked = fixture.obs.clone();
-        blocked.enemy_units.push(UnitObs {
-            id: UnitId(900),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: saving.plan.anchor,
-            hp: UnitKind::Sentinel.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        });
+        blocked.enemy_units.push(UnitObs::fixture(
+            900,
+            PlayerId(1),
+            UnitKind::Sentinel,
+            saving.plan.anchor,
+        ));
         let first_blocked = crate::bot::difficulty::next_strategic_admission_tick(fixture.obs.tick);
 
         blocked.tick = first_blocked;
@@ -4191,22 +4073,12 @@ mod tests {
         obs.known_wrecks = vec![(TilePos::new(8, 2), 400), (TilePos::new(8, 3), 119)];
         obs.my_units[0].idle = false;
         obs.my_units[0].harvesting = Some(TilePos::new(8, 3));
-        obs.enemy_units.push(UnitObs {
-            id: UnitId(38),
-            player: PlayerId(1),
-            kind: UnitKind::Gnat,
-            tile: TilePos::new(10, 9),
-            hp: UnitKind::Gnat.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        });
+        obs.enemy_units.push(UnitObs::fixture(
+            38,
+            PlayerId(1),
+            UnitKind::Gnat,
+            TilePos::new(10, 9),
+        ));
         let ordinary_loss = TilePos::new(8, 7);
         let mut policy = UtilityPolicy::new();
 
@@ -4540,15 +4412,9 @@ mod tests {
         let mut obs = observation();
         let anchor = node.offset(7, 0);
         obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor,
             hp: BuildingKind::Turret.tier_stats(1).max_hp,
-            built: true,
-            seen: true,
             tier: 1,
+            ..BuildingObs::fixture(9, PlayerId(1), BuildingKind::Turret, anchor)
         });
 
         assert!(
@@ -4576,20 +4442,8 @@ mod tests {
         obs.known_wrecks = vec![(threatened, 45)];
         obs.known_scrap = vec![(safe_fallback, 100)];
         obs.enemy_units.push(UnitObs {
-            id: UnitId(9),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: threatened.offset(3, 0),
-            hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(9, PlayerId(1), UnitKind::Sentinel, threatened.offset(3, 0))
         });
         let mut policy = UtilityPolicy::new();
         let mut intents = Vec::new();
@@ -4631,20 +4485,8 @@ mod tests {
         obs.known_wrecks = vec![(threatened, 45)];
         obs.known_scrap = vec![(safe_fallback, 100)];
         obs.enemy_units.push(UnitObs {
-            id: UnitId(9),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: last_seen,
-            hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(9, PlayerId(1), UnitKind::Sentinel, last_seen)
         });
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&obs);
@@ -5078,20 +4920,13 @@ mod tests {
         );
         obs.my_buildings[1].hp = BuildingKind::Extractor.base_stats().max_hp / 2;
         obs.enemy_units.push(UnitObs {
-            id: UnitId(90),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: patient_anchor.offset(3, 0),
-            hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(
+                90,
+                PlayerId(1),
+                UnitKind::Sentinel,
+                patient_anchor.offset(3, 0),
+            )
         });
 
         let mut policy = UtilityPolicy::new();
@@ -5140,15 +4975,9 @@ mod tests {
         obs.tick = 100;
         obs.known_wrecks = vec![(node, 45)];
         obs.enemy_buildings.push(BuildingObs {
-            provisional: false,
-            id: BuildingId(9),
-            player: PlayerId(1),
-            kind: BuildingKind::Turret,
-            anchor,
             hp: BuildingKind::Turret.tier_stats(1).max_hp,
-            built: true,
-            seen: true,
             tier: 1,
+            ..BuildingObs::fixture(9, PlayerId(1), BuildingKind::Turret, anchor)
         });
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&obs);

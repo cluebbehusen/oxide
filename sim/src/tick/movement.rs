@@ -256,6 +256,18 @@ pub(super) fn note_stalls(state: &mut State, travel: &[Vec2Fx], driven: &[Vec2Fx
     }
 }
 
+/// A stall count describes the route being walked. Construction, site
+/// cancellation and cleanup run after [`note_stalls`] and may drop that route,
+/// so the count goes with it before the tick ends; otherwise the state fails
+/// its own invariants and the next route inherits a stale count.
+pub(super) fn forget_stalls_without_routes(state: &mut State) {
+    for unit in &mut state.units {
+        if unit.path.is_none() {
+            unit.stall_ticks = 0;
+        }
+    }
+}
+
 /// Advances every unit along its path by its speed, returning each
 /// unit's displacement this tick (indexed like `state.units`) — the
 /// collision resolver reads travel to slide movers around each other
@@ -613,8 +625,9 @@ fn owner_local_ranks(state: &State) -> Vec<usize> {
 }
 
 /// Resolves unit-unit collisions: several deterministic relaxation passes
-/// push overlapping pairs apart, half the overlap each, so units cannot
-/// stack — grouped movers fan out and a body-blocked unit stays blocked. A
+/// push overlapping pairs apart, each body taking the share of the overlap
+/// its partner's footprint area earns it, so units cannot stack — grouped
+/// movers fan out and a body-blocked unit stays blocked. A
 /// push that would land in an impassable tile is discarded (rocks beat
 /// crowd pressure), and one per-unit budget spans every pass in the tick
 /// so packed crowds settle instead of exploding.
@@ -902,7 +915,20 @@ fn relaxation_pass(
             (false, false) => match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
                 (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
                 (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
-                _ => (chassis::fx::HALF, chassis::fx::HALF),
+                // Footprint area stands in for mass, so a heavy hull gives
+                // less ground than the light one shoving it. Equal radii
+                // still split exactly in half. The division rounds, so it is
+                // always taken for the lighter body: keyed to pair order, a
+                // seat's mirror image would receive the other rounding.
+                _ => {
+                    let (mass_i, mass_j) = (radius_i * radius_i, radius_j * radius_j);
+                    let light_share = mass_i.max(mass_j) / (mass_i + mass_j);
+                    if mass_i <= mass_j {
+                        (light_share, Fx::ONE - light_share)
+                    } else {
+                        (Fx::ONE - light_share, light_share)
+                    }
+                }
             },
         };
         let (away_i, away_j) = (-dir, dir);
@@ -1003,6 +1029,44 @@ mod tests {
             "the stalled route was kept"
         );
         assert_eq!(state.units[slot].stall_ticks, 0);
+    }
+
+    #[test]
+    fn a_route_dropped_after_stalls_were_noted_takes_its_count_with_it() {
+        let mut state = Scenario::skirmish().build().unwrap();
+        let waypoint = TilePos::new(20, 12);
+        let slot = 0;
+        state.units[slot].path = Some(PathFollow {
+            goal: waypoint,
+            waypoints: vec![waypoint],
+            next: 0,
+        });
+        let mut travel = vec![Vec2Fx::ZERO; state.units.len()];
+        travel[slot] = Vec2Fx::new(Fx::lit("0.1"), Fx::ZERO);
+        let driven: Vec<Vec2Fx> = state
+            .units
+            .iter()
+            .zip(&travel)
+            .map(|(unit, &step)| unit.pos + step)
+            .collect();
+        note_stalls(&mut state, &travel, &driven);
+        assert_eq!(state.units[slot].stall_ticks, 1);
+        state
+            .validate_invariants()
+            .expect("a stalled walker is valid");
+
+        // A late phase, such as revealing the site a builder is walking to,
+        // retargets the unit after the stalls were noted.
+        state.units[slot].path = None;
+        assert!(matches!(
+            state.validate_invariants(),
+            Err(crate::state::StateIntegrityError::InvalidStallTicks(_))
+        ));
+        forget_stalls_without_routes(&mut state);
+        assert_eq!(state.units[slot].stall_ticks, 0);
+        state
+            .validate_invariants()
+            .expect("the count left with the route");
     }
 
     #[test]
@@ -1696,6 +1760,100 @@ mod tests {
                 assert_ne!(
                     state.units[inside_slot].pos, before,
                     "{edge} pair with outside slot {outside_slot} was not separated"
+                );
+            }
+        }
+    }
+
+    fn resting_overlap(kinds: [UnitKind; 2], separation: Fx) -> [Fx; 2] {
+        let mut state = boundary_pair();
+        let center = TilePos::new(5, 2).center();
+        let half = separation * chassis::fx::HALF;
+        for ((unit, kind), side) in state.units.iter_mut().zip(kinds).zip([-Fx::ONE, Fx::ONE]) {
+            unit.kind = kind;
+            unit.pos = Vec2Fx::new(center.x + half * side, center.y);
+        }
+        let before: Vec<Vec2Fx> = state.units.iter().map(|unit| unit.pos).collect();
+        let travel = vec![Vec2Fx::ZERO; state.units.len()];
+        resolve_collisions(&mut state, &travel, &mut UnitIndex::new());
+        [0, 1].map(|slot| state.units[slot].pos.dist(before[slot]))
+    }
+
+    #[test]
+    fn equal_bodies_split_an_overlap_exactly_in_half() {
+        let [left, right] = resting_overlap([UnitKind::Sentinel; 2], Fx::lit("0.6"));
+        assert!(left > Fx::ZERO);
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn a_heavy_hull_yields_less_than_the_light_one_shoving_it() {
+        let kinds = [UnitKind::Sentinel, UnitKind::Breaker];
+        let radii = kinds.map(|kind| kind.stats().radius);
+        let overlap = Fx::lit("0.1");
+        let [light, heavy] = resting_overlap(kinds, radii[0] + radii[1] - overlap);
+        let tolerance = Fx::lit("0.000001");
+        assert!(heavy > Fx::ZERO && light > heavy + heavy);
+        assert!((light + heavy - overlap).abs() < tolerance);
+        let imbalance = light * radii[0] * radii[0] - heavy * radii[1] * radii[1];
+        assert!(
+            imbalance.abs() < tolerance,
+            "shares are not inverse to area"
+        );
+    }
+
+    #[test]
+    fn mixed_size_collision_is_equivariant_under_half_turns() {
+        let mut state = collision_trio();
+        state.units[0].kind = UnitKind::Breaker;
+        state.units[2].kind = UnitKind::Scuttler;
+        state.units[0].pos = Vec2Fx::new(Fx::lit("5.5"), Fx::lit("3.5"));
+        state.units[1].pos = Vec2Fx::new(Fx::lit("4.85"), Fx::lit("3.3"));
+        state.units[2].pos = Vec2Fx::new(Fx::lit("6.1"), Fx::lit("3.75"));
+        let travel = vec![
+            Vec2Fx::new(Fx::lit("0.02"), Fx::lit("0.01")),
+            Vec2Fx::new(Fx::lit("0.08"), Fx::lit("0.02")),
+            Vec2Fx::new(Fx::lit("-0.12"), Fx::lit("-0.03")),
+        ];
+
+        assert_collision_half_turn(state, travel);
+    }
+
+    /// A seat's light body meeting the other seat's heavy one, and the
+    /// half-turn image with the kinds exchanged between the seats: which body
+    /// the pair loop reaches first differs, so the split must not depend on it.
+    #[test]
+    fn mixed_size_split_ignores_which_seat_owns_the_heavier_body() {
+        let kinds = [UnitKind::Sentinel, UnitKind::Breaker];
+        let mut original = boundary_pair();
+        let width = Fx::from_num(original.map.width());
+        let height = Fx::from_num(original.map.height());
+        let rotate = |pos: Vec2Fx| Vec2Fx::new(width - pos.x, height - pos.y);
+        for step in 0..64 {
+            let gap = Fx::lit("0.5") + Fx::lit("0.00617") * Fx::from_num(step);
+            let at = [
+                Vec2Fx::new(Fx::lit("5.31"), Fx::lit("2.47")),
+                Vec2Fx::new(
+                    Fx::lit("5.31") + gap,
+                    Fx::lit("2.47") + gap * Fx::lit("0.37"),
+                ),
+            ];
+            let mut rotated = original.clone();
+            for slot in 0..2 {
+                original.units[slot].kind = kinds[slot];
+                original.units[slot].pos = at[slot];
+                rotated.units[slot].kind = kinds[1 - slot];
+                rotated.units[slot].pos = rotate(at[1 - slot]);
+            }
+            let travel = vec![Vec2Fx::ZERO; 2];
+            let mut a = original.clone();
+            resolve_collisions(&mut a, &travel, &mut UnitIndex::new());
+            resolve_collisions(&mut rotated, &travel, &mut UnitIndex::new());
+            for slot in 0..2 {
+                assert_eq!(
+                    rotated.units[slot].pos,
+                    rotate(a.units[1 - slot].pos),
+                    "gap {gap}: the split depended on pair order"
                 );
             }
         }

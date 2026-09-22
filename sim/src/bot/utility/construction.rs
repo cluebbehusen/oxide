@@ -1617,54 +1617,18 @@ mod tests {
 
     fn harvester(id: u32, tile: TilePos, founding: Option<(BuildingKind, TilePos)>) -> UnitObs {
         UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Harvester,
-            tile,
-            hp: UnitKind::Harvester.stats().max_hp,
             idle: founding.is_none(),
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
             founding,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(id, PlayerId(0), UnitKind::Harvester, tile)
         }
     }
 
     fn sentinel(id: u32, tile: TilePos) -> UnitObs {
-        UnitObs {
-            id: UnitId(id),
-            player: PlayerId(0),
-            kind: UnitKind::Sentinel,
-            tile,
-            hp: UnitKind::Sentinel.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
-        }
+        UnitObs::fixture(id, PlayerId(0), UnitKind::Sentinel, tile)
     }
 
     fn building(id: u32, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> BuildingObs {
-        BuildingObs {
-            provisional: false,
-            id: BuildingId(id),
-            player,
-            kind,
-            anchor,
-            hp: kind.base_stats().max_hp,
-            built: true,
-            seen: true,
-            tier: 0,
-        }
+        BuildingObs::fixture(id, player, kind, anchor)
     }
 
     fn focused_dials() -> Dials {
@@ -4044,20 +4008,8 @@ mod tests {
 
         let mut hostile = ready.clone();
         hostile.enemy_units.push(UnitObs {
-            id: UnitId(90),
-            player: PlayerId(1),
-            kind: UnitKind::Avalanche,
-            tile: frontier,
-            hp: UnitKind::Avalanche.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(90, PlayerId(1), UnitKind::Avalanche, frontier)
         });
 
         let cases = [
@@ -4375,20 +4327,8 @@ mod tests {
 
         let mut occupied = ready.clone();
         occupied.enemy_units.push(UnitObs {
-            id: UnitId(20),
-            player: PlayerId(1),
-            kind: UnitKind::Sentinel,
-            tile: frame.offset(1, 0),
-            hp: UnitKind::Sentinel.stats().max_hp,
             idle: false,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
-            grounded: false,
+            ..UnitObs::fixture(20, PlayerId(1), UnitKind::Sentinel, frame.offset(1, 0))
         });
         assert!(!has_supported_restoration(&policy, &occupied, HOME));
 
@@ -4396,20 +4336,8 @@ mod tests {
         // same airframe in the air does not.
         let mut parked = ready.clone();
         parked.enemy_units.push(UnitObs {
-            id: UnitId(21),
-            player: PlayerId(1),
-            kind: UnitKind::Condor,
-            tile: frame.offset(1, 1),
-            hp: UnitKind::Condor.stats().max_hp,
-            idle: true,
-            carrying: 0,
-            harvesting: None,
-            cargo: 0,
-            site: None,
-            salvaging: None,
-            founding: None,
-            repairing: false,
             grounded: true,
+            ..UnitObs::fixture(21, PlayerId(1), UnitKind::Condor, frame.offset(1, 1))
         });
         assert!(!has_supported_restoration(&policy, &parked, HOME));
         let mut overflown = parked.clone();

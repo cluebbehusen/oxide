@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(test)]
 use crate::bot::observation::ObservationData;
-use crate::ids::{BuildingId, PlayerId, UnitId};
+use crate::ids::PlayerId;
 use crate::scenario::{PlayerSpec, Scenario};
 
 pub(super) const WIDTH: i32 = 40;
@@ -75,36 +75,11 @@ pub(super) fn building(
     kind: BuildingKind,
     anchor: TilePos,
 ) -> BuildingObs {
-    BuildingObs {
-        provisional: false,
-        id: BuildingId(id),
-        player,
-        kind,
-        anchor,
-        hp: kind.base_stats().max_hp,
-        built: true,
-        seen: true,
-        tier: 0,
-    }
+    BuildingObs::fixture(id, player, kind, anchor)
 }
 
 pub(super) fn unit(id: u32, player: PlayerId, kind: UnitKind, tile: TilePos) -> UnitObs {
-    UnitObs {
-        id: UnitId(id),
-        player,
-        kind,
-        tile,
-        hp: kind.stats().max_hp,
-        idle: true,
-        carrying: 0,
-        harvesting: None,
-        cargo: 0,
-        site: None,
-        salvaging: None,
-        founding: None,
-        repairing: false,
-        grounded: false,
-    }
+    UnitObs::fixture(id, player, kind, tile)
 }
 
 pub(super) fn observation(me: PlayerId, home: TilePos) -> Observation {

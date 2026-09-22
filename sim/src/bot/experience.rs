@@ -1237,15 +1237,13 @@ mod tests {
                 hp: 40,
             }],
             enemy_buildings: vec![super::super::observation::BuildingObs {
-                provisional: false,
-                id: BuildingId(5),
-                player: PlayerId(1),
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(5, 5),
                 hp: 1000,
-                built: true,
-                seen: true,
-                tier: 0,
+                ..super::super::observation::BuildingObs::fixture(
+                    5,
+                    PlayerId(1),
+                    BuildingKind::Foundry,
+                    TilePos::new(5, 5),
+                )
             }],
             ..Default::default()
         });
@@ -1315,15 +1313,13 @@ mod tests {
                 hp: 40,
             }],
             enemy_buildings: vec![super::super::observation::BuildingObs {
-                provisional: false,
-                id: BuildingId(5),
-                player: PlayerId(1),
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(5, 5),
                 hp: 1000,
-                built: true,
-                seen: true,
-                tier: 0,
+                ..super::super::observation::BuildingObs::fixture(
+                    5,
+                    PlayerId(1),
+                    BuildingKind::Foundry,
+                    TilePos::new(5, 5),
+                )
             }],
             ..Default::default()
         });
@@ -1358,15 +1354,8 @@ mod tests {
             map_height: 20,
             visible: vec![true; 400],
             enemy_buildings: vec![BuildingObs {
-                provisional: false,
-                id: BuildingId(1),
-                player: PlayerId(1),
-                kind: BuildingKind::Foundry,
-                anchor: TilePos::new(5, 5),
                 hp: 1000,
-                built: true,
-                seen: true,
-                tier: 0,
+                ..BuildingObs::fixture(1, PlayerId(1), BuildingKind::Foundry, TilePos::new(5, 5))
             }],
             ..Default::default()
         });
