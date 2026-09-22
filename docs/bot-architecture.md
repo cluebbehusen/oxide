@@ -1147,6 +1147,13 @@ preferences.
 
 ## Controller-local battlefield loop
 
+Ground mission planning prepares each available army's center, ground-capable
+count, and marching strength once per decision. Unchanged armies are borrowed;
+only staging armies with newly unavailable members need an owned filtered copy.
+Retained servicing, defense assignment, and pressure/reserve selection share one
+decision-local set of unit claims, attention usage, and lazy route preparation.
+They execute in that order because each consumes capacity available to the next.
+
 Playable army contact includes observed completed defenses with compatible
 weapon range and known fire geometry. Local strength counts nearby participants
 and the defenses actually covering them. An army returns after a newly observed
