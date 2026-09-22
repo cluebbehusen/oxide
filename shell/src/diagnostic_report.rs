@@ -65,7 +65,11 @@ impl ReportJob {
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos();
-            oxide_kit::recovery::export(&source, &reports.join(format!("report-{stamp}")))?;
+            oxide_kit::recovery::export(
+                &source,
+                &reports.join(format!("report-{stamp}")),
+                &crate::build_identity(),
+            )?;
             Ok("Diagnostic report exported. Open diagnostics folder to find it.".into())
         })
     }
@@ -178,7 +182,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oxide-report-home-{}", std::process::id()));
         let base =
             oxide_kit::GameReplay::new(oxide_sim::SIM_VERSION, oxide_sim::Scenario::skirmish());
-        let interrupted = RecoveryWriter::start(root.clone(), base, 0).unwrap();
+        let interrupted =
+            RecoveryWriter::start(root.clone(), base, 0, crate::build_identity()).unwrap();
         interrupted.prepared(0, &[]);
         interrupted.completed(1);
         until(|| interrupted.status().durable_tick == 1);

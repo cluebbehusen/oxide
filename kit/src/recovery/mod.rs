@@ -27,7 +27,8 @@ pub struct BuildIdentity {
     pub version: String,
     /// Recording commit, or `unknown` for a source archive.
     pub revision: String,
-    /// `true`, `false`, or `unknown` when the build source could not be inspected.
+    /// Whether the executable's package/dependency trees and shared build inputs
+    /// had changes: `true`, `false`, or `unknown` when source could not be inspected.
     pub dirty: String,
     /// Build operating system.
     pub os: String,
@@ -36,10 +37,17 @@ pub struct BuildIdentity {
 }
 impl Default for BuildIdentity {
     fn default() -> Self {
+        Self::new(env!("CARGO_PKG_VERSION"), "unknown", "unknown")
+    }
+}
+
+impl BuildIdentity {
+    /// Identity captured by the host executable's build script.
+    pub fn new(version: &str, revision: &str, dirty: &str) -> Self {
         Self {
-            version: env!("CARGO_PKG_VERSION").into(),
-            revision: env!("OXIDE_BUILD_REVISION").into(),
-            dirty: env!("OXIDE_BUILD_DIRTY").into(),
+            version: version.into(),
+            revision: revision.into(),
+            dirty: dirty.into(),
             os: std::env::consts::OS.into(),
             architecture: std::env::consts::ARCH.into(),
         }
@@ -474,7 +482,7 @@ pub(crate) fn session_directories(root: &Path) -> Vec<PathBuf> {
 
 /// Export a consistent verified prefix and available diagnostics to a new report directory.
 /// Existing destinations are refused; named saves and source records are never replaced.
-pub fn export(directory: &Path, destination: &Path) -> Result<()> {
+pub fn export(directory: &Path, destination: &Path, running_build: &BuildIdentity) -> Result<()> {
     ensure!(!destination.exists(), "report destination already exists");
     let readers = if directory.join("recovery.bin").exists() {
         let file = File::options()
@@ -493,7 +501,7 @@ pub fn export(directory: &Path, destination: &Path) -> Result<()> {
         record.replay.save(destination.join("replay.json"))?;
         #[cfg(test)]
         tests::fault("export");
-        let manifest = serde_json::json!({ "format": 1, "complete": true, "kind": record.kind, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": BuildIdentity::default(), "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
+        let manifest = serde_json::json!({ "format": 1, "complete": true, "kind": record.kind, "replay_digest": chassis::hash::state_hash(&record.replay), "session": record.session, "build": record.build, "running_build": running_build, "sim_version": SIM_VERSION, "ticks": record.replay.meta.ticks, "clean": record.clean, "issue": record.issue, "prepared_tick": record.prepared.as_ref().map(|_| record.replay.meta.ticks), "prepared_commands": record.prepared });
         let mut manifest = manifest;
         if let Some(checkpoint) = &record.checkpoint {
             manifest["checkpoint"] = serde_json::to_value(checkpoint)?;

@@ -577,10 +577,15 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         .last()
                         .map_or(0, |command| command.tick.saturating_add(1))
                 });
-                oxide_kit::recovery::RecoveryWriter::start(root, replay.clone(), ticks)
-                    .map(std::sync::Arc::new)
-                    .map_err(|error| eprintln!("Recovery unavailable: {error}"))
-                    .ok()
+                oxide_kit::recovery::RecoveryWriter::start(
+                    root,
+                    replay.clone(),
+                    ticks,
+                    crate::build_identity(),
+                )
+                .map(std::sync::Arc::new)
+                .map_err(|error| eprintln!("Recovery unavailable: {error}"))
+                .ok()
             })
         } else {
             None

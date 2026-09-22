@@ -42,6 +42,12 @@ crate-level rustdoc.
 
 ## Development
 
+The executable's build script captures its Git revision and dirty status from
+the shell and shared dependency package trees, workspace manifests, Cargo
+configuration, assets, scenarios, and shared build support. Private workspace
+notes and the driver package do not contribute. Source archives report unknown
+provenance. This metadata is observational and never enters simulation hashes.
+
 Run commands from the workspace root:
 
 ```sh

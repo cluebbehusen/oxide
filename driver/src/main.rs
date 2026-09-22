@@ -499,13 +499,13 @@ fn main() -> Result<()> {
         Cmd::RecoveryInspect { directory, export } => {
             let record = oxide_kit::recovery::inspect(&directory)?;
             if let Some(destination) = export {
-                oxide_kit::recovery::export(&directory, &destination)?;
+                oxide_kit::recovery::export(&directory, &destination, &crate::build_identity())?;
             }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "session": record.session, "build": record.build,
-                    "running_build": oxide_kit::recovery::BuildIdentity::default(),
+                    "running_build": build_identity(),
                     "scenario": record.replay.setup.name, "ticks": record.replay.meta.ticks,
                     "commands": record.replay.commands.len(), "prepared_commands": record.prepared.as_ref().map(Vec::len),
                     "clean": record.clean, "issue": record.issue, "kind": record.kind
@@ -1131,6 +1131,14 @@ fn main() -> Result<()> {
         } => oxide_driver::shots::run(port, bless, &dir, threshold)?,
     }
     Ok(())
+}
+
+fn build_identity() -> oxide_kit::recovery::BuildIdentity {
+    oxide_kit::recovery::BuildIdentity::new(
+        env!("CARGO_PKG_VERSION"),
+        env!("OXIDE_BUILD_REVISION"),
+        env!("OXIDE_BUILD_DIRTY"),
+    )
 }
 
 #[cfg(test)]

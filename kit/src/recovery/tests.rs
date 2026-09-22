@@ -7,6 +7,9 @@ fn base() -> GameReplay {
     replay.meta.ticks = Some(0);
     replay
 }
+fn start(root: PathBuf) -> Result<RecoveryWriter> {
+    RecoveryWriter::start(root, base(), 0, BuildIdentity::default())
+}
 
 #[test]
 fn checkpoint_recovery_consumes_pending_input_once_and_preserves_controller_future() {
@@ -23,10 +26,15 @@ fn checkpoint_recovery_consumes_pending_input_once_and_preserves_controller_futu
     let checkpoint =
         SessionCheckpoint::capture(&scenario, &state, &bots, &pending, Some(&stats)).unwrap();
     let root = temp();
-    let writer = RecoveryWriter::start_checkpoint(root.clone(), checkpoint.clone()).unwrap();
+    let recording_build = BuildIdentity::new("fixture", "checkpoint-recording", "false");
+    let writer =
+        RecoveryWriter::start_checkpoint(root.clone(), checkpoint.clone(), recording_build.clone())
+            .unwrap();
     wait(&writer, |status| status.ready || status.error.is_some());
     assert!(writer.status().error.is_none());
     let original_boundary = inspect(writer.directory()).unwrap();
+    assert_eq!(writer.build(), &recording_build);
+    assert_eq!(original_boundary.build, recording_build);
     let restored = original_boundary
         .checkpoint
         .unwrap()
@@ -71,15 +79,18 @@ fn checkpoint_recovery_consumes_pending_input_once_and_preserves_controller_futu
         assert_eq!(state.hash(), restored.state.hash());
     }
     let report_dir = root.join("export");
-    export(&directory, &report_dir).unwrap();
+    export(&directory, &report_dir, &BuildIdentity::default()).unwrap();
     let exported = inspect(&report_dir).unwrap();
     assert!(exported.checkpoint.is_some());
+    assert_eq!(exported.build, recording_build);
+    let recovered_build = BuildIdentity::new("fixture", "checkpoint-recovery", "true");
     let replacement = RecoveryWriter::start_recovered_checkpoint(
         root.clone(),
         record.replay,
         38,
         checkpoint,
         Some(directory.clone()),
+        recovered_build.clone(),
     )
     .unwrap();
     wait(&replacement, |status| {
@@ -91,6 +102,11 @@ fn checkpoint_recovery_consumes_pending_input_once_and_preserves_controller_futu
         replacement.status()
     );
     assert!(directory.join("superseded.json").exists());
+    assert_eq!(replacement.build(), &recovered_build);
+    assert_eq!(
+        inspect(replacement.directory()).unwrap().build,
+        recovered_build
+    );
     drop_and_wait(replacement);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -385,7 +401,8 @@ fn empty_ticks_and_resumed_prefixes_retain_their_duration() {
 #[test]
 fn worker_flushes_exact_prefix_and_excludes_active_recordings() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let recording_build = BuildIdentity::new("fixture", "recorded-revision", "false");
+    let writer = RecoveryWriter::start(root.clone(), base(), 0, recording_build.clone()).unwrap();
     let mut state = Scenario::skirmish().build().unwrap();
     for tick in 0..20 {
         let commands = if tick == 0 { vec![command()] } else { vec![] };
@@ -404,7 +421,9 @@ fn worker_flushes_exact_prefix_and_excludes_active_recordings() {
     }
     let found = latest_interrupted(&root).unwrap();
     assert_eq!(found.ticks, 20);
-    let replay = inspect(&directory).unwrap().replay;
+    let recorded = inspect(&directory).unwrap();
+    assert_eq!(recorded.build, recording_build);
+    let replay = recorded.replay;
     let mut reproduced = replay.setup.build().unwrap();
     let mut cursor = replay.cursor();
     for tick in 0..20 {
@@ -417,16 +436,27 @@ fn worker_flushes_exact_prefix_and_excludes_active_recordings() {
     }
     assert_eq!(state.hash(), reproduced.hash());
     let report = root.join("export");
-    export(&directory, &report).unwrap();
+    let exporting_build = BuildIdentity::new("fixture", "exporting-revision", "true");
+    export(&directory, &report, &exporting_build).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["build"],
+        serde_json::to_value(&recording_build).unwrap()
+    );
+    assert_eq!(
+        manifest["running_build"],
+        serde_json::to_value(&exporting_build).unwrap()
+    );
     assert!(crate::load_replay(report.join("replay.json")).is_ok());
     assert_eq!(inspect(&report).unwrap().replay.meta.ticks, Some(20));
-    assert!(export(&directory, &report).is_err());
+    assert!(export(&directory, &report, &BuildIdentity::default()).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn clean_close_requires_success_and_storage_failure_does_not_block() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     writer.prepared(0, &[]);
     writer.completed(1);
     writer.finish(1);
@@ -437,7 +467,7 @@ fn clean_close_requires_success_and_storage_failure_does_not_block() {
     drop_and_wait(writer);
     let bad = root.join("file");
     std::fs::write(&bad, b"not a directory").unwrap();
-    let writer = RecoveryWriter::start(bad, base(), 0).unwrap();
+    let writer = start(bad).unwrap();
     wait(&writer, |s| s.error.is_some());
     writer.prepared(0, &[]);
     assert!(!writer.status().clean);
@@ -447,7 +477,7 @@ fn clean_close_requires_success_and_storage_failure_does_not_block() {
 #[test]
 fn oversized_command_batch_stops_capture_without_partial_submission() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     let commands = vec![PlayerCommand {
         player: PlayerId(0),
         command: Command::Stop {
@@ -483,7 +513,7 @@ pub(super) fn fault(phase: &str) {
 #[ignore = "subprocess fixture; invoked by forced_termination_retains_a_valid_prefix"]
 fn interrupted_child() {
     let root = PathBuf::from(std::env::var_os("OXIDE_RECOVERY_TEST_ROOT").unwrap());
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     for tick in 0..10 {
         writer.prepared(tick, &[]);
         writer.completed(tick + 1);
@@ -493,7 +523,11 @@ fn interrupted_child() {
     ARMED.store(true, std::sync::atomic::Ordering::Release);
     match phase.as_str() {
         "export" => {
-            let _ = export(writer.directory(), &root.join("report"));
+            let _ = export(
+                writer.directory(),
+                &root.join("report"),
+                &crate::recovery::BuildIdentity::default(),
+            );
         }
         "clean" => writer.finish(10),
         "prepared" => {
@@ -565,7 +599,7 @@ fn forced_termination_retains_a_valid_prefix() {
 #[test]
 fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     writer.prepared(0, &[]);
     writer.completed(1);
     wait(&writer, |status| status.durable_tick == 1);
@@ -573,8 +607,14 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
     drop_and_wait(writer);
     std::fs::write(source.join("watchdog.json"), b"[\"original stall\"]").unwrap();
     let recovered = inspect(&source).unwrap().replay;
-    let replacement =
-        RecoveryWriter::start_recovered(root.clone(), recovered, 1, Some(source.clone())).unwrap();
+    let replacement = RecoveryWriter::start_recovered(
+        root.clone(),
+        recovered,
+        1,
+        Some(source.clone()),
+        crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     wait(&replacement, |status| status.ready);
     assert!(
         source.join("superseded.json").exists(),
@@ -589,7 +629,12 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
         b"[\"original stall\"]"
     );
     let report = root.join("export-with-history");
-    export(replacement.directory(), &report).unwrap();
+    export(
+        replacement.directory(),
+        &report,
+        &crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     assert!(report.join("previous-manifest.json").exists());
     assert_eq!(
         std::fs::read(report.join("previous-watchdog.json")).unwrap(),
@@ -604,7 +649,7 @@ fn recovered_sources_retire_only_after_an_exact_replacement_is_durable() {
 #[test]
 fn queued_commands_stop_explicitly_when_storage_cannot_drain() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     wait(&writer, |status| status.ready);
     let lock = std::fs::File::open(root.join("budget.lock")).unwrap();
     lock.lock().unwrap();
@@ -643,7 +688,7 @@ fn retention_preserves_export_readers_and_explicit_reports() {
     std::fs::create_dir_all(&report).unwrap();
     std::fs::write(report.join("sentinel"), b"keep").unwrap();
     for index in 0..7 {
-        let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+        let writer = start(root.clone()).unwrap();
         wait(&writer, |status| status.ready);
         writer.finish(0);
         wait(&writer, |status| status.clean);
@@ -671,13 +716,18 @@ fn retention_preserves_export_readers_and_explicit_reports() {
 #[test]
 fn report_verification_rejects_a_changed_replay() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     writer.prepared(0, &[]);
     writer.completed(1);
     wait(&writer, |status| status.durable_tick == 1);
     let report = root.join("reports/export");
     std::fs::create_dir_all(report.parent().unwrap()).unwrap();
-    export(writer.directory(), &report).unwrap();
+    export(
+        writer.directory(),
+        &report,
+        &crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     let mut replay = inspect(&report).unwrap().replay;
     replay.meta.ticks = Some(2);
     replay.save(report.join("replay.json")).unwrap();
@@ -701,7 +751,7 @@ fn report_verification_rejects_a_changed_replay() {
 #[test]
 fn a_first_tick_failure_can_be_reported_without_offering_an_empty_resume() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     wait(&writer, |status| status.ready);
     writer.prepared(0, &[command()]);
     let directory = writer.directory().to_owned();
@@ -715,7 +765,12 @@ fn a_first_tick_failure_can_be_reported_without_offering_an_empty_resume() {
     let source = latest_diagnostic_record(&root).unwrap();
     assert_eq!(source.ticks, 0);
     let report = root.join("report");
-    export(&source.directory, &report).unwrap();
+    export(
+        &source.directory,
+        &report,
+        &crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     let inspected = inspect(&report).unwrap();
     assert_eq!(inspected.replay.meta.ticks, Some(0));
     assert!(inspected.replay.commands.is_empty());
@@ -726,17 +781,29 @@ fn a_first_tick_failure_can_be_reported_without_offering_an_empty_resume() {
 #[test]
 fn recovered_source_can_be_claimed_once_even_by_cached_callers() {
     let root = temp();
-    let writer = RecoveryWriter::start(root.clone(), base(), 0).unwrap();
+    let writer = start(root.clone()).unwrap();
     writer.prepared(0, &[]);
     writer.completed(1);
     wait(&writer, |status| status.durable_tick == 1);
     let source = writer.directory().to_owned();
     drop_and_wait(writer);
     let replay = inspect(&source).unwrap().replay;
-    let a = RecoveryWriter::start_recovered(root.clone(), replay.clone(), 1, Some(source.clone()))
-        .unwrap();
-    let b = RecoveryWriter::start_recovered(root.clone(), replay.clone(), 1, Some(source.clone()))
-        .unwrap();
+    let a = RecoveryWriter::start_recovered(
+        root.clone(),
+        replay.clone(),
+        1,
+        Some(source.clone()),
+        crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
+    let b = RecoveryWriter::start_recovered(
+        root.clone(),
+        replay.clone(),
+        1,
+        Some(source.clone()),
+        crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     for writer in [&a, &b] {
         wait(writer, |status| status.ready || status.error.is_some());
     }
@@ -749,8 +816,14 @@ fn recovered_source_can_be_claimed_once_even_by_cached_callers() {
         marker_json["by"],
         winner.directory().file_name().unwrap().to_str().unwrap()
     );
-    let late =
-        RecoveryWriter::start_recovered(root.clone(), replay, 1, Some(source.clone())).unwrap();
+    let late = RecoveryWriter::start_recovered(
+        root.clone(),
+        replay,
+        1,
+        Some(source.clone()),
+        crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     wait(&late, |status| status.error.is_some());
     assert!(
         late.status()
@@ -774,10 +847,21 @@ fn playback_recordings_export_the_full_source_but_never_offer_live_recovery() {
     let mut replay = base();
     replay.record(0, command());
     replay.meta.ticks = Some(20);
-    let writer = RecoveryWriter::start_playback(root.clone(), replay.clone(), 20).unwrap();
+    let writer = RecoveryWriter::start_playback(
+        root.clone(),
+        replay.clone(),
+        20,
+        crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     wait(&writer, |status| status.ready);
     let source = writer.directory().to_owned();
-    export(&source, &root.join("report")).unwrap();
+    export(
+        &source,
+        &root.join("report"),
+        &crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     let report = inspect(&root.join("report")).unwrap();
     assert_eq!(report.kind, RecordingKind::Playback);
     assert_eq!(
@@ -792,8 +876,14 @@ fn playback_recordings_export_the_full_source_but_never_offer_live_recovery() {
     }
     assert!(latest_interrupted(&root).is_none());
     assert_eq!(latest_diagnostic_record(&root).unwrap().directory, source);
-    let invalid =
-        RecoveryWriter::start_recovered(root.clone(), replay, 20, Some(source.clone())).unwrap();
+    let invalid = RecoveryWriter::start_recovered(
+        root.clone(),
+        replay,
+        20,
+        Some(source.clone()),
+        crate::recovery::BuildIdentity::default(),
+    )
+    .unwrap();
     wait(&invalid, |status| status.error.is_some());
     assert!(
         invalid

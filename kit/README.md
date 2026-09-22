@@ -34,6 +34,9 @@ while reusable game-independent primitives stay in `chassis`.
 - `recovery` keeps a bounded incremental command journal, distinguishes prepared
   commands from completed ticks, and exports verified replay prefixes with build
   provenance. Its worker handles disk durability without blocking the caller.
+  The host supplies build identity; the kit never probes Git or embeds a sibling
+  executable's revision. Diagnostics share the recording identity, while export
+  also records the identity of the executable preparing the report.
 - `load_replay` owns bounded Oxide replay loading and version-scoped setup
   compatibility.
 - `runner` executes scenarios and replays headlessly through the same

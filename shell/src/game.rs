@@ -405,6 +405,7 @@ impl Game {
                             self.state.current_tick(),
                             checkpoint,
                             Some(source),
+                            crate::build_identity(),
                         )
                     } else {
                         let checkpoint = oxide_kit::checkpoint::SessionCheckpoint::capture(
@@ -417,6 +418,7 @@ impl Game {
                         oxide_kit::recovery::RecoveryWriter::start_checkpoint(
                             root.clone(),
                             checkpoint,
+                            crate::build_identity(),
                         )
                     }
                 } else {
@@ -425,6 +427,7 @@ impl Game {
                         self.recorder.clone(),
                         self.state.current_tick(),
                         source,
+                        crate::build_identity(),
                     )
                 }
             })();

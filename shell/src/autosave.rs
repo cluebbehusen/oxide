@@ -520,7 +520,8 @@ mod tests {
         use oxide_kit::recovery::{RecoveryWriter, inspect, latest_diagnostic_record};
         let root = scratch("zero-recovery");
         let baseline = GameReplay::new(oxide_sim::SIM_VERSION, oxide_sim::Scenario::skirmish());
-        let old = RecoveryWriter::start(root.clone(), baseline, 0).unwrap();
+        let old =
+            RecoveryWriter::start(root.clone(), baseline, 0, crate::build_identity()).unwrap();
         old.prepared(0, &[]);
         old.completed(1);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

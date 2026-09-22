@@ -16,6 +16,7 @@ fn recording() -> (PathBuf, Arc<RecoveryWriter>) {
             root.clone(),
             GameReplay::new(SIM_VERSION, Scenario::skirmish()),
             0,
+            crate::recovery::BuildIdentity::new("fixture", "diagnostic-host", "false"),
         )
         .unwrap(),
     );
@@ -317,6 +318,11 @@ fn every_shell_screen_keeps_its_identity_in_persisted_context() {
         )
         .unwrap();
         assert_eq!(stored["screen"], id);
+        assert_eq!(stored["build"]["revision"], "diagnostic-host");
+        assert_eq!(
+            stored["build"],
+            serde_json::to_value(writer.build()).unwrap()
+        );
     }
     cleanup(root, writer, recorder);
 }
