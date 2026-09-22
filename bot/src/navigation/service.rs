@@ -113,10 +113,7 @@ impl<'a> ServiceRoutes<'a> {
                 let cost = self
                     .ground_routes
                     .safe_command_route_cost(from, goal, false)?;
-                let speed = u128::try_from(kind.stats().speed.to_bits())
-                    .ok()
-                    .filter(|speed| *speed > 0)?;
-                u64::try_from((u128::from(cost) << 32).div_ceil(speed.checked_mul(10)?)).ok()
+                Some(super::travel::travel_ticks(kind, cost))
             })
             .flatten();
         self.travel.insert(key, travel);

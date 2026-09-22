@@ -448,18 +448,15 @@ impl UtilityPolicy {
 }
 
 fn array_ready_at(now: chassis::Tick, worker: &UnitObs, travel: u32) -> chassis::Tick {
-    now.saturating_add(super::defense::travel_ticks(
-        travel,
-        worker.kind.stats().speed,
-    ))
-    .saturating_add(u64::from(
-        BuildingKind::Array
-            .base_stats()
-            .construction
-            .expect("Array construction")
-            .build_ticks
-            .div_ceil(worker.kind.stats().build_rate.max(1)),
-    ))
+    now.saturating_add(crate::navigation::travel::travel_ticks(worker.kind, travel))
+        .saturating_add(u64::from(
+            BuildingKind::Array
+                .base_stats()
+                .construction
+                .expect("Array construction")
+                .build_ticks
+                .div_ceil(worker.kind.stats().build_rate.max(1)),
+        ))
 }
 
 fn array_opportunity_evidence(

@@ -2,8 +2,8 @@
 
 use super::construction_checks::ConstructionChecks;
 use super::economic_investment::{FundingCalendar, economic_case};
-use super::economic_value::travel_ticks;
 use super::*;
+use crate::navigation::travel::travel_ticks;
 use crate::query_work::QueryPurpose;
 use std::collections::BTreeMap;
 

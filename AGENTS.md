@@ -42,8 +42,8 @@ user directs it. Once created, maintain that note through Kladde.
 The target is strict: **same seed plus same command log produces bit-identical
 state on every run and platform.**
 
-- `chassis`, `oxide-sim`, and `oxide-bot` contain no floating-point arithmetic. Use
-  `chassis::fx::Fx`; floats are presentation-only.
+- `chassis`, `oxide-sim`, and `oxide-bot` contain no floating-point arithmetic.
+  Use `chassis::fx::Fx`; floats are presentation-only.
 - Never depend on `HashMap` or `HashSet` iteration for an outcome. Iterate in a
   canonical order and finish tie-break keys with an id or `(y, x)`.
 - Once a `Scenario` exists, all outcome-relevant randomness comes from

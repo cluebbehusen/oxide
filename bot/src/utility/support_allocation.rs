@@ -460,10 +460,11 @@ impl UtilityPolicy {
             let Some(distance) = geometry.builder_travel_cost(worker, kind, anchor) else {
                 continue;
             };
-            let delay = super::economic_value::travel_ticks(worker.kind, distance).saturating_add(
-                u64::from(stats.build_ticks)
-                    .div_ceil(u64::from(worker.kind.stats().build_rate.max(1))),
-            );
+            let delay = crate::navigation::travel::travel_ticks(worker.kind, distance)
+                .saturating_add(
+                    u64::from(stats.build_ticks)
+                        .div_ceil(u64::from(worker.kind.stats().build_rate.max(1))),
+                );
             let service = 1_800_u64.saturating_sub(delay) / oxide_sim::stats::REPAIR_BAY_PERIOD
                 * u64::from(oxide_sim::stats::REPAIR_BAY_STEP);
             let benefit = patients

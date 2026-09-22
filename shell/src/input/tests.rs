@@ -4,6 +4,8 @@
 use super::*;
 use oxide_sim::{PlayerCommand, UnitKind};
 
+mod double_click;
+
 fn headless_game() -> Game {
     Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
         .expect("embedded skirmish builds")

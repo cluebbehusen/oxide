@@ -4,6 +4,7 @@ use super::*;
 use crate::PublicMapBriefing;
 use crate::allocation::{ClaimOwner, PaidQueueClaim, ProposalKey, ScheduledProducerJob};
 use crate::navigation::commands::production_spawn_doorstep;
+use crate::navigation::travel::travel_ticks;
 use crate::orient::Orientation;
 use crate::query_work::QueryPurpose;
 use crate::resources::{ProducerEgress, ResourceSnapshot};
@@ -408,7 +409,9 @@ impl RaidPlanner {
                         && routes
                             .prospective_group_route_cost(unit.tile, tile, RAID_GROUP_SIZE)
                             .is_some_and(|cost| {
-                                obs.tick.saturating_add(raid_travel(cost)) < deadline
+                                obs.tick
+                                    .saturating_add(travel_ticks(UnitKind::Scuttler, cost))
+                                    < deadline
                             })
                 })
                 .map(|unit| unit.id)
@@ -444,7 +447,7 @@ impl RaidPlanner {
                 else {
                     continue;
                 };
-                let ready_before = deadline.saturating_sub(raid_travel(cost));
+                let ready_before = deadline.saturating_sub(travel_ticks(UnitKind::Scuttler, cost));
                 let owned = context
                     .paid_production
                     .iter()
@@ -553,11 +556,6 @@ fn procurement_routes<'a>(
         ),
         _ => RouteProjection::new(QueryPurpose::RaidOperation, obs, Domain::Ground),
     }
-}
-
-fn raid_travel(cost: u32) -> Tick {
-    let speed = UnitKind::Scuttler.stats().speed.to_bits() as u128;
-    u64::try_from((u128::from(cost) << 32).div_ceil(speed * 10)).unwrap_or(u64::MAX)
 }
 
 fn current_target(obs: &Observation, request: &RaidProcurementRequest) -> Option<TilePos> {

@@ -450,7 +450,7 @@ impl<'a> ReconRoutes<'a> {
             .for_kind(kind)
             .safe_command_route_cost(from, goal, false)?;
         Some(
-            now.saturating_add(super::economic_value::travel_ticks(kind, cost))
+            now.saturating_add(crate::navigation::travel::travel_ticks(kind, cost))
                 .saturating_add(24),
         )
     }

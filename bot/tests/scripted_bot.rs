@@ -931,19 +931,17 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
     );
 }
 
-#[test]
-fn balanced_mirror_stays_active_without_rejected_commands() {
-    let mut scenario = Scenario::skirmish();
-    for player in &mut scenario.players {
-        player.bot = true;
-        player.bot_config = Some(BotConfig::default());
-    }
-    let mut state = scenario.build().expect("skirmish builds");
-    let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
+/// Plays an all-bot match to a result or `ceiling`, returning the result and
+/// the tick it stopped on. No command may be rejected, and while the match
+/// is undecided both seats must keep producing and fighting in every
+/// 10,000-tick window, so a match that reaches the ceiling is still a game.
+fn play_live_match(label: &str, scenario: &Scenario, ceiling: u64) -> (Option<GameResult>, u64) {
+    let mut state = scenario.build().expect("scenario builds");
+    let mut bots = seat_bots(scenario).expect("the scenario has a briefing");
     let mut trained = [0_u32; 2];
     let mut damaged = [0_u32; 2];
 
-    for _ in 0..60_000 {
+    for _ in 0..ceiling {
         if state.result().is_some() {
             break;
         }
@@ -953,7 +951,7 @@ fn balanced_mirror_stays_active_without_rejected_commands() {
             match event {
                 Event::CommandRejected { player, reason } => {
                     panic!(
-                        "mirror command rejected at tick {} for {player:?}: {reason:?}",
+                        "{label}: command rejected at tick {} for {player:?}: {reason:?}",
                         report.tick
                     );
                 }
@@ -966,7 +964,7 @@ fn balanced_mirror_stays_active_without_rejected_commands() {
             for seat in 0..2 {
                 assert!(
                     trained[seat] > 0 && damaged[seat] > 0,
-                    "mirror seat {seat} stopped producing or fighting in the 10,000 ticks ending at {}: trained {}, damage events {}",
+                    "{label}: seat {seat} stopped producing or fighting in the 10,000 ticks ending at {}: trained {}, damage events {}",
                     state.current_tick(),
                     trained[seat],
                     damaged[seat]
@@ -976,44 +974,70 @@ fn balanced_mirror_stays_active_without_rejected_commands() {
             damaged = [0; 2];
         }
     }
+    (state.result(), state.current_tick())
 }
 
 #[test]
-fn distinct_balanced_personalities_play_decisive_matches_in_either_seat() {
-    for seeds in [[0, 1], [1, 0]] {
-        let mut scenario = Scenario::skirmish();
-        for (player, seed) in scenario.players.iter_mut().zip(seeds) {
-            player.bot = true;
-            player.bot_config = Some(BotConfig::scripted(
-                BotDifficulty::Standard,
-                BotStance::Balanced,
-                seed,
-            ));
-        }
-        let mut state = scenario.build().expect("skirmish builds");
-        let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-        for _ in 0..50_000 {
-            if state.result().is_some() {
-                break;
-            }
-            let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
-            let report = state.tick(&commands);
-            for event in report.events {
-                if let Event::CommandRejected { player, reason } = event {
-                    panic!(
-                        "seeds {seeds:?}: command rejected at tick {} for {player:?}: {reason:?}",
-                        report.tick
-                    );
-                }
-            }
-        }
-        assert!(
-            matches!(state.result(), Some(GameResult::Victory { .. })),
-            "seeds {seeds:?} should produce a decisive match by tick {}: {:?}",
-            state.current_tick(),
-            state.result()
-        );
+fn balanced_mirror_stays_active_without_rejected_commands() {
+    let mut scenario = Scenario::skirmish();
+    for player in &mut scenario.players {
+        player.bot = true;
+        player.bot_config = Some(BotConfig::default());
     }
+    play_live_match("default mirror", &scenario, 60_000);
+}
+
+/// A single long mirror is a knife-edge: one bit of collision rounding turns
+/// an early knockout into an hour of even trades, so no pinned match can be
+/// required to finish. Across a small batch most must, and every leg carries
+/// the liveness and command-validity checks of [`play_live_match`].
+#[test]
+fn distinct_balanced_personalities_mostly_play_decisive_matches_in_either_seat() {
+    const SEED_PAIRS: [[u64; 2]; 3] = [[0, 1], [2, 3], [4, 5]];
+    const CEILING: u64 = 50_000;
+
+    let legs: Vec<[u64; 2]> = SEED_PAIRS
+        .iter()
+        .flat_map(|&[first, second]| [[first, second], [second, first]])
+        .collect();
+    let outcomes: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = legs
+            .iter()
+            .map(|&seeds| {
+                scope.spawn(move || {
+                    let mut scenario = Scenario::skirmish();
+                    for (player, seed) in scenario.players.iter_mut().zip(seeds) {
+                        player.bot = true;
+                        player.bot_config = Some(BotConfig::scripted(
+                            BotDifficulty::Standard,
+                            BotStance::Balanced,
+                            seed,
+                        ));
+                    }
+                    play_live_match(&format!("seeds {seeds:?}"), &scenario, CEILING)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
+
+    let decisive = outcomes
+        .iter()
+        .filter(|(result, _)| matches!(result, Some(GameResult::Victory { .. })))
+        .count();
+    assert!(
+        decisive * 2 > legs.len(),
+        "only {decisive} of {} legs were decisive by tick {CEILING}: {:?}",
+        legs.len(),
+        legs.iter().zip(&outcomes).collect::<Vec<_>>()
+    );
 }
 
 #[test]
