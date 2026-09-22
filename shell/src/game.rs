@@ -4,8 +4,8 @@
 use anyhow::Result;
 use chassis::replay::Replay;
 use macroquad::prelude::{Vec2, vec2};
+use oxide_bot::{SeatBot, seat_bots};
 use oxide_protocol::hash_hex;
-use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
     TICKS_PER_SECOND, UnitId, UnitKind,

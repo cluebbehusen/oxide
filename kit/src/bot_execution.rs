@@ -3,7 +3,8 @@
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
 
-use oxide_sim::{PlayerCommand, State, bot::SeatBot};
+use oxide_bot::SeatBot;
+use oxide_sim::{PlayerCommand, State};
 use rayon::prelude::*;
 
 thread_local! {
@@ -135,9 +136,9 @@ impl BotExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bot::seat_bots;
     use oxide_sim::{
         Command, PlayerId, Scenario,
-        bot::seat_bots,
         scenario::{BotConfig, BotDifficulty, BotStance},
     };
 

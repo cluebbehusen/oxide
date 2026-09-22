@@ -11,7 +11,8 @@ Read the README for the crate you are changing:
 | Crate                                  | Responsibility                                                                |
 | -------------------------------------- | ----------------------------------------------------------------------------- |
 | [`chassis`](chassis/README.md)         | Reusable deterministic primitives. No game rules or engine dependencies.      |
-| [`oxide-sim`](sim/README.md)           | Game rules and command-producing bots.                                        |
+| [`oxide-sim`](sim/README.md)           | Game rules and player-knowledge projection.                                   |
+| [`oxide-bot`](bot/README.md)           | Observation-driven opponent policy and command production.                    |
 | [`oxide-protocol`](protocol/README.md) | Debug wire types, framing, input events, and state views.                     |
 | [`oxide-kit`](kit/README.md)           | Shared replay, statistics, fixture, and CPU-rendering services.               |
 | [`oxide-shell`](shell/README.md)       | Macroquad input, UI, rendering, audio, persistence, and live session.         |
@@ -41,7 +42,7 @@ user directs it. Once created, maintain that note through Kladde.
 The target is strict: **same seed plus same command log produces bit-identical
 state on every run and platform.**
 
-- `chassis` and `oxide-sim` contain no floating-point arithmetic. Use
+- `chassis`, `oxide-sim`, and `oxide-bot` contain no floating-point arithmetic. Use
   `chassis::fx::Fx`; floats are presentation-only.
 - Never depend on `HashMap` or `HashSet` iteration for an outcome. Iterate in a
   canonical order and finish tie-break keys with an id or `(y, x)`.

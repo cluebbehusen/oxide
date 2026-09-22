@@ -7,7 +7,7 @@
 //! seating does not isolate engine or map fairness.
 
 use anyhow::{Context, Result};
-use oxide_sim::bot::seat_bots;
+use oxide_bot::seat_bots;
 use oxide_sim::scenario::Scenario;
 use oxide_sim::{GameResult, State};
 use serde::Serialize;

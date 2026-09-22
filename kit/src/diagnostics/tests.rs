@@ -1,6 +1,7 @@
 use super::*;
 use crate::{GameReplay, recovery};
-use oxide_sim::{SIM_VERSION, Scenario, bot::seat_bots};
+use oxide_bot::seat_bots;
+use oxide_sim::{SIM_VERSION, Scenario};
 use std::path::PathBuf;
 
 fn recording() -> (PathBuf, Arc<RecoveryWriter>) {

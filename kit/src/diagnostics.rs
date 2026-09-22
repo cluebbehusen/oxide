@@ -1,7 +1,7 @@
 //! Optional bounded timing and independent progress monitoring. Never replay input.
 
 use crate::recovery::RecoveryWriter;
-use oxide_sim::bot::observer::{BotPhase, PhaseObserver, PlanningWorkStats};
+use oxide_bot::observer::{BotPhase, PhaseObserver, PlanningWorkStats};
 use serde::Serialize;
 use std::{
     cell::{Cell, RefCell},
@@ -394,7 +394,7 @@ impl Recorder {
     pub fn bot_commands(
         &self,
         state: &oxide_sim::State,
-        bot: &mut oxide_sim::bot::SeatBot,
+        bot: &mut oxide_bot::SeatBot,
     ) -> Vec<oxide_sim::PlayerCommand> {
         if !self.enabled() {
             return bot.act(state);

@@ -184,11 +184,3 @@ pub fn face_target(state: &mut State, id: oxide_sim::UnitId, target: oxide_sim::
     };
     face_toward(state, id, point);
 }
-
-/// The ordinary Standard profile for focused bot integration checks.
-pub fn standard_brain(scenario: &Scenario, player: PlayerId) -> oxide_sim::bot::Brain {
-    oxide_sim::bot::Brain::balanced(
-        player,
-        std::sync::Arc::new(oxide_sim::bot::PublicMapBriefing::from_scenario(scenario).unwrap()),
-    )
-}

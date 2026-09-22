@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
-use oxide_sim::bot::{DecisionTrace, SeatBot, TracedBotAct, seat_bots};
+use oxide_bot::{DecisionTrace, SeatBot, TracedBotAct, seat_bots};
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
 
 /// The concrete replay type for Oxide sessions.

@@ -751,7 +751,7 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
 
     // The fog-honest observation carries the blip and nothing more about
     // the contact — the unit itself is absent.
-    let obs = oxide_sim::bot::Observation::fog_honest(&state, PlayerId(0));
+    let obs = oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0));
     assert!(obs.blips.contains(&intruder_tile));
     assert!(
         obs.enemy_units.is_empty(),
