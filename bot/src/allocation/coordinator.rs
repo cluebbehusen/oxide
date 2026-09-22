@@ -1414,13 +1414,8 @@ mod tests {
         AllocationCapacity::fixture(
             ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                 current_scrap: 0,
-                observed_at: 120,
-                horizon: 1_200,
-                cadence: 12,
-                forecast_income: Vec::new(),
                 units,
-                builders: Vec::new(),
-                producers: Vec::new(),
+                ..ResourcePlanningFixture::empty(120..=1_200, 12)
             })
             .expect("the coordinator fixture has a bounded horizon"),
         )
@@ -1435,10 +1430,6 @@ mod tests {
         AllocationCapacity::fixture(
             ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                 current_scrap,
-                observed_at: 120,
-                horizon: 1_200,
-                cadence: 12,
-                forecast_income: Vec::new(),
                 units,
                 builders: builders
                     .into_iter()
@@ -1462,6 +1453,7 @@ mod tests {
                         .expect("the contextual producer fixture is valid")
                     })
                     .collect(),
+                ..ResourcePlanningFixture::empty(120..=1_200, 12)
             })
             .expect("the contextual resource fixture is valid"),
         )
@@ -1519,9 +1511,6 @@ mod tests {
         );
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: cost - 17,
-            observed_at: 120,
-            horizon: deadline,
-            cadence: 12,
             forecast_income: vec![crate::resources::ForecastAvailability {
                 available_at: deadline,
                 amount: 27,
@@ -1532,7 +1521,7 @@ mod tests {
                 kind: UnitKind::Harvester,
                 obligation: None,
             }],
-            producers: Vec::new(),
+            ..ResourcePlanningFixture::empty(120..=deadline, 12)
         })
         .expect("the Foundry forecast is valid");
         let survival =
@@ -2441,9 +2430,6 @@ mod tests {
         });
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: 0,
-            observed_at: 120,
-            horizon: foundry_deadline,
-            cadence: 12,
             forecast_income: vec![
                 crate::resources::ForecastAvailability {
                     available_at: 300,
@@ -2454,8 +2440,6 @@ mod tests {
                     amount: unit_cost,
                 },
             ],
-            units: Vec::new(),
-            builders: Vec::new(),
             producers: vec![
                 ProducerPlanningProjection::fixture(
                     producer,
@@ -2467,6 +2451,7 @@ mod tests {
                 )
                 .expect("the connected producer is valid"),
             ],
+            ..ResourcePlanningFixture::empty(120..=foundry_deadline, 12)
         })
         .expect("the shared forecast has a valid bounded horizon");
         assert_eq!(
@@ -2520,12 +2505,6 @@ mod tests {
         });
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: kind.stats().cost.saturating_mul(2),
-            observed_at: 120,
-            horizon: deadline,
-            cadence: 12,
-            forecast_income: Vec::new(),
-            units: Vec::new(),
-            builders: Vec::new(),
             producers: vec![
                 ProducerPlanningProjection::fixture(
                     busy,
@@ -2546,6 +2525,7 @@ mod tests {
                 )
                 .expect("the idle producer projection is valid"),
             ],
+            ..ResourcePlanningFixture::empty(120..=deadline, 12)
         })
         .expect("the two-lane resource projection is valid");
         let allocation = CrossDomainAllocation {
@@ -2620,15 +2600,10 @@ mod tests {
 
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: bank,
-            observed_at: 0,
-            horizon: ready_at + 2,
-            cadence: 1,
             forecast_income: vec![crate::resources::ForecastAvailability {
                 available_at: future_tick,
                 amount: kind.stats().cost,
             }],
-            units: Vec::new(),
-            builders: Vec::new(),
             producers: vec![
                 ProducerPlanningProjection::fixture(
                     producer,
@@ -2640,6 +2615,7 @@ mod tests {
                 )
                 .expect("the future producer is valid"),
             ],
+            ..ResourcePlanningFixture::empty(0..=ready_at + 2, 1)
         })
         .expect("the current-plus-future resource projection is valid");
         let settlement = CrossDomainAllocation {
@@ -2665,15 +2641,10 @@ mod tests {
             AllocationCapacity::fixture(
                 ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                     current_scrap: 0,
-                    observed_at: 120,
-                    horizon: 1200,
-                    cadence: 12,
                     forecast_income: vec![crate::resources::ForecastAvailability {
                         available_at: 240,
                         amount: income,
                     }],
-                    units: vec![],
-                    builders: vec![],
                     producers: vec![
                         (BuildingId(1), UnitKind::Buzzard),
                         (BuildingId(2), UnitKind::Warden),
@@ -2691,6 +2662,7 @@ mod tests {
                         .unwrap()
                     })
                     .collect(),
+                    ..ResourcePlanningFixture::empty(120..=1200, 12)
                 })
                 .unwrap(),
             )

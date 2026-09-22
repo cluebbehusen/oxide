@@ -3441,6 +3441,46 @@ mod tests {
     use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
     use oxide_sim::stats::{BuildingKind, UnitKind};
 
+    struct SessionProfile {
+        profile: ResolvedProfile,
+        tuning: DifficultyTuning,
+        dials: Dials,
+    }
+
+    impl SessionProfile {
+        fn new(profile: ResolvedProfile) -> Self {
+            let tuning = DifficultyTuning::for_level(profile.difficulty);
+            let dials = Dials::scripted(&profile, tuning);
+            Self {
+                profile,
+                tuning,
+                dials,
+            }
+        }
+
+        fn context<'a>(
+            &'a self,
+            observation: &'a Observation,
+            home: TilePos,
+            public_map: &'a PublicMapBriefing,
+            intelligence: &'a StrategicIntelligence,
+        ) -> AllocationSessionContext<'a> {
+            AllocationSessionContext {
+                evidence: Default::default(),
+                dials: &self.dials,
+                profile: &self.profile,
+                tuning: self.tuning,
+                observation,
+                home,
+                public_map,
+                orientation: Orientation::for_home(observation, home),
+                intelligence,
+                enlisted: &[],
+                lift_support: None,
+            }
+        }
+    }
+
     #[test]
     fn rollback_preserves_observed_outcomes_without_committing_new_ownership() {
         use crate::experience::{
@@ -3594,13 +3634,9 @@ mod tests {
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         };
-        let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
-            BotDifficulty::Standard,
-            BotStance::Balanced,
-            7,
+        let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
+            BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
         ));
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(observation);
         let mut policy = UtilityPolicy::new();
@@ -3614,19 +3650,7 @@ mod tests {
         }
         let mut trace = AllocationTrace::default();
         let outcome = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation,
-                home: HOME,
-                public_map: &public_map,
-                orientation: Orientation::for_home(observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(observation, HOME, &public_map, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -4100,15 +4124,14 @@ mod tests {
                     .push(owned_unit(101, UnitKind::Scuttler, HOME.offset(4, 0)));
             }
             obs.my_queues[0] = vec![UnitKind::Scuttler; 2 - live];
-            let profile = prime_profile();
-            let tuning = DifficultyTuning::for_level(profile.difficulty);
+            let setup = SessionProfile::new(prime_profile());
             let map = connected_briefing(&obs);
             let orientation = Orientation::for_home(&obs, HOME);
             let resources = ResourceSnapshot::from_observation(&obs);
             let mut raid = RaidPlanner::new();
             let request = raid
                 .muster_request(
-                    RaidPlanningContext::new(&profile, tuning, &obs, HOME, &[], &[]),
+                    RaidPlanningContext::new(&setup.profile, setup.tuning, &obs, HOME, &[], &[]),
                     &resources,
                     Some(&map),
                     Some(orientation),
@@ -4119,7 +4142,6 @@ mod tests {
             assert!(raid.bind_procurement(&obs, &[], &map, orientation));
             let paid = raid.paid_claims().to_vec();
             obs.tick += 24;
-            let dials = Dials::scripted(&profile, tuning);
             let mut intelligence = StrategicIntelligence::new();
             intelligence.update(&obs);
             let mut policy = UtilityPolicy::new();
@@ -4130,17 +4152,8 @@ mod tests {
             let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
             let mut session = AllocationSession::new(
                 AllocationSessionContext {
-                    evidence: Default::default(),
-                    dials: &dials,
-                    profile: &profile,
-                    tuning,
-                    observation: &obs,
-                    home: HOME,
-                    public_map: &map,
                     orientation,
-                    intelligence: &intelligence,
-                    enlisted: &[],
-                    lift_support: None,
+                    ..setup.context(&obs, HOME, &map, &intelligence)
                 },
                 AllocationParticipants {
                     policy: &mut policy,
@@ -4227,9 +4240,7 @@ mod tests {
         trace: Option<&mut AllocationTrace>,
     ) -> AllocationSessionOutcome {
         const HOME: TilePos = TilePos::new(3, 10);
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(observation);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(observation);
@@ -4240,19 +4251,7 @@ mod tests {
         let mut work = advanced(snapshots);
         work.team_decision = team_decision;
         AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation,
-                home: HOME,
-                public_map: &briefing,
-                orientation: Orientation::for_home(observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(observation, HOME, &briefing, &intelligence),
             AllocationParticipants {
                 policy,
                 strategy,
@@ -4581,16 +4580,12 @@ mod tests {
             .operation()
             .expect("the fixture has an active lift")
             .clone();
-        let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
-            BotDifficulty::Standard,
-            BotStance::Balanced,
-            7,
+        let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
+            BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
         ));
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
         let resources = ResourceSnapshot::from_observation(&observation);
         let projection = resources
-            .planning_projection(operation.deadline, dials.cadence)
+            .planning_projection(operation.deadline, setup.dials.cadence)
             .expect("the active connected horizon is valid");
         let mut lane = projection
             .producer(BuildingId(2))
@@ -4663,19 +4658,7 @@ mod tests {
         work.lift_was_active = true;
         work.lift_started_at = operation.started_at;
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: HOME,
-                public_map: &public_map,
-                orientation: Orientation::for_home(&observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, HOME, &public_map, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -4946,9 +4929,7 @@ mod tests {
             extractor_frames: vec![],
             initial_scrap: vec![],
         };
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
         let mut policy = UtilityPolicy::new();
@@ -4959,19 +4940,7 @@ mod tests {
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let mut trace = AllocationTrace::default();
         let outcome = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(3, 10),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -5000,13 +4969,9 @@ mod tests {
     fn successful_commit_retains_speculative_planners_and_prepared_output() {
         let observation = observation();
         let briefing = briefing();
-        let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
-            BotDifficulty::Standard,
-            BotStance::Balanced,
-            7,
+        let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
+            BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
         ));
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
         let intelligence = StrategicIntelligence::new();
         let original_policy = UtilityPolicy::new();
         let mut policy = original_policy.clone();
@@ -5022,24 +4987,12 @@ mod tests {
         let original_raids = RaidPlanner::new();
         let mut raids = RaidPlanner::new();
         let resources = ResourceSnapshot::from_observation(&observation);
-        let settlement = CrossDomainAllocation::new(&resources, 120, dials.cadence)
+        let settlement = CrossDomainAllocation::new(&resources, 120, setup.dials.cadence)
             .expect("the empty resource projection is valid")
             .resolve(AllocationPersonality::default(), None)
             .expect("an empty portfolio is feasible");
         let session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(0, 0),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(0, 0)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -5090,13 +5043,9 @@ mod tests {
         observation.my_queues = vec![vec![UnitKind::Sentinel], Vec::new()];
         observation.my_queue_progress = vec![0, 0];
 
-        let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
-            BotDifficulty::Standard,
-            BotStance::Balanced,
-            7,
+        let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
+            BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
         ));
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
         let deadline = observation.tick.saturating_add(1_000);
         let resources = ResourceSnapshot::from_observation(&observation);
         let delayed_decision = StrategicDecision {
@@ -5115,13 +5064,13 @@ mod tests {
             reservations: Vec::new(),
             committed_scrap: UnitKind::Sentinel.stats().cost,
         };
-        let mut allocation = CrossDomainAllocation::new(&resources, deadline, dials.cadence)
+        let mut allocation = CrossDomainAllocation::new(&resources, deadline, setup.dials.cadence)
             .expect("the two-producer projection is valid");
         allocation.import(
             legacy_decision_obligation(
                 &resources,
                 LegacyDecisionRequest {
-                    cadence: dials.cadence,
+                    cadence: setup.dials.cadence,
                     accepted_at: 12,
                     decision_tick: observation.tick,
                     channel: LegacyChannel::TeamRelief,
@@ -5137,7 +5086,7 @@ mod tests {
             legacy_decision_obligation(
                 &resources,
                 LegacyDecisionRequest {
-                    cadence: dials.cadence,
+                    cadence: setup.dials.cadence,
                     accepted_at: 24,
                     decision_tick: observation.tick,
                     channel: LegacyChannel::Lift,
@@ -5186,19 +5135,7 @@ mod tests {
         let mut raids = RaidPlanner::new();
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(0, 0),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(0, 0)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -5243,9 +5180,7 @@ mod tests {
             UnitKind::Harvester,
             TilePos::new(12, 15),
         ));
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(&observation);
         let intelligence = StrategicIntelligence::new();
         let connected = current_connected_proposal(&observation);
@@ -5325,7 +5260,7 @@ mod tests {
             let mut allocation = CrossDomainAllocation::new(
                 &input.resources,
                 observation.tick + 10_000,
-                dials.cadence,
+                setup.dials.cadence,
             )
             .unwrap();
             allocation.offer(connected_investment_proposal(connected.clone()).unwrap());
@@ -5336,19 +5271,7 @@ mod tests {
             assert!(!settlement.producer_schedule().is_empty());
             let mut trace = AllocationTrace::default();
             let mut session = AllocationSession::new(
-                AllocationSessionContext {
-                    evidence: Default::default(),
-                    dials: &dials,
-                    profile: &profile,
-                    tuning,
-                    observation: &observation,
-                    home: TilePos::new(3, 10),
-                    public_map: &briefing,
-                    orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-                    intelligence: &intelligence,
-                    enlisted: &[],
-                    lift_support: None,
-                },
+                setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
                 AllocationParticipants {
                     policy: &mut policy,
                     strategy: &mut strategy,
@@ -5421,13 +5344,9 @@ mod tests {
     fn rejected_allocation_restores_participants_and_preserves_maintenance() {
         let observation = observation();
         let briefing = briefing();
-        let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
-            BotDifficulty::Standard,
-            BotStance::Balanced,
-            7,
+        let setup = SessionProfile::new(crate::profile::ResolvedProfile::resolve(
+            BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 7),
         ));
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
         let intelligence = StrategicIntelligence::new();
         let original_policy = UtilityPolicy::new();
         let mut policy = original_policy.clone();
@@ -5460,19 +5379,7 @@ mod tests {
         let original_raids = RaidPlanner::new();
         let mut raids = RaidPlanner::new();
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(0, 0),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(0, 0)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -5564,9 +5471,7 @@ mod tests {
     fn allocation_failure_restores_policy_state_mutated_during_prepare() {
         let observation = observation();
         let briefing = briefing();
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let intelligence = StrategicIntelligence::new();
         let foundry_cost = BuildingKind::Foundry
             .base_stats()
@@ -5595,12 +5500,12 @@ mod tests {
             obligations: &[],
             obs: &observation,
             resources: &resources,
-            profile: &profile,
+            profile: &setup.profile,
             briefing: &briefing,
             orientation: Orientation::for_home(&observation, TilePos::new(0, 0)),
             unavailable: &[],
             demands: &[],
-            cadence: dials.cadence,
+            cadence: setup.dials.cadence,
             unit_contacts: &[],
             building_contacts: &[],
             protected_scrap: 0,
@@ -5638,19 +5543,7 @@ mod tests {
             committed_scrap: UnitKind::Sentinel.stats().cost,
         };
         let outcome = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(0, 0),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(0, 0)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -5810,9 +5703,7 @@ mod tests {
         let mut planner = StrategicPlanner::new();
         planner.commit_connected_proposal(proposal).unwrap();
         let active = connected_obligation(&mut planner, &observation);
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let public_map = connected_briefing(&observation);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
@@ -5864,19 +5755,12 @@ mod tests {
         input.fresh_lift_producer_jobs = 1;
         let mut trace = AllocationTrace::default();
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(3, 10),
-                public_map: &public_map,
-                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(
+                &observation,
+                TilePos::new(3, 10),
+                &public_map,
+                &intelligence,
+            ),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -5939,9 +5823,7 @@ mod tests {
             TilePos::new(7, 12),
         ));
 
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let public_map = briefing();
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
@@ -5970,19 +5852,7 @@ mod tests {
         )];
         let mut trace = AllocationTrace::default();
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: HOME,
-                public_map: &public_map,
-                orientation: Orientation::for_home(&observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, HOME, &public_map, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -6177,9 +6047,7 @@ mod tests {
             .cost;
         observation.scrap = foundry_cost.saturating_add(defense_cost);
 
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let public_map = briefing();
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
@@ -6264,19 +6132,7 @@ mod tests {
         ];
         let mut trace = AllocationTrace::default();
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: HOME,
-                public_map: &public_map,
-                orientation: Orientation::for_home(&observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, HOME, &public_map, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -6442,9 +6298,7 @@ mod tests {
             anchor: proposal.anchor(),
         };
 
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(&observation);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
@@ -6476,19 +6330,7 @@ mod tests {
         input.voluntary_scrap_guard = guard;
         input.allocation_horizon = deadline;
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: HOME,
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, HOME),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, HOME, &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -6564,9 +6406,7 @@ mod tests {
     fn zero_cost_connected_operation_does_not_require_unowned_guard_capital() {
         let observation = connected_observation(120, 0);
         let deadline = observation.tick.saturating_add(1);
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(&observation);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
@@ -6583,19 +6423,7 @@ mod tests {
         input.allocation_horizon = deadline;
         input.voluntary_scrap_guard = UnitKind::Sentinel.stats().cost;
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(3, 10),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -6730,9 +6558,7 @@ mod tests {
                     .collect();
             }
             observation.tick = observation.tick.saturating_add(12);
-            let profile = prime_profile();
-            let tuning = DifficultyTuning::for_level(profile.difficulty);
-            let dials = Dials::scripted(&profile, tuning);
+            let setup = SessionProfile::new(prime_profile());
             let briefing = connected_briefing(&observation);
             let mut intelligence = StrategicIntelligence::new();
             intelligence.update(&observation);
@@ -6746,19 +6572,7 @@ mod tests {
             work.lift_started_at = lift_operation.started_at;
             let mut trace = AllocationTrace::default();
             let outcome = AllocationSession::new(
-                AllocationSessionContext {
-                    evidence: Default::default(),
-                    dials: &dials,
-                    profile: &profile,
-                    tuning,
-                    observation: &observation,
-                    home: HOME,
-                    public_map: &briefing,
-                    orientation: Orientation::for_home(&observation, HOME),
-                    intelligence: &intelligence,
-                    enlisted: &[],
-                    lift_support: None,
-                },
+                setup.context(&observation, HOME, &briefing, &intelligence),
                 AllocationParticipants {
                     policy: &mut policy,
                     strategy: &mut strategy,

@@ -3866,36 +3866,32 @@ mod tests {
         assert!(package.forecast_scrap > 0);
     }
 
-    #[test]
-    fn forecast_income_waits_for_the_next_bot_decision_before_training() {
-        let strike = Role::AirGround.unit_for(Faction::Ferrous);
-        let mut observation = observation(strike.stats().cost - 1);
-        add_complete_tech(&mut observation);
+    fn add_completed_income_and_live_support(observation: &mut Observation) {
+        add_complete_tech(observation);
         add_owned_building(
-            &mut observation,
+            observation,
             20,
             BuildingKind::Reclaimer,
             TilePos::new(14, 2),
             true,
         );
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
+        let observation = &mut **observation;
+        observation.my_units.extend([
+            unit(
                 40,
                 observation.me.0,
                 Role::Scout.unit_for(observation.faction),
                 TilePos::new(7, 7),
-            ));
-        }
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                41,
-                observation.me.0,
-                UnitKind::Bombard,
-                TilePos::new(8, 7),
-            ));
-        }
+            ),
+            unit(41, observation.me.0, UnitKind::Bombard, TilePos::new(8, 7)),
+        ]);
+    }
+
+    #[test]
+    fn forecast_income_waits_for_the_next_bot_decision_before_training() {
+        let strike = Role::AirGround.unit_for(Faction::Ferrous);
+        let mut observation = observation(strike.stats().cost - 1);
+        add_completed_income_and_live_support(&mut observation);
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let income_period = oxide_sim::stats::RECLAIMER_PERIOD;
         let payment_tick = observation.tick.div_ceil(income_period) * income_period;
@@ -3935,32 +3931,7 @@ mod tests {
     fn forecast_funded_training_can_fit_prime_cadence_but_not_a_slower_cadence() {
         let strike = Role::AirGround.unit_for(Faction::Ferrous);
         let mut observation = observation(strike.stats().cost - 1);
-        add_complete_tech(&mut observation);
-        add_owned_building(
-            &mut observation,
-            20,
-            BuildingKind::Reclaimer,
-            TilePos::new(14, 2),
-            true,
-        );
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                40,
-                observation.me.0,
-                Role::Scout.unit_for(observation.faction),
-                TilePos::new(7, 7),
-            ));
-        }
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                41,
-                observation.me.0,
-                UnitKind::Bombard,
-                TilePos::new(8, 7),
-            ));
-        }
+        add_completed_income_and_live_support(&mut observation);
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let resources = ResourceSnapshot::from_observation(&observation);
         let access = all_producers(&resources);
@@ -4021,32 +3992,7 @@ mod tests {
     fn older_forecast_shortfall_owns_income_before_a_new_package() {
         let strike = Role::AirGround.unit_for(Faction::Ferrous);
         let mut observation = observation(strike.stats().cost - 1);
-        add_complete_tech(&mut observation);
-        add_owned_building(
-            &mut observation,
-            20,
-            BuildingKind::Reclaimer,
-            TilePos::new(14, 2),
-            true,
-        );
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                40,
-                observation.me.0,
-                Role::Scout.unit_for(observation.faction),
-                TilePos::new(7, 7),
-            ));
-        }
-        {
-            let observation = &mut *observation;
-            observation.my_units.push(unit(
-                41,
-                observation.me.0,
-                UnitKind::Bombard,
-                TilePos::new(8, 7),
-            ));
-        }
+        add_completed_income_and_live_support(&mut observation);
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let income_period = oxide_sim::stats::RECLAIMER_PERIOD;
         let first_payment = observation.tick.div_ceil(income_period) * income_period;

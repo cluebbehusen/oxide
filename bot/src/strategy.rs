@@ -7249,6 +7249,13 @@ mod tests {
     use oxide_sim::scenario::{BotConfig, BotDifficulty};
     use oxide_sim::state::Faction;
 
+    fn planner_with_operation(op: AirOperation, plan: AirPlan) -> StrategicPlanner {
+        StrategicPlanner {
+            air: Some(ActiveAirOperation { op, plan }),
+            ..StrategicPlanner::new()
+        }
+    }
+
     const HOME: TilePos = TilePos::new(3, 10);
     const TARGET: TilePos = TilePos::new(24, 10);
 
@@ -7748,17 +7755,7 @@ mod tests {
 
     fn with_operation(phase: AirOperationPhase, tick: Tick) -> StrategicPlanner {
         let observation = obs(tick);
-        StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation(phase, tick),
-                plan: connected_test_plan(&observation),
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        }
+        planner_with_operation(operation(phase, tick), connected_test_plan(&observation))
     }
 
     fn wealthy_airborne_operation(
@@ -7796,17 +7793,7 @@ mod tests {
         plan.desired_strike_aircraft = 10;
         plan.desired_screen = 5;
         plan.screen = (200..205).map(UnitId).collect();
-        let planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let planner = planner_with_operation(operation, plan);
         (battle, planner)
     }
 
@@ -11630,17 +11617,8 @@ mod tests {
                 .target_anchors,
             vec![left_survivor, TARGET, right_survivor]
         );
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation(AirOperationPhase::Assemble, admitted_at),
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner =
+            planner_with_operation(operation(AirOperationPhase::Assemble, admitted_at), plan);
 
         let mut after_destruction = initial;
         after_destruction.tick += 12;
@@ -14352,17 +14330,7 @@ mod tests {
 
         let mut operation = operation(AirOperationPhase::Assemble, initial.tick);
         operation.strike_aircraft.clear();
-        let template = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let template = planner_with_operation(operation, plan);
         let run = |retain_extractor: bool, current_scrap: u32| {
             let mut hidden = initial.clone();
             hidden.tick += 12;
@@ -14434,17 +14402,7 @@ mod tests {
         let plan = connected_test_plan(&initial);
         let mut operation = operation(AirOperationPhase::Recon, initial.tick);
         operation.strike_aircraft = vec![UnitId(3)];
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
 
         let decision = think(&mut planner, &hidden, &intelligence);
 
@@ -14562,17 +14520,7 @@ mod tests {
         let mut operation = operation(AirOperationPhase::Recon, hidden.tick);
         operation.artillery.clear();
         operation.strike_aircraft.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
 
         let decision = think(&mut planner, &hidden, &intelligence);
 
@@ -14652,17 +14600,7 @@ mod tests {
 
             let mut operation = operation(AirOperationPhase::Assemble, admitted_at);
             operation.strike_aircraft.clear();
-            let mut planner = StrategicPlanner {
-                air: Some(ActiveAirOperation {
-                    op: operation,
-                    plan,
-                }),
-                standby: AirStandby::default(),
-                cooldown_until: 0,
-                terminal_outcome: None,
-                outcomes: Default::default(),
-                experience: Default::default(),
-            };
+            let mut planner = planner_with_operation(operation, plan);
             let mut intelligence = knowledge(&initial);
 
             let commissioned = think(&mut planner, &initial, &intelligence);
@@ -14824,17 +14762,7 @@ mod tests {
         operation.scout = None;
         operation.artillery.clear();
         operation.strike_aircraft.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan: connected_test_plan(&observation),
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, connected_test_plan(&observation));
 
         let decision = think(&mut planner, &observation, &intelligence);
         let operation = planner
@@ -14867,17 +14795,7 @@ mod tests {
         operation.artillery = vec![UnitId(2)];
         operation.strike_aircraft = vec![UnitId(3), UnitId(4)];
         let plan = connected_test_plan(&battle);
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let mut intelligence = knowledge(&battle);
 
         let suppression = think(&mut planner, &battle, &intelligence);
@@ -14922,17 +14840,7 @@ mod tests {
             .expect("the observed force can field a connected package");
         assert_eq!(preferred_artillery(&identity, &battle), UnitKind::Bombard);
         assert_eq!(plan.desired_artillery, 1);
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let intel = knowledge(&battle);
 
@@ -15524,17 +15432,7 @@ mod tests {
         op.phase_started_at = boundary;
         op.artillery.clear();
         op.strike_aircraft.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op,
-                plan: AirPlan::remembered_connected(&hidden),
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(op, AirPlan::remembered_connected(&hidden));
 
         assert!(
             planner
@@ -15599,17 +15497,7 @@ mod tests {
         op.scout_dispatch = Some((UnitId(1), TARGET));
         op.artillery.clear();
         op.strike_aircraft.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op,
-                plan: AirPlan::remembered_connected(&hidden),
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(op, AirPlan::remembered_connected(&hidden));
 
         assert!(
             planner
@@ -15912,17 +15800,10 @@ mod tests {
             kind: UnitKind::Condor,
             count: 6,
         }];
-        let planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation(AirOperationPhase::Assemble, observation.tick),
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let planner = planner_with_operation(
+            operation(AirOperationPhase::Assemble, observation.tick),
+            plan,
+        );
 
         assert_eq!(
             planner.remaining_airwork_ticks(&observation),
@@ -16076,17 +15957,7 @@ mod tests {
         let frozen_renewable = plan.observed_renewable;
         let frozen_fighters = plan.observed_fighters;
         let frozen_timeout = plan.assembly_timeout;
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
 
         add_renewable_economy(&mut battle, 12);
         battle.my_units.extend((300..=379).map(|id| {
@@ -16138,17 +16009,7 @@ mod tests {
         plan.screen = vec![UnitId(30), UnitId(31)];
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let suppression = think(&mut planner, &battle, &intel);
@@ -16233,17 +16094,7 @@ mod tests {
             plan.desired_strike_aircraft = 2;
             plan.desired_screen = 0;
             plan.screen.clear();
-            StrategicPlanner {
-                air: Some(ActiveAirOperation {
-                    op: operation,
-                    plan,
-                }),
-                standby: AirStandby::default(),
-                cooldown_until: 0,
-                terminal_outcome: None,
-                outcomes: Default::default(),
-                experience: Default::default(),
-            }
+            planner_with_operation(operation, plan)
         };
         let status = |planner: &StrategicPlanner,
                       observation: &Observation,
@@ -16366,17 +16217,10 @@ mod tests {
         let flak_anchor = TilePos::new(12, 5);
         let planner_for = |tick| {
             let observation = obs(tick);
-            StrategicPlanner {
-                air: Some(ActiveAirOperation {
-                    op: operation(AirOperationPhase::SuppressAa, tick),
-                    plan: connected_test_plan(&observation),
-                }),
-                standby: AirStandby::default(),
-                cooldown_until: 0,
-                terminal_outcome: None,
-                outcomes: Default::default(),
-                experience: Default::default(),
-            }
+            planner_with_operation(
+                operation(AirOperationPhase::SuppressAa, tick),
+                connected_test_plan(&observation),
+            )
         };
 
         let mut current = obs(400);
@@ -16552,17 +16396,7 @@ mod tests {
         plan.desired_screen = 0;
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -16733,17 +16567,7 @@ mod tests {
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
         plan.screen.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let request = LiftSupportRequest {
             player: PlayerId(1),
             target: TARGET,
@@ -16883,17 +16707,7 @@ mod tests {
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
         plan.screen.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -16914,17 +16728,7 @@ mod tests {
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
         plan.screen.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
 
         let first = think(&mut planner, &battle, &knowledge(&battle));
         assert!(first.intents.contains(&Intent::AttackUnits {
@@ -16976,17 +16780,7 @@ mod tests {
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
         plan.screen.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let mut intel = knowledge(&battle);
 
         let first = think(&mut planner, &battle, &intel);
@@ -17049,17 +16843,7 @@ mod tests {
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
         plan.screen.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let request = LiftSupportRequest {
             player: PlayerId(1),
             target: TARGET,
@@ -17197,17 +16981,7 @@ mod tests {
         plan.screen = vec![UnitId(30), UnitId(31)];
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -17276,16 +17050,12 @@ mod tests {
         let observation = obs(101);
         let stale_intel = knowledge(&obs(100));
         let mut planner = StrategicPlanner {
-            air: None,
             standby: AirStandby {
                 scout: Some(UnitId(1)),
                 artillery: vec![UnitId(2)],
                 strike_aircraft: vec![UnitId(3), UnitId(4)],
             },
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
+            ..StrategicPlanner::new()
         };
         let before = planner.clone();
 
@@ -17309,17 +17079,7 @@ mod tests {
         plan.desired_screen = 0;
         let mut operation = operation(AirOperationPhase::Assemble, battle.tick);
         operation.artillery.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -17385,17 +17145,7 @@ mod tests {
         operation.scout = Some(UnitId(99));
         operation.scout_dispatch = None;
         operation.artillery.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -17430,17 +17180,7 @@ mod tests {
         operation.scout = Some(UnitId(99));
         operation.scout_dispatch = Some((UnitId(99), TARGET));
         operation.artillery.clear();
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -17871,17 +17611,7 @@ mod tests {
             plan.desired_strike_aircraft = 2;
             plan.desired_screen = 0;
             plan.screen.clear();
-            let mut planner = StrategicPlanner {
-                air: Some(ActiveAirOperation {
-                    op: operation,
-                    plan,
-                }),
-                standby: AirStandby::default(),
-                cooldown_until: 0,
-                terminal_outcome: None,
-                outcomes: Default::default(),
-                experience: Default::default(),
-            };
+            let mut planner = planner_with_operation(operation, plan);
 
             let decision = planner.think(
                 &identity,
@@ -17938,17 +17668,7 @@ mod tests {
             plan.desired_strike_aircraft = 2;
             plan.desired_screen = 0;
             plan.screen.clear();
-            let mut planner = StrategicPlanner {
-                air: Some(ActiveAirOperation {
-                    op: operation,
-                    plan,
-                }),
-                standby: AirStandby::default(),
-                cooldown_until: 0,
-                terminal_outcome: None,
-                outcomes: Default::default(),
-                experience: Default::default(),
-            };
+            let mut planner = planner_with_operation(operation, plan);
 
             let decision = planner.think(&identity, tuning, &battle, &intel, HOME, &[]);
             let operation = planner
@@ -18084,17 +17804,7 @@ mod tests {
         let mut plan = AirPlan::island(&profile(), &battle);
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
         let intel = knowledge(&battle);
 
         let decision = think(&mut planner, &battle, &intel);
@@ -18127,17 +17837,7 @@ mod tests {
         let mut plan = AirPlan::island(&profile(), &battle);
         plan.desired_strike_aircraft = 2;
         plan.desired_screen = 0;
-        let mut planner = StrategicPlanner {
-            air: Some(ActiveAirOperation {
-                op: operation,
-                plan,
-            }),
-            standby: AirStandby::default(),
-            cooldown_until: 0,
-            terminal_outcome: None,
-            outcomes: Default::default(),
-            experience: Default::default(),
-        };
+        let mut planner = planner_with_operation(operation, plan);
 
         let completion = think(&mut planner, &battle, &knowledge(&battle));
         let operation = planner

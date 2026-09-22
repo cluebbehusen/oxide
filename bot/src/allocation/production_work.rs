@@ -326,12 +326,6 @@ mod tests {
         let producer = BuildingId(7);
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: 10_000,
-            observed_at: tick,
-            horizon: tick + 10_000,
-            cadence: 1,
-            forecast_income: vec![],
-            units: vec![],
-            builders: vec![],
             producers: vec![
                 ProducerPlanningProjection::fixture(
                     producer,
@@ -343,6 +337,7 @@ mod tests {
                 )
                 .unwrap(),
             ],
+            ..ResourcePlanningFixture::empty(tick..=tick + 10_000, 1)
         })
         .unwrap();
         let capacity = AllocationCapacity::fixture(resources);
@@ -491,12 +486,6 @@ mod tests {
         let (mut current, current_claims) = fixture(12, 2);
         current.resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: 10_000,
-            observed_at: 12,
-            horizon: 10_012,
-            cadence: 1,
-            forecast_income: vec![],
-            units: vec![],
-            builders: vec![],
             producers: vec![
                 ProducerPlanningProjection::fixture(
                     BuildingId(7),
@@ -508,6 +497,7 @@ mod tests {
                 )
                 .unwrap(),
             ],
+            ..ResourcePlanningFixture::empty(12..=10_012, 1)
         })
         .unwrap();
         assert_eq!(
@@ -627,18 +617,14 @@ mod tests {
             let capacity = AllocationCapacity::fixture(
                 ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                     current_scrap: bank,
-                    observed_at: 0,
-                    horizon: 10_000,
-                    cadence: 1,
                     forecast_income: (1..=1_000)
                         .map(|available_at| ForecastAvailability {
                             available_at,
                             amount: 1,
                         })
                         .collect(),
-                    units: vec![],
-                    builders: vec![],
                     producers: basis.resources.producers().to_vec(),
+                    ..ResourcePlanningFixture::empty(0..=10_000, 1)
                 })
                 .unwrap(),
             );

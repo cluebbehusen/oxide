@@ -1,5 +1,20 @@
 use super::*;
 
+impl ResourcePlanningFixture {
+    pub(crate) fn empty(ticks: std::ops::RangeInclusive<Tick>, cadence: Tick) -> Self {
+        Self {
+            current_scrap: 0,
+            observed_at: *ticks.start(),
+            horizon: *ticks.end(),
+            cadence,
+            forecast_income: Vec::new(),
+            units: Vec::new(),
+            builders: Vec::new(),
+            producers: Vec::new(),
+        }
+    }
+}
+
 /// A domain fixture that admits the snapshot's exact producer/kind pairs.
 /// Queue, egress, deadline and capital checks still run in the real scheduler.
 pub(crate) fn all_producers(resources: &ResourceSnapshot) -> ProductionAccess {

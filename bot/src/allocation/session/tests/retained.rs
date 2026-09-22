@@ -106,9 +106,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
             blocked: false,
             preparation_need: None,
         };
-        let profile = prime_profile();
-        let tuning = DifficultyTuning::for_level(profile.difficulty);
-        let dials = Dials::scripted(&profile, tuning);
+        let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(&observation);
         let intelligence = StrategicIntelligence::new();
         let mut strategy = StrategicPlanner::new();
@@ -117,19 +115,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let mut raids = RaidPlanner::new();
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let mut session = AllocationSession::new(
-            AllocationSessionContext {
-                evidence: Default::default(),
-                dials: &dials,
-                profile: &profile,
-                tuning,
-                observation: &observation,
-                home: TilePos::new(5, 15),
-                public_map: &briefing,
-                orientation: Orientation::for_home(&observation, TilePos::new(5, 15)),
-                intelligence: &intelligence,
-                enlisted: &[],
-                lift_support: None,
-            },
+            setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
                 strategy: &mut strategy,
@@ -221,9 +207,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
         legacy_air_claims: None,
         staged_strategy: None,
     };
-    let profile = prime_profile();
-    let tuning = DifficultyTuning::for_level(profile.difficulty);
-    let dials = Dials::scripted(&profile, tuning);
+    let setup = SessionProfile::new(prime_profile());
     let briefing = connected_briefing(&observation);
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
@@ -234,19 +218,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     let mut raids = RaidPlanner::new();
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut session = AllocationSession::new(
-        AllocationSessionContext {
-            evidence: Default::default(),
-            dials: &dials,
-            profile: &profile,
-            tuning,
-            observation: &observation,
-            home: TilePos::new(5, 15),
-            public_map: &briefing,
-            orientation: Orientation::for_home(&observation, TilePos::new(5, 15)),
-            intelligence: &intelligence,
-            enlisted: &[],
-            lift_support: None,
-        },
+        setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence),
         AllocationParticipants {
             policy: &mut policy,
             strategy: &mut strategy,
@@ -497,9 +469,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         legacy_air_claims: None,
         staged_strategy: None,
     };
-    let profile = prime_profile();
-    let tuning = DifficultyTuning::for_level(profile.difficulty);
-    let dials = Dials::scripted(&profile, tuning);
+    let setup = SessionProfile::new(prime_profile());
     let briefing = connected_briefing(&observation);
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
@@ -510,19 +480,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let mut raids = RaidPlanner::new();
     let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
     let mut session = AllocationSession::new(
-        AllocationSessionContext {
-            evidence: Default::default(),
-            dials: &dials,
-            profile: &profile,
-            tuning,
-            observation: &observation,
-            home: TilePos::new(3, 10),
-            public_map: &briefing,
-            orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-            intelligence: &intelligence,
-            enlisted: &[],
-            lift_support: None,
-        },
+        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
         AllocationParticipants {
             policy: &mut policy,
             strategy: &mut strategy,
@@ -660,9 +618,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
         },
         eligible_producers: vec![BuildingId(11)],
     });
-    let profile = prime_profile();
-    let tuning = DifficultyTuning::for_level(profile.difficulty);
-    let dials = Dials::scripted(&profile, tuning);
+    let setup = SessionProfile::new(prime_profile());
     let briefing = connected_briefing(&observation);
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
@@ -683,19 +639,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     prepared.allocation_horizon = forecast_deadline.max(standing_ready_before);
     prepared.foundry_saving = foundry_cost;
     let mut session = AllocationSession::new(
-        AllocationSessionContext {
-            evidence: Default::default(),
-            dials: &dials,
-            profile: &profile,
-            tuning,
-            observation: &observation,
-            home: TilePos::new(3, 10),
-            public_map: &briefing,
-            orientation: Orientation::for_home(&observation, TilePos::new(3, 10)),
-            intelligence: &intelligence,
-            enlisted: &[],
-            lift_support: None,
-        },
+        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
         AllocationParticipants {
             policy: &mut policy,
             strategy: &mut strategy,
