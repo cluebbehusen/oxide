@@ -59,6 +59,14 @@ implementation as production.
 
 ## Development
 
+Strategy's `think_alone` fixtures advance a single planner with fixture funding.
+They select the richest active revision and then use the real resource
+scheduler; they do not exercise portfolio competition or controller admission.
+`Brain` tests own command-level funding, preemption and cross-domain ownership;
+allocation-session tests own transactional rejection and rollback. Test-only
+roster references and work counters verify query equivalence and bounds without
+adding another runtime execution mode.
+
 ```sh
 cargo test -p oxide-bot --locked
 cargo test -p oxide-bot --lib utility::policy_tests --locked
