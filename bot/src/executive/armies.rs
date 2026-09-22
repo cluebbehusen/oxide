@@ -240,11 +240,14 @@ impl Executive {
             self.exhausted_rear.dedup();
         }
         for army in &mut self.armies {
-            army.members.retain(|id| roster.get(*id).is_some());
-            if army.members.is_empty() {
+            let mut members = roster.members(&army.members);
+            if members.len() != army.members.len() {
+                army.members.clear();
+                army.members.extend(members.iter().map(|unit| unit.id));
+            }
+            if members.is_empty() {
                 continue; // swept below
             }
-            let mut members = roster.members(&army.members);
             let unit_contact = enemies_near(obs, &members, CONTACT_RADIUS);
             let static_contact = members.iter().any(|member| {
                 obs.enemy_buildings.iter().any(|building| {
@@ -303,21 +306,20 @@ impl Executive {
             // pulling it then just thins the line.
             if !in_contact {
                 let mut pulled: Vec<UnitId> = Vec::new();
-                army.members.retain(|id| {
-                    let Some(u) = roster.get(*id) else {
-                        return false;
-                    };
+                members.retain(|u| {
                     let max = u.kind.stats().max_hp;
                     if u.hp * PULLBACK_DEN < max * PULLBACK_NUM
-                        && (self.exhausted_rear.binary_search(id).is_err())
+                        && self.exhausted_rear.binary_search(&u.id).is_err()
                     {
-                        pulled.push(*id);
+                        pulled.push(u.id);
                         false
                     } else {
                         true
                     }
                 });
                 if !pulled.is_empty() {
+                    army.members.clear();
+                    army.members.extend(members.iter().map(|unit| unit.id));
                     out.push(PlayerCommand {
                         player: me,
                         command: Command::Move {
@@ -336,7 +338,6 @@ impl Executive {
                     }
                     self.rear.sort_unstable_by_key(|unit| unit.id);
                 }
-                members = roster.members(&army.members);
             }
             if army.members.is_empty() {
                 continue; // swept below
@@ -3903,6 +3904,68 @@ mod tests {
             Command::Move { units, .. } if units == &vec![UnitId(3)]
         )));
         assert_eq!(maintained.armies[0].state, ArmyState::Withdrawing);
+    }
+
+    #[test]
+    fn quiet_maintenance_resolves_members_once_even_when_rotating_wounded() {
+        let staging = TilePos::new(4, 4);
+        for rotate in [false, true] {
+            let units: Vec<_> = (0..128)
+                .map(|id| {
+                    unit(
+                        id,
+                        PlayerId(0),
+                        UnitKind::Sentinel,
+                        staging,
+                        if rotate && id % 2 == 0 {
+                            1
+                        } else {
+                            UnitKind::Sentinel.stats().max_hp
+                        },
+                        true,
+                    )
+                })
+                .collect();
+            let obs = observation(120, (20, 20), units, Vec::new());
+            let mut ids: Vec<_> = obs.my_units.iter().map(|unit| unit.id).collect();
+            ids.push(UnitId(999));
+            let original_count = ids.len();
+            let mut executive = Executive {
+                armies: vec![army(0, ids, ArmyState::Staging, staging)],
+                player_frame: Some(PlayerFacingTactics {
+                    frame: CentroidFrame::for_rear(&obs, TilePos::new(1, 1)),
+                    defense_focus: None,
+                }),
+                ..Default::default()
+            };
+            let roster = UnitRoster::new(&obs.my_units);
+            let commands = executive.maintain_with_roster(
+                PlayerId(0),
+                &obs,
+                TilePos::new(1, 1),
+                MaintenanceMode {
+                    centroid_frame: None,
+                    coordinated_focus: false,
+                    coordinated_defense_focus: false,
+                },
+                &roster,
+            );
+            let retained: Vec<_> = (0..128)
+                .filter(|id| !rotate || id % 2 != 0)
+                .map(UnitId)
+                .collect();
+            assert_eq!(executive.armies[0].members, retained);
+            assert_eq!(executive.rear.len(), if rotate { 64 } else { 0 });
+            assert_eq!(commands.len(), usize::from(rotate));
+            if rotate {
+                assert!(matches!(&commands[0].command, Command::Move { units, .. }
+                    if *units == (0..128).step_by(2).map(UnitId).collect::<Vec<_>>()));
+            }
+            assert!(
+                roster.work().0 <= original_count,
+                "quiet maintenance must reuse its resolved roster"
+            );
+        }
     }
 
     #[test]
