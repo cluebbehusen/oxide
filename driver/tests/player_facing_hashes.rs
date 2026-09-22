@@ -1,165 +1,268 @@
-//! State-hash fixtures for the shipped player-facing controller.
-//!
-//! Representative shipped maps run through `oxide_bot::seat_bots`,
-//! the same seating path as the shell and driver, at Prime difficulty,
-//! Balanced stance, and fixed per-seat personality seeds to a combat horizon.
-//! These pin controller behavior independently of the controller-free rule
-//! scenarios in `state-hashes.json`.
-//!
-//! Two rows per map at the common 6,000-tick horizon: the state hash, and a
-//! running fold of the full command stream — each tick's commands folded with
-//! the tick they were staged for — keyed `<map>#commands`. Separately keyed
-//! later-horizon probes may extend a map without replacing that comparable
-//! baseline. The command fold moves whenever any decision or its timing
-//! changes, even where the worlds later reconverge, so it is the sharper
-//! refactoring tripwire; the state hash anchors the world the commands actually
-//! built.
-//!
-//! `tests/goldens/player-facing-hashes.json` obeys the same bless discipline
-//! as the simulation golden. An intentional player-facing behavior change is
-//! expected to move rows here while leaving `state-hashes.json` untouched.
-//! Inspect that drift and obtain explicit approval from the human user for
-//! either a version bump or a same-version bless before changing the workspace
-//! version or invoking `BLESS_SAME_VERSION=1`.
+//! Focused controller contracts with cross-platform state and command hashes.
+//! Behavioral assertions must pass before a checkpoint can be blessed.
 
 mod support;
 
-use oxide_sim::Scenario;
-use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
+use chassis::grid::TilePos;
+use oxide_bot::{SeatBot, seat_bots};
+use oxide_kit::GameReplay;
+use oxide_sim::scenario::{BotConfig, PlayerSpec, UnitSpec};
+use oxide_sim::{
+    Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, TickReport, UnitKind,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use support::check_or_bless;
 
-const DEFAULT_FIXTURE_TICKS: u64 = 6_000;
-const SKYHOOK_EXTENDED_TICKS: u64 = 10_000;
-
-/// Representative repertoire spread: a 1v1, small and large team maps, the
-/// transport-island economy, and the two largest shipped bot loads.
-const MAPS: [&str; 6] = [
-    "skirmish",
-    "twin-forges",
-    "three-shifts",
-    "terminal-basin",
-    "skyhook-anchorage",
-    "gatework-array",
-];
-
-/// Fixed per-seat personality seed. Any stable spread works; it is part of
-/// the fixture identity and must not change without a re-bless.
-const fn personality_seed(seat: usize) -> u64 {
-    9_000 + seat as u64
-}
-
-fn run_ticks(name: &str) -> u64 {
-    if name == "skyhook-anchorage" {
-        SKYHOOK_EXTENDED_TICKS
-    } else {
-        DEFAULT_FIXTURE_TICKS
+fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
+    let mut map = vec![vec!['.'; 28]; 16];
+    map[2][2] = '1';
+    map[12][24] = '2';
+    map[4][6] = 's';
+    Scenario {
+        name: name.into(),
+        seed: 42,
+        map: map
+            .into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect(),
+        players: vec![
+            PlayerSpec {
+                name: "Controller".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap,
+                bot: true,
+                bot_config: Some(BotConfig::default()),
+            },
+            PlayerSpec {
+                name: "Idle opponent".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: if worker {
+            vec![UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 4,
+                y: 4,
+            }]
+        } else {
+            Vec::new()
+        },
+        buildings: Vec::new(),
+        meta: None,
     }
 }
 
-struct MapRun {
-    rows: Vec<(String, String)>,
-    saw_lift_load: bool,
-}
-
-fn hash_rows(
-    name: &str,
-    suffix: &str,
-    state_hash: u64,
+struct Probe {
+    state: State,
+    twin: State,
+    bots: Vec<SeatBot>,
+    twin_bots: Vec<SeatBot>,
+    replay: GameReplay,
+    history: Vec<(u64, TickReport)>,
     command_fold: u64,
-) -> [(String, String); 2] {
-    let key = format!("{name}{suffix}");
-    [
-        (key.clone(), oxide_protocol::hash_hex(state_hash)),
-        (
-            format!("{key}#commands"),
-            oxide_protocol::hash_hex(command_fold),
-        ),
-    ]
 }
 
-fn run_map(name: &str) -> MapRun {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../scenarios/{name}.json"));
-    let mut scenario =
-        Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-    for (seat, player) in scenario.players.iter_mut().enumerate() {
-        player.bot = true;
-        player.bot_config = Some(BotConfig::scripted(
-            BotDifficulty::Prime,
-            BotStance::Balanced,
-            personality_seed(seat),
-        ));
+impl Probe {
+    fn new(scenario: Scenario) -> Self {
+        let state = scenario.build().unwrap();
+        state.validate_invariants().unwrap();
+        let bots = seat_bots(&scenario).unwrap();
+        assert_eq!(bots.len(), 1);
+        Self {
+            twin: scenario.build().unwrap(),
+            state,
+            bots,
+            twin_bots: seat_bots(&scenario).unwrap(),
+            replay: GameReplay::new(oxide_sim::SIM_VERSION, scenario),
+            history: Vec::new(),
+            command_fold: 0,
+        }
     }
-    let mut state = scenario
-        .build()
-        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-    let mut bots =
-        oxide_bot::seat_bots(&scenario).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-    assert_eq!(
-        bots.len(),
-        scenario.players.len(),
-        "{name}: every seat must receive the shipped scripted controller"
-    );
 
-    let mut command_fold: u64 = 0;
-    let mut saw_lift_load = false;
-    let mut rows = Vec::new();
-    let final_tick = run_ticks(name);
-    for _ in 0..final_tick {
-        let mut commands = Vec::new();
-        for bot in &mut bots {
-            commands.extend(bot.act(&state));
+    fn step(&mut self) -> (Vec<PlayerCommand>, TickReport) {
+        let tick = self.state.current_tick();
+        let commands: Vec<_> = self
+            .bots
+            .iter_mut()
+            .flat_map(|bot| bot.act(&self.state))
+            .collect();
+        let other: Vec<_> = self
+            .twin_bots
+            .iter_mut()
+            .flat_map(|bot| bot.act(&self.twin))
+            .collect();
+        assert_eq!(commands, other, "controller commands diverged at {tick}");
+        for command in &commands {
+            self.replay.record(tick, command.clone());
         }
-        if !commands.is_empty() {
-            // The tick is part of the fold: replay identity is "these
-            // commands at this tick", so identical commands sliding to a
-            // different tick must move this row even where the world
-            // later reconverges.
-            command_fold =
-                chassis::hash::state_hash(&(command_fold, state.current_tick(), &commands));
-            saw_lift_load |= commands
+        self.command_fold = chassis::hash::state_hash(&(self.command_fold, tick, &commands));
+        let mut restored: State =
+            serde_json::from_slice(&serde_json::to_vec(&self.state).unwrap()).unwrap();
+        let report = self.state.tick(&commands);
+        assert_eq!(
+            report,
+            self.twin.tick(&commands),
+            "independent events at {tick}"
+        );
+        assert_eq!(
+            report,
+            restored.tick(&commands),
+            "restored events at {tick}"
+        );
+        assert_eq!(
+            self.state.hash(),
+            self.twin.hash(),
+            "independent state at {tick}"
+        );
+        assert_eq!(
+            self.state.hash(),
+            restored.hash(),
+            "restored state at {tick}"
+        );
+        assert!(
+            report
+                .events
                 .iter()
-                .any(|c| matches!(c.command, oxide_sim::Command::Load { .. }));
+                .all(|event| !matches!(event, Event::CommandRejected { .. })),
+            "focused controller issued an invalid command at {tick}: {:?}",
+            report.events
+        );
+        self.state.validate_invariants().unwrap();
+        self.history.push((self.state.hash(), report.clone()));
+        (commands, report)
+    }
+
+    fn finish(mut self) -> BTreeMap<String, String> {
+        self.replay.meta.ticks = Some(self.state.current_tick());
+        let replay: GameReplay =
+            serde_json::from_slice(&serde_json::to_vec(&self.replay).unwrap()).unwrap();
+        replay.validate(Some(oxide_sim::SIM_VERSION)).unwrap();
+        let mut state = replay.setup.build().unwrap();
+        let mut cursor = replay.cursor();
+        for (hash, report) in self.history {
+            let commands: Vec<_> = cursor
+                .take_tick(state.current_tick())
+                .iter()
+                .map(|row| row.command.clone())
+                .collect();
+            assert_eq!(state.tick(&commands), report, "replay events diverged");
+            assert_eq!(state.hash(), hash, "replay state diverged");
         }
-        state.tick(&commands);
-        if state.current_tick() == DEFAULT_FIXTURE_TICKS {
-            rows.extend(hash_rows(name, "", state.hash(), command_fold));
+        assert!(cursor.is_finished());
+        BTreeMap::from([
+            (
+                replay.setup.name.clone(),
+                oxide_protocol::hash_hex(state.hash()),
+            ),
+            (
+                format!("{}#commands", replay.setup.name),
+                oxide_protocol::hash_hex(self.command_fold),
+            ),
+        ])
+    }
+}
+
+fn recovery(funded: bool) -> BTreeMap<String, String> {
+    let price = UnitKind::Harvester.stats().cost;
+    let name = if funded {
+        "recovery-funded"
+    } else {
+        "recovery-underfunded"
+    };
+    let bank = if funded { price } else { price - 1 };
+    let mut probe = Probe::new(scenario(name, bank, false));
+    assert!(probe.state.units().is_empty());
+    let foundry = probe
+        .state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0))
+        .unwrap()
+        .id;
+    let (commands, _) = probe.step();
+    let expected = if funded {
+        vec![PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        }]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(
+        commands, expected,
+        "recovery must respect the exact worker price"
+    );
+    // A queued worker stops recovery income; the unfunded seat earns one tick-zero credit.
+    assert_eq!(
+        probe.state.player(PlayerId(0)).scrap,
+        if funded { 0 } else { bank + 1 }
+    );
+    let queue = &probe.state.building(foundry).unwrap().queue;
+    assert_eq!(queue.len(), usize::from(funded));
+    if funded {
+        assert_eq!(queue[0], UnitKind::Harvester);
+    }
+    probe.finish()
+}
+
+fn harvesting() -> BTreeMap<String, String> {
+    let mut probe = Probe::new(scenario("harvest-repeat-delivery", 0, true));
+    let worker = probe.state.units()[0].id;
+    let node = TilePos::new(6, 4);
+    assert_eq!(probe.state.unit(worker).unwrap().order, Order::Idle);
+    assert!(probe.state.can_see(PlayerId(0), node));
+    assert!(probe.state.map().scrap_at(node) > 0);
+    let (commands, _) = probe.step();
+    assert!(commands.iter().any(|command| matches!(&command.command,
+        Command::Harvest { units, node: target, .. } if units.contains(&worker) && *target == node
+    )), "idle worker did not receive harvesting work: {commands:?}");
+    let mut deliveries = 0;
+    let mut deposited = 0;
+    for _ in 0..600 {
+        let (_, report) = probe.step();
+        for event in report.events {
+            if let Event::ScrapDeposited {
+                player: PlayerId(0),
+                amount,
+            } = event
+            {
+                assert!(amount > 0);
+                deliveries += 1;
+                deposited += amount;
+            }
+        }
+        if deliveries == 2 {
+            break;
         }
     }
-    if final_tick > DEFAULT_FIXTURE_TICKS {
-        rows.extend(hash_rows(
-            name,
-            &format!("@{final_tick}"),
-            state.hash(),
-            command_fold,
-        ));
-    }
-    MapRun {
-        rows,
-        saw_lift_load,
-    }
+    assert_eq!(
+        deliveries, 2,
+        "worker failed to complete two nearby harvest cycles"
+    );
+    assert_eq!(probe.state.player(PlayerId(0)).scrap, deposited);
+    assert!(matches!(
+        probe.state.unit(worker).unwrap().order,
+        Order::Harvest { .. }
+    ));
+    probe.finish()
 }
 
 #[test]
-fn scripted_controller_matches_hash_fixtures() {
-    let runs: Vec<MapRun> = std::thread::scope(|scope| {
-        let handles: Vec<_> = MAPS
-            .iter()
-            .map(|name| scope.spawn(|| run_map(name)))
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("a fixture run panicked"))
-            .collect()
-    });
-    assert!(
-        runs.iter().any(|run| run.saw_lift_load),
-        "no fixture map exercised a transport Load — the lift path is uncovered; \
-         adjust the map set or seeds so the fixture demonstrably reaches it"
-    );
-    let actual: BTreeMap<String, String> = runs.into_iter().flat_map(|run| run.rows).collect();
+fn focused_controller_contracts_match_hash_fixtures() {
+    let actual = [recovery(false), recovery(true), harvesting()]
+        .into_iter()
+        .flatten()
+        .collect();
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/player-facing-hashes.json");
-    check_or_bless(&fixture, actual);
+    support::check_or_bless(&fixture, actual);
 }

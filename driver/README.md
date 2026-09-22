@@ -116,19 +116,25 @@ and reconstruction of the recorded command stream are checked throughout.
 `tests/goldens/state-hashes.json` is shared by the existing cross-platform
 matrix.
 
-`tests/player_facing_hashes.rs` separately pins the current controller's state
-and command streams. The regular liveness harness runs Skirmish, Twin Forges,
-and Basalt Spine for 12,000 ticks each, covering an open duel, team play, and
-constrained terrain. It seats Standard/Balanced bots with personality seed zero
-and checks activity, invariants, serialization, and elimination. The exhaustive
-all-map sweep is ignored by default and remains available on demand; both use
-the same assertions. Cheap map gates and exact-hash fixtures retain their
-existing scope. Bot measurements describe that configured controller interacting
-with the simulation. The opening image and renderer showcase cover drawing
-without depending on an autonomous midgame.
+`tests/player_facing_hashes.rs` checks exact recovery funding and repeated
+nearby harvest deliveries through the maintained controller. Behavioral
+assertions precede short state and tick-stamped command hashes. Independent
+controllers, state round trips, and replay reconstruction must agree at every
+step.
+
+The regular integrity harness runs Skirmish, Twin Forges, and Basalt Spine for
+up to 12,000 ticks each, covering an open duel, team play, and constrained
+terrain. It seats Standard/Balanced bots with personality seed zero and checks
+state validity and serialization, including the initial and final states. It
+stops after validating a terminal result without requiring a winner, activity
+quotas, or a historical command stream. The exhaustive all-map sweep is ignored
+by default and uses the same checks, extending large, vast, and grand maps to
+24,000 ticks. Cheap map gates and small rule-hash fixtures retain their scope.
+The opening image and renderer showcase cover drawing without depending on an
+autonomous midgame.
 
 Run the exhaustive sweep explicitly:
 
 ```sh
-cargo test -p oxide-driver --test headless --locked every_shipped_scenario_stays_valid_and_live -- --ignored --exact --nocapture
+cargo test -p oxide-driver --test headless --locked every_shipped_scenario_preserves_state_integrity -- --ignored --exact --nocapture
 ```
