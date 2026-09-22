@@ -7324,40 +7324,10 @@ mod tests {
     const HOME: TilePos = TilePos::new(3, 10);
     const TARGET: TilePos = TilePos::new(24, 10);
 
-    trait AdjudicatedStrategicThink {
-        fn think(
-            &mut self,
-            profile: &ResolvedProfile,
-            tuning: DifficultyTuning,
-            obs: &Observation,
-            intel: &StrategicIntelligence,
-            home: TilePos,
-            enlisted: &[UnitId],
-        ) -> StrategicDecision;
-
-        fn think_with_lift_support(
-            &mut self,
-            profile: &ResolvedProfile,
-            tuning: DifficultyTuning,
-            obs: &Observation,
-            intel: &StrategicIntelligence,
-            home: TilePos,
-            coordination: StrategicCoordination<'_>,
-        ) -> StrategicDecision;
-
-        fn think_through_adjudication(
-            &mut self,
-            profile: &ResolvedProfile,
-            tuning: DifficultyTuning,
-            obs: &Observation,
-            intel: &StrategicIntelligence,
-            home: TilePos,
-            coordination: StrategicCoordination<'_>,
-        ) -> StrategicThinkResult;
-    }
-
-    impl AdjudicatedStrategicThink for StrategicPlanner {
-        fn think(
+    // These fixtures advance one domain with no competing planners. Active revisions
+    // receive their richest variant; controller admission is tested through Brain.
+    impl StrategicPlanner {
+        fn think_alone(
             &mut self,
             profile: &ResolvedProfile,
             tuning: DifficultyTuning,
@@ -7366,8 +7336,7 @@ mod tests {
             home: TilePos,
             enlisted: &[UnitId],
         ) -> StrategicDecision {
-            <Self as AdjudicatedStrategicThink>::think_through_adjudication(
-                self,
+            self.think_alone_with(
                 profile,
                 tuning,
                 obs,
@@ -7387,28 +7356,7 @@ mod tests {
             .decision
         }
 
-        fn think_with_lift_support(
-            &mut self,
-            profile: &ResolvedProfile,
-            tuning: DifficultyTuning,
-            obs: &Observation,
-            intel: &StrategicIntelligence,
-            home: TilePos,
-            coordination: StrategicCoordination<'_>,
-        ) -> StrategicDecision {
-            <Self as AdjudicatedStrategicThink>::think_through_adjudication(
-                self,
-                profile,
-                tuning,
-                obs,
-                intel,
-                home,
-                coordination,
-            )
-            .decision
-        }
-
-        fn think_through_adjudication(
+        fn think_alone_with(
             &mut self,
             profile: &ResolvedProfile,
             tuning: DifficultyTuning,
@@ -7963,7 +7911,7 @@ mod tests {
         obs: &Observation,
         intel: &StrategicIntelligence,
     ) -> StrategicDecision {
-        planner.think(
+        planner.think_alone(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             obs,
@@ -8570,18 +8518,20 @@ mod tests {
             .map(|active| reservations(&active.op, &active.plan, &observation))
             .expect("the fixture has an active operation");
 
-        let decision = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                enlisted: &owned,
-                ..coordination(None)
-            },
-        );
+        let decision = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &observation,
+                &intelligence,
+                HOME,
+                StrategicCoordination {
+                    planning: None,
+                    enlisted: &owned,
+                    ..coordination(None)
+                },
+            )
+            .decision;
 
         let operation = planner
             .air_operation()
@@ -8619,14 +8569,16 @@ mod tests {
         active.op.started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
         active.op.phase_started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
 
-        let decision = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination(None),
-        );
+        let decision = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &observation,
+                &intelligence,
+                HOME,
+                coordination(None),
+            )
+            .decision;
 
         let operation = planner
             .air_operation()
@@ -8662,14 +8614,16 @@ mod tests {
         active.op.started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
         active.op.phase_started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
 
-        let deadline_decision = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination(None),
-        );
+        let deadline_decision = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &observation,
+                &intelligence,
+                HOME,
+                coordination(None),
+            )
+            .decision;
 
         let operation = planner
             .air_operation()
@@ -8684,14 +8638,16 @@ mod tests {
 
         observation.tick += DifficultyTuning::for_level(BotDifficulty::Prime).cadence;
         intelligence.update(&observation);
-        let committed = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination(None),
-        );
+        let committed = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &observation,
+                &intelligence,
+                HOME,
+                coordination(None),
+            )
+            .decision;
 
         let operation = planner
             .air_operation()
@@ -8726,11 +8682,40 @@ mod tests {
         let mut blocked = StrategicPlanner::new();
 
         assert_eq!(
-            blocked.think_with_lift_support(
+            blocked
+                .think_alone_with(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &eligible,
+                    &eligible_intelligence,
+                    HOME,
+                    StrategicCoordination {
+                        planning: None,
+                        enlisted: &[],
+                        lift_support: None,
+                        allow_new_operation: false,
+                        protected_current_scrap: 0,
+                        protected_forecast_scrap: 0,
+                        public_map: None,
+                        orientation: test_orientation(),
+                    },
+                )
+                .decision,
+            StrategicDecision::default()
+        );
+        assert!(blocked.air_operation().is_none());
+
+        let mut battle = obs(100);
+        see_approach(&mut battle);
+        see_building_footprint(&mut battle, TARGET, BuildingKind::Crucible);
+        let intelligence = knowledge(&battle);
+        let mut active = with_operation(AirOperationPhase::Verify, battle.tick);
+        let continued = active
+            .think_alone_with(
                 &profile(),
                 DifficultyTuning::for_level(BotDifficulty::Prime),
-                &eligible,
-                &eligible_intelligence,
+                &battle,
+                &intelligence,
                 HOME,
                 StrategicCoordination {
                     planning: None,
@@ -8742,33 +8727,8 @@ mod tests {
                     public_map: None,
                     orientation: test_orientation(),
                 },
-            ),
-            StrategicDecision::default()
-        );
-        assert!(blocked.air_operation().is_none());
-
-        let mut battle = obs(100);
-        see_approach(&mut battle);
-        see_building_footprint(&mut battle, TARGET, BuildingKind::Crucible);
-        let intelligence = knowledge(&battle);
-        let mut active = with_operation(AirOperationPhase::Verify, battle.tick);
-        let continued = active.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intelligence,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: false,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: test_orientation(),
-            },
-        );
+            )
+            .decision;
 
         assert_eq!(
             active.air_operation().map(|operation| operation.phase()),
@@ -8797,23 +8757,25 @@ mod tests {
         see_approach(&mut incomplete);
         let incomplete_intelligence = knowledge(&incomplete);
         let mut assembling = with_operation(AirOperationPhase::Assemble, incomplete.tick);
-        let held = assembling.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &incomplete,
-            &incomplete_intelligence,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: false,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: test_orientation(),
-            },
-        );
+        let held = assembling
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &incomplete,
+                &incomplete_intelligence,
+                HOME,
+                StrategicCoordination {
+                    planning: None,
+                    enlisted: &[],
+                    lift_support: None,
+                    allow_new_operation: false,
+                    protected_current_scrap: 0,
+                    protected_forecast_scrap: 0,
+                    public_map: None,
+                    orientation: test_orientation(),
+                },
+            )
+            .decision;
         assert_eq!(held.committed_scrap(), 0);
         assert!(
             held.intents
@@ -8829,23 +8791,25 @@ mod tests {
             .retain(|unit| !matches!(unit.id, UnitId(3) | UnitId(4)));
         let damaged_intelligence = knowledge(&damaged);
         let mut recovering = with_operation(AirOperationPhase::SuppressAa, damaged.tick);
-        let retreat = recovering.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &damaged,
-            &damaged_intelligence,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: false,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: test_orientation(),
-            },
-        );
+        let retreat = recovering
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &damaged,
+                &damaged_intelligence,
+                HOME,
+                StrategicCoordination {
+                    planning: None,
+                    enlisted: &[],
+                    lift_support: None,
+                    allow_new_operation: false,
+                    protected_current_scrap: 0,
+                    protected_forecast_scrap: 0,
+                    public_map: None,
+                    orientation: test_orientation(),
+                },
+            )
+            .decision;
         assert!(
             retreat
                 .intents
@@ -9389,7 +9353,7 @@ mod tests {
         operation.scout_dispatch = None;
         operation.phase_started_at = current.tick.saturating_sub(tuning.reaction_delay + 1);
 
-        let training = planner.think(&profile(), tuning, &current, &intelligence, HOME, &[]);
+        let training = planner.think_alone(&profile(), tuning, &current, &intelligence, HOME, &[]);
 
         let operation = planner.air_operation().unwrap();
         assert_eq!(operation.phase(), AirOperationPhase::Recon);
@@ -9417,7 +9381,7 @@ mod tests {
         hidden.scrap = 0;
         intelligence.update(&hidden);
 
-        let waiting = planner.think(&profile(), tuning, &hidden, &intelligence, HOME, &[]);
+        let waiting = planner.think_alone(&profile(), tuning, &hidden, &intelligence, HOME, &[]);
 
         let operation = planner.air_operation().unwrap();
         assert_eq!(operation.phase(), AirOperationPhase::Recon);
@@ -9440,7 +9404,7 @@ mod tests {
         ready.my_units.sort_unstable_by_key(|unit| unit.id);
         intelligence.update(&ready);
 
-        let dispatch = planner.think(&profile(), tuning, &ready, &intelligence, HOME, &[]);
+        let dispatch = planner.think_alone(&profile(), tuning, &ready, &intelligence, HOME, &[]);
 
         let operation = planner.air_operation().unwrap();
         assert_eq!(operation.phase(), AirOperationPhase::Recon);
@@ -9462,7 +9426,7 @@ mod tests {
             .idle = false;
         intelligence.update(&reacquired);
 
-        let reacquired_result = planner.think_through_adjudication(
+        let reacquired_result = planner.think_alone_with(
             &profile(),
             tuning,
             &reacquired,
@@ -9507,7 +9471,7 @@ mod tests {
                 let mut identity = profile();
                 identity.difficulty = difficulty;
 
-                planner.think(&identity, tuning, &observation, &intelligence, HOME, &[]);
+                planner.think_alone(&identity, tuning, &observation, &intelligence, HOME, &[]);
 
                 let operation = planner.air_operation().unwrap();
                 assert_eq!(
@@ -11135,7 +11099,7 @@ mod tests {
 
         let mut guarded = with_operation(AirOperationPhase::Strike, observation.tick);
         let guarded_decision = guarded
-            .think_through_adjudication(
+            .think_alone_with(
                 &profile(),
                 DifficultyTuning::for_level(BotDifficulty::Prime),
                 &observation,
@@ -11370,18 +11334,20 @@ mod tests {
         let identity = profile();
         let mut planner = with_operation(AirOperationPhase::Recover, battle.tick);
 
-        let decision = planner.think_with_lift_support(
-            &identity,
-            DifficultyTuning::for_level(identity.difficulty),
-            &battle,
-            &intel,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                public_map: Some(&public_map),
-                ..coordination(None)
-            },
-        );
+        let decision = planner
+            .think_alone_with(
+                &identity,
+                DifficultyTuning::for_level(identity.difficulty),
+                &battle,
+                &intel,
+                HOME,
+                StrategicCoordination {
+                    planning: None,
+                    public_map: Some(&public_map),
+                    ..coordination(None)
+                },
+            )
+            .decision;
 
         assert!(!decision.reservations.contains(&UnitId(1)));
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -11435,7 +11401,7 @@ mod tests {
         identity.traits.siege = 52;
         let mut planner = StrategicPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -11487,7 +11453,7 @@ mod tests {
         );
 
         let mut siege_planner = StrategicPlanner::new();
-        siege_planner.think(
+        siege_planner.think_alone(
             &siege,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -11510,7 +11476,7 @@ mod tests {
         );
 
         let mut low_planner = StrategicPlanner::new();
-        low_planner.think(
+        low_planner.think_alone(
             &low_siege,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -11556,7 +11522,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Standard);
         let mut planner = StrategicPlanner::new();
         let immature_intelligence = knowledge(&immature);
-        let held = planner.think(
+        let held = planner.think_alone(
             &identity,
             tuning,
             &immature,
@@ -11576,7 +11542,8 @@ mod tests {
         mature.my_units.sort_unstable_by_key(|unit| unit.id);
         assert_eq!(combat_roster(&mature), 12);
         let mature_intelligence = knowledge(&mature);
-        let admitted = planner.think(&identity, tuning, &mature, &mature_intelligence, HOME, &[]);
+        let admitted =
+            planner.think_alone(&identity, tuning, &mature, &mature_intelligence, HOME, &[]);
 
         assert!(planner.air_operation().is_some());
         assert!(
@@ -11606,7 +11573,7 @@ mod tests {
         );
 
         let mut planner = StrategicPlanner::new();
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &battle,
@@ -11996,7 +11963,7 @@ mod tests {
         ));
         let tuning = DifficultyTuning::for_level(identity.difficulty);
         let mut planner = StrategicPlanner::new();
-        planner.think(&identity, tuning, &hidden, &intelligence, HOME, &[]);
+        planner.think_alone(&identity, tuning, &hidden, &intelligence, HOME, &[]);
         assert!(planner.air_operation().is_some_and(|operation| {
             !operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
         }));
@@ -12427,7 +12394,7 @@ mod tests {
         let intelligence = knowledge(&battle);
         let mut planner = StrategicPlanner::new();
 
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &battle,
@@ -12460,7 +12427,7 @@ mod tests {
         let intelligence = knowledge(&on_boundary);
         let mut planner = StrategicPlanner::new();
 
-        let rejected = planner.think_through_adjudication(
+        let rejected = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &on_boundary,
@@ -12486,7 +12453,7 @@ mod tests {
         off_boundary.tick = 121;
         let intelligence = knowledge(&off_boundary);
         let mut planner = StrategicPlanner::new();
-        let not_considered = planner.think_through_adjudication(
+        let not_considered = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &off_boundary,
@@ -12505,7 +12472,7 @@ mod tests {
         let intelligence = knowledge(&observation);
         let mut planner = StrategicPlanner::new();
 
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -12528,7 +12495,7 @@ mod tests {
         let target = intelligence.buildings()[0].clone();
         let mut planner = StrategicPlanner::new();
 
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -12557,7 +12524,7 @@ mod tests {
         let mut planner = StrategicPlanner::new();
         let enlisted = [UnitId(1), UnitId(2), UnitId(3), UnitId(4)];
 
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -13669,14 +13636,16 @@ mod tests {
             .target_anchors = vec![TARGET];
         let mut coordination = coordination(None);
         coordination.public_map = Some(&public_map);
-        let positioning = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination,
-        );
+        let positioning = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &observation,
+                &intelligence,
+                HOME,
+                coordination,
+            )
+            .decision;
         let firing_stand = positioning
             .intents
             .iter()
@@ -13715,14 +13684,16 @@ mod tests {
             .expect("fixture scout")
             .idle = false;
         intelligence.update(&observation);
-        let attack = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination,
-        );
+        let attack = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &observation,
+                &intelligence,
+                HOME,
+                coordination,
+            )
+            .decision;
         assert!(
             attack.intents.contains(&Intent::AttackUnits {
                 units: vec![UnitId(2)],
@@ -14135,7 +14106,7 @@ mod tests {
         let intelligence = knowledge(&battle);
         let mut planner = with_operation(AirOperationPhase::Assemble, 300);
 
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &battle,
@@ -14189,7 +14160,7 @@ mod tests {
         package.derived_at = battle.tick - 1;
         package.preparation_deadline = battle.tick;
 
-        let result = planner.think_through_adjudication(
+        let result = planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &battle,
@@ -14953,7 +14924,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let intel = knowledge(&battle);
 
-        let waiting = planner.think(&identity, tuning, &battle, &intel, HOME, &[]);
+        let waiting = planner.think_alone(&identity, tuning, &battle, &intel, HOME, &[]);
 
         let operation = planner.air_operation().expect("operation advances");
         assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
@@ -14975,7 +14946,7 @@ mod tests {
         identity.traits.siege = 20;
         let mut planner = StrategicPlanner::new();
 
-        planner.think_with_lift_support(
+        planner.think_alone_with(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -15019,7 +14990,7 @@ mod tests {
         assert_eq!(identity.primary, Specialty::Air);
         let mut planner = StrategicPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -15051,7 +15022,7 @@ mod tests {
         };
         let mut planner = StrategicPlanner::new();
 
-        planner.think_with_lift_support(
+        planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -15183,7 +15154,7 @@ mod tests {
         let public_map = public_map_with_terrain(&hidden, []);
         let mut planner = StrategicPlanner::new();
 
-        planner.think_with_lift_support(
+        planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &hidden,
@@ -15226,7 +15197,7 @@ mod tests {
         identity.traits.siege = 20;
         let mut planner = StrategicPlanner::new();
 
-        planner.think(
+        planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &first_sighting,
@@ -15261,7 +15232,7 @@ mod tests {
         identity.traits.siege = 20;
         let mut planner = StrategicPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &hidden,
@@ -15310,7 +15281,7 @@ mod tests {
         assert_eq!(identity.primary, Specialty::Air);
         let mut planner = StrategicPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &ghost,
@@ -15357,7 +15328,7 @@ mod tests {
         tuning.tactical_memory = 5_000;
         let mut planner = StrategicPlanner::new();
 
-        planner.think(&identity, tuning, &ghost, &intel, HOME, &[]);
+        planner.think_alone(&identity, tuning, &ghost, &intel, HOME, &[]);
         let admitted_at = planner
             .air_operation()
             .expect("the remembered objective begins scout-only reconnaissance")
@@ -15374,7 +15345,7 @@ mod tests {
         scout_ready.my_units.push(own(99, UnitKind::Kestrel, HOME));
         scout_ready.my_units.sort_unstable_by_key(|unit| unit.id);
         intel.update(&scout_ready);
-        let dispatch = planner.think(&identity, tuning, &scout_ready, &intel, HOME, &[]);
+        let dispatch = planner.think_alone(&identity, tuning, &scout_ready, &intel, HOME, &[]);
 
         let operation = planner
             .air_operation()
@@ -15404,7 +15375,7 @@ mod tests {
         scout.idle = false;
         scout.tile = HOME.offset(1, 0);
         intel.update(&after_old_deadline);
-        let after = planner.think(&identity, tuning, &after_old_deadline, &intel, HOME, &[]);
+        let after = planner.think_alone(&identity, tuning, &after_old_deadline, &intel, HOME, &[]);
 
         let operation = planner
             .air_operation()
@@ -15501,7 +15472,7 @@ mod tests {
             "an unreachable live scout cannot create a phantom carrier floor"
         );
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &ghost,
@@ -15573,7 +15544,7 @@ mod tests {
             "expired active Recon cannot create a phantom carrier floor"
         );
 
-        let decision = planner.think(&identity, tuning, &hidden, &intel, HOME, &[]);
+        let decision = planner.think_alone(&identity, tuning, &hidden, &intel, HOME, &[]);
         let operation = planner
             .air_operation()
             .expect("the stale operation remains observable for its recovery think");
@@ -15622,7 +15593,7 @@ mod tests {
             "a lost dispatched scout cannot reserve carrier capital for its replacement"
         );
 
-        let decision = planner.think(&identity, tuning, &hidden, &intel, HOME, &[]);
+        let decision = planner.think_alone(&identity, tuning, &hidden, &intel, HOME, &[]);
         assert_eq!(
             planner.terminal_outcome(),
             Some(AirOperationOutcome::Aborted {
@@ -15653,18 +15624,20 @@ mod tests {
         let identity = profile();
         let mut planner = StrategicPlanner::new();
 
-        let decision = planner.think_with_lift_support(
-            &identity,
-            DifficultyTuning::for_level(identity.difficulty),
-            &ghost,
-            &intel,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                public_map: Some(&public_map),
-                ..coordination(None)
-            },
-        );
+        let decision = planner
+            .think_alone_with(
+                &identity,
+                DifficultyTuning::for_level(identity.difficulty),
+                &ghost,
+                &intel,
+                HOME,
+                StrategicCoordination {
+                    planning: None,
+                    public_map: Some(&public_map),
+                    ..coordination(None)
+                },
+            )
+            .decision;
 
         let operation = planner
             .air_operation()
@@ -15700,7 +15673,7 @@ mod tests {
             intel.update(&ghost);
             let mut planner = StrategicPlanner::new();
 
-            let recon = planner.think(&identity, tuning, &ghost, &intel, HOME, &[]);
+            let recon = planner.think_alone(&identity, tuning, &ghost, &intel, HOME, &[]);
             let ghost_operation = planner.air_operation().unwrap();
             assert!(!ghost_operation.assault_admitted(), "{difficulty:?}");
             let admitted_at = planner
@@ -15714,7 +15687,7 @@ mod tests {
 
             let current = wealthy_island_obs(5_016, 1);
             intel.update(&current);
-            planner.think(&identity, tuning, &current, &intel, HOME, &[]);
+            planner.think_alone(&identity, tuning, &current, &intel, HOME, &[]);
             let admitted = planner.air_operation().unwrap();
             assert!(admitted.assault_admitted(), "{difficulty:?}");
             assert_eq!(admitted.started_at, 5_016, "{difficulty:?}");
@@ -15771,7 +15744,7 @@ mod tests {
         assert_eq!(identity.primary, Specialty::Air);
         let mut planner = StrategicPlanner::new();
 
-        let recon = planner.think(
+        let recon = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &ghost,
@@ -15792,7 +15765,7 @@ mod tests {
         let mut current = wealthy_island_obs(5_016, 1);
         reveal_ground_route(&mut current);
         intel.update(&current);
-        planner.think(
+        planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &current,
@@ -15824,7 +15797,7 @@ mod tests {
         identity.traits.siege = 20;
         let mut planner = StrategicPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &identity,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -15951,7 +15924,7 @@ mod tests {
                 if current_intel.observed_at() != Some(shared.tick) {
                     current_intel.update(&shared);
                 }
-                planner.think(&identity, tuning, &shared, current_intel, HOME, &[]);
+                planner.think_alone(&identity, tuning, &shared, current_intel, HOME, &[]);
                 if tick < 5_016 {
                     assert!(
                         planner.air_operation().is_none(),
@@ -15983,7 +15956,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut intel = knowledge(&reinforced);
         let mut planner = StrategicPlanner::new();
-        planner.think(&identity, tuning, &reinforced, &intel, HOME, &[]);
+        planner.think_alone(&identity, tuning, &reinforced, &intel, HOME, &[]);
         let frozen = planner.air_plan().cloned().unwrap();
 
         reinforced.my_units.extend((100..=139).map(|id| {
@@ -15996,7 +15969,7 @@ mod tests {
         reinforced.my_units.sort_unstable_by_key(|unit| unit.id);
         reinforced.tick += tuning.cadence;
         intel.update(&reinforced);
-        planner.think(&identity, tuning, &reinforced, &intel, HOME, &[]);
+        planner.think_alone(&identity, tuning, &reinforced, &intel, HOME, &[]);
 
         let current = AirPlan::island(&identity, &reinforced);
         assert!(current.desired_strike_aircraft > frozen.desired_strike_aircraft);
@@ -16020,7 +15993,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut intel = knowledge(&wealthy);
         let mut planner = StrategicPlanner::new();
-        planner.think(&identity, tuning, &wealthy, &intel, HOME, &[]);
+        planner.think_alone(&identity, tuning, &wealthy, &intel, HOME, &[]);
         let frozen = planner.air_plan().cloned().unwrap();
 
         let depleted = wealthy_island_obs(5_019, 1);
@@ -16031,7 +16004,7 @@ mod tests {
         assert!(current.desired_screen < frozen.desired_screen);
 
         intel.update(&depleted);
-        planner.think(&identity, tuning, &depleted, &intel, HOME, &[]);
+        planner.think_alone(&identity, tuning, &depleted, &intel, HOME, &[]);
 
         assert_eq!(planner.air_plan().unwrap(), &frozen);
     }
@@ -16694,14 +16667,16 @@ mod tests {
             "the same flak does cover the transport's actual drop envelope"
         );
 
-        let suppression = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination(Some(&request)),
-        );
+        let suppression = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &battle,
+                &intel,
+                HOME,
+                coordination(Some(&request)),
+            )
+            .decision;
         assert_eq!(
             planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
@@ -16730,14 +16705,16 @@ mod tests {
             .enemy_buildings
             .retain(|building| building.id != BuildingId(81));
         intel.update(&battle);
-        let searching = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination(Some(&request)),
-        );
+        let searching = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &battle,
+                &intel,
+                HOME,
+                coordination(Some(&request)),
+            )
+            .decision;
         assert_eq!(
             planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa,
@@ -16762,7 +16739,7 @@ mod tests {
         battle.explored[flak_index] = true;
         battle.tick += 1;
         intel.update(&battle);
-        planner.think_with_lift_support(
+        planner.think_alone_with(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &battle,
@@ -16782,14 +16759,16 @@ mod tests {
             .saturating_add(tuning.reaction_delay)
             .saturating_add(tuning.commitment_hesitation);
         intel.update(&battle);
-        let released = planner.think_with_lift_support(
-            &profile(),
-            tuning,
-            &battle,
-            &intel,
-            HOME,
-            coordination(Some(&request)),
-        );
+        let released = planner
+            .think_alone_with(
+                &profile(),
+                tuning,
+                &battle,
+                &intel,
+                HOME,
+                coordination(Some(&request)),
+            )
+            .decision;
         assert_eq!(
             planner.air_operation().unwrap().phase(),
             AirOperationPhase::Strike
@@ -16960,14 +16939,16 @@ mod tests {
         };
         let intel = knowledge(&battle);
 
-        let decision = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination(Some(&request)),
-        );
+        let decision = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &battle,
+                &intel,
+                HOME,
+                coordination(Some(&request)),
+            )
+            .decision;
 
         assert!(decision.intents.contains(&Intent::AttackUnits {
             units: vec![UnitId(3), UnitId(4)],
@@ -17009,14 +16990,16 @@ mod tests {
         let mut coordination = coordination(None);
         coordination.public_map = Some(&public_map);
 
-        let decision = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination,
-        );
+        let decision = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &battle,
+                &intel,
+                HOME,
+                coordination,
+            )
+            .decision;
 
         let operation = planner
             .air_operation()
@@ -17123,7 +17106,7 @@ mod tests {
         let intel = knowledge(&observation);
         let mut planner = StrategicPlanner::new();
 
-        planner.think(
+        planner.think_alone(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -17143,7 +17126,7 @@ mod tests {
         ];
         observation.my_queues = vec![Vec::new(); 3];
         let intel = knowledge(&observation);
-        planner.think(
+        planner.think_alone(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &observation,
@@ -17612,14 +17595,16 @@ mod tests {
         let mut coordination = coordination(None);
         coordination.public_map = Some(&public_map);
 
-        let decision = planner.think_with_lift_support(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination,
-        );
+        let decision = planner
+            .think_alone_with(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                &battle,
+                &intel,
+                HOME,
+                coordination,
+            )
+            .decision;
 
         let operation = planner.air_operation().expect("operation remains active");
         assert_ne!(operation.phase(), AirOperationPhase::Recover);
@@ -17726,7 +17711,7 @@ mod tests {
             plan.screen.clear();
             let mut planner = planner_with_operation(operation, plan);
 
-            let decision = planner.think(
+            let decision = planner.think_alone(
                 &identity,
                 DifficultyTuning::for_level(BotDifficulty::Prime),
                 &battle,
@@ -17783,7 +17768,7 @@ mod tests {
             plan.screen.clear();
             let mut planner = planner_with_operation(operation, plan);
 
-            let decision = planner.think(&identity, tuning, &battle, &intel, HOME, &[]);
+            let decision = planner.think_alone(&identity, tuning, &battle, &intel, HOME, &[]);
             let operation = planner
                 .air_operation()
                 .expect("the refused verification remains observable during recovery");
@@ -17816,7 +17801,7 @@ mod tests {
         let mut planner = with_operation(AirOperationPhase::SuppressAa, battle.tick);
         planner.air_op_mut().unwrap().phase_started_at = battle.tick;
 
-        let decision = planner.think(
+        let decision = planner.think_alone(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Standard),
             &battle,
@@ -18381,7 +18366,7 @@ mod tests {
         });
 
         for (difficulty, identity, planner) in &mut cases {
-            let retained = planner.think(
+            let retained = planner.think_alone(
                 identity,
                 DifficultyTuning::for_level(*difficulty),
                 &hidden,
@@ -18406,7 +18391,7 @@ mod tests {
         hidden.tick += 1;
         intel.update(&hidden);
         for (difficulty, identity, planner) in &mut cases {
-            let recovered = planner.think(
+            let recovered = planner.think_alone(
                 identity,
                 DifficultyTuning::for_level(*difficulty),
                 &hidden,
