@@ -373,56 +373,73 @@ fn newborn_at_factory(
 }
 
 struct ReconRoutes<'a> {
-    ground: RouteProjection<'a>,
-    air: RouteProjection<'a>,
+    context: EconomicInvestmentContext<'a>,
+    danger: &'a danger::HarvestDangerProjection,
+    ground: std::cell::OnceCell<RouteProjection<'a>>,
+    air: std::cell::OnceCell<RouteProjection<'a>>,
 }
 
 impl<'a> ReconRoutes<'a> {
     fn new(
         context: EconomicInvestmentContext<'a>,
-        danger: &danger::HarvestDangerProjection,
+        danger: &'a danger::HarvestDangerProjection,
     ) -> Self {
-        let obs = context.obs;
-        let mut air_sources = Vec::new();
-        for unit in context.unit_contacts {
-            if unit.confidence_at(obs.tick) == 0 {
-                continue;
-            }
-            for weapon in unit
-                .kind
-                .stats()
-                .weapons
-                .iter()
-                .filter(|weapon| weapon.targets.covers(Domain::Air))
-            {
-                air_sources.push((unit.tile.center(), weapon.range + Fx::from_num(1)));
-            }
-        }
-        for building in context.building_contacts {
-            if !building.built || building.confidence_at(obs.tick) == 0 {
-                continue;
-            }
-            let stats = building.kind.tier_stats(building.tier);
-            for weapon in stats
-                .weapons
-                .iter()
-                .filter(|weapon| weapon.targets.covers(Domain::Air))
-            {
-                air_sources.push((
-                    building.anchor.center(),
-                    weapon.range + Fx::from_num(stats.size.0.max(stats.size.1)),
-                ));
-            }
-        }
         Self {
-            ground: RouteProjection::ground_avoiding_with_public_terrain(
+            context,
+            danger,
+            ground: Default::default(),
+            air: Default::default(),
+        }
+    }
+
+    fn ground(&self) -> &RouteProjection<'a> {
+        self.ground.get_or_init(|| {
+            RouteProjection::ground_avoiding_with_public_terrain(
                 QueryPurpose::ReconApproach,
-                obs,
-                context.briefing,
-                context.orientation,
-                |tile| danger.contains(tile),
-            ),
-            air: RouteProjection::avoiding_with_public_terrain(
+                self.context.obs,
+                self.context.briefing,
+                self.context.orientation,
+                |tile| self.danger.contains(tile),
+            )
+        })
+    }
+
+    fn air(&self) -> &RouteProjection<'a> {
+        self.air.get_or_init(|| {
+            let context = self.context;
+            let obs = context.obs;
+            let mut air_sources = Vec::new();
+            for unit in context.unit_contacts {
+                if unit.confidence_at(obs.tick) == 0 {
+                    continue;
+                }
+                for weapon in unit
+                    .kind
+                    .stats()
+                    .weapons
+                    .iter()
+                    .filter(|weapon| weapon.targets.covers(Domain::Air))
+                {
+                    air_sources.push((unit.tile.center(), weapon.range + Fx::from_num(1)));
+                }
+            }
+            for building in context.building_contacts {
+                if !building.built || building.confidence_at(obs.tick) == 0 {
+                    continue;
+                }
+                let stats = building.kind.tier_stats(building.tier);
+                for weapon in stats
+                    .weapons
+                    .iter()
+                    .filter(|weapon| weapon.targets.covers(Domain::Air))
+                {
+                    air_sources.push((
+                        building.anchor.center(),
+                        weapon.range + Fx::from_num(stats.size.0.max(stats.size.1)),
+                    ));
+                }
+            }
+            RouteProjection::avoiding_with_public_terrain(
                 QueryPurpose::ReconApproach,
                 obs,
                 Domain::Air,
@@ -433,19 +450,19 @@ impl<'a> ReconRoutes<'a> {
                         .iter()
                         .any(|(source, range)| source.dist_sq(tile.center()) <= *range * *range)
                 },
-            ),
-        }
+            )
+        })
     }
 
-    fn for_kind(&mut self, kind: UnitKind) -> &mut RouteProjection<'a> {
+    fn for_kind(&self, kind: UnitKind) -> &RouteProjection<'a> {
         if kind.stats().domain == Domain::Air {
-            &mut self.air
+            self.air()
         } else {
-            &mut self.ground
+            self.ground()
         }
     }
 
-    fn arrival(&mut self, now: Tick, from: TilePos, goal: TilePos, kind: UnitKind) -> Option<Tick> {
+    fn arrival(&self, now: Tick, from: TilePos, goal: TilePos, kind: UnitKind) -> Option<Tick> {
         let cost = self
             .for_kind(kind)
             .safe_command_route_cost(from, goal, false)?;
@@ -455,12 +472,7 @@ impl<'a> ReconRoutes<'a> {
         )
     }
 
-    fn approach(
-        &mut self,
-        from: TilePos,
-        kind: UnitKind,
-        question: &ReconQuestion,
-    ) -> Option<TilePos> {
+    fn approach(&self, from: TilePos, kind: UnitKind, question: &ReconQuestion) -> Option<TilePos> {
         let tile = if matches!(question.key.consumer, ReconConsumer::Approach(_)) {
             question
                 .key
@@ -816,7 +828,7 @@ impl UtilityPolicy {
             Some(context.unit_contacts),
             Some(context.building_contacts),
         );
-        let mut routes = ReconRoutes::new(context, &danger);
+        let routes = ReconRoutes::new(context, &danger);
         let mut intents = Vec::new();
         let return_goal = self.passable_near(obs, home);
         let mut assigned = self.state.reconnaissance.reservations();
@@ -889,9 +901,9 @@ impl UtilityPolicy {
                 if work.unpaid
                     && !obs.my_buildings.iter().any(|building| {
                         building.id == producer
-                            && routes.air.reaches(building.anchor, work.proposal.goal)
+                            && routes.air().reaches(building.anchor, work.proposal.goal)
                             && routes
-                                .air
+                                .air()
                                 .command_path_avoids_blocked(building.anchor, work.proposal.goal)
                     })
                 {
@@ -1119,7 +1131,7 @@ impl UtilityPolicy {
             Some(context.unit_contacts),
             Some(context.building_contacts),
         );
-        let mut routes = ReconRoutes::new(context, &danger);
+        let routes = ReconRoutes::new(context, &danger);
         let owned = self.state.reconnaissance.reservations();
         let mut proposals = Vec::new();
         for question in questions {
@@ -1197,7 +1209,7 @@ impl UtilityPolicy {
                     .filter(|unit| unit.kind.stats().harvest.is_some() && unit.hp > 0)
                     .any(|worker| {
                         oxide_sim::geometry::rect_adjacent_tiles(question.key.tile(), size)
-                            .any(|door| routes.ground.reaches(worker.tile, door))
+                            .any(|door| routes.ground().reaches(worker.tile, door))
                     });
                 if !accessible {
                     continue;
@@ -1496,7 +1508,7 @@ impl UtilityPolicy {
                     .map(|building| building.anchor);
                 if let Some(home) = home
                     && let Some(goal) = routes.approach(home, kind, &question)
-                    && routes.air.command_path_avoids_blocked(home, goal)
+                    && routes.air().command_path_avoids_blocked(home, goal)
                 {
                     self.state.reconnaissance.needs_air = true;
                     self.state.reconnaissance.capability_demand.push(
@@ -1869,6 +1881,71 @@ mod tests {
             true,
             &[],
         )
+    }
+
+    #[test]
+    fn route_domains_prepare_only_on_demand_and_keep_distinct_blockers() {
+        use crate::observer::{BotPhase, PhaseObserver, QueryOperation, QueryWork};
+        use crate::query_work::Capture;
+
+        #[derive(Default)]
+        struct Surfaces(std::cell::Cell<u64>);
+        impl PhaseObserver for Surfaces {
+            fn enter(&self, _: BotPhase) {}
+            fn exit(&self, _: BotPhase) {}
+            fn collect_query_work(&self) -> bool {
+                true
+            }
+            fn query_work(&self, rows: &[QueryWork]) {
+                self.0.set(
+                    self.0.get()
+                        + rows
+                            .iter()
+                            .filter(|row| {
+                                row.purpose == QueryPurpose::ReconApproach
+                                    && row.operation == QueryOperation::PrepareSurface
+                            })
+                            .map(|row| row.requests)
+                            .sum::<u64>(),
+                );
+            }
+        }
+
+        let (mut obs, map, profile) = fixture();
+        let rock = TilePos::new(10, 10);
+        let peak = TilePos::new(12, 10);
+        obs.known_rock = vec![rock, peak];
+        obs.known_peaks = vec![peak];
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let context = context(&obs, &map, &profile, &resources);
+        let policy = UtilityPolicy::new();
+        let danger = policy.harvest_danger_projection(&obs, Some(&[]), Some(&[]));
+        let surfaces = Surfaces::default();
+        let routes = {
+            let _capture = Capture::new(Some(&surfaces));
+            ReconRoutes::new(context, &danger)
+        };
+        assert_eq!(surfaces.0.get(), 0);
+        for _ in 0..2 {
+            let _capture = Capture::new(Some(&surfaces));
+            assert!(routes.for_kind(UnitKind::Kestrel).open(rock));
+            assert!(!routes.for_kind(UnitKind::Kestrel).open(peak));
+        }
+        assert_eq!(
+            surfaces.0.get(),
+            2,
+            "only the air domain should be prepared"
+        );
+        for _ in 0..2 {
+            let _capture = Capture::new(Some(&surfaces));
+            assert!(!routes.for_kind(UnitKind::Harvester).open(rock));
+            assert!(!routes.for_kind(UnitKind::Harvester).open(peak));
+        }
+        assert_eq!(
+            surfaces.0.get(),
+            4,
+            "each domain reuses its prepared surfaces"
+        );
     }
 
     #[test]
