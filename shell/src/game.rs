@@ -149,12 +149,12 @@ pub(crate) fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
 
 impl Game {
     pub(crate) fn view(&self) -> Scene<'_> {
-        Scene {
-            state: &self.state,
-            scenario: &self.scenario,
-            pending: &self.pending,
-            presentation: &self.presentation,
-        }
+        Scene::new(
+            &self.state,
+            &self.scenario,
+            &self.pending,
+            &self.presentation,
+        )
     }
     pub fn selection_commandable(&self) -> bool {
         self.view().selection_commandable()
