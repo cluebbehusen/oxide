@@ -2,6 +2,7 @@
 
 use crate::config::PerformanceDisplay;
 use crate::performance::PerformanceView;
+use crate::render::prim::fill_rect;
 use crate::{layout::TOP_BAR_H, theme, typography};
 use macroquad::prelude::*;
 
@@ -76,13 +77,7 @@ pub(super) fn draw(view: &PerformanceView, status_space: Option<(f32, f32)>) -> 
     let layout = geometry(super::viewport(), s, view.mode, width, status_space);
     let panel = layout.panel;
     if panel.w > 0.0 {
-        draw_rectangle(
-            panel.x,
-            panel.y,
-            panel.w,
-            panel.h,
-            Color::from_rgba(15, 15, 19, 230),
-        );
+        fill_rect(panel, Color::from_rgba(15, 15, 19, 230));
     }
     typography::draw(
         &fps,
@@ -113,13 +108,7 @@ pub(super) fn draw(view: &PerformanceView, status_space: Option<(f32, f32)>) -> 
         );
     }
     let graph = Rect::new(x, layout.details_y + 67.0 * s, panel.w - 20.0 * s, 42.0 * s);
-    draw_rectangle(
-        graph.x,
-        graph.y,
-        graph.w,
-        graph.h,
-        Color::from_rgba(5, 5, 9, 160),
-    );
+    fill_rect(graph, Color::from_rgba(5, 5, 9, 160));
     for ms in [1000.0 / 60.0, 2000.0 / 60.0] {
         let y = graph.y + graph.h * (1.0 - ms / 50.0);
         draw_line(

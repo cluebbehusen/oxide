@@ -205,6 +205,7 @@ mod panel_draw;
 mod panel_layout;
 mod performance;
 mod pits;
+pub(crate) mod prim;
 mod support_brackets;
 mod world;
 use chrome::*;
@@ -934,6 +935,15 @@ fn draw_unit_pass(
                 }),
             }
         };
+        // A turreted rig leans only its hull; the mount keeps its true aim.
+        let slide_yaw = game
+            .presentation
+            .slide_yaw(unit.id, alpha, reduced_motion());
+        let rotation = if rig.is_some() {
+            rotation
+        } else {
+            rotation + slide_yaw
+        };
         if airborne {
             let (shadow_size, shadow_offset, body_lift) = air_presentation(unit.kind, zoom);
             sprites.draw_unit(
@@ -1043,7 +1053,11 @@ fn draw_unit_pass(
                     phase
                 },
             );
-            (source, accent, game.draw_hull_heading(unit.id, alpha))
+            (
+                source,
+                accent,
+                game.draw_hull_heading(unit.id, alpha) + slide_yaw,
+            )
         } else {
             (source, accent, rotation)
         };

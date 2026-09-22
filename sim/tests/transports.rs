@@ -1,33 +1,13 @@
 //! The 0.15 Skyhook: boarding, riding, landing, stranding, and dying.
 
 mod common;
+use common::{cmd, players, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::UnitSpec;
 use oxide_sim::state::Order;
-use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, Target, UnitKind};
-
-fn players(scrap: u32) -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
+use oxide_sim::{Command, Event, Faction, Scenario, Target, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
@@ -54,17 +34,6 @@ fn open_map() -> Vec<String> {
         "#......................#".into(),
         "########################".into(),
     ]
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
 }
 
 #[test]

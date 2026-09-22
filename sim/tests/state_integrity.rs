@@ -12,6 +12,9 @@
 //! shipped-map integrity sweep samples this validator and the JSON trust
 //! boundary across the full authored roster.
 
+mod common;
+use common::cmd;
+
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
@@ -98,13 +101,6 @@ fn arena() -> Scenario {
             },
         ],
         meta: None,
-    }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
     }
 }
 

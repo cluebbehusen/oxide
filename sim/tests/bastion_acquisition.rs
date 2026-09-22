@@ -3,14 +3,9 @@
 mod common;
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::{BuildingId, BuildingKind, Command, Event, PlayerId, Target, UnitKind};
 
 use common::*;
-
-fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
-}
 
 fn bastion_and_target(
     target: TilePos,

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
-use oxide_sim::bot::{DecisionTrace, SeatBot, TracedBotAct, seat_bots};
+use oxide_bot::{DecisionTrace, SeatBot, TracedBotAct, seat_bots};
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
 
 /// The concrete replay type for Oxide sessions.
@@ -141,27 +141,17 @@ pub fn run_replay_bounded(
         }
         Err(err) => return Err(err.into()),
     }
-    let total = ticks_override.or(replay.meta.ticks).unwrap_or_else(|| {
-        replay
-            .commands
-            .last()
-            .map_or(0, |c| c.tick.saturating_add(1))
-    });
+    let total = ticks_override.unwrap_or_else(|| crate::replay_duration(replay));
     anyhow::ensure!(
         allow_long || total <= MAX_REPLAY_TICKS,
         "replay claims {total} ticks (limit {MAX_REPLAY_TICKS}); pass --allow-long to run it anyway"
     );
     let mut state = replay.setup.build().context("building replay setup")?;
-    let mut cursor = replay.cursor();
+    let mut playback = crate::ReplayPlayback::new(replay);
     for _ in 0..total {
-        let commands: Vec<PlayerCommand> = cursor
-            .take_tick(state.current_tick())
-            .iter()
-            .map(|t| t.command.clone())
-            .collect();
-        state.tick(&commands);
+        playback.step(&mut state);
     }
-    if !cursor.is_finished() {
+    if !playback.is_finished() {
         anyhow::bail!(
             "playback of {total} ticks left recorded commands unconsumed — \
              the replay's duration metadata is wrong"

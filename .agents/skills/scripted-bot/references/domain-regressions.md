@@ -14,13 +14,15 @@ builders and footprints across competing domains. Derive proposals and retained
 obligations from the same resource snapshot. Test acceptance and subsequent
 commitment without a rerank. Paid work survives release of unpaid demand.
 
-Use `resources/production` domain tests for exact FIFO readiness, fixed
-deadlines, blocked or unknown ground egress, caller priority, restricted
-producer/kind pairs, paid occurrence exclusions and current-bank bounds. An
-excluded paid item still delays its lane. Completion during the deadline's
-production phase cannot count as present in that tick's earlier observation.
-Keep the independent small exhaustive feasibility oracle when optimizing the
-search.
+Use `resources/production` tests for necessary capacity bounds, FIFO readiness,
+deadlines, egress, restricted producer/kind pairs and paid occurrence
+exclusions. An excluded paid item still delays its lane. Completion during the
+deadline's production phase cannot count as present in that tick's earlier
+observation. Test exact production feasibility through the shared funded
+refinement service, including producer-subset overload beside unrelated spare
+capacity and deferred work that must not trigger recovery. Keep independent
+small exhaustive oracles when optimizing the search; do not restore an unbounded
+runtime solver for tests.
 
 Use allocation and Brain tests for retained forecast-to-current maturation,
 protected spending, future-lane reservations, preemption and producer loss.

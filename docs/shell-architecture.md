@@ -126,6 +126,11 @@ to the controlled seat. The simulation performs final ownership, fog, cost,
 placement, and target validation. Dead entities and hostiles that leave sight
 are removed from selection.
 
+Double-clicks and touch double-taps select units or buildings of the picked
+entity's kind and owner whose centers lie in the camera viewport. Building
+groups span upgrade tiers and retain normal visibility and concealment checks.
+Units retain picking priority over buildings, as with single clicks.
+
 Selection panels and tooltips derive their facts from simulation accessors.
 Static capabilities may be shown for foreign selections; current enemy orders,
 loads, and building income remain private. Placement and support previews use
@@ -262,7 +267,10 @@ respect that knowledge boundary.
 
 The GPU renderer owns camera clipping, fog composition, sprites, effects, and
 screen chrome. Interpolation smooths fixed simulation ticks without moving
-simulation entities. Presentation derives from authoritative events and state;
+simulation entities. Collision slides are eased: a drawn ground body may trail
+its simulation position and lean its hull off the simulation heading within
+small fixed bounds, while selection, targeting, and turret aim keep reading
+simulation truth. Presentation derives from authoritative events and state;
 seeks reset interpolation and rebuild any persistent effects needed at the new
 tick. Pause, speed, and reduced-motion behavior follow those presentation
 clocks.

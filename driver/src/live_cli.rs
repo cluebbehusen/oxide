@@ -3,7 +3,7 @@
 //! is touched), and the capture-sequence contact-sheet helper.
 
 use crate::parse::{
-    BuildingKindArg, UnitKindArg, parse_key, parse_mouse_button, parse_point, parse_tile,
+    parse_building_kind, parse_key, parse_mouse_button, parse_point, parse_tile, parse_unit_kind,
 };
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -175,8 +175,8 @@ pub(crate) enum LiveCmd {
         #[arg(long)]
         building: u32,
         /// What to train.
-        #[arg(long, value_enum)]
-        kind: UnitKindArg,
+        #[arg(long, value_parser = parse_unit_kind)]
+        kind: oxide_sim::UnitKind,
     },
     /// Start a construction site with a harvester.
     Build {
@@ -186,8 +186,8 @@ pub(crate) enum LiveCmd {
         #[arg(long, value_delimiter = ',')]
         units: Vec<u32>,
         /// What to construct.
-        #[arg(long, value_enum)]
-        kind: BuildingKindArg,
+        #[arg(long, value_parser = parse_building_kind)]
+        kind: oxide_sim::BuildingKind,
         /// Anchor tile as "x,y" (top-left of the footprint).
         #[arg(long)]
         at: String,
@@ -535,7 +535,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Train {
                 building: BuildingId(building),
-                kind: kind.into(),
+                kind,
             },
         },
         LiveCmd::Stop { player, units: ids } => Request::SendCommand {
@@ -553,7 +553,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Build {
                 units: units(ids),
-                kind: kind.into(),
+                kind,
                 anchor: parse_tile(&at)?,
                 queue,
                 defer,

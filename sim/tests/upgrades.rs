@@ -6,33 +6,13 @@
 //! Crucible.
 
 mod common;
+use common::{cmd, players};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD, SITE_DECAY_PERIOD};
-use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
-
-fn players(scrap: u32) -> Vec<PlayerSpec> {
-    vec![
-        PlayerSpec {
-            name: "Ferrous".into(),
-            faction: Faction::Ferrous,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-        PlayerSpec {
-            name: "Cupric".into(),
-            faction: Faction::Cupric,
-            team: None,
-            scrap,
-            bot: false,
-            bot_config: None,
-        },
-    ]
-}
+use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State, UnitKind};
 
 /// Seat 0 with a Fabricator, a Turret, and a harvester crew — the
 /// Reclaimer joins only where its income cannot smudge exact-bank math.
@@ -99,13 +79,6 @@ fn arena(scrap: u32, crucible: bool, reclaimer: bool) -> Scenario {
         ],
         buildings,
         meta: None,
-    }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
     }
 }
 

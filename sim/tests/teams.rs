@@ -1,13 +1,13 @@
 //! Teams: shared sight, unattackable allies, team-scoped victory, and
 //! spectating seats. Headless scenarios through the public API only.
 
+mod common;
+use common::{cmd, run_until, unit};
+
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{PlayerSpec, ScenarioError, UnitSpec};
-use oxide_sim::{
-    Command, Event, Faction, GameResult, Order, PlayerCommand, PlayerId, Scenario, State, Target,
-    UnitKind,
-};
+use oxide_sim::{Command, Event, Faction, GameResult, Order, PlayerId, Scenario, Target, UnitKind};
 
 /// A 2v2 arena: west team (seats 0, 1) against east team (seats 2, 3).
 fn arena4(units: Vec<UnitSpec>) -> Scenario {
@@ -48,34 +48,6 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
         buildings: Vec::new(),
         meta: None,
     }
-}
-
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
-fn cmd(player: u8, command: Command) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command,
-    }
-}
-
-fn run_until(
-    state: &mut State,
-    max_ticks: u64,
-    mut stop: impl FnMut(&State, &[Event]) -> bool,
-) -> Vec<Event> {
-    let mut all = Vec::new();
-    for _ in 0..max_ticks {
-        let report = state.tick(&[]);
-        let done = stop(state, &report.events);
-        all.extend(report.events);
-        if done {
-            return all;
-        }
-    }
-    panic!("condition not reached within {max_ticks} ticks");
 }
 
 #[test]
@@ -194,7 +166,7 @@ fn team_sight_is_shared() {
         state.can_see(PlayerId(0), spot),
         "an ally's eyes are the team's eyes"
     );
-    let obs = oxide_sim::bot::Observation::fog_honest(&state, PlayerId(0));
+    let obs = oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0));
     assert!(
         obs.enemy_units
             .iter()
@@ -297,25 +269,6 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
     run_until(&mut state, 3000, |s, _| s.result().is_some());
     assert_eq!(state.result(), Some(GameResult::Victory { team: 0 }));
     assert_eq!(state.winners(), vec![PlayerId(0), PlayerId(1)]);
-}
-
-#[test]
-fn a_2v2_scenario_reproduces_bit_identically() {
-    let scenario = Scenario::load("../scenarios/twin-forges.json").unwrap();
-    let run = || {
-        let mut state = scenario.build().unwrap();
-        let mut bots = oxide_sim::bot::seat_bots(&scenario).unwrap();
-        assert!(!bots.is_empty(), "twin-forges fields bot seats");
-        for _ in 0..600 {
-            let mut commands = Vec::new();
-            for bot in bots.iter_mut() {
-                commands.extend(bot.act(&state));
-            }
-            state.tick(&commands);
-        }
-        state.hash()
-    };
-    assert_eq!(run(), run(), "same seed, same commands, same world");
 }
 
 #[test]

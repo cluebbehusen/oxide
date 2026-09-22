@@ -4,6 +4,7 @@
 //! world renderer.
 
 use super::*;
+use crate::render::prim::stroke_circle;
 
 const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
 const MINI_VOID: Color = color_u8!(10, 10, 13, 255);
@@ -293,13 +294,7 @@ pub(crate) fn draw_minimap(game: &crate::game::Scene<'_>) {
                 (1.0 - pulse) * (1.0 - (age / 6.0)).max(0.0),
             )
         };
-        draw_circle_lines(
-            center.x,
-            center.y,
-            radius,
-            1.5,
-            Color::new(0.85, 0.32, 0.29, alpha),
-        );
+        stroke_circle(center, radius, 1.5, Color::new(0.85, 0.32, 0.29, alpha));
     }
 }
 

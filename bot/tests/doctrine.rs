@@ -1,0 +1,2699 @@
+//! Strategic-channel tests for the rules-based controller: artillery
+//! standoff, air defense, repair audits, wreck salvage, raid discipline,
+//! and the orientation involution that keeps observations seat-fair.
+
+use chassis::grid::TilePos;
+use oxide_bot::observation::OBSERVATION_VERSION;
+use oxide_bot::observation::ObservationData;
+use oxide_bot::{BuildingObs, Intent, Observation, Orientation, PublicMapBriefing, UnitObs};
+use oxide_sim::scenario::PlayerSpec;
+use oxide_sim::stats::BuildingKind;
+use oxide_sim::{BuildingId, Command, Faction, PlayerId, Scenario, Target, UnitId, UnitKind};
+
+fn obs_base() -> Observation {
+    Observation::from_data(ObservationData {
+        version: OBSERVATION_VERSION,
+        tick: 0,
+        me: PlayerId(0),
+        scrap: 0,
+        map_width: 24,
+        map_height: 13,
+        my_units: Vec::new(),
+        my_carried_units: Vec::new(),
+        my_buildings: Vec::new(),
+        my_queues: Vec::new(),
+        my_queue_progress: Vec::new(),
+        my_queued_units: Vec::new(),
+        my_repair_targets: Vec::new(),
+        ally_units: Vec::new(),
+        ally_buildings: Vec::new(),
+        enemy_units: Vec::new(),
+        enemy_buildings: Vec::new(),
+        visible: vec![true; 24 * 13],
+        explored: vec![true; 24 * 13],
+        known_scrap: Vec::new(),
+        known_rock: Vec::new(),
+        known_pits: Vec::new(),
+        known_frames: Vec::new(),
+        known_peaks: Vec::new(),
+        known_wrecks: Vec::new(),
+        salvage_incidents: Vec::new(),
+        blips: Vec::new(),
+        contact_tracks: Vec::new(),
+        faction: Faction::Ferrous,
+        my_shells: 0,
+        incoming_shells: Vec::new(),
+    })
+}
+
+fn public_map(obs: &Observation) -> PublicMapBriefing {
+    let width = usize::try_from(obs.map_width).expect("the test map has a positive width");
+    let height = usize::try_from(obs.map_height).expect("the test map has a positive height");
+    assert!(width >= 2 && height >= 2);
+    let mut map = vec![".".repeat(width); height];
+    map[0].replace_range(..1, "1");
+    PublicMapBriefing::from_scenario(&Scenario {
+        name: "doctrine test map".into(),
+        seed: 0,
+        map,
+        players: vec![PlayerSpec {
+            name: "test seat".into(),
+            faction: obs.faction,
+            team: None,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }],
+        units: Vec::new(),
+        buildings: Vec::new(),
+        meta: None,
+    })
+    .expect("the focused observation has a matching public map")
+}
+
+fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
+    UnitObs {
+        id: UnitId(id),
+        player: PlayerId(player),
+        kind,
+        tile: TilePos::new(x, y),
+        hp: kind.stats().max_hp,
+        idle: true,
+        carrying: 0,
+        harvesting: None,
+        cargo: 0,
+        site: None,
+        salvaging: None,
+        founding: None,
+        repairing: false,
+        grounded: false,
+    }
+}
+
+fn building_obs(id: u32, player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingObs {
+    BuildingObs {
+        provisional: false,
+        id: BuildingId(id),
+        player: PlayerId(player),
+        kind,
+        anchor: TilePos::new(x, y),
+        hp: kind.base_stats().max_hp,
+        built: true,
+        seen: true,
+        tier: 0,
+    }
+}
+
+/// A fully-populated observation: every positioned field carries data,
+/// so a field the orientation forgets to flip fails the round-trip.
+fn full_obs() -> Observation {
+    let mut obs = obs_base();
+    obs.visible.fill(false);
+    let visible = TilePos::new(7, 2);
+    let visible_index = usize::try_from(visible.y * obs.map_width + visible.x).unwrap();
+    obs.visible[visible_index] = true;
+    obs.explored.fill(false);
+    let explored = TilePos::new(4, 3);
+    let explored_index = usize::try_from(explored.y * obs.map_width + explored.x).unwrap();
+    obs.explored[explored_index] = true;
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Harvester, 3, 2),
+        unit_obs(1, 0, UnitKind::Bombard, 4, 5),
+    ];
+    obs.my_buildings = vec![building_obs(0, 0, BuildingKind::Foundry, 2, 2)];
+    obs.my_queues = vec![vec![UnitKind::Sentinel]];
+    obs.ally_units = vec![unit_obs(7, 1, UnitKind::Wisp, 6, 6)];
+    obs.ally_buildings = vec![building_obs(3, 1, BuildingKind::Array, 8, 3)];
+    obs.enemy_units = vec![unit_obs(9, 2, UnitKind::Darter, 19, 9)];
+    obs.enemy_buildings = vec![building_obs(5, 2, BuildingKind::Bastion, 18, 8)];
+    obs.known_scrap = vec![(TilePos::new(5, 5), 200), (TilePos::new(12, 4), 400)];
+    obs.known_rock = vec![TilePos::new(10, 6), TilePos::new(11, 6)];
+    obs.known_peaks = vec![TilePos::new(11, 6)];
+    obs.known_wrecks = vec![(TilePos::new(9, 9), 30)];
+    obs.blips = vec![TilePos::new(15, 2), TilePos::new(16, 11)];
+    obs.salvage_incidents = vec![TilePos::new(17, 3), TilePos::new(2, 10)];
+    obs.known_frames = vec![TilePos::new(13, 7), TilePos::new(3, 8)];
+    obs.incoming_shells = vec![TilePos::new(7, 7)];
+    obs.my_shells = 2;
+    obs
+}
+
+#[test]
+fn salvage_incidents_flip_as_canonical_warning_tiles() {
+    let obs = full_obs();
+    let orientation = Orientation::for_home(&obs, TilePos::new(20, 10));
+    let flipped = orientation.observe(&obs);
+    let mut expected: Vec<TilePos> = obs
+        .salvage_incidents
+        .iter()
+        .map(|incident| orientation.tile(*incident))
+        .collect();
+    expected.sort_by_key(|tile| (tile.y, tile.x));
+
+    assert_eq!(flipped.salvage_incidents, expected);
+    assert!(
+        flipped
+            .salvage_incidents
+            .windows(2)
+            .all(|pair| (pair[0].y, pair[0].x) <= (pair[1].y, pair[1].x))
+    );
+}
+
+#[test]
+fn frames_flip_like_footprints_not_tiles() {
+    // The involution below is satisfied by an untransformed field
+    // trivially (flipping nothing twice is nothing), which is exactly
+    // how the forgotten known_frames shipped: this one-way check pins
+    // the transform itself. A frame is a 2x2, so its anchor image is
+    // the building rule, offset by the footprint — not the tile rule.
+    let obs = full_obs();
+    let orientation = Orientation::for_home(&obs, TilePos::new(20, 10));
+    assert!(!orientation.is_identity());
+    let flipped = orientation.observe(&obs);
+    let mut expected: Vec<TilePos> = obs
+        .known_frames
+        .iter()
+        .map(|f| orientation.anchor(*f, (2, 2)))
+        .collect();
+    expected.sort_by_key(|p| (p.y, p.x));
+    assert_eq!(flipped.known_frames, expected);
+    assert!(
+        flipped
+            .known_frames
+            .windows(2)
+            .all(|w| { (w[0].y, w[0].x) <= (w[1].y, w[1].x) }),
+        "oriented frames keep the canonical order"
+    );
+}
+
+#[test]
+fn orientation_is_an_involution_over_every_positioned_field() {
+    let obs = full_obs();
+    // A southeast home flips both axes — the maximal transform.
+    let orientation = Orientation::for_home(&obs, TilePos::new(20, 10));
+    assert!(!orientation.is_identity());
+    let flipped = orientation.observe(&obs);
+    assert!(flipped.visible(orientation.tile(TilePos::new(7, 2))));
+    assert!(!flipped.visible(TilePos::new(7, 2)));
+    assert!(flipped.explored(orientation.tile(TilePos::new(4, 3))));
+    assert!(!flipped.explored(TilePos::new(4, 3)));
+    assert_ne!(
+        serde_json::to_string(&obs).unwrap(),
+        serde_json::to_string(&flipped).unwrap(),
+        "test premise: the flip must actually move things"
+    );
+    let mut back = orientation.observe(&flipped);
+    // The involution restores positions; only sort order may differ, so
+    // normalize before comparing.
+    back.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
+    back.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
+    back.known_rock.sort_by_key(|p| (p.y, p.x));
+    back.known_peaks.sort_by_key(|p| (p.y, p.x));
+    back.blips.sort_by_key(|p| (p.y, p.x));
+    back.salvage_incidents.sort_by_key(|p| (p.y, p.x));
+    let mut want = obs;
+    want.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
+    want.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
+    want.known_rock.sort_by_key(|p| (p.y, p.x));
+    want.known_peaks.sort_by_key(|p| (p.y, p.x));
+    want.blips.sort_by_key(|p| (p.y, p.x));
+    want.salvage_incidents.sort_by_key(|p| (p.y, p.x));
+    assert_eq!(
+        serde_json::to_string(&want).unwrap(),
+        serde_json::to_string(&back).unwrap(),
+        "flipping twice must restore every positioned field"
+    );
+}
+
+#[test]
+fn positioned_intents_flip_and_positionless_ones_pass() {
+    let obs = full_obs();
+    let orientation = Orientation::for_home(&obs, TilePos::new(20, 10));
+    let intents = vec![
+        Intent::RaidAir {
+            target: TilePos::new(4, 4),
+        },
+        Intent::MoveUnits {
+            units: vec![UnitId(1), UnitId(2)],
+            goal: TilePos::new(5, 4),
+        },
+        Intent::AttackMoveUnits {
+            units: vec![UnitId(3)],
+            goal: TilePos::new(6, 4),
+        },
+        Intent::AttackUnits {
+            units: vec![UnitId(4)],
+            target: Target::Building(BuildingId(9)),
+        },
+        Intent::Repair {
+            building: BuildingId(3),
+        },
+    ];
+    let emitted = orientation.emit(intents);
+    match &emitted[0] {
+        Intent::RaidAir { target } => {
+            assert_eq!(
+                *target,
+                TilePos::new(24 - 1 - 4, 13 - 1 - 4),
+                "a raid target must flip into world space"
+            );
+        }
+        other => panic!("unexpected intent {other:?}"),
+    }
+    assert_eq!(
+        emitted[1],
+        Intent::MoveUnits {
+            units: vec![UnitId(1), UnitId(2)],
+            goal: orientation.tile(TilePos::new(5, 4)),
+        }
+    );
+    assert_eq!(
+        emitted[2],
+        Intent::AttackMoveUnits {
+            units: vec![UnitId(3)],
+            goal: orientation.tile(TilePos::new(6, 4)),
+        }
+    );
+    assert_eq!(
+        emitted[3],
+        Intent::AttackUnits {
+            units: vec![UnitId(4)],
+            target: Target::Building(BuildingId(9)),
+        },
+        "entity targets are stable ids rather than positions"
+    );
+    assert_eq!(
+        emitted[4],
+        Intent::Repair {
+            building: BuildingId(3)
+        },
+        "a repair names a building, not a place — it passes through"
+    );
+}
+
+// --- channel tests: drive the utility policy on synthetic worlds -----
+
+use oxide_bot::{Dials, UtilityPolicy};
+
+/// A base observation with a built home Foundry (the policy's anchor).
+fn obs_with_home() -> Observation {
+    let mut obs = obs_base();
+    obs.my_buildings = vec![building_obs(0, 0, BuildingKind::Foundry, 2, 2)];
+    obs.my_queues = vec![Vec::new()];
+    obs.scrap = 400;
+    obs
+}
+
+fn think(policy: &mut UtilityPolicy, obs: &Observation) -> Vec<Intent> {
+    policy.think_player_facing(&Dials::full(), obs, &[], &[], &[], &public_map(obs))
+}
+
+fn player_think(policy: &mut UtilityPolicy, dials: &Dials, obs: &Observation) -> Vec<Intent> {
+    policy.think_player_facing(dials, obs, &[], &[], &[], &public_map(obs))
+}
+
+#[test]
+fn enemy_air_pulls_anti_air_out_of_the_fabricator() {
+    let mut obs = obs_with_home();
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
+    obs.my_queues.push(Vec::new());
+    obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Darter, 15, 6)];
+    let mut policy = UtilityPolicy::new();
+    let intents = think(&mut policy, &obs);
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            Intent::TrainAt {
+                kind: UnitKind::Flakhound,
+                ..
+            }
+        )),
+        "a Ferrous seat answers the sky with its own AA variant: {intents:?}"
+    );
+
+    // The same threat through Cupric eyes buys the Stinger.
+    obs.faction = Faction::Cupric;
+    let mut policy = UtilityPolicy::new();
+    let intents = think(&mut policy, &obs);
+    assert!(intents.iter().any(|i| matches!(
+        i,
+        Intent::TrainAt {
+            kind: UnitKind::Stinger,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn idle_harvesters_take_wreck_fields_as_readily_as_nodes() {
+    let mut obs = obs_with_home();
+    obs.my_units = vec![unit_obs(0, 0, UnitKind::Harvester, 6, 6)];
+    obs.known_wrecks = vec![(TilePos::new(8, 6), 40)];
+    let mut policy = UtilityPolicy::new();
+    let intents = think(&mut policy, &obs);
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            Intent::AssignHarvest { node, .. } if *node == TilePos::new(8, 6)
+        )),
+        "battlefield salvage is work: {intents:?}"
+    );
+}
+
+#[test]
+fn forward_enemy_guns_do_not_redefine_the_enemy_home_half() {
+    let mut obs = obs_with_home();
+    obs.my_units = vec![unit_obs(0, 0, UnitKind::Harvester, 3, 2)];
+    let central = TilePos::new(12, 2);
+    obs.known_scrap = vec![(central, 200)];
+    obs.enemy_buildings = vec![building_obs(9, 1, BuildingKind::FlakTurret, 10, 2)];
+
+    let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
+    assert!(
+        intents.iter().any(|intent| matches!(
+            intent,
+            Intent::AssignHarvest {
+                unit: UnitId(0),
+                node,
+            } if *node == central
+        )),
+        "a forward gun is a threat, not evidence of where the enemy home half begins: {intents:?}"
+    );
+
+    obs.known_scrap = vec![(TilePos::new(18, 2), 200)];
+    obs.enemy_buildings
+        .push(building_obs(10, 1, BuildingKind::Foundry, 20, 2));
+    let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
+    assert!(
+        intents
+            .iter()
+            .all(|intent| !matches!(intent, Intent::AssignHarvest { .. })),
+        "a known enemy Foundry still bounds routine harvesting to our half: {intents:?}"
+    );
+}
+
+#[test]
+fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
+    let mut obs = obs_with_home();
+    let dials = Dials::full();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Buzzard, 4, 4),
+        unit_obs(1, 0, UnitKind::Buzzard, 5, 4),
+        unit_obs(2, 0, UnitKind::Buzzard, 4, 5),
+    ];
+    obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Harvester, 18, 9)];
+    let mut policy = UtilityPolicy::new();
+    let intents = player_think(&mut policy, &dials, &obs);
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, Intent::RaidAir { target } if *target == TilePos::new(18, 9))),
+        "three idle wings and a bare harvest line is a raid: {intents:?}"
+    );
+
+    let mut flak = building_obs(5, 1, BuildingKind::FlakTurret, 17, 8);
+    flak.built = false;
+    obs.enemy_buildings = vec![flak.clone()];
+    let mut policy = UtilityPolicy::new();
+    let intents = player_think(&mut policy, &dials, &obs);
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, Intent::RaidAir { target } if *target == TilePos::new(18, 9))),
+        "an unfinished Flak site cannot fire and must not scrub the raid: {intents:?}"
+    );
+
+    flak.built = true;
+    obs.enemy_buildings = vec![flak.clone()];
+    let mut policy = UtilityPolicy::new();
+    let intents = player_think(&mut policy, &dials, &obs);
+    assert!(
+        !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
+        "no wing flies into completed visible Flak: {intents:?}"
+    );
+
+    flak.seen = false;
+    obs.enemy_buildings = vec![flak];
+    let mut policy = UtilityPolicy::new();
+    let intents = player_think(&mut policy, &dials, &obs);
+    assert!(
+        !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
+        "completed remembered Flak remains actionable risk: {intents:?}"
+    );
+}
+
+#[test]
+fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
+    let mut obs = obs_with_home();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Buzzard, 4, 4),
+        unit_obs(1, 0, UnitKind::Buzzard, 5, 4),
+    ];
+    obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Harvester, 18, 9)];
+    let mut dials = Dials::full();
+    dials.air_wing = 2;
+
+    let reserved = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &obs,
+        &[],
+        &[],
+        &[UnitId(0)],
+        &public_map(&obs),
+    );
+    assert!(
+        reserved
+            .iter()
+            .all(|intent| !matches!(intent, Intent::RaidAir { .. })),
+        "one reserved bomber plus one free bomber is not a utility wing: {reserved:?}"
+    );
+
+    let free =
+        UtilityPolicy::new().think_player_facing(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    assert!(
+        free.iter().any(|intent| matches!(
+            intent,
+            Intent::RaidAir { target } if *target == TilePos::new(18, 9)
+        )),
+        "two free bombers complete the utility wing: {free:?}"
+    );
+}
+
+#[test]
+fn a_pushed_army_holds_its_artillery_at_standoff() {
+    use oxide_bot::Executive;
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(1, 0, UnitKind::Sentinel, 4, 3),
+        unit_obs(2, 0, UnitKind::Bombard, 3, 4),
+    ];
+    let mut exec = Executive::new();
+    let staging = TilePos::new(4, 4);
+    let _ = exec.apply(PlayerId(0), &obs, &[Intent::FormArmy { staging, size: 3 }]);
+    assert_eq!(exec.armies()[0].members.len(), 3);
+    let army = exec.armies()[0].id;
+    let target = TilePos::new(20, 10);
+    let commands = exec.apply(PlayerId(0), &obs, &[Intent::PushArmy { army, target }]);
+    // Two marching orders: escorts onto the target, the gun short of it.
+    let goals: Vec<TilePos> = commands
+        .iter()
+        .filter_map(|c| match &c.command {
+            oxide_sim::Command::AttackMove { goal, units, .. } => Some((*goal, units.clone())),
+            _ => None,
+        })
+        .map(|(g, _)| g)
+        .collect();
+    assert!(goals.contains(&target), "escorts march onto the target");
+    assert!(
+        goals
+            .iter()
+            .any(|g| *g != target && g.chebyshev(target) <= 8),
+        "the Bombard holds a standoff short of the target: {goals:?}"
+    );
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(1, 0, UnitKind::Bombard, 3, 4),
+        unit_obs(2, 0, UnitKind::Bombard, 4, 4),
+        unit_obs(3, 0, UnitKind::Bombard, 5, 4),
+    ];
+    let mut exec = Executive::new();
+    let _ = exec.apply(PlayerId(0), &obs, &[Intent::FormArmy { staging, size: 4 }]);
+    let army = exec.armies()[0].id;
+    let commands = exec.apply(PlayerId(0), &obs, &[Intent::PushArmy { army, target }]);
+    assert!(commands.iter().any(|command| matches!(
+        &command.command,
+        Command::AttackMove { units, goal, queue: false }
+            if units == &vec![UnitId(0)] && *goal == target
+    )));
+    let mut parked = commands
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::Move {
+                units,
+                goal,
+                queue: false,
+            } if *goal == staging => Some(units.clone()),
+            _ => None,
+        })
+        .expect("the artillery-majority body parks its guns at the rally");
+    parked.sort_unstable();
+    assert_eq!(
+        parked,
+        vec![UnitId(1), UnitId(2), UnitId(3)],
+        "the single escort advances without dragging unsupported guns: {commands:?}"
+    );
+}
+
+#[test]
+fn air_superiority_mass_does_not_rout_a_ground_only_engagement() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let mut obs = obs_base();
+    obs.my_units = vec![unit_obs(0, 0, UnitKind::Warden, 6, 5)];
+    obs.enemy_units = (10..22)
+        .map(|id| unit_obs(id, 1, UnitKind::Shrike, 7, 5))
+        .collect();
+    let mut exec = Executive::new();
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: TilePos::new(6, 5),
+            size: 1,
+        }],
+    );
+
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(
+        exec.armies()[0].state,
+        ArmyState::Staging,
+        "ground-only armor and air-only interceptors cannot engage each other"
+    );
+
+    obs.enemy_units
+        .push(unit_obs(30, 1, UnitKind::Sentinel, 7, 5));
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(
+        exec.armies()[0].state,
+        ArmyState::Engaging,
+        "irrelevant interceptors must not turn one ordinary ground contact into a rout"
+    );
+}
+
+/// An island world: home in the northwest, a known-rock wall severing
+/// the map top to bottom, and the enemy Foundry remembered across it.
+fn island_obs() -> Observation {
+    let mut obs = obs_with_home();
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    obs
+}
+
+fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
+    use oxide_bot::{Army, ArmyId, ArmyState};
+
+    let members: Vec<UnitId> = obs.my_units.iter().map(|unit| unit.id).collect();
+    let army = Army {
+        id: ArmyId(7),
+        members,
+        state: ArmyState::Staging,
+        staging: TilePos::new(7, 6),
+        target: None,
+        focus: None,
+        progress: None,
+        issued: None,
+        bounces: 0,
+    };
+    let mut dials = Dials::balanced();
+    dials.own_strength_scale = u16::MAX;
+    dials.enemy_strength_scale = 0;
+    UtilityPolicy::new().think_player_facing(&dials, obs, &[army], &[], &[], &public_map(obs))
+}
+
+#[test]
+fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
+    use oxide_bot::{Army, ArmyId, ArmyState};
+
+    let army = |members: Vec<UnitId>, staging: TilePos| Army {
+        id: ArmyId(7),
+        members,
+        state: ArmyState::Staging,
+        staging,
+        target: None,
+        focus: None,
+        progress: None,
+        issued: None,
+        bounces: 0,
+    };
+    let ids: Vec<UnitId> = (1..=6).map(UnitId).collect();
+    let mut dials = Dials::balanced();
+    dials.own_strength_scale = u16::MAX;
+    dials.enemy_strength_scale = 0;
+
+    let mut home_side = island_obs();
+    home_side.my_units = (1..=6)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32, 6))
+        .collect();
+
+    let blocked = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &home_side,
+        &[army(ids.clone(), TilePos::new(7, 6))],
+        &[],
+        &[],
+        &public_map(&home_side),
+    );
+    assert!(
+        blocked
+            .iter()
+            .all(|intent| !matches!(intent, Intent::PushArmy { .. })),
+        "the home army must wait for the ferry rather than order across known rock: {blocked:?}"
+    );
+
+    let mut landed = island_obs();
+    landed.my_units = (1..=6)
+        .map(|id| {
+            unit_obs(
+                id,
+                0,
+                UnitKind::Sentinel,
+                15 + (id % 2) as i32,
+                5 + id as i32,
+            )
+        })
+        .collect();
+    let local = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &landed,
+        &[army(ids, TilePos::new(16, 7))],
+        &[],
+        &[],
+        &public_map(&landed),
+    );
+    assert!(
+        local.iter().any(|intent| matches!(
+            intent,
+            Intent::PushArmy {
+                army: ArmyId(7),
+                target
+            } if *target == TilePos::new(18, 8)
+        )),
+        "a landed army keeps its local offensive verb: {local:?}"
+    );
+}
+
+#[test]
+fn ground_armies_do_not_invent_a_road_through_an_unexplored_gulf() {
+    let mut obs = obs_with_home();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    obs.my_units = (1..=6)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32, 6))
+        .collect();
+    obs.explored.fill(false);
+    for y in 0..obs.map_height {
+        for x in 0..=10 {
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
+        }
+        for x in 15..obs.map_width {
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
+        }
+    }
+
+    let blocked = staged_ground_push_intents(&obs);
+    assert!(
+        blocked
+            .iter()
+            .all(|intent| !matches!(intent, Intent::PushArmy { .. })),
+        "unknown ground must not bridge two separately explored islands: {blocked:?}"
+    );
+
+    for x in 11..15 {
+        {
+            let obs = &mut *obs;
+            obs.explored[(6 * obs.map_width + x) as usize] = true;
+        }
+    }
+    let connected = staged_ground_push_intents(&obs);
+    assert!(
+        connected
+            .iter()
+            .any(|intent| matches!(intent, Intent::PushArmy { .. })),
+        "an explored corridor restores the ordinary ground push: {connected:?}"
+    );
+}
+
+#[test]
+fn only_the_player_facing_controller_route_checks_defensive_retargets() {
+    use oxide_bot::{Army, ArmyId, ArmyState};
+
+    let mut obs = island_obs();
+    obs.my_units = (1..=3)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 15 + id as i32, 6))
+        .collect();
+    obs.enemy_units = vec![unit_obs(20, 1, UnitKind::Sentinel, 5, 4)];
+    let army = Army {
+        id: ArmyId(7),
+        members: vec![UnitId(1), UnitId(2), UnitId(3)],
+        state: ArmyState::Staging,
+        staging: TilePos::new(16, 6),
+        target: None,
+        focus: None,
+        progress: None,
+        issued: None,
+        bounces: 0,
+    };
+    let dials = Dials::balanced();
+
+    let player_facing = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &obs,
+        &[army],
+        &[],
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        player_facing
+            .iter()
+            .all(|intent| !matches!(intent, Intent::PushArmy { .. })),
+        "a player-facing army must not retarget across a known wall: {player_facing:?}"
+    );
+}
+
+#[test]
+fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
+    use oxide_bot::{ArmyState, Dials, Executive};
+
+    let mut obs = obs_with_home();
+    obs.my_units = vec![unit_obs(1, 0, UnitKind::Flakhound, 8, 4)];
+    obs.enemy_units = vec![unit_obs(20, 1, UnitKind::Sentinel, 9, 4)];
+    let staging = TilePos::new(4, 4);
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 1 }],
+        &[],
+    );
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+
+    let retreat = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
+    assert!(matches!(
+        retreat.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::AttackMove { units, goal, queue: false },
+            ..
+        }] if units == &vec![UnitId(1)] && *goal == staging
+    ));
+
+    let enlisted: Vec<_> = exec.enlisted().collect();
+    let intents = UtilityPolicy::new().think_player_facing(
+        &Dials::balanced(),
+        &obs,
+        exec.armies(),
+        &enlisted,
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::PushArmy { army, .. } if *army == exec.armies()[0].id
+        )),
+        "the retreat must remain the body's only queue-replacing order: {intents:?}"
+    );
+
+    obs.my_units[0].tile = staging;
+    obs.my_units[0].idle = true;
+    obs.enemy_units[0].tile = TilePos::new(6, 4);
+    obs.tick = Dials::balanced().cadence;
+    let settled = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert!(settled.is_empty());
+    assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
+    let enlisted: Vec<_> = exec.enlisted().collect();
+    let player_facing = UtilityPolicy::new().think_player_facing(
+        &Dials::balanced(),
+        &obs,
+        exec.armies(),
+        &enlisted,
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        player_facing.iter().all(|intent| !matches!(
+            intent,
+            Intent::PushArmy { army, .. } if *army == exec.armies()[0].id
+        )),
+        "an army holding its retreat line must not recommit to the same losing contact: {player_facing:?}"
+    );
+
+    for _ in 0..4 {
+        obs.tick += Dials::balanced().cadence;
+        assert!(
+            exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
+                .is_empty()
+        );
+        assert_eq!(
+            exec.armies()[0].state,
+            ArmyState::Withdrawing,
+            "a faster think cadence must not turn fallback contact into focus/retreat churn"
+        );
+    }
+
+    obs.enemy_units[0].tile = TilePos::new(12, 4);
+    obs.tick += Dials::balanced().cadence;
+    assert!(
+        exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
+            .is_empty()
+    );
+    assert_eq!(
+        exec.armies()[0].state,
+        ArmyState::Withdrawing,
+        "the continuously visible threat remains inside the routed fight area even after direct contact breaks"
+    );
+
+    obs.enemy_units[0].tile = TilePos::new(18, 4);
+    obs.tick += Dials::balanced().cadence;
+    assert!(
+        exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
+            .is_empty()
+    );
+    assert_eq!(exec.armies()[0].state, ArmyState::Staging);
+
+    obs.enemy_units[0].tile = TilePos::new(6, 4);
+    obs.tick += Dials::balanced().cadence;
+    let contact = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert!(contact.is_empty());
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+    let enlisted: Vec<_> = exec.enlisted().collect();
+    let engaged = UtilityPolicy::new().think_player_facing(
+        &Dials::balanced(),
+        &obs,
+        exec.armies(),
+        &enlisted,
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        engaged.iter().all(|intent| !matches!(
+            intent,
+            Intent::PushArmy { army, .. } if *army == exec.armies()[0].id
+        )),
+        "defense must not replace the order of a body already handling local contact: {engaged:?}"
+    );
+
+    obs.tick += Dials::balanced().cadence;
+
+    let holding = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert!(holding.is_empty());
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+}
+
+#[test]
+fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
+    use oxide_bot::{ArmyState, Dials, Executive};
+
+    let home = TilePos::new(2, 2);
+    let staging = TilePos::new(4, 4);
+    let expansion = TilePos::new(18, 8);
+    let mut obs = obs_with_home();
+    obs.faction = Faction::Cupric;
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Foundry, 18, 8));
+    obs.my_queues.push(Vec::new());
+    obs.my_units = vec![unit_obs(1, 0, UnitKind::Stinger, 17, 8)];
+    obs.enemy_units = (20..=22)
+        .map(|id| unit_obs(id, 1, UnitKind::Sentinel, 18 + (id as i32 - 21), 8))
+        .collect();
+
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 1 }],
+        &[],
+    );
+    let army_id = exec.armies()[0].id;
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army: army_id,
+            target: expansion,
+        }],
+        &[],
+    );
+
+    let first_contact = exec.maintain_player_facing(PlayerId(0), &obs, home);
+    assert!(first_contact.is_empty());
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+    obs.tick += 1;
+    let retreat = exec.maintain_player_facing(PlayerId(0), &obs, home);
+    assert!(matches!(
+        retreat.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::AttackMove { units, goal, queue: false },
+            ..
+        }] if units == &vec![UnitId(1)] && *goal == staging
+    ));
+    assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
+
+    obs.my_units[0].tile = staging;
+    obs.my_units[0].idle = true;
+    obs.tick += 1;
+    assert!(
+        exec.maintain_player_facing(PlayerId(0), &obs, home)
+            .is_empty()
+    );
+    assert_eq!(
+        exec.armies()[0].state,
+        ArmyState::Withdrawing,
+        "the same visible force still contests the fight that routed this body"
+    );
+
+    let enlisted: Vec<_> = exec.enlisted().collect();
+    let outmatched = UtilityPolicy::new().think_player_facing(
+        &Dials::balanced(),
+        &obs,
+        exec.armies(),
+        &enlisted,
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        outmatched.iter().all(|intent| !matches!(
+            intent,
+            Intent::PushArmy { army, .. } if *army == army_id
+        )),
+        "a body must not bounce between home and the same catastrophic defense: {outmatched:?}"
+    );
+    assert!(
+        outmatched
+            .iter()
+            .any(|intent| matches!(intent, Intent::FormArmy { .. })),
+        "the bot must keep mustering while the visible matchup is too weak: {outmatched:?}"
+    );
+
+    obs.my_units.extend([
+        unit_obs(2, 0, UnitKind::Scuttler, 4, 4),
+        unit_obs(3, 0, UnitKind::Scuttler, 5, 4),
+        unit_obs(4, 0, UnitKind::Scuttler, 4, 5),
+        unit_obs(5, 0, UnitKind::Scuttler, 5, 5),
+        unit_obs(6, 0, UnitKind::Scuttler, 4, 6),
+        unit_obs(7, 0, UnitKind::Scuttler, 5, 6),
+    ]);
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 6 }],
+        &[],
+    );
+    let fresh_army = exec
+        .armies()
+        .iter()
+        .find(|army| army.id != army_id)
+        .expect("fresh production musters separately from the routed body")
+        .id;
+    let enlisted: Vec<_> = exec.enlisted().collect();
+    let reinforced = UtilityPolicy::new().think_player_facing(
+        &Dials::balanced(),
+        &obs,
+        exec.armies(),
+        &enlisted,
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        reinforced.iter().any(|intent| matches!(
+            intent,
+            Intent::PushArmy { army, target }
+                if *army == fresh_army && *target == expansion
+        )),
+        "a fresh ground-capable body can reopen defense without recommitting the routed force: {reinforced:?}"
+    );
+    assert!(reinforced.iter().all(|intent| !matches!(
+        intent,
+        Intent::PushArmy { army, .. } if *army == army_id
+    )));
+}
+
+#[test]
+fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
+    use oxide_bot::{ArmyState, Dials, Executive};
+
+    let target = TilePos::new(18, 8);
+    let staging = TilePos::new(5, 4);
+    let mut obs = obs_with_home();
+    obs.my_units = (1..=4)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 4 + id as i32, 4))
+        .collect();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 4 }],
+        &[],
+    );
+    let army_id = exec.armies()[0].id;
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army: army_id,
+            target,
+        }],
+        &[],
+    );
+
+    for (unit, (x, y)) in obs
+        .my_units
+        .iter_mut()
+        .zip([(16, 8), (17, 8), (18, 7), (18, 9)])
+    {
+        unit.tile = TilePos::new(x, y);
+        unit.idle = false;
+    }
+    obs.tick = 6;
+
+    let maintenance = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert!(maintenance.is_empty());
+    assert_eq!(exec.armies()[0].state, ArmyState::Staging);
+    assert_eq!(exec.armies()[0].staging, target);
+
+    let mut dials = Dials::balanced();
+    dials.army_size = 4;
+    dials.own_strength_scale = u16::MAX;
+    dials.enemy_strength_scale = 0;
+    let enlisted: Vec<_> = exec.enlisted().collect();
+    let player_facing = UtilityPolicy::new().think_player_facing(
+        &dials,
+        &obs,
+        exec.armies(),
+        &enlisted,
+        &[],
+        &public_map(&obs),
+    );
+    assert!(
+        player_facing.iter().all(|intent| !matches!(
+            intent,
+            Intent::PushArmy { army, target: next }
+                if *army == army_id && *next == target
+        )),
+        "the standing attack-move must keep owning the live objective: {player_facing:?}"
+    );
+}
+
+#[test]
+fn player_facing_completed_forward_army_rejoins_the_safe_muster() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let target = TilePos::new(18, 8);
+    let forward_staging = TilePos::new(6, 4);
+    let home_staging = TilePos::new(2, 2);
+    let mut obs = obs_with_home();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 5, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 6, 4),
+        unit_obs(3, 0, UnitKind::Sentinel, 2, 2),
+        unit_obs(4, 0, UnitKind::Sentinel, 3, 2),
+    ];
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: forward_staging,
+            size: 2,
+        }],
+        &[],
+    );
+    let forward = exec.armies()[0].id;
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army: forward,
+            target,
+        }],
+        &[],
+    );
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: home_staging,
+            size: 2,
+        }],
+        &[],
+    );
+    assert_eq!(exec.armies().len(), 2, "test premise");
+
+    for (unit, tile) in obs
+        .my_units
+        .iter_mut()
+        .take(2)
+        .zip([TilePos::new(17, 8), target])
+    {
+        unit.tile = tile;
+        unit.idle = false;
+    }
+    obs.tick = 6;
+    assert!(
+        exec.maintain_player_facing(PlayerId(0), &obs, home_staging)
+            .is_empty()
+    );
+    assert_eq!(exec.armies().len(), 2);
+    assert_eq!(exec.armies()[0].state, ArmyState::Staging);
+    assert_eq!(exec.armies()[0].target, Some(target));
+
+    obs.enemy_buildings.clear();
+    for unit in obs.my_units.iter_mut().take(2) {
+        unit.idle = true;
+    }
+    obs.tick = 12;
+    assert!(
+        exec.maintain_player_facing(PlayerId(0), &obs, home_staging)
+            .is_empty()
+    );
+    assert_eq!(exec.armies().len(), 1);
+    assert_eq!(exec.armies()[0].members, vec![UnitId(3), UnitId(4)]);
+
+    let commands = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: home_staging,
+            size: 4,
+        }],
+        &[],
+    );
+    assert_eq!(
+        exec.armies()[0].members,
+        vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
+    );
+    assert!(matches!(
+        commands.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::AttackMove { units, goal, queue: false },
+            ..
+        }] if units == &vec![UnitId(1), UnitId(2)] && *goal == home_staging
+    ));
+}
+
+#[test]
+fn player_facing_refused_forward_army_cannot_mask_a_reachable_muster() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let left = TilePos::new(5, 4);
+    let right = TilePos::new(7, 4);
+    let mut obs = obs_with_home();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 8, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 4, 4),
+    ];
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(6, y)).collect();
+
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: right,
+            size: 1,
+        }],
+        &[],
+    );
+    let forward = exec.armies()[0].id;
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army: forward,
+            target: left,
+        }],
+        &[],
+    );
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: left,
+            size: 1,
+        }],
+        &[],
+    );
+    assert_eq!(exec.armies().len(), 2, "test premise");
+
+    obs.tick = 6;
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, left);
+    assert_eq!(exec.armies()[0].state, ArmyState::Pushing);
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army: forward,
+            target: TilePos::new(4, 4),
+        }],
+        &[],
+    );
+
+    obs.tick = 12;
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, left);
+    assert_eq!(exec.armies().len(), 1);
+    assert_eq!(exec.armies()[0].members, vec![UnitId(2)]);
+    let commands = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: left,
+            size: 2,
+        }],
+        &[],
+    );
+    assert!(commands.is_empty());
+    assert_eq!(exec.armies()[0].members, vec![UnitId(2)]);
+}
+
+#[test]
+fn player_facing_army_finishes_a_harmless_target_without_restarting_its_march() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let mut obs = obs_with_home();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 6, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 6, 5),
+    ];
+    obs.enemy_units = vec![unit_obs(20, 1, UnitKind::Flakhound, 7, 4)];
+    assert!(
+        obs.my_units
+            .iter()
+            .all(|unit| unit.tile.chebyshev(obs.enemy_units[0].tile) <= 1),
+        "ordinary acquisition must be able to finish the harmless contact without a chase order"
+    );
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: TilePos::new(4, 4),
+            size: 2,
+        }],
+        &[],
+    );
+    let army = exec.armies()[0].id;
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army,
+            target: TilePos::new(18, 8),
+        }],
+        &[],
+    );
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+
+    obs.tick = 6;
+
+    let commands = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+    assert!(
+        commands.is_empty(),
+        "an in-range harmless contact should not replace the objective march with an explicit chase"
+    );
+}
+
+#[test]
+fn player_facing_ground_armies_do_not_pursue_aircraft_over_unstandable_ground() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let mut obs = obs_with_home();
+    obs.my_units = (1..=7)
+        .map(|id| {
+            unit_obs(
+                id,
+                0,
+                UnitKind::Sentinel,
+                5 + id as i32 % 3,
+                4 + id as i32 / 3,
+            )
+        })
+        .collect();
+    let aircraft = UnitId(20);
+    obs.enemy_units = vec![unit_obs(aircraft.0, 1, UnitKind::Moth, 9, 5)];
+    obs.known_rock.push(TilePos::new(9, 5));
+
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: TilePos::new(6, 5),
+            size: 7,
+        }],
+        &[],
+    );
+    let first_contact = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert!(first_contact.is_empty());
+    assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
+
+    obs.tick = 6;
+
+    assert!(
+        exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
+            .is_empty(),
+        "ground defenders answer nearby aircraft through their standing order and auto-acquisition instead of pathing onto the aircraft's unstandable tile"
+    );
+    assert_eq!(exec.armies()[0].focus, None);
+
+    // Salvo-priced fight strength reads the Moth's full bombing stick as
+
+    // Attack: it withdraws to its own staging ground through an
+    // attack-move that answers fire on the way, and never paths onto the
+    // aircraft's unstandable tile.
+}
+
+#[test]
+fn a_known_scrap_wall_suppresses_an_impossible_ground_push() {
+    let mut obs = obs_with_home();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    obs.my_units = (1..=6)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32, 6))
+        .collect();
+    obs.known_scrap = (0..obs.map_height)
+        .map(|y| (TilePos::new(12, y), 100))
+        .collect();
+
+    let blocked = staged_ground_push_intents(&obs);
+    assert!(
+        blocked
+            .iter()
+            .all(|intent| !matches!(intent, Intent::PushArmy { .. })),
+        "known impassable salvage must stop an AttackMove storm: {blocked:?}"
+    );
+
+    obs.known_scrap.retain(|(tile, _)| tile.y != 6);
+    let open = staged_ground_push_intents(&obs);
+    assert!(
+        open.iter()
+            .any(|intent| matches!(intent, Intent::PushArmy { .. })),
+        "one known-open gap restores the legal push: {open:?}"
+    );
+}
+
+#[test]
+fn a_known_building_wall_suppresses_an_impossible_ground_push() {
+    let mut obs = obs_with_home();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    obs.my_units = (1..=6)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32, 6))
+        .collect();
+    obs.ally_buildings = (0..obs.map_height)
+        .map(|y| building_obs(100 + y as u32, 2, BuildingKind::Turret, 12, y))
+        .collect();
+
+    let blocked = staged_ground_push_intents(&obs);
+    assert!(
+        blocked
+            .iter()
+            .all(|intent| !matches!(intent, Intent::PushArmy { .. })),
+        "known structures must stop an AttackMove storm: {blocked:?}"
+    );
+
+    obs.ally_buildings.retain(|building| building.anchor.y != 6);
+    let open = staged_ground_push_intents(&obs);
+    assert!(
+        open.iter()
+            .any(|intent| matches!(intent, Intent::PushArmy { .. })),
+        "one known-open gap restores the legal push: {open:?}"
+    );
+}
+
+#[test]
+fn the_army_draft_never_conscripts_the_air_wing() {
+    use oxide_bot::Executive;
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(1, 0, UnitKind::Buzzard, 4, 3),
+        unit_obs(2, 0, UnitKind::Talon, 3, 4),
+        unit_obs(3, 0, UnitKind::Sentinel, 5, 3),
+    ];
+    let mut exec = Executive::new();
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: TilePos::new(4, 4),
+            size: 4,
+        }],
+    );
+    let members = &exec.armies()[0].members;
+    assert_eq!(
+        members.as_slice(),
+        &[UnitId(0), UnitId(3)],
+        "armies are ground bodies; wings stay free for the raid channel"
+    );
+}
+
+#[test]
+fn player_facing_muster_drafts_only_fighters_with_a_known_ground_route() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 4),
+        unit_obs(1, 0, UnitKind::Flakhound, 4, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 8, 4),
+        unit_obs(3, 0, UnitKind::Flakhound, 9, 4),
+    ];
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(6, y)).collect();
+    let staging = TilePos::new(5, 4);
+    let form = [Intent::FormArmy { staging, size: 4 }];
+
+    let mut player_facing = Executive::new();
+    let commands = player_facing.apply_with_reservations(PlayerId(0), &obs, &form, &[]);
+    assert_eq!(
+        player_facing.armies()[0].members,
+        vec![UnitId(0), UnitId(1)],
+        "the nearby reachable component forms a useful partial army"
+    );
+    assert!(matches!(
+        commands.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::AttackMove { units, goal, queue: false },
+            ..
+        }] if units == &vec![UnitId(0), UnitId(1)] && *goal == staging
+    ));
+}
+
+#[test]
+fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.explored.fill(false);
+    for y in 0..obs.map_height {
+        for x in 0..=5 {
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
+        }
+        for x in 7..obs.map_width {
+            {
+                let obs = &mut *obs;
+                obs.explored[(y * obs.map_width + x) as usize] = true;
+            }
+        }
+    }
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 4, 4),
+        unit_obs(1, 0, UnitKind::Flakhound, 7, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 1, 4),
+    ];
+    let staging = TilePos::new(5, 4);
+    let mut exec = Executive::new();
+    let _ = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 1 }],
+        &[],
+    );
+
+    let commands = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 3 }],
+        &[],
+    );
+    assert_eq!(exec.armies()[0].members, vec![UnitId(0), UnitId(2)]);
+    assert!(matches!(
+        commands.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::AttackMove { units, goal, queue: false },
+            ..
+        }] if units == &vec![UnitId(2)] && *goal == staging
+    ));
+
+    {
+        let obs = &mut *obs;
+        obs.explored[(4 * obs.map_width + 6) as usize] = true;
+    }
+    let commands = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy { staging, size: 3 }],
+        &[],
+    );
+    assert_eq!(
+        exec.armies()[0].members,
+        vec![UnitId(0), UnitId(1), UnitId(2)]
+    );
+    assert!(matches!(
+        commands.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::AttackMove { units, goal, queue: false },
+            ..
+        }] if units == &vec![UnitId(1)] && *goal == staging
+    ));
+}
+
+#[test]
+fn muster_extends_a_nearby_staged_body() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 3 + id as i32, 4))
+        .collect();
+    let first = TilePos::new(6, 4);
+    let nearby = TilePos::new(7, 5);
+    let intents = |staging, size| [Intent::FormArmy { staging, size }];
+
+    let mut player_facing = Executive::new();
+    let _ = player_facing.apply(PlayerId(0), &obs, &intents(first, 2));
+    assert_eq!(player_facing.armies().len(), 1, "test premise");
+
+    let commands =
+        player_facing.apply_with_reservations(PlayerId(0), &obs, &intents(nearby, 4), &[]);
+    assert!(
+        commands.iter().any(|command| matches!(&command.command,
+            Command::AttackMove { units, goal, .. } if units.len() == 2 && *goal == nearby)),
+        "new members must move to the requested nearby muster"
+    );
+    assert_eq!(player_facing.armies().len(), 1);
+    assert_eq!(
+        player_facing.armies()[0].members,
+        vec![UnitId(0), UnitId(1), UnitId(2), UnitId(3)]
+    );
+    assert_eq!(player_facing.armies()[0].staging, first);
+}
+
+#[test]
+fn player_facing_muster_does_not_consolidate_bodies_across_a_known_wall() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 4),
+        unit_obs(1, 0, UnitKind::Sentinel, 4, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 8, 4),
+        unit_obs(3, 0, UnitKind::Sentinel, 9, 4),
+    ];
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(6, y)).collect();
+    let left = TilePos::new(5, 4);
+    let right = TilePos::new(7, 4);
+    let mut exec = Executive::new();
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: left,
+            size: 2,
+        }],
+    );
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: right,
+            size: 2,
+        }],
+    );
+    assert_eq!(exec.armies().len(), 2, "test premise");
+
+    let commands = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: left,
+            size: 4,
+        }],
+        &[],
+    );
+
+    assert!(commands.is_empty());
+    assert_eq!(exec.armies().len(), 2);
+    let mut left_members = exec.armies()[0].members.clone();
+    left_members.sort_unstable();
+    let mut right_members = exec.armies()[1].members.clone();
+    right_members.sort_unstable();
+    assert_eq!(left_members, vec![UnitId(0), UnitId(1)]);
+    assert_eq!(right_members, vec![UnitId(2), UnitId(3)]);
+}
+
+#[test]
+fn player_facing_rear_wait_keeps_unrepaired_units_out_of_voluntary_musters() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 4, 4),
+        unit_obs(1, 0, UnitKind::Sentinel, 5, 4),
+    ];
+    let staging = TilePos::new(6, 4);
+    let rear = TilePos::new(2, 2);
+    let form = [Intent::FormArmy { staging, size: 2 }];
+    let mut player_facing = Executive::new();
+    let _ = player_facing.apply_with_reservations(PlayerId(0), &obs, &form, &[]);
+
+    obs.my_units[0].hp = 1;
+    let retreat = player_facing.maintain_player_facing(PlayerId(0), &obs, rear);
+    assert!(retreat.iter().any(|command| matches!(
+        &command.command,
+        Command::Move { units, goal, queue: false }
+            if units == &vec![UnitId(0)] && *goal == rear
+    )));
+
+    obs.my_units[0].tile = rear;
+    obs.tick = 1_199;
+    let _ = player_facing.maintain_player_facing(PlayerId(0), &obs, rear);
+    let _ = player_facing.apply_with_reservations(PlayerId(0), &obs, &form, &[]);
+    assert!(
+        player_facing
+            .armies()
+            .iter()
+            .all(|army| !army.members.contains(&UnitId(0))),
+        "the repair window remains a real opportunity to recover"
+    );
+
+    obs.tick = 1_200;
+    let _ = player_facing.maintain_player_facing(PlayerId(0), &obs, rear);
+    let _ = player_facing.apply_with_reservations(PlayerId(0), &obs, &form, &[]);
+    assert!(
+        player_facing
+            .armies()
+            .iter()
+            .all(|army| !army.members.contains(&UnitId(0))),
+        "rear timeout must not turn a nearly destroyed machine into voluntary assault strength"
+    );
+
+    obs.my_units[0].hp = UnitKind::Sentinel.stats().max_hp;
+    obs.tick += 1;
+    let _ = player_facing.maintain_player_facing(PlayerId(0), &obs, rear);
+    let commands = player_facing.apply_with_reservations(PlayerId(0), &obs, &form, &[]);
+    assert!(
+        player_facing.armies()[0].members.contains(&UnitId(0))
+            && commands.iter().any(|command| matches!(
+                &command.command,
+                Command::AttackMove { units, goal, queue: false }
+                    if units.contains(&UnitId(0)) && *goal == staging
+            )),
+        "a genuinely repaired machine must become eligible for the next voluntary muster"
+    );
+}
+
+#[test]
+fn exact_group_intents_lower_canonical_live_owned_members_only() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(3, 0, UnitKind::Bombard, 4, 3),
+        unit_obs(5, 0, UnitKind::Warden, 5, 3),
+        unit_obs(7, 0, UnitKind::Lancer, 6, 3),
+        unit_obs(9, 1, UnitKind::Sentinel, 7, 3),
+        unit_obs(11, 0, UnitKind::Sentinel, 8, 3),
+        unit_obs(13, 0, UnitKind::Tender, 9, 3),
+    ];
+    obs.my_units[1].hp = 0;
+    let move_goal = TilePos::new(10, 5);
+    let march_goal = TilePos::new(12, 6);
+    let target = Target::Building(BuildingId(42));
+
+    let commands = Executive::new().apply(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::MoveUnits {
+                units: vec![
+                    UnitId(11),
+                    UnitId(5),
+                    UnitId(3),
+                    UnitId(5),
+                    UnitId(99),
+                    UnitId(9),
+                ],
+                goal: move_goal,
+            },
+            Intent::AttackMoveUnits {
+                units: vec![UnitId(1)],
+                goal: march_goal,
+            },
+            Intent::AttackUnits {
+                units: vec![UnitId(7)],
+                target,
+            },
+            Intent::RepairUnits {
+                welders: vec![UnitId(13), UnitId(1), UnitId(13)],
+                target: UnitId(5),
+            },
+        ],
+    );
+
+    assert_eq!(
+        commands,
+        vec![
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Move {
+                    units: vec![UnitId(5), UnitId(11)],
+                    goal: move_goal,
+                    queue: false,
+                },
+            },
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::AttackMove {
+                    units: vec![UnitId(1)],
+                    goal: march_goal,
+                    queue: false,
+                },
+            },
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Attack {
+                    units: vec![UnitId(7)],
+                    target: target.into(),
+                    queue: false,
+                },
+            },
+            oxide_sim::PlayerCommand {
+                player: PlayerId(0),
+                command: Command::RepairUnit {
+                    units: vec![UnitId(13)],
+                    target: UnitId(5),
+                    queue: false,
+                },
+            },
+        ],
+        "dead, non-owned, missing, and duplicate ids are removed before lowering"
+    );
+
+    let empty = Executive::new().apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::AttackUnits {
+            units: vec![UnitId(3), UnitId(9), UnitId(99)],
+            target,
+        }],
+    );
+    assert!(empty.is_empty(), "an empty filtered group emits no command");
+}
+
+#[test]
+fn exact_reservations_survive_an_earlier_army_draft_and_transfer_ownership() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(1, 0, UnitKind::Sentinel, 4, 3),
+        unit_obs(2, 0, UnitKind::Sentinel, 5, 3),
+    ];
+    let staging = TilePos::new(8, 5);
+    let operation_goal = TilePos::new(16, 8);
+    let mut exec = Executive::new();
+
+    let commands = exec.apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::FormArmy { staging, size: 3 },
+            Intent::MoveUnits {
+                units: vec![UnitId(2)],
+                goal: operation_goal,
+            },
+        ],
+        &[UnitId(2), UnitId(99)],
+    );
+
+    assert_eq!(exec.armies()[0].members.len(), 2);
+    assert!(exec.armies()[0].members.contains(&UnitId(0)));
+    assert!(exec.armies()[0].members.contains(&UnitId(1)));
+    assert!(!exec.armies()[0].members.contains(&UnitId(2)));
+    assert!(commands.iter().any(|command| matches!(
+        &command.command,
+        Command::AttackMove { units, goal, queue: false }
+            if units.len() == 2
+                && units.contains(&UnitId(0))
+                && units.contains(&UnitId(1))
+                && *goal == staging
+    )));
+    assert!(commands.iter().any(|command| matches!(
+        &command.command,
+        Command::Move { units, goal, queue: false }
+            if units == &vec![UnitId(2)] && *goal == operation_goal
+    )));
+
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::AttackMoveUnits {
+            units: vec![UnitId(1)],
+            goal: operation_goal,
+        }],
+    );
+    assert_eq!(
+        exec.armies()[0].members,
+        vec![UnitId(0)],
+        "an explicit operation transfers its members out of army lifecycle bookkeeping"
+    );
+}
+
+#[test]
+fn one_worker_cannot_be_promised_to_two_jobs_in_one_think() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![unit_obs(0, 0, UnitKind::Harvester, 5, 4)];
+    obs.my_buildings = vec![
+        building_obs(0, 0, BuildingKind::Turret, 6, 4),
+        building_obs(1, 0, BuildingKind::Turret, 8, 4),
+    ];
+    obs.my_queues = vec![Vec::new(), Vec::new()];
+
+    let commands = Executive::new().apply(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::Salvage {
+                building: BuildingId(0),
+            },
+            Intent::Repair {
+                building: BuildingId(1),
+            },
+            Intent::AssignHarvest {
+                unit: UnitId(0),
+                node: TilePos::new(10, 4),
+            },
+        ],
+    );
+    assert_eq!(
+        commands,
+        vec![oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Salvage {
+                units: vec![UnitId(0)],
+                building: BuildingId(0),
+                queue: false,
+            },
+        }],
+        "the earliest strategic job owns the only worker for this think"
+    );
+
+    let commands = Executive::new().apply(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::Repair {
+                building: BuildingId(1),
+            },
+            Intent::Salvage {
+                building: BuildingId(0),
+            },
+        ],
+    );
+    assert_eq!(
+        commands,
+        vec![oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Repair {
+                units: vec![UnitId(0)],
+                building: BuildingId(1),
+                queue: false,
+            },
+        }],
+        "changing intent order changes the winner, never the one-worker limit"
+    );
+}
+
+#[test]
+fn boarding_riders_leave_the_army_before_its_next_order() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 3, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 4, 4),
+        unit_obs(3, 0, UnitKind::Sentinel, 5, 4),
+        unit_obs(10, 0, UnitKind::Skyhook, 4, 5),
+    ];
+    let staging = TilePos::new(6, 4);
+    let mut exec = Executive::new();
+    let _ = exec.apply(PlayerId(0), &obs, &[Intent::FormArmy { staging, size: 3 }]);
+    let army = exec.armies()[0].id;
+    let target = TilePos::new(20, 8);
+
+    let commands = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::Load {
+                transport: UnitId(10),
+                riders: vec![UnitId(1), UnitId(2)],
+            },
+            Intent::PushArmy { army, target },
+        ],
+    );
+
+    assert!(matches!(
+        commands.first().map(|command| &command.command),
+        Some(Command::Load { units, transport, queue: false })
+            if units == &vec![UnitId(1), UnitId(2)] && *transport == UnitId(10)
+    ));
+    assert!(commands.iter().any(|command| matches!(
+        &command.command,
+        Command::AttackMove { units, goal, queue: false }
+            if units == &vec![UnitId(3)] && *goal == target
+    )));
+    assert_eq!(exec.armies()[0].members, vec![UnitId(3)]);
+}
+
+#[test]
+fn exact_loading_uses_its_reservations_without_stealing_same_think_claims() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 3, 4),
+        unit_obs(2, 0, UnitKind::Sentinel, 4, 4),
+        unit_obs(3, 0, UnitKind::Sentinel, 5, 4),
+        unit_obs(10, 0, UnitKind::Skyhook, 4, 5),
+    ];
+    let strategic_goal = TilePos::new(18, 8);
+    let commands = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::MoveUnits {
+                units: vec![UnitId(1)],
+                goal: strategic_goal,
+            },
+            Intent::Load {
+                transport: UnitId(10),
+                riders: vec![UnitId(1), UnitId(2), UnitId(3)],
+            },
+        ],
+        &[UnitId(3)],
+    );
+
+    assert!(matches!(
+        commands.first().map(|command| &command.command),
+        Some(Command::Move { units, goal, queue: false })
+            if units == &vec![UnitId(1)] && *goal == strategic_goal
+    ));
+    assert!(matches!(
+        commands.get(1).map(|command| &command.command),
+        Some(Command::Load { units, transport, queue: false })
+            if units == &vec![UnitId(2), UnitId(3)] && *transport == UnitId(10)
+    ));
+    assert_eq!(commands.len(), 2);
+
+    let transport_reserved = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::Load {
+            transport: UnitId(10),
+            riders: vec![UnitId(2)],
+        }],
+        &[UnitId(10)],
+    );
+    assert!(matches!(
+        transport_reserved.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::Load {
+                units,
+                transport: UnitId(10),
+                queue: false,
+            },
+            ..
+        }] if units == &vec![UnitId(2)]
+    ));
+
+    let already_moving = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[
+            Intent::MoveUnits {
+                units: vec![UnitId(10)],
+                goal: strategic_goal,
+            },
+            Intent::Load {
+                transport: UnitId(10),
+                riders: vec![UnitId(2)],
+            },
+        ],
+        &[UnitId(10), UnitId(2)],
+    );
+    assert_eq!(
+        already_moving.len(),
+        1,
+        "an earlier exact command owns the transport for this think"
+    );
+}
+
+#[test]
+fn repeated_refused_marches_release_even_when_the_target_changes() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(2, 0, UnitKind::Sentinel, 4, 3),
+    ];
+    let mut exec = Executive::new();
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: TilePos::new(7, 5),
+            size: 2,
+        }],
+    );
+    let army = exec.armies()[0].id;
+
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army,
+            target: TilePos::new(20, 8),
+        }],
+    );
+    obs.tick = 8;
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(exec.armies()[0].state, ArmyState::Pushing);
+
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army,
+            target: TilePos::new(19, 9),
+        }],
+    );
+    obs.tick = 16;
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+
+    assert!(exec.armies().is_empty());
+    assert_eq!(exec.enlisted().count(), 0);
+}
+
+#[test]
+fn a_march_that_started_but_stopped_eventually_releases_the_army() {
+    use oxide_bot::{ArmyState, Executive};
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 11, 7),
+        unit_obs(2, 0, UnitKind::Sentinel, 12, 7),
+    ];
+    let original_staging = TilePos::new(4, 3);
+    let mut exec = Executive::new();
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: original_staging,
+            size: 2,
+        }],
+    );
+    let army = exec.armies()[0].id;
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::PushArmy {
+            army,
+            target: TilePos::new(21, 9),
+        }],
+    );
+
+    // A non-idle line proves that the command started, so this is not the
+    // immediate refused-order recovery. It has simply stopped making ground.
+    for unit in &mut obs.my_units {
+        unit.idle = false;
+    }
+    obs.tick = 1;
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+    assert_eq!(exec.armies()[0].state, ArmyState::Pushing);
+    obs.tick = 1_202;
+    let _ = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
+
+    assert!(exec.armies().is_empty());
+    assert_eq!(exec.enlisted().count(), 0);
+}
+
+#[test]
+fn an_unreachable_paid_site_does_not_starve_reachable_construction() {
+    let mut obs = obs_with_home();
+    obs.scrap = 2_000;
+    obs.my_queues[0] = vec![UnitKind::Sentinel, UnitKind::Sentinel];
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 6))
+        .collect();
+    let mut orphan = building_obs(1, 0, BuildingKind::Turret, 19, 1);
+    orphan.built = false;
+    orphan.hp = 1;
+    obs.my_buildings.push(orphan);
+    obs.my_queues.push(Vec::new());
+    let mut reachable = building_obs(2, 0, BuildingKind::Fabricator, 7, 2);
+    reachable.built = false;
+    reachable.hp = 1;
+    obs.my_buildings.push(reachable);
+    obs.my_queues.push(Vec::new());
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
+
+    let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
+
+    assert!(
+        !intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Turret,
+                anchor,
+            } if *anchor == TilePos::new(19, 1)
+        )),
+        "no free player-facing builder can reach the paid site: {intents:?}"
+    );
+    assert!(
+        intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Fabricator,
+                anchor,
+            } if anchor.x < 12
+        )),
+        "the disconnected orphan must yield to reachable construction: {intents:?}"
+    );
+}
+
+#[test]
+fn executive_defers_a_build_claim_outside_current_sight() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![unit_obs(1, 0, UnitKind::Harvester, 3, 3)];
+    let anchor = TilePos::new(14, 7);
+    let (width, height) = BuildingKind::Fabricator.base_stats().size;
+    for dy in 0..height {
+        for dx in 0..width {
+            let tile = anchor.offset(dx, dy);
+            let index = usize::try_from(tile.y * obs.map_width + tile.x).unwrap();
+            obs.visible[index] = false;
+        }
+    }
+
+    let commands = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::Build {
+            kind: BuildingKind::Fabricator,
+            anchor,
+        }],
+        &[],
+    );
+
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        commands[0].command,
+        Command::Build {
+            kind: BuildingKind::Fabricator,
+            anchor: actual,
+            defer: true,
+            ..
+        } if actual == anchor
+    ));
+
+    obs.visible.fill(true);
+    let commands = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        &[Intent::Build {
+            kind: BuildingKind::Fabricator,
+            anchor,
+        }],
+        &[],
+    );
+    assert!(matches!(
+        commands[0].command,
+        Command::Build { defer: false, .. }
+    ));
+}
+
+#[test]
+fn player_facing_builds_choose_a_reachable_worker() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Harvester, 13, 5),
+        unit_obs(2, 0, UnitKind::Harvester, 3, 5),
+    ];
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
+    let intent = Intent::Build {
+        kind: BuildingKind::Fabricator,
+        anchor: TilePos::new(10, 5),
+    };
+
+    let commands = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        std::slice::from_ref(&intent),
+        &[],
+    );
+    assert!(matches!(
+        commands.as_slice(),
+        [oxide_sim::PlayerCommand {
+            command: Command::Build { units, .. },
+            ..
+        }] if units == &[UnitId(2)]
+    ));
+
+    obs.my_units.remove(1);
+    let commands = Executive::new().apply_with_reservations(
+        PlayerId(0),
+        &obs,
+        std::slice::from_ref(&intent),
+        &[],
+    );
+    assert!(
+        commands.is_empty(),
+        "a known-severed worker must not be sent"
+    );
+}
+
+#[test]
+fn residual_policy_does_not_duplicate_a_walking_foundry_commitment() {
+    let mut obs = obs_with_home();
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Fabricator, 6, 2));
+    obs.my_queues.push(Vec::new());
+    obs.my_buildings
+        .push(building_obs(2, 0, BuildingKind::Extractor, 20, 9));
+    obs.my_queues.push(Vec::new());
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .chain((10..13).map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32 - 10, 7)))
+        .collect();
+    obs.known_scrap.clear();
+    let promised = TilePos::new(16, 7);
+    let founder = &mut obs.my_units[0];
+    founder.idle = false;
+    founder.founding = Some((BuildingKind::Foundry, promised));
+    obs.enemy_buildings
+        .push(building_obs(90, 1, BuildingKind::Foundry, 18, 8));
+    obs.scrap = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("Foundries have a price")
+        .cost
+        + UnitKind::Sentinel.stats().cost;
+    let mut dials = Dials::full();
+    dials.deep_tech = false;
+    dials.expansion = true;
+    dials.scouting = false;
+    let mut policy = UtilityPolicy::new();
+
+    let next = player_think(&mut policy, &dials, &obs);
+    assert!(
+        next.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Foundry,
+                ..
+            } | Intent::BuildWith {
+                kind: BuildingKind::Foundry,
+                ..
+            }
+        )),
+        "an unpaid Foundry founder already owns this cadence's capital commitment: {next:?}"
+    );
+    assert!(
+        next.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "the separately reserved promise must not bank a second unusable Foundry fund: {next:?}"
+    );
+}
+
+#[test]
+fn a_walking_fabricator_is_reserved_and_counts_as_the_tech_rung() {
+    let mut obs = obs_with_home();
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .chain((10..13).map(|id| unit_obs(id, 0, UnitKind::Sentinel, 5 + id as i32 - 10, 7)))
+        .collect();
+    let promised = TilePos::new(9, 5);
+    obs.my_units[0].idle = false;
+    obs.my_units[0].founding = Some((BuildingKind::Fabricator, promised));
+    obs.enemy_buildings
+        .push(building_obs(90, 1, BuildingKind::Foundry, 18, 8));
+    obs.scrap = BuildingKind::Fabricator
+        .base_stats()
+        .construction
+        .expect("Fabricators have a price")
+        .cost
+        + UnitKind::Sentinel.stats().cost;
+    let mut dials = Dials::full();
+    dials.scouting = false;
+
+    let player = player_think(&mut UtilityPolicy::new(), &dials, &obs);
+    assert!(
+        player.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Fabricator,
+                ..
+            }
+        )),
+        "a walking Fabricator already fills the one-off tech rung: {player:?}"
+    );
+    assert!(
+        player.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "only the unpaid Fabricator price is reserved; its residual bank remains usable: {player:?}"
+    );
+}
+
+#[test]
+fn a_walking_extractor_claims_its_fixed_frame_once() {
+    let mut obs = obs_with_home();
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
+    obs.my_queues.push(Vec::new());
+    let frame = TilePos::new(10, 7);
+    obs.known_frames = vec![frame];
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .collect();
+    obs.my_units[0].idle = false;
+    obs.my_units[0].founding = Some((BuildingKind::Extractor, frame));
+    obs.scrap = 1_000;
+    let mut dials = Dials::full();
+    dials.extractors = true;
+    dials.scouting = false;
+
+    let player = player_think(&mut UtilityPolicy::new(), &dials, &obs);
+    assert!(
+        player.iter().all(|intent| !matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Extractor,
+                anchor,
+            } if *anchor == frame
+        )),
+        "a fixed frame already has one unpaid restoration claim: {player:?}"
+    );
+}
+
+#[test]
+fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_with_home();
+    obs.scrap = 1_000;
+    obs.visible.fill(false);
+    obs.my_units = (0..4)
+        .map(|id| {
+            let mut worker = unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5);
+            worker.idle = false;
+            worker.repairing = true;
+            worker
+        })
+        .collect();
+    let mut dials = Dials::full();
+    dials.scouting = false;
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Fabricator, 8, 2));
+    obs.my_queues.push(Vec::new());
+
+    let mut intents = player_think(&mut UtilityPolicy::new(), &dials, &obs);
+    assert!(
+        intents
+            .iter()
+            .all(|intent| !matches!(intent, Intent::Build { .. } | Intent::BuildWith { .. })),
+        "residual utility must not originate a speculative Repair Bay: {intents:?}"
+    );
+    intents.push(Intent::BuildWith {
+        builder: UnitId(0),
+        kind: BuildingKind::RepairBay,
+        anchor: TilePos::new(12, 6),
+    });
+    let stop = intents
+        .iter()
+        .position(|intent| matches!(intent, Intent::StopUnits { .. }))
+        .expect("the unpaid remote build cancels voluntary repair");
+    let build = intents
+        .iter()
+        .position(|intent| matches!(intent, Intent::BuildWith { .. }))
+        .expect("the exact construction assignment is retained");
+    assert!(
+        stop < build,
+        "repair cancellation must lower before Build: {intents:?}"
+    );
+
+    let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
+    let stopped = commands.iter().find_map(|command| match &command.command {
+        Command::Stop { units } => Some(units),
+        _ => None,
+    });
+    let builder = commands.iter().find_map(|command| match &command.command {
+        Command::Build {
+            units, defer: true, ..
+        } => units.first(),
+        _ => None,
+    });
+    let builder = builder.expect("the unseen build lowers as a deferred claim");
+    assert!(
+        stopped.is_some_and(|units| units.contains(builder)),
+        "the same repaired worker is stopped before receiving its new Found order: {commands:?}"
+    );
+}
+
+#[test]
+fn visible_paid_construction_does_not_fund_an_unowned_repair_program() {
+    let mut obs = obs_with_home();
+    obs.scrap = 1_000;
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .collect();
+    obs.my_units[0].idle = false;
+    obs.my_units[0].repairing = true;
+    let mut wounded = building_obs(7, 0, BuildingKind::Turret, 10, 5);
+    wounded.hp = 1;
+    obs.my_buildings.push(wounded);
+    obs.my_queues.push(Vec::new());
+    obs.my_repair_targets = vec![(UnitId(0), Target::Building(BuildingId(7)))];
+    let mut site = building_obs(8, 0, BuildingKind::Fabricator, 14, 8);
+    site.built = false;
+    obs.my_buildings.push(site);
+    obs.my_queues.push(Vec::new());
+    let mut dials = Dials::full();
+    dials.scouting = false;
+
+    let intents = player_think(&mut UtilityPolicy::new(), &dials, &obs);
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::StopUnits { units } if units == &[UnitId(0)])),
+        "paid construction and a known patient do not supply a Support funding grant: {intents:?}"
+    );
+    assert!(
+        intents
+            .iter()
+            .all(|intent| !matches!(intent, Intent::Repair { .. } | Intent::RepairWith { .. })),
+        "residual utility cannot restart an unfunded repair: {intents:?}"
+    );
+}
+
+#[test]
+fn an_underfunded_foundry_promise_escrows_every_player_facing_spend() {
+    let mut obs = obs_with_home();
+    for (id, kind, x) in [
+        (1, BuildingKind::Fabricator, 5),
+        (2, BuildingKind::Airworks, 8),
+        (3, BuildingKind::Crucible, 11),
+        (4, BuildingKind::Turret, 14),
+    ] {
+        obs.my_buildings.push(building_obs(id, 0, kind, x, 2));
+        obs.my_queues.push(Vec::new());
+    }
+    let promised = TilePos::new(17, 8);
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 6))
+        .collect();
+    obs.my_units[0].idle = false;
+    obs.my_units[0].founding = Some((BuildingKind::Foundry, promised));
+    obs.my_units.push(unit_obs(10, 0, UnitKind::Tender, 7, 6));
+    obs.my_units[4].idle = false;
+    obs.my_units[4].repairing = true;
+    let mut patient = unit_obs(11, 0, UnitKind::Sentinel, 8, 6);
+    patient.hp = 1;
+    obs.my_units.push(patient);
+    obs.my_buildings[4].hp = 1;
+    obs.known_scrap = vec![(TilePos::new(8, 9), 500)];
+    let foundry_cost = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("expansion Foundries have a price")
+        .cost;
+    obs.scrap = foundry_cost - 1;
+
+    let mut dials = Dials::full();
+    dials.adaptive_composition = true;
+    dials.expansion = true;
+    dials.scouting = false;
+    let mut policy = UtilityPolicy::new();
+    let _ = player_think(&mut policy, &dials, &obs);
+    obs.tick = 2_016;
+    let intents = player_think(&mut policy, &dials, &obs);
+
+    assert!(
+        intents.iter().any(|intent| matches!(
+            intent,
+            Intent::StopUnits { units } if units == &[UnitId(10)]
+        )),
+        "an active voluntary repair is cancelled before it can drain the claim: {intents:?}"
+    );
+    assert!(
+        intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::TrainAt { .. }
+                | Intent::Build { .. }
+                | Intent::Repair { .. }
+                | Intent::RepairUnits { .. }
+                | Intent::Upgrade { .. }
+        )),
+        "even low-screen desperation cannot consume an unpaid Foundry claim: {intents:?}"
+    );
+}
+
+#[test]
+fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
+    use oxide_bot::Executive;
+
+    let mut obs = obs_with_home();
+    obs.scrap = 1_000;
+    obs.my_units = (0..4)
+        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
+        .collect();
+    let mut dials = Dials::full();
+    dials.deep_tech = false;
+    let mut policy = UtilityPolicy::new();
+
+    let mut orphan = building_obs(1, 0, BuildingKind::Fabricator, 8, 2);
+    orphan.built = false;
+    orphan.hp = 1;
+    obs.my_buildings.push(orphan);
+    obs.my_queues.push(Vec::new());
+    let intents = player_think(&mut policy, &dials, &obs);
+    let player_scout = intents
+        .iter()
+        .position(|intent| matches!(intent, Intent::Scout { .. }))
+        .expect("the player-facing policy scouts");
+    let player_build = intents
+        .iter()
+        .position(|intent| matches!(intent, Intent::Build { .. }))
+        .expect("the player-facing policy resumes paid construction");
+    assert!(player_scout < player_build);
+    let scout = intents
+        .iter()
+        .find_map(|intent| match intent {
+            Intent::Scout { unit, .. } => Some(*unit),
+            _ => None,
+        })
+        .expect("a full harvest line supplies a scout");
+    assert!(
+        intents.iter().any(|intent| matches!(
+            intent,
+            Intent::Build {
+                kind: BuildingKind::Fabricator,
+                ..
+            }
+        )),
+        "the same think also resumes the paid Fabricator: {intents:?}"
+    );
+
+    let commands = Executive::new().apply_with_reservations(PlayerId(0), &obs, &intents, &[]);
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Move {
+                units,
+                queue: false,
+                ..
+            } if units == &[scout]
+        )),
+        "the scout intent must survive lowering: {commands:?}"
+    );
+    let builder = commands.iter().find_map(|command| match &command.command {
+        Command::Build {
+            units,
+            kind: BuildingKind::Fabricator,
+            ..
+        } => units.first().copied(),
+        _ => None,
+    });
+    assert_ne!(
+        builder,
+        Some(scout),
+        "construction must deterministically choose a different harvester"
+    );
+    assert!(
+        builder.is_some(),
+        "the Fabricator build must also survive lowering"
+    );
+}
+
+#[test]
+fn a_complete_tree_uses_the_crucible_and_airworks_for_its_heaviest_roster() {
+    for (faction, bomber) in [
+        (Faction::Ferrous, UnitKind::Condor),
+        (Faction::Cupric, UnitKind::Moth),
+    ] {
+        let mut obs = obs_with_home();
+        obs.faction = faction;
+        obs.scrap = 2_000;
+        obs.my_buildings.extend([
+            building_obs(1, 0, BuildingKind::Fabricator, 5, 2),
+            building_obs(2, 0, BuildingKind::Airworks, 8, 2),
+            building_obs(3, 0, BuildingKind::Crucible, 11, 2),
+        ]);
+        obs.my_queues = vec![
+            vec![UnitKind::Sentinel, UnitKind::Sentinel],
+            vec![UnitKind::Lancer, UnitKind::Lancer],
+            Vec::new(),
+            Vec::new(),
+        ];
+        obs.my_units = (0..4)
+            .map(|id| unit_obs(id, 0, UnitKind::Warden, 3 + id as i32, 5))
+            .collect();
+
+        let intents = UtilityPolicy::new().think_player_facing(
+            &Dials::balanced(),
+            &obs,
+            &[],
+            &[],
+            &[],
+            &public_map(&obs),
+        );
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt { building, kind: UnitKind::Breaker }
+                if *building == BuildingId(3)
+        )));
+        assert!(intents.iter().any(|intent| matches!(
+            intent,
+            Intent::TrainAt { building, kind }
+                if *building == BuildingId(2) && *kind == bomber
+        )));
+    }
+}

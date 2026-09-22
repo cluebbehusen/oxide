@@ -19,12 +19,12 @@
 use crate::runner::{self, GameReplay};
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
+use oxide_bot::{SeatBot, seat_bots};
 use oxide_protocol::framing::{IncomingRequest, Limits, incoming};
 use oxide_protocol::{
     AdvancedView, DebugSession, PresentedView, Reply, Request, ResponseEnvelope, SavedView,
     ScreenshotView, StatusView, dispatch_shared, hash_hex,
 };
-use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{Event, PlayerCommand, SIM_VERSION, Scenario, State};
 use std::net::TcpListener;
 use std::time::Duration;

@@ -3,6 +3,9 @@
 //! utility that makes the tier-three climb a purchase instead of dead
 //! spend. Fuel beyond the ring is not its to take.
 
+mod common;
+use common::open_arena;
+
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, CRUCIBLE_SMELT_PERIOD};
@@ -15,20 +18,7 @@ use oxide_sim::{Faction, PlayerId, Scenario, State, UnitKind};
 /// smelter feeds it.
 fn yard() -> Scenario {
     Scenario {
-        name: "smelter-yard".into(),
         seed: 11,
-        map: vec![
-            "##############################".into(),
-            "#1...........................#".into(),
-            "#............................#".into(),
-            "#............................#".into(),
-            "#............................#".into(),
-            "#............................#".into(),
-            "#............................#".into(),
-            "#..........................2.#".into(),
-            "#............................#".into(),
-            "##############################".into(),
-        ],
         players: vec![
             PlayerSpec {
                 name: "Ferrous".into(),
@@ -45,26 +35,6 @@ fn yard() -> Scenario {
                 scrap: 0,
                 bot: false,
                 bot_config: None,
-            },
-        ],
-        units: vec![
-            UnitSpec {
-                player: 0,
-                kind: UnitKind::Harvester,
-                x: 4,
-                y: 2,
-            },
-            UnitSpec {
-                player: 1,
-                kind: UnitKind::Harvester,
-                x: 12,
-                y: 5,
-            },
-            UnitSpec {
-                player: 1,
-                kind: UnitKind::Harvester,
-                x: 26,
-                y: 5,
             },
         ],
         buildings: vec![
@@ -87,7 +57,30 @@ fn yard() -> Scenario {
                 y: 4,
             },
         ],
-        meta: None,
+        ..open_arena(
+            30,
+            10,
+            vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Harvester,
+                    x: 4,
+                    y: 2,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Harvester,
+                    x: 12,
+                    y: 5,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Harvester,
+                    x: 26,
+                    y: 5,
+                },
+            ],
+        )
     }
 }
 

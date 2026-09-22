@@ -1,6 +1,7 @@
 //! Role and allegiance cues at strategic camera scales.
 
 use crate::game::Scene;
+use crate::render::prim::{fill_circle, stroke_circle};
 use macroquad::prelude::*;
 use oxide_sim::{Unit, UnitKind};
 
@@ -151,8 +152,8 @@ pub fn draw_markers(game: &Scene<'_>, alpha: f32) {
                     line((0.0, -2.0), (0.0, 4.0));
                 }
                 Role::Scout => {
-                    draw_circle_lines(center.x, center.y, 3.0, 1.3, ink);
-                    draw_circle(center.x, center.y, 1.0, ink);
+                    stroke_circle(center, 3.0, 1.3, ink);
+                    fill_circle(center, 1.0, ink);
                 }
                 Role::Support => {
                     line((-3.5, 0.0), (3.5, 0.0));
@@ -187,7 +188,7 @@ pub fn draw_markers(game: &Scene<'_>, alpha: f32) {
                 );
             }
             if selected {
-                draw_circle_lines(center.x, center.y, 12.0, 1.3, ink);
+                stroke_circle(center, 12.0, 1.3, ink);
             }
             if unit.hp < unit.kind.stats().max_hp {
                 draw_rectangle(center.x - 7.0, center.y - 12.0, 14.0, 2.0, fill);
@@ -353,9 +354,9 @@ fn building_glyph(kind: oxide_sim::BuildingKind, p: Vec2, ink: Color) {
             line((-4.0, 4.0), (4.0, 4.0));
         }
         Array => {
-            draw_circle_lines(p.x, p.y, 4.0, 1.1, ink);
+            stroke_circle(p, 4.0, 1.1, ink);
             line((0.0, 0.0), (3.0, -4.0));
-            draw_circle(p.x, p.y, 1.4, ink);
+            fill_circle(p, 1.4, ink);
         }
         RepairBay => {
             line((-4.0, 0.0), (4.0, 0.0));

@@ -27,7 +27,7 @@ Sandboxes use the ordinary scenario schema in `sim/src/scenario.rs` and the
 terrain bytes documented in the map-authoring skill. The sandbox-specific moves:
 
 - A passive seat is `"bot": true` with no `bot_config`: a documented empty chair
-  (`seat_bots` in `sim/src/bot/mod.rs`) that never issues commands, so it cannot
+  (`seat_bots` in `bot/src/runtime.rs`) that never issues commands, so it cannot
   build, train, harvest, or maneuver — but its units and turrets still
   auto-defend, because return fire is simulation behavior, not controller
   behavior. Never mark a passive seat `"bot": false`: the shell's playable

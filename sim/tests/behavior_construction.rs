@@ -476,55 +476,6 @@ fn scouted_sites_are_remembered_as_sites() {
 }
 
 #[test]
-fn bot_sends_a_relief_builder_to_an_orphaned_site() {
-    use oxide_sim::stats::BuildingKind;
-    // Manufacture the orphan directly: a scripted Build, then Stop the
-    // builder on the spot. Hand the seat to a bot — its relief loop must
-    // finish the paid-for site (a pending site once suppressed fabricator
-    // logic forever instead).
-    let scenario = arena(vec![
-        unit(1, UnitKind::Harvester, 12, 2),
-        unit(1, UnitKind::Harvester, 13, 3),
-    ]);
-    let mut state = scenario.build().unwrap();
-    let builder = state.units()[0].id;
-    let anchor = TilePos::new(12, 1);
-    state.tick(&[cmd(
-        1,
-        Command::Build {
-            units: vec![builder],
-            kind: BuildingKind::Turret,
-            anchor,
-            queue: false,
-            defer: false,
-        },
-    )]);
-    state.tick(&[cmd(
-        1,
-        Command::Stop {
-            units: vec![builder],
-        },
-    )]);
-    let site = state
-        .buildings()
-        .iter()
-        .find(|b| b.anchor == anchor)
-        .unwrap()
-        .id;
-    assert!(!state.building(site).unwrap().built);
-
-    let mut bot = standard_brain(&scenario, PlayerId(1));
-    for _ in 0..3000u32 {
-        let commands = bot.act(&state);
-        state.tick(&commands);
-        if state.building(site).is_some_and(|b| b.built) {
-            return;
-        }
-    }
-    panic!("orphaned site was never resumed by the bot");
-}
-
-#[test]
 fn a_fresh_site_blocks_units_already_walking_through_it() {
     use oxide_sim::stats::BuildingKind;
     // The mover's cached path runs straight along row 6; a turret site

@@ -5,8 +5,8 @@
 //! decided, and emits one compact row suitable for JSONL comparison.
 
 use anyhow::{Context, Result, ensure};
+use oxide_bot::{DecisionTrace, PublicMapBriefing, ResolvedProfile, SeatBot};
 use oxide_kit::GameReplay;
-use oxide_sim::bot::{DecisionTrace, PublicMapBriefing, ResolvedProfile, SeatBot};
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::Serialize;
@@ -704,7 +704,7 @@ fn evaluate_plan_artifact_impl(
                 config: plan.controllers[seat].and_then(EvaluationController::config),
                 profile: plan.controllers[seat]
                     .and_then(EvaluationController::config)
-                    .map(BotConfig::resolve_profile),
+                    .map(ResolvedProfile::resolve),
             })
             .collect(),
         termination: if stall_loop.is_some() {
@@ -1622,7 +1622,7 @@ mod tests {
                 assert_eq!(seat.controller, controller);
                 assert_eq!(seat.faction, faction);
                 assert_eq!(seat.config, config);
-                assert_eq!(seat.profile, config.map(BotConfig::resolve_profile));
+                assert_eq!(seat.profile, config.map(ResolvedProfile::resolve));
             }
             assert!(
                 row.evidence.iter().all(|seat| seat.commands > 0),
@@ -2411,8 +2411,8 @@ mod tests {
             (400, 400)
         );
         assert_eq!(
-            prime.resolve_profile().traits,
-            scrapheap.resolve_profile().traits
+            ResolvedProfile::resolve(prime).traits,
+            ResolvedProfile::resolve(scrapheap).traits
         );
         assert_eq!(swapped.players[0].bot_config, Some(scrapheap));
         assert_eq!(swapped.players[1].bot_config, Some(prime));

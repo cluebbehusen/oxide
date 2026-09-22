@@ -124,11 +124,6 @@ impl BotConfig {
             personality_seed,
         }
     }
-
-    /// Resolves the seed into the stable internal personality used by a brain.
-    pub fn resolve_profile(self) -> crate::bot::ResolvedProfile {
-        crate::bot::ResolvedProfile::resolve(self)
-    }
 }
 
 impl Default for BotConfig {
@@ -378,9 +373,7 @@ impl Scenario {
     /// Parses the map and proves that its authored Foundry anchors match the
     /// declared player table. Shared by state construction and the immutable
     /// pre-match bot briefing so those two views cannot disagree.
-    pub(crate) fn parse_map_and_anchors(
-        &self,
-    ) -> Result<(Map, Vec<(PlayerId, TilePos)>), ScenarioError> {
+    pub fn parse_map_and_anchors(&self) -> Result<(Map, Vec<(PlayerId, TilePos)>), ScenarioError> {
         if self.players.is_empty() || self.players.len() > 16 {
             return Err(ScenarioError::PlayerCount(self.players.len()));
         }

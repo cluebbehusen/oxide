@@ -18,10 +18,11 @@ if cargo llvm-cov report --json --summary-only --output-path "$report"; then
             | ltrimstr($root)
             | split("/")[0]
             | if . == "sim" then {rank: 1, name: "oxide-sim"}
-              elif . == "protocol" then {rank: 2, name: "oxide-protocol"}
-              elif . == "kit" then {rank: 3, name: "oxide-kit"}
-              elif . == "shell" then {rank: 4, name: "oxide-shell"}
-              elif . == "driver" then {rank: 5, name: "oxide-driver"}
+              elif . == "bot" then {rank: 2, name: "oxide-bot"}
+              elif . == "protocol" then {rank: 3, name: "oxide-protocol"}
+              elif . == "kit" then {rank: 4, name: "oxide-kit"}
+              elif . == "shell" then {rank: 5, name: "oxide-shell"}
+              elif . == "driver" then {rank: 6, name: "oxide-driver"}
               else {rank: 0, name: .}
               end;
         def row($name; $covered; $count):

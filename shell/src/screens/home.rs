@@ -30,12 +30,14 @@ pub enum Out {
     Quit,
 }
 
-/// The Home screen: its menu and whether a Continue row leads it.
+/// The Home screen: its menu and the verb behind each row.
 pub struct HomeScreen {
     /// The rows.
     pub menu: Menu,
-    /// Whether row zero is Continue (a compatible autosave exists).
-    pub resumable: bool,
+    /// What each menu row does, in row order. Rows are values, not indices,
+    /// so a conditional row (Recover, Continue) cannot shift its neighbours
+    /// onto the wrong verb.
+    rows: Vec<Out>,
     /// Independently recoverable interrupted session, if any.
     pub recovery: Option<oxide_kit::recovery::InterruptedMatch>,
 }
@@ -58,22 +60,29 @@ impl HomeScreen {
                 0,
                 format!("Recover match ({:02}:{:02})", seconds / 60, seconds % 60),
             );
+            self.rows.insert(0, Out::Recover);
         }
         self
     }
 
     /// Builds the door with resumability decided by the caller (tests).
     pub fn with_resumable(resumable: bool) -> Self {
-        let mut items = Vec::new();
-        if resumable {
-            items.push("Continue".to_string());
-        }
-        items.extend(
-            ["Play", "Tutorial", "Replays", "Roster", "Settings", "Quit"].map(str::to_string),
-        );
+        let (items, rows) = resumable
+            .then_some(("Continue", Out::Continue))
+            .into_iter()
+            .chain([
+                ("Play", Out::Play),
+                ("Tutorial", Out::Tutorial),
+                ("Replays", Out::Replays),
+                ("Roster", Out::Roster),
+                ("Settings", Out::Settings),
+                ("Quit", Out::Quit),
+            ])
+            .map(|(label, out)| (label.to_string(), out))
+            .unzip();
         Self {
             menu: Menu::new("OXIDE", items),
-            resumable,
+            rows,
             recovery: None,
         }
     }
@@ -94,20 +103,7 @@ impl HomeScreen {
             return Out::Stay;
         };
         sounds.push((SoundKind::Click, None));
-        if self.recovery.is_some() && choice == 0 {
-            return Out::Recover;
-        }
-        let choice = choice - usize::from(self.recovery.is_some());
-        let base = if self.resumable { choice } else { choice + 1 };
-        match base {
-            0 => Out::Continue,
-            1 => Out::Play,
-            2 => Out::Tutorial,
-            3 => Out::Replays,
-            4 => Out::Roster,
-            5 => Out::Settings,
-            _ => Out::Quit,
-        }
+        self.rows[choice]
     }
 }
 

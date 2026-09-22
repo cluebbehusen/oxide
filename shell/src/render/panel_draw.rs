@@ -3,6 +3,7 @@
 //! the LayoutModel; the pure card model lives in crate::panel.
 
 use super::*;
+use crate::render::prim::{fill_rect, stroke_rect};
 
 use super::panel_layout::{PanelGeometry, measure_info};
 
@@ -450,13 +451,7 @@ fn draw_catalog(
         minimap,
         panel.cards.len(),
     );
-    draw_rectangle(
-        band.x,
-        band.y,
-        band.w,
-        band.h,
-        Color::from_rgba(20, 24, 26, 255),
-    );
+    fill_rect(band, Color::from_rgba(20, 24, 26, 255));
     draw_rectangle(
         band.x,
         band.y,
@@ -509,11 +504,8 @@ fn draw_catalog(
         let armed =
             matches!(card.action, CardAction::ArmBuild(kind) if input.placing == Some(kind));
         let hot = hovered == Some(i);
-        draw_rectangle(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
+        fill_rect(
+            rect,
             if armed {
                 Color::from_rgba(67, 57, 37, 255)
             } else if hot {
@@ -714,13 +706,7 @@ pub(crate) fn draw_panel(
             badge,
             badge,
         );
-        draw_rectangle(
-            plate.x,
-            plate.y,
-            plate.w,
-            plate.h,
-            Color::new(0.05, 0.05, 0.07, tint.a * 0.85),
-        );
+        fill_rect(plate, Color::new(0.05, 0.05, 0.07, tint.a * 0.85));
         blit(plate, sprites.verb_icon(*verb), tint);
     };
 
@@ -737,13 +723,7 @@ pub(crate) fn draw_panel(
         if rect.w == 0.0 {
             continue;
         }
-        draw_rectangle(
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
-            Color::from_rgba(20, 24, 26, 255),
-        );
+        fill_rect(rect, Color::from_rgba(20, 24, 26, 255));
         draw_rectangle(
             rect.x,
             rect.y,
@@ -871,22 +851,16 @@ pub(crate) fn draw_panel(
                 rh,
             );
             let hovered = rect.contains(input.mouse);
-            draw_rectangle(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
+            fill_rect(
+                rect,
                 if hovered {
                     Color::from_rgba(48, 57, 58, 255)
                 } else {
                     Color::new(0.13, 0.13, 0.17, 1.0)
                 },
             );
-            draw_rectangle_lines(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
+            stroke_rect(
+                rect,
                 if hovered { 2.0 * s } else { 1.2 * s },
                 if hovered {
                     BONE
@@ -952,7 +926,7 @@ pub(crate) fn draw_panel(
         } else {
             Color::from_rgba(29, 35, 38, 255)
         };
-        draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+        fill_rect(rect, bg);
         let border = if selected {
             SCRAP_COLOR
         } else if !card.enabled {
@@ -962,7 +936,7 @@ pub(crate) fn draw_panel(
         } else {
             Color::from_rgba(55, 65, 66, 180)
         };
-        draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.5 * s, border);
+        stroke_rect(rect, 1.5 * s, border);
         let tint = if card.enabled {
             WHITE
         } else {
@@ -1124,13 +1098,7 @@ pub(crate) fn draw_panel(
             dock.h += more_h;
         }
         let dock_top = dock.y;
-        draw_rectangle(
-            dock.x,
-            dock.y,
-            dock.w,
-            dock.h,
-            Color::from_rgba(20, 20, 24, 255),
-        );
+        fill_rect(dock, Color::from_rgba(20, 20, 24, 255));
         draw_rectangle(
             dock.x,
             dock.y,
@@ -1157,23 +1125,14 @@ pub(crate) fn draw_panel(
             let mut rect = grid_slots[i];
             rect.y -= more_h;
             let hovered = rect.contains(input.mouse);
-            draw_rectangle(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                Color::new(0.14, 0.14, 0.18, 1.0),
-            );
+            fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
             // The active order or production head wears the bright border;
             // a ready-but-blocked head remains the queue's current job.
             let group = panel.queue_groups.get(i);
             let active = group.map_or(i == 0, |g| g.active > 0);
             let wide_group = group.is_some() && rect.w >= 150.0 * s;
-            draw_rectangle_lines(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
+            stroke_rect(
+                rect,
                 if active { 2.0 * s } else { 1.2 * s },
                 if hovered || active {
                     BONE

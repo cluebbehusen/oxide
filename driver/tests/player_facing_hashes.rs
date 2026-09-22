@@ -4,8 +4,8 @@
 mod support;
 
 use chassis::grid::TilePos;
+use oxide_bot::{SeatBot, seat_bots};
 use oxide_kit::GameReplay;
-use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::scenario::{BotConfig, PlayerSpec, UnitSpec};
 use oxide_sim::{
     Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, TickReport, UnitKind,

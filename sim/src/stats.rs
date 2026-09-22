@@ -540,6 +540,22 @@ impl UnitKind {
         }
     }
 
+    /// Ticks a ground chassis loses leaving a stop on the opposite bearing,
+    /// against covering the same ground at full speed: the pivot in place
+    /// through a half turn, plus the ramps up to speed and back down to rest.
+    pub fn ground_reversal_ticks(self) -> u64 {
+        let rate = u64::from(self.ground_turn_rate());
+        if rate == 0 {
+            return 0;
+        }
+        let pivot = u64::from(128 - GROUND_ALIGNED_STEPS)
+            .div_ceil(rate)
+            .saturating_sub(1);
+        // A linear ramp over `n` ticks covers the ground of `(n + 1) / 2`.
+        let ramps = u64::from(GROUND_ACCEL_TICKS + GROUND_BRAKE_TICKS - 2).div_ceil(2);
+        pivot + ramps
+    }
+
     /// Ground gun mounts whose bearing is independent of the chassis.
     pub const fn has_ground_turret(self) -> bool {
         matches!(self, Self::Sentinel | Self::Warden | Self::Lancer)
@@ -2096,10 +2112,10 @@ pub const EXTRACTOR_REMOTE_INCOME_PER_MINUTE: u32 = 120;
 pub const EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE: u32 = 180;
 
 /// Remote Extractors pay one scrap every half second.
-pub(crate) const EXTRACTOR_REMOTE_YIELD: (u32, u64) = (1, 10);
+pub const EXTRACTOR_REMOTE_YIELD: (u32, u64) = (1, 10);
 
 /// Supported Extractors pay three scrap every second.
-pub(crate) const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
+pub const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
 
 /// Ticks between decay steps on an unattended construction site (one hp
 /// per step, applied while no own harvest-capable machine stands beside
@@ -2118,7 +2134,9 @@ pub const SITE_DECAY_PERIOD: u64 = 8;
 /// salvage from creating scrap.
 pub const REPAIR_COST_PERMILLE: u64 = 850;
 
-pub(crate) fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
+/// Scrap charged for the next unit-repair tick at the given repair progress.
+/// Uses cumulative rounding so consecutive ticks agree with authoritative billing.
+pub fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
     let stats = kind.stats();
     let owed = |ticks: u32| {
         let welded = u64::from(stats.max_hp) * u64::from(ticks) / u64::from(stats.train_ticks);
@@ -2251,6 +2269,16 @@ pub const WAYPOINT_ACCEPT: Fx = Fx::lit("0.35");
 /// steps is 135 degrees: right-angle corners are driven as arcs; a reversal
 /// stops first.
 pub const GROUND_PIVOT_THRESHOLD: u8 = 96;
+
+/// Heading error, in compass steps, inside which a ground chassis is on its
+/// bearing: it rolls from rest and tracks its target point directly.
+pub const GROUND_ALIGNED_STEPS: u8 = 8;
+
+/// Ticks a ground motor takes from rest to full speed.
+pub const GROUND_ACCEL_TICKS: u8 = 6;
+
+/// Ticks a ground motor takes from full speed to rest.
+pub const GROUND_BRAKE_TICKS: u8 = 3;
 
 /// Running ticks of contact cancelling most of a ground body's intended
 /// progress before it drops its route and its brain plans again from where

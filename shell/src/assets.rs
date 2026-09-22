@@ -65,105 +65,19 @@ pub struct Sprites {
     wreck_pile: Rect,
     air_shadow: Rect,
     burst: Rect,
-    foundry: [Rect; 3],
-    turret: [Rect; 3],
-    fabricator: [Rect; 3],
-    flak_turret: [Rect; 3],
-    bastion: [Rect; 3],
-    array: [Rect; 3],
-    reclaimer: [Rect; 3],
-    extractor: [Rect; 3],
-    airworks: [Rect; 3],
-    crucible: [Rect; 3],
-    barricade: [Rect; 3],
-    scuttle_charge: [Rect; 3],
-    repair_bay: [Rect; 3],
     bastion_action: [[Rect; 3]; 9],
-    foundry_work: [[Rect; 3]; 4],
-    fabricator_work: [[Rect; 3]; 4],
-    array_work: [[Rect; 3]; 6],
     array_t1_work: [[Rect; 3]; 6],
-    reclaimer_work: [[Rect; 3]; 3],
-    extractor_work: [[Rect; 3]; 3],
-    airworks_work: [[Rect; 3]; 4],
-    crucible_work: [[Rect; 3]; 3],
-    repair_bay_work: [[Rect; 3]; 4],
     construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
-    harvester: [Rect; 3],
-    harvester_tread: [[Rect; 3]; 2],
     harvester_cargo: [[Rect; 3]; 5],
     harvester_cargo_scoop: [[[Rect; 3]; 2]; 5],
     harvester_cargo_tread: [[[Rect; 3]; 2]; 5],
+    /// Hull and tier-zero work art per building kind, indexed the same way.
+    buildings: Vec<BuildingArt>,
+    /// Chassis art per unit kind, indexed by the kind's discriminant.
+    units: Vec<UnitArt>,
     scaffold: [Rect; 2],
     debris: [Rect; 3],
-    scuttler: [Rect; 3],
-    scuttler_move: [[Rect; 3]; 2],
-    scuttler_action: [[Rect; 3]; 4],
-    lancer: [Rect; 3],
-    lancer_move: [[Rect; 3]; 2],
-    lancer_action: [[Rect; 3]; 6],
-    sentinel: [Rect; 3],
-    sentinel_move: [[Rect; 3]; 2],
-    sentinel_action: [[Rect; 3]; 4],
-    bombard: [Rect; 3],
-    bombard_move: [[Rect; 3]; 2],
-    bombard_action: [[Rect; 3]; 6],
-    flakhound: [Rect; 3],
-    flakhound_tread: [[Rect; 3]; 2],
-    flakhound_action: [[Rect; 3]; 9],
-    stinger: [Rect; 3],
-    stinger_move: [[Rect; 3]; 2],
-    stinger_action: [[Rect; 3]; 4],
-    buzzard: [Rect; 3],
-    buzzard_move: [[Rect; 3]; 2],
-    buzzard_action: [[Rect; 3]; 4],
-    darter: [Rect; 3],
-    darter_move: [[Rect; 3]; 2],
-    darter_action: [[Rect; 3]; 4],
-    talon: [Rect; 3],
-    talon_move: [[Rect; 3]; 2],
-    talon_action: [[Rect; 3]; 4],
-    wisp: [Rect; 3],
-    wisp_move: [[Rect; 3]; 2],
-    wisp_action: [[Rect; 3]; 4],
-    warden: [Rect; 3],
-    warden_move: [[Rect; 3]; 2],
-    warden_action: [[Rect; 3]; 4],
-    shrike: [Rect; 3],
-    shrike_move: [[Rect; 3]; 2],
-    shrike_action: [[Rect; 3]; 4],
-    sylph: [Rect; 3],
-    sylph_move: [[Rect; 3]; 2],
-    sylph_action: [[Rect; 3]; 4],
-    tender: [Rect; 3],
-    tender_move: [[Rect; 3]; 2],
-    tender_action: [[Rect; 3]; 4],
-    excavator: [Rect; 3],
-    excavator_move: [[Rect; 3]; 2],
-    excavator_action: [[Rect; 3]; 4],
     excavator_cargo: [Rect; EXCAVATOR_CARGO_LEVELS],
-    kestrel: [Rect; 3],
-    kestrel_move: [[Rect; 3]; 2],
-    gnat: [Rect; 3],
-    gnat_move: [[Rect; 3]; 2],
-    condor: [Rect; 3],
-    condor_move: [[Rect; 3]; 2],
-    condor_action: [[Rect; 3]; 4],
-    moth: [Rect; 3],
-    moth_move: [[Rect; 3]; 2],
-    moth_action: [[Rect; 3]; 6],
-    breaker: [Rect; 3],
-    breaker_move: [[Rect; 3]; 2],
-    breaker_action: [[Rect; 3]; 4],
-    avalanche: [Rect; 3],
-    avalanche_move: [[Rect; 3]; 2],
-    avalanche_action: [[Rect; 3]; 4],
-    skyhook: [Rect; 3],
-    skyhook_move: [[Rect; 3]; 2],
-    skyhook_action: [[Rect; 3]; 4],
-    sapper: [Rect; 3],
-    sapper_move: [[Rect; 3]; 2],
-    sapper_action: [[Rect; 3]; 3],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -546,24 +460,6 @@ pub(crate) fn building_stem(kind: BuildingKind) -> &'static str {
     }
 }
 
-fn building_index(kind: BuildingKind) -> usize {
-    match kind {
-        BuildingKind::Foundry => 0,
-        BuildingKind::Turret => 1,
-        BuildingKind::Fabricator => 2,
-        BuildingKind::FlakTurret => 3,
-        BuildingKind::Bastion => 4,
-        BuildingKind::Array => 5,
-        BuildingKind::Reclaimer => 6,
-        BuildingKind::RepairBay => 7,
-        BuildingKind::Extractor => 8,
-        BuildingKind::Airworks => 9,
-        BuildingKind::Crucible => 10,
-        BuildingKind::Barricade => 11,
-        BuildingKind::ScuttleCharge => 12,
-    }
-}
-
 /// The three names every faction-varied row carries.
 fn variant_keys(stem: &str, suffix: &str) -> [String; 3] {
     [
@@ -641,7 +537,53 @@ fn excavator_cargo_rows(rects: &Manifest) -> Result<[Rect; EXCAVATOR_CARGO_LEVEL
     Ok(out)
 }
 
+/// One unit kind's chassis art: the ready row, its two locomotion poses, and
+/// however many action frames its atlas bank ships.
+struct UnitArt {
+    base: [Rect; 3],
+    moving: [[Rect; 3]; 2],
+    action: Vec<[Rect; 3]>,
+}
+
+/// Loads every kind's art in discriminant order, so accessors can index by
+/// `kind as usize`.
+fn unit_art(rects: &Manifest) -> Result<Vec<UnitArt>> {
+    UnitKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, &kind)| {
+            anyhow::ensure!(
+                kind as usize == index,
+                "UnitKind::ALL must list {kind:?} at its discriminant"
+            );
+            let stem = unit_stem(kind);
+            Ok(UnitArt {
+                base: variant_row(rects, stem, "")?,
+                moving: variant_rows(rects, stem, unit_move_suffixes(kind))?,
+                action: unit_action_suffixes(kind)
+                    .iter()
+                    .map(|suffix| variant_row(rects, stem, suffix))
+                    .collect::<Result<_>>()?,
+            })
+        })
+        .collect()
+}
+
+/// The two locomotion poses: tracked hulls ship tread frames, everything
+/// else ships move frames.
+fn unit_move_suffixes(kind: UnitKind) -> [&'static str; 2] {
+    match kind {
+        UnitKind::Harvester | UnitKind::Flakhound => TREAD_SUFFIXES,
+        _ => MOVE_SUFFIXES,
+    }
+}
+
+/// How many action frames a kind's atlas bank ships.
 #[cfg(test)]
+pub(crate) fn unit_action_frames(kind: UnitKind) -> usize {
+    unit_action_suffixes(kind).len()
+}
+
 fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
     match kind {
         UnitKind::Harvester => &[],
@@ -669,7 +611,35 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
     }
 }
 
-#[cfg(test)]
+/// One building kind's base hull and the activity frames its tier-zero bank
+/// ships. Upgraded hulls and their work rows stay named fields.
+struct BuildingArt {
+    base: [Rect; 3],
+    work: Vec<[Rect; 3]>,
+}
+
+/// Loads every kind's art in discriminant order, like [`unit_art`].
+fn building_art(rects: &Manifest) -> Result<Vec<BuildingArt>> {
+    BuildingKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, &kind)| {
+            anyhow::ensure!(
+                kind as usize == index,
+                "BuildingKind::ALL must list {kind:?} at its discriminant"
+            );
+            let stem = building_stem(kind);
+            Ok(BuildingArt {
+                base: variant_row(rects, stem, "")?,
+                work: building_work_suffixes(kind)
+                    .iter()
+                    .map(|suffix| variant_row(rects, stem, suffix))
+                    .collect::<Result<_>>()?,
+            })
+        })
+        .collect()
+}
+
 fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
     match kind {
         BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::RepairBay => {
@@ -688,74 +658,17 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
     }
 }
 
-/// Every kind the shell must find art for.
-#[cfg(test)]
-const ALL_UNIT_KINDS: [UnitKind; 24] = [
-    UnitKind::Harvester,
-    UnitKind::Sentinel,
-    UnitKind::Scuttler,
-    UnitKind::Lancer,
-    UnitKind::Bombard,
-    UnitKind::Flakhound,
-    UnitKind::Stinger,
-    UnitKind::Buzzard,
-    UnitKind::Darter,
-    UnitKind::Talon,
-    UnitKind::Wisp,
-    UnitKind::Warden,
-    UnitKind::Tender,
-    UnitKind::Excavator,
-    UnitKind::Kestrel,
-    UnitKind::Gnat,
-    UnitKind::Shrike,
-    UnitKind::Sylph,
-    UnitKind::Condor,
-    UnitKind::Moth,
-    UnitKind::Breaker,
-    UnitKind::Avalanche,
-    UnitKind::Skyhook,
-    UnitKind::Sapper,
-];
-
-const ALL_BUILDING_KINDS: [BuildingKind; 13] = [
-    BuildingKind::Foundry,
-    BuildingKind::Turret,
-    BuildingKind::Fabricator,
-    BuildingKind::FlakTurret,
-    BuildingKind::Bastion,
-    BuildingKind::Array,
-    BuildingKind::Reclaimer,
-    BuildingKind::RepairBay,
-    BuildingKind::Extractor,
-    BuildingKind::Airworks,
-    BuildingKind::Crucible,
-    BuildingKind::Barricade,
-    BuildingKind::ScuttleCharge,
-];
-
-#[cfg(test)]
-const WORK_BUILDING_KINDS: [BuildingKind; 8] = [
-    BuildingKind::Foundry,
-    BuildingKind::Fabricator,
-    BuildingKind::Array,
-    BuildingKind::Reclaimer,
-    BuildingKind::RepairBay,
-    BuildingKind::Extractor,
-    BuildingKind::Airworks,
-    BuildingKind::Crucible,
-];
-
 fn construction_rows(
     rects: &Manifest,
 ) -> Result<[[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT]> {
     let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
     let mut out = [empty; SITE_FRAME_COUNT * BUILDING_KIND_COUNT];
-    for kind in ALL_BUILDING_KINDS {
+    for kind in BuildingKind::ALL {
         for stage in 0..SITE_STAGES {
             for phase in 0..SITE_PHASES {
                 let frame = stage * SITE_PHASES + phase;
                 let suffix = format!("_site{stage}_{phase}");
-                out[building_index(kind) * SITE_FRAME_COUNT + frame] =
+                out[kind as usize * SITE_FRAME_COUNT + frame] =
                     variant_row(rects, building_stem(kind), &suffix)?;
             }
         }
@@ -849,47 +762,18 @@ fn atlas_keys() -> Vec<String> {
         keys.extend(variant_keys(BASTION_MOUNT_STEM, suffix));
         keys.extend(variant_keys(building_stem(BuildingKind::Bastion), suffix));
     }
-    for kind in ALL_BUILDING_KINDS {
-        keys.extend(variant_keys(building_stem(kind), ""));
-    }
-    for kind in ALL_UNIT_KINDS {
-        keys.extend(variant_keys(unit_stem(kind), ""));
+    for kind in UnitKind::ALL {
+        let stem = unit_stem(kind);
+        keys.extend(variant_keys(stem, ""));
+        for suffix in unit_move_suffixes(kind) {
+            keys.extend(variant_keys(stem, suffix));
+        }
+        for suffix in unit_action_suffixes(kind) {
+            keys.extend(variant_keys(stem, suffix));
+        }
     }
     for suffix in SCOOP_SUFFIXES {
         keys.extend(variant_keys(unit_stem(UnitKind::Harvester), suffix));
-    }
-    for kind in [UnitKind::Harvester, UnitKind::Flakhound] {
-        for suffix in TREAD_SUFFIXES {
-            keys.extend(variant_keys(unit_stem(kind), suffix));
-        }
-    }
-    for kind in [
-        UnitKind::Sentinel,
-        UnitKind::Scuttler,
-        UnitKind::Lancer,
-        UnitKind::Bombard,
-        UnitKind::Stinger,
-        UnitKind::Buzzard,
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
-        UnitKind::Warden,
-        UnitKind::Tender,
-        UnitKind::Excavator,
-        UnitKind::Kestrel,
-        UnitKind::Gnat,
-        UnitKind::Shrike,
-        UnitKind::Sylph,
-        UnitKind::Condor,
-        UnitKind::Moth,
-        UnitKind::Breaker,
-        UnitKind::Avalanche,
-        UnitKind::Skyhook,
-        UnitKind::Sapper,
-    ] {
-        for suffix in MOVE_SUFFIXES {
-            keys.extend(variant_keys(unit_stem(kind), suffix));
-        }
     }
     for level in 0..HARVESTER_CARGO_LEVELS {
         keys.extend(variant_keys("harvester", &format!("_cargo{level}")));
@@ -900,17 +784,11 @@ fn atlas_keys() -> Vec<String> {
     for level in 0..EXCAVATOR_CARGO_LEVELS {
         keys.push(format!("excavator_cargo{level}"));
     }
-    for kind in ALL_UNIT_KINDS {
-        for suffix in unit_action_suffixes(kind) {
-            keys.extend(variant_keys(unit_stem(kind), suffix));
-        }
-    }
-    for kind in WORK_BUILDING_KINDS {
+    for kind in BuildingKind::ALL {
+        keys.extend(variant_keys(building_stem(kind), ""));
         for suffix in building_work_suffixes(kind) {
             keys.extend(variant_keys(building_stem(kind), suffix));
         }
-    }
-    for kind in ALL_BUILDING_KINDS {
         for stage in 0..SITE_STAGES {
             for phase in 0..SITE_PHASES {
                 keys.extend(variant_keys(
@@ -997,8 +875,6 @@ impl Sprites {
             burst,
         ] = pick(&rects, SINGLE_KEYS)?;
         let entity_lod = crate::entity_lod::EntityLod::load(&rects, page_height).await?;
-        let unit = |kind| variant_row(&rects, unit_stem(kind), "");
-        let building = |kind| variant_row(&rects, building_stem(kind), "");
         Ok(Self {
             sentinel_rig: unit_rig(&rects, "sentinel", 4)?,
             warden_rig: unit_rig(&rects, "warden", 4)?,
@@ -1057,125 +933,17 @@ impl Sprites {
             wreck_pile,
             air_shadow,
             burst,
-            foundry: building(BuildingKind::Foundry)?,
-            turret: building(BuildingKind::Turret)?,
-            fabricator: building(BuildingKind::Fabricator)?,
-            flak_turret: building(BuildingKind::FlakTurret)?,
-            bastion: building(BuildingKind::Bastion)?,
-            array: building(BuildingKind::Array)?,
-            reclaimer: building(BuildingKind::Reclaimer)?,
-            extractor: building(BuildingKind::Extractor)?,
-            airworks: building(BuildingKind::Airworks)?,
-            crucible: building(BuildingKind::Crucible)?,
-            barricade: building(BuildingKind::Barricade)?,
-            scuttle_charge: building(BuildingKind::ScuttleCharge)?,
-            repair_bay: building(BuildingKind::RepairBay)?,
             bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
-            foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
-            fabricator_work: variant_rows(&rects, "fabricator", WORK_SUFFIXES_4)?,
-            array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
             array_t1_work: variant_rows(&rects, "array_t1", WORK_SUFFIXES_6)?,
-            reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
-            extractor_work: variant_rows(&rects, "extractor", WORK_SUFFIXES_3)?,
-            airworks_work: variant_rows(&rects, "airworks", WORK_SUFFIXES_4)?,
-            crucible_work: variant_rows(&rects, "crucible", WORK_SUFFIXES_3)?,
-            repair_bay_work: variant_rows(&rects, "repair_bay", WORK_SUFFIXES_4)?,
             construction: construction_rows(&rects)?,
-            harvester: unit(UnitKind::Harvester)?,
-            harvester_tread: variant_rows(&rects, unit_stem(UnitKind::Harvester), TREAD_SUFFIXES)?,
             harvester_cargo: harvester_cargo_rows(&rects)?,
             harvester_cargo_scoop: harvester_cargo_motion_rows(&rects, SCOOP_SUFFIXES)?,
             harvester_cargo_tread: harvester_cargo_motion_rows(&rects, TREAD_SUFFIXES)?,
+            buildings: building_art(&rects)?,
+            units: unit_art(&rects)?,
             scaffold: pick(&rects, SCAFFOLD_KEYS)?,
             debris: pick(&rects, DEBRIS_KEYS)?,
-            scuttler: unit(UnitKind::Scuttler)?,
-            scuttler_move: variant_rows(&rects, unit_stem(UnitKind::Scuttler), MOVE_SUFFIXES)?,
-            scuttler_action: variant_rows(
-                &rects,
-                unit_stem(UnitKind::Scuttler),
-                ACTION_SUFFIXES_4,
-            )?,
-            lancer: unit(UnitKind::Lancer)?,
-            lancer_move: variant_rows(&rects, unit_stem(UnitKind::Lancer), MOVE_SUFFIXES)?,
-            lancer_action: variant_rows(&rects, unit_stem(UnitKind::Lancer), ACTION_SUFFIXES_6)?,
-            sentinel: unit(UnitKind::Sentinel)?,
-            sentinel_move: variant_rows(&rects, unit_stem(UnitKind::Sentinel), MOVE_SUFFIXES)?,
-            sentinel_action: variant_rows(
-                &rects,
-                unit_stem(UnitKind::Sentinel),
-                ACTION_SUFFIXES_4,
-            )?,
-            bombard: unit(UnitKind::Bombard)?,
-            bombard_move: variant_rows(&rects, unit_stem(UnitKind::Bombard), MOVE_SUFFIXES)?,
-            bombard_action: variant_rows(&rects, unit_stem(UnitKind::Bombard), ACTION_SUFFIXES_6)?,
-            flakhound: unit(UnitKind::Flakhound)?,
-            flakhound_tread: variant_rows(&rects, unit_stem(UnitKind::Flakhound), TREAD_SUFFIXES)?,
-            flakhound_action: variant_rows(
-                &rects,
-                unit_stem(UnitKind::Flakhound),
-                ACTION_SUFFIXES_9,
-            )?,
-            stinger: unit(UnitKind::Stinger)?,
-            stinger_move: variant_rows(&rects, unit_stem(UnitKind::Stinger), MOVE_SUFFIXES)?,
-            stinger_action: variant_rows(&rects, unit_stem(UnitKind::Stinger), ACTION_SUFFIXES_4)?,
-            buzzard: unit(UnitKind::Buzzard)?,
-            buzzard_move: variant_rows(&rects, unit_stem(UnitKind::Buzzard), MOVE_SUFFIXES)?,
-            buzzard_action: variant_rows(&rects, unit_stem(UnitKind::Buzzard), ACTION_SUFFIXES_4)?,
-            darter: unit(UnitKind::Darter)?,
-            darter_move: variant_rows(&rects, unit_stem(UnitKind::Darter), MOVE_SUFFIXES)?,
-            darter_action: variant_rows(&rects, unit_stem(UnitKind::Darter), ACTION_SUFFIXES_4)?,
-            talon: unit(UnitKind::Talon)?,
-            talon_move: variant_rows(&rects, unit_stem(UnitKind::Talon), MOVE_SUFFIXES)?,
-            talon_action: variant_rows(&rects, unit_stem(UnitKind::Talon), ACTION_SUFFIXES_4)?,
-            wisp: unit(UnitKind::Wisp)?,
-            wisp_move: variant_rows(&rects, unit_stem(UnitKind::Wisp), MOVE_SUFFIXES)?,
-            wisp_action: variant_rows(&rects, unit_stem(UnitKind::Wisp), ACTION_SUFFIXES_4)?,
-            warden: unit(UnitKind::Warden)?,
-            warden_move: variant_rows(&rects, unit_stem(UnitKind::Warden), MOVE_SUFFIXES)?,
-            warden_action: variant_rows(&rects, unit_stem(UnitKind::Warden), ACTION_SUFFIXES_4)?,
-            shrike: unit(UnitKind::Shrike)?,
-            shrike_move: variant_rows(&rects, unit_stem(UnitKind::Shrike), MOVE_SUFFIXES)?,
-            shrike_action: variant_rows(&rects, unit_stem(UnitKind::Shrike), ACTION_SUFFIXES_4)?,
-            sylph: unit(UnitKind::Sylph)?,
-            sylph_move: variant_rows(&rects, unit_stem(UnitKind::Sylph), MOVE_SUFFIXES)?,
-            sylph_action: variant_rows(&rects, unit_stem(UnitKind::Sylph), ACTION_SUFFIXES_4)?,
-            tender: unit(UnitKind::Tender)?,
-            tender_move: variant_rows(&rects, unit_stem(UnitKind::Tender), MOVE_SUFFIXES)?,
-            tender_action: variant_rows(&rects, unit_stem(UnitKind::Tender), ACTION_SUFFIXES_4)?,
-            excavator: unit(UnitKind::Excavator)?,
-            excavator_move: variant_rows(&rects, unit_stem(UnitKind::Excavator), MOVE_SUFFIXES)?,
-            excavator_action: variant_rows(
-                &rects,
-                unit_stem(UnitKind::Excavator),
-                ACTION_SUFFIXES_4,
-            )?,
             excavator_cargo: excavator_cargo_rows(&rects)?,
-            kestrel: unit(UnitKind::Kestrel)?,
-            kestrel_move: variant_rows(&rects, unit_stem(UnitKind::Kestrel), MOVE_SUFFIXES)?,
-            gnat: unit(UnitKind::Gnat)?,
-            gnat_move: variant_rows(&rects, unit_stem(UnitKind::Gnat), MOVE_SUFFIXES)?,
-            condor: unit(UnitKind::Condor)?,
-            condor_move: variant_rows(&rects, unit_stem(UnitKind::Condor), MOVE_SUFFIXES)?,
-            condor_action: variant_rows(&rects, unit_stem(UnitKind::Condor), ACTION_SUFFIXES_4)?,
-            moth: unit(UnitKind::Moth)?,
-            moth_move: variant_rows(&rects, unit_stem(UnitKind::Moth), MOVE_SUFFIXES)?,
-            moth_action: variant_rows(&rects, unit_stem(UnitKind::Moth), ACTION_SUFFIXES_6)?,
-            breaker: unit(UnitKind::Breaker)?,
-            breaker_move: variant_rows(&rects, unit_stem(UnitKind::Breaker), MOVE_SUFFIXES)?,
-            breaker_action: variant_rows(&rects, unit_stem(UnitKind::Breaker), ACTION_SUFFIXES_4)?,
-            avalanche: unit(UnitKind::Avalanche)?,
-            avalanche_move: variant_rows(&rects, unit_stem(UnitKind::Avalanche), MOVE_SUFFIXES)?,
-            avalanche_action: variant_rows(
-                &rects,
-                unit_stem(UnitKind::Avalanche),
-                ACTION_SUFFIXES_4,
-            )?,
-            skyhook: unit(UnitKind::Skyhook)?,
-            skyhook_move: variant_rows(&rects, unit_stem(UnitKind::Skyhook), MOVE_SUFFIXES)?,
-            skyhook_action: variant_rows(&rects, unit_stem(UnitKind::Skyhook), ACTION_SUFFIXES_4)?,
-            sapper: unit(UnitKind::Sapper)?,
-            sapper_move: variant_rows(&rects, unit_stem(UnitKind::Sapper), MOVE_SUFFIXES)?,
-            sapper_action: variant_rows(&rects, unit_stem(UnitKind::Sapper), ACTION_SUFFIXES_3)?,
         })
     }
 
@@ -1432,21 +1200,7 @@ impl Sprites {
 
     /// The building sprite region for a kind and faction.
     fn building_row(&self, kind: oxide_sim::BuildingKind) -> &[Rect; 3] {
-        match kind {
-            oxide_sim::BuildingKind::Foundry => &self.foundry,
-            oxide_sim::BuildingKind::Turret => &self.turret,
-            oxide_sim::BuildingKind::Fabricator => &self.fabricator,
-            oxide_sim::BuildingKind::FlakTurret => &self.flak_turret,
-            oxide_sim::BuildingKind::Bastion => &self.bastion,
-            oxide_sim::BuildingKind::Array => &self.array,
-            oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
-            oxide_sim::BuildingKind::RepairBay => &self.repair_bay,
-            oxide_sim::BuildingKind::Extractor => &self.extractor,
-            oxide_sim::BuildingKind::Airworks => &self.airworks,
-            oxide_sim::BuildingKind::Crucible => &self.crucible,
-            oxide_sim::BuildingKind::Barricade => &self.barricade,
-            oxide_sim::BuildingKind::ScuttleCharge => &self.scuttle_charge,
-        }
+        &self.buildings[kind as usize].base
     }
 
     pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
@@ -1513,15 +1267,7 @@ impl Sprites {
         let rows: &[[Rect; 3]] = match (kind, tier) {
             (BuildingKind::Reclaimer, 1) => &self.reclaimer_t1_work,
             (BuildingKind::Array, 1) => &self.array_t1_work,
-            (_, tier) if tier != 0 => return None,
-            (BuildingKind::Foundry, 0) => &self.foundry_work,
-            (BuildingKind::Fabricator, 0) => &self.fabricator_work,
-            (BuildingKind::Array, 0) => &self.array_work,
-            (BuildingKind::Reclaimer, 0) => &self.reclaimer_work,
-            (BuildingKind::RepairBay, 0) => &self.repair_bay_work,
-            (BuildingKind::Extractor, 0) => &self.extractor_work,
-            (BuildingKind::Airworks, 0) => &self.airworks_work,
-            (BuildingKind::Crucible, 0) => &self.crucible_work,
+            (_, 0) => &self.buildings[kind as usize].work,
             _ => return None,
         };
         frame.checked_sub(1).and_then(|index| rows.get(index))
@@ -1551,7 +1297,7 @@ impl Sprites {
     fn construction_row(&self, kind: BuildingKind, stage: usize, phase: usize) -> &[Rect; 3] {
         let stage = stage.min(SITE_STAGES - 1);
         let phase = phase.min(SITE_PHASES - 1);
-        &self.construction[building_index(kind) * SITE_FRAME_COUNT + stage * SITE_PHASES + phase]
+        &self.construction[kind as usize * SITE_FRAME_COUNT + stage * SITE_PHASES + phase]
     }
 
     /// A full construction-site frame authored for the final building's
@@ -1594,14 +1340,15 @@ impl Sprites {
     }
 
     fn excavator_frame_row(&self, pose: ExcavatorPose) -> &[Rect; 3] {
+        let art = &self.units[UnitKind::Excavator as usize];
         match pose {
-            ExcavatorPose::Idle => &self.excavator,
-            ExcavatorPose::Tread1 => &self.excavator_move[0],
-            ExcavatorPose::Tread2 => &self.excavator_move[1],
-            ExcavatorPose::Work1 => &self.excavator_action[0],
-            ExcavatorPose::Work2 => &self.excavator_action[1],
-            ExcavatorPose::Work3 => &self.excavator_action[2],
-            ExcavatorPose::Work4 => &self.excavator_action[3],
+            ExcavatorPose::Idle => &art.base,
+            ExcavatorPose::Tread1 => &art.moving[0],
+            ExcavatorPose::Tread2 => &art.moving[1],
+            ExcavatorPose::Work1 => &art.action[0],
+            ExcavatorPose::Work2 => &art.action[1],
+            ExcavatorPose::Work3 => &art.action[2],
+            ExcavatorPose::Work4 => &art.action[3],
         }
     }
 
@@ -1621,36 +1368,11 @@ impl Sprites {
     }
 
     fn moving_unit_row(&self, kind: UnitKind, frame: usize) -> &[Rect; 3] {
-        let rows = match kind {
-            UnitKind::Harvester => &self.harvester_tread,
-            UnitKind::Sentinel => &self.sentinel_move,
-            UnitKind::Scuttler => &self.scuttler_move,
-            UnitKind::Lancer => &self.lancer_move,
-            UnitKind::Bombard => &self.bombard_move,
-            UnitKind::Flakhound => &self.flakhound_tread,
-            UnitKind::Stinger => &self.stinger_move,
-            UnitKind::Buzzard => &self.buzzard_move,
-            UnitKind::Darter => &self.darter_move,
-            UnitKind::Talon => &self.talon_move,
-            UnitKind::Wisp => &self.wisp_move,
-            UnitKind::Warden => &self.warden_move,
-            UnitKind::Tender => &self.tender_move,
-            UnitKind::Excavator => &self.excavator_move,
-            UnitKind::Kestrel => &self.kestrel_move,
-            UnitKind::Gnat => &self.gnat_move,
-            UnitKind::Shrike => &self.shrike_move,
-            UnitKind::Sylph => &self.sylph_move,
-            UnitKind::Condor => &self.condor_move,
-            UnitKind::Moth => &self.moth_move,
-            UnitKind::Breaker => &self.breaker_move,
-            UnitKind::Avalanche => &self.avalanche_move,
-            UnitKind::Skyhook => &self.skyhook_move,
-            UnitKind::Sapper => &self.sapper_move,
-        };
+        let art = &self.units[kind as usize];
         frame
             .checked_sub(1)
-            .and_then(|index| rows.get(index))
-            .unwrap_or_else(|| self.unit_row(kind))
+            .and_then(|index| art.moving.get(index))
+            .unwrap_or(&art.base)
     }
 
     /// A unit's authored locomotion phase. Frame 0 is the ordinary base art;
@@ -1675,63 +1397,11 @@ impl Sprites {
     }
 
     fn unit_row(&self, kind: UnitKind) -> &[Rect; 3] {
-        match kind {
-            UnitKind::Harvester => &self.harvester,
-            UnitKind::Sentinel => &self.sentinel,
-            UnitKind::Scuttler => &self.scuttler,
-            UnitKind::Lancer => &self.lancer,
-            UnitKind::Bombard => &self.bombard,
-            UnitKind::Flakhound => &self.flakhound,
-            UnitKind::Stinger => &self.stinger,
-            UnitKind::Buzzard => &self.buzzard,
-            UnitKind::Darter => &self.darter,
-            UnitKind::Talon => &self.talon,
-            UnitKind::Wisp => &self.wisp,
-            UnitKind::Warden => &self.warden,
-            UnitKind::Tender => &self.tender,
-            UnitKind::Excavator => &self.excavator,
-            UnitKind::Kestrel => &self.kestrel,
-            UnitKind::Gnat => &self.gnat,
-            UnitKind::Shrike => &self.shrike,
-            UnitKind::Sylph => &self.sylph,
-            UnitKind::Condor => &self.condor,
-            UnitKind::Moth => &self.moth,
-            UnitKind::Breaker => &self.breaker,
-            UnitKind::Avalanche => &self.avalanche,
-            UnitKind::Skyhook => &self.skyhook,
-            UnitKind::Sapper => &self.sapper,
-        }
+        &self.units[kind as usize].base
     }
 
     fn unit_action_row(&self, kind: UnitKind, frame: usize) -> Option<&[Rect; 3]> {
-        let rows: &[[Rect; 3]] = match kind {
-            UnitKind::Harvester => return None,
-            UnitKind::Sentinel => &self.sentinel_action,
-            UnitKind::Scuttler => &self.scuttler_action,
-            UnitKind::Lancer => &self.lancer_action,
-            UnitKind::Bombard => &self.bombard_action,
-            UnitKind::Flakhound => &self.flakhound_action,
-            UnitKind::Stinger => &self.stinger_action,
-            UnitKind::Buzzard => &self.buzzard_action,
-            UnitKind::Darter => &self.darter_action,
-            UnitKind::Talon => &self.talon_action,
-            UnitKind::Wisp => &self.wisp_action,
-            UnitKind::Warden => &self.warden_action,
-            UnitKind::Shrike => &self.shrike_action,
-            UnitKind::Sylph => &self.sylph_action,
-            UnitKind::Tender => &self.tender_action,
-            UnitKind::Excavator => &self.excavator_action,
-            UnitKind::Condor => &self.condor_action,
-            UnitKind::Moth => &self.moth_action,
-            UnitKind::Breaker => &self.breaker_action,
-            UnitKind::Avalanche => &self.avalanche_action,
-            UnitKind::Skyhook => &self.skyhook_action,
-            UnitKind::Sapper => &self.sapper_action,
-            UnitKind::Kestrel | UnitKind::Gnat => {
-                return None;
-            }
-        };
-        rows.get(frame)
+        self.units[kind as usize].action.get(frame)
     }
 
     /// A unit's zero-based authored action frame. Harvester and invalid frame
@@ -2195,6 +1865,30 @@ mod tests {
     }
 
     #[test]
+    fn the_building_loader_finds_every_kind_in_the_shipped_atlas() {
+        let art = building_art(&manifest()).expect("every building bank is in the atlas");
+        for kind in BuildingKind::ALL {
+            assert_eq!(
+                art[kind as usize].work.len(),
+                building_work_suffixes(kind).len(),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unit_loader_finds_every_kind_in_the_shipped_atlas() {
+        let art = unit_art(&manifest()).expect("every unit bank is in the atlas");
+        for kind in UnitKind::ALL {
+            assert_eq!(
+                art[kind as usize].action.len(),
+                unit_action_frames(kind),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
     fn atlas_regions_fit_a_portable_texture_with_extrusion_room() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites");
         let atlas = manifest();
@@ -2247,32 +1941,6 @@ mod tests {
         assert_eq!(atlas_page(source, 5680.0), (0, source));
         let first = Rect::new(17.0, 3964.0, 128.0, 128.0);
         assert_eq!(atlas_page(first, 4096.0), (0, first));
-    }
-
-    #[test]
-    fn every_kind_has_both_rosters_and_an_accent_mask() {
-        let atlas = manifest();
-        let stems = ALL_UNIT_KINDS
-            .map(unit_stem)
-            .into_iter()
-            .chain(ALL_BUILDING_KINDS.map(building_stem));
-        for stem in stems {
-            for key in variant_keys(stem, "") {
-                assert!(atlas.contains_key(&key), "no {key} in the atlas");
-            }
-        }
-        for stem in [
-            TURRET_BARREL_STEM,
-            TURRET_BARREL_T1_STEM,
-            TURRET_BARREL_T2_STEM,
-            FLAK_MOUNT_STEM,
-            FLAK_MOUNT_T1_STEM,
-            BASTION_MOUNT_STEM,
-        ] {
-            for key in variant_keys(stem, "") {
-                assert!(atlas.contains_key(&key), "no {key} in the atlas");
-            }
-        }
     }
 
     #[test]
@@ -2452,7 +2120,10 @@ mod tests {
             );
         }
 
-        for kind in WORK_BUILDING_KINDS {
+        let working = BuildingKind::ALL
+            .into_iter()
+            .filter(|kind| !building_work_suffixes(*kind).is_empty());
+        for kind in working {
             let stem = building_stem(kind);
             let base = sprite_image(&format!("{stem}_ferrous"));
             let mut changed = false;
@@ -2477,7 +2148,7 @@ mod tests {
             changed |= sprite_image(&format!("array_t1_ferrous{suffix}")).bytes != deep_array.bytes;
         }
         assert!(changed, "array_t1 needs at least one visible work pose");
-        for kind in ALL_BUILDING_KINDS {
+        for kind in BuildingKind::ALL {
             let stem = building_stem(kind);
             let base = sprite_image(&format!("{stem}_ferrous"));
             for stage in 0..SITE_STAGES {
@@ -2503,7 +2174,7 @@ mod tests {
 
     #[test]
     fn production_action_and_cargo_rows_match_the_runtime_contract() {
-        for kind in ALL_UNIT_KINDS {
+        for kind in UnitKind::ALL {
             let stem = unit_stem(kind);
             for suffix in unit_action_suffixes(kind) {
                 assert_animation_variant(stem, suffix);

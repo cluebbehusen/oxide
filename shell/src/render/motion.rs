@@ -843,18 +843,10 @@ mod tests {
 
     #[test]
     fn every_unit_action_row_stays_inside_its_contract() {
-        let action_counts = [
-            (UnitKind::Sentinel, 4),
-            (UnitKind::Scuttler, 4),
-            (UnitKind::Lancer, 6),
-            (UnitKind::Bombard, 6),
-            (UnitKind::Flakhound, 9),
-            (UnitKind::Stinger, 4),
-            (UnitKind::Buzzard, 4),
-            (UnitKind::Darter, 4),
-            (UnitKind::Talon, 4),
-            (UnitKind::Wisp, 4),
-        ];
+        let action_counts = UnitKind::ALL
+            .into_iter()
+            .map(|kind| (kind, crate::assets::unit_action_frames(kind)))
+            .filter(|(_, count)| *count > 0);
         for (kind, count) in action_counts {
             for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
                 for attack in [

@@ -77,6 +77,65 @@ impl Client {
         })
     }
 
+    /// The session's status line.
+    pub fn status(&mut self) -> Result<oxide_protocol::StatusView> {
+        match self.call(Request::Status)? {
+            Reply::Status(view) => Ok(view),
+            other => wrong_reply("status", other),
+        }
+    }
+
+    /// The state view `filter` selects.
+    pub fn state(
+        &mut self,
+        filter: oxide_protocol::StateFilter,
+    ) -> Result<oxide_protocol::StateView> {
+        match self.call(Request::QueryState { filter })? {
+            Reply::State(view) => Ok(view),
+            other => wrong_reply("state", other),
+        }
+    }
+
+    /// The authoritative state hash.
+    pub fn state_hash(&mut self) -> Result<oxide_protocol::HashView> {
+        match self.call(Request::StateHash)? {
+            Reply::Hash(view) => Ok(view),
+            other => wrong_reply("hash", other),
+        }
+    }
+
+    /// Where the camera is looking.
+    pub fn camera(&mut self) -> Result<oxide_protocol::CameraView> {
+        match self.call(Request::QueryCamera)? {
+            Reply::Camera(view) => Ok(view),
+            other => wrong_reply("camera", other),
+        }
+    }
+
+    /// The interface as the shell currently presents it.
+    pub fn ui(&mut self) -> Result<oxide_protocol::UiView> {
+        match self.call(Request::QueryUi)? {
+            Reply::Ui(view) => Ok(view),
+            other => wrong_reply("ui", other),
+        }
+    }
+
+    /// Steps the simulation `ticks` ticks without presenting them.
+    pub fn advance(&mut self, ticks: u64) -> Result<oxide_protocol::AdvancedView> {
+        match self.call(Request::AdvanceTicks { ticks })? {
+            Reply::Advanced(view) => Ok(view),
+            other => wrong_reply("advanced", other),
+        }
+    }
+
+    /// Steps `ticks` ticks through the presentation path, keeping their events.
+    pub fn present(&mut self, ticks: u64) -> Result<oxide_protocol::PresentedView> {
+        match self.call(Request::PresentTicks { ticks })? {
+            Reply::Presented(view) => Ok(view),
+            other => wrong_reply("presented", other),
+        }
+    }
+
     /// Sends one request and waits for its response.
     pub fn call(&mut self, request: Request) -> Result<Reply> {
         self.reader
@@ -112,6 +171,10 @@ impl Client {
             .into_result()
             .map_err(|message| anyhow::anyhow!("shell error: {message}"))
     }
+}
+
+fn wrong_reply<T>(expected: &str, got: Reply) -> Result<T> {
+    bail!("expected a {expected} reply, got {got:?}")
 }
 
 #[cfg(test)]
