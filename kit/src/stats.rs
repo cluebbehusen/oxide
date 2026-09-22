@@ -4,13 +4,14 @@
 //! Result screen's data, and a driver subcommand for anyone else.
 
 use crate::GameReplay;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use oxide_sim::{Event, PlayerId, State};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// One player's sampled series and totals.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlayerStats {
     /// Seat index.
     pub seat: u8,
@@ -21,6 +22,7 @@ pub struct PlayerStats {
     /// Living units by kind name at each sample point — the
     /// composition timeline a viewer can band-chart. BTreeMap keys keep
     /// the serialization deterministic.
+    #[serde(deserialize_with = "deserialize_kinds")]
     pub kinds: Vec<BTreeMap<&'static str, u16>>,
     /// Scrap brought home by Harvesters across the whole match.
     pub scrap_collected: u32,
@@ -38,7 +40,8 @@ pub struct PlayerStats {
 }
 
 /// The whole report.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchStats {
     /// Tick of each sample column.
     pub sample_ticks: Vec<u64>,
@@ -57,12 +60,34 @@ const MAX_LIVE_SAMPLES: usize = 49;
 /// Totals consume the same deterministic tick events as [`compute`]. Graph
 /// samples thin themselves by powers of two, keeping memory and end-of-match
 /// work bounded no matter how long the session runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveMatchStats {
     stats: MatchStats,
     every: u64,
 }
 
 impl LiveMatchStats {
+    pub(crate) fn validate_checkpoint(&self, state: &State) -> Result<()> {
+        self.stats.validate_checkpoint(state)?;
+        anyhow::ensure!(
+            self.stats.final_tick == state.current_tick(),
+            "statistics tick mismatch"
+        );
+        anyhow::ensure!(self.every.is_power_of_two(), "invalid statistics stride");
+        anyhow::ensure!(
+            self.stats.sample_ticks.len() <= MAX_LIVE_SAMPLES,
+            "too many live samples"
+        );
+        anyhow::ensure!(
+            self.stats
+                .sample_ticks
+                .iter()
+                .all(|tick| tick.is_multiple_of(self.every)),
+            "statistics samples disagree with stride"
+        );
+        Ok(())
+    }
     /// Starts tracking from the current state, including an exact opening
     /// sample.
     pub fn new(state: &State) -> Self {
@@ -102,6 +127,65 @@ impl LiveMatchStats {
         }
         report
     }
+}
+
+impl MatchStats {
+    /// Validates a retained report against its session's seats and time boundary.
+    pub fn validate_checkpoint(&self, state: &State) -> Result<()> {
+        anyhow::ensure!(
+            self.final_tick <= state.current_tick(),
+            "statistics are from the future"
+        );
+        anyhow::ensure!(
+            !self.sample_ticks.is_empty() && self.sample_ticks.len() <= MAX_LIVE_SAMPLES + 1,
+            "invalid statistics sample count"
+        );
+        anyhow::ensure!(
+            self.sample_ticks.windows(2).all(|pair| pair[0] < pair[1])
+                && self
+                    .sample_ticks
+                    .last()
+                    .is_some_and(|tick| *tick <= self.final_tick),
+            "invalid statistics sample times"
+        );
+        anyhow::ensure!(
+            self.players.len() == state.players().len(),
+            "statistics seat count mismatch"
+        );
+        for (seat, player) in self.players.iter().enumerate() {
+            let samples = self.sample_ticks.len();
+            anyhow::ensure!(
+                usize::from(player.seat) == seat
+                    && player.scrap.len() == samples
+                    && player.army_value.len() == samples
+                    && player.kinds.len() == samples,
+                "statistics columns or seat mismatch"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn deserialize_kinds<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<BTreeMap<&'static str, u16>>, D::Error> {
+    Vec::<BTreeMap<String, u16>>::deserialize(deserializer)?
+        .into_iter()
+        .map(|sample| {
+            sample
+                .into_iter()
+                .map(|(name, count)| {
+                    oxide_sim::UnitKind::ALL
+                        .into_iter()
+                        .find(|kind| kind.name() == name)
+                        .map(|kind| (kind.name(), count))
+                        .ok_or_else(|| {
+                            serde::de::Error::custom(format!("unknown unit kind {name}"))
+                        })
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn blank_players(seats: usize) -> Vec<PlayerStats> {
@@ -199,17 +283,18 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     let every = every.max(1);
     let total = crate::bounded_replay_duration(replay)?;
-    let mut state = replay.setup.build().context("building scenario")?;
+    let mut state = crate::recording::initial_state(replay)?;
     let mut playback = crate::ReplayPlayback::new(replay);
 
     let mut stats = blank_players(state.players().len());
     let mut sample_ticks = Vec::new();
 
+    let start = state.current_tick();
     sample(&state, &mut stats, &mut sample_ticks);
-    for _ in 0..total {
+    for _ in start..total {
         let report = playback.step(&mut state);
         accumulate_events(&mut stats, &report.events);
-        if state.current_tick().is_multiple_of(every) {
+        if (state.current_tick() - start).is_multiple_of(every) {
             sample(&state, &mut stats, &mut sample_ticks);
         }
     }

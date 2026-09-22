@@ -6,14 +6,14 @@ use super::{
 use chassis::Tick;
 use oxide_sim::ids::BuildingId;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ProductionBounds {
     latest: Option<Vec<ScheduledProducerJob>>,
     windows: Vec<WindowBound>,
     fixed: Vec<FixedWindow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct WindowBound {
     jobs: Vec<(usize, u128)>,
     producers: Vec<usize>,
@@ -22,7 +22,7 @@ struct WindowBound {
     quantum: Tick,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FixedWindow {
     job: usize,
     producer: usize,

@@ -84,6 +84,10 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
             .last()
             .map_or(0, |command| command.tick.saturating_add(1))
     });
+    anyhow::ensure!(
+        record.origin.is_none(),
+        "live profiling requires a session checkpoint for this replay origin"
+    );
     validate_resume_tick(total, options.from)?;
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");

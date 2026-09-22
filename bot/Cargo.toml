@@ -9,7 +9,8 @@ description = "Fog-honest deterministic command-producing opponent"
 [dependencies]
 oxide-sim = { workspace = true }
 chassis = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
+ciborium = "0.2.2"
 
 [dev-dependencies]
 serde_json = { workspace = true }

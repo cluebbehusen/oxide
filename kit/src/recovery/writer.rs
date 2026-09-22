@@ -73,12 +73,39 @@ impl RecoveryWriter {
         tick: u64,
         source: Option<PathBuf>,
     ) -> Result<Self> {
-        Self::start_recording(root, base, tick, source, RecordingKind::LiveMatch)
+        Self::start_recording(root, base, tick, source, RecordingKind::LiveMatch, None)
+    }
+
+    /// Starts a live journal at a session checkpoint, without retaining older commands.
+    pub fn start_checkpoint(
+        root: PathBuf,
+        checkpoint: crate::checkpoint::SessionCheckpoint,
+    ) -> Result<Self> {
+        let base = checkpoint.recording()?;
+        Self::start_recovered_checkpoint(root, base.clone(), base.start_tick(), checkpoint, None)
+    }
+
+    /// Retains a recovered segment and its controller origin until its replacement is durable.
+    pub fn start_recovered_checkpoint(
+        root: PathBuf,
+        base: GameReplay,
+        tick: u64,
+        checkpoint: crate::checkpoint::SessionCheckpoint,
+        source: Option<PathBuf>,
+    ) -> Result<Self> {
+        Self::start_recording(
+            root,
+            base,
+            tick,
+            source,
+            RecordingKind::LiveMatch,
+            Some(checkpoint),
+        )
     }
 
     /// Retain a watched replay for diagnostics without offering it as a resumable match.
     pub fn start_playback(root: PathBuf, base: GameReplay, ticks: u64) -> Result<Self> {
-        Self::start_recording(root, base, ticks, None, RecordingKind::Playback)
+        Self::start_recording(root, base, ticks, None, RecordingKind::Playback, None)
     }
 
     fn start_recording(
@@ -87,6 +114,7 @@ impl RecoveryWriter {
         tick: u64,
         source: Option<PathBuf>,
         kind: RecordingKind,
+        checkpoint: Option<crate::checkpoint::SessionCheckpoint>,
     ) -> Result<Self> {
         ensure!(
             source
@@ -111,6 +139,7 @@ impl RecoveryWriter {
             session,
             build: BuildIdentity::default(),
             base,
+            checkpoint,
         };
         let shared = Arc::new(Shared::default());
         let worker_shared = shared.clone();
@@ -328,7 +357,7 @@ fn run(
         .open(directory.join("readers"))?;
     *lease_guard = Some(lease);
     budget.unlock()?;
-    header.base.validate(Some(SIM_VERSION))?;
+    validate_origin(header.kind, &header.base, header.checkpoint.as_ref())?;
     ensure!(
         header
             .base
@@ -375,6 +404,11 @@ fn run(
         ensure!(
             chassis::hash::state_hash(&previous.replay) == chassis::hash::state_hash(&header.base),
             "replacement does not contain the recovered prefix"
+        );
+        ensure!(
+            chassis::hash::state_hash(&previous.checkpoint)
+                == chassis::hash::state_hash(&header.checkpoint),
+            "replacement does not retain the recovered controller origin"
         );
         let provenance = serde_json::json!({
             "session": previous.session, "build": previous.build, "ticks": tick,
@@ -429,6 +463,11 @@ fn run(
                             *at == tick && !prepared && tick < MAX_REPLAY_TICKS,
                             "invalid recovery preparation"
                         );
+                        if *at == header.base.start_tick()
+                            && let Some(checkpoint) = &header.checkpoint
+                        {
+                            checkpoint.validate_first_batch(commands)?;
+                        }
                         count = count.saturating_add(commands.len());
                         replay_bytes = commands.iter().fold(replay_bytes, |bytes, command| {
                             bytes.saturating_add(command_bytes(&command.command))

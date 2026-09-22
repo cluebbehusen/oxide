@@ -13,7 +13,9 @@ const HORIZON: Tick = 1_800;
 const LOSS_COOLDOWN: Tick = 3_600;
 const QUIET_INTERVAL: Tick = 300;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum ReconConsumer {
     HostileStart(PlayerId),
     Objective(PlayerId, BuildingKind),
@@ -23,7 +25,9 @@ pub(crate) enum ReconConsumer {
     Approach(BuildingId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct ReconQuestionKey {
     pub(crate) consumer: ReconConsumer,
     pub(crate) y: i32,
@@ -44,7 +48,7 @@ impl ReconQuestionKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReconQuestion {
     pub(crate) key: ReconQuestionKey,
     pub(crate) size: (i32, i32),
@@ -54,7 +58,7 @@ pub(crate) struct ReconQuestion {
     pub(crate) urgency: Urgency,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ReconObserver {
     Live(UnitId),
     Queued {
@@ -70,7 +74,7 @@ pub(crate) enum ReconObserver {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReconProposal {
     pub(crate) question: ReconQuestion,
     pub(crate) observer: ReconObserver,
@@ -81,7 +85,9 @@ pub(crate) struct ReconProposal {
     pub(crate) arrival_at: Tick,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct ReconProposalKey {
     pub(crate) question: ReconQuestionKey,
     pub(crate) unit: Option<UnitId>,
@@ -165,7 +171,7 @@ impl ReconProposal {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ReconPhase {
     Preparation,
     Outbound,
@@ -183,7 +189,7 @@ impl ReconPhase {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReconAssignment {
     pub(crate) proposal: ReconProposal,
     pub(crate) unit: Option<UnitId>,
@@ -229,14 +235,14 @@ impl ReconAssignment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReconRecovery {
     pub(crate) retry_at: Tick,
     pub(crate) quiet_since: Option<Tick>,
     pub(crate) attempts: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OperationalReconWork {
     pub(crate) target: TilePos,
     pub(crate) scout: Option<UnitId>,
@@ -245,7 +251,7 @@ pub(crate) struct OperationalReconWork {
     pub(crate) paid: Vec<crate::allocation::PaidQueueClaim>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Reconnaissance {
     pub(crate) assignments: BTreeMap<ReconQuestionKey, ReconAssignment>,
     pub(crate) recovery: BTreeMap<ReconQuestionKey, ReconRecovery>,

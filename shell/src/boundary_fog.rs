@@ -8,7 +8,7 @@ const PAD: i32 = 8;
 const EXPLORED: u8 = 1;
 const VISIBLE: u8 = 2;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BoundaryFog {
     width: i32,
     height: i32,
@@ -17,6 +17,36 @@ pub(crate) struct BoundaryFog {
 }
 
 impl BoundaryFog {
+    pub(crate) fn valid_checkpoint(&self, state: &State) -> bool {
+        self.width == state.map().width()
+            && self.height == state.map().height()
+            && self.cells.is_consistent()
+            && self.cells.width() == self.width + PAD * 2
+            && self.cells.height() == self.height + PAD * 2
+            && self
+                .cells
+                .iter()
+                .all(|(_, flags)| *flags == 0 || *flags == EXPLORED || *flags == EXPLORED | VISIBLE)
+            && self.visible.iter().all(|pos| {
+                self.cells
+                    .get(*pos)
+                    .is_some_and(|flags| *flags & VISIBLE != 0)
+            })
+            && self
+                .visible
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == self.visible.len()
+            && self.visible.len()
+                == self
+                    .cells
+                    .iter()
+                    .filter(|(_, flags)| **flags & VISIBLE != 0)
+                    .count()
+    }
+
     pub(crate) fn new(state: &State, viewer: PlayerId) -> Self {
         let width = state.map().width();
         let height = state.map().height();

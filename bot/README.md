@@ -24,6 +24,15 @@ and navigation data can be shared; each seat keeps its mutable planning state.
 Commands are gathered in canonical seat order before `State::tick`. This crate
 adds no threads and no wall-clock decisions.
 
+`SeatBot::checkpoint` captures controller memory and unfinished planning by
+borrowing the seat. Restoration checks a separately versioned CBOR payload
+against the scenario, configuration, and world boundary. Decision memory and
+budgeted search progress survive; observational query caches and public-map
+navigation caches rebuild. The payload is an internal same-version continuation
+format; changes to its layout or interpretation require a controller revision
+and an explicit compatibility decision. It is separate from policy rollback
+checkpoints and never enters authoritative `State` or its hash.
+
 `navigation` owns bot route queries, search storage, and cache lifetimes. Its
 `commands` module projects ordinary movement and Build routes from player
 knowledge; `paths` provides canonical endpoint routes and bounds;
