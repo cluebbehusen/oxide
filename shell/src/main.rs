@@ -30,6 +30,7 @@ mod rocket_audio;
 mod saved_game;
 mod saves;
 mod screens;
+mod seat_style;
 mod slide_motion;
 mod soundtrack;
 mod strategic_markers;

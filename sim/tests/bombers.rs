@@ -64,12 +64,7 @@ fn peak_strike_arena() -> Scenario {
 /// The victim turret every strike test bombs: ground-only guns cannot
 /// answer an aircraft, so the pass geometry is the whole story.
 fn victim_turret() -> BuildingSpec {
-    BuildingSpec {
-        player: 1,
-        kind: BuildingKind::Turret,
-        x: 15,
-        y: 4,
-    }
+    common::building(1, BuildingKind::Turret, 15, 4)
 }
 
 #[test]
@@ -488,12 +483,7 @@ fn edge_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
 }
 
 fn turret(player: u8, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec {
-        player,
-        kind: BuildingKind::Turret,
-        x,
-        y,
-    }
+    common::building(player, BuildingKind::Turret, x, y)
 }
 
 fn enemy_building(state: &oxide_sim::State, x: i32, y: i32) -> oxide_sim::ids::BuildingId {

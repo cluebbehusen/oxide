@@ -184,3 +184,31 @@ pub fn face_target(state: &mut State, id: oxide_sim::UnitId, target: oxide_sim::
     };
     face_toward(state, id, point);
 }
+
+pub(crate) fn wide_open_map() -> Vec<String> {
+    vec![
+        "########################".into(),
+        "#1.....................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#...................2..#".into(),
+        "#......................#".into(),
+        "########################".into(),
+    ]
+}
+
+pub(crate) fn drip_credits(state: &oxide_sim::State) -> u32 {
+    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
+    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
+    let credits_by = |tick: u64| {
+        if tick < start {
+            0
+        } else {
+            tick / period - (start / period - 1)
+        }
+    };
+    u32::try_from(credits_by(state.current_tick())).unwrap()
+}

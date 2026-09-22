@@ -4,7 +4,6 @@
 mod common;
 
 use chassis::grid::TilePos;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::{BuildingKind, Command, Event, PlayerId, Scenario, Target, UnitId, UnitKind};
 
 use common::{cmd, open_arena, unit};
@@ -36,12 +35,7 @@ fn role_scenario(
             } else {
                 mirrored_anchor(*anchor, *kind)
             };
-            BuildingSpec {
-                player: defender,
-                kind: *kind,
-                x: anchor.x,
-                y: anchor.y,
-            }
+            common::building(defender, *kind, anchor.x, anchor.y)
         })
         .collect();
     let mut units: Vec<_> = attackers
