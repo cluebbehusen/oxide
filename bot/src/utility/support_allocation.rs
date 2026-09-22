@@ -9,13 +9,15 @@ use crate::trace::{RepairProgramTrace, SupportLifecycleReason, SupportLifecycleT
 use chassis::Tick;
 use oxide_sim::ids::Target;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct SupportKey {
     pub(crate) patient: Target,
     pub(crate) worker: UnitId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RepairAssignment {
     pub(crate) key: SupportKey,
     pub(crate) accepted_at: Tick,
@@ -78,7 +80,7 @@ impl RepairAssignment {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SupportWork {
     pub(crate) repairs: Vec<RepairAssignment>,
     pub(crate) lifecycle: Vec<SupportLifecycleTrace>,

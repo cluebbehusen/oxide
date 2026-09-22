@@ -13,7 +13,7 @@ const CONTEXT_LIMIT: usize = 128;
 const SCORE_LIMIT: i32 = 1024;
 const EPISODE_WEIGHT: i32 = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) enum Doctrine {
     Pressure,
     Air,
@@ -23,7 +23,7 @@ pub(crate) enum Doctrine {
     Sustain,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) enum EpisodeOwner {
     Ground,
     Air,
@@ -37,13 +37,13 @@ pub(crate) enum EpisodeOwner {
     LiftAssault,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) struct EpisodeId {
     pub(crate) owner: EpisodeOwner,
     pub(crate) serial: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) struct ExperienceKey {
     pub(crate) doctrine: Doctrine,
     pub(crate) y: i32,
@@ -52,7 +52,7 @@ pub(crate) struct ExperienceKey {
     pub(crate) subject: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub(crate) enum Outcome {
     Complete,
     Partial,
@@ -62,7 +62,7 @@ pub(crate) enum Outcome {
     Inconclusive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub(crate) enum OutcomeReason {
     ObjectiveObservedGone,
     ServiceCompleted,
@@ -79,7 +79,7 @@ pub(crate) enum OutcomeReason {
     ResourceExhausted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub(crate) struct EpisodeReport {
     pub(crate) id: EpisodeId,
     /// Coordinated components share one credit identity, even after handoff.
@@ -151,21 +151,21 @@ impl EpisodeReport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ContextEntry {
     key: ExperienceKey,
     contributions: Vec<ContextContribution>,
     updated_at: Tick,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ContextContribution {
     credit: EpisodeId,
     score: i32,
     finished_at: Tick,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Experience {
     observed_at: Option<Tick>,
     map: (i32, i32),
@@ -428,7 +428,7 @@ pub(crate) fn ground_doctrine(obs: &Observation, members: &[UnitId]) -> Doctrine
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct EpisodeWatch {
     report: EpisodeReport,
     members: Vec<(UnitId, u32)>,
@@ -438,14 +438,14 @@ struct EpisodeWatch {
     ground_contact_losses: (u32, bool),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ObjectiveWatch {
     watch: EpisodeWatch,
     deadline: Tick,
 }
 
 /// Owners explicitly open and finish episodes; disappearance is not a verdict.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OutcomeJournal {
     watch: Option<EpisodeWatch>,
     follow_through: Vec<ObjectiveWatch>,

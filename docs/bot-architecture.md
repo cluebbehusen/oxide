@@ -1212,8 +1212,13 @@ per decision. Fresh blocking foundations cannot displace those workers from
 their current work tiles; movement and completion release this protection
 without changing ordinary terrain routing. Contested-harvest quarantine retains
 its separate complete-sweep and safe-return requirements. These components are
-reconstructed by replaying the observed command prefix, not serialized into
-authoritative `State`.
+reconstructed by replaying the observed command prefix in the existing replay
+loader. Internal session checkpoints preserve them directly, together with
+unfinished planning and its remaining work allowance. Neither path puts
+controller memory in authoritative `State`. Controller checkpoint restoration
+validates map, configuration, planning storage, and time boundaries before
+exposing a seat; navigation query caches rebuild without changing decision work
+allowances.
 
 An unpaid Foundry's recovery interval spans both funding and execution blockage.
 Restored funding permits another readiness check; only a ready builder and site

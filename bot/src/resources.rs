@@ -150,7 +150,7 @@ pub(crate) struct UnitResource {
 }
 
 /// Existing non-preemptible work attached to a construction-capable unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum BuilderObligation {
     /// Raising an already-paid site.
     Build(BuildingId),
@@ -171,7 +171,7 @@ pub(crate) enum BuilderObligation {
 }
 
 /// One construction-capable own unit and any work that already owns it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BuilderResource {
     /// Exact unit id.
     pub(crate) id: UnitId,

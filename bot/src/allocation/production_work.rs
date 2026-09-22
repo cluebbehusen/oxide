@@ -9,7 +9,7 @@ const SLICE: usize = 4_096;
 const FOREGROUND_SLICE: usize = 16_384;
 const TASK_WORK: usize = 65_536;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Task {
     started_at: Tick,
     used_at: Tick,
@@ -217,13 +217,46 @@ impl Task {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProductionWork {
     tasks: Vec<Task>,
     next_pending: usize,
 }
 
 impl ProductionWork {
+    pub(crate) fn valid_checkpoint(&self, tick: Tick) -> bool {
+        self.tasks.len() <= RETAINED_TASKS
+            && self.tasks.iter().all(|task| {
+                let producers = task.capacity.resources.producers();
+                task.started_at <= task.used_at
+                    && task.used_at <= tick
+                    && task.spent <= TASK_WORK
+                    && task.capacity.resources.valid_checkpoint(tick)
+                    && task.claims.producer_jobs.iter().all(|job| {
+                        job.claim.access.producers().iter().all(|id| {
+                            producers
+                                .binary_search_by_key(id, ProducerPlanningProjection::producer)
+                                .is_ok()
+                        }) && job.claim.fixed_assignment().is_none_or(|assignment| {
+                            producers
+                                .binary_search_by_key(
+                                    &assignment.producer,
+                                    ProducerPlanningProjection::producer,
+                                )
+                                .is_ok()
+                        })
+                    })
+                    && *task.bounds
+                        == production_bounds::ProductionBounds::new(
+                            &task.claims.producer_jobs,
+                            producers,
+                        )
+                    && task
+                        .continuation
+                        .valid_checkpoint(&task.capacity, &task.claims, tick)
+            })
+    }
+
     pub(crate) fn counts(&self) -> (usize, usize) {
         (
             self.tasks.iter().filter(|task| task.pending()).count(),
@@ -416,6 +449,12 @@ mod tests {
                 break actual;
             }
             assert_eq!(result, Progress::Deferred);
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&work, &mut bytes).unwrap();
+            let restored: ProductionWork = ciborium::from_reader(bytes.as_slice()).unwrap();
+            assert_eq!(work, restored);
+            assert!(restored.valid_checkpoint(0));
+            work = restored;
             assert!(slices < 200);
         };
         assert!(slices > 1);

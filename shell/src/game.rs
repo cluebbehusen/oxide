@@ -87,6 +87,7 @@ pub struct Selection {
 mod fx;
 mod presentation;
 pub(crate) use presentation::{Presentation, Scene};
+mod checkpoint;
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 

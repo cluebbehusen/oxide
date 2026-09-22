@@ -30,7 +30,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One lowerable production family and the total number the operation wants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ProviderDemand {
     pub(super) kind: UnitKind,
     pub(super) count: usize,
@@ -38,7 +38,9 @@ pub(super) struct ProviderDemand {
 
 /// Strategic priority carried across package derivation and production
 /// lowering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(super) enum ProviderPriority {
     Minimum,
     Marginal,
@@ -46,7 +48,9 @@ pub(super) enum ProviderPriority {
 
 /// One ordered tranche of exact providers with the same strategic priority,
 /// tactical family, and concrete kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(super) struct ProviderDemandTranche {
     pub(super) priority: ProviderPriority,
     pub(super) family: ForceFamily,
@@ -58,7 +62,7 @@ pub(super) struct ProviderDemandTranche {
 ///
 /// Suppression and strike use full-salvo damage per 100 ticks, so a multi-bomb
 /// airframe is valued by the complete attack run rather than its per-bomb hit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct NormalizedCapability {
     pub(super) recon: u64,
     pub(super) suppression: u64,
@@ -156,7 +160,7 @@ pub(crate) enum ForcePackageRejection {
 }
 
 /// A connected operation sized against one current, targetable opportunity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ConnectedForcePackage {
     /// Observation tick that supplied this package's evidence.
     pub(super) derived_at: Tick,
@@ -215,7 +219,9 @@ const TACTICAL_EFFECT_WINDOW: Tick = 1_200;
 
 type PackageCandidateScore = (u64, u128, Reverse<u32>, u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum ForceFamily {
     Recon,
     Suppression,
@@ -235,7 +241,9 @@ enum AddProviderFailure {
     PreparationWindowTooShort,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(super) struct FundedProvider {
     pub(super) kind: UnitKind,
     pub(super) command_tick: Tick,

@@ -3,7 +3,7 @@ use chassis::Tick;
 use serde::Serialize;
 
 /// Frozen site identity that remains meaningful when fog replaces a live id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ArmyObjective {
     /// Observed identity, absent when only a remembered footprint was available.
     pub id: Option<BuildingId>,
@@ -54,7 +54,7 @@ impl ArmyObjective {
 }
 
 /// A ground body's responsibility, independent of its tactical combat state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub enum ArmyPurpose {
     /// Protect an exact own or allied asset.
     Defend(BuildingId),
@@ -67,7 +67,7 @@ pub enum ArmyPurpose {
 }
 
 /// Accepted executive ownership metadata; proposals cannot mutate it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ArmyMission {
     /// Stable consumer of this force.
     pub purpose: ArmyPurpose,
@@ -82,7 +82,7 @@ pub struct ArmyMission {
 }
 
 /// Exact result of an attempted responsibility or membership change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub enum MissionDisposition {
     /// Validated membership and responsibility were committed.
     Accepted,
@@ -105,7 +105,7 @@ pub enum MissionDisposition {
 }
 
 /// Observational lowering receipt, never an input to mission selection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct MissionDecision {
     /// Existing army, or absent when requesting a new exact body.
     pub army: Option<u32>,

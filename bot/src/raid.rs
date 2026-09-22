@@ -77,7 +77,7 @@ impl<'a> RaidPlanningContext<'a> {
 }
 
 /// The active phase of a harassment operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RaidPhase {
     /// Close on a currently observed weak point.
     Ingress,
@@ -88,7 +88,7 @@ pub enum RaidPhase {
 }
 
 /// Why a raid broke contact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RaidExitReason {
     /// Current sight over the objective confirmed it was gone.
     Complete,
@@ -105,7 +105,7 @@ pub enum RaidExitReason {
 }
 
 /// The persistent order currently owned by a raid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RaidDispatch {
     /// Attack-move toward the last observed objective tile.
     Ingress(TilePos),
@@ -116,7 +116,9 @@ pub enum RaidDispatch {
 }
 
 /// The exact hostile asset a raid is trying to remove.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum RaidObjective {
     /// A visible economic unit.
     Unit {
@@ -135,7 +137,7 @@ pub enum RaidObjective {
 }
 
 /// Inspectable persistent state of one bounded raid.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RaidOperation {
     /// Player whose asset was selected.
     pub target_player: PlayerId,
@@ -160,7 +162,7 @@ pub struct RaidOperation {
 }
 
 /// Controller-local owner of a guile raid and its cooldown.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RaidPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
     active: Option<RaidOperation>,
@@ -1295,6 +1297,7 @@ mod tests {
                 target: Target::Unit(UnitId(80)),
             }]
         );
+        planner = crate::checkpoint::round_trip(&planner);
         obs.tick += 1;
         assert!(
             planner

@@ -17,7 +17,7 @@ use crate::standing_force::CapabilityDemand;
 use serde::Serialize;
 
 /// Canonical identity of an economic action, also exposed in decision traces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum EconomicInvestmentKey {
     /// One worker trained at a specific completed producer.
@@ -72,7 +72,7 @@ impl PartialOrd for EconomicInvestmentKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EconomicInvestment {
     pub(crate) key: EconomicInvestmentKey,
     pub(crate) builder: Option<UnitId>,

@@ -63,8 +63,10 @@ use oxide_sim::ids::{PlayerId, UnitId};
 use oxide_sim::scenario::BotConfig;
 use std::sync::Arc;
 
+mod checkpoint;
+
 /// The personality, intelligence, strategic planners, and authored map briefing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct PlayerFacingMind {
     profile: ResolvedProfile,
     intelligence: StrategicIntelligence,
