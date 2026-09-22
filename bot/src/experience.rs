@@ -383,7 +383,20 @@ impl Experience {
                 .contributions
                 .sort_unstable_by_key(|value| (value.evidence.finished_at(), value.credit));
             if entry.contributions.len() > EPISODE_LIMIT {
-                entry.contributions.remove(0);
+                let (oldest, _) = entry
+                    .contributions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, value)| {
+                        let newest = value.evidence.finished_at().max(
+                            value
+                                .doctrine
+                                .map_or(0, |(_, evidence)| evidence.finished_at()),
+                        );
+                        (newest, value.credit)
+                    })
+                    .expect("overfull context has contributions");
+                entry.contributions.remove(oldest);
             }
             entry.updated_at = now;
         } else {
@@ -1221,6 +1234,69 @@ mod tests {
         );
         assert!(memory.episodes.is_empty());
         assert_eq!(memory.score(report(1).context), 0);
+    }
+
+    #[test]
+    fn capacity_eviction_uses_both_evidence_times_without_reordering_scores() {
+        for (contextual_tick, doctrine_tick, contextual_score, doctrine_score) in
+            [(1, 200, 1024, -128), (200, 1, 768, -133)]
+        {
+            let mut memory = memory();
+            let mut obs = crate::test_support::observation_data();
+            obs.map_width = 32;
+            obs.map_height = 32;
+            obs.tick = 200;
+            memory.observe(&Observation::from_data(obs), 6000);
+            let mut original = report(1);
+            original.finished_at = contextual_tick;
+            original.doctrine_eligible = false;
+            memory.report(original.clone());
+            for serial in 2..=64 {
+                let mut other = report(serial);
+                other.finished_at = 2;
+                other.outcome = Outcome::Complete;
+                other.doctrine_eligible = false;
+                memory.report(other);
+            }
+            let mut later = report(100);
+            later.credit = original.credit;
+            later.finished_at = doctrine_tick;
+            later.outcome = Outcome::Partial;
+            memory.report(later);
+            let mut independent = report(101);
+            independent.context.x += 1;
+            independent.finished_at = 200;
+            memory.report(independent);
+            assert_eq!(memory.doctrine_score(Doctrine::Pressure), doctrine_score);
+            assert_eq!(memory.contextual_score(original.context), contextual_score);
+
+            let mut overflow = report(65);
+            overflow.finished_at = 65;
+            overflow.outcome = Outcome::Aborted;
+            overflow.reason = OutcomeReason::Preempted;
+            overflow.doctrine_eligible = false;
+            memory.report(overflow);
+            assert_eq!(memory.doctrine_score(Doctrine::Pressure), doctrine_score);
+            assert_eq!(memory.contextual_score(original.context), contextual_score);
+            let entry = memory
+                .contexts
+                .iter()
+                .find(|entry| entry.key == original.context)
+                .unwrap();
+            assert_eq!(entry.contributions.len(), EPISODE_LIMIT);
+            assert!(
+                !entry
+                    .contributions
+                    .iter()
+                    .any(|value| value.credit == report(2).credit)
+            );
+            assert!(
+                entry
+                    .contributions
+                    .iter()
+                    .any(|value| value.credit == report(3).credit)
+            );
+        }
     }
 
     #[test]
