@@ -569,6 +569,7 @@ impl<'a, 'b> WorkRoutes<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::briefing;
     #[test]
     fn batched_footprint_distances_match_scalar_edges_and_unreachable_tiles() {
         for width in 1..9 {
@@ -660,29 +661,6 @@ mod tests {
                     }
                 }
             }
-        }
-    }
-
-    fn briefing(
-        width: i32,
-        height: i32,
-        walls: impl IntoIterator<Item = TilePos>,
-        starts: Vec<crate::StartingFoundry>,
-    ) -> PublicMapBriefing {
-        let mut non_ground_terrain = walls
-            .into_iter()
-            .map(|tile| (tile, oxide_sim::map::Terrain::Rock))
-            .collect::<Vec<_>>();
-        non_ground_terrain.sort_unstable_by_key(|(tile, _)| (tile.y, tile.x));
-        PublicMapBriefing {
-            regions: Default::default(),
-            map_width: width,
-            map_height: height,
-            starting_foundries: starts,
-            teams: vec![Some(0), Some(1)],
-            non_ground_terrain,
-            extractor_frames: Vec::new(),
-            initial_scrap: Vec::new(),
         }
     }
 

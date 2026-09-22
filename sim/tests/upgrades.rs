@@ -32,20 +32,10 @@ fn arena(scrap: u32, crucible: bool, reclaimer: bool) -> Scenario {
         },
     ];
     if reclaimer {
-        buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Reclaimer,
-            x: 6,
-            y: 6,
-        });
+        buildings.push(common::building(0, BuildingKind::Reclaimer, 6, 6));
     }
     if crucible {
-        buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Crucible,
-            x: 11,
-            y: 5,
-        });
+        buildings.push(common::building(0, BuildingKind::Crucible, 11, 5));
     }
     Scenario {
         name: "upgrade-arena".into(),
@@ -340,12 +330,7 @@ fn upgrades_refuse_the_broke_the_topped_out_and_the_cancel() {
 #[test]
 fn an_upgrading_works_is_committed_offline_and_mortal() {
     let mut scenario = arena(2_000, false, false);
-    scenario.units.push(UnitSpec {
-        player: 1,
-        kind: UnitKind::Sapper,
-        x: 8,
-        y: 2,
-    });
+    scenario.units.push(common::unit(1, UnitKind::Sapper, 8, 2));
     let mut state = scenario.build().unwrap();
     let turret = find(&state, BuildingKind::Turret);
     let raider = state.units()[2].id;
@@ -397,18 +382,8 @@ fn an_upgrading_works_is_committed_offline_and_mortal() {
 fn lethal_fire_wins_an_upgrades_completion_tick() {
     let mut scenario = arena(2_000, false, false);
     scenario.units.extend([
-        UnitSpec {
-            player: 1,
-            kind: UnitKind::Sapper,
-            x: 8,
-            y: 2,
-        },
-        UnitSpec {
-            player: 1,
-            kind: UnitKind::Sapper,
-            x: 9,
-            y: 3,
-        },
+        common::unit(1, UnitKind::Sapper, 8, 2),
+        common::unit(1, UnitKind::Sapper, 9, 3),
     ]);
     let mut state = scenario.build().unwrap();
     let turret = find(&state, BuildingKind::Turret);
@@ -496,12 +471,9 @@ fn the_deep_array_waits_for_the_crucible_too() {
     // Both deepest rungs sit behind the forge gate: the Array's wide
     // detection ring joins the Bulwark there.
     let mut scenario = arena(2_000, false, false);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Array,
-        x: 14,
-        y: 3,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Array, 14, 3));
     let mut state = scenario.build().unwrap();
     let array = find(&state, BuildingKind::Array);
 
@@ -519,12 +491,9 @@ fn the_deep_array_waits_for_the_crucible_too() {
     assert_eq!(state.building(array).unwrap().tier, 0, "nothing moved");
 
     let mut scenario = arena(2_000, true, false);
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Array,
-        x: 14,
-        y: 3,
-    });
+    scenario
+        .buildings
+        .push(common::building(0, BuildingKind::Array, 14, 3));
     let mut state = scenario.build().unwrap();
     let array = find(&state, BuildingKind::Array);
     state.tick(&[upgrade(array)]);

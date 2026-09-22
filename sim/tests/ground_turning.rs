@@ -69,12 +69,12 @@ fn every_ground_chassis_pivots_before_moving_and_completes_its_route() {
 fn independent_ground_guns_traverse_without_spinning_the_hull() {
     for kind in [UnitKind::Sentinel, UnitKind::Warden, UnitKind::Lancer] {
         let mut scenario = open_arena(26, 18, vec![unit(0, kind, 6, 8)]);
-        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
-            player: 1,
-            kind: oxide_sim::BuildingKind::Fabricator,
-            x: 9,
-            y: 8,
-        });
+        scenario.buildings.push(common::building(
+            1,
+            oxide_sim::BuildingKind::Fabricator,
+            9,
+            8,
+        ));
         let mut state = scenario.build().unwrap();
         let mut document = serde_json::to_value(&state).unwrap();
         document["units"][0]["heading"] = serde_json::json!(128);

@@ -80,9 +80,7 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
     }
 }
 
-fn structure(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
-    BuildingSpec { player, kind, x, y }
-}
+use common::building as structure;
 
 fn walk(player: u8, units: Vec<UnitId>, goal: TilePos) -> PlayerCommand {
     cmd(
@@ -238,12 +236,12 @@ fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> S
         true,
     );
     if overlap {
-        scenario.buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::RepairBay,
-            x: BAY_ANCHOR.0 + 3,
-            y: BAY_ANCHOR.1,
-        });
+        scenario.buildings.push(common::building(
+            0,
+            BuildingKind::RepairBay,
+            BAY_ANCHOR.0 + 3,
+            BAY_ANCHOR.1,
+        ));
     }
     let mut json = serde_json::to_value(scenario.build().unwrap()).unwrap();
     json["units"][0]["hp"] = serde_json::json!(hp);
@@ -312,12 +310,12 @@ fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
         500,
         true,
     );
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::RepairBay,
-        x: BAY_ANCHOR.0 + 3,
-        y: BAY_ANCHOR.1,
-    });
+    scenario.buildings.push(common::building(
+        0,
+        BuildingKind::RepairBay,
+        BAY_ANCHOR.0 + 3,
+        BAY_ANCHOR.1,
+    ));
     let mut state = scenario.build().unwrap();
     assert_eq!(
         state

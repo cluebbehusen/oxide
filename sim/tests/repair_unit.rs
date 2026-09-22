@@ -9,7 +9,7 @@ use common::{arena, cmd, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::UnitSpec;
 use oxide_sim::{
     BuildingKind, Command, Event, Order, PlayerCommand, PlayerId, State, Target, UnitId, UnitKind,
     UnitRepairSource,
@@ -96,12 +96,9 @@ fn departure_case(work: DepartingWork, tick: u64) -> (State, UnitId, UnitId, Pla
     }
     let mut scenario = arena(units);
     if matches!(work, DepartingWork::Repair | DepartingWork::Salvage) {
-        scenario.buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Turret,
-            x: 9,
-            y: 2,
-        });
+        scenario
+            .buildings
+            .push(common::building(0, BuildingKind::Turret, 9, 2));
     }
     let state = scenario.build().unwrap();
     let (welder, patient) = (state.units()[0].id, state.units()[1].id);

@@ -20,9 +20,10 @@
 //! net rather than trim it. `FUZZ_SEEDS` raises the seed count for a soak
 //! run without renumbering the default set.
 
+mod common;
+
 use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
-use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::stats::{BuildingKind, ORDER_QUEUE_CAP};
 use oxide_sim::{
     BuildingId, Command, Event, GameResult, PlayerCommand, PlayerId, Scenario, State, Target,
@@ -594,8 +595,7 @@ fn seed_at(index: u64) -> u64 {
 /// never find a legal patient and their whole bodies — the billing
 /// meter, the drain ledger, `purge_opposing_verb` — go unfuzzed.
 fn arena() -> State {
-    let standing =
-        |player: u8, kind: BuildingKind, x: i32, y: i32| BuildingSpec { player, kind, x, y };
+    let standing = common::building;
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.scrap = 100_000;
@@ -603,12 +603,9 @@ fn arena() -> State {
     // A bomber per seat, so landing verbs, auto-land, and takeoff run under
     // the sampled checklist from the first tick.
     for (player, (x, y)) in [(0u8, (7, 6)), (1u8, (31, 16))] {
-        scenario.units.push(oxide_sim::scenario::UnitSpec {
-            player,
-            kind: UnitKind::Condor,
-            x,
-            y,
-        });
+        scenario
+            .units
+            .push(common::unit(player, UnitKind::Condor, x, y));
     }
     scenario.buildings = vec![
         standing(0, BuildingKind::Turret, 12, 3),

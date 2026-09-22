@@ -7,19 +7,14 @@ use common::{cmd, players, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::UnitSpec;
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{Command, Event, PlayerId, Scenario, UnitKind};
 
 fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     let mut buildings = Vec::new();
     if fabricator {
-        buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Fabricator,
-            x: 2,
-            y: 5,
-        });
+        buildings.push(common::building(0, BuildingKind::Fabricator, 2, 5));
     }
     Scenario {
         name: "roster-arena".into(),

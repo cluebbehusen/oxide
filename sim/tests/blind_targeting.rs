@@ -23,12 +23,7 @@ fn radar_scene(
         y: 16,
     }];
     if let Some(kind) = defense {
-        scenario.buildings.push(BuildingSpec {
-            player: 0,
-            kind,
-            x: 5,
-            y: 6,
-        });
+        scenario.buildings.push(common::building(0, kind, 5, 6));
     }
     let state = scenario.build().unwrap();
     assert!(!state.can_see(PlayerId(0), TilePos::new(14, 8)));
@@ -757,12 +752,9 @@ fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
             }];
             if remembered {
                 scenario.units.push(unit(0, UnitKind::Harvester, 22, 13));
-                scenario.buildings.push(BuildingSpec {
-                    player: 1,
-                    kind: BuildingKind::Reclaimer,
-                    x: 22,
-                    y: 10,
-                });
+                scenario
+                    .buildings
+                    .push(common::building(1, BuildingKind::Reclaimer, 22, 10));
             } else {
                 scenario.units.push(unit(1, UnitKind::Gnat, 22, 10));
             }

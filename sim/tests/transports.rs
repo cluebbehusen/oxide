@@ -1,6 +1,7 @@
 //! The 0.15 Skyhook: boarding, riding, landing, stranding, and dying.
 
 mod common;
+use common::wide_open_map as open_map;
 use common::{cmd, players, unit};
 
 use chassis::grid::TilePos;
@@ -19,21 +20,6 @@ fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
         buildings: Vec::new(),
         meta: None,
     }
-}
-
-fn open_map() -> Vec<String> {
-    vec![
-        "########################".into(),
-        "#1.....................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#...................2..#".into(),
-        "#......................#".into(),
-        "########################".into(),
-    ]
 }
 
 #[test]

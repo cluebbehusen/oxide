@@ -387,36 +387,7 @@ fn command_name(command: &Command) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chassis::replay::Replay;
-    use oxide_sim::{PlayerCommand, Scenario, UnitId};
-
-    fn stop(player: u8, unit: UnitId) -> PlayerCommand {
-        PlayerCommand {
-            player: PlayerId(player),
-            command: Command::Stop { units: vec![unit] },
-        }
-    }
-
-    fn fixture() -> GameReplay {
-        let scenario = Scenario::skirmish();
-        let state = scenario.build().expect("skirmish builds");
-        let unit = |seat| {
-            state
-                .units()
-                .iter()
-                .find(|unit| unit.player == PlayerId(seat))
-                .expect("each skirmish seat starts with a unit")
-                .id
-        };
-        let mut replay = Replay::new(SIM_VERSION, scenario);
-        replay.record(0, stop(0, unit(0)));
-        replay.record(3, stop(1, unit(1)));
-        replay.record(5, stop(0, unit(0)));
-        replay.record(8, stop(1, unit(1)));
-        replay.record(10, stop(0, unit(0)));
-        replay.meta.ticks = Some(12);
-        replay
-    }
+    use crate::test_support::replay_fixture as fixture;
 
     #[test]
     fn inspection_captures_exact_sorted_ticks_and_fog() {

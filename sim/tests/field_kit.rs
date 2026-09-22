@@ -2,6 +2,7 @@
 //! stealth), the Sapper's one-way demolition, and Barricade walls.
 
 mod common;
+use common::wide_open_map as open_map;
 use common::{building, cmd, players, unit};
 
 use chassis::grid::TilePos;
@@ -20,21 +21,6 @@ fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -
         buildings,
         meta: None,
     }
-}
-
-fn open_map() -> Vec<String> {
-    vec![
-        "########################".into(),
-        "#1.....................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#...................2..#".into(),
-        "#......................#".into(),
-        "########################".into(),
-    ]
 }
 
 /// A 40x12 floor: both detection rings — the base mast's 12 and the Deep

@@ -8,19 +8,14 @@ use common::{cmd, players};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::UnitSpec;
 use oxide_sim::stats::{BuildingKind, FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK};
 use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, State, UnitKind};
 
 fn arena(scrap: u32, fabricator: bool, units: Vec<UnitSpec>) -> Scenario {
     let mut buildings = Vec::new();
     if fabricator {
-        buildings.push(BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Fabricator,
-            x: 3,
-            y: 6,
-        });
+        buildings.push(common::building(0, BuildingKind::Fabricator, 3, 6));
     }
     Scenario {
         name: "foundry-arena".into(),
@@ -58,12 +53,7 @@ fn build_foundry(builder: oxide_sim::UnitId, anchor: TilePos) -> PlayerCommand {
 }
 
 fn harvester(x: i32, y: i32) -> UnitSpec {
-    UnitSpec {
-        player: 0,
-        kind: UnitKind::Harvester,
-        x,
-        y,
-    }
+    common::unit(0, UnitKind::Harvester, x, y)
 }
 
 #[test]
