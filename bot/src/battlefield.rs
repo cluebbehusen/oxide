@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 const CELL_SIZE: i32 = 8;
 const APPROACH_RADIUS: i32 = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Motion {
     id: UnitId,
     tile: TilePos,
@@ -23,7 +23,7 @@ struct Motion {
 }
 
 /// Current observed force in one spatial cell and physical domain.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Concentration {
     /// Observed owner; anonymous radar never contributes here.
     pub player: PlayerId,
@@ -40,7 +40,7 @@ pub struct Concentration {
 }
 
 /// Current pressure attributed to one specific friendly asset.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct AssetPressure {
     /// Exact own or allied building.
     pub asset: BuildingId,
@@ -61,7 +61,7 @@ pub struct AssetPressure {
 }
 
 /// A bounded region whose current contents could change an asset decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct BattlefieldQuestion {
     /// Consumer asset.
     pub asset: BuildingId,
@@ -76,7 +76,7 @@ pub struct BattlefieldQuestion {
 }
 
 /// Marginal radar service for a consequential observed approach.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct CoverageDemand {
     /// Asset that benefits from advance warning.
     pub asset: BuildingId,
@@ -91,7 +91,7 @@ pub struct CoverageDemand {
 }
 
 /// Exact Executive ownership visible to mission and investment preparation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ArmyCommitment {
     /// Stable Executive body identity.
     pub army: u32,
@@ -104,7 +104,7 @@ pub struct ArmyCommitment {
 }
 
 /// Current pressure remaining after reachable local service, credited once.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct DefensiveDemand {
     /// Exact defended asset.
     pub asset: BuildingId,
@@ -117,7 +117,7 @@ pub struct DefensiveDemand {
 }
 
 /// Immutable evidence shared by domain proposal preparation in one decision.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct BattlefieldAssessment {
     /// Whether a real observation has initialized this assessment.
     pub observed: bool,
@@ -141,7 +141,7 @@ pub struct BattlefieldAssessment {
     pub motion: Vec<(UnitId, TilePos, Tick, TilePos, Tick)>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Battlefield {
     map: (i32, i32),
     tracks: BTreeMap<UnitId, Motion>,

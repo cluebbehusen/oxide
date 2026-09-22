@@ -18,7 +18,7 @@ const SECONDARY_BONUS: i16 = 8;
 const TRAIT_BUDGET: i16 = 300;
 
 /// A strategic preference that can become a seeded specialty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Specialty {
     /// Aircraft, escorts, and bombing operations.
@@ -66,7 +66,7 @@ impl Specialty {
 ///
 /// Values use a `0..=100` scale. They rank otherwise legal strategic choices;
 /// they never change costs, vision, prerequisites, or unit strength.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct PersonalityTraits {
     /// Preference for aircraft and air operations.
     pub air: u8,
@@ -97,7 +97,7 @@ impl PersonalityTraits {
 }
 
 /// A complete, deterministic personality resolved before a match begins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ResolvedProfile {
     /// Skill rung, kept separate from personality preferences.
     pub difficulty: BotDifficulty,

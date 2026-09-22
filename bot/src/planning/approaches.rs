@@ -12,7 +12,7 @@ const RETAINED_FIELDS: usize = 16;
 const READY_BYTES: usize = 32 * 1024 * 1024;
 const IDLE_LIFETIME: u64 = 120;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Job {
     query_purpose: QueryPurpose,
     used: u64,
@@ -74,14 +74,14 @@ impl Job {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Generation {
     width: i32,
     height: i32,
     blocked: Vec<bool>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct ApproachPreparation {
     generation: Option<Generation>,
     jobs: BTreeMap<(Option<BlockedRect>, Vec<TilePos>), Job>,
@@ -89,6 +89,31 @@ pub(super) struct ApproachPreparation {
 }
 
 impl ApproachPreparation {
+    pub(super) fn valid_checkpoint(&self, width: i32, height: i32, tick: u64) -> bool {
+        let cells = width as usize * height as usize;
+        self.jobs.len() <= RETAINED_FIELDS
+            && match &self.generation {
+                None => self.jobs.is_empty(),
+                Some(generation) => {
+                    generation.width == width
+                        && generation.height == height
+                        && generation.blocked.len() == cells
+                        && self.jobs.values().all(|job| {
+                            job.used <= tick
+                                && job.open.len() <= cells
+                                && job.traversal.as_ref().is_none_or(|work| {
+                                    job.open.is_empty()
+                                        && job.ready.is_none()
+                                        && work.valid_checkpoint(width, height)
+                                })
+                                && job.ready.as_ref().is_none_or(|ready| {
+                                    job.open.is_empty() && ready.valid_checkpoint(width, height)
+                                })
+                        })
+                }
+            }
+    }
+
     pub(super) fn counts(&self) -> (usize, usize) {
         (
             self.jobs.values().filter(|job| job.ready.is_none()).count(),
@@ -328,7 +353,9 @@ mod tests {
             Progress::Deferred
         ));
         assert_eq!(work.stats().pending_approach_fields, 2);
-        let clone = work.clone();
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&work, &mut bytes).unwrap();
+        let clone: PlanningWork = ciborium::from_reader(bytes.as_slice()).unwrap();
         for tick in (12..120).step_by(12) {
             work.begin(tick);
             clone.begin(tick);

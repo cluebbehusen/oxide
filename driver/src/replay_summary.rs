@@ -15,7 +15,7 @@
 //! would narrate a divergent ghost game, so it is refused instead.
 
 use crate::runner::GameReplay;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chassis::grid::TilePos;
 use oxide_sim::scenario::BotConfig;
 use oxide_sim::{
@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// Version of the serialized [`SummaryReport`] contract.
-pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 3;
+pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 4;
 
 /// Space gate: a loss joins an active battle when within this many tiles of
 /// its running centroid. Above the longest direct-fire range in the game
@@ -105,6 +105,8 @@ pub struct SummaryReport {
 /// Scenario facts useful when orienting a summary.
 #[derive(Debug, Serialize)]
 pub struct ScenarioLine {
+    /// First absolute tick available; statistics describe this segment only.
+    pub start_tick: u64,
     /// Scenario display name.
     pub name: String,
     /// Deterministic scenario seed.
@@ -113,9 +115,9 @@ pub struct ScenarioLine {
     pub map_width: i32,
     /// Map height in tiles.
     pub map_height: i32,
-    /// Ticks the summary executed (after any `--until` clamp).
+    /// Absolute end tick summarized (after any `--until` clamp).
     pub effective_ticks: u64,
-    /// Ticks the replay records in total.
+    /// Absolute end tick recorded.
     pub total_ticks: u64,
     /// Digest cadence in ticks after defaulting.
     pub every: u64,
@@ -325,7 +327,8 @@ pub struct SeatDigestRow {
     /// teammates repeat the same figure). `explored_pct` is a map-size
     /// fraction and is not comparable across maps; this and the delta are.
     pub explored_tiles: u64,
-    /// Tiles newly explored since the previous digest.
+    /// Tiles newly explored since the previous digest, or since the checkpoint
+    /// for the first digest of a checkpoint-origin recording.
     pub explored_delta: u64,
     /// Explored share of the map in whole percent.
     pub explored_pct: u32,
@@ -636,13 +639,15 @@ struct SeatWindow {
 pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryReport> {
     replay.validate(Some(SIM_VERSION))?;
     let total = oxide_kit::bounded_replay_duration(replay)?;
-    let effective = opts.until.map_or(total, |until| until.min(total));
+    let effective = opts
+        .until
+        .map_or(total, |until| until.clamp(replay.start_tick(), total));
     let every = opts
         .every
-        .unwrap_or_else(|| (effective / 16).clamp(2_000, 10_000))
+        .unwrap_or_else(|| ((effective - replay.start_tick()) / 16).clamp(2_000, 10_000))
         .max(1);
 
-    let mut state = replay.setup.build().context("building replay setup")?;
+    let mut state = oxide_kit::recording::initial_state(replay)?;
     let seats: Vec<SeatLine> = replay
         .setup
         .players
@@ -700,8 +705,8 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 .map(|name| TechFirstRecord {
                     name: name.to_owned(),
                     starting: true,
-                    tick: 0,
-                    clock: clock(0),
+                    tick: replay.start_tick(),
+                    clock: clock(replay.start_tick()),
                 })
                 .collect();
             starting.sort_by(|a, b| a.name.cmp(&b.name));
@@ -714,15 +719,24 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     let mut contacted: BTreeSet<(u8, u8)> = BTreeSet::new();
 
     let mut windows: Vec<SeatWindow> = vec![SeatWindow::default(); seat_count];
-    let mut prev_explored: Vec<u64> = vec![0; seat_count];
+    let mut prev_explored: Vec<u64> = if replay.origin.is_some() {
+        let explored = team_exploration(&state);
+        state
+            .players()
+            .iter()
+            .map(|seat| explored[&seat.team].0)
+            .collect()
+    } else {
+        vec![0; seat_count]
+    };
     let mut window_combat: u64 = 0;
     let mut quiet_run: Option<QuietRun> = None;
-    let mut prev_boundary: u64 = 0;
+    let mut prev_boundary = replay.start_tick();
 
     let mut game_over_tick: Option<u64> = None;
 
     let mut playback = oxide_kit::ReplayPlayback::new(replay);
-    for _ in 0..effective {
+    for _ in state.current_tick()..effective {
         let report = playback.step(&mut state);
         let now = state.current_tick();
 
@@ -1046,6 +1060,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     Ok(SummaryReport {
         schema_version: REPLAY_SUMMARY_SCHEMA_VERSION,
         scenario: ScenarioLine {
+            start_tick: replay.start_tick(),
             name: replay.setup.name.clone(),
             seed: replay.setup.seed,
             map_width: state.map().width(),
@@ -1185,20 +1200,12 @@ fn built_count(state: &State, seat: u8, kind: BuildingKind) -> u32 {
         .count() as u32
 }
 
-fn capture_digest(
-    state: &State,
-    tick: u64,
-    post_game: bool,
-    windows: &mut [SeatWindow],
-    prev_explored: &mut [u64],
-    with_minimap: bool,
-) -> Digest {
-    let seat_count = state.players().len();
+fn team_exploration(state: &State) -> BTreeMap<u8, (u64, u32)> {
     // Vision is team-shared: compute each team's explored share once.
     let mut team_explored: BTreeMap<u8, (u64, u32)> = BTreeMap::new();
     let map = state.map();
     let tiles = u64::from(map.width().unsigned_abs()) * u64::from(map.height().unsigned_abs());
-    for seat in 0..seat_count {
+    for seat in 0..state.players().len() {
         let team = state.players()[seat].team;
         team_explored.entry(team).or_insert_with(|| {
             let vision = state.vision(PlayerId(seat as u8));
@@ -1213,6 +1220,20 @@ fn capture_digest(
             (explored, ((explored * 100) / tiles.max(1)) as u32)
         });
     }
+
+    team_explored
+}
+
+fn capture_digest(
+    state: &State,
+    tick: u64,
+    post_game: bool,
+    windows: &mut [SeatWindow],
+    prev_explored: &mut [u64],
+    with_minimap: bool,
+) -> Digest {
+    let seat_count = state.players().len();
+    let team_explored = team_exploration(state);
 
     let rows = (0..seat_count)
         .map(|seat| {
@@ -1434,6 +1455,13 @@ impl SummaryReport {
             scenario.every,
             clock(scenario.every),
         );
+        if scenario.start_tick > 0 {
+            let _ = writeln!(
+                out,
+                "  recording starts at tick {}; earlier history is unavailable",
+                scenario.start_tick
+            );
+        }
         if scenario.effective_ticks < scenario.total_ticks {
             let _ = writeln!(
                 out,

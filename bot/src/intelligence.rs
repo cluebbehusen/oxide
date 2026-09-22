@@ -26,7 +26,9 @@ const UNIT_CONFIDENCE_HORIZON: Tick = 600;
 const BUILDING_CONFIDENCE_HORIZON: Tick = 3_600;
 
 /// Whether a contact is justified by sight this tick or only by memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum ContactEvidence {
     /// The source appears in the current visible observation.
     Current,
@@ -35,7 +37,7 @@ pub enum ContactEvidence {
 }
 
 /// Last known state of a hostile unit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnitContact {
     /// Stable simulation id.
     pub id: UnitId,
@@ -81,7 +83,7 @@ impl UnitContact {
 }
 
 /// Last known state of a hostile building.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BuildingContact {
     /// Live id when this controller has personally seen the building. A ghost
     /// supplied without history has no targetable id contract.
@@ -241,7 +243,7 @@ impl AirDefenseAssessment {
 }
 
 /// Controller-local, fog-honest memory of hostile assets.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StrategicIntelligence {
     observed_at: Option<Tick>,
     map_width: i32,
@@ -252,6 +254,32 @@ pub struct StrategicIntelligence {
 }
 
 impl StrategicIntelligence {
+    pub(crate) fn valid_checkpoint(&self, map: &crate::PublicMapBriefing, tick: Tick) -> bool {
+        match self.observed_at {
+            None => self.visible.is_empty() && self.units.is_empty() && self.buildings.is_empty(),
+            Some(observed) => {
+                observed <= tick
+                    && self.map_width == map.map_width()
+                    && self.map_height == map.map_height()
+                    && self.visible.len() == self.map_width as usize * self.map_height as usize
+                    && self.units.iter().all(|unit| {
+                        unit.last_seen <= observed
+                            && unit.tile.x >= 0
+                            && unit.tile.y >= 0
+                            && unit.tile.x < self.map_width
+                            && unit.tile.y < self.map_height
+                    })
+                    && self.buildings.iter().all(|building| {
+                        building.last_seen.is_none_or(|seen| seen <= observed)
+                            && building.anchor.x >= 0
+                            && building.anchor.y >= 0
+                            && building.anchor.x < self.map_width
+                            && building.anchor.y < self.map_height
+                    })
+            }
+        }
+    }
+
     /// Creates empty intelligence for a new controller.
     pub fn new() -> Self {
         Self::default()

@@ -28,11 +28,13 @@ pub use missions::{ArmyMission, ArmyObjective, ArmyPurpose, MissionDecision, Mis
 pub(super) use armies::{catastrophically_outmatched_near, locally_overmatches_near};
 
 /// Stable handle for an army within one bot's executive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct ArmyId(pub u32);
 
 /// Where an army is in its life.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ArmyState {
     /// Gathering at a rally, or holding a live objective after arrival.
     Staging,
@@ -45,7 +47,7 @@ pub enum ArmyState {
 }
 
 /// A body of fighters managed as one thing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Army {
     /// Handle.
     pub id: ArmyId,
@@ -243,14 +245,14 @@ pub enum Intent {
 }
 
 /// One fighter waiting behind the line and the tick its retreat began.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct RearUnit {
     id: UnitId,
     since: u64,
 }
 
 /// Player-facing tactical state that survives between decision ticks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PlayerFacingTactics {
     frame: armies::CentroidFrame,
     defense_focus: Option<(Target, Vec<BuildingId>)>,
@@ -258,7 +260,7 @@ struct PlayerFacingTactics {
 
 /// The layer between policies and the sim. One per bot; carries across
 /// ticks because armies are controller memory rather than simulation state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Executive {
     pub(crate) ground_outcomes:
         std::collections::BTreeMap<ArmyId, super::experience::OutcomeJournal>,
@@ -278,6 +280,18 @@ pub struct Executive {
 }
 
 impl Executive {
+    pub(crate) fn valid_checkpoint(&self, tick: u64) -> bool {
+        self.next_army < u32::MAX
+            && self.armies.windows(2).all(|pair| pair[0].id < pair[1].id)
+            && self.armies.iter().all(|army| {
+                army.id.0 < self.next_army
+                    && army.members.windows(2).all(|pair| pair[0] < pair[1])
+                    && army.progress.is_none_or(|(_, at)| at <= tick)
+                    && army.issued.is_none_or(|(at, _)| at <= tick)
+            })
+            && self.rear.iter().all(|unit| unit.since <= tick)
+    }
+
     /// Fresh, armyless executive.
     pub fn new() -> Self {
         Self::default()

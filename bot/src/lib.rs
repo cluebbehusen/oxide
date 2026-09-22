@@ -26,6 +26,7 @@ mod allocation;
 pub mod battlefield;
 pub mod brain;
 pub mod briefing;
+pub mod checkpoint;
 pub mod difficulty;
 pub mod executive;
 mod experience;

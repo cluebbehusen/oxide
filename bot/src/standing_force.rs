@@ -149,7 +149,9 @@ struct ExpansionSecurityNeed {
 }
 
 /// Why ordinary production currently wants one more unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum StandingForceReason {
     /// Restore the difficulty's non-negotiable ordinary fighting screen.
     CoreRecovery,
@@ -174,7 +176,7 @@ pub(crate) enum StandingForceReason {
 }
 
 /// One independently useful standing-force purchase or bounded accumulation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StandingForceProposal {
     observed_at: Tick,
     ready_before: Tick,
@@ -190,7 +192,7 @@ pub(crate) struct StandingForceProposal {
     pub(crate) raid: Option<super::raid::RaidProcurementRequest>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StandingForceCommitment {
     pub(crate) proposal: StandingForceProposal,
     pub(crate) job: super::allocation::ScheduledProducerJob,
@@ -272,7 +274,7 @@ impl StandingForceCommitment {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum StandingForceFunding {
     Immediate,
     Accumulate {
@@ -691,7 +693,7 @@ struct DemandBasis {
 
 /// Useful route-local work before current funds, technology, or factories gate
 /// its providers. Alternatives with the same service and reason are substitutes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CapabilityDemand {
     pub(crate) kind: UnitKind,
     pub(crate) service: StandingForceServiceKey,

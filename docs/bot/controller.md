@@ -25,9 +25,10 @@ a difficulty, stance, and personality seed. `seat_bots` passes that exact setup
 and one shared immutable scenario briefing to the fog-honest `Brain::scripted`
 controller. Player-facing decisions stop when the own seat resigns or has no
 remaining Foundry, even while teammates keep the match alive; remnant units
-continue their ordinary simulation programs without new bot commands. Resume
-rebuilds that briefing from the scenario embedded in the replay before
-fast-forwarding controller memory, so it adds no hidden save state or ambient
+continue their ordinary simulation programs without new bot commands. Legacy
+replay imports rebuild that briefing from the recorded scenario before
+fast-forwarding controller memory. Checkpoint saves restore retained controller
+memory directly and rebuild observational caches; neither path consults ambient
 input.
 
 Profile resolution turns the seed into six bounded preferences: air, siege,

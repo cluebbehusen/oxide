@@ -150,15 +150,61 @@ interrupted harvest job.
 
 ## Persistence and replay
 
-A save is a replay: starting scenario, tick-stamped commands, simulation
-version, and metadata. There is no independent mutable snapshot format. The live
-replay recorder is always active. Autosaves represent resumable sessions;
-decided matches are watchable records. Named saves persist until explicitly
-deleted, while autosaves and finished matches rotate separately.
+`oxide_kit::checkpoint::SessionCheckpoint` is the internal continuation
+boundary: scenario, world, controller memory, pending commands, and live
+statistics at a completed tick. Capture borrows the host without draining inputs
+or running bots. Restore validates the pieces before installation and executes
+no historical ticks. Controller and session format revisions are independent of
+`SIM_VERSION`; the initial implementation accepts only matching revisions and
+simulation versions.
+
+The session envelope fingerprints the captured scenario and world together.
+Restoration rejects changes to either side of that pairing, including a seed
+changed in both the session and its companion recorder. Capture trusts the host
+to supply the world's original scenario; this consistency fingerprint is not
+authentication or proof that historical commands produced the snapshot. Session
+revision 2 requires the fingerprint and rejects revision 1 checkpoints.
+Simulation serialization and hashes are unchanged.
+
+The headless session serde adapter uses `RecordedCheckpoint`, retaining its
+recorder as a companion. Its setup and end tick must agree with the core, but
+loading does not verify the entire history against the snapshot. The shell
+adapter instead captures the core without a recorder. It additionally retains
+tutorial progress, concession statistics, and decorative boundary exploration.
+Camera, selection, effects, and interpolation rebuild, the wall clock starts
+paused, and recovery/diagnostic workers are not serialized.
+
+Continue and named saves use the shell adapter in a versioned player-save
+envelope. The loader bounds reads to 256 MiB before decoding, requires matching
+save, shell, session, controller, and simulation revisions, and validates the
+metadata against the restored session before installation. Restoration runs no
+historical ticks and starts a fresh world-origin recording at the saved tick.
+Pending input is still pending and enters that recording only when its tick
+executes. A save is self-contained and never requires an earlier recording or
+save file. Cross-version migration is not implemented.
+
+Compatible legacy replay-backed saves reconstruct through `Game::from_replay`
+once, then start a fresh recording segment. The next save writes the checkpoint
+format; import never rewrites the source. Legacy reconstruction retains its
+interactive tick limit. Named saves persist until explicitly deleted; autosaves
+and finished-match recordings rotate separately. Finished matches remain
+recordings, containing the available history since the current segment began.
+
+Recordings can additionally start from a versioned world checkpoint. Its
+scenario and world fingerprint are validated, and commands cannot precede its
+absolute start tick. Playback, inspection, and statistics execute only the
+available suffix. Home and backward seeks stop at the recording origin; the
+scrub bar spans that origin through the absolute end tick. Segment statistics
+cannot reconstruct earlier events and explicitly describe only available
+history. World-only recordings cannot resume live play because they lack
+controller memory.
 
 Save publication reserves a collision-free destination and uses the chassis
 atomic-write path. Failures are reported to the player. Shelf discovery skips
-malformed files and labels incompatible versions.
+malformed files and labels incompatible formats and versions. Checkpoint rows
+validate the complete session without executing it; Continue selects the newest
+compatible autosave, skipping invalid or unavailable neighbors. Legacy save rows
+identify that loading reconstructs the match.
 
 `Game::from_replay` reconstructs state from the recorded commands. Bots observe
 reconstruction to restore their controller-local memory, but their regenerated
@@ -170,6 +216,18 @@ Ordinary play also keeps an incremental recovery journal through
 boundaries to a persistence worker. Only a contiguous, validated completed
 prefix can be recovered; an unfinished tick is diagnostic evidence. Recovered
 matches start paused.
+
+Recovery journals may pair a world-origin recording with a separate session
+checkpoint. Restoration validates that both describe the same initial world,
+restores controllers and live statistics, then observes only completed suffix
+ticks. Recorded commands remain authoritative. Pending checkpoint inputs must
+prefix the first journal batch: they survive when no tick completed and are
+consumed exactly once when that batch completed. An unfinished prepared batch
+remains diagnostic evidence. Exports retain the controller origin separately
+from the watchable replay. Replacement journals must retain both origins before
+retiring a recovered source. Ordinary new matches still start recovery from
+their existing scenario-backed recorder. A loaded player save starts recovery
+from its restored session checkpoint and new world-origin recording.
 
 The worker publishes durable progress separately from live progress. Storage
 failure or queue exhaustion stops capture with a visible warning while gameplay
@@ -288,10 +346,10 @@ Procedural quarry boundaries and pits derive from map geometry with fog-aware
 visibility. The shell extends allied unit sight discs and completed-building
 footprint sight into a bounded off-map quarry margin. Its presentation-only
 exploration cache updates on every tick, including bulk advances, and rebuilds
-from the command log when a saved match resumes. Map tiles retain authoritative
-simulation fog; the replay viewer remains fog-free. Animation, heading, and
-weapon effects use the relevant simulation state rather than inventing movement
-or firing delays.
+from legacy command logs during import. Player checkpoints retain that cache
+directly. Map tiles retain authoritative simulation fog; the replay viewer
+remains fog-free. Animation, heading, and weapon effects use the relevant
+simulation state rather than inventing movement or firing delays.
 
 `entity_lod` derives full, half, quarter, and eighth-resolution entity textures
 at startup without changing authored atlas bytes. Regions pack in descending

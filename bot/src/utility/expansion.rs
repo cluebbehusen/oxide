@@ -103,7 +103,7 @@ impl ExpansionEconomy {
 }
 
 /// The deterministic payback quote for one exact candidate site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct FoundryOpportunity {
     pub(super) anchor: TilePos,
     horizon_ticks: u64,

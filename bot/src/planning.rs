@@ -21,7 +21,7 @@ type CampaignAlternatives = std::collections::BTreeMap<
 const DECISION_WORK: usize = 128_000;
 const PRODUCTION_RESERVE: usize = DECISION_WORK / 4;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PlanningWork {
     tick: Cell<Option<u64>>,
     allowance: usize,
@@ -64,6 +64,41 @@ impl Default for PlanningWork {
 }
 
 impl PlanningWork {
+    pub(crate) fn valid_checkpoint(&self, map: &crate::PublicMapBriefing, tick: u64) -> bool {
+        let budget = self.budget.borrow();
+        let rotation = |work: &RankedRotation| {
+            work.tick.is_none_or(|t| t <= tick)
+                && work.offset <= map.map_width() as usize * map.map_height() as usize
+                && work.next <= map.map_width() as usize * map.map_height() as usize
+        };
+        self.tick.get().is_none_or(|t| t <= tick)
+            && self.allowance == DECISION_WORK
+            && budget.remaining.checked_add(budget.spent) == Some(self.allowance)
+            && self.navigation_spent.get() <= self.allowance
+            && self.site_checks.get() <= self.allowance
+            && self.fields.borrow().valid_checkpoint(map, tick)
+            && self
+                .approaches
+                .borrow()
+                .iter()
+                .all(|work| work.valid_checkpoint(map.map_width(), map.map_height(), tick))
+            && self.production.borrow().valid_checkpoint(tick)
+            && self.sites.borrow().valid_checkpoint(tick)
+            && rotation(&self.foundry.borrow())
+            && rotation(&self.campaign_sites.borrow())
+            && self.infrastructure.borrow().values().all(rotation)
+            && self.campaigns.borrow().len() <= 16
+            && self
+                .campaigns
+                .borrow()
+                .values()
+                .all(|(used, work)| *used <= tick && work.valid_checkpoint(tick, 2))
+            && self.campaign_selection.borrow().0.is_none_or(|t| t <= tick)
+            && self.campaign_selection.borrow().1.len() <= 2
+            && self.campaign_checks.get().0 <= tick
+            && self.campaign_checks.get().1 <= self.allowance
+    }
+
     pub(crate) fn infrastructure_sites(
         &self,
         tick: u64,
@@ -412,7 +447,7 @@ impl PlanningWork {
 }
 
 /// Refine the strongest estimate plus a rotating remainder on actual requests.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct RankedRotation {
     tick: Option<u64>,
     offset: usize,
@@ -439,14 +474,14 @@ impl RankedRotation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Progress<T> {
     Ready(T),
     ProvenInfeasible,
     Deferred,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct WorkBudget {
     remaining: usize,
     spent: usize,
