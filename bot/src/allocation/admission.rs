@@ -382,7 +382,7 @@ pub(crate) fn admit_decision(
         || (strategic_was_staged && allocation_ok)
         || (strategy
             .air_operation()
-            .is_some_and(|op| op.assault_admitted)
+            .is_some_and(|op| op.assault_admitted())
             && strategy.connected_package_diagnostics().is_some());
     let mut utility_reservations = policy.state.reconnaissance.reservations();
     utility_reservations.extend(policy.support_reservations());
@@ -572,7 +572,7 @@ fn air_channel_state(planner: &StrategicPlanner) -> ChannelState {
     let Some(operation) = planner.air_operation() else {
         return ChannelState::Idle;
     };
-    let phase = match operation.phase {
+    let phase = match operation.phase() {
         AirOperationPhase::Recon => ChannelPhase::AirRecon,
         AirOperationPhase::Assemble => ChannelPhase::AirAssemble,
         AirOperationPhase::SuppressAa => ChannelPhase::AirSuppressAa,

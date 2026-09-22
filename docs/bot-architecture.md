@@ -664,6 +664,13 @@ indefinitely.
 
 ## Air and lift operations
 
+Air operations own one lifecycle state: watching a remembered objective,
+admitted reconnaissance, assembly, suppression, verification, strike, or
+recovery. Recovery carries its reason and prior assault admission; other states
+derive admission directly. Diagnostic phases remain stable, with watching
+reported as Recon. Phase, admission, and recovery reason cannot be mutated
+independently.
+
 On severed ground, wealthy bots may run two independent operations. The air
 planner builds a screen and bomber wing, scouts the route, attacks currently
 visible flak along it, and then commits against a current objective. Its force

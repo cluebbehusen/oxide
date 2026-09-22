@@ -1011,6 +1011,20 @@ pub(super) enum AirOperationOutcome {
     Aborted { player: PlayerId, target: TilePos },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AirStage {
+    Watching,
+    Recon,
+    Assemble,
+    SuppressAa,
+    Verify,
+    Strike,
+    Recover {
+        reason: AirRecoveryReason,
+        assault_admitted: bool,
+    },
+}
+
 /// Inspectable persistent state of the active operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AirOperation {
@@ -1022,10 +1036,7 @@ pub struct AirOperation {
     pub target: TilePos,
     /// Last live id, used only with current evidence.
     pub target_id: Option<BuildingId>,
-    /// Whether current sight has admitted non-scout spending and reservations.
-    pub assault_admitted: bool,
-    /// Current playbook phase.
-    pub phase: AirOperationPhase,
+    pub(super) stage: AirStage,
     /// Start tick of the operation.
     pub started_at: Tick,
     /// Start tick of the current phase.
@@ -1049,8 +1060,52 @@ pub struct AirOperation {
     /// First tick on which exact package membership crossed the tactical
     /// commitment boundary. Recovery never erases this history.
     pub membership_frozen_at: Option<Tick>,
-    /// Set only while recovering.
-    pub recovery_reason: Option<AirRecoveryReason>,
+}
+
+impl AirOperation {
+    /// Current playbook phase, including observation-only reconnaissance.
+    pub fn phase(&self) -> AirOperationPhase {
+        match self.stage {
+            AirStage::Watching | AirStage::Recon => AirOperationPhase::Recon,
+            AirStage::Assemble => AirOperationPhase::Assemble,
+            AirStage::SuppressAa => AirOperationPhase::SuppressAa,
+            AirStage::Verify => AirOperationPhase::Verify,
+            AirStage::Strike => AirOperationPhase::Strike,
+            AirStage::Recover { .. } => AirOperationPhase::Recover,
+        }
+    }
+
+    /// Whether current sight has admitted non-scout spending and reservations.
+    pub fn assault_admitted(&self) -> bool {
+        match self.stage {
+            AirStage::Watching => false,
+            AirStage::Recover {
+                assault_admitted, ..
+            } => assault_admitted,
+            _ => true,
+        }
+    }
+
+    /// Why the operation is withdrawing, if it is in recovery.
+    pub fn recovery_reason(&self) -> Option<AirRecoveryReason> {
+        match self.stage {
+            AirStage::Recover { reason, .. } => Some(reason),
+            _ => None,
+        }
+    }
+
+    fn admit_assault(&mut self, now: Tick) {
+        self.stage = match self.stage {
+            AirStage::Watching => AirStage::Recon,
+            AirStage::Recover { reason, .. } => AirStage::Recover {
+                reason,
+                assault_admitted: true,
+            },
+            stage => stage,
+        };
+        self.started_at = now;
+        self.phase_started_at = now;
+    }
 }
 
 /// Role-preserving survivors held only through the operation cooldown.
@@ -1593,8 +1648,7 @@ impl FreshConnectedProposal {
             target_kind: BuildingKind::Crucible,
             target: anchor,
             target_id: Some(objective),
-            assault_admitted: true,
-            phase: AirOperationPhase::Recon,
+            stage: AirStage::Recon,
             started_at: derived_at,
             phase_started_at: derived_at,
             scout: None,
@@ -1605,7 +1659,6 @@ impl FreshConnectedProposal {
             strike_aircraft: Vec::new(),
             strike_issued_at: None,
             membership_frozen_at: None,
-            recovery_reason: None,
         };
         let active = ActiveAirOperation { op, plan };
         let mut cumulative = minimum_claims.clone();
@@ -2323,8 +2376,7 @@ fn connected_proposal_operation(
             target_kind: target.kind,
             target: target.anchor,
             target_id: target.id,
-            assault_admitted: true,
-            phase: AirOperationPhase::Recon,
+            stage: AirStage::Recon,
             started_at: admitted_at,
             phase_started_at: admitted_at,
             scout: standby.scout,
@@ -2335,7 +2387,6 @@ fn connected_proposal_operation(
             strike_aircraft: standby.strike_aircraft.clone(),
             strike_issued_at: None,
             membership_frozen_at: None,
-            recovery_reason: None,
         },
         ConnectedProposalOrigin::Remembered { active } => {
             let mut op = active.op.clone();
@@ -2343,9 +2394,7 @@ fn connected_proposal_operation(
             op.target_kind = target.kind;
             op.target = target.anchor;
             op.target_id = target.id;
-            op.assault_admitted = true;
-            op.started_at = admitted_at;
-            op.phase_started_at = admitted_at;
+            op.admit_assault(admitted_at);
             op
         }
         ConnectedProposalOrigin::Active { active } => {
@@ -2474,7 +2523,7 @@ impl StrategicPlanner {
 
     pub(crate) fn has_active_island_operation(&self) -> bool {
         self.air.as_ref().is_some_and(|active| {
-            active.op.assault_admitted && active.plan.connected_package.is_none()
+            active.op.assault_admitted() && active.plan.connected_package.is_none()
         })
     }
 
@@ -2486,7 +2535,7 @@ impl StrategicPlanner {
         context: StrategicThinkContext<'_>,
     ) -> Option<StrategicThinkResult> {
         let active = self.air.as_ref()?;
-        if !active.op.assault_admitted || active.plan.connected_package.is_some() {
+        if !active.op.assault_admitted() || active.plan.connected_package.is_some() {
             return None;
         }
         Some(self.think_after_connected_adjudication(context))
@@ -2519,7 +2568,7 @@ impl StrategicPlanner {
         }
 
         if let Some(active) = &self.air {
-            if active.op.assault_admitted {
+            if active.op.assault_admitted() {
                 return Ok(None);
             }
             let mut refreshed = active.clone();
@@ -2671,8 +2720,8 @@ impl StrategicPlanner {
         let Some(package) = active.plan.connected_package.as_ref() else {
             return Ok(None);
         };
-        if !active.op.assault_admitted
-            || active.op.phase > AirOperationPhase::Assemble
+        if !active.op.assault_admitted()
+            || active.op.phase() > AirOperationPhase::Assemble
             || active.op.membership_frozen_at.is_some()
             || package.derived_at >= obs.tick
             || operation_recovery_reason(&active.op, &active.plan, profile, obs, intel).is_some()
@@ -2791,7 +2840,7 @@ impl StrategicPlanner {
             && self
                 .air
                 .as_ref()
-                .is_some_and(|active| active.op.assault_admitted)
+                .is_some_and(|active| active.op.assault_admitted())
         {
             return Err(ConnectedProposalCommitError::ExistingAssault);
         }
@@ -2827,10 +2876,10 @@ impl StrategicPlanner {
         let active = self
             .air
             .as_mut()
-            .filter(|active| active.op.assault_admitted)?;
+            .filter(|active| active.op.assault_admitted())?;
         let package = active.plan.connected_package.as_ref()?;
         let obs = request.obs;
-        let provider_jobs = if active.op.phase <= AirOperationPhase::Assemble
+        let provider_jobs = if active.op.phase() <= AirOperationPhase::Assemble
             && obs.tick < package.preparation_deadline
             && operation_recovery_reason(
                 &active.op,
@@ -2858,7 +2907,7 @@ impl StrategicPlanner {
                     request.resource_snapshot,
                     0,
                 );
-            if active.op.phase <= AirOperationPhase::Assemble
+            if active.op.phase() <= AirOperationPhase::Assemble
                 && active.op.membership_frozen_at.is_none()
             {
                 let owned = reservations(&active.op, &active.plan, obs);
@@ -2942,7 +2991,7 @@ impl StrategicPlanner {
         let Some(active) = self.air.as_ref().filter(|active| {
             active.op.scout.is_none()
                 && matches!(
-                    active.op.phase,
+                    active.op.phase(),
                     AirOperationPhase::Recon | AirOperationPhase::Assemble
                 )
         }) else {
@@ -2982,7 +3031,7 @@ impl StrategicPlanner {
         obs: &Observation,
     ) -> Vec<ConnectedPurchase> {
         let Some(active) = self.air.as_mut().filter(|active| {
-            active.op.assault_admitted && active.op.phase <= AirOperationPhase::Assemble
+            active.op.assault_admitted() && active.op.phase() <= AirOperationPhase::Assemble
         }) else {
             return Vec::new();
         };
@@ -3033,7 +3082,7 @@ impl StrategicPlanner {
         // work. This path returns before the normal pass would do it.
         self.paid_connected_production(obs);
         let has_unpaid_provider = self.air.as_ref().is_some_and(|active| {
-            if active.op.phase > AirOperationPhase::Assemble {
+            if active.op.phase() > AirOperationPhase::Assemble {
                 return false;
             }
             let Some(package) = active.plan.connected_package.as_ref() else {
@@ -3097,7 +3146,7 @@ impl StrategicPlanner {
             .air
             .as_mut()
             .expect("an active connected obligation can only come from its planner");
-        debug_assert!(active.op.assault_admitted);
+        debug_assert!(active.op.assault_admitted());
         debug_assert!(active.plan.connected_package.is_some());
         recover(
             &mut active.op,
@@ -3149,7 +3198,7 @@ impl StrategicPlanner {
         let Some(ActiveAirOperation { op, plan }) = &self.air else {
             return 0;
         };
-        if op.phase > AirOperationPhase::Assemble {
+        if op.phase() > AirOperationPhase::Assemble {
             return 0;
         }
         if let Some(package) = &plan.connected_package {
@@ -3189,7 +3238,7 @@ impl StrategicPlanner {
             .filter(|id| unit(obs, **id).is_some_and(|member| member.kind == bomber_kind))
             .count();
         let missing_scout = 1usize.saturating_sub(live_scout);
-        if !op.assault_admitted {
+        if !op.assault_admitted() {
             return remaining_training_ticks(obs, missing_scout, scout_kind);
         }
         let missing_screen = plan.desired_screen.saturating_sub(live_screen);
@@ -3236,7 +3285,7 @@ impl StrategicPlanner {
             return None;
         }
         let active = if let Some(active) = self.air.as_ref() {
-            if active.op.phase != AirOperationPhase::Recon || active.op.assault_admitted {
+            if active.op.phase() != AirOperationPhase::Recon || active.op.assault_admitted() {
                 return None;
             }
             active.clone()
@@ -3380,7 +3429,7 @@ impl StrategicPlanner {
                 subject: ExperienceSubject::Building(op.target_id),
             },
             &members,
-            op.phase as u8,
+            op.phase() as u8,
         );
         let objective_gone = op
             .target_id
@@ -3389,24 +3438,22 @@ impl StrategicPlanner {
             unit(obs, *id)
                 .is_some_and(|member| member.kind == Role::AirGround.unit_for(obs.faction))
         });
-        let began_in_recovery = op.phase == AirOperationPhase::Recover;
+        let began_in_recovery = op.phase() == AirOperationPhase::Recover;
         refresh_target(&mut op, intel);
-        if !op.assault_admitted
+        if !op.assault_admitted()
             && strategic_admission_tick(obs.tick)
             && let Some(current_target) = current_target_contact(&op, intel)
         {
             let admitted_at = plan.admitted_at;
             if wealthy_island_target(profile, obs, home, current_target, public_map) {
                 let mut admitted = AirPlan::island_with_production(profile, obs, production);
-                op.assault_admitted = true;
-                op.started_at = obs.tick;
-                op.phase_started_at = obs.tick;
+                op.admit_assault(obs.tick);
                 admitted.admitted_at = admitted_at;
                 plan = admitted;
             }
         }
-        if op.assault_admitted
-            && op.phase <= AirOperationPhase::Assemble
+        if op.assault_admitted()
+            && op.phase() <= AirOperationPhase::Assemble
             && let Some(deadline) = plan
                 .connected_package
                 .as_ref()
@@ -3444,7 +3491,7 @@ impl StrategicPlanner {
                 &resources.targets.target_anchors,
             );
         }
-        if !began_in_recovery && op.phase != AirOperationPhase::Recover {
+        if !began_in_recovery && op.phase() != AirOperationPhase::Recover {
             abort_if_needed(&mut op, &plan, profile, obs, intel);
         }
 
@@ -3454,7 +3501,7 @@ impl StrategicPlanner {
             .map_or_else(Vec::new, |request| request.planned_drops.clone());
         let external_enlisted = excluding_owned(enlisted, &reservations(&op, &plan, obs));
         if let Some(package) = plan.connected_package.as_ref()
-            && op.phase <= AirOperationPhase::Assemble
+            && op.phase() <= AirOperationPhase::Assemble
         {
             let route = ConnectedRouteContext {
                 campaign_routes: None,
@@ -3491,19 +3538,17 @@ impl StrategicPlanner {
             protected_current_scrap,
             protected_forecast_scrap,
         };
-        match op.phase {
-            AirOperationPhase::Recon if !op.assault_admitted => {
-                remembered_recon(&mut op, &plan, &context, &mut out)
-            }
-            AirOperationPhase::Recon => recon(&mut op, &mut plan, &context, &mut out),
-            AirOperationPhase::Assemble => assemble(&mut op, &mut plan, &context, &mut out),
-            AirOperationPhase::SuppressAa => suppress(&mut op, &mut plan, &context, &mut out),
-            AirOperationPhase::Verify => verify(&mut op, &mut plan, &context, &mut out),
-            AirOperationPhase::Strike => strike(&mut op, &mut plan, &context, &mut out),
-            AirOperationPhase::Recover => {}
+        match op.stage {
+            AirStage::Watching => remembered_recon(&mut op, &plan, &context, &mut out),
+            AirStage::Recon => recon(&mut op, &mut plan, &context, &mut out),
+            AirStage::Assemble => assemble(&mut op, &mut plan, &context, &mut out),
+            AirStage::SuppressAa => suppress(&mut op, &mut plan, &context, &mut out),
+            AirStage::Verify => verify(&mut op, &mut plan, &context, &mut out),
+            AirStage::Strike => strike(&mut op, &mut plan, &context, &mut out),
+            AirStage::Recover { .. } => {}
         }
         let preparation_expired = plan.connected_package.as_ref().is_some_and(|package| {
-            op.phase <= AirOperationPhase::Assemble
+            op.phase() <= AirOperationPhase::Assemble
                 && obs.tick >= package.preparation_deadline
                 && !assembly_complete(&op, &plan)
         });
@@ -3517,9 +3562,9 @@ impl StrategicPlanner {
                 .retain(|intent| !matches!(intent, Intent::TrainAt { .. }));
             out.reserved_scrap = 0;
         }
-        let recovery_entered_this_tick = op.phase == AirOperationPhase::Recover
+        let recovery_entered_this_tick = op.phase() == AirOperationPhase::Recover
             && (!began_in_recovery || op.phase_started_at == obs.tick);
-        if op.phase == AirOperationPhase::Recover {
+        if op.phase() == AirOperationPhase::Recover {
             if recovery_entered_this_tick {
                 self.cooldown_until = obs.tick.saturating_add(cooldown(profile, tuning));
             }
@@ -3549,11 +3594,11 @@ impl StrategicPlanner {
                 .reservations
                 .iter()
                 .all(|id| unit(obs, *id).is_some_and(|member| member.idle));
-        let recovered = op.phase == AirOperationPhase::Recover
+        let recovered = op.phase() == AirOperationPhase::Recover
             && (out.reservations.is_empty()
                 || settled
                 || elapsed(op.phase_started_at, obs.tick) >= 500);
-        if let Some(reason) = op.recovery_reason {
+        if let Some(reason) = op.recovery_reason() {
             let (outcome, reason, confidence, doctrine) = match reason {
                 AirRecoveryReason::Complete if objective_gone => (
                     Outcome::Complete,
@@ -3598,7 +3643,7 @@ impl StrategicPlanner {
             self.outcomes
                 .finish(obs, outcome, reason, confidence, doctrine);
         }
-        if settled && !out.reservations.is_empty() && reusable_survivors(op.recovery_reason) {
+        if settled && !out.reservations.is_empty() && reusable_survivors(op.recovery_reason()) {
             self.standby = AirStandby::from_operation(&op, obs);
         } else if recovered {
             self.terminal_outcome = Some(air_operation_outcome(&op));
@@ -3699,7 +3744,7 @@ fn demand_components(demands: &[ProviderDemand]) -> Vec<(UnitKind, usize)> {
 }
 
 fn air_operation_outcome(op: &AirOperation) -> AirOperationOutcome {
-    if op.recovery_reason == Some(AirRecoveryReason::Complete) {
+    if op.recovery_reason() == Some(AirRecoveryReason::Complete) {
         AirOperationOutcome::Released {
             player: op.target_player,
             target: op.target,
@@ -3891,7 +3936,7 @@ fn recon(
         && target_seen(op, plan, obs)
         && elapsed(op.phase_started_at, obs.tick) >= tuning.reaction_delay
     {
-        enter(op, AirOperationPhase::Assemble, obs.tick);
+        enter(op, AirStage::Assemble, obs.tick);
     }
 }
 
@@ -3990,7 +4035,7 @@ fn assemble(
                 recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
                 return;
             }
-            enter(op, AirOperationPhase::SuppressAa, obs.tick);
+            enter(op, AirStage::SuppressAa, obs.tick);
             hold_air_strike(op, plan, obs, *home, out);
             return;
         }
@@ -4021,7 +4066,7 @@ fn assemble(
             recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
             return;
         }
-        enter(op, AirOperationPhase::SuppressAa, obs.tick);
+        enter(op, AirStage::SuppressAa, obs.tick);
         stage_artillery(op, staging, out);
         hold_strike_aircraft(op, obs, *home, out);
     }
@@ -4145,7 +4190,7 @@ fn suppress(
                     recover(op, AirRecoveryReason::NewAirDefense, obs.tick);
                 }
                 AirborneCorridorStatus::Clear => {
-                    enter(op, AirOperationPhase::Verify, obs.tick);
+                    enter(op, AirStage::Verify, obs.tick);
                     if !scout_and_hold(op, plan, context, landing_sites, out) {
                         out.intents.clear();
                         recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
@@ -4170,7 +4215,7 @@ fn suppress(
             AirDefenseEvidence::VisibleWithoutKnownCoverage
                 if corridor_clear(intel, home, connected_strike_anchor(op, plan, intel), &[]) =>
             {
-                enter(op, AirOperationPhase::Verify, obs.tick);
+                enter(op, AirStage::Verify, obs.tick);
                 if !scout_and_hold(op, plan, context, &[], out) {
                     out.intents.clear();
                     recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
@@ -4206,7 +4251,7 @@ fn verify(
         cluster_aa.and_then(|assessment| assessment.targetable)
     };
     if air_defense.is_some() {
-        enter(op, AirOperationPhase::SuppressAa, obs.tick);
+        enter(op, AirStage::SuppressAa, obs.tick);
         suppress(op, plan, context, out);
         return;
     }
@@ -4221,7 +4266,7 @@ fn verify(
                         .reaction_delay
                         .saturating_add(tuning.commitment_hesitation) =>
             {
-                enter(op, AirOperationPhase::Strike, obs.tick);
+                enter(op, AirStage::Strike, obs.tick);
                 strike(op, plan, context, out);
             }
             AirborneCorridorStatus::Clear | AirborneCorridorStatus::NeedsRecon => {
@@ -4247,7 +4292,7 @@ fn verify(
                         .reaction_delay
                         .saturating_add(tuning.commitment_hesitation) =>
         {
-            enter(op, AirOperationPhase::Strike, obs.tick);
+            enter(op, AirStage::Strike, obs.tick);
             strike(op, plan, context, out);
         }
         AirDefenseEvidence::RememberedCoverage
@@ -4283,7 +4328,7 @@ fn strike(
         assessment.has_targets && assessment.evidence == AirDefenseEvidence::CurrentCoverage
     });
     if air_defense.is_some() || connected_cluster_needs_clearance {
-        enter(op, AirOperationPhase::SuppressAa, obs.tick);
+        enter(op, AirStage::SuppressAa, obs.tick);
         suppress(op, plan, context, out);
         return;
     }
@@ -4423,7 +4468,7 @@ fn operation_recovery_reason(
     obs: &Observation,
     intel: &StrategicIntelligence,
 ) -> Option<AirRecoveryReason> {
-    if op.phase <= AirOperationPhase::Assemble
+    if op.phase() <= AirOperationPhase::Assemble
         && op
             .scout_dispatch
             .is_some_and(|(scout, _)| unit(obs, scout).is_none())
@@ -4431,18 +4476,18 @@ fn operation_recovery_reason(
         return Some(AirRecoveryReason::RequiredUnitLost);
     }
     let waiting_for_recon_scout =
-        op.phase == AirOperationPhase::Recon && op.scout.is_none_or(|id| unit(obs, id).is_none());
+        op.phase() == AirOperationPhase::Recon && op.scout.is_none_or(|id| unit(obs, id).is_none());
     let connected_preparation =
-        plan.connected_package.is_some() && op.phase <= AirOperationPhase::Assemble;
+        plan.connected_package.is_some() && op.phase() <= AirOperationPhase::Assemble;
     if elapsed(op.started_at, obs.tick) >= operation_timeout(profile, plan)
         || (!connected_preparation
             && !waiting_for_recon_scout
-            && elapsed(op.phase_started_at, obs.tick) >= phase_timeout(op.phase, plan))
+            && elapsed(op.phase_started_at, obs.tick) >= phase_timeout(op.phase(), plan))
     {
         return Some(AirRecoveryReason::Timeout);
     }
     if !plan.airborne()
-        && op.phase < AirOperationPhase::Strike
+        && op.phase() < AirOperationPhase::Strike
         && operation_objective_is_stale(op, plan, obs.tick, intel)
     {
         return Some(AirRecoveryReason::StaleIntelligence);
@@ -4483,7 +4528,7 @@ fn operation_recovery_reason(
     {
         return Some(AirRecoveryReason::RequiredUnitLost);
     }
-    if op.phase < AirOperationPhase::Strike && operation_objective_cleared(op, plan, obs, intel) {
+    if op.phase() < AirOperationPhase::Strike && operation_objective_cleared(op, plan, obs, intel) {
         return Some(AirRecoveryReason::ObjectiveLost);
     }
     None
@@ -4600,8 +4645,11 @@ fn fresh_air_operation(
         target_kind: target.kind,
         target: target.anchor,
         target_id: target.id,
-        assault_admitted,
-        phase: AirOperationPhase::Recon,
+        stage: if assault_admitted {
+            AirStage::Recon
+        } else {
+            AirStage::Watching
+        },
         started_at: obs.tick,
         phase_started_at: obs.tick,
         scout: standby.scout,
@@ -4620,7 +4668,6 @@ fn fresh_air_operation(
         },
         strike_issued_at: None,
         membership_frozen_at: None,
-        recovery_reason: None,
     };
     ActiveAirOperation { op, plan }
 }
@@ -7238,17 +7285,23 @@ fn elapsed(start: Tick, now: Tick) -> Tick {
     now.saturating_sub(start)
 }
 
-fn enter(op: &mut AirOperation, phase: AirOperationPhase, now: Tick) {
-    if phase == AirOperationPhase::SuppressAa {
+fn enter(op: &mut AirOperation, stage: AirStage, now: Tick) {
+    if stage == AirStage::SuppressAa {
         op.membership_frozen_at.get_or_insert(now);
     }
-    op.phase = phase;
+    op.stage = stage;
     op.phase_started_at = now;
 }
 
 fn recover(op: &mut AirOperation, reason: AirRecoveryReason, now: Tick) {
-    enter(op, AirOperationPhase::Recover, now);
-    op.recovery_reason = Some(reason);
+    enter(
+        op,
+        AirStage::Recover {
+            reason,
+            assault_admitted: op.assault_admitted(),
+        },
+        now,
+    );
     op.scout_dispatch = None;
 }
 
@@ -7546,8 +7599,17 @@ mod tests {
             target_kind: BuildingKind::Crucible,
             target: TARGET,
             target_id: Some(BuildingId(80)),
-            assault_admitted: true,
-            phase,
+            stage: match phase {
+                AirOperationPhase::Recon => AirStage::Recon,
+                AirOperationPhase::Assemble => AirStage::Assemble,
+                AirOperationPhase::SuppressAa => AirStage::SuppressAa,
+                AirOperationPhase::Verify => AirStage::Verify,
+                AirOperationPhase::Strike => AirStage::Strike,
+                AirOperationPhase::Recover => AirStage::Recover {
+                    reason: AirRecoveryReason::Timeout,
+                    assault_admitted: true,
+                },
+            },
             started_at: tick - 50,
             phase_started_at: tick - 50,
             scout: Some(UnitId(1)),
@@ -7564,7 +7626,6 @@ mod tests {
                     | AirOperationPhase::Strike
             )
             .then_some(tick),
-            recovery_reason: None,
         }
     }
 
@@ -8570,10 +8631,13 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the complete package crosses the commitment boundary");
-        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
         assert_eq!(operation.membership_frozen_at, Some(observation.tick));
         assert_eq!(operation.strike_aircraft, [UnitId(3), UnitId(4)]);
-        assert_ne!(operation.recovery_reason, Some(AirRecoveryReason::Timeout));
+        assert_ne!(
+            operation.recovery_reason(),
+            Some(AirRecoveryReason::Timeout)
+        );
         assert!(decision.reservations.contains(&UnitId(4)));
     }
 
@@ -8610,9 +8674,12 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("a complete deadline roster is retained after reconnaissance");
-        assert_eq!(operation.phase, AirOperationPhase::Assemble);
+        assert_eq!(operation.phase(), AirOperationPhase::Assemble);
         assert_eq!(operation.strike_aircraft, [UnitId(3), UnitId(4)]);
-        assert_ne!(operation.recovery_reason, Some(AirRecoveryReason::Timeout));
+        assert_ne!(
+            operation.recovery_reason(),
+            Some(AirRecoveryReason::Timeout)
+        );
         assert!(deadline_decision.reservations.contains(&UnitId(4)));
 
         observation.tick += DifficultyTuning::for_level(BotDifficulty::Prime).cadence;
@@ -8629,7 +8696,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the ready roster crosses commitment on the next decision boundary");
-        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
         assert_eq!(operation.membership_frozen_at, Some(observation.tick));
         assert!(committed.reservations.contains(&UnitId(4)));
     }
@@ -8639,10 +8706,10 @@ mod tests {
         let mut operation = operation(AirOperationPhase::Assemble, 100);
         assert_eq!(operation.membership_frozen_at, None);
 
-        enter(&mut operation, AirOperationPhase::SuppressAa, 120);
+        enter(&mut operation, AirStage::SuppressAa, 120);
         assert_eq!(operation.membership_frozen_at, Some(120));
-        enter(&mut operation, AirOperationPhase::Verify, 130);
-        enter(&mut operation, AirOperationPhase::SuppressAa, 140);
+        enter(&mut operation, AirStage::Verify, 130);
+        enter(&mut operation, AirStage::SuppressAa, 140);
         assert_eq!(operation.membership_frozen_at, Some(120));
 
         recover(&mut operation, AirRecoveryReason::Timeout, 150);
@@ -8704,7 +8771,7 @@ mod tests {
         );
 
         assert_eq!(
-            active.air_operation().map(|operation| operation.phase),
+            active.air_operation().map(|operation| operation.phase()),
             Some(AirOperationPhase::Strike)
         );
         assert_eq!(continued.committed_scrap(), 0);
@@ -8804,9 +8871,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the lost-scout operation withdraws before closing");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert!(planner.cooldown_until > observation.tick);
@@ -8840,9 +8907,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the lost-scout operation withdraws before closing");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert_eq!(decision.committed_scrap(), 0);
@@ -8872,7 +8939,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the wealthy island starts a real air operation");
-        assert_eq!(operation.phase, AirOperationPhase::Assemble);
+        assert_eq!(operation.phase(), AirOperationPhase::Assemble);
         assert_eq!(operation.scout, Some(UnitId(1)));
         assert!(operation.scout_dispatch.is_some());
         assert!(dispatched.intents.iter().any(|intent| matches!(
@@ -8891,9 +8958,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed operation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert_eq!(failed.committed_scrap(), 0);
@@ -9279,7 +9346,7 @@ mod tests {
             Intent::MoveUnits { units, .. } if units.contains(&UnitId(1))
         )));
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::Recon
         );
 
@@ -9291,7 +9358,7 @@ mod tests {
         intel.update(&waiting);
         let assigned = think(&mut planner, &waiting, &intel);
         let operation = planner.air_operation().unwrap();
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
         assert_eq!(operation.phase_started_at, waiting.tick);
         assert_eq!(operation.scout, Some(UnitId(5)));
         assert!(assigned.intents.iter().any(|intent| matches!(
@@ -9325,7 +9392,7 @@ mod tests {
         let training = planner.think(&profile(), tuning, &current, &intelligence, HOME, &[]);
 
         let operation = planner.air_operation().unwrap();
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
         assert_eq!(operation.scout, None);
         assert_eq!(operation.scout_dispatch, None);
         assert_eq!(training.committed_scrap(), UnitKind::Kestrel.stats().cost);
@@ -9353,7 +9420,7 @@ mod tests {
         let waiting = planner.think(&profile(), tuning, &hidden, &intelligence, HOME, &[]);
 
         let operation = planner.air_operation().unwrap();
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
         assert_eq!(operation.scout, None);
         assert_eq!(operation.scout_dispatch, None);
         assert!(waiting.intents.iter().all(|intent| !matches!(
@@ -9376,7 +9443,7 @@ mod tests {
         let dispatch = planner.think(&profile(), tuning, &ready, &intelligence, HOME, &[]);
 
         let operation = planner.air_operation().unwrap();
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
         assert_eq!(operation.scout, Some(UnitId(5)));
         assert!(operation.scout_dispatch.is_some());
         assert!(dispatch.intents.iter().any(|intent| matches!(
@@ -9405,7 +9472,7 @@ mod tests {
         );
 
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::Assemble,
             "Prime may react immediately only after the required scout has a real dispatch; rejection={:?}",
             reacquired_result.rejected_connected_candidate,
@@ -9444,7 +9511,7 @@ mod tests {
 
                 let operation = planner.air_operation().unwrap();
                 assert_eq!(
-                    operation.phase,
+                    operation.phase(),
                     AirOperationPhase::Recon,
                     "{difficulty:?} advanced after its full reaction delay without a scout dispatch"
                 );
@@ -9512,8 +9579,8 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the operation remains active");
-        assert_eq!(operation.phase, AirOperationPhase::Verify);
-        assert_eq!(operation.recovery_reason, None);
+        assert_eq!(operation.phase(), AirOperationPhase::Verify);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(while_unfinished.intents.iter().all(|intent| !matches!(
             intent,
             Intent::AttackUnits {
@@ -9536,8 +9603,8 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("suppression retains the operation");
-        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
-        assert_eq!(operation.recovery_reason, None);
+        assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(after_completion.intents.iter().any(|intent| matches!(
             intent,
             Intent::AttackUnits {
@@ -9562,8 +9629,8 @@ mod tests {
         let while_unfinished = think(&mut planner, &construction, &intel);
 
         let operation = planner.air_operation().expect("the strike remains active");
-        assert_eq!(operation.phase, AirOperationPhase::Strike);
-        assert_eq!(operation.recovery_reason, None);
+        assert_eq!(operation.phase(), AirOperationPhase::Strike);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(while_unfinished.intents.iter().any(|intent| matches!(
             intent,
             Intent::AttackUnits {
@@ -9586,8 +9653,8 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("suppression retains the operation");
-        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
-        assert_eq!(operation.recovery_reason, None);
+        assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(after_completion.intents.iter().any(|intent| matches!(
             intent,
             Intent::AttackUnits {
@@ -9630,7 +9697,7 @@ mod tests {
         let mut planner = with_operation(AirOperationPhase::SuppressAa, 101);
         let out = think(&mut planner, &hidden, &intel);
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(
@@ -10032,8 +10099,8 @@ mod tests {
         let mut planner = with_operation(AirOperationPhase::Strike, 300);
         let continued = think(&mut planner, &battle, &intel);
         let op = planner.air_operation().unwrap();
-        assert_eq!(op.phase, AirOperationPhase::Strike);
-        assert_eq!(op.recovery_reason, None);
+        assert_eq!(op.phase(), AirOperationPhase::Strike);
+        assert_eq!(op.recovery_reason(), None);
         assert_eq!(continued.reservations, [UnitId(1), UnitId(2), UnitId(3)]);
 
         battle.tick += 1;
@@ -10041,9 +10108,9 @@ mod tests {
         let intel = knowledge(&battle);
         let out = think(&mut planner, &battle, &intel);
         let op = planner.air_operation().unwrap();
-        assert_eq!(op.phase, AirOperationPhase::Recover);
+        assert_eq!(op.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            op.recovery_reason,
+            op.recovery_reason(),
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert!(planner.cooldown_until > battle.tick);
@@ -10059,8 +10126,8 @@ mod tests {
         timed_out.air_op_mut().unwrap().started_at = 0;
         think(&mut timed_out, &obs, &intel);
         let op = timed_out.air_operation().unwrap();
-        assert_eq!(op.phase, AirOperationPhase::Recover);
-        assert_eq!(op.recovery_reason, Some(AirRecoveryReason::Timeout));
+        assert_eq!(op.phase(), AirOperationPhase::Recover);
+        assert_eq!(op.recovery_reason(), Some(AirRecoveryReason::Timeout));
     }
 
     #[test]
@@ -10093,7 +10160,10 @@ mod tests {
         let intel = knowledge(&settled);
         let mut planner = with_operation(AirOperationPhase::Recover, settled.tick);
         planner.cooldown_until = 1_000;
-        planner.air_op_mut().unwrap().recovery_reason = Some(AirRecoveryReason::Complete);
+        planner.air_op_mut().unwrap().stage = AirStage::Recover {
+            reason: AirRecoveryReason::Complete,
+            assault_admitted: true,
+        };
 
         let decision = think(&mut planner, &settled, &intel);
 
@@ -10128,7 +10198,10 @@ mod tests {
         let observation = obs(400);
         let intel = knowledge(&observation);
         let mut planner = with_operation(AirOperationPhase::Recover, 400);
-        planner.air_op_mut().unwrap().recovery_reason = Some(AirRecoveryReason::NewAirDefense);
+        planner.air_op_mut().unwrap().stage = AirStage::Recover {
+            reason: AirRecoveryReason::NewAirDefense,
+            assault_admitted: true,
+        };
 
         think(&mut planner, &observation, &intel);
 
@@ -10170,7 +10243,10 @@ mod tests {
         let operation = planner.air_op_mut().unwrap();
         operation.artillery = vec![UnitId(2), UnitId(5)];
         operation.strike_aircraft = vec![UnitId(3)];
-        operation.recovery_reason = Some(AirRecoveryReason::Timeout);
+        operation.stage = AirStage::Recover {
+            reason: AirRecoveryReason::Timeout,
+            assault_admitted: true,
+        };
         let intel = knowledge(&settled);
 
         let recovered = think(&mut planner, &settled, &intel);
@@ -10234,7 +10310,10 @@ mod tests {
         let mut settled = obs(408);
         let mut planner = with_operation(AirOperationPhase::Recover, settled.tick);
         planner.cooldown_until = 500;
-        planner.air_op_mut().unwrap().recovery_reason = Some(AirRecoveryReason::Complete);
+        planner.air_op_mut().unwrap().stage = AirStage::Recover {
+            reason: AirRecoveryReason::Complete,
+            assault_admitted: true,
+        };
         let intel = knowledge(&settled);
         think(&mut planner, &settled, &intel);
 
@@ -10276,7 +10355,7 @@ mod tests {
         let ideal = staging(HOME, TARGET);
 
         let operation = planner.air_operation().expect("assembly remains active");
-        assert_eq!(operation.phase, AirOperationPhase::Assemble);
+        assert_eq!(operation.phase(), AirOperationPhase::Assemble);
         assert_eq!(operation.scout_dispatch, Some((UnitId(1), ideal)));
         assert!(decision.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(1)],
@@ -10937,9 +11016,9 @@ mod tests {
             .air_operation()
             .expect("the failed assembly remains observable during recovery");
 
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -10998,9 +11077,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed operation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(planner.cooldown_until > observation.tick);
@@ -11072,9 +11151,9 @@ mod tests {
         let operation = guarded
             .air_operation()
             .expect("the refused strike remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(guarded_decision.intents.iter().all(|intent| !matches!(
@@ -11105,9 +11184,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("recovery remains observable");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableStaging)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -11130,7 +11209,10 @@ mod tests {
         let decision = think(&mut planner, &observation, &intel);
 
         assert_eq!(
-            planner.air_operation().expect("operation continues").phase,
+            planner
+                .air_operation()
+                .expect("operation continues")
+                .phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(decision.intents.contains(&Intent::MoveUnits {
@@ -11155,9 +11237,9 @@ mod tests {
         let decision = think(&mut planner, &observation, &intel);
 
         let operation = planner.air_operation().unwrap();
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableStaging)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -11192,7 +11274,7 @@ mod tests {
         assert_eq!(
             planner
                 .air_operation()
-                .and_then(|operation| operation.recovery_reason),
+                .and_then(|operation| operation.recovery_reason()),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
 
@@ -11224,7 +11306,7 @@ mod tests {
         assert_eq!(
             planner
                 .air_operation()
-                .and_then(|operation| operation.recovery_reason),
+                .and_then(|operation| operation.recovery_reason()),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -11247,9 +11329,9 @@ mod tests {
             .air_operation()
             .expect("the refused strike remains observable during recovery");
 
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert_eq!(operation.strike_issued_at, None);
@@ -11660,8 +11742,8 @@ mod tests {
             .air
             .as_ref()
             .expect("the surviving admitted target keeps preparation active");
-        assert_ne!(active.op.phase, AirOperationPhase::Recover);
-        assert_eq!(active.op.recovery_reason, None);
+        assert_ne!(active.op.phase(), AirOperationPhase::Recover);
+        assert_eq!(active.op.recovery_reason(), None);
         assert_eq!(active.op.target, left_survivor);
         assert_eq!(active.op.target_kind, BuildingKind::Turret);
         assert_eq!(active.op.target_id, Some(BuildingId(81)));
@@ -11783,8 +11865,8 @@ mod tests {
             .air
             .as_ref()
             .expect("the surviving frozen targets keep preparation active");
-        assert_ne!(active.op.phase, AirOperationPhase::Recover);
-        assert_eq!(active.op.recovery_reason, None);
+        assert_ne!(active.op.phase(), AirOperationPhase::Recover);
+        assert_eq!(active.op.recovery_reason(), None);
         assert_eq!(active.op.target, left_survivor);
         assert_eq!(active.op.target_kind, BuildingKind::Turret);
         assert_eq!(active.op.target_id, Some(BuildingId(81)));
@@ -11916,7 +11998,7 @@ mod tests {
         let mut planner = StrategicPlanner::new();
         planner.think(&identity, tuning, &hidden, &intelligence, HOME, &[]);
         assert!(planner.air_operation().is_some_and(|operation| {
-            !operation.assault_admitted && operation.target_id == Some(BuildingId(80))
+            !operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
         }));
 
         let mut current = wealthy_island_obs(5_016, 1);
@@ -11949,14 +12031,14 @@ mod tests {
             coordination(None),
         ));
         assert!(without_acceptance.air_operation().is_some_and(|operation| {
-            !operation.assault_admitted && operation.target_id == Some(BuildingId(80))
+            !operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
         }));
 
         planner
             .commit_connected_proposal(proposal)
             .expect("the unchanged remembered origin accepts the proposal");
         assert!(planner.air_operation().is_some_and(|operation| {
-            operation.assault_admitted && operation.target_id == Some(BuildingId(80))
+            operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
         }));
         assert_eq!(planner.air_admitted_at(), Some(hidden.tick));
         assert_eq!(
@@ -13224,7 +13306,10 @@ mod tests {
                 if units == &[UnitId(2)] && *goal == staging(HOME, TARGET)
         )));
         assert_eq!(
-            planner.air_operation().expect("operation continues").phase,
+            planner
+                .air_operation()
+                .expect("operation continues")
+                .phase(),
             AirOperationPhase::Strike
         );
 
@@ -13251,8 +13336,11 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("completion recovery remains observable");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
-        assert_eq!(operation.recovery_reason, Some(AirRecoveryReason::Complete));
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
+        assert_eq!(
+            operation.recovery_reason(),
+            Some(AirRecoveryReason::Complete)
+        );
     }
 
     #[test]
@@ -13744,7 +13832,7 @@ mod tests {
             },
             &mut decision,
         );
-        assert_eq!(operation.phase, AirOperationPhase::Verify);
+        assert_eq!(operation.phase(), AirOperationPhase::Verify);
         assert!(operation.scout_dispatch.is_some());
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
@@ -13786,7 +13874,7 @@ mod tests {
             },
             &mut decision,
         );
-        assert_eq!(operation.phase, AirOperationPhase::Strike);
+        assert_eq!(operation.phase(), AirOperationPhase::Strike);
     }
 
     #[test]
@@ -13847,7 +13935,7 @@ mod tests {
         let dx = scout_goal.x - far_edge.x;
         let dy = scout_goal.y - far_edge.y;
         assert!(dx.saturating_mul(dx) + dy.saturating_mul(dy) <= scout_vision * scout_vision);
-        assert_eq!(operation.phase, AirOperationPhase::Verify);
+        assert_eq!(operation.phase(), AirOperationPhase::Verify);
 
         observation.tick += 12;
         observation.visible[far_index] = true;
@@ -13871,7 +13959,7 @@ mod tests {
         let mut cleared = StrategicDecision::default();
         verify(&mut operation, &mut plan, &context, &mut cleared);
 
-        assert_eq!(operation.phase, AirOperationPhase::Strike);
+        assert_eq!(operation.phase(), AirOperationPhase::Strike);
     }
 
     #[test]
@@ -13920,7 +14008,7 @@ mod tests {
         let mut decision = StrategicDecision::default();
         verify(&mut operation, &mut plan, &context, &mut decision);
 
-        assert_eq!(operation.phase, AirOperationPhase::Verify);
+        assert_eq!(operation.phase(), AirOperationPhase::Verify);
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
             Intent::AttackUnits {
@@ -14073,7 +14161,7 @@ mod tests {
         assert_eq!(
             planner
                 .air_operation()
-                .and_then(|operation| operation.recovery_reason),
+                .and_then(|operation| operation.recovery_reason()),
             Some(AirRecoveryReason::NewAirDefense)
         );
         assert!(result.decision.intents.iter().all(|intent| !matches!(
@@ -14127,9 +14215,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the rejected operation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::NewAirDefense)
         );
         assert_eq!(operation.membership_frozen_at, None);
@@ -14176,7 +14264,7 @@ mod tests {
         );
 
         let active = planner.air.as_mut().expect("the operation remains active");
-        active.op.phase = AirOperationPhase::SuppressAa;
+        active.op.stage = AirStage::SuppressAa;
         active.op.phase_started_at = richer.tick;
         active.op.membership_frozen_at = Some(richer.tick);
         let frozen_package = active.plan.connected_package.clone();
@@ -14289,7 +14377,8 @@ mod tests {
 
         think(&mut planner, &observation, &intelligence);
         assert!(planner.air_operation().is_some_and(|operation| {
-            operation.phase <= AirOperationPhase::Assemble && operation.recovery_reason.is_none()
+            operation.phase() <= AirOperationPhase::Assemble
+                && operation.recovery_reason().is_none()
         }));
 
         observation.tick += 1;
@@ -14308,9 +14397,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed preparation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible)
         );
         assert!(
@@ -14378,21 +14467,23 @@ mod tests {
 
         let (forecast_funded, _) = run(true, 0);
         assert!(forecast_funded.air_operation().is_some_and(|operation| {
-            operation.phase == AirOperationPhase::Assemble && operation.recovery_reason.is_none()
+            operation.phase() == AirOperationPhase::Assemble
+                && operation.recovery_reason().is_none()
         }));
 
         let (bank_funded, _) = run(false, 10_000);
         assert!(bank_funded.air_operation().is_some_and(|operation| {
-            operation.phase == AirOperationPhase::Assemble && operation.recovery_reason.is_none()
+            operation.phase() == AirOperationPhase::Assemble
+                && operation.recovery_reason().is_none()
         }));
 
         let (unfunded, decision) = run(false, 0);
         let operation = unfunded
             .air_operation()
             .expect("the failed preparation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible)
         );
         assert!(
@@ -14426,9 +14517,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the infeasible scaled package remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -14544,9 +14635,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("an infeasible admitted package enters observable recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible)
         );
         assert!(
@@ -14657,8 +14748,8 @@ mod tests {
             let operation = first_planner
                 .air_operation()
                 .expect("the paid provider keeps the operation active");
-            assert_eq!(operation.phase, AirOperationPhase::Assemble);
-            assert_eq!(operation.recovery_reason, None);
+            assert_eq!(operation.phase(), AirOperationPhase::Assemble);
+            assert_eq!(operation.recovery_reason(), None);
             assert!(first_decision.intents.iter().all(|intent| !matches!(
                 intent,
                 Intent::TrainAt {
@@ -14673,9 +14764,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the infeasible operation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -14695,7 +14786,8 @@ mod tests {
 
         think(&mut planner, &observation, &intelligence);
         assert!(planner.air_operation().is_some_and(|operation| {
-            operation.phase <= AirOperationPhase::Assemble && operation.recovery_reason.is_none()
+            operation.phase() <= AirOperationPhase::Assemble
+                && operation.recovery_reason().is_none()
         }));
 
         observation.tick += 1;
@@ -14727,9 +14819,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed preparation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible)
         );
     }
@@ -14785,7 +14877,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("reachable replacements keep preparation active");
-        assert_ne!(operation.phase, AirOperationPhase::Recover);
+        assert_ne!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(operation.scout, Some(UnitId(11)));
         assert_eq!(operation.artillery, [UnitId(12)]);
         assert!(!operation.strike_aircraft.is_empty());
@@ -14819,7 +14911,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the committed package remains active");
-        assert_eq!(operation.phase, AirOperationPhase::Verify);
+        assert_eq!(operation.phase(), AirOperationPhase::Verify);
         assert_eq!(
             suppression.reservations,
             [UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
@@ -14864,7 +14956,7 @@ mod tests {
         let waiting = planner.think(&identity, tuning, &battle, &intel, HOME, &[]);
 
         let operation = planner.air_operation().expect("operation advances");
-        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
         assert_eq!(operation.artillery, [UnitId(2)]);
         assert!(waiting.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(2)],
@@ -15107,7 +15199,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the remembered connected objective remains eligible for reconnaissance");
-        assert!(!operation.assault_admitted);
+        assert!(!operation.assault_admitted());
         assert_eq!(operation.target, TARGET);
         assert_eq!(
             planner.air_plan().map(|plan| plan.suppression),
@@ -15181,8 +15273,8 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("a persistent building ghost warrants honest reconnaissance");
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
-        assert!(!operation.assault_admitted);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
+        assert!(!operation.assault_admitted());
         assert_eq!(operation.target, TARGET);
         assert!(decision.intents.iter().any(|intent| matches!(
             intent,
@@ -15230,7 +15322,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the remembered objective admits scout-only reconnaissance");
-        assert!(!operation.assault_admitted);
+        assert!(!operation.assault_admitted());
         assert_eq!(operation.scout, None);
         assert!(operation.artillery.is_empty());
         assert!(operation.strike_aircraft.is_empty());
@@ -15287,10 +15379,10 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the late scout must extend reconnaissance instead of timing out");
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
         assert_eq!(operation.scout, Some(UnitId(99)));
         assert_eq!(operation.phase_started_at, scout_ready.tick);
-        assert_eq!(operation.recovery_reason, None);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(dispatch.intents.iter().any(|intent| matches!(
             intent,
             Intent::MoveUnits { units, .. } if units == &[UnitId(99)]
@@ -15317,10 +15409,10 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the reset window must remain active past the original deadline");
-        assert_eq!(operation.phase, AirOperationPhase::Recon);
+        assert_eq!(operation.phase(), AirOperationPhase::Recon);
         assert_eq!(operation.scout, Some(UnitId(99)));
         assert_eq!(operation.phase_started_at, assigned_at);
-        assert_eq!(operation.recovery_reason, None);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(
             after.intents.is_empty(),
             "the accepted flight should persist"
@@ -15421,9 +15513,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed reconnaissance remains observable for one think");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -15444,7 +15536,7 @@ mod tests {
         let identity = profile();
         let tuning = DifficultyTuning::for_level(identity.difficulty);
         let mut op = operation(AirOperationPhase::Recon, boundary);
-        op.assault_admitted = false;
+        op.stage = AirStage::Watching;
         op.started_at = boundary;
         op.phase_started_at = boundary;
         op.artillery.clear();
@@ -15485,9 +15577,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the stale operation remains observable for its recovery think");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::StaleIntelligence)
         );
         assert_eq!(decision.committed_scrap(), 0);
@@ -15508,7 +15600,7 @@ mod tests {
         let identity = profile();
         let tuning = DifficultyTuning::for_level(identity.difficulty);
         let mut op = operation(AirOperationPhase::Recon, hidden.tick);
-        op.assault_admitted = false;
+        op.stage = AirStage::Watching;
         op.started_at = hidden.tick;
         op.phase_started_at = hidden.tick;
         op.scout_dispatch = Some((UnitId(1), TARGET));
@@ -15577,10 +15669,10 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the refused reconnaissance remains observable during recovery");
-        assert!(!operation.assault_admitted);
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert!(!operation.assault_admitted());
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -15610,7 +15702,7 @@ mod tests {
 
             let recon = planner.think(&identity, tuning, &ghost, &intel, HOME, &[]);
             let ghost_operation = planner.air_operation().unwrap();
-            assert!(!ghost_operation.assault_admitted, "{difficulty:?}");
+            assert!(!ghost_operation.assault_admitted(), "{difficulty:?}");
             let admitted_at = planner
                 .air_admitted_at()
                 .expect("remembered reconnaissance owns an admission tick");
@@ -15624,7 +15716,7 @@ mod tests {
             intel.update(&current);
             planner.think(&identity, tuning, &current, &intel, HOME, &[]);
             let admitted = planner.air_operation().unwrap();
-            assert!(admitted.assault_admitted, "{difficulty:?}");
+            assert!(admitted.assault_admitted(), "{difficulty:?}");
             assert_eq!(admitted.started_at, 5_016, "{difficulty:?}");
             assert_eq!(
                 planner.air_admitted_at(),
@@ -15690,7 +15782,7 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the remembered connected objective starts scout-only reconnaissance");
-        assert!(!operation.assault_admitted);
+        assert!(!operation.assault_admitted());
         assert_eq!(recon.reservations, [UnitId(1)]);
         assert_eq!(
             planner.air_plan().map(|plan| plan.suppression),
@@ -15712,7 +15804,7 @@ mod tests {
         let admitted = planner
             .air_operation()
             .expect("current sight admits the connected assault");
-        assert!(admitted.assault_admitted);
+        assert!(admitted.assault_admitted());
         assert_eq!(admitted.started_at, current.tick);
         let plan = planner.air_plan().expect("the assault owns a plan");
         assert_eq!(plan.suppression, AirSuppression::GroundArtillery);
@@ -16063,7 +16155,7 @@ mod tests {
         let intel = knowledge(&battle);
         let verification = think(&mut planner, &battle, &intel);
         assert_eq!(
-            planner.air_operation().map(|operation| operation.phase),
+            planner.air_operation().map(|operation| operation.phase()),
             Some(AirOperationPhase::Verify),
             "decision={verification:?}, cooldown={}",
             planner.cooldown_until
@@ -16139,7 +16231,7 @@ mod tests {
         );
         let current_decision = think(&mut current_planner, &current, &intelligence);
         assert_eq!(
-            current_planner.air_operation().unwrap().phase,
+            current_planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(current_decision.intents.contains(&Intent::AttackUnits {
@@ -16178,7 +16270,7 @@ mod tests {
         );
         let remembered_decision = think(&mut remembered_planner, &remembered, &intelligence);
         assert_eq!(
-            remembered_planner.air_operation().unwrap().phase,
+            remembered_planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(
@@ -16215,7 +16307,7 @@ mod tests {
         );
         let absent_decision = think(&mut absent_planner, &absent, &intelligence);
         assert_eq!(
-            absent_planner.air_operation().unwrap().phase,
+            absent_planner.air_operation().unwrap().phase(),
             AirOperationPhase::Verify,
             "only fresh negative evidence may advance the operation"
         );
@@ -16256,7 +16348,7 @@ mod tests {
         let mut current_planner = planner_for(current.tick);
         let current_decision = think(&mut current_planner, &current, &intel);
         assert_eq!(
-            current_planner.air_operation().unwrap().phase,
+            current_planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(
@@ -16293,7 +16385,7 @@ mod tests {
         let mut remembered_planner = planner_for(remembered.tick);
         let remembered_decision = think(&mut remembered_planner, &remembered, &intel);
         assert_eq!(
-            remembered_planner.air_operation().unwrap().phase,
+            remembered_planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(
@@ -16322,7 +16414,7 @@ mod tests {
         let mut absent_planner = planner_for(absent.tick);
         let absent_decision = think(&mut absent_planner, &absent, &intel);
         assert_eq!(
-            absent_planner.air_operation().unwrap().phase,
+            absent_planner.air_operation().unwrap().phase(),
             AirOperationPhase::Verify,
             "fresh negative evidence may advance the combined operation"
         );
@@ -16385,7 +16477,7 @@ mod tests {
 
         let decision = think(&mut planner, &stale, &intel);
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::Verify
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -16441,7 +16533,7 @@ mod tests {
 
         let assembly = think(&mut planner, &battle, &intel);
         let frozen = planner.air_operation().unwrap();
-        assert_eq!(frozen.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(frozen.phase(), AirOperationPhase::SuppressAa);
         assert_eq!(frozen.strike_aircraft.len(), 10);
         assert_eq!(planner.air_plan().unwrap().screen.len(), 5);
         let expected: Vec<_> = std::iter::once(UnitId(1))
@@ -16465,7 +16557,7 @@ mod tests {
         let intel = knowledge(&battle);
         let verification = think(&mut planner, &battle, &intel);
         assert_eq!(
-            planner.air_operation().map(|operation| operation.phase),
+            planner.air_operation().map(|operation| operation.phase()),
             Some(AirOperationPhase::Verify),
             "weak mobile AA should not cancel the frozen 10-bomber/5-screen wave: {verification:?}; {:?}",
             planner.air_operation()
@@ -16476,7 +16568,7 @@ mod tests {
         let strike = think(&mut planner, &battle, &intel);
         let expected: Vec<_> = (100..110).chain(200..205).map(UnitId).collect();
         assert_eq!(
-            planner.air_operation().map(|operation| operation.phase),
+            planner.air_operation().map(|operation| operation.phase()),
             Some(AirOperationPhase::Strike)
         );
         assert!(strike.intents.contains(&Intent::AttackUnits {
@@ -16498,7 +16590,7 @@ mod tests {
         let intel = knowledge(&defended);
         let assembly = think(&mut flak_planner, &defended, &intel);
         assert_eq!(
-            flak_planner.air_operation().unwrap().phase,
+            flak_planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         let expected_reservations: Vec<_> = std::iter::once(UnitId(1))
@@ -16523,7 +16615,7 @@ mod tests {
         let intel = knowledge(&defended);
         let suppression = think(&mut flak_planner, &defended, &intel);
         assert_eq!(
-            flak_planner.air_operation().unwrap().phase,
+            flak_planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa,
             "current Flak remains a hard gate even for the full wealthy wing"
         );
@@ -16555,9 +16647,9 @@ mod tests {
                 .air_operation()
                 .expect("recovery remains observable for one think");
 
-            assert_eq!(operation.phase, AirOperationPhase::Recover, "{phase:?}");
+            assert_eq!(operation.phase(), AirOperationPhase::Recover, "{phase:?}");
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::NewAirDefense),
                 "{phase:?}"
             );
@@ -16611,7 +16703,7 @@ mod tests {
             coordination(Some(&request)),
         );
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(suppression.intents.contains(&Intent::AttackUnits {
@@ -16647,7 +16739,7 @@ mod tests {
             coordination(Some(&request)),
         );
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::SuppressAa,
             "destroying flak in fog is not enough to release the transports"
         );
@@ -16679,7 +16771,7 @@ mod tests {
             coordination(Some(&request)),
         );
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::Verify,
             "current sight must clear both the objective and frozen drop approach"
         );
@@ -16699,7 +16791,7 @@ mod tests {
             coordination(Some(&request)),
         );
         assert_eq!(
-            planner.air_operation().unwrap().phase,
+            planner.air_operation().unwrap().phase(),
             AirOperationPhase::Strike
         );
         assert!(released.intents.contains(&Intent::AttackUnits {
@@ -16929,9 +17021,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("recovery remains observable");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17004,9 +17096,9 @@ mod tests {
         let decision = think(&mut planner, &battle, &intel);
 
         let operation = planner.air_operation().expect("recovery remains visible");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17104,9 +17196,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("recovery remains observable");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17128,9 +17220,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed ingress remains observable through recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(refused.intents.iter().all(|intent| !matches!(
@@ -17168,7 +17260,7 @@ mod tests {
         let decision = think(&mut planner, &battle, &intel);
 
         let operation = planner.air_operation().expect("operation continues");
-        assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
+        assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
         assert_eq!(operation.scout, Some(UnitId(1)));
         assert!(decision.intents.iter().any(|intent| matches!(
             intent,
@@ -17205,9 +17297,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the failed assembly remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert_eq!(operation.scout_dispatch, None);
@@ -17242,9 +17334,9 @@ mod tests {
                 .air_operation()
                 .expect("the failed operation remains observable during recovery");
 
-            assert_eq!(operation.phase, AirOperationPhase::Recover);
+            assert_eq!(operation.phase(), AirOperationPhase::Recover);
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::RequiredUnitLost)
             );
             assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17269,8 +17361,8 @@ mod tests {
                 .air_operation()
                 .expect("suppression retains the operation");
 
-            assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
-            assert_eq!(operation.recovery_reason, None);
+            assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
+            assert_eq!(operation.recovery_reason(), None);
             let firing_stand = decision
                 .intents
                 .iter()
@@ -17316,8 +17408,8 @@ mod tests {
                 .air_operation()
                 .expect("suppression retains the operation");
 
-            assert_eq!(operation.phase, AirOperationPhase::SuppressAa);
-            assert_eq!(operation.recovery_reason, None);
+            assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
+            assert_eq!(operation.recovery_reason(), None);
             let firing_stand = decision
                 .intents
                 .iter()
@@ -17366,9 +17458,9 @@ mod tests {
                 .air_operation()
                 .expect("recovery remains observable");
 
-            assert_eq!(operation.phase, AirOperationPhase::Recover, "{phase:?}");
+            assert_eq!(operation.phase(), AirOperationPhase::Recover, "{phase:?}");
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::NewAirDefense),
                 "{phase:?}"
             );
@@ -17421,8 +17513,12 @@ mod tests {
                 .air_operation()
                 .expect("suppression retains the operation");
 
-            assert_eq!(operation.phase, AirOperationPhase::SuppressAa, "{phase:?}");
-            assert_eq!(operation.recovery_reason, None, "{phase:?}");
+            assert_eq!(
+                operation.phase(),
+                AirOperationPhase::SuppressAa,
+                "{phase:?}"
+            );
+            assert_eq!(operation.recovery_reason(), None, "{phase:?}");
             let firing_stand = decision
                 .intents
                 .iter()
@@ -17526,8 +17622,8 @@ mod tests {
         );
 
         let operation = planner.air_operation().expect("operation remains active");
-        assert_ne!(operation.phase, AirOperationPhase::Recover);
-        assert_eq!(operation.recovery_reason, None);
+        assert_ne!(operation.phase(), AirOperationPhase::Recover);
+        assert_eq!(operation.recovery_reason(), None);
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
             Intent::AttackUnits {
@@ -17558,7 +17654,7 @@ mod tests {
             .air_operation()
             .expect("recovery remains observable");
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(
@@ -17587,9 +17683,9 @@ mod tests {
                 .air_operation()
                 .expect("the failed operation remains observable during recovery");
 
-            assert_eq!(operation.phase, AirOperationPhase::Recover);
+            assert_eq!(operation.phase(), AirOperationPhase::Recover);
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::UnreachableAirRoute)
             );
             assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17642,9 +17738,9 @@ mod tests {
                 .air_operation()
                 .expect("the failed suppression remains observable during recovery");
 
-            assert_eq!(operation.phase, AirOperationPhase::Recover);
+            assert_eq!(operation.phase(), AirOperationPhase::Recover);
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::UnreachableAirRoute),
                 "approach_visible={approach_visible}"
             );
@@ -17692,9 +17788,9 @@ mod tests {
                 .air_operation()
                 .expect("the refused verification remains observable during recovery");
 
-            assert_eq!(operation.phase, AirOperationPhase::Recover);
+            assert_eq!(operation.phase(), AirOperationPhase::Recover);
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::UnreachableAirRoute),
                 "approach_visible={approach_visible}"
             );
@@ -17730,7 +17826,7 @@ mod tests {
         );
 
         assert_eq!(
-            planner.air_operation().expect("operation waits").phase,
+            planner.air_operation().expect("operation waits").phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17758,7 +17854,10 @@ mod tests {
         let decision = think(&mut planner, &battle, &intel);
 
         assert_eq!(
-            planner.air_operation().expect("operation continues").phase,
+            planner
+                .air_operation()
+                .expect("operation continues")
+                .phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(decision.intents.contains(&Intent::AttackUnits {
@@ -17791,7 +17890,7 @@ mod tests {
             .air_operation()
             .expect("recovery remains observable");
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
         assert!(
@@ -17827,7 +17926,10 @@ mod tests {
         let decision = think(&mut planner, &battle, &intel);
 
         assert_eq!(
-            planner.air_operation().expect("operation continues").phase,
+            planner
+                .air_operation()
+                .expect("operation continues")
+                .phase(),
             AirOperationPhase::SuppressAa
         );
         assert!(decision.intents.contains(&Intent::AttackUnits {
@@ -17860,8 +17962,11 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("the survivors receive one return order");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
-        assert_eq!(operation.recovery_reason, Some(AirRecoveryReason::Complete));
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
+        assert_eq!(
+            operation.recovery_reason(),
+            Some(AirRecoveryReason::Complete)
+        );
         assert!(completion.intents.iter().all(|intent| !matches!(
             intent,
             Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
@@ -17902,9 +18007,9 @@ mod tests {
         let operation = planner
             .air_operation()
             .expect("recovery remains observable");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::ObjectiveLost)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -17929,7 +18034,7 @@ mod tests {
             .air_operation()
             .expect("recovery remains observable");
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::UnreachableStaging)
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -18285,8 +18390,12 @@ mod tests {
                 &[],
             );
             let operation = planner.air_operation().expect("the boundary is inclusive");
-            assert_eq!(operation.phase, AirOperationPhase::Recon, "{difficulty:?}");
-            assert_eq!(operation.recovery_reason, None, "{difficulty:?}");
+            assert_eq!(
+                operation.phase(),
+                AirOperationPhase::Recon,
+                "{difficulty:?}"
+            );
+            assert_eq!(operation.recovery_reason(), None, "{difficulty:?}");
             assert_eq!(
                 retained.reservations,
                 [UnitId(1), UnitId(2), UnitId(3), UnitId(4)],
@@ -18309,12 +18418,12 @@ mod tests {
                 .air_operation()
                 .expect("survivors receive one recovery order before release");
             assert_eq!(
-                operation.phase,
+                operation.phase(),
                 AirOperationPhase::Recover,
                 "{difficulty:?}"
             );
             assert_eq!(
-                operation.recovery_reason,
+                operation.recovery_reason(),
                 Some(AirRecoveryReason::StaleIntelligence),
                 "{difficulty:?}"
             );

@@ -581,7 +581,7 @@ impl<'a> AllocationSession<'a> {
             .strategy
             .air_operation()
             .and_then(|operation| {
-                if operation.phase == crate::strategy::AirOperationPhase::Recover {
+                if operation.phase() == crate::strategy::AirOperationPhase::Recover {
                     return None;
                 }
                 Some(crate::utility::OperationalReconWork {
@@ -2341,11 +2341,11 @@ pub(crate) fn lift_air_support(
             None => LiftAirSupport::Independent,
         };
     };
-    if !operation.assault_admitted {
+    if !operation.assault_admitted() {
         return LiftAirSupport::Independent;
     }
     let shared = (operation.target_player, operation.target);
-    match operation.phase {
+    match operation.phase() {
         AirOperationPhase::Recon
         | AirOperationPhase::Assemble
         | AirOperationPhase::SuppressAa
@@ -2358,7 +2358,7 @@ pub(crate) fn lift_air_support(
             target: shared.1,
         },
         AirOperationPhase::Recover => {
-            if operation.recovery_reason == Some(crate::strategy::AirRecoveryReason::Complete) {
+            if operation.recovery_reason() == Some(crate::strategy::AirRecoveryReason::Complete) {
                 LiftAirSupport::Released {
                     player: shared.0,
                     target: shared.1,
@@ -4306,9 +4306,9 @@ mod tests {
         let operation = strategy
             .air_operation()
             .expect("the failed preparation enters bounded recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover, "{context}");
+        assert_eq!(operation.phase(), AirOperationPhase::Recover, "{context}");
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::PreparationInfeasible),
             "{context}"
         );

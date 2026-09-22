@@ -171,7 +171,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             .participants
             .strategy
             .air_operation()
-            .filter(|operation| operation.assault_admitted)
+            .filter(|operation| operation.assault_admitted())
             .and_then(|_| self.participants.strategy.air_admitted_at());
         let island_precedes_foundry = island_admitted_at.is_some_and(|accepted_at| {
             self.participants

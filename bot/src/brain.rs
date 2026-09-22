@@ -1944,7 +1944,7 @@ mod tests {
     #[test]
     fn prior_operations_share_one_canonical_ownership_ledger() {
         use super::super::raid::{RaidObjective, RaidOperation, RaidPhase};
-        use super::super::strategy::{AirOperation, AirOperationPhase};
+        use super::super::strategy::AirOperation;
         use super::super::team::{TeamReliefOperation, TeamReliefPhase};
 
         let air = AirOperation {
@@ -1952,8 +1952,7 @@ mod tests {
             target_kind: BuildingKind::Foundry,
             target: TilePos::new(20, 8),
             target_id: Some(BuildingId(3)),
-            assault_admitted: true,
-            phase: AirOperationPhase::Assemble,
+            stage: crate::strategy::AirStage::Assemble,
             started_at: 100,
             phase_started_at: 120,
             scout: Some(UnitId(8)),
@@ -1964,7 +1963,6 @@ mod tests {
             strike_aircraft: vec![UnitId(10), UnitId(11)],
             strike_issued_at: None,
             membership_frozen_at: None,
-            recovery_reason: None,
         };
         let relief = TeamReliefOperation {
             ally: PlayerId(2),
@@ -2024,13 +2022,13 @@ mod tests {
             }
         );
         let mut ghost_recon = air.clone();
-        ghost_recon.assault_admitted = false;
+        ghost_recon.stage = crate::strategy::AirStage::Watching;
         assert_eq!(
             air_support(Some(&ghost_recon), None),
             LiftAirSupport::Independent
         );
         let mut released = air.clone();
-        released.phase = AirOperationPhase::Strike;
+        released.stage = crate::strategy::AirStage::Strike;
         assert_eq!(
             air_support(Some(&released), None),
             LiftAirSupport::Released {
@@ -2038,13 +2036,18 @@ mod tests {
                 target: TilePos::new(20, 8),
             }
         );
-        released.phase = AirOperationPhase::Recover;
-        released.recovery_reason = Some(super::super::strategy::AirRecoveryReason::Complete);
+        released.stage = crate::strategy::AirStage::Recover {
+            reason: crate::strategy::AirRecoveryReason::Complete,
+            assault_admitted: true,
+        };
         assert!(matches!(
             air_support(Some(&released), None),
             LiftAirSupport::Released { .. }
         ));
-        released.recovery_reason = Some(super::super::strategy::AirRecoveryReason::NewAirDefense);
+        released.stage = crate::strategy::AirStage::Recover {
+            reason: crate::strategy::AirRecoveryReason::NewAirDefense,
+            assault_admitted: true,
+        };
         assert!(matches!(
             air_support(Some(&released), None),
             LiftAirSupport::Aborted { .. }
@@ -3238,8 +3241,12 @@ mod tests {
             let operation = (brain.mind().strategy)
                 .air_operation()
                 .expect("remembered disconnected Foundry starts reconnaissance");
-            assert_eq!(operation.phase, AirOperationPhase::Recon, "{difficulty:?}");
-            assert!(!operation.assault_admitted, "{difficulty:?}");
+            assert_eq!(
+                operation.phase(),
+                AirOperationPhase::Recon,
+                "{difficulty:?}"
+            );
+            assert!(!operation.assault_admitted(), "{difficulty:?}");
             assert!(
                 (brain.mind().lifts).operation().is_none(),
                 "prospective capital must not start or freeze a lift for {difficulty:?}"
@@ -3326,7 +3333,7 @@ mod tests {
         assert_eq!(
             (brain.mind().strategy)
                 .air_operation()
-                .map(|operation| operation.phase),
+                .map(|operation| operation.phase()),
             Some(AirOperationPhase::Recon)
         );
 
@@ -3361,9 +3368,9 @@ mod tests {
         let operation = (brain.mind().strategy)
             .air_operation()
             .expect("the stale operation remains observable during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(AirRecoveryReason::StaleIntelligence)
         );
     }
@@ -3441,8 +3448,9 @@ mod tests {
         let strategy = &brain.mind().strategy;
         assert!(
             strategy.air_operation().is_some_and(|operation| {
-                operation.phase == AirOperationPhase::Recover
-                    && operation.recovery_reason == Some(AirRecoveryReason::UnreachableAirRoute)
+                operation.phase() == AirOperationPhase::Recover
+                    && operation.recovery_reason() == Some(AirRecoveryReason::UnreachableAirRoute)
+                    && !operation.assault_admitted()
             }) || matches!(
                 strategy.terminal_outcome(),
                 Some(AirOperationOutcome::Aborted { .. })
@@ -3545,7 +3553,7 @@ mod tests {
         assert_eq!(
             (brain.mind().strategy)
                 .air_operation()
-                .map(|operation| operation.phase),
+                .map(|operation| operation.phase()),
             Some(AirOperationPhase::Recon)
         );
         assert_eq!(
@@ -5682,9 +5690,9 @@ mod tests {
         let operation = (brain.mind().strategy)
             .air_operation()
             .expect("the failed connected operation remains visible during recovery");
-        assert_eq!(operation.phase, AirOperationPhase::Recover);
+        assert_eq!(operation.phase(), AirOperationPhase::Recover);
         assert_eq!(
-            operation.recovery_reason,
+            operation.recovery_reason(),
             Some(super::super::strategy::AirRecoveryReason::PreparationInfeasible)
         );
 
@@ -5812,7 +5820,7 @@ mod tests {
             (brain.mind().strategy)
                 .air_operation()
                 .is_some_and(|operation| {
-                    operation.assault_admitted && operation.phase == AirOperationPhase::Recon
+                    operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
                 })
         );
         let prefixed_timeout = (brain.mind().strategy)
@@ -5924,7 +5932,7 @@ mod tests {
         assert!(
             planner
                 .air_operation()
-                .is_some_and(|operation| operation.assault_admitted),
+                .is_some_and(|operation| operation.assault_admitted()),
             "the regression must exercise an admitted residual island operation"
         );
         assert!(
@@ -6119,7 +6127,7 @@ mod tests {
             })
             .expect("the admitted island operation needs the last shallow Airworks slot");
         assert!(strategy.air_operation().is_some_and(|operation| {
-            operation.assault_admitted && operation.phase == AirOperationPhase::Recon
+            operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
         }));
         assert!(strategy.connected_package_diagnostics().is_none());
         let island_airwork = strategy.remaining_airwork_ticks(&observed);
@@ -6358,7 +6366,7 @@ mod tests {
             },
         ));
         assert!(planner.air_operation().is_some_and(|operation| {
-            operation.assault_admitted && operation.phase == AirOperationPhase::Recon
+            operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
         }));
         assert!(planner.connected_package_diagnostics().is_none());
         assert!(admission.decision.intents.iter().any(|intent| matches!(
@@ -6416,7 +6424,7 @@ mod tests {
         let operation = (brain.mind().strategy)
             .air_operation()
             .expect("the island operation remains active");
-        assert_eq!(operation.phase, AirOperationPhase::Assemble);
+        assert_eq!(operation.phase(), AirOperationPhase::Assemble);
         assert_eq!(operation.phase_started_at, decision_tick);
         let operation_scout = operation
             .scout
@@ -6569,7 +6577,7 @@ mod tests {
             let operation = planner
                 .air_operation()
                 .expect("the remembered objective admits reconnaissance");
-            assert!(!operation.assault_admitted);
+            assert!(!operation.assault_admitted());
             (
                 planner
                     .air_admitted_at()
@@ -6623,7 +6631,7 @@ mod tests {
                 .air_operation()
                 .expect("current sight promotes the reconnaissance");
             assert!(
-                operation.assault_admitted,
+                operation.assault_admitted(),
                 "current reconnaissance must promote through its retained allocation priority: {:?}",
                 promoted.trace
             );
