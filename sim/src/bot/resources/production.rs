@@ -1,27 +1,14 @@
-//! Deterministic capacity checks for exact production demand.
+//! Necessary capacity bounds and paid production inventory.
 //!
 //! This module checks the requested roster and paid inventory against producer
 //! capacity. Shared allocation owns funded schedules and command lowering.
 
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use super::{ProducerEgress, ResourceSnapshot};
 use crate::ids::BuildingId;
 use crate::stats::{Domain, UnitKind};
 use chassis::Tick;
-
-/// A request for an exact number of one concrete unit kind.
-///
-/// The containing slice is ordered from highest to lowest priority. Repeated
-/// kinds remain separate priority tranches rather than being combined.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProductionDemand {
-    /// Exact unit kind requested by the owning strategy.
-    pub(crate) kind: UnitKind,
-    /// Number of new queue appends requested.
-    pub(crate) count: usize,
-}
 
 /// Producer-to-objective reachability supplied by an owning strategy.
 ///
@@ -95,12 +82,6 @@ impl ProductionAccess {
 struct LaneCapacityClass {
     eligible_kinds: Vec<UnitKind>,
     remaining_capacities: Vec<Tick>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct AssignmentSearchKey {
-    remaining_counts: Vec<usize>,
-    lane_classes: Vec<LaneCapacityClass>,
 }
 
 /// Immutable lane eligibility plus the available production time before a
@@ -188,223 +169,6 @@ impl HorizonProblem {
     }
 }
 
-/// Exact feasibility oracle over canonical lane-capacity classes.
-///
-/// Each recursive step consumes one requested provider, so the search is
-/// finite. Canonical capacity multisets collapse permutations of concrete
-/// producers without imposing an arbitrary state cutoff on a feasible force
-/// package.
-struct AssignmentSearch<'a> {
-    problem: &'a HorizonProblem,
-    memo: BTreeMap<AssignmentSearchKey, bool>,
-    visited_states: usize,
-}
-
-impl<'a> AssignmentSearch<'a> {
-    const MAX_EAGER_LANE_PATTERNS: usize = 20_000;
-
-    fn new(problem: &'a HorizonProblem) -> Self {
-        Self {
-            problem,
-            memo: BTreeMap::new(),
-            visited_states: 0,
-        }
-    }
-
-    fn fits_concrete(&mut self, remaining_counts: &[usize], capacities: &[Tick]) -> bool {
-        self.fits(
-            remaining_counts.to_vec(),
-            self.problem.canonical_lane_classes(capacities),
-        )
-    }
-
-    fn fits(&mut self, remaining_counts: Vec<usize>, lane_classes: Vec<LaneCapacityClass>) -> bool {
-        if remaining_counts.iter().all(|&count| count == 0) {
-            return true;
-        }
-
-        let key = AssignmentSearchKey {
-            remaining_counts,
-            lane_classes,
-        };
-        if let Some(&result) = self.memo.get(&key) {
-            return result;
-        }
-        self.visited_states = self.visited_states.saturating_add(1);
-
-        if !remaining_work_fits_canonical_capacity(
-            &self.problem.kinds,
-            &key.remaining_counts,
-            &key.lane_classes,
-        ) {
-            self.memo.insert(key, false);
-            return false;
-        }
-
-        if let Some(result) = self.fits_single_lane_class(
-            &key.remaining_counts,
-            key.lane_classes
-                .first()
-                .filter(|_| key.lane_classes.len() == 1),
-        ) {
-            self.memo.insert(key, result);
-            return result;
-        }
-
-        let Some(kind_index) = most_constrained_remaining_kind(
-            &self.problem.kinds,
-            &key.remaining_counts,
-            &key.lane_classes,
-        ) else {
-            self.memo.insert(key, true);
-            return true;
-        };
-        let kind = self.problem.kinds[kind_index];
-        let duration = Tick::from(kind.stats().train_ticks);
-        let mut candidates = Vec::new();
-        for (class_index, class) in key.lane_classes.iter().enumerate() {
-            if class.eligible_kinds.binary_search(&kind).is_err() {
-                continue;
-            }
-            for (capacity_index, &capacity) in class.remaining_capacities.iter().enumerate() {
-                if capacity < duration
-                    || capacity_index > 0
-                        && class.remaining_capacities[capacity_index - 1] == capacity
-                {
-                    continue;
-                }
-                candidates.push((capacity - duration, class_index, capacity_index));
-            }
-        }
-        candidates.sort_unstable();
-
-        for (_, class_index, capacity_index) in candidates {
-            let mut next_counts = key.remaining_counts.clone();
-            next_counts[kind_index] -= 1;
-            let mut next_classes = key.lane_classes.clone();
-            next_classes[class_index].remaining_capacities[capacity_index] -= duration;
-            next_classes[class_index]
-                .remaining_capacities
-                .sort_unstable();
-            if self.fits(next_counts, next_classes) {
-                self.memo.insert(key, true);
-                return true;
-            }
-        }
-
-        self.memo.insert(key, false);
-        false
-    }
-
-    /// Packs one interchangeable producer class a lane at a time when its
-    /// exact pattern set is small. This is only a search-order optimization;
-    /// larger pattern sets continue through the general exact job search.
-    fn fits_single_lane_class(
-        &mut self,
-        remaining_counts: &[usize],
-        class: Option<&LaneCapacityClass>,
-    ) -> Option<bool> {
-        let class = class?;
-        let (&capacity, later_capacities) = class.remaining_capacities.split_first()?;
-        let mut maxima = Vec::with_capacity(self.problem.kinds.len());
-        let mut pattern_count = 1_usize;
-        for (&kind, &count) in self.problem.kinds.iter().zip(remaining_counts) {
-            let duration = Tick::from(kind.stats().train_ticks);
-            let maximum = if class.eligible_kinds.binary_search(&kind).is_ok() {
-                count.min(usize::try_from(capacity / duration).unwrap_or(usize::MAX))
-            } else {
-                0
-            };
-            maxima.push(maximum);
-            pattern_count = pattern_count.saturating_mul(maximum.saturating_add(1));
-        }
-        if pattern_count > Self::MAX_EAGER_LANE_PATTERNS {
-            return None;
-        }
-
-        let durations: Vec<_> = self
-            .problem
-            .kinds
-            .iter()
-            .map(|kind| Tick::from(kind.stats().train_ticks))
-            .collect();
-        let mut patterns = Vec::with_capacity(pattern_count);
-        LanePatternEnumerator {
-            durations: &durations,
-            remaining_counts,
-            maxima: &maxima,
-            capacity,
-            out: &mut patterns,
-        }
-        .enumerate(0, 0, &mut vec![0; maxima.len()]);
-        patterns.sort_unstable_by(|(left_used, left), (right_used, right)| {
-            right_used.cmp(left_used).then_with(|| right.cmp(left))
-        });
-
-        for (_, allocation) in patterns {
-            let mut next_counts = remaining_counts.to_vec();
-            for (remaining, assigned) in next_counts.iter_mut().zip(allocation) {
-                *remaining -= assigned;
-            }
-            let next_classes = if later_capacities.is_empty() {
-                Vec::new()
-            } else {
-                vec![LaneCapacityClass {
-                    eligible_kinds: class.eligible_kinds.clone(),
-                    remaining_capacities: later_capacities.to_vec(),
-                }]
-            };
-            if self.fits(next_counts, next_classes) {
-                return Some(true);
-            }
-        }
-        Some(false)
-    }
-}
-
-struct LanePatternEnumerator<'a> {
-    durations: &'a [Tick],
-    remaining_counts: &'a [usize],
-    maxima: &'a [usize],
-    capacity: Tick,
-    out: &'a mut Vec<(Tick, Vec<usize>)>,
-}
-
-impl LanePatternEnumerator<'_> {
-    fn enumerate(&mut self, kind_index: usize, used: Tick, allocation: &mut [usize]) {
-        let Some(&duration) = self.durations.get(kind_index) else {
-            let unused = self.capacity - used;
-            let maximal = self
-                .durations
-                .iter()
-                .enumerate()
-                .all(|(index, &candidate)| {
-                    allocation[index] == self.remaining_counts[index] || candidate > unused
-                });
-            if maximal {
-                self.out.push((used, allocation.to_vec()));
-            }
-            return;
-        };
-
-        for count in 0..=self.maxima[kind_index] {
-            let Some(next_used) = Tick::try_from(count)
-                .ok()
-                .and_then(|count| duration.checked_mul(count))
-                .and_then(|added| used.checked_add(added))
-            else {
-                break;
-            };
-            if next_used > self.capacity {
-                break;
-            }
-            allocation[kind_index] = count;
-            self.enumerate(kind_index + 1, next_used, allocation);
-        }
-        allocation[kind_index] = 0;
-    }
-}
-
 /// Necessary throughput bounds for ranking speculative rosters. A positive
 /// result still requires a funded FIFO schedule before admission.
 pub(crate) fn production_may_fit_horizon(
@@ -419,64 +183,6 @@ pub(crate) fn production_may_fit_horizon(
         &problem.request_counts(requested),
         &problem.canonical_lane_classes(&problem.initial_capacities),
     )
-}
-
-/// Whether every requested append can finish through the allowed completed
-/// producer lanes before `deadline`, independent of when forecast income
-/// becomes spendable.
-///
-/// This is structural feasibility evidence for a strategy that already owns a
-/// bounded forecast. It neither grants current credit nor permits an append;
-/// shared allocation owns funding and command schedules.
-pub(crate) fn production_demands_fit_horizon_with_access(
-    resources: &ResourceSnapshot,
-    demands: &[ProductionDemand],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> bool {
-    let requested: Vec<_> = demands
-        .iter()
-        .filter(|demand| demand.count > 0)
-        .flat_map(|demand| core::iter::repeat_n(demand.kind, demand.count))
-        .collect();
-    complete_horizon_fits(resources, &requested, deadline, access).0
-}
-
-fn complete_horizon_fits(
-    resources: &ResourceSnapshot,
-    requested: &[UnitKind],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> (bool, usize) {
-    let problem = HorizonProblem::new(resources, requested, deadline, access);
-    let mut search = AssignmentSearch::new(&problem);
-    let fits = search.fits_concrete(
-        &problem.request_counts(requested),
-        &problem.initial_capacities,
-    );
-    (fits, search.visited_states)
-}
-
-fn most_constrained_remaining_kind(
-    kinds: &[UnitKind],
-    remaining_counts: &[usize],
-    lane_classes: &[LaneCapacityClass],
-) -> Option<usize> {
-    kinds
-        .iter()
-        .enumerate()
-        .filter(|(kind_index, _)| remaining_counts[*kind_index] > 0)
-        .min_by_key(|(kind_index, kind)| {
-            let duration = Tick::from(kind.stats().train_ticks);
-            let available_slots = available_slots_for_kind(**kind, duration, lane_classes);
-            (
-                available_slots.saturating_sub(remaining_counts[*kind_index] as u128),
-                available_slots,
-                Reverse(duration),
-                **kind,
-            )
-        })
-        .map(|(kind_index, _)| kind_index)
 }
 
 /// Necessary aggregate and per-kind throughput checks for a canonical state.

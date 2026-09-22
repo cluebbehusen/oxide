@@ -74,14 +74,19 @@ impl ProductionBounds {
         }
         let mut windows = Vec::new();
         for demands in families {
-            let mut groups: Vec<Vec<BuildingId>> = demands
+            let mut groups: Vec<_> = demands
                 .iter()
-                .map(|(_, job)| job.claim.access.producers().to_vec())
+                .map(|(_, job)| job.claim.access.producers())
                 .collect();
-            let mut all: Vec<_> = groups.iter().flatten().copied().collect();
+            groups.sort_unstable();
+            groups.dedup();
+            let mut all: Vec<_> = groups
+                .iter()
+                .flat_map(|group| group.iter().copied())
+                .collect();
             all.sort_unstable();
             all.dedup();
-            groups.push(all);
+            groups.push(&all);
             groups.sort_unstable();
             groups.dedup();
             let mut releases: Vec<_> = demands

@@ -318,24 +318,32 @@ impl PackageRefinement<'_> {
         providers: &[FundedProvider],
         deadline: Tick,
     ) -> Progress<()> {
+        let mut eligible_by_kind = BTreeMap::new();
         let jobs = providers
             .iter()
             .map(|provider| {
-                let eligible = resources
-                    .producers()
-                    .iter()
-                    .filter(|lane| {
-                        access.allows(lane.producer, provider.kind)
-                            && lane.horizon_timing(&[provider.kind]).is_some_and(|timing| {
-                                matches!(
-                                    timing.current_egress,
-                                    ProducerEgress::NotRequired | ProducerEgress::Open
-                                )
-                            })
-                    })
-                    .map(|lane| lane.producer)
-                    .collect();
-                ProducerJobClaim::flexible(provider.kind, provider.command_tick, deadline, eligible)
+                let eligible = eligible_by_kind.entry(provider.kind).or_insert_with(|| {
+                    resources
+                        .producers()
+                        .iter()
+                        .filter(|lane| {
+                            access.allows(lane.producer, provider.kind)
+                                && lane.horizon_timing(&[provider.kind]).is_some_and(|timing| {
+                                    matches!(
+                                        timing.current_egress,
+                                        ProducerEgress::NotRequired | ProducerEgress::Open
+                                    )
+                                })
+                        })
+                        .map(|lane| lane.producer)
+                        .collect::<Vec<_>>()
+                });
+                ProducerJobClaim::flexible(
+                    provider.kind,
+                    provider.command_tick,
+                    deadline,
+                    eligible.clone(),
+                )
             })
             .collect();
         crate::bot::allocation::forecast::refine(self.capacity, self.key, jobs, self.planning)
@@ -2494,6 +2502,222 @@ mod tests {
             TilePos::new(11, 2),
             Vec::new(),
         );
+    }
+
+    fn refine_roster(
+        obs: &Observation,
+        roster: &[(UnitKind, usize)],
+        deadline: Tick,
+        planning: &PlanningWork,
+    ) -> Progress<()> {
+        let resources = ResourceSnapshot::from_observation(obs);
+        let demands: Vec<_> = roster
+            .iter()
+            .map(|&(kind, count)| ProviderDemandTranche {
+                priority: ProviderPriority::Minimum,
+                family: match kind.role() {
+                    Role::Scout => ForceFamily::Recon,
+                    Role::Bombard => ForceFamily::Suppression,
+                    _ => ForceFamily::Strike,
+                },
+                kind,
+                count,
+            })
+            .collect();
+        refine_provider_demands(
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(planning),
+            ),
+            &demands,
+            obs.tick,
+            constraints(deadline, 0),
+            ConnectedOffenseKey {
+                objective: BuildingId(99),
+                anchor: TilePos::new(25, 25),
+            },
+        )
+    }
+
+    #[test]
+    fn shared_forecast_rejects_overfull_air_group_despite_spare_ground_capacity() {
+        let mut obs = observation(100_000);
+        obs.tick = 120;
+        obs.faction = Faction::Cupric;
+        for id in 0..16 {
+            add_producer(
+                &mut obs,
+                id + 1,
+                BuildingKind::Airworks,
+                TilePos::new(2 + (id % 4) as i32 * 6, 2 + (id / 4) as i32 * 6),
+                vec![],
+            );
+        }
+        add_producer(
+            &mut obs,
+            20,
+            BuildingKind::Fabricator,
+            TilePos::new(26, 26),
+            vec![],
+        );
+        let deadline = obs.tick + 2400;
+        let overfull = [
+            (UnitKind::Gnat, 1),
+            (UnitKind::Darter, 256),
+            (UnitKind::Bombard, 1),
+        ];
+        let work = PlanningWork::default();
+        assert_eq!(
+            refine_roster(&obs, &overfull, deadline, &work),
+            Progress::ProvenInfeasible
+        );
+        assert!(
+            (1..16_384).contains(&work.spent()),
+            "the producer-subset bound must reject without packing the roster"
+        );
+        let zero = PlanningWork::with_allowance(0);
+        assert_eq!(
+            refine_roster(&obs, &overfull, deadline, &zero),
+            Progress::Deferred
+        );
+        assert_eq!(zero.spent(), 0);
+        let near_capacity = [
+            (UnitKind::Gnat, 1),
+            (UnitKind::Darter, 255),
+            (UnitKind::Bombard, 1),
+        ];
+        let work = PlanningWork::default();
+        assert_ne!(
+            refine_roster(&obs, &near_capacity, deadline, &work),
+            Progress::ProvenInfeasible,
+            "a finite allowance may defer a feasible large roster, never reject it"
+        );
+    }
+
+    #[test]
+    fn shared_forecast_reassigns_scout_to_leave_the_only_bomber_lane() {
+        for (faction, scout, bomber, queued) in [
+            (
+                Faction::Ferrous,
+                UnitKind::Kestrel,
+                UnitKind::Condor,
+                UnitKind::Talon,
+            ),
+            (
+                Faction::Cupric,
+                UnitKind::Gnat,
+                UnitKind::Moth,
+                UnitKind::Wisp,
+            ),
+        ] {
+            let mut obs = observation(10_000);
+            obs.tick = 120;
+            obs.faction = faction;
+            add_complete_tech(&mut obs);
+            add_producer(
+                &mut obs,
+                14,
+                BuildingKind::Airworks,
+                TilePos::new(14, 2),
+                vec![queued],
+            );
+            let deadline = obs.tick + Tick::from(bomber.stats().train_ticks) + 1;
+            assert_eq!(
+                refine_roster(
+                    &obs,
+                    &[(scout, 1), (bomber, 1)],
+                    deadline,
+                    &PlanningWork::default()
+                ),
+                Progress::Ready(())
+            );
+        }
+    }
+
+    #[test]
+    fn shared_forecast_matches_independent_funded_oracle_on_small_rosters() {
+        for (queued, scrap, restricted) in [
+            (0, 10_000, false),
+            (2, 10_000, false),
+            (4, 10_000, false),
+            (0, 250, false),
+            (2, 10_000, true),
+            (4, 250, true),
+        ] {
+            let mut obs = observation(scrap);
+            obs.tick = 120;
+            add_complete_tech(&mut obs);
+            obs.my_queues[2] = vec![UnitKind::Buzzard; queued];
+            add_producer(
+                &mut obs,
+                14,
+                BuildingKind::Airworks,
+                TilePos::new(14, 2),
+                vec![],
+            );
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let access = if restricted {
+                ProductionAccess::restricted_kinds(vec![
+                    (BuildingId(12), UnitKind::Buzzard),
+                    (BuildingId(12), UnitKind::Condor),
+                    (BuildingId(14), UnitKind::Buzzard),
+                ])
+            } else {
+                all_producers(&resources)
+            };
+            for horizon in [179, 180, 299, 300, 600] {
+                for buzzards in 0..=2 {
+                    for condors in 0..=2 {
+                        let demands = [
+                            ProviderDemandTranche {
+                                priority: ProviderPriority::Minimum,
+                                family: ForceFamily::Strike,
+                                kind: UnitKind::Buzzard,
+                                count: buzzards,
+                            },
+                            ProviderDemandTranche {
+                                priority: ProviderPriority::Minimum,
+                                family: ForceFamily::Strike,
+                                kind: UnitKind::Condor,
+                                count: condors,
+                            },
+                        ];
+                        let deadline = obs.tick + horizon;
+                        let expected = provider_demands_fit_funded_horizon(
+                            &resources,
+                            &demands,
+                            obs.tick,
+                            constraints(deadline, 0),
+                            &access,
+                        );
+                        let actual = refine_provider_demands(
+                            ProductionEvidence::with_planning(
+                                &resources,
+                                &access,
+                                Some(&PlanningWork::default()),
+                            ),
+                            &demands,
+                            obs.tick,
+                            constraints(deadline, 0),
+                            ConnectedOffenseKey {
+                                objective: BuildingId(99),
+                                anchor: TilePos::new(25, 25),
+                            },
+                        );
+                        assert_eq!(
+                            actual,
+                            if expected {
+                                Progress::Ready(())
+                            } else {
+                                Progress::ProvenInfeasible
+                            },
+                            "queued={queued}, scrap={scrap}, restricted={restricted}, horizon={horizon}, buzzards={buzzards}, condors={condors}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

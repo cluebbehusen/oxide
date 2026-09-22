@@ -19,9 +19,8 @@ use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::profile::{ResolvedProfile, Specialty};
 use super::resources::{
-    ProducerEgress, ProducerLaneReservations, ProductionAccess, ProductionDemand, ResourceSnapshot,
+    ProducerEgress, ProducerLaneReservations, ProductionAccess, ResourceSnapshot,
     count_paid_queued_ready_with_access, paid_queued_ready_occurrences_with_access,
-    production_demands_fit_horizon_with_access,
 };
 #[cfg(test)]
 use crate::bot::observation::ObservationData;
@@ -3863,7 +3862,7 @@ fn recon(
         enlisted,
         |kind| kind == screen_kind,
     );
-    if !connected_package_is_feasible(op, plan, context) {
+    if connected_package_is_proven_infeasible(op, plan, context) {
         recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
         return;
     }
@@ -3963,7 +3962,7 @@ fn assemble(
         enlisted,
         |kind| kind == screen_kind,
     );
-    if !connected_package_is_feasible(op, plan, context) {
+    if connected_package_is_proven_infeasible(op, plan, context) {
         recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
         return;
     }
@@ -6277,16 +6276,16 @@ fn schedule_missing_members(
     schedule(context, &demands, out);
 }
 
-fn connected_package_is_feasible(
+fn connected_package_is_proven_infeasible(
     op: &AirOperation,
     plan: &AirPlan,
     context: &AirPlanningContext<'_>,
 ) -> bool {
     let Some(package) = &plan.connected_package else {
-        return true;
+        return false;
     };
     if context.obs.tick >= package.preparation_deadline {
-        return true;
+        return false;
     }
     let resources = context
         .connected_resources
@@ -6300,19 +6299,7 @@ fn connected_package_is_feasible(
         package.preparation_deadline,
         &resources.access,
     );
-    let production_demands = outstanding
-        .iter()
-        .map(|demand| ProductionDemand {
-            kind: demand.kind,
-            count: demand.count,
-        })
-        .collect::<Vec<_>>();
-    production_demands_fit_horizon_with_access(
-        &resources.snapshot,
-        &production_demands,
-        package.preparation_deadline,
-        &resources.access,
-    ) && !matches!(
+    matches!(
         refine_provider_demands(
             ProductionEvidence::with_planning(
                 &resources.snapshot,
@@ -13064,12 +13051,9 @@ mod tests {
             .map(|lane| lane.producer)
             .collect();
         assert_eq!(eligible, [BuildingId(12)]);
-        assert!(production_demands_fit_horizon_with_access(
+        assert!(crate::bot::resources::production_may_fit_horizon(
             &resources,
-            &[ProductionDemand {
-                kind: UnitKind::Bombard,
-                count: 1
-            }],
+            &[UnitKind::Bombard],
             observation.tick + CONNECTED_PREPARATION_HORIZON,
             &public_access,
         ));
@@ -14268,6 +14252,37 @@ mod tests {
                 "a rich defended cluster should justify more than the removed fixed cohort: {package:?}"
             );
         }
+    }
+
+    #[test]
+    fn retained_connected_feasibility_defers_without_recovering_but_rejects_lost_producers() {
+        let mut observation = developed_connected_obs(120);
+        observation.scrap = 10_000;
+        observation.my_units.clear();
+        let intelligence = knowledge(&observation);
+        let identity = profile();
+        let plan = connected_test_plan(&observation);
+        let op = operation(AirOperationPhase::Assemble, observation.tick);
+        let zero = crate::bot::planning::PlanningWork::with_allowance(0);
+        let mut context = planning_context(&identity, &observation, &intelligence);
+        context.planning = Some(&zero);
+        assert!(!connected_package_is_proven_infeasible(
+            &op, &plan, &context
+        ));
+        assert_eq!(zero.spent(), 0);
+        let work = crate::bot::planning::PlanningWork::default();
+        context.planning = Some(&work);
+        assert!(!connected_package_is_proven_infeasible(
+            &op, &plan, &context
+        ));
+        assert!(work.spent() > 0);
+
+        observation.my_buildings.clear();
+        observation.my_queues.clear();
+        observation.my_queue_progress.clear();
+        let mut context = planning_context(&identity, &observation, &intelligence);
+        context.planning = Some(&work);
+        assert!(connected_package_is_proven_infeasible(&op, &plan, &context));
     }
 
     #[test]
