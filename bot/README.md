@@ -58,6 +58,11 @@ allocation-session tests own transactional rejection and rollback. Test-only
 roster references and work counters verify query equivalence and bounds without
 adding another runtime execution mode.
 
+Team relief keeps observed pressure age separate from its proposed force.
+Allocation rollback restores accepted relief ownership and cooldown, retains
+pressure and outcome evidence, and discards the unaccepted proposal. A retry
+revalidates current members without restarting pressure credibility.
+
 ```sh
 cargo test -p oxide-bot --locked
 cargo test -p oxide-bot --lib utility::policy_tests --locked
