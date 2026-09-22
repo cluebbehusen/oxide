@@ -52,7 +52,7 @@ fn restore(checkpoint: GameCheckpoint) -> Result<Game> {
     );
     let (core, recorder) = checkpoint.recorded.restore()?;
     anyhow::ensure!(
-        usize::from(checkpoint.human.0) < core.state.players().len(),
+        checkpoint.human == Game::human_seat(&core.scenario)?,
         "invalid local seat"
     );
     anyhow::ensure!(
@@ -161,5 +161,49 @@ mod tests {
         assert!(serde_json::from_value::<Game>(bad).is_err());
         assert_eq!(game.state.current_tick(), 0);
         assert!(game.pending.is_empty());
+    }
+
+    #[test]
+    fn checkpoint_requires_the_scenarios_single_human_seat() {
+        for human in [0, 1] {
+            let mut scenario = Scenario::skirmish();
+            for (seat, player) in scenario.players.iter_mut().enumerate() {
+                player.bot = seat != human;
+                player.bot_config = player.bot.then_some(Default::default());
+            }
+            let game = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
+            let original = serde_json::to_value(&game).unwrap();
+            let restored: Game = serde_json::from_value(original.clone()).unwrap();
+            assert_eq!(restored.presentation.human, PlayerId(human as u8));
+            let mut bad = original;
+            bad["human"] = serde_json::json!(1 - human);
+            let error = serde_json::from_value::<Game>(bad).err().unwrap();
+            assert!(error.to_string().contains("invalid local seat"));
+        }
+        for bots in [false, true] {
+            let mut scenario = Scenario::skirmish();
+            for player in &mut scenario.players {
+                player.bot = bots;
+                player.bot_config = None;
+            }
+            let state = scenario.build().unwrap();
+            let stats = oxide_kit::stats::LiveMatchStats::new(&state);
+            let session =
+                SessionCheckpoint::capture(&scenario, &state, &[], &[], Some(&stats)).unwrap();
+            let checkpoint = GameCheckpoint {
+                version: 1,
+                recorded: RecordedCheckpoint::capture(
+                    session,
+                    &GameReplay::new(SIM_VERSION, scenario),
+                )
+                .unwrap(),
+                human: PlayerId(0),
+                demo: Default::default(),
+                concede_stats: None,
+                boundary_fog: crate::boundary_fog::BoundaryFog::new(&state, PlayerId(0)),
+            };
+            let error = restore(checkpoint).err().unwrap();
+            assert!(error.to_string().contains("exactly one non-bot seat"));
+        }
     }
 }

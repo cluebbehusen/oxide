@@ -188,12 +188,11 @@ impl Game {
     /// `new` with the window injected — the only constructor tests use,
     /// because it never touches macroquad.
     pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
-        // The human is the scenario's single non-bot seat — seat choice
-        // never permutes seats (parity carries factions, teams, and the
-        // automation harness), it just moves which chair the human
-        // takes. Anything but exactly one non-bot seat is a malformed
-        // PLAYABLE session; the spectator constructor above is the
-        // lenient door.
+        let human = Self::human_seat(&scenario)?;
+        Self::assemble(scenario, viewport, human)
+    }
+
+    fn human_seat(scenario: &Scenario) -> Result<PlayerId> {
         let humans: Vec<PlayerId> = scenario
             .players
             .iter()
@@ -201,14 +200,13 @@ impl Game {
             .filter(|(_, p)| !p.bot)
             .map(|(i, _)| PlayerId(i as u8))
             .collect();
-        let human = match humans.as_slice() {
-            [seat] => *seat,
+        match humans.as_slice() {
+            [seat] => Ok(*seat),
             _ => anyhow::bail!(
                 "a session wants exactly one non-bot seat, got {}",
                 humans.len()
             ),
-        };
-        Self::assemble(scenario, viewport, human)
+        }
     }
 
     fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {

@@ -14,11 +14,14 @@ while reusable game-independent primitives stay in `chassis`.
   canonical controller roster, pending inputs, and optional incremental
   statistics. Restoration installs those parts without executing historical
   ticks. The session, simulation, and controller revisions are checked
-  independently. `RecordedCheckpoint` carries the existing recorder alongside
-  this core so current hosts can continue exporting complete legacy replays.
-  Recorder setup and duration are checked; restoration does not re-execute the
-  log to prove its correspondence to the world. This internal contract does not
-  change ordinary saves, Continue, or recovery.
+  independently. A fingerprint binds the captured scenario and world, rejecting
+  later mismatches even if both scenario copies change. Capture trusts the
+  host's pairing; the fingerprint neither authenticates data nor proves
+  historical origin. `RecordedCheckpoint` carries the existing recorder
+  alongside this core so current hosts can continue exporting complete legacy
+  replays. Recorder setup and duration are checked; restoration does not
+  re-execute the log to prove its correspondence to the world. This internal
+  contract does not change ordinary saves, Continue, or recovery.
 
 - `bot_execution` collects commands in input seat order, using a shared pool of
   up to four workers when multiple bots are due. A busy or unavailable pool uses

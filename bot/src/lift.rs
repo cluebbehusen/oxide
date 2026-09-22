@@ -300,8 +300,20 @@ impl ActiveLiftProductionObligation {
 /// Sorted, deduplicated unit ids. Readers binary-search the slice, so
 /// ordering is a type invariant here rather than a convention every
 /// mutation site re-establishes by hand.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct UnitIdSet(Vec<UnitId>);
+
+impl<'de> serde::Deserialize<'de> for UnitIdSet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let ids = Vec::<UnitId>::deserialize(deserializer)?;
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(serde::de::Error::custom(
+                "unit ids must be strictly increasing",
+            ));
+        }
+        Ok(Self(ids))
+    }
+}
 
 impl UnitIdSet {
     /// Canonicalizes arbitrary ids into a set.
@@ -2560,6 +2572,32 @@ mod tests {
 
     const HOME: TilePos = TilePos::new(5, 15);
     const TARGET: TilePos = TilePos::new(50, 15);
+
+    #[test]
+    fn checkpoint_unit_id_sets_preserve_search_and_insert_invariants() {
+        for json in ["[]", "[3]", "[1,2,3]"] {
+            let ids: UnitIdSet = serde_json::from_str(json).unwrap();
+            let mut restored = crate::checkpoint::round_trip(&ids);
+            for id in ids.iter().copied() {
+                assert!(restored.binary_search(&id).is_ok());
+                assert!(!restored.insert(id));
+            }
+            assert!(restored.insert(UnitId(4)));
+            assert_eq!(restored.pop_last(), Some(UnitId(4)));
+            assert_eq!(restored, ids);
+        }
+        for ids in [vec![3, 1, 2], vec![1, 1], vec![1, 2, 2]] {
+            assert!(serde_json::from_value::<UnitIdSet>(serde_json::json!(ids)).is_err());
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&ids, &mut bytes).unwrap();
+            let error = ciborium::from_reader::<UnitIdSet, _>(bytes.as_slice()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("unit ids must be strictly increasing")
+            );
+        }
+    }
 
     #[test]
     fn remembered_proven_island_holds_only_missing_first_carrier_capital() {

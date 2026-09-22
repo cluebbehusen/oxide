@@ -10,7 +10,7 @@ use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
 use serde::{Deserialize, Serialize};
 
 /// Session envelope revision, separate from simulation and controller revisions.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Encoded checkpoint load bound, including the optional legacy command history.
 pub const MAX_BYTES: usize = 256 * 1024 * 1024;
 
@@ -22,6 +22,7 @@ pub struct SessionCheckpoint {
     sim_version: String,
     scenario: Scenario,
     state: State,
+    snapshot_binding: u64,
     bots: Vec<BotCheckpoint>,
     pending: Vec<PlayerCommand>,
     stats: Option<LiveMatchStats>,
@@ -44,6 +45,8 @@ pub struct RestoredSession {
 impl SessionCheckpoint {
     /// Borrows a quiescent host after its tick and statistics update have finished.
     /// Does not run controllers, drain inputs, or advance the simulation.
+    /// The host must supply the scenario that produced this world. The binding
+    /// detects later mismatches; it does not prove the world's historical origin.
     pub fn capture(
         scenario: &Scenario,
         state: &State,
@@ -56,6 +59,7 @@ impl SessionCheckpoint {
             sim_version: SIM_VERSION.into(),
             scenario: scenario.clone(),
             state: state.clone(),
+            snapshot_binding: snapshot_binding(scenario, state),
             bots: bots
                 .iter()
                 .map(SeatBot::checkpoint)
@@ -95,6 +99,10 @@ impl SessionCheckpoint {
         self.state
             .validate_invariants()
             .context("checkpoint world")?;
+        ensure!(
+            self.snapshot_binding == snapshot_binding(&self.scenario, &self.state),
+            "checkpoint scenario/world binding mismatch"
+        );
         let initial = self.scenario.build().context("checkpoint scenario")?;
         ensure!(
             initial.map().width() == self.state.map().width()
@@ -149,6 +157,10 @@ impl SessionCheckpoint {
             stats: self.stats,
         })
     }
+}
+
+fn snapshot_binding(scenario: &Scenario, state: &State) -> u64 {
+    chassis::hash::state_hash(&(scenario, state.hash()))
 }
 
 /// A checkpoint paired with the existing recorder until replay origins support
@@ -250,9 +262,11 @@ mod tests {
     #[test]
     fn checkpoint_rejects_incompatible_or_inconsistent_parts() {
         let original = checkpoint();
-        let mut bad = original.clone();
-        bad.session.version += 1;
-        assert!(bad.restore().is_err());
+        for version in [1, VERSION + 1] {
+            let mut bad = original.clone();
+            bad.session.version = version;
+            assert!(bad.restore().is_err());
+        }
         let mut bad = original.clone();
         bad.session.sim_version = "other".into();
         assert!(bad.restore().is_err());
@@ -283,5 +297,39 @@ mod tests {
             assert!(result.is_err());
         }
         assert!(RecordedCheckpoint::from_bytes(b"{}").is_err());
+    }
+
+    #[test]
+    fn checkpoint_rejects_changes_to_the_captured_setup_and_world_pair() {
+        let original = checkpoint();
+        for change_world in [false, true] {
+            let mut bad = original.clone();
+            if change_world {
+                bad.session.state.tick(&[]);
+                bad.recorder.meta.ticks = Some(bad.session.state.current_tick());
+            } else {
+                bad.session.scenario.seed += 1;
+                bad.recorder.setup = bad.session.scenario.clone();
+            }
+            let bytes = serde_json::to_vec(&bad).unwrap();
+            let error = RecordedCheckpoint::from_bytes(&bytes)
+                .unwrap()
+                .restore()
+                .err()
+                .unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("scenario/world binding mismatch")
+            );
+        }
+        let mut bad = original.session;
+        bad.scenario.seed += 1;
+        let error = bad.restore().err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("scenario/world binding mismatch")
+        );
     }
 }
