@@ -1105,8 +1105,11 @@ impl UtilityPolicy {
         let Some(briefing) = public_map else {
             return false;
         };
-        let reaches =
-            |anchor, size| Self::public_ground_terrain_reaches(briefing, obs, home, anchor, size);
+        if briefing.map_width() != obs.map_width || briefing.map_height() != obs.map_height {
+            return false;
+        }
+        let regions = briefing.regions();
+        let reaches = |anchor, size| regions.reaches_footprint(home, anchor, size);
         self.uncleared_hostile_starts(briefing, obs.me)
             .into_iter()
             .any(|start| reaches(start.anchor, BuildingKind::Foundry.base_stats().size))
@@ -1122,40 +1125,6 @@ impl UtilityPolicy {
                     && unit.kind.stats().domain == Domain::Ground
                     && reaches(unit.tile, (1, 1))
             })
-    }
-
-    fn public_ground_terrain_reaches(
-        public_map: &PublicMapBriefing,
-        obs: &Observation,
-        home: TilePos,
-        target: TilePos,
-        target_size: (i32, i32),
-    ) -> bool {
-        let (width, height) = (public_map.map_width(), public_map.map_height());
-        if width != obs.map_width
-            || height != obs.map_height
-            || width <= 0
-            || height <= 0
-            || target_size.0 <= 0
-            || target_size.1 <= 0
-        {
-            return false;
-        }
-        let open = |tile: TilePos| {
-            public_map
-                .terrain_at(tile)
-                .is_some_and(|terrain| !terrain.blocks_ground())
-        };
-        if !open(home) {
-            return false;
-        }
-        let goal = |tile: TilePos| {
-            tile.x >= target.x
-                && tile.x < target.x + target_size.0
-                && tile.y >= target.y
-                && tile.y < target.y + target_size.1
-        };
-        super::navigation::flood::reaches_any(width, height, [home], open, goal)
     }
 
     fn shallow_sentinel_reinforcement(obs: &Observation, intents: &[Intent]) -> bool {
