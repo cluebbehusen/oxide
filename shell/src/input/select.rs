@@ -343,7 +343,7 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
     }
 }
 
-/// Double-click: everyone of the clicked unit's kind currently on screen.
+/// Double-click: visible entities of the picked kind and owner on screen.
 pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
     let world = game.presentation.camera.to_world(screen);
     // The sweep stays within the PICKED unit's owner: double-clicking
@@ -366,20 +366,42 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
             ))
         })
         .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
-    let Some((_, _, kind, owner)) = picked else {
+    let (lo, hi) = game.presentation.camera.world_rect();
+    let on_screen = |p: Vec2| p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
+    if let Some((_, _, kind, owner)) = picked {
+        game.presentation.selection.buildings.clear();
+        game.presentation.selection.units = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| u.player == owner && u.kind == kind && selectable(game, u))
+            .filter(|u| on_screen(vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+            .map(|u| u.id)
+            .collect();
+        return;
+    }
+
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let Some(picked) = game
+        .state
+        .buildings_at(tile)
+        .find(|building| selectable_building(game, building))
+    else {
         return;
     };
-    let (lo, hi) = game.presentation.camera.world_rect();
-    game.presentation.selection.buildings.clear();
-    game.presentation.selection.units = game
+    let (kind, owner) = (picked.kind, picked.player);
+    game.presentation.selection.units.clear();
+    game.presentation.selection.buildings = game
         .state
-        .units()
+        .buildings()
         .iter()
-        .filter(|u| u.player == owner && u.kind == kind && selectable(game, u))
-        .filter(|u| {
-            let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
+        .filter(|building| {
+            building.player == owner && building.kind == kind && selectable_building(game, building)
         })
-        .map(|u| u.id)
+        .filter(|building| {
+            let center = building.center();
+            on_screen(vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>()))
+        })
+        .map(|building| building.id)
         .collect();
 }

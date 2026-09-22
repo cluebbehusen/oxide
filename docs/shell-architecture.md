@@ -126,6 +126,11 @@ to the controlled seat. The simulation performs final ownership, fog, cost,
 placement, and target validation. Dead entities and hostiles that leave sight
 are removed from selection.
 
+Double-clicks and touch double-taps select units or buildings of the picked
+entity's kind and owner whose centers lie in the camera viewport. Building
+groups span upgrade tiers and retain normal visibility and concealment checks.
+Units retain picking priority over buildings, as with single clicks.
+
 Selection panels and tooltips derive their facts from simulation accessors.
 Static capabilities may be shown for foreign selections; current enemy orders,
 loads, and building income remain private. Placement and support previews use
