@@ -1317,7 +1317,15 @@ impl Ord for ObligationKey {
         if let (Self::SavedEconomy(left), Self::SavedEconomy(right)) = (self, other) {
             return left.cmp(right);
         }
-        self.sort_key().cmp(&other.sort_key())
+        self.sort_key()
+            .cmp(&other.sort_key())
+            .then_with(|| match (self, other) {
+                (
+                    Self::EmergencyDefense { kind: left, .. },
+                    Self::EmergencyDefense { kind: right, .. },
+                ) => left.cmp(right),
+                _ => Ordering::Equal,
+            })
     }
 }
 
@@ -4121,6 +4129,42 @@ mod tests {
     use super::*;
     use crate::resources::{BuilderResource, ForecastAvailability, ResourcePlanningFixture};
     use oxide_sim::stats::QUEUE_CAP;
+
+    #[test]
+    fn emergency_obligation_order_preserves_every_building_identity() {
+        let keys: Vec<_> = [TilePos::new(2, 3), TilePos::new(3, 3)]
+            .into_iter()
+            .flat_map(|anchor| {
+                BuildingKind::ALL.map(|kind| ObligationKey::EmergencyDefense { kind, anchor })
+            })
+            .collect();
+        for left in &keys {
+            for right in &keys {
+                assert_eq!(left.cmp(right) == Ordering::Equal, left == right);
+                assert_eq!(left.cmp(right), right.cmp(left).reverse());
+            }
+        }
+        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len());
+        let ordered: Vec<_> = keys
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(matches!(
+            ordered[0],
+            ObligationKey::EmergencyDefense {
+                kind: BuildingKind::Turret,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ordered[1],
+            ObligationKey::EmergencyDefense {
+                kind: BuildingKind::FlakTurret,
+                ..
+            }
+        ));
+    }
 
     fn site(x: i32, y: i32) -> SiteFootprint {
         SiteFootprint::new(TilePos::new(x, y), (2, 2)).expect("the fixture site is positive")
