@@ -896,33 +896,35 @@ pub(crate) fn legacy_unit_obligation(
     ))
 }
 
-/// Exact evidence needed to import one unmigrated planner decision.
-pub(crate) struct LegacyDecisionRequest<'a> {
+/// Exact producer requests and reserve ownership supplied by one operation.
+pub(crate) struct OperationProductionRequest<'a> {
     pub(crate) cadence: Tick,
     pub(crate) accepted_at: Tick,
     pub(crate) decision_tick: Tick,
     pub(crate) channel: LegacyChannel,
     pub(crate) sequence: u32,
     pub(crate) decision: &'a StrategicDecision,
+    pub(crate) protect_reserve: bool,
     /// Earlier same-think producer commands, in their committed order.
     /// These are projection context only; this obligation does not claim them.
     pub(crate) prior_producer_intents: &'a [crate::executive::Intent],
     pub(crate) production_deadline: Tick,
 }
 
-/// Imports one unmigrated planner decision, including the exact immediate
-/// producer appends that account for part of its reported capital.
-pub(crate) fn legacy_decision_obligation(
+/// Projects immediate purchases after the accepted prefix, keeping an unspent
+/// reserve separate from their ordinary unit costs.
+pub(crate) fn operation_production_obligation(
     resources: &ResourceSnapshot,
-    request: LegacyDecisionRequest<'_>,
+    request: OperationProductionRequest<'_>,
 ) -> Result<ImportedObligation, CoordinatorInputError> {
-    let LegacyDecisionRequest {
+    let OperationProductionRequest {
         cadence,
         accepted_at,
         decision_tick,
         channel,
         sequence,
         decision,
+        protect_reserve,
         prior_producer_intents,
         production_deadline,
     } = request;
@@ -930,66 +932,44 @@ pub(crate) fn legacy_decision_obligation(
         .planning_projection(production_deadline, cadence)?
         .producers()
         .to_vec();
-    for intent in prior_producer_intents {
-        let crate::executive::Intent::TrainAt { building, kind } = intent else {
-            continue;
+    let mut append = |building: BuildingId, kind| {
+        let error = CoordinatorInputError::ImmediateProducerUnavailable {
+            producer: building,
+            kind,
         };
-        let Some(index) = producers
+        producers
             .binary_search_by_key(
-                building,
+                &building,
                 crate::resources::ProducerPlanningProjection::producer,
             )
             .ok()
-        else {
-            return Err(CoordinatorInputError::ImmediateProducerUnavailable {
-                producer: *building,
-                kind: *kind,
-            });
-        };
-        if producers[index].append(*kind, decision_tick).is_none() {
-            return Err(CoordinatorInputError::ImmediateProducerUnavailable {
-                producer: *building,
-                kind: *kind,
-            });
+            .and_then(|index| producers[index].append(kind, decision_tick))
+            .ok_or(error)
+    };
+    for intent in prior_producer_intents {
+        if let crate::executive::Intent::TrainAt { building, kind } = intent {
+            append(*building, *kind)?;
         }
     }
-    let mut jobs = Vec::new();
-    for intent in &decision.intents {
-        let crate::executive::Intent::TrainAt { building, kind } = intent else {
-            continue;
-        };
-        let Some(index) = producers
-            .binary_search_by_key(
+    let jobs = decision
+        .production()
+        .map(|(building, kind)| {
+            let projected = append(building, kind)?;
+            Ok(ProducerJobClaim::fixed(
                 building,
-                crate::resources::ProducerPlanningProjection::producer,
-            )
-            .ok()
-        else {
-            return Err(CoordinatorInputError::ImmediateProducerUnavailable {
-                producer: *building,
-                kind: *kind,
-            });
-        };
-        let Some(projected) = producers[index].append(*kind, decision_tick) else {
-            return Err(CoordinatorInputError::ImmediateProducerUnavailable {
-                producer: *building,
-                kind: *kind,
-            });
-        };
-        jobs.push(ProducerJobClaim::fixed(
-            *building,
-            *kind,
-            decision_tick,
-            projected.starts_at,
-            projected.ready_at,
-            production_deadline,
-        ));
-    }
-    let production_cost = jobs
-        .iter()
-        .map(|job| job.kind().stats().cost)
-        .fold(0, u32::saturating_add);
-    let current_scrap = decision.committed_scrap.saturating_sub(production_cost);
+                kind,
+                decision_tick,
+                projected.starts_at,
+                projected.ready_at,
+                production_deadline,
+            ))
+        })
+        .collect::<Result<Vec<_>, CoordinatorInputError>>()?;
+    let current_scrap = if protect_reserve {
+        decision.reserved_scrap
+    } else {
+        0
+    };
     Ok(imported_obligation(
         ObligationClass::Legacy,
         accepted_at,
@@ -1582,11 +1562,12 @@ mod tests {
                 kind: UnitKind::Sentinel,
             }],
             reservations: vec![UnitId(3)],
-            committed_scrap: UnitKind::Sentinel.stats().cost.saturating_add(17),
+            reserved_scrap: 17,
         };
-        let obligation = legacy_decision_obligation(
+        let obligation = operation_production_obligation(
             &resources,
-            LegacyDecisionRequest {
+            OperationProductionRequest {
+                protect_reserve: true,
                 cadence: 12,
                 accepted_at: 24,
                 decision_tick: 120,
@@ -1638,7 +1619,7 @@ mod tests {
                 kind: UnitKind::Skyhook,
             }],
             reservations: Vec::new(),
-            committed_scrap: UnitKind::Skyhook.stats().cost,
+            reserved_scrap: 0,
         };
         let second = StrategicDecision {
             intents: vec![crate::executive::Intent::TrainAt {
@@ -1646,11 +1627,12 @@ mod tests {
                 kind: UnitKind::Kestrel,
             }],
             reservations: Vec::new(),
-            committed_scrap: UnitKind::Kestrel.stats().cost,
+            reserved_scrap: 0,
         };
-        let first_obligation = legacy_decision_obligation(
+        let first_obligation = operation_production_obligation(
             &resources,
-            LegacyDecisionRequest {
+            OperationProductionRequest {
+                protect_reserve: true,
                 cadence: 12,
                 accepted_at: 24,
                 decision_tick: obs.tick,
@@ -1662,9 +1644,10 @@ mod tests {
             },
         )
         .expect("the older Airworks append is representable");
-        let second_obligation = legacy_decision_obligation(
+        let second_obligation = operation_production_obligation(
             &resources,
-            LegacyDecisionRequest {
+            OperationProductionRequest {
+                protect_reserve: true,
                 cadence: 12,
                 accepted_at: 36,
                 decision_tick: obs.tick,

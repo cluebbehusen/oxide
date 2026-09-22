@@ -1104,8 +1104,25 @@ pub struct StrategicDecision {
     pub intents: Vec<Intent>,
     /// Canonical exact-unit claims for the executive.
     pub reservations: Vec<UnitId>,
-    /// Scrap spent now or banked for the next trainable missing member.
-    pub committed_scrap: u32,
+    /// Current scrap held independently of this decision's production requests.
+    pub reserved_scrap: u32,
+}
+
+impl StrategicDecision {
+    pub(crate) fn production(&self) -> impl Iterator<Item = (BuildingId, UnitKind)> + '_ {
+        self.intents.iter().filter_map(|intent| match intent {
+            Intent::TrainAt { building, kind } => Some((*building, *kind)),
+            _ => None,
+        })
+    }
+
+    /// Current capital owned by held reserves and exact immediate purchases.
+    pub fn committed_scrap(&self) -> u32 {
+        self.production()
+            .fold(self.reserved_scrap, |total, (_, kind)| {
+                total.saturating_add(kind.stats().cost)
+            })
+    }
 }
 
 struct AirPlanningContext<'a> {
@@ -3497,13 +3514,13 @@ impl StrategicPlanner {
         });
         if preparation_expired {
             out.intents.clear();
-            out.committed_scrap = 0;
+            out.reserved_scrap = 0;
             recover(&mut op, AirRecoveryReason::Timeout, obs.tick);
         }
         if !allow_new_operation {
             out.intents
                 .retain(|intent| !matches!(intent, Intent::TrainAt { .. }));
-            out.committed_scrap = 0;
+            out.reserved_scrap = 0;
         }
         let recovery_entered_this_tick = op.phase == AirOperationPhase::Recover
             && (!began_in_recovery || op.phase_started_at == obs.tick);
@@ -4508,14 +4525,13 @@ fn schedule(
                 })
                 .min_by_key(|producer| (producer.depth, producer.id));
             if bank < cost || producer.is_none() {
-                out.committed_scrap = out.committed_scrap.saturating_add(bank.min(cost));
+                out.reserved_scrap = out.reserved_scrap.saturating_add(bank.min(cost));
                 break 'demands;
             }
             let Some(producer) = producer else {
                 break 'demands;
             };
             bank -= cost;
-            out.committed_scrap += cost;
             out.intents.push(production.append(producer));
         }
     }
@@ -7402,14 +7418,8 @@ mod tests {
                     settlement.producer_lane_reservations().clone()
                 });
             let mut intents = Vec::new();
-            let mut committed = 0;
             if let Some(settlement) = &settlement {
                 self.record_connected_purchases(settlement.producer_schedule(), obs.tick);
-                committed = settlement
-                    .producer_schedule()
-                    .iter()
-                    .map(|job| job.current_scrap)
-                    .sum();
                 intents.extend(
                     settlement
                         .producer_schedule()
@@ -7426,7 +7436,16 @@ mod tests {
                     .with_producer_lanes(&intents, &lanes),
             );
             result.decision.intents.extend(intents);
-            result.decision.committed_scrap += committed;
+            if let Some(settlement) = &settlement {
+                result.decision.reserved_scrap = result.decision.reserved_scrap.saturating_add(
+                    settlement
+                        .producer_schedule()
+                        .iter()
+                        .filter(|job| job.enqueued_at > obs.tick)
+                        .map(|job| job.current_scrap)
+                        .sum(),
+                );
+            }
             result.rejected_connected_candidate = rejected_connected_candidate;
             result
         }
@@ -8021,9 +8040,10 @@ mod tests {
             },
         );
         if let Some(settlement) = allocate_connected_in_test(&mut planner, request) {
-            out.committed_scrap = settlement
+            out.reserved_scrap = settlement
                 .producer_schedule()
                 .iter()
+                .filter(|job| job.enqueued_at > context.obs.tick)
                 .map(|job| job.current_scrap)
                 .sum();
             out.intents.extend(
@@ -8692,7 +8712,7 @@ mod tests {
             active.air_operation().map(|operation| operation.phase),
             Some(AirOperationPhase::Strike)
         );
-        assert_eq!(continued.committed_scrap, 0);
+        assert_eq!(continued.committed_scrap(), 0);
         assert_eq!(
             continued.reservations,
             [UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
@@ -8732,7 +8752,7 @@ mod tests {
                 orientation: test_orientation(),
             },
         );
-        assert_eq!(held.committed_scrap, 0);
+        assert_eq!(held.committed_scrap(), 0);
         assert!(
             held.intents
                 .iter()
@@ -8830,7 +8850,7 @@ mod tests {
             operation.recovery_reason,
             Some(AirRecoveryReason::RequiredUnitLost)
         );
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
         assert!(
             decision
                 .intents
@@ -8865,7 +8885,7 @@ mod tests {
             Intent::MoveUnits { units, .. } if units == &[UnitId(1)]
         )));
         assert!(
-            dispatched.committed_scrap > 0,
+            dispatched.committed_scrap() > 0,
             "the live operation must own a real factory bank before the loss"
         );
 
@@ -8881,7 +8901,7 @@ mod tests {
             operation.recovery_reason,
             Some(AirRecoveryReason::RequiredUnitLost)
         );
-        assert_eq!(failed.committed_scrap, 0);
+        assert_eq!(failed.committed_scrap(), 0);
         assert!(!failed.reservations.contains(&UnitId(17)));
         assert_eq!(
             failed
@@ -9313,7 +9333,7 @@ mod tests {
         assert_eq!(operation.phase, AirOperationPhase::Recon);
         assert_eq!(operation.scout, None);
         assert_eq!(operation.scout_dispatch, None);
-        assert_eq!(training.committed_scrap, UnitKind::Kestrel.stats().cost);
+        assert_eq!(training.committed_scrap(), UnitKind::Kestrel.stats().cost);
         assert_eq!(
             training
                 .intents
@@ -9657,7 +9677,7 @@ mod tests {
             let mut out = StrategicDecision::default();
             schedule(&context, &[(kind, 5)], &mut out);
             assert_eq!(out.intents, expected);
-            assert_eq!(out.committed_scrap, held);
+            assert_eq!(out.committed_scrap(), held);
         }
     }
 
@@ -9690,7 +9710,7 @@ mod tests {
             &planning_context(&identity, &obs, &intelligence),
             &mut out,
         );
-        assert_eq!(out.committed_scrap, full, "{out:?}");
+        assert_eq!(out.committed_scrap(), full, "{out:?}");
         let bomber_factories: Vec<_> = out
             .intents
             .iter()
@@ -9712,7 +9732,7 @@ mod tests {
             &planning_context(&identity, &obs, &intelligence),
             &mut partial,
         );
-        assert_eq!(partial.committed_scrap, 0);
+        assert_eq!(partial.committed_scrap(), 0);
         assert!(
             partial.intents.is_empty(),
             "an infeasible retained package must be revised or recovered before buying a fragment"
@@ -9755,7 +9775,7 @@ mod tests {
             "a future slot is feasibility evidence, not a current append"
         );
         assert_eq!(
-            decision.committed_scrap,
+            decision.committed_scrap(),
             UnitKind::Bombard.stats().cost,
             "the operation must keep its next provider affordable while the paid queue drains"
         );
@@ -9823,7 +9843,8 @@ mod tests {
             "the later open Airworks cannot spend capital assigned to the next Bombard"
         );
         assert_eq!(
-            decision.committed_scrap, 0,
+            decision.committed_scrap(),
+            0,
             "without income the whole package is unfundable"
         );
 
@@ -9849,7 +9870,7 @@ mod tests {
             )),
             "the full Fabricator cannot receive a current append"
         );
-        assert_eq!(parallel.committed_scrap, observation.scrap);
+        assert_eq!(parallel.committed_scrap(), observation.scrap);
     }
 
     #[test]
@@ -9975,7 +9996,7 @@ mod tests {
                 .flat_map(|tranche| core::iter::repeat_n(tranche.kind, tranche.count))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(decision.committed_scrap, minimum_scrap);
+        assert_eq!(decision.committed_scrap(), minimum_scrap);
     }
 
     #[test]
@@ -14385,7 +14406,7 @@ mod tests {
                 .iter()
                 .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
         );
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
     }
 
     #[test]
@@ -14422,7 +14443,7 @@ mod tests {
                 ..
             }
         )));
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
     }
 
     #[test]
@@ -14540,7 +14561,7 @@ mod tests {
                 .all(|intent| !matches!(intent, Intent::TrainAt { .. })),
             "an impossible minimum must block every later provider tranche: {decision:?}"
         );
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
     }
 
     #[test]
@@ -14650,7 +14671,7 @@ mod tests {
                     ..
                 }
             )));
-            assert_eq!(first_decision.committed_scrap, 0);
+            assert_eq!(first_decision.committed_scrap(), 0);
         }
 
         let (decision, planner) = run(12, false);
@@ -15179,7 +15200,7 @@ mod tests {
         assert!(operation.artillery.is_empty());
         assert!(operation.strike_aircraft.is_empty());
         assert_eq!(decision.reservations, [UnitId(1)]);
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
             Intent::TrainAt { kind, .. } if *kind != UnitKind::Kestrel
@@ -15222,7 +15243,7 @@ mod tests {
             planner.remaining_airwork_ticks(&ghost),
             u64::from(UnitKind::Kestrel.stats().train_ticks)
         );
-        assert_eq!(decision.committed_scrap, UnitKind::Kestrel.stats().cost);
+        assert_eq!(decision.committed_scrap(), UnitKind::Kestrel.stats().cost);
         assert!(matches!(
             decision.intents.as_slice(),
             [Intent::TrainAt {
@@ -15414,7 +15435,7 @@ mod tests {
             intent,
             Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
         )));
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
     }
 
     #[test]
@@ -15474,7 +15495,7 @@ mod tests {
             operation.recovery_reason,
             Some(AirRecoveryReason::StaleIntelligence)
         );
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
     }
 
     #[test]
@@ -15524,7 +15545,7 @@ mod tests {
             "a lost scout with no surviving claims completes recovery immediately"
         );
         assert!(!decision.reservations.contains(&UnitId(5)));
-        assert_eq!(decision.committed_scrap, 0);
+        assert_eq!(decision.committed_scrap(), 0);
     }
 
     #[test]
@@ -15602,7 +15623,7 @@ mod tests {
             assert!(ghost_operation.artillery.is_empty(), "{difficulty:?}");
             assert!(ghost_operation.strike_aircraft.is_empty(), "{difficulty:?}");
             assert_eq!(recon.reservations, [UnitId(1)], "{difficulty:?}");
-            assert_eq!(recon.committed_scrap, 0, "{difficulty:?}");
+            assert_eq!(recon.committed_scrap(), 0, "{difficulty:?}");
 
             let current = wealthy_island_obs(5_016, 1);
             intel.update(&current);
@@ -18303,7 +18324,8 @@ mod tests {
                 "{difficulty:?}"
             );
             assert_eq!(
-                recovered.committed_scrap, 0,
+                recovered.committed_scrap(),
+                0,
                 "{difficulty:?} must release its factory bank on the boundary"
             );
         }

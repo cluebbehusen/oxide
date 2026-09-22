@@ -9,14 +9,14 @@ use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
     CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
-    ImportedObligation, LegacyChannel, LegacyDecisionRequest, ObligationClass, ObligationKey,
+    ImportedObligation, LegacyChannel, ObligationClass, ObligationKey, OperationProductionRequest,
     ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
     active_connected_revision_investment_proposal, active_connected_revision_obligation,
     clamped_current_reserve_obligation, connected_investment_proposal, current_reserve_at,
     defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
     fixed_production_current_reserve, forecast_reserve_through, foundry_investment_proposal,
-    fresh_emergency_defense_obligation, imported_obligation, legacy_decision_obligation,
-    legacy_unit_obligation, observed_builder_obligations, saved_foundry_obligation,
+    fresh_emergency_defense_obligation, imported_obligation, legacy_unit_obligation,
+    observed_builder_obligations, operation_production_obligation, saved_foundry_obligation,
     standing_force_investment_proposals,
 };
 use crate::PublicMapBriefing;
@@ -2634,41 +2634,21 @@ fn push_legacy_planner_claim(
             legacy_unit_obligation(retained_at, channel, 0, retained_units),
         )
     };
-    let production_cost = decision
-        .intents
-        .iter()
-        .filter_map(|intent| match intent {
-            Intent::TrainAt { kind, .. } => Some(kind.stats().cost),
-            _ => None,
-        })
-        .fold(0, u32::saturating_add);
-    let exact_production_decision;
-    let decision = if protect_unspent_current_scrap {
-        decision
-    } else {
-        exact_production_decision = StrategicDecision {
-            committed_scrap: production_cost,
-            ..decision.clone()
-        };
-        &exact_production_decision
-    };
-    if decision.committed_scrap == 0
-        && !decision
-            .intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::TrainAt { .. }))
+    if (!protect_unspent_current_scrap || decision.reserved_scrap == 0)
+        && decision.production().next().is_none()
     {
         return retained_valid;
     }
-    let immediate = legacy_decision_obligation(
+    let immediate = operation_production_obligation(
         resources,
-        LegacyDecisionRequest {
+        OperationProductionRequest {
             cadence,
             accepted_at,
             decision_tick: decision_at,
             channel,
             sequence: 1,
             decision,
+            protect_reserve: protect_unspent_current_scrap,
             prior_producer_intents,
             production_deadline,
         },
@@ -2922,20 +2902,17 @@ fn strategic_decision_with_production_prefix(
 ) -> StrategicDecision {
     let mut result = decision.clone();
     let mut retained = 0_usize;
-    let mut removed_cost = 0_u32;
     result.intents.retain(|intent| {
-        let Intent::TrainAt { kind, .. } = intent else {
+        let Intent::TrainAt { .. } = intent else {
             return true;
         };
         if retained < production_limit {
             retained = retained.saturating_add(1);
             true
         } else {
-            removed_cost = removed_cost.saturating_add(kind.stats().cost);
             false
         }
     });
-    result.committed_scrap = result.committed_scrap.saturating_sub(removed_cost);
     result
 }
 
@@ -3717,15 +3694,15 @@ mod tests {
             staged_strategy: None,
             emergency_defense: None,
             team_decision: StrategicDecision {
-                committed_scrap: 1,
+                reserved_scrap: 1,
                 ..StrategicDecision::default()
             },
             lift_decision: StrategicDecision {
-                committed_scrap: 2,
+                reserved_scrap: 2,
                 ..StrategicDecision::default()
             },
             raid_decision: StrategicDecision {
-                committed_scrap: 3,
+                reserved_scrap: 3,
                 ..StrategicDecision::default()
             },
         }
@@ -4427,7 +4404,7 @@ mod tests {
                 },
             ],
             reservations: vec![UnitId(7)],
-            committed_scrap: cost.saturating_mul(2),
+            reserved_scrap: 0,
         };
         let resources = ResourceSnapshot::from_observation(&observation);
 
@@ -4447,7 +4424,7 @@ mod tests {
         .expect("the exact producer projection is valid");
 
         assert_eq!(prefix.reservations, decision.reservations);
-        assert_eq!(prefix.committed_scrap, cost);
+        assert_eq!(prefix.committed_scrap(), cost);
         assert_eq!(
             prefix
                 .intents
@@ -5026,9 +5003,9 @@ mod tests {
         });
 
         assert!(outcome.allocation_ok);
-        assert_eq!(outcome.team_decision.committed_scrap, 1);
-        assert_eq!(outcome.lift_decision.committed_scrap, 2);
-        assert_eq!(outcome.raid_decision.committed_scrap, 3);
+        assert_eq!(outcome.team_decision.committed_scrap(), 1);
+        assert_eq!(outcome.lift_decision.committed_scrap(), 2);
+        assert_eq!(outcome.raid_decision.committed_scrap(), 3);
         assert_eq!(outcome.planner_claims, vec![UnitId(99)]);
         assert_eq!(outcome.strategic_core_exclusions, vec![UnitId(98)]);
         assert_eq!(policy, committed_policy);
@@ -5063,7 +5040,7 @@ mod tests {
                 kind: UnitKind::Harvester,
             }],
             reservations: Vec::new(),
-            committed_scrap: UnitKind::Harvester.stats().cost,
+            reserved_scrap: 0,
         };
         let immediate_decision = StrategicDecision {
             intents: vec![Intent::TrainAt {
@@ -5071,14 +5048,15 @@ mod tests {
                 kind: UnitKind::Sentinel,
             }],
             reservations: Vec::new(),
-            committed_scrap: UnitKind::Sentinel.stats().cost,
+            reserved_scrap: 0,
         };
         let mut allocation = CrossDomainAllocation::new(&resources, deadline, setup.dials.cadence)
             .expect("the two-producer projection is valid");
         allocation.import(
-            legacy_decision_obligation(
+            operation_production_obligation(
                 &resources,
-                LegacyDecisionRequest {
+                OperationProductionRequest {
+                    protect_reserve: true,
                     cadence: setup.dials.cadence,
                     accepted_at: 12,
                     decision_tick: observation.tick,
@@ -5092,9 +5070,10 @@ mod tests {
             .expect("the delayed Foundry append is representable"),
         );
         allocation.import(
-            legacy_decision_obligation(
+            operation_production_obligation(
                 &resources,
-                LegacyDecisionRequest {
+                OperationProductionRequest {
+                    protect_reserve: true,
                     cadence: setup.dials.cadence,
                     accepted_at: 24,
                     decision_tick: observation.tick,
@@ -5427,7 +5406,7 @@ mod tests {
                     kind: UnitKind::Sentinel,
                 }],
                 reservations: vec![UnitId(91)],
-                committed_scrap: UnitKind::Sentinel.stats().cost,
+                reserved_scrap: 0,
             },
             rejected_connected_candidate: None,
         });
@@ -5558,7 +5537,7 @@ mod tests {
                 kind: UnitKind::Sentinel,
             }],
             reservations: Vec::new(),
-            committed_scrap: UnitKind::Sentinel.stats().cost,
+            reserved_scrap: 0,
         };
         let outcome = AllocationSession::new(
             setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),

@@ -685,7 +685,7 @@ fn rolled_back_connected_procurement_retries_without_extending_deadline() {
             kind: UnitKind::Sentinel,
         }],
         reservations: Vec::new(),
-        committed_scrap: UnitKind::Sentinel.stats().cost,
+        reserved_scrap: 0,
     };
     let mut policy = UtilityPolicy::new();
     let mut strategy = planner;

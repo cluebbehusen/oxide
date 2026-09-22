@@ -1927,7 +1927,7 @@ mod tests {
                 },
             ],
             reservations: vec![UnitId(3)],
-            committed_scrap: UnitKind::Skyhook.stats().cost,
+            reserved_scrap: 0,
         };
 
         let projected = project_strategic_queues(&obs, &decision);
