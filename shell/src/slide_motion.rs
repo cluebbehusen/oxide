@@ -67,8 +67,12 @@ impl SlideMotion {
             self.lag[1],
             ((self.lag[1] + correction) * LAG_RETAIN).clamp_length_max(MAX_LAG),
         ];
+        if !lean {
+            self.yaw = [0.0; 2];
+            return;
+        }
         let travel = propulsion + correction;
-        let target = if lean && correction != Vec2::ZERO && travel != Vec2::ZERO {
+        let target = if correction != Vec2::ZERO && travel != Vec2::ZERO {
             let off_axis = travel.y.atan2(travel.x) - heading;
             // Period pi: a shove from ahead and one from behind roll the body
             // along the same axis, and a square sideways skid turns nothing.
@@ -182,6 +186,17 @@ mod tests {
         let held = slid(40, Vec2::new(SPEED, 0.0), correction, false);
         assert_eq!(held.yaw(1.0), 0.0);
         assert!(held.lag(1.0).length() > 0.0);
+    }
+
+    #[test]
+    fn forbidding_lean_clears_both_interpolation_endpoints_but_keeps_lag() {
+        let mut slide = slid(40, Vec2::new(SPEED, 0.0), Vec2::new(0.0, 0.12), true);
+        assert!(slide.current_yaw() > 0.3);
+        slide.observe(41, 0.0, Vec2::ZERO, Vec2::ZERO, SPEED, false);
+        for alpha in [0.0, 0.5, 1.0] {
+            assert_eq!(slide.yaw(alpha), 0.0);
+            assert!(slide.lag(alpha).length() > 0.0);
+        }
     }
 
     #[test]

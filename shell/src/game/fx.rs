@@ -28,7 +28,12 @@ pub(crate) struct UnitBody {
 }
 
 impl UnitBody {
-    fn capture(game: &Presentation, state: &State, unit: &oxide_sim::state::Unit) -> Self {
+    fn capture(
+        game: &Presentation,
+        state: &State,
+        unit: &oxide_sim::state::Unit,
+        reduced_motion: bool,
+    ) -> Self {
         let kind = unit.kind;
         let rotation = if kind.has_ground_turret() || super::rotor_hull_turn_rate(kind).is_some() {
             game.draw_hull_heading(state, unit.id, 1.0)
@@ -48,7 +53,7 @@ impl UnitBody {
         let rotation = if super::rotor_hull_turn_rate(kind).is_some() {
             rotation
         } else {
-            rotation + game.slide_yaw(unit.id, 1.0)
+            rotation + game.slide_yaw(unit.id, 1.0, reduced_motion)
         };
         let velocity = game
             .prev_pos
@@ -71,7 +76,7 @@ impl UnitBody {
 pub(super) struct PreviousEffects {
     buildings: Vec<(oxide_sim::BuildingId, CollapseBody)>,
     shells: Vec<oxide_sim::state::Shell>,
-    units: Vec<(oxide_sim::UnitId, UnitBody)>,
+    units: Vec<(oxide_sim::UnitId, UnitBody, Vec2)>,
     visible_crash_contacts: Vec<oxide_sim::UnitId>,
 }
 
@@ -123,7 +128,13 @@ impl PreviousEffects {
                         || game.all_seeing()
                         || state.vision(game.human).visible(unit.tile())
                 })
-                .map(|unit| (unit.id, UnitBody::capture(game, state, unit)))
+                .map(|unit| {
+                    (
+                        unit.id,
+                        UnitBody::capture(game, state, unit, crate::render::reduced_motion()),
+                        game.draw_pos(unit.id, unit.pos, 1.0),
+                    )
+                })
                 .collect(),
         }
     }
@@ -906,8 +917,8 @@ impl Presentation {
                         .fx_previous
                         .units
                         .iter()
-                        .find(|(id, _)| id == unit)
-                        .map(|(_, body)| *body);
+                        .find(|(id, _, _)| id == unit)
+                        .map(|(_, body, at)| (*body, *at));
                     let witnessed = *player == self.human
                         || sees(self, *pos)
                         || self.all_seeing()
@@ -917,7 +928,7 @@ impl Presentation {
                     }
                     self.sounds_pending
                         .push((SoundKind::UnitDeath, Some(world_vec(*pos))));
-                    let body = prior.unwrap_or(UnitBody {
+                    let body = prior.map(|(body, _)| body).unwrap_or(UnitBody {
                         kind: *kind,
                         player: *player,
                         faction: state.player(*player).faction,
@@ -941,7 +952,7 @@ impl Presentation {
                             }
                         } else {
                             EffectKind::Debris {
-                                at: world_vec(*pos),
+                                at: prior.map_or_else(|| world_vec(*pos), |(_, at)| at),
                                 body,
                                 seed: unit.0,
                             }
@@ -1516,6 +1527,7 @@ mod tests {
                     &live.presentation,
                     &live.state,
                     live.state.unit(UnitId(0)).unwrap(),
+                    false,
                 );
                 playback.remember_previous_tick(&reference);
                 let expected = reference.tick(&[]);
@@ -1557,6 +1569,66 @@ mod tests {
     }
 
     #[test]
+    fn ground_death_keeps_the_eased_origin_and_respects_reduced_motion_yaw() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.units = vec![oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 10,
+            y: 10,
+        }];
+        let mut game = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
+        let unit = game.state.units()[0].clone();
+        let mut slide = crate::slide_motion::SlideMotion::new(0);
+        for tick in 1..=10 {
+            slide.observe(
+                tick,
+                0.0,
+                Vec2::new(0.11, 0.0),
+                Vec2::new(0.0, 0.11),
+                0.11,
+                true,
+            );
+        }
+        game.presentation.slide_motion.insert(unit.id.0, slide);
+        let drawn = game.presentation.draw_pos(unit.id, unit.pos, 1.0);
+        assert!((drawn - world_vec(unit.pos)).length() > 0.14);
+        let eased_body = UnitBody::capture(&game.presentation, &game.state, &unit, false);
+        let reduced_body = UnitBody::capture(&game.presentation, &game.state, &unit, true);
+        assert!(
+            (eased_body.rotation - reduced_body.rotation - crate::slide_motion::MAX_YAW).abs()
+                < 1e-6
+        );
+        assert_eq!(
+            reduced_body.rotation,
+            game.presentation
+                .draw_heading(unit.id, unit.weapon_heading(), 1.0)
+        );
+        game.presentation.remember_previous_tick(&game.state);
+        game.presentation.slide_motion.clear();
+        game.presentation.spawn_fx(
+            &game.state,
+            &[Event::UnitDied {
+                unit: unit.id,
+                pos: unit.pos,
+                player: unit.player,
+                kind: unit.kind,
+                grounded: true,
+            }],
+        );
+        let origin = game
+            .presentation
+            .fx
+            .iter()
+            .find_map(|effect| match effect.kind {
+                EffectKind::Debris { at, seed, .. } if seed == unit.id.0 => Some(at),
+                _ => None,
+            })
+            .expect("ground casualty has debris");
+        assert_eq!(origin, drawn);
+    }
+
+    #[test]
     fn wreck_capture_keeps_the_hull_bearing_when_the_turret_aims_away() {
         for kind in [
             UnitKind::Sentinel,
@@ -1583,7 +1655,8 @@ mod tests {
                     > 0.1
             );
             assert!(
-                (UnitBody::capture(&game.presentation, &game.state, unit).rotation - 0.7).abs()
+                (UnitBody::capture(&game.presentation, &game.state, unit, false).rotation - 0.7)
+                    .abs()
                     < 1e-6,
                 "{kind:?}"
             );

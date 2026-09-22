@@ -935,7 +935,9 @@ fn draw_unit_pass(
             }
         };
         // A turreted rig leans only its hull; the mount keeps its true aim.
-        let slide_yaw = game.presentation.slide_yaw(unit.id, alpha);
+        let slide_yaw = game
+            .presentation
+            .slide_yaw(unit.id, alpha, reduced_motion());
         let rotation = if rig.is_some() {
             rotation
         } else {

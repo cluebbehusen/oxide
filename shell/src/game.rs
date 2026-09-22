@@ -1014,7 +1014,7 @@ mod tests {
                 let unit = game.state.unit(id).unwrap();
                 let lag = world_vec(unit.pos) - game.presentation.draw_pos(id, unit.pos, 1.0);
                 widest_lag = widest_lag.max(lag.length());
-                widest_lean = widest_lean.max(game.presentation.slide_yaw(id, 1.0).abs());
+                widest_lean = widest_lean.max(game.presentation.slide_yaw(id, 1.0, false).abs());
             }
         }
         assert!(widest_lag > 0.02 && widest_lag <= crate::slide_motion::MAX_LAG + 1e-6);
