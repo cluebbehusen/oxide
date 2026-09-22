@@ -708,5 +708,11 @@ fn rolled_back_connected_procurement_retries_without_extending_deadline() {
     assert!(!retry.allocated_producer_intents.is_empty());
     let after = connected_obligation(&mut strategy, &observation);
     assert_eq!(after.deadline(), retained.deadline());
-    assert!(strategy.air_operation().unwrap().recovery_reason.is_none());
+    assert!(
+        strategy
+            .air_operation()
+            .unwrap()
+            .recovery_reason()
+            .is_none()
+    );
 }

@@ -172,12 +172,12 @@ pub(super) fn settle_operations(
         let support = lift_air_support(strategy.air_operation(), strategy.terminal_outcome());
         let support = match (strategy.air_operation(), support) {
             (Some(operation), LiftAirSupport::Released { player, target })
-                if operation.phase != AirOperationPhase::Recover =>
+                if operation.phase() != AirOperationPhase::Recover =>
             {
                 LiftAirSupport::Suppressing { player, target }
             }
             (Some(operation), support @ LiftAirSupport::Suppressing { .. })
-                if operation.phase != AirOperationPhase::Recover =>
+                if operation.phase() != AirOperationPhase::Recover =>
             {
                 support
             }
@@ -257,7 +257,7 @@ pub(super) fn settle_operations(
         strategy
             .air_operation()
             .filter(|operation| {
-                operation.phase == AirOperationPhase::Recon && !operation.assault_admitted
+                operation.phase() == AirOperationPhase::Recon && !operation.assault_admitted()
             })
             .and_then(|operation| {
                 context.intelligence.buildings().iter().find(|contact| {

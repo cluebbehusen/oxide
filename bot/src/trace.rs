@@ -3185,7 +3185,7 @@ pub(super) fn connected_force_trace(
     let status = match (planner.terminal_outcome(), operation) {
         (Some(AirOperationOutcome::Released { .. }), _) => ConnectedForceStatus::Released,
         (Some(AirOperationOutcome::Aborted { .. }), _) => ConnectedForceStatus::Aborted,
-        (_, Some(operation)) => operation.recovery_reason.map_or_else(
+        (_, Some(operation)) => operation.recovery_reason().map_or_else(
             || {
                 if package.is_some() {
                     ConnectedForceStatus::Active
@@ -3515,7 +3515,6 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::super::strategy::AirOperationPhase;
     use super::*;
 
     #[test]
@@ -3603,8 +3602,7 @@ mod tests {
             target_kind: BuildingKind::Foundry,
             target: TilePos::new(9, 8),
             target_id: Some(BuildingId(7)),
-            assault_admitted: true,
-            phase: AirOperationPhase::Assemble,
+            stage: crate::strategy::AirStage::Assemble,
             started_at: 10,
             phase_started_at: 20,
             scout: Some(UnitId(3)),
@@ -3615,7 +3613,6 @@ mod tests {
             strike_aircraft: vec![UnitId(8), UnitId(6), UnitId(8)],
             strike_issued_at: None,
             membership_frozen_at: None,
-            recovery_reason: None,
         };
 
         let revisable = AssignedForceTrace::from_operation(&operation);
@@ -3623,13 +3620,16 @@ mod tests {
         assert_eq!(revisable.suppression, [UnitId(4), UnitId(5)]);
         assert_eq!(revisable.strike, [UnitId(6), UnitId(8)]);
 
-        operation.phase = AirOperationPhase::Recover;
+        operation.stage = crate::strategy::AirStage::Recover {
+            reason: AirRecoveryReason::Timeout,
+            assault_admitted: true,
+        };
         assert!(
             !AssignedForceTrace::from_operation(&operation).membership_frozen,
             "pre-commit recovery must not fabricate a crossed commitment boundary"
         );
 
-        operation.phase = AirOperationPhase::SuppressAa;
+        operation.stage = crate::strategy::AirStage::SuppressAa;
         operation.membership_frozen_at = Some(30);
         let committed = AssignedForceTrace::from_operation(&operation);
         assert!(committed.membership_frozen);
@@ -3637,7 +3637,10 @@ mod tests {
         assert_eq!(committed.suppression, revisable.suppression);
         assert_eq!(committed.strike, revisable.strike);
 
-        operation.phase = AirOperationPhase::Recover;
+        operation.stage = crate::strategy::AirStage::Recover {
+            reason: AirRecoveryReason::Timeout,
+            assault_admitted: true,
+        };
         assert!(
             AssignedForceTrace::from_operation(&operation).membership_frozen,
             "recovery after suppression must retain the real commitment history"
