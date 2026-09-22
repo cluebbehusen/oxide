@@ -50,6 +50,23 @@ impl StaticRegions {
             })
     }
 
+    pub(crate) fn reaches_footprint(
+        &self,
+        from: TilePos,
+        anchor: TilePos,
+        size: (i32, i32),
+    ) -> bool {
+        let Some(origin) = self.region_at(from) else {
+            return false;
+        };
+        (anchor.y.max(0)..anchor.y.saturating_add(size.1).min(self.height)).any(|y| {
+            (anchor.x.max(0)..anchor.x.saturating_add(size.0).min(self.width)).any(|x| {
+                self.region_at(TilePos::new(x, y))
+                    .is_some_and(|goal| self.components[origin] == self.components[goal])
+            })
+        })
+    }
+
     pub(crate) fn clusters(&self, points: impl IntoIterator<Item = TilePos>) -> Vec<Vec<TilePos>> {
         let mut clusters = BTreeMap::<usize, Vec<TilePos>>::new();
         for point in points {
@@ -274,10 +291,79 @@ mod tests {
                         expected,
                         "mask={mask}, {start:?} -> {goal:?}"
                     );
+                    for size in [(1, 1), (2, 2)] {
+                        let expected = briefing.terrain_at(start)
+                            == Some(oxide_sim::map::Terrain::Ground)
+                            && super::super::flood::reaches_any(
+                                3,
+                                3,
+                                [start],
+                                |tile| {
+                                    briefing.terrain_at(tile)
+                                        == Some(oxide_sim::map::Terrain::Ground)
+                                },
+                                |tile| {
+                                    (goal.x..goal.x + size.0).contains(&tile.x)
+                                        && (goal.y..goal.y + size.1).contains(&tile.y)
+                                },
+                            );
+                        assert_eq!(
+                            regions.reaches_footprint(start, goal, size),
+                            expected,
+                            "mask={mask}, {start:?} -> {goal:?}, {size:?}"
+                        );
+                    }
                 }
             }
             assert!(!regions.connects(&[], &[TilePos::new(0, 0)]));
             assert!(!regions.connects(&[TilePos::new(-1, 0)], &[TilePos::new(0, 0)]));
+        }
+    }
+
+    #[test]
+    fn footprint_queries_clip_to_the_map_and_preserve_orientation() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.map = vec!["1#..".into(), ".#..".into(), ".#..".into(), ".#.2".into()];
+        let briefing = PublicMapBriefing::from_scenario(&scenario).unwrap();
+        let from = TilePos::new(0, 0);
+        for (anchor, size, expected) in [
+            (TilePos::new(-1, -1), (2, 2), true),
+            (TilePos::new(1, 0), (2, 2), false),
+            (TilePos::new(0, 0), (0, 2), false),
+            (TilePos::new(0, 0), (2, -1), false),
+            (TilePos::new(0, 3), (2, 2), true),
+            (TilePos::new(0, 4), (2, 2), false),
+            (TilePos::new(i32::MAX, 0), (2, 2), false),
+            (TilePos::new(0, i32::MAX), (2, 2), false),
+        ] {
+            assert_eq!(
+                briefing.regions().reaches_footprint(from, anchor, size),
+                expected
+            );
+        }
+        for home in [
+            from,
+            TilePos::new(3, 0),
+            TilePos::new(0, 3),
+            TilePos::new(3, 3),
+        ] {
+            let orientation = crate::orient::Orientation::for_map(4, 4, home);
+            let oriented = orientation.briefing(&briefing);
+            for (anchor, expected) in [(TilePos::new(0, 1), true), (TilePos::new(2, 1), false)] {
+                assert_eq!(
+                    oriented.regions().reaches_footprint(
+                        orientation.tile(from),
+                        orientation.anchor(anchor, (2, 2)),
+                        (2, 2),
+                    ),
+                    expected
+                );
+            }
+            assert!(!oriented.regions().reaches_footprint(
+                orientation.tile(TilePos::new(1, 1)),
+                orientation.anchor(from, (2, 2)),
+                (2, 2),
+            ));
         }
     }
 
