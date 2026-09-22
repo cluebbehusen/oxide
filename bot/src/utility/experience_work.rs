@@ -9,7 +9,7 @@ use chassis::Tick;
 use oxide_sim::ids::Target;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FailedWork {
     tile: TilePos,
     failed_at: Tick,
@@ -249,7 +249,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct BuildAttempt {
     worker: UnitId,
     kind: BuildingKind,
@@ -278,14 +278,14 @@ impl BuildAttempt {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FoundationWatch {
     building: oxide_sim::ids::BuildingId,
     cost: u32,
     journal: OutcomeJournal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct HarvestAttempt {
     node: TilePos,
     since: Tick,
@@ -294,7 +294,7 @@ struct HarvestAttempt {
     journal: OutcomeJournal,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct WorkExperience {
     pub(super) enabled: bool,
     pub(super) construction_work_tiles: BTreeSet<TilePos>,

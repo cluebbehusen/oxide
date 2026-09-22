@@ -150,6 +150,34 @@ interrupted harvest job.
 
 ## Persistence and replay
 
+`oxide_kit::checkpoint::SessionCheckpoint` is the internal continuation
+boundary: scenario, world, controller memory, pending commands, and live
+statistics at a completed tick. Capture borrows the host without draining inputs
+or running bots. Restore validates the pieces before installation and executes
+no historical ticks. Controller and session format revisions are independent of
+`SIM_VERSION`; the initial implementation accepts only matching revisions and
+simulation versions.
+
+The session envelope fingerprints the captured scenario and world together.
+Restoration rejects changes to either side of that pairing, including a seed
+changed in both the session and its companion recorder. Capture trusts the host
+to supply the world's original scenario; this consistency fingerprint is not
+authentication or proof that historical commands produced the snapshot. Session
+revision 2 requires the fingerprint and rejects revision 1 checkpoints.
+Simulation serialization and hashes are unchanged.
+
+The shell and headless session serde adapters use `RecordedCheckpoint`, which
+retains the existing full recorder as a companion. The core checkpoint requires
+no command history; the companion preserves legacy replay export until replay
+origins can carry checkpoints. Its setup and duration must agree with the core,
+but loading does not verify the entire history against the snapshot. Shell
+checkpoints additionally retain tutorial progress, concession statistics, and
+decorative boundary exploration. Camera, selection, effects, and interpolation
+rebuild, the wall clock starts paused, and recovery/diagnostic workers are not
+serialized. These adapters are not wired to player save files or debug load
+commands. External persistence needs bounded loading and an explicit
+compatibility policy before adopting this internal format.
+
 A save is a replay: starting scenario, tick-stamped commands, simulation
 version, and metadata. There is no independent mutable snapshot format. The live
 replay recorder is always active. Autosaves represent resumable sessions;

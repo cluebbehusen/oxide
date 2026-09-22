@@ -9,14 +9,14 @@ thread_local! {
     pub(super) static SEARCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Solution {
     pub producers: Vec<ProducerPlanningProjection>,
     pub schedule: Vec<ScheduledProducerJob>,
     pub capital: Vec<CapitalFundingAssignment>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Frame {
     producers: Vec<ProducerPlanningProjection>,
     remaining: Vec<bool>,
@@ -26,13 +26,50 @@ struct Frame {
     placements: BTreeMap<PlacementKey, ProductionPlacement>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Continuation {
     frames: Vec<Frame>,
     constructive: bool,
 }
 
 impl Continuation {
+    pub(super) fn valid_checkpoint(
+        &self,
+        capacity: &AllocationCapacity,
+        claims: &ClaimState,
+        tick: Tick,
+    ) -> bool {
+        let jobs = claims.producer_jobs.len();
+        let producers = capacity.resources.producers();
+        let placement = |value: &ProductionPlacement| {
+            value.job_index < jobs
+                && value.lane_index < producers.len()
+                && value.lane_after.valid_checkpoint(tick)
+        };
+        self.frames.len() <= jobs.saturating_add(1)
+            && self.frames.iter().all(|frame| {
+                frame.remaining.len() == jobs
+                    && frame.producers.len() == producers.len()
+                    && frame
+                        .producers
+                        .iter()
+                        .zip(producers)
+                        .all(|(a, b)| a.producer() == b.producer() && a.valid_checkpoint(tick))
+                    && frame.placements.values().all(placement)
+                    && frame.preparation.as_ref().is_none_or(|preparation| {
+                        preparation.job <= jobs
+                            && preparation.placements.values().all(placement)
+                            && preparation.lane.as_ref().is_none_or(|lane| {
+                                preparation.job < jobs
+                                    && lane.index < producers.len()
+                                    && lane.income <= lane.income_end
+                                    && lane.income_end <= capacity.resources.forecast_income().len()
+                                    && lane.best.as_ref().is_none_or(placement)
+                            })
+                    })
+            })
+    }
+
     pub fn new(
         producers: &[ProducerPlanningProjection],
         remaining: &[bool],
@@ -236,7 +273,7 @@ type PlacementKey = (
     usize,
 );
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PlacementPreparation {
     job: usize,
     producer: usize,
@@ -244,7 +281,7 @@ struct PlacementPreparation {
     placements: BTreeMap<PlacementKey, ProductionPlacement>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct LaneCandidates {
     index: usize,
     earliest: Tick,

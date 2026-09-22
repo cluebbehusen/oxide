@@ -137,14 +137,14 @@ const CONTESTED_RECON_SWEEP_TICKS: u64 = oxide_sim::stats::HARVEST_INCIDENT_MEMO
 /// A scout recalled by fresh danger waits before attempting the same region.
 const CONTESTED_RECON_RETRY_TICKS: u64 = 3 * oxide_sim::TICKS_PER_SECOND as u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ContestedHarvestRegion {
     center: TilePos,
     last_evidence: u64,
     sweep_started_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct HarvesterWatch {
     id: UnitId,
     tile: TilePos,
@@ -168,14 +168,14 @@ impl ContestedRecon {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct RetreatingContestedScout {
     unit: UnitId,
     order_dispatched: bool,
     suspend_solo_air_on_loss: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum PublicScoutPrior {
     HostileStart(StartingFoundry),
     Extractor(TilePos),
@@ -202,14 +202,14 @@ impl PublicScoutPrior {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum ScoutDispatchRole {
     Ordinary,
     PublicGround(PublicScoutPrior),
     SoloAir,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ScoutDispatch {
     unit: UnitId,
     from: TilePos,
@@ -462,7 +462,7 @@ const SALVAGE_PRIORITY: [BuildingKind; 6] = [
 
 /// The policy's tunable considerations. The fairness rule is that
 /// dials change *thinking* — never income, vision, or combat math.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Dials {
     /// Think every N ticks.
     pub cadence: u64,
@@ -713,15 +713,16 @@ impl Dials {
 /// Channel-based scripted policy. Its memory is bot-local and legitimate
 /// (a bot is a command source, not sim state): harvest blacklists, raid
 /// memory, and the scout rotation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UtilityPolicy {
     pub(crate) state: PolicyState,
     pub(crate) planning: super::planning::PlanningWork,
+    #[serde(skip)]
     queries: PolicyQueries,
 }
 
 /// Decision-relevant memory restored after a rejected allocation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PolicyState {
     pub(crate) work_experience: experience_work::WorkExperience,
     /// Largest hostile ground force observed within the difficulty's
@@ -1018,6 +1019,10 @@ impl<'a> StrategicUtilityContext<'a> {
 }
 
 impl UtilityPolicy {
+    pub(crate) fn valid_checkpoint(&self, map: &PublicMapBriefing, tick: u64) -> bool {
+        self.planning.valid_checkpoint(map, tick)
+    }
+
     pub(crate) fn speculative_checkpoint(&self) -> PolicyCheckpoint {
         PolicyCheckpoint(self.state.clone())
     }

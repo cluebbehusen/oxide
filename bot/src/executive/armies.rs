@@ -36,7 +36,7 @@ const OBJECTIVE_RADIUS: i32 = 2;
 /// the exact mean lies between tiles: a half-turn maps `floor(x)` to
 /// `ceil(mirror(x))`, not another floor. Transforming into the owner's frame
 /// before division gives both seats the same deterministic tie.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct CentroidFrame {
     flip_x: bool,
     flip_y: bool,

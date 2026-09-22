@@ -29,7 +29,7 @@ const MIN_RELIEF_GROUP: usize = 2;
 const WITHDRAWAL_TIMEOUT: Tick = 400;
 
 /// The active phase of an allied-base relief operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeamReliefPhase {
     /// Marching the exact relief group toward the allied Foundry.
     Deploying,
@@ -40,7 +40,7 @@ pub enum TeamReliefPhase {
 }
 
 /// Why a relief operation broke contact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeamReliefExitReason {
     /// No hostile ground pressure remains visible around the allied Foundry.
     PressureEnded,
@@ -57,7 +57,7 @@ pub enum TeamReliefExitReason {
 }
 
 /// The persistent order currently owned by a relief operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeamReliefDispatch {
     /// Attack-move toward the allied base.
     Outbound(TilePos),
@@ -68,7 +68,7 @@ pub enum TeamReliefDispatch {
 }
 
 /// Inspectable persistent state of one team-relief operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TeamReliefOperation {
     /// Teammate whose Foundry requested relief.
     pub ally: PlayerId,
@@ -97,7 +97,7 @@ pub struct TeamReliefOperation {
     pub dispatch: Option<TeamReliefDispatch>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PressureWatch {
     foundry: BuildingId,
     first_seen_at: Tick,
@@ -105,7 +105,7 @@ struct PressureWatch {
 }
 
 /// Controller-local owner of team-pressure evidence, relief, and cooldown.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TeamReliefPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
     active: Option<TeamReliefOperation>,
@@ -1861,6 +1861,7 @@ mod tests {
             }]
         );
 
+        planner = crate::checkpoint::round_trip(&planner);
         obs.tick += 1;
         let stable = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert!(stable.intents.is_empty());

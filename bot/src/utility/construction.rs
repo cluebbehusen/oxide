@@ -75,7 +75,7 @@ pub(crate) struct FreshEmergencyDefenseContext<'a> {
 ///
 /// Allocation and command lowering consume this exact plan so the reserved
 /// capital and eventual order retain the same site and builder.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct FoundryExpansionPlan {
     pub(super) anchor: TilePos,
     pub(super) builder: UnitId,

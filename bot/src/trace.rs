@@ -151,7 +151,7 @@ pub struct ExperienceTrace {
 }
 
 /// Why a finite repair assignment started, continued, or released its claims.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportLifecycleReason {
     /// Allocation accepted the exact patient and worker.
@@ -173,7 +173,7 @@ pub enum SupportLifecycleReason {
 }
 
 /// One exact repair program's owner-visible funding interval.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct RepairProgramTrace {
     /// Exact worker, never an implicit first-available selection.
     pub worker: UnitId,
@@ -188,7 +188,7 @@ pub struct RepairProgramTrace {
 }
 
 /// One observed lifecycle decision, independent of trace enablement.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct SupportLifecycleTrace {
     /// Decision tick that produced this transition.
     pub tick: Tick,
@@ -295,7 +295,7 @@ impl SupportTrace {
 }
 
 /// Current, owner-local protection work. This grants no allied repair access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentReleaseReason {
     /// The exact fighter is no longer alive in the owner's observation.
@@ -1212,7 +1212,7 @@ pub struct ReconRecoveryTrace {
 }
 
 /// Why an unpaid information assignment released its capital.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReconReleaseReason {
     /// Current evidence answered the pending question before dispatch.

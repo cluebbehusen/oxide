@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 const BUCKETS: usize = 15;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DistanceWork {
     width: usize,
     open: Vec<bool>,
@@ -19,6 +19,32 @@ pub(crate) struct DistanceWork {
 }
 
 impl DistanceWork {
+    pub(crate) fn valid_checkpoint(&self, width: i32, height: i32) -> bool {
+        let cells = width as usize * height as usize;
+        let ceiling = (cells as u32).saturating_mul(14);
+        self.width == width as usize
+            && self.open.len() == cells
+            && self.distances.len() == cells
+            && self.current <= ceiling
+            && self
+                .distances
+                .iter()
+                .all(|d| *d == u32::MAX || *d <= ceiling)
+            && self.queued == self.frontier.iter().map(VecDeque::len).sum::<usize>()
+            && self.queued <= cells.saturating_mul(8)
+            && self.frontier.iter().enumerate().all(|(bucket, entries)| {
+                entries.iter().all(|(distance, index)| {
+                    *index < cells
+                        && *distance >= self.current
+                        && *distance <= self.current.saturating_add(14)
+                        && *distance as usize % BUCKETS == bucket
+                }) && entries
+                    .iter()
+                    .zip(entries.iter().skip(1))
+                    .all(|(a, b)| a.0 <= b.0)
+            })
+    }
+
     pub(crate) fn new(
         query_purpose: QueryPurpose,
         width: i32,
@@ -150,6 +176,30 @@ impl DistanceWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_rejects_malformed_frontiers_before_advancing() {
+        let work = DistanceWork::new(
+            QueryPurpose::NavigationTest,
+            4,
+            3,
+            vec![true; 12],
+            [TilePos::new(0, 0)],
+        );
+        assert!(work.valid_checkpoint(4, 3));
+        let mut forged = work.clone();
+        forged.queued += 1;
+        assert!(!forged.valid_checkpoint(4, 3));
+        forged = work.clone();
+        forged.frontier[0][0].1 = 12;
+        assert!(!forged.valid_checkpoint(4, 3));
+        forged = work.clone();
+        forged.frontier[0][0].0 = u32::MAX;
+        assert!(!forged.valid_checkpoint(4, 3));
+        forged = work;
+        forged.distances.pop();
+        assert!(!forged.valid_checkpoint(4, 3));
+    }
 
     #[test]
     fn every_slice_size_preserves_the_complete_field_and_clone_continuation() {

@@ -12,13 +12,15 @@ const HORIZON: Tick = 1_800;
 const QUIET: Tick = 300;
 const SERVICE_RADIUS: i32 = 6;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct ProtectionKey {
     pub(crate) asset: Target,
     pub(crate) air: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProtectionRequest {
     pub(crate) key: ProtectionKey,
     pub(crate) tile: TilePos,
@@ -27,7 +29,7 @@ pub(crate) struct ProtectionRequest {
     pub(crate) value: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SupportDeployment {
     pub(crate) key: ProtectionKey,
     pub(crate) unit: UnitId,
@@ -70,7 +72,7 @@ impl SupportDeployment {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SupportDeployments {
     pub(crate) active: Vec<SupportDeployment>,
     pub(crate) requests: Vec<ProtectionRequest>,
