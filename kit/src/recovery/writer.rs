@@ -55,6 +55,7 @@ struct Queued {
 /// One session's bounded command sink. Dropping it preserves an interrupted record.
 /// Disk work belongs to its worker; gameplay uses only `try_send` and atomic reservations.
 pub struct RecoveryWriter {
+    build: BuildIdentity,
     directory: PathBuf,
     sender: SyncSender<Queued>,
     shared: Arc<Shared>,
@@ -62,8 +63,8 @@ pub struct RecoveryWriter {
 impl RecoveryWriter {
     /// Start a fresh recording from an already resolved replay prefix.
     /// Directory initialization and baseline serialization run on the worker.
-    pub fn start(root: PathBuf, base: GameReplay, tick: u64) -> Result<Self> {
-        Self::start_recovered(root, base, tick, None)
+    pub fn start(root: PathBuf, base: GameReplay, tick: u64, build: BuildIdentity) -> Result<Self> {
+        Self::start_recovered(root, base, tick, None, build)
     }
 
     /// Retire a recovered source only after its replacement baseline is durable.
@@ -72,13 +73,19 @@ impl RecoveryWriter {
         base: GameReplay,
         tick: u64,
         source: Option<PathBuf>,
+        build: BuildIdentity,
     ) -> Result<Self> {
-        Self::start_recording(root, base, tick, source, RecordingKind::LiveMatch)
+        Self::start_recording(root, base, tick, source, RecordingKind::LiveMatch, build)
     }
 
     /// Retain a watched replay for diagnostics without offering it as a resumable match.
-    pub fn start_playback(root: PathBuf, base: GameReplay, ticks: u64) -> Result<Self> {
-        Self::start_recording(root, base, ticks, None, RecordingKind::Playback)
+    pub fn start_playback(
+        root: PathBuf,
+        base: GameReplay,
+        ticks: u64,
+        build: BuildIdentity,
+    ) -> Result<Self> {
+        Self::start_recording(root, base, ticks, None, RecordingKind::Playback, build)
     }
 
     fn start_recording(
@@ -87,6 +94,7 @@ impl RecoveryWriter {
         tick: u64,
         source: Option<PathBuf>,
         kind: RecordingKind,
+        build: BuildIdentity,
     ) -> Result<Self> {
         ensure!(
             source
@@ -109,7 +117,7 @@ impl RecoveryWriter {
         let header = Header {
             kind,
             session,
-            build: BuildIdentity::default(),
+            build: build.clone(),
             base,
         };
         let shared = Arc::new(Shared::default());
@@ -142,10 +150,15 @@ impl RecoveryWriter {
                 }
             })?;
         Ok(Self {
+            build,
             directory,
             sender,
             shared,
         })
+    }
+    /// Host identity shared by the recording header and diagnostic sidecars.
+    pub fn build(&self) -> &BuildIdentity {
+        &self.build
     }
     /// Directory containing this recording and its diagnostic sidecars.
     pub fn directory(&self) -> &Path {

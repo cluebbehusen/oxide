@@ -368,6 +368,7 @@ impl Game {
                 self.recorder.clone(),
                 self.state.current_tick(),
                 self.recovery_source.take(),
+                crate::build_identity(),
             ) {
                 Ok(writer) => self.recovery = Some(std::sync::Arc::new(writer)),
                 Err(error) => {

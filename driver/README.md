@@ -9,6 +9,12 @@ The driver observes and orchestrates the game through public simulation and
 protocol boundaries. It does not contain alternate gameplay rules, and its
 automated players use the same command path as every other player.
 
+Build provenance belongs to this executable. Its build script watches the driver
+and shared dependency package trees plus shared build inputs, assets, and
+scenarios; shell-only edits and private workspace notes do not contribute to its
+dirty status. Reports retain both the original recording identity and this
+exporter's identity. Source archives report unknown provenance.
+
 ## Main pieces
 
 - Re-exported `runner`, `render`, `playback`, and `stats` come from `oxide-kit`

@@ -79,6 +79,7 @@ impl PlaybackSession {
                             root.to_owned(),
                             self.replay.clone(),
                             self.engine.total(),
+                            crate::build_identity(),
                         )?,
                     ));
                 }

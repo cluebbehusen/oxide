@@ -215,6 +215,14 @@ async fn main() {
     }
 }
 
+fn build_identity() -> oxide_kit::recovery::BuildIdentity {
+    oxide_kit::recovery::BuildIdentity::new(
+        env!("CARGO_PKG_VERSION"),
+        env!("OXIDE_BUILD_REVISION"),
+        env!("OXIDE_BUILD_DIRTY"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
