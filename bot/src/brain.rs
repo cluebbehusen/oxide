@@ -1197,6 +1197,7 @@ mod tests {
         rows[18][33] = '2';
 
         Scenario {
+            mode: Default::default(),
             name: "remote expansion defense".into(),
             seed: 0x0A16_0DEF,
             map: rows
@@ -1343,6 +1344,7 @@ mod tests {
         let left_unit_tile = TilePos::new(8, 6);
         let right_unit_tile = TilePos::new(21, 13);
         let scenario = Scenario {
+            mode: Default::default(),
             name: "mirrored wounded withdrawal".into(),
             seed: 1_616_101,
             map: rows
@@ -1551,6 +1553,7 @@ mod tests {
             "################################################",
         ];
         Scenario {
+            mode: Default::default(),
             name: "Calibration Open - Ferrous".into(),
             seed: 1_616_101,
             map: map.into_iter().map(str::to_owned).collect(),
@@ -1639,6 +1642,7 @@ mod tests {
         rows[8][24] = '2';
 
         Scenario {
+            mode: Default::default(),
             name: "prime defense focus".into(),
             seed: 0x0A16_DEF0,
             map: rows
@@ -7854,6 +7858,7 @@ mod tests {
         });
 
         Scenario {
+            mode: Default::default(),
             name: "brain bulk-lift capacity".into(),
             seed: 0x0A16_00C0,
             map: rows
@@ -7931,6 +7936,7 @@ mod tests {
         rows[10][36] = '3';
 
         Scenario {
+            mode: Default::default(),
             name: "brain opening-core team-relief admission".into(),
             seed: 0x0A16_7EA1,
             map: rows
@@ -8150,6 +8156,7 @@ mod tests {
         });
 
         Scenario {
+            mode: Default::default(),
             name: "accepted Foundry saving competes with connected air".into(),
             seed: 1_616_305,
             map: rows

@@ -11,6 +11,7 @@ use oxide_sim::{Command, Event, PlayerCommand, PlayerId, Scenario, Target, UnitK
 
 fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "strike-arena".into(),
         seed: 11,
         map: vec![
@@ -34,6 +35,7 @@ fn arena(scrap: u32, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scen
 
 fn peak_strike_arena() -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "peak-strike-arena".into(),
         seed: 11,
         map: vec![
@@ -454,6 +456,7 @@ fn a_bomber_never_turns_faster_than_its_rate() {
 /// south wall at y = 16, so a Condor can be parked close to a corner.
 fn edge_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "edge-arena".into(),
         seed: 11,
         map: vec![

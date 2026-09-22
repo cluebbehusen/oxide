@@ -503,6 +503,7 @@ mod tests {
             }
             rows.push("####################".to_string());
             Scenario {
+                mode: Default::default(),
                 name: "detour".into(),
                 seed: 5,
                 map: rows,
@@ -547,6 +548,7 @@ mod tests {
         }
         rows.push("####################".to_string());
         let scenario = Scenario {
+            mode: Default::default(),
             name: "detour".into(),
             seed: 5,
             map: rows,

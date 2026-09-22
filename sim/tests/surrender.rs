@@ -25,6 +25,7 @@ fn arena4() -> Scenario {
         bot_config: None,
     };
     Scenario {
+        mode: Default::default(),
         name: "surrender-arena".into(),
         seed: 42,
         map: vec![

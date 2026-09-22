@@ -384,6 +384,7 @@ mod tests {
         rows[1] = "#1.....................#".to_string();
         rows[13] = "#....................2.#".to_string();
         Scenario {
+            mode: Default::default(),
             name: "mirror".into(),
             seed: 3,
             map: rows,

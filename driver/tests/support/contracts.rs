@@ -18,6 +18,7 @@ fn arena(name: &str, units: Vec<UnitSpec>) -> Scenario {
     rows[1][1] = '1';
     rows[27][37] = '2';
     Scenario {
+        mode: Default::default(),
         name: name.into(),
         seed: 42,
         map: rows

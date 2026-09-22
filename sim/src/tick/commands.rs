@@ -30,15 +30,8 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         // The eliminated don't give orders (matters in 3+ player games —
         // two-player matches freeze on the result before this can bite).
-        // Alive means a standing Foundry and no concession, matching the
-        // victory rule — which also makes a second Surrender reject here.
-        if state.players[pc.player.0 as usize].resigned
-            || !state.buildings.iter().any(|b| {
-                b.player == pc.player
-                    && !b.provisional
-                    && b.kind == crate::stats::BuildingKind::Foundry
-            })
-        {
+        // Sandbox seats need no Foundry, but surrender still relinquishes control.
+        if !state.accepts_commands(pc.player) {
             events.push(Event::CommandRejected {
                 player: pc.player,
                 reason: RejectReason::Eliminated,

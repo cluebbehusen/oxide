@@ -107,6 +107,7 @@ fn stage() -> Stage {
         bot_config: None,
     };
     let mut state = Scenario {
+        mode: Default::default(),
         name: "canonicalization-arena".into(),
         seed: 42,
         map: map(),

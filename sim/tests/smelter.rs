@@ -163,6 +163,7 @@ fn mirrored_crucibles_smelt_mirrored_wreck_tiles() {
         height as i32 - ch - left_anchor.y,
     );
     let scenario = Scenario {
+        mode: Default::default(),
         name: "mirrored-smelters".into(),
         seed: 3,
         map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
@@ -253,6 +254,7 @@ fn a_centered_crucible_smelts_in_its_owners_home_frame() {
         rows[1][1] = '1';
         rows[height - 3][width - 3] = '2';
         let scenario = Scenario {
+            mode: Default::default(),
             name: "centered-smelter".into(),
             seed: 3,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),

@@ -465,6 +465,7 @@ fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
     rows[northwest.y as usize][northwest.x as usize] = b'1';
     rows[southeast.y as usize][southeast.x as usize] = b'2';
     let scenario = Scenario {
+        mode: Default::default(),
         name: "seat-one public recon orientation".into(),
         seed: 91,
         map: rows
@@ -619,6 +620,7 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
     rows[own_start.y as usize][own_start.x as usize] = b'2';
     rows[frame.y as usize][frame.x as usize] = b'E';
     let scenario = Scenario {
+        mode: Default::default(),
         name: "seat-one public Extractor recon orientation".into(),
         seed: 92,
         map: rows

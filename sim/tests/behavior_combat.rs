@@ -512,6 +512,7 @@ fn attack_command_kills_and_reports() {
 #[test]
 fn avalanche_backs_out_of_its_dead_zone_before_firing() {
     let scenario = Scenario {
+        mode: Default::default(),
         name: "avalanche-dead-zone".into(),
         seed: 43,
         map: vec![
@@ -1066,6 +1067,7 @@ fn rock_is_cover_until_the_attacker_repositions() {
     // would land on the command tick from the starting tile; with it, the
     // attacker must first walk around either end of the wall.
     let scenario = Scenario {
+        mode: Default::default(),
         name: "cover".into(),
         seed: 42,
         map: vec![

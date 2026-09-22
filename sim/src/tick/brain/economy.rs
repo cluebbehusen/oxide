@@ -1899,6 +1899,7 @@ mod harvest_zone_tests {
     #[test]
     fn replacement_preserves_worker_affinity_before_route_efficiency() {
         let state = Scenario {
+            mode: Default::default(),
             name: "harvest-worker-affinity".into(),
             seed: 11,
             map: vec![
@@ -1988,6 +1989,7 @@ mod harvest_zone_tests {
     #[test]
     fn danger_replan_cadence_uses_owner_local_rank() {
         let mut state = Scenario {
+            mode: Default::default(),
             name: "owner-local-replan-cadence".into(),
             seed: 13,
             map: vec![
@@ -2079,6 +2081,7 @@ mod harvest_zone_tests {
     #[test]
     fn unseen_wreck_selection_reads_frozen_memory_not_live_salvage() {
         let mut state = Scenario {
+            mode: Default::default(),
             name: "harvest-memory".into(),
             seed: 9,
             map: vec![
@@ -2149,6 +2152,7 @@ mod harvest_zone_tests {
     #[test]
     fn an_unscouted_enemy_building_cannot_bend_a_route_through_fog() {
         let scenario = Scenario {
+            mode: Default::default(),
             name: "harvest-route-belief".into(),
             seed: 10,
             map: vec![

@@ -2745,6 +2745,7 @@ mod tests {
         let mut map = vec![".".repeat(width); height];
         map[0].replace_range(..1, "1");
         PublicMapBriefing::from_scenario(&Scenario {
+            mode: Default::default(),
             name: "utility test map".into(),
             seed: 0,
             map,
@@ -2776,6 +2777,7 @@ mod tests {
             map[frame.y as usize][frame.x as usize] = b'E';
         }
         PublicMapBriefing::from_scenario(&Scenario {
+            mode: Default::default(),
             name: "utility test map with frames".into(),
             seed: 0,
             map: map
@@ -2808,6 +2810,7 @@ mod tests {
         map[home.y as usize][home.x as usize] = b'1';
         map[enemy.y as usize][enemy.x as usize] = b'2';
         PublicMapBriefing::from_scenario(&Scenario {
+            mode: Default::default(),
             name: "opening guard corridor".into(),
             seed: 0,
             map: map
@@ -4323,6 +4326,7 @@ mod tests {
             "s",
         );
         let scenario = Scenario {
+            mode: Default::default(),
             name: "contested recovery flight".into(),
             seed: 41,
             map,

@@ -1033,6 +1033,7 @@ mod tests {
         map[usize::try_from(hostile.y).expect("hostile y is in bounds")]
             [usize::try_from(hostile.x).expect("hostile x is in bounds")] = '2';
         PublicMapBriefing::from_scenario(&Scenario {
+            mode: Default::default(),
             name: "expansion economy fixture".into(),
             seed: 0,
             map: map

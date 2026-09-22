@@ -64,6 +64,7 @@ fn three_fronts() -> Scenario {
         y: 12 + index / 4,
     }));
     Scenario {
+        mode: Default::default(),
         name: "independent-information-fronts".into(),
         seed: 81,
         map: map

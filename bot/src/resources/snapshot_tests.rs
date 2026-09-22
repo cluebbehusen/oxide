@@ -84,6 +84,7 @@ fn income_parity_state(
     tiles[18][38] = '2';
     tiles[extractor.y as usize][extractor.x as usize] = 'E';
     let scenario = oxide_sim::Scenario {
+        mode: Default::default(),
         name: "resource-forecast-parity".into(),
         seed: 17,
         map: map_rows(tiles),
@@ -150,6 +151,7 @@ fn blocked_egress_state() -> (oxide_sim::State, BuildingId, BuildingId) {
         }
     }
     let scenario = oxide_sim::Scenario {
+        mode: Default::default(),
         name: "blocked-producer-egress".into(),
         seed: 23,
         map: map_rows(tiles),

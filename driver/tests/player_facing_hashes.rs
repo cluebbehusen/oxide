@@ -19,6 +19,7 @@ fn scenario(name: &str, scrap: u32, worker: bool) -> Scenario {
     map[12][24] = '2';
     map[4][6] = 's';
     Scenario {
+        mode: Default::default(),
         name: name.into(),
         seed: 42,
         map: map

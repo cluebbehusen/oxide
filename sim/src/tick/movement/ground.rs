@@ -235,6 +235,7 @@ mod tests {
         }
         let rows: Vec<String> = rows.into_iter().map(|r| r.into_iter().collect()).collect();
         Scenario {
+            mode: Default::default(),
             name: "ground-motor".into(),
             seed: 1,
             map: rows,

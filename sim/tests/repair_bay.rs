@@ -40,6 +40,7 @@ fn arena(units: Vec<UnitSpec>, factions: [Faction; 2], scrap: u32, bay: bool) ->
         Vec::new()
     };
     Scenario {
+        mode: Default::default(),
         name: "bay-arena".into(),
         seed: 42,
         map: vec![

@@ -19,13 +19,17 @@ pub const MAX_PLAYERS: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scenario {
+    /// Match victory rules, or an open-ended sandbox with optional Foundries.
+    #[serde(default, skip_serializing_if = "ScenarioMode::is_match")]
+    pub mode: ScenarioMode,
     /// Display name.
     pub name: String,
     /// Master seed for simulation randomness.
     pub seed: u64,
     /// The playfield as ASCII rows (see [`crate::map`] for the legend).
     pub map: Vec<String>,
-    /// One entry per player; map anchors `1`..`8` and `a`..`h` must match.
+    /// One entry per player; matches require an anchor `1`..`8` or `a`..`h`
+    /// per seat. Sandbox anchors are optional.
     pub players: Vec<PlayerSpec>,
     /// Starting units.
     #[serde(default)]
@@ -40,6 +44,23 @@ pub struct Scenario {
     /// any other byte, and absent on older files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<ScenarioMeta>,
+}
+
+/// Rules for scenario setup and match completion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioMode {
+    /// Foundries define seat survival and team victory.
+    #[default]
+    Match,
+    /// Foundries are optional and play does not end automatically.
+    Sandbox,
+}
+
+impl ScenarioMode {
+    pub(crate) fn is_match(&self) -> bool {
+        *self == Self::Match
+    }
 }
 
 /// Presentation-only facts a map browser shows before anyone commits.
@@ -373,8 +394,8 @@ pub enum ScenarioError {
 }
 
 impl Scenario {
-    /// Parses the map and proves that its authored Foundry anchors match the
-    /// declared player table. Shared by state construction and the immutable
+    /// Parses the map and validates Foundry anchors against the declared mode
+    /// and player table. Shared by state construction and the immutable
     /// pre-match bot briefing so those two views cannot disagree.
     pub fn parse_map_and_anchors(&self) -> Result<(Map, Vec<(PlayerId, TilePos)>), ScenarioError> {
         if self.players.is_empty() || self.players.len() > MAX_PLAYERS {
@@ -389,7 +410,7 @@ impl Scenario {
         }
         for index in 0..self.players.len() {
             let player = PlayerId(index as u8);
-            if !anchors.iter().any(|(anchored, _)| *anchored == player) {
+            if self.mode.is_match() && !anchors.iter().any(|(anchored, _)| *anchored == player) {
                 return Err(ScenarioError::MissingAnchor(player));
             }
         }
@@ -477,21 +498,16 @@ impl Scenario {
                 }
             })
             .collect();
-        if self.players.len() > 1 {
+        if self.mode.is_match() && self.players.len() > 1 {
             let first = players[0].team;
             if players.iter().all(|p| p.team == first) {
                 return Err(ScenarioError::OneTeam);
             }
         }
         let mut state = State::assemble(map, players, self.seed);
+        state.mode = self.mode;
 
-        for index in 0..self.players.len() {
-            let player = PlayerId(index as u8);
-            let anchor = anchors
-                .iter()
-                .find(|(p, _)| *p == player)
-                .map(|(_, a)| *a)
-                .ok_or(ScenarioError::MissingAnchor(player))?;
+        for &(player, anchor) in &anchors {
             let (w, h) = BuildingKind::Foundry.base_stats().size;
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
@@ -540,7 +556,9 @@ impl Scenario {
         // over terrain (scrap mines out and buildings — foundries and
         // authored structures alike — can be demolished, so terrain is
         // the honest floor of reachability).
-        if let Some((first, rest)) = anchors.split_first() {
+        if self.mode.is_match()
+            && let Some((first, rest)) = anchors.split_first()
+        {
             let width = state.map().width();
             let height = state.map().height();
             let idx = |t: TilePos| (t.y * width + t.x) as usize;

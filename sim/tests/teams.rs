@@ -20,6 +20,7 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
         bot_config: None,
     };
     Scenario {
+        mode: Default::default(),
         name: "team-arena".into(),
         seed: 42,
         map: vec![

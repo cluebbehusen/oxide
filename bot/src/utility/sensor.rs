@@ -764,6 +764,7 @@ mod tests {
         map[0].replace_range(0..1, "1");
         map[3].replace_range(3..4, &center.to_string());
         PublicMapBriefing::from_scenario(&Scenario {
+            mode: Default::default(),
             name: "Array terrain coverage".into(),
             seed: 0,
             map,
@@ -1057,6 +1058,7 @@ mod tests {
             .collect::<Vec<_>>();
         map[0].replace_range(0..1, "1");
         let briefing = PublicMapBriefing::from_scenario(&Scenario {
+            mode: Default::default(),
             name: "Array row-prefix differential".into(),
             seed: 0,
             map,

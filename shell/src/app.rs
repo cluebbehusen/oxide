@@ -1034,12 +1034,9 @@ fn resume(
     crate::saved_game::load(path, diagnostics)
 }
 
-/// Whether the human's seat can still concede: it holds a Foundry and
-/// has not already resigned — the Surrender row's gate, matching the
-/// sim's own command gate so the menu never offers a verb the sim
-/// would only reject.
+/// The Surrender row shares the simulation's seat command gate.
 fn can_surrender(game: &Game) -> bool {
-    !game.state.player(game.presentation.human).resigned && game.home_foundry().is_some()
+    game.state.accepts_commands(game.presentation.human)
 }
 
 fn visible_diagnostics<'a>(

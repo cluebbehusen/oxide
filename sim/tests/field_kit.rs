@@ -13,6 +13,7 @@ use oxide_sim::{Command, Event, PlayerId, Scenario, State, Target, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "field-kit-arena".into(),
         seed: 17,
         map,

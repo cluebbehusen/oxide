@@ -43,6 +43,15 @@ roof bay, then obey their ordinary orders from there.
 
 ## Development
 
+Scenarios default to `mode: "match"`, which requires a Foundry anchor per seat
+and uses Foundry-based elimination and victory. `mode: "sandbox"` permits
+optional anchors, allied-only scenes and disconnected arenas, and runs without
+automatic elimination or victory. It still requires at least one valid seat and
+validates every placed entity. Commands keep their ordinary costs and ownership
+rules; a sandbox seat can command units without a Foundry. Explicit surrender
+still relinquishes that seat's command authority. Mode is part of serialized
+world state and replay setup.
+
 Run commands from the workspace root:
 
 ```sh

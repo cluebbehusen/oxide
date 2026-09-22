@@ -407,7 +407,7 @@ pub(crate) fn draw_hud(
     // the seat has no voice left. Commands still route; the sim rejects
     // them.
     let resigned = game.state.player(game.presentation.human).resigned;
-    if game.state.result().is_none() && (resigned || game.home_foundry().is_none()) {
+    if game.state.result().is_none() && !game.state.accepts_commands(game.presentation.human) {
         let text = if resigned {
             "SURRENDERED - SPECTATING"
         } else {
