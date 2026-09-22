@@ -377,10 +377,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidReturnCargo(_) => 75,
         E::ScrapBeyondCapacity(_) => 76,
         E::InvalidStallTicks(_) => 77,
+        E::InvalidLeashClock(_) => 78,
     }
 }
 
-const ROWS: usize = 78;
+const ROWS: usize = 79;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -471,6 +472,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidReturnCargo(UnitId(0)),
         E::ScrapBeyondCapacity(UnitId(0)),
         E::InvalidStallTicks(UnitId(0)),
+        E::InvalidLeashClock(UnitId(0)),
     ]
 }
 
@@ -618,12 +620,54 @@ fn make_landed(d: &mut Value) {
 /// message fragment the row names its victim with, so a row that stops
 /// firing (or starts blaming the wrong entity) reads as a failure here.
 #[test]
+fn leash_clocks_are_bounded_at_deserialization() {
+    for (field, bound) in [
+        ("patience", oxide_sim::stats::LEASH_PATIENCE),
+        ("cooldown", oxide_sim::stats::LEASH_REACQUIRE_COOLDOWN),
+    ] {
+        let mut document = snapshot();
+        document["units"][0]["leash"] = json!({"anchor": {"x": 4, "y": 4}});
+        for value in [0, bound] {
+            document["units"][0]["leash"][field] = json!(value);
+            serde_json::from_value::<State>(document.clone()).expect("legal leash clock boundary");
+        }
+        for value in [bound + 1, u16::MAX] {
+            document["units"][0]["leash"][field] = json!(value);
+            assert!(
+                refusal(document.clone()).contains("invalid leash clock"),
+                "{field}={value}"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_checklist_row_refuses_its_forgery() {
     let fixtures: Vec<Forgery> = vec![
+        (
+            "an oversized chase allowance",
+            |d| d["units"][0]["leash"] = json!({"anchor": {"x": 4, "y": 4}, "patience": u16::MAX}),
+            "unit u0 carries an invalid leash clock",
+        ),
         (
             "an oversized scrap load",
             |d| d["units"][0]["carrying"] = json!(1_000_000),
             "unit u0 carries scrap beyond its harvest capacity",
+        ),
+        (
+            "a landed ground rider",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                let next = d["next_unit_id"].as_u64().unwrap();
+                rider["id"] = json!(next);
+                d["next_unit_id"] = json!(next + 1);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider.clone()]);
+                serde_json::from_value::<State>(d.clone()).expect("valid dormant cargo baseline");
+                rider["landed"] = json!(true);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that is not dormant",
         ),
         (
             "ground unit with crash momentum",
