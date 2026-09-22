@@ -2420,8 +2420,8 @@ fn alternate_drop(
     claimed: &[TilePos],
 ) -> Option<TilePos> {
     let air = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Air);
-    open_slots(obs, target, claimed.len().saturating_add(32))
-        .into_iter()
+    open_slot_candidates(obs, target, obs.map_width.max(obs.map_height).max(1))
+        .take(claimed.len().saturating_add(32))
         .find(|tile| !claimed.contains(tile) && air.reaches(from, *tile))
 }
 
@@ -2438,8 +2438,8 @@ fn unit(obs: &Observation, id: UnitId) -> Option<&UnitObs> {
 
 fn landing_slots(obs: &Observation, from: TilePos, target: TilePos, count: usize) -> Vec<TilePos> {
     let air = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Air);
-    open_slots(obs, target, count.saturating_mul(3))
-        .into_iter()
+    open_slot_candidates(obs, target, obs.map_width.max(obs.map_height).max(1))
+        .take(count.saturating_mul(3))
         .filter(|tile| air.reaches(from, *tile))
         .take(count)
         .collect()
@@ -2460,21 +2460,11 @@ fn pickup_slots(
     component: TilePos,
     count: usize,
 ) -> Vec<TilePos> {
-    if !routing::ground_open(QueryPurpose::LiftOperation, obs, component) {
+    if count == 0 || !routing::ground_open(QueryPurpose::LiftOperation, obs, component) {
         return Vec::new();
     }
-    let map_cells = usize::try_from(obs.map_width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(obs.map_height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
-    let candidates = open_slots(obs, home, map_cells);
     let routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
-    candidates
-        .into_iter()
+    open_slot_candidates(obs, home, obs.map_width.max(obs.map_height).max(1))
         .filter(|tile| routes.reaches(component, *tile))
         .take(count)
         .collect()
@@ -2482,14 +2472,9 @@ fn pickup_slots(
 
 fn pickup_component_anchors(obs: &Observation, home: TilePos) -> Vec<TilePos> {
     let radius = BuildingKind::Foundry.base_stats().vision;
-    let count = usize::try_from(radius.saturating_mul(2).saturating_add(1))
-        .ok()
-        .and_then(|width| width.checked_mul(width))
-        .unwrap_or(0);
-    let candidates = open_slots_within(obs, home, radius, count);
     let mut anchors = Vec::new();
     let routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, obs);
-    for candidate in candidates {
+    for candidate in open_slot_candidates(obs, home, radius) {
         if anchors
             .iter()
             .copied()
@@ -2503,33 +2488,25 @@ fn pickup_component_anchors(obs: &Observation, home: TilePos) -> Vec<TilePos> {
 }
 
 fn open_slots(obs: &Observation, center: TilePos, count: usize) -> Vec<TilePos> {
-    open_slots_within(obs, center, obs.map_width.max(obs.map_height).max(1), count)
+    open_slot_candidates(obs, center, obs.map_width.max(obs.map_height).max(1))
+        .take(count)
+        .collect()
 }
 
-fn open_slots_within(
+fn open_slot_candidates(
     obs: &Observation,
     center: TilePos,
     radius: i32,
-    count: usize,
-) -> Vec<TilePos> {
-    let mut slots = Vec::with_capacity(count);
-    for r in 1..=radius {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let tile = center.offset(dx, dy);
-                if routing::ground_open(QueryPurpose::LiftOperation, obs, tile) {
-                    slots.push(tile);
-                    if slots.len() == count {
-                        return slots;
-                    }
-                }
-            }
-        }
-    }
-    slots
+) -> impl Iterator<Item = TilePos> + '_ {
+    let ground = RouteProjection::new(QueryPurpose::LiftOperation, obs, Domain::Ground);
+    (1..=radius)
+        .flat_map(move |r| {
+            (-r..=r).flat_map(move |dy| {
+                let step = if dy.abs() == r { 1 } else { (2 * r) as usize };
+                (-r..=r).step_by(step).map(move |dx| center.offset(dx, dy))
+            })
+        })
+        .filter(move |tile| ground.open(*tile))
 }
 
 fn footprint_ring(anchor: TilePos, size: (i32, i32)) -> Vec<TilePos> {
@@ -2559,6 +2536,72 @@ mod tests {
 
     const HOME: TilePos = TilePos::new(5, 15);
     const TARGET: TilePos = TilePos::new(50, 15);
+
+    #[test]
+    fn slot_queries_preserve_perimeter_order_and_stop_at_the_requested_count() {
+        let obs = island_obs();
+        for center in [HOME, TARGET, TilePos::new(0, 0), TilePos::new(63, 31)] {
+            for radius in [0, 1, 6] {
+                let mut expected = Vec::new();
+                for r in 1..=radius {
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            let tile = center.offset(dx, dy);
+                            if dx.abs().max(dy.abs()) == r
+                                && routing::ground_open(QueryPurpose::LiftOperation, &obs, tile)
+                            {
+                                expected.push(tile);
+                            }
+                        }
+                    }
+                }
+                assert_eq!(
+                    open_slot_candidates(&obs, center, radius).collect::<Vec<_>>(),
+                    expected
+                );
+                for count in [0, 1, 3, usize::MAX] {
+                    assert_eq!(
+                        open_slot_candidates(&obs, center, radius)
+                            .take(count)
+                            .collect::<Vec<_>>(),
+                        expected.iter().copied().take(count).collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+        let (slots, work) =
+            crate::navigation::work::measure(|| open_slots(&obs, TilePos::new(10, 10), 1));
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            work.passability_queries, 1,
+            "the first open slot ends the search"
+        );
+        assert!(open_slots(&obs, HOME, 0).is_empty());
+    }
+
+    #[test]
+    fn pickup_queries_filter_connectivity_before_applying_the_limit() {
+        let obs = split_staging_obs(5, 20);
+        let component = obs
+            .my_units
+            .iter()
+            .find(|unit| unit.id.0 >= 100)
+            .unwrap()
+            .tile;
+        let routes = RouteProjection::known_ground(QueryPurpose::LiftOperation, &obs);
+        let expected: Vec<_> = open_slots(&obs, HOME, usize::MAX)
+            .into_iter()
+            .filter(|tile| routes.reaches(component, *tile))
+            .collect();
+        assert!(!expected.is_empty());
+        for count in [0, 1, 3, usize::MAX] {
+            assert_eq!(
+                pickup_slots(&obs, HOME, component, count),
+                expected.iter().copied().take(count).collect::<Vec<_>>()
+            );
+        }
+        assert!(pickup_slots(&obs, HOME, TilePos::new(-1, -1), 4).is_empty());
+    }
 
     #[test]
     fn remembered_proven_island_holds_only_missing_first_carrier_capital() {
