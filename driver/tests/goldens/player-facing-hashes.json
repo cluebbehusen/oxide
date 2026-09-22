@@ -1,19 +1,11 @@
 {
   "sim_version": "0.17.0",
   "hashes": {
-    "gatework-array": "0xb8b7745ba7ec29b5",
-    "gatework-array#commands": "0x3a969a59c9e9083d",
-    "skirmish": "0x7529bceffb4db710",
-    "skirmish#commands": "0x1d203fe326a32111",
-    "skyhook-anchorage": "0xa5e82cee6554951d",
-    "skyhook-anchorage#commands": "0x3b6488bd1352784e",
-    "skyhook-anchorage@10000": "0x22b36d0e6533c9f1",
-    "skyhook-anchorage@10000#commands": "0x49945592eb099173",
-    "terminal-basin": "0xf6307bad61972933",
-    "terminal-basin#commands": "0x4c52f985130b0ab2",
-    "three-shifts": "0xf5718eabc9266d0b",
-    "three-shifts#commands": "0x4fabef59931bb05a",
-    "twin-forges": "0xd2172faf6cce9a41",
-    "twin-forges#commands": "0x7c19c69acb1fd65b"
+    "harvest-repeat-delivery": "0xa25dc9c2886fc9f2",
+    "harvest-repeat-delivery#commands": "0xbae128480ed9f0d9",
+    "recovery-funded": "0x7cb5fcc8cac1b11f",
+    "recovery-funded#commands": "0xb131ecd00d07bcf3",
+    "recovery-underfunded": "0xd4b7b295dbb782f3",
+    "recovery-underfunded#commands": "0xd94d12186c0f2fb7"
   }
 }

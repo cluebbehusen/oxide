@@ -9,7 +9,7 @@
 //! validator row tighter than reality would refuse a state the sim
 //! produces, turning hardening into data loss. A scripted run therefore
 //! exercises uncommon verbs and checks every tick, while the driver's
-//! shipped-map liveness sweep samples this validator and the JSON trust
+//! shipped-map integrity sweep samples this validator and the JSON trust
 //! boundary across the full authored roster.
 
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};

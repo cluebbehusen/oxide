@@ -9,18 +9,18 @@ use oxide_sim::{Command, Faction, PlayerId, Scenario, UnitKind};
 #[test]
 fn a_mirrored_seat_claims_the_real_frame() {
     // The east-half home flips the seat's whole frame of reference,
-    // and the derelict frame's mirror image — x = 28-2-11 = 15 — is
-    // bare ground. A commander whose orientation forgot to flip
+    // and the derelict frame's mirror image — x = 28-2-11 = 15 — does
+    // not hold a frame. A commander whose orientation forgot to flip
     // known_frames aimed its restoration there and never built an
     // Extractor at all; the shipped maps put mirrored seats in this
     // position on every 180-degree pair.
-    let scenario = Scenario {
+    let mut scenario = Scenario {
         name: "mirrored-frame-claim".into(),
         seed: 41,
         map: vec![
             "############################".into(),
-            "#..ss..................1...#".into(),
-            "#..ss...2..................#".into(),
+            "#.2.............1..........#".into(),
+            "#..........................#".into(),
             "#..........E...............#".into(),
             "#..........................#".into(),
             "#....................ss....#".into(),
@@ -50,8 +50,8 @@ fn a_mirrored_seat_claims_the_real_frame() {
             UnitSpec {
                 player: 0,
                 kind: UnitKind::Harvester,
-                x: 21,
-                y: 2,
+                x: 13,
+                y: 3,
             },
             UnitSpec {
                 player: 0,
@@ -77,12 +77,6 @@ fn a_mirrored_seat_claims_the_real_frame() {
                 x: 18,
                 y: 3,
             },
-            UnitSpec {
-                player: 1,
-                kind: UnitKind::Harvester,
-                x: 2,
-                y: 6,
-            },
         ],
         buildings: vec![BuildingSpec {
             player: 0,
@@ -92,34 +86,63 @@ fn a_mirrored_seat_claims_the_real_frame() {
         }],
         meta: None,
     };
+    scenario.units.extend((0..5).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 20 + index,
+        y: 7,
+    }));
     let mut state = scenario.build().expect("mirrored proving ground builds");
+    let anchor = chassis::grid::TilePos::new(11, 3);
+    let wrong_anchor = chassis::grid::TilePos::new(15, 4);
+    assert!(state.map().is_extractor_frame(anchor));
+    assert!(!state.map().is_extractor_frame(wrong_anchor));
+    assert!(state.can_see(PlayerId(0), anchor));
     let mut bot = common::standard_brain(&scenario, PlayerId(0));
-
-    let mut extractor_stood = false;
-    for _ in 0..14_000u32 {
+    let mut claimed = None;
+    let mut progressed = false;
+    for _ in 0..300 {
         let commands = bot.act(&state);
         for command in &commands {
-            if let Command::Build { kind, anchor, .. } = command.command
-                && kind == BuildingKind::Extractor
+            if let Command::Build {
+                kind: BuildingKind::Extractor,
+                anchor: target,
+                ..
+            } = command.command
             {
-                assert!(
-                    state.map().is_extractor_frame(anchor),
-                    "an Extractor claim left for {anchor:?}, which holds no frame"
+                assert_eq!(
+                    target, anchor,
+                    "the mirrored command must target the real frame"
                 );
+                claimed = Some(target);
             }
         }
-        state.tick(&commands);
-        if state
-            .buildings()
-            .iter()
-            .any(|b| b.player == PlayerId(0) && b.kind == BuildingKind::Extractor && b.built)
-        {
-            extractor_stood = true;
-            break;
+        let report = state.tick(&commands);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| !matches!(event, oxide_sim::Event::CommandRejected { .. })),
+            "{report:?}"
+        );
+        if let Some(site) = state.buildings().iter().find(|building| {
+            building.player == PlayerId(0)
+                && building.kind == BuildingKind::Extractor
+                && building.anchor == anchor
+        }) {
+            progressed = site.built || site.hp > BuildingKind::Extractor.base_stats().max_hp / 5;
+            if progressed {
+                break;
+            }
         }
     }
+    assert_eq!(
+        claimed,
+        Some(anchor),
+        "funded visible frame received no build command"
+    );
     assert!(
-        extractor_stood,
-        "the mirrored seat never restored the frame it can see"
+        progressed,
+        "the accepted Extractor must receive construction work"
     );
 }

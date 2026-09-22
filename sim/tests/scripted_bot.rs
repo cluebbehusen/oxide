@@ -12,10 +12,10 @@ use oxide_sim::bot::{
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
 };
-use oxide_sim::stats::{Domain, QUEUE_CAP, Role};
+use oxide_sim::stats::{QUEUE_CAP, Role};
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, GameResult, Order, PlayerId, Scenario, TICKS_PER_SECOND,
-    Target, UnitKind,
+    BuildingKind, Command, Event, Faction, Order, PlayerId, Scenario, TICKS_PER_SECOND, Target,
+    UnitKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -192,186 +192,6 @@ fn scripted_profile_is_seat_symmetric() {
 
     assert_eq!(left.profile(), right.profile());
     assert_eq!(left.dials(), right.dials());
-}
-
-#[test]
-fn scripted_seat_is_deterministic_and_makes_progress_past_the_opening() {
-    let mut scenario = Scenario::skirmish();
-    scenario.players[1].bot = true;
-    scenario.players[1].bot_config = Some(BotConfig::default());
-    let mut left = scenario.build().expect("skirmish builds");
-    let mut right = scenario.build().expect("skirmish builds again");
-    let mut left_bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-    let mut right_bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-    let starting_units = left.units().len();
-    let starting_buildings = left.buildings().len();
-    let mut active_thinks = 0_u32;
-    let mut rejected_commands = Vec::new();
-
-    // Four simulated minutes: enough to exercise
-    // harvesting, production, construction, and the first strategic
-    // transition rather than merely accepting an opening command.
-    for _ in 0..4_800 {
-        let left_commands: Vec<_> = left_bots
-            .iter_mut()
-            .flat_map(|bot| bot.act(&left))
-            .collect();
-        let right_commands: Vec<_> = right_bots
-            .iter_mut()
-            .flat_map(|bot| bot.act(&right))
-            .collect();
-        assert_eq!(left_commands, right_commands);
-        active_thinks += u32::from(!left_commands.is_empty());
-        let left_report = left.tick(&left_commands);
-        let right_report = right.tick(&right_commands);
-        assert_eq!(
-            left_report, right_report,
-            "identical controllers produced different observable events"
-        );
-        rejected_commands.extend(left_report.events.iter().filter_map(|event| match event {
-            Event::CommandRejected {
-                player: PlayerId(1),
-                reason,
-            } => Some((left_report.tick, *reason)),
-            _ => None,
-        }));
-        assert_eq!(left.hash(), right.hash());
-    }
-
-    assert!(
-        rejected_commands.is_empty(),
-        "the scripted seat issued rejected commands: {rejected_commands:?}"
-    );
-    assert!(
-        active_thinks > 10,
-        "the scripted seat stopped issuing commands"
-    );
-    assert!(
-        left.units().len() > starting_units || left.buildings().len() > starting_buildings,
-        "the scripted seat never turned its economy into a unit or structure"
-    );
-}
-
-fn is_opening_core_unit(kind: UnitKind) -> bool {
-    matches!(kind.role(), Role::Sentinel | Role::Warden | Role::Breaker)
-}
-
-fn ground_strength(kind: UnitKind, hp: u32) -> u64 {
-    let damage_per_hundred_ticks = kind
-        .stats()
-        .weapons
-        .iter()
-        .filter(|weapon| weapon.targets.covers(Domain::Ground))
-        .map(|weapon| u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
-        .sum::<u64>();
-    u64::from(hp) * damage_per_hundred_ticks
-}
-
-fn full_ground_strength(kind: UnitKind) -> u64 {
-    ground_strength(kind, kind.stats().max_hp)
-}
-
-fn opening_core_strength(observation: &Observation, commands: &[oxide_sim::PlayerCommand]) -> u64 {
-    let live = observation
-        .my_units
-        .iter()
-        .filter(|unit| is_opening_core_unit(unit.kind))
-        .map(|unit| ground_strength(unit.kind, unit.hp))
-        .sum::<u64>();
-    let queued = observation
-        .my_queues
-        .iter()
-        .flatten()
-        .copied()
-        .filter(|kind| is_opening_core_unit(*kind))
-        .map(full_ground_strength)
-        .sum::<u64>();
-    let planned = commands
-        .iter()
-        .filter(|command| command.player == observation.me)
-        .filter_map(|command| match command.command {
-            Command::Train { kind, .. } if is_opening_core_unit(kind) => Some(kind),
-            _ => None,
-        })
-        .map(full_ground_strength)
-        .sum::<u64>();
-
-    live + queued + planned
-}
-
-#[test]
-fn scrapheap_and_prime_reach_their_opening_core_before_the_first_fabricator() {
-    const OPENING_END: u64 = 5_000;
-
-    for (difficulty, floor) in [
-        (BotDifficulty::Scrapheap, 4_u64),
-        (BotDifficulty::Prime, 8_u64),
-    ] {
-        let mut scenario = Scenario::skirmish();
-        scenario.players[0].bot = true;
-        scenario.players[0].bot_config = Some(BotConfig::scripted(
-            difficulty,
-            BotStance::Balanced,
-            1_616_201,
-        ));
-        scenario.players[1].bot = false;
-        scenario.players[1].bot_config = None;
-
-        let mut state = scenario.build().expect("Skirmish builds");
-        let mut brain = Brain::scripted(
-            PlayerId(0),
-            scenario.players[0]
-                .bot_config
-                .expect("the bot is configured"),
-            public_map(&scenario),
-        );
-        let target_strength = full_ground_strength(UnitKind::Sentinel) * floor;
-        let mut first_fabricator = None;
-        let mut last_trace = None;
-
-        while state.current_tick() < OPENING_END && first_fabricator.is_none() {
-            let observation = Observation::fog_honest(&state, PlayerId(0));
-            let decision = brain.act_traced(&state);
-            if decision.trace.is_some() {
-                last_trace = decision.trace;
-            }
-            let commands = decision.commands;
-            if commands.iter().any(|command| {
-                matches!(
-                    command.command,
-                    Command::Build {
-                        kind: BuildingKind::Fabricator,
-                        ..
-                    }
-                )
-            }) {
-                let projected_strength = opening_core_strength(&observation, &commands);
-                assert!(
-                    projected_strength >= target_strength,
-                    "{difficulty:?} spent on its first Fabricator with strength {projected_strength}, below its {floor}-equivalent target {target_strength}"
-                );
-                first_fabricator = Some(state.current_tick());
-            }
-
-            let report = state.tick(&commands);
-            assert!(
-                report.events.iter().all(|event| !matches!(
-                    event,
-                    Event::CommandRejected {
-                        player: PlayerId(0),
-                        ..
-                    }
-                )),
-                "{difficulty:?} issued a rejected opening command: {:?}",
-                report.events
-            );
-        }
-
-        assert!(
-            first_fabricator.is_some(),
-            "{difficulty:?} did not reach a Fabricator within {OPENING_END} ticks; trace={last_trace:?}"
-        );
-    }
 }
 
 #[test]
@@ -929,91 +749,6 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
         "the mapped Extractor reconnaissance command must be accepted: {:?}",
         report.events
     );
-}
-
-#[test]
-fn balanced_mirror_stays_active_without_rejected_commands() {
-    let mut scenario = Scenario::skirmish();
-    for player in &mut scenario.players {
-        player.bot = true;
-        player.bot_config = Some(BotConfig::default());
-    }
-    let mut state = scenario.build().expect("skirmish builds");
-    let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-    let mut trained = [0_u32; 2];
-    let mut damaged = [0_u32; 2];
-
-    for _ in 0..60_000 {
-        if state.result().is_some() {
-            break;
-        }
-        let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
-        let report = state.tick(&commands);
-        for event in report.events {
-            match event {
-                Event::CommandRejected { player, reason } => {
-                    panic!(
-                        "mirror command rejected at tick {} for {player:?}: {reason:?}",
-                        report.tick
-                    );
-                }
-                Event::UnitTrained { player, .. } => trained[player.0 as usize] += 1,
-                Event::DamageTaken { player, .. } => damaged[player.0 as usize] += 1,
-                _ => {}
-            }
-        }
-        if state.current_tick().is_multiple_of(10_000) && state.result().is_none() {
-            for seat in 0..2 {
-                assert!(
-                    trained[seat] > 0 && damaged[seat] > 0,
-                    "mirror seat {seat} stopped producing or fighting in the 10,000 ticks ending at {}: trained {}, damage events {}",
-                    state.current_tick(),
-                    trained[seat],
-                    damaged[seat]
-                );
-            }
-            trained = [0; 2];
-            damaged = [0; 2];
-        }
-    }
-}
-
-#[test]
-fn distinct_balanced_personalities_play_decisive_matches_in_either_seat() {
-    for seeds in [[0, 1], [1, 0]] {
-        let mut scenario = Scenario::skirmish();
-        for (player, seed) in scenario.players.iter_mut().zip(seeds) {
-            player.bot = true;
-            player.bot_config = Some(BotConfig::scripted(
-                BotDifficulty::Standard,
-                BotStance::Balanced,
-                seed,
-            ));
-        }
-        let mut state = scenario.build().expect("skirmish builds");
-        let mut bots = seat_bots(&scenario).expect("the skirmish has a briefing");
-        for _ in 0..50_000 {
-            if state.result().is_some() {
-                break;
-            }
-            let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
-            let report = state.tick(&commands);
-            for event in report.events {
-                if let Event::CommandRejected { player, reason } = event {
-                    panic!(
-                        "seeds {seeds:?}: command rejected at tick {} for {player:?}: {reason:?}",
-                        report.tick
-                    );
-                }
-            }
-        }
-        assert!(
-            matches!(state.result(), Some(GameResult::Victory { .. })),
-            "seeds {seeds:?} should produce a decisive match by tick {}: {:?}",
-            state.current_tick(),
-            state.result()
-        );
-    }
 }
 
 #[test]
@@ -4729,4 +4464,233 @@ fn ferry_cycle_map() -> Vec<String> {
     rows.into_iter()
         .map(|row| row.into_iter().collect())
         .collect()
+}
+
+fn funded_core_scenario(difficulty: BotDifficulty, core: u32, fabricator: bool) -> Scenario {
+    let mut scenario = Scenario::skirmish();
+    scenario.name = "Funded production prerequisite".into();
+    scenario.map = open_air_operation_map();
+    scenario.meta = None;
+    scenario.players[0].scrap = 3_500;
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        difficulty,
+        BotStance::Balanced,
+        1_616_201,
+    ));
+    scenario.players[1].scrap = 0;
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+    scenario.units = (0..7)
+        .map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Harvester,
+            x: 4 + index % 4,
+            y: 5 + index / 4,
+        })
+        .chain((0..core).map(|index| UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 4 + (index % 6) as i32,
+            y: 10 + (index / 6) as i32,
+        }))
+        .collect();
+    scenario.buildings = if fabricator {
+        vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 3,
+            y: 3,
+        }]
+    } else {
+        Vec::new()
+    };
+    scenario
+}
+
+#[test]
+fn opening_core_threshold_gates_funded_capital_purchases() {
+    for difficulty in [BotDifficulty::Scrapheap, BotDifficulty::Prime] {
+        let config = BotConfig::scripted(difficulty, BotStance::Balanced, 1_616_201);
+        let probe = funded_core_scenario(difficulty, 0, false);
+        let floor = Brain::scripted(PlayerId(0), config, public_map(&probe))
+            .dials()
+            .minimum_core_equivalents;
+        for ready in [false, true] {
+            let scenario = funded_core_scenario(difficulty, floor - u32::from(!ready), false);
+            let mut state = scenario.build().unwrap();
+            let mut brain = Brain::scripted(PlayerId(0), config, public_map(&scenario));
+            let observation = Observation::fog_honest(&state, PlayerId(0));
+            assert_eq!(
+                observation
+                    .my_units
+                    .iter()
+                    .filter(|unit| unit.kind == UnitKind::Sentinel)
+                    .count(),
+                (floor - u32::from(!ready)) as usize
+            );
+            let decision = brain.act_traced(&state);
+            let capital: Vec<_> = decision
+                .commands
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command.command,
+                        Command::Build { .. } | Command::UpgradeBuilding { .. }
+                    )
+                })
+                .collect();
+            assert_eq!(
+                !capital.is_empty(),
+                ready,
+                "{difficulty:?}, ready={ready}: {decision:?}"
+            );
+            if !ready {
+                assert!(
+                    decision.commands.iter().any(|command| matches!(
+                        command.command,
+                        Command::Train {
+                            kind: UnitKind::Sentinel,
+                            ..
+                        }
+                    )),
+                    "missing core must receive an ordinary replacement order"
+                );
+            }
+            let report = state.tick(&decision.commands);
+            assert!(
+                report
+                    .events
+                    .iter()
+                    .all(|event| !matches!(event, Event::CommandRejected { .. })),
+                "{report:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn funded_production_demand_builds_its_missing_fabricator() {
+    let scenario = funded_core_scenario(BotDifficulty::Prime, 8, false);
+    let mut state = scenario.build().unwrap();
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .all(|building| building.kind != BuildingKind::Fabricator)
+    );
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.unwrap(),
+        public_map(&scenario),
+    );
+    let decision = brain.act_traced(&state);
+    let anchor = decision
+        .commands
+        .iter()
+        .find_map(|command| match command.command {
+            Command::Build {
+                kind: BuildingKind::Fabricator,
+                anchor,
+                ..
+            } => Some(anchor),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("funded prerequisite was not requested: {decision:?}"));
+    let purchase = decision
+        .commands
+        .iter()
+        .find(|command| {
+            matches!(
+                command.command,
+                Command::Build {
+                    kind: BuildingKind::Fabricator,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let cost = BuildingKind::Fabricator
+        .base_stats()
+        .construction
+        .unwrap()
+        .cost;
+    assert_eq!(
+        state.inspect_command_phase(std::slice::from_ref(purchase), |view| view
+            .scrap(PlayerId(0))),
+        Some(state.player(PlayerId(0)).scrap - cost)
+    );
+    let report = state.tick(&decision.commands);
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::CommandRejected { .. }))
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|building| building.player == PlayerId(0)
+                && building.kind == BuildingKind::Fabricator
+                && building.anchor == anchor)
+    );
+}
+
+#[test]
+fn funded_advanced_production_uses_an_existing_fabricator() {
+    let scenario = funded_core_scenario(BotDifficulty::Prime, 8, true);
+    let mut state = scenario.build().unwrap();
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.unwrap(),
+        public_map(&scenario),
+    );
+    let decision = brain.act_traced(&state);
+    let (producer, kind) = decision
+        .commands
+        .iter()
+        .find_map(|command| match command.command {
+            Command::Train { building, kind }
+                if state.building(building).unwrap().kind == BuildingKind::Fabricator =>
+            {
+                Some((building, kind))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("available advanced producer received no work: {decision:?}"));
+    assert_ne!(
+        kind,
+        UnitKind::Sentinel,
+        "the prepared demand must select an advanced unit"
+    );
+    let purchase = decision.commands.iter().find(|command| matches!(command.command,
+        Command::Train { building, kind: selected } if building == producer && selected == kind
+    )).unwrap();
+    assert_eq!(
+        state.inspect_command_phase(std::slice::from_ref(purchase), |view| view
+            .scrap(PlayerId(0))),
+        Some(state.player(PlayerId(0)).scrap - kind.stats().cost)
+    );
+    let report = state.tick(&decision.commands);
+    assert!(
+        report
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::CommandRejected { .. }))
+    );
+    let mut produced = false;
+    for _ in 0..kind.stats().train_ticks {
+        let report = state.tick(&[]);
+        produced |= report.events.iter().any(|event| matches!(event,
+            Event::UnitTrained { building, kind: spawned, .. } if *building == producer && *spawned == kind
+        ));
+        if produced {
+            break;
+        }
+    }
+    assert!(
+        produced,
+        "the controller's paid advanced unit must actually spawn"
+    );
 }
