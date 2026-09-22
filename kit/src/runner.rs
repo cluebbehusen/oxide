@@ -146,9 +146,13 @@ pub fn run_replay_bounded(
         allow_long || total <= MAX_REPLAY_TICKS,
         "replay claims {total} ticks (limit {MAX_REPLAY_TICKS}); pass --allow-long to run it anyway"
     );
-    let mut state = replay.setup.build().context("building replay setup")?;
+    anyhow::ensure!(
+        total >= replay.start_tick(),
+        "requested end precedes recording origin"
+    );
+    let mut state = crate::recording::initial_state(replay)?;
     let mut playback = crate::ReplayPlayback::new(replay);
-    for _ in 0..total {
+    for _ in state.current_tick()..total {
         playback.step(&mut state);
     }
     if !playback.is_finished() {

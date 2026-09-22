@@ -1,10 +1,7 @@
-//! The replay shelf: everything watchable this machine has kept —
-//! autosaves and explicit saves from the platform data dir plus
-//! anything under the replays dir (cwd-relative in a workspace run,
-//! data-rooted when bundled). Entries carry the metadata the browser shows
-//! and an honest compatibility verdict: replays reproduce only on the
-//! sim that wrote them, and the browser says so instead of guessing.
+//! The shelf classifies resumable checkpoints and watchable recordings.
+//! Unavailable revisions stay visible with a reason; malformed files are skipped.
 
+#[cfg(test)]
 use oxide_sim::SIM_VERSION;
 use std::path::PathBuf;
 
@@ -30,6 +27,24 @@ impl RecordKind {
     }
 }
 
+pub(crate) fn record_kind(
+    meta: &chassis::replay::ReplayMeta,
+    path: &std::path::Path,
+) -> RecordKind {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    match meta.kind.as_deref() {
+        Some("autosave") => RecordKind::Autosave,
+        Some("save") => RecordKind::Save,
+        Some("match") => RecordKind::Match,
+        _ if stem.starts_with("autosave-") => RecordKind::Autosave,
+        _ if stem.starts_with("save-") => RecordKind::Save,
+        _ => RecordKind::Match,
+    }
+}
+
 /// One row in the replay browser.
 pub struct ReplayEntry {
     /// File on disk.
@@ -38,7 +53,7 @@ pub struct ReplayEntry {
     pub label: String,
     /// Focused-row detail line.
     pub blurb: String,
-    /// Whether this sim can honestly replay it.
+    /// Whether this build can load or watch the record.
     pub compatible: bool,
     /// What the record is; decides its shelf section and verb.
     pub kind: RecordKind,
@@ -81,24 +96,14 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(replay) = oxide_kit::load_replay(&path) else {
+        let Ok(replay) = crate::saved_game::inspect(&path) else {
             continue;
         };
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("replay");
-        // The kind tag is the rule since 0.13; the filename prefix is
-        // the fallback that keeps 0.12-era records classified (their
-        // information rule lived in their names).
-        let kind = match replay.meta.kind.as_deref() {
-            Some("autosave") => RecordKind::Autosave,
-            Some("save") => RecordKind::Save,
-            Some("match") => RecordKind::Match,
-            _ if stem.starts_with("autosave-") => RecordKind::Autosave,
-            _ if stem.starts_with("save-") => RecordKind::Save,
-            _ => RecordKind::Match,
-        };
+        let kind = record_kind(&replay.meta, &path);
         // A record's own saved_at outranks mtime: a copied or synced
         // file reports the copy date, and only the metadata tells the
         // truth about when the save was made.
@@ -117,52 +122,31 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| civil_date(d.as_secs()))
             .unwrap_or_default();
-        let ticks = replay.meta.ticks.unwrap_or_else(|| {
-            replay
-                .commands
-                .last()
-                .map_or(0, |c| c.tick.saturating_add(1))
-        });
-        let compatible = replay.meta.sim_version == SIM_VERSION;
+        let ticks = replay.meta.ticks.unwrap_or(0);
+        let compatible = replay.problem.is_none();
         // A named save leads with its name; everything else leads with
         // its map and keeps the file stem for identification.
         let label = match replay.meta.description.as_deref() {
-            Some(name) => format!(
-                "{} | {} | t{} | {}",
-                elide(name),
-                replay.setup.name,
-                ticks,
-                date
-            ),
-            None => format!(
-                "{} | t{} | {} | {}",
-                replay.setup.name,
-                ticks,
-                date,
-                elide(stem)
-            ),
+            Some(name) => format!("{} | {} | t{} | {}", elide(name), replay.map, ticks, date),
+            None => format!("{} | t{} | {} | {}", replay.map, ticks, date, elide(stem)),
         };
-        let blurb = if !compatible {
-            let verb = if kind.resumable() {
-                "unloadable"
-            } else {
-                "unwatchable"
-            };
-            format!(
-                "recorded on sim v{}; this build runs v{SIM_VERSION}, {verb}",
-                replay.meta.sim_version
-            )
+        let blurb = if let Some(problem) = replay.problem {
+            format!("unavailable: {problem} | {{delete}} twice deletes")
         } else if kind.resumable() {
             let what = match kind {
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            format!("{what} | {{confirm}} loads | {{delete}} twice deletes")
+            let action = if replay.legacy {
+                "reconstructs and loads paused"
+            } else {
+                "loads paused"
+            };
+            format!("{what} | {{confirm}} {action} | {{delete}} twice deletes")
         } else {
             format!(
                 "{} seats | sim v{} | {{confirm}} watches | {{delete}} twice deletes",
-                replay.setup.players.len(),
-                replay.meta.sim_version
+                replay.seats, replay.meta.sim_version
             )
         };
         out.push((
@@ -366,7 +350,7 @@ mod tests {
             "duration comes from the command tail"
         );
         assert!(
-            entry.blurb.contains("unloadable"),
+            entry.blurb.contains("unavailable"),
             "saves are loaded, not watched"
         );
         assert_ne!(

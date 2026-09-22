@@ -4,8 +4,8 @@
 //! engine replays it through raw [`State::tick`] exactly as the record
 //! dictates. Seeking backward restores the nearest forward checkpoint
 //! (in-memory `State` clones taken every `CHECKPOINT_EVERY` ticks on
-//! the way through) and re-simulates the suffix; save-is-a-replay means
-//! a seeked position can never diverge from a straight run, and the
+//! the way through) and re-simulates the suffix. A seeked position must
+//! agree with a straight run from the recording origin, and the
 //! test below holds that as a hash identity.
 
 use crate::GameReplay;
@@ -47,19 +47,14 @@ fn checkpoint_cadence(total: u64) -> u64 {
 }
 
 impl Playback {
-    /// Validates and opens a replay at tick 0. Cross-version records are
+    /// Validates and opens a replay at its origin. Cross-version records are
     /// refused — replays reproduce only on the sim that wrote them.
     pub fn load(replay: GameReplay) -> Result<Self> {
         replay
             .validate(Some(SIM_VERSION))
             .map_err(|err| anyhow::anyhow!("{err}"))?;
-        let state = replay.setup.build()?;
-        let total = replay.meta.ticks.unwrap_or_else(|| {
-            replay
-                .commands
-                .last()
-                .map_or(0, |c| c.tick.saturating_add(1))
-        });
+        let state = crate::recording::initial_state(&replay)?;
+        let total = crate::replay_duration(&replay);
         // Seeking is synchronous: a structurally valid file claiming an
         // absurd length would hang the viewer at the first End press.
         const MAX_INTERACTIVE_TICKS: u64 = 2_000_000;
@@ -67,7 +62,7 @@ impl Playback {
             total <= MAX_INTERACTIVE_TICKS,
             "replay spans {total} ticks, beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"
         );
-        let cadence = checkpoint_cadence(total);
+        let cadence = checkpoint_cadence(total - replay.start_tick());
         Ok(Self {
             replay,
             state,
@@ -79,7 +74,12 @@ impl Playback {
         })
     }
 
-    /// The recorded length in ticks.
+    /// First absolute tick available in the recording.
+    pub fn start(&self) -> u64 {
+        self.replay.start_tick()
+    }
+
+    /// The absolute end tick.
     pub fn total(&self) -> u64 {
         self.total
     }
@@ -121,7 +121,7 @@ impl Playback {
     /// callers loop across frames, so a long first seek costs a
     /// progress bar instead of a frozen render thread.
     pub fn seek_step(&mut self, target: u64, budget: u64) -> bool {
-        let target = target.min(self.total);
+        let target = target.clamp(self.start(), self.total);
         // Inspect checkpoints by reference: most forward slices need no restore.
         let best = self.checkpoints.iter().rev().find(|(t, _)| *t <= target);
         let restore = match &best {
@@ -131,7 +131,7 @@ impl Playback {
         };
         if restore {
             self.state = best.map_or_else(
-                || self.replay.setup.build().expect("validated at load"),
+                || crate::recording::initial_state(&self.replay).expect("validated at load"),
                 |(_, state)| state.clone(),
             );
             self.last_motion.clear();

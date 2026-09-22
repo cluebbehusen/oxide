@@ -1223,25 +1223,31 @@ winner after the recent report history evicts it. Evidence expires at its own
 completion time; new evidence for another credit cannot renew it. Replacing
 shared credit moves only that credit. Storage retains at most 64 credits per
 context, 128 contexts, and 64 recent episode reports, with canonical
-oldest-first eviction. Recent reports support diagnostics and approach
-reconnaissance; both preference scores come from retained credit evidence.
-Context scores fold in canonical completion order with saturation so
-counterevidence can break an entrenched preference. Experience refreshes its six
-doctrine scores after observation or a report changes retained evidence.
-Proposal queries read those prepared scores rather than rescanning every credit;
-contextual lookup inspects at most one bounded context's contributions. These
-preferences alter candidate ranking and effective allocation return without
-rewriting raw consequence, urgency, confidence, or safety. Retry records for
-dispatched harvest and construction attempts expire and require fresh legal
-preparation. Current footprint occupation invalidates a construction attempt
-without a route penalty; remembered buildings alone cannot establish that
-occupation. Work observation also indexes active builders' occupied tiles once
-per decision. Fresh blocking foundations cannot displace those workers from
-their current work tiles; movement and completion release this protection
-without changing ordinary terrain routing. Contested-harvest quarantine retains
-its separate complete-sweep and safe-return requirements. These components are
-reconstructed by replaying the observed command prefix, not serialized into
-authoritative `State`.
+oldest-first eviction. Credit eviction uses the newer of its retained contextual
+and doctrine evidence timestamps, breaking ties by credit identity. Recent
+reports support diagnostics and approach reconnaissance; both preference scores
+come from retained credit evidence. Context scores fold in canonical completion
+order with saturation so counterevidence can break an entrenched preference.
+Experience refreshes its six doctrine scores after observation or a report
+changes retained evidence. Proposal queries read those prepared scores rather
+than rescanning every credit; contextual lookup inspects at most one bounded
+context's contributions. These preferences alter candidate ranking and effective
+allocation return without rewriting raw consequence, urgency, confidence, or
+safety. Retry records for dispatched harvest and construction attempts expire
+and require fresh legal preparation. Current footprint occupation invalidates a
+construction attempt without a route penalty; remembered buildings alone cannot
+establish that occupation. Work observation also indexes active builders'
+occupied tiles once per decision. Fresh blocking foundations cannot displace
+those workers from their current work tiles; movement and completion release
+this protection without changing ordinary terrain routing. Contested-harvest
+quarantine retains its separate complete-sweep and safe-return requirements.
+These components are reconstructed by replaying the observed command prefix in
+the existing replay loader. Internal session checkpoints preserve them directly,
+together with unfinished planning and its remaining work allowance. Neither path
+puts controller memory in authoritative `State`. Controller checkpoint
+restoration validates map, configuration, planning storage, and time boundaries
+before exposing a seat; navigation query caches rebuild without changing
+decision work allowances.
 
 An unpaid Foundry's recovery interval spans both funding and execution blockage.
 Restored funding permits another readiness check; only a ready builder and site

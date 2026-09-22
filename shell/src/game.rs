@@ -87,6 +87,7 @@ pub struct Selection {
 mod fx;
 mod presentation;
 pub(crate) use presentation::{Presentation, Scene};
+mod checkpoint;
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 
@@ -187,12 +188,11 @@ impl Game {
     /// `new` with the window injected — the only constructor tests use,
     /// because it never touches macroquad.
     pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
-        // The human is the scenario's single non-bot seat — seat choice
-        // never permutes seats (parity carries factions, teams, and the
-        // automation harness), it just moves which chair the human
-        // takes. Anything but exactly one non-bot seat is a malformed
-        // PLAYABLE session; the spectator constructor above is the
-        // lenient door.
+        let human = Self::human_seat(&scenario)?;
+        Self::assemble(scenario, viewport, human)
+    }
+
+    fn human_seat(scenario: &Scenario) -> Result<PlayerId> {
         let humans: Vec<PlayerId> = scenario
             .players
             .iter()
@@ -200,14 +200,13 @@ impl Game {
             .filter(|(_, p)| !p.bot)
             .map(|(i, _)| PlayerId(i as u8))
             .collect();
-        let human = match humans.as_slice() {
-            [seat] => *seat,
+        match humans.as_slice() {
+            [seat] => Ok(*seat),
             _ => anyhow::bail!(
                 "a session wants exactly one non-bot seat, got {}",
                 humans.len()
             ),
-        };
-        Self::assemble(scenario, viewport, human)
+        }
     }
 
     fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
@@ -246,6 +245,30 @@ impl Game {
         Self::from_replay_observed(replay, None)
     }
 
+    pub(crate) fn from_recovery(
+        record: oxide_kit::recovery::Inspection,
+        diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
+    ) -> Result<Self> {
+        let Some(checkpoint) = record.checkpoint else {
+            return Self::from_replay_observed(record.replay, diagnostics);
+        };
+        let core = checkpoint.resume_recording(&record.replay)?;
+        let mut game = Self::new(core.scenario)?;
+        game.replace_state_after_jump(&core.state);
+        game.bots = core.bots;
+        game.pending = PendingCommands(core.pending);
+        game.recorder = record.replay;
+        game.live_stats = core
+            .stats
+            .ok_or_else(|| anyhow::anyhow!("shell recovery requires live statistics"))?;
+        game.end_stats = game
+            .state
+            .result()
+            .map(|_| game.live_stats.snapshot(&game.state));
+        game.presentation.paused = true;
+        Ok(game)
+    }
+
     pub(crate) fn from_replay_observed(
         replay: GameReplay,
         diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
@@ -258,6 +281,10 @@ impl Game {
         replay
             .validate(Some(SIM_VERSION))
             .map_err(|err| anyhow::anyhow!("{err}"))?;
+        anyhow::ensure!(
+            replay.origin.is_none(),
+            "live continuation requires a session checkpoint for this replay origin"
+        );
         let scenario = replay.setup.clone();
         let mut state = scenario.build()?;
         let total = replay.meta.ticks.unwrap_or_else(|| {
@@ -363,12 +390,45 @@ impl Game {
             && !self.recovery_warned
             && let Some(root) = &self.recovery_root
         {
-            match oxide_kit::recovery::RecoveryWriter::start_recovered(
-                root.clone(),
-                self.recorder.clone(),
-                self.state.current_tick(),
-                self.recovery_source.take(),
-            ) {
+            let source = self.recovery_source.take();
+            let start = (|| -> Result<_> {
+                if self.recorder.origin.is_some() {
+                    if let Some(source) = source {
+                        let checkpoint = oxide_kit::recovery::inspect(&source)?
+                            .checkpoint
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("missing recovered controller origin")
+                            })?;
+                        oxide_kit::recovery::RecoveryWriter::start_recovered_checkpoint(
+                            root.clone(),
+                            self.recorder.clone(),
+                            self.state.current_tick(),
+                            checkpoint,
+                            Some(source),
+                        )
+                    } else {
+                        let checkpoint = oxide_kit::checkpoint::SessionCheckpoint::capture(
+                            &self.scenario,
+                            &self.state,
+                            &self.bots,
+                            &self.pending,
+                            Some(&self.live_stats),
+                        )?;
+                        oxide_kit::recovery::RecoveryWriter::start_checkpoint(
+                            root.clone(),
+                            checkpoint,
+                        )
+                    }
+                } else {
+                    oxide_kit::recovery::RecoveryWriter::start_recovered(
+                        root.clone(),
+                        self.recorder.clone(),
+                        self.state.current_tick(),
+                        source,
+                    )
+                }
+            })();
+            match start {
                 Ok(writer) => self.recovery = Some(std::sync::Arc::new(writer)),
                 Err(error) => {
                     self.recovery_warned = true;

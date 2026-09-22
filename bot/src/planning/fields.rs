@@ -12,14 +12,14 @@ use std::{collections::BTreeMap, sync::Arc};
 const RETAINED_JOBS: usize = 4;
 const PENDING_IDLE_LIFETIME: u64 = 120;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Job {
     query_purpose: QueryPurpose,
     used_at: u64,
     work: PublicFieldWork,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FieldPreparation {
     generation: Option<(PublicMapBriefing, BlockedGroundLayout)>,
     jobs: BTreeMap<Vec<TilePos>, Job>,
@@ -27,6 +27,20 @@ pub(crate) struct FieldPreparation {
 }
 
 impl FieldPreparation {
+    pub(super) fn valid_checkpoint(&self, map: &PublicMapBriefing, tick: u64) -> bool {
+        self.jobs.len() <= RETAINED_JOBS
+            && match &self.generation {
+                None => self.jobs.is_empty(),
+                Some((generation, blocked)) => {
+                    generation == map
+                        && blocked.valid_checkpoint(map)
+                        && self.jobs.iter().all(|(sources, job)| {
+                            job.used_at <= tick && job.work.valid_checkpoint(map, sources)
+                        })
+                }
+            }
+    }
+
     pub(super) fn resume_pending(&mut self, tick: u64, budget: &mut WorkBudget) {
         self.jobs.retain(|_, job| {
             job.work.is_ready() || tick.saturating_sub(job.used_at) < PENDING_IDLE_LIFETIME

@@ -13,12 +13,18 @@ automated players use the same command path as every other player.
 
 - Re-exported `runner`, `render`, `playback`, and `stats` come from `oxide-kit`
   and keep headless execution shared with the shell.
-- `client` speaks the debug protocol; `session` serves it windowlessly.
+- `client` speaks the debug protocol; `session` serves it windowlessly. Serde on
+  `Session` uses the shared session checkpoint and retained recorder, restoring
+  controllers and queued input without replaying earlier ticks. The existing CLI
+  and debug save/load commands continue to use replay files.
 - `recovery-inspect <session-directory> [--export <new-report-directory>]`
   verifies an interrupted journal and exports its completed replay prefix plus
   available diagnostic sidecars without needing a responsive shell.
 - `replay_inspect` and `replay_summary` provide exact snapshots and compact
-  match narratives.
+  match narratives. Checkpoint-origin recordings report their first available
+  absolute tick, and summaries and inactivity windows cover only that segment.
+  Inspection schema 2 and summary schema 4 expose this boundary; inspection
+  rejects requests for unavailable earlier ticks.
 - `bot_eval` runs the player-facing controller to a decision, tick ceiling, or
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
   tick-ceiling, exact-profile, and anomaly provenance. It can exchange complete
