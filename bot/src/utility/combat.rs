@@ -2393,8 +2393,8 @@ mod tests {
     fn corroborated_assault_experience_changes_the_next_unpaid_objective_and_decays() {
         use crate::executive::ArmyPurpose;
         use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, Experience, ExperienceKey, Outcome,
-            OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, Experience, ExperienceKey,
+            ExperienceSubject, Outcome, OutcomeReason,
         };
         let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
@@ -2443,7 +2443,7 @@ mod tests {
                     doctrine: Doctrine::Siege,
                     x: 40,
                     y: 6,
-                    subject: 200,
+                    subject: ExperienceSubject::Building(Some(oxide_sim::BuildingId(200))),
                 },
                 objective: None,
                 started_at: 0,

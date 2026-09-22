@@ -3,7 +3,8 @@
 #[cfg(test)]
 use crate::observation::ObservationData;
 use chassis::Tick;
-use oxide_sim::ids::UnitId;
+use oxide_sim::ids::{BuildingId, UnitId};
+use oxide_sim::stats::{BuildingKind, UnitKind};
 use serde::Serialize;
 
 use super::observation::Observation;
@@ -21,6 +22,19 @@ pub(crate) enum Doctrine {
     Expansion,
     Fortification,
     Sustain,
+}
+
+impl Doctrine {
+    fn index(self) -> usize {
+        match self {
+            Self::Pressure => 0,
+            Self::Air => 1,
+            Self::Siege => 2,
+            Self::Expansion => 3,
+            Self::Fortification => 4,
+            Self::Sustain => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -48,8 +62,38 @@ pub(crate) struct ExperienceKey {
     pub(crate) doctrine: Doctrine,
     pub(crate) y: i32,
     pub(crate) x: i32,
-    /// Domain-owned objective, counter, or service identity.
-    pub(crate) subject: u64,
+    pub(crate) subject: ExperienceSubject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(crate) enum ExperienceSubject {
+    Building(Option<BuildingId>),
+    Unit(UnitId),
+    Construction(BuildingKind),
+    Production(UnitKind),
+    Upgrade(BuildingId),
+    Harvest,
+    Reconnaissance,
+}
+
+impl ExperienceKey {
+    pub(crate) fn construction(kind: BuildingKind, anchor: chassis::grid::TilePos) -> Self {
+        Self {
+            doctrine: match kind {
+                BuildingKind::RepairBay => Doctrine::Sustain,
+                BuildingKind::Turret
+                | BuildingKind::FlakTurret
+                | BuildingKind::Bastion
+                | BuildingKind::ScuttleCharge
+                | BuildingKind::Barricade
+                | BuildingKind::Array => Doctrine::Fortification,
+                _ => Doctrine::Expansion,
+            },
+            x: anchor.x,
+            y: anchor.y,
+            subject: ExperienceSubject::Construction(kind),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -161,8 +205,39 @@ struct ContextEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextContribution {
     credit: EpisodeId,
+    evidence: Evidence,
+    doctrine: Option<(Doctrine, Evidence)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Evidence {
+    rank: (u8, u16, Tick, std::cmp::Reverse<EpisodeId>),
     score: i32,
-    finished_at: Tick,
+}
+
+impl Evidence {
+    fn from_report(report: &EpisodeReport) -> Self {
+        Self {
+            rank: report.contextual_rank(),
+            score: report.contribution(),
+        }
+    }
+
+    fn finished_at(self) -> Tick {
+        self.rank.2
+    }
+
+    fn reported_by(self, id: EpisodeId) -> bool {
+        self.rank.3 == std::cmp::Reverse(id)
+    }
+
+    fn current(self, now: Tick, horizon: Tick) -> bool {
+        now.saturating_sub(self.finished_at()) < horizon
+    }
+
+    fn score_at(self, now: Tick, horizon: Tick) -> i32 {
+        decay(self.score, now.saturating_sub(self.finished_at()), horizon)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -172,6 +247,7 @@ pub(crate) struct Experience {
     horizon: Tick,
     episodes: Vec<EpisodeReport>,
     contexts: Vec<ContextEntry>,
+    doctrine_scores: [i16; 6],
 }
 
 impl Experience {
@@ -188,11 +264,16 @@ impl Experience {
         self.episodes
             .retain(|report| obs.tick.saturating_sub(report.finished_at) < self.horizon);
         self.contexts.retain_mut(|entry| {
-            entry.contributions.retain(|contribution| {
-                obs.tick.saturating_sub(contribution.finished_at) < self.horizon
+            entry.contributions.retain_mut(|contribution| {
+                contribution.doctrine = contribution
+                    .doctrine
+                    .filter(|(_, evidence)| evidence.current(obs.tick, self.horizon));
+                contribution.evidence.current(obs.tick, self.horizon)
+                    || contribution.doctrine.is_some()
             });
             !entry.contributions.is_empty()
         });
+        self.refresh_doctrine();
     }
 
     /// Idempotent owner report; a shared credit can affect learning only once.
@@ -205,6 +286,16 @@ impl Experience {
                 .episodes
                 .iter()
                 .any(|existing| existing.id == report.id)
+            || self
+                .contexts
+                .iter()
+                .flat_map(|entry| &entry.contributions)
+                .any(|value| {
+                    value.evidence.reported_by(report.id)
+                        || value
+                            .doctrine
+                            .is_some_and(|(_, evidence)| evidence.reported_by(report.id))
+                })
         {
             return;
         }
@@ -222,42 +313,7 @@ impl Experience {
         {
             report.context.doctrine = Doctrine::Air;
         }
-        let prior_credit = self
-            .episodes
-            .iter()
-            .filter(|existing| existing.credit == report.credit)
-            .max_by_key(|existing| existing.contextual_rank())
-            .cloned();
-        let prior_doctrine = self
-            .episodes
-            .iter()
-            .filter(|existing| {
-                existing.credit == report.credit
-                    && existing.doctrine_eligible
-                    && existing.confidence >= 750
-                    && existing.contribution() != 0
-            })
-            .map(EpisodeReport::contextual_rank)
-            .max();
-        if report.doctrine_eligible && report.confidence >= 750 && report.contribution() != 0 {
-            if prior_doctrine.is_none_or(|prior| report.contextual_rank() > prior) {
-                for existing in self
-                    .episodes
-                    .iter_mut()
-                    .filter(|existing| existing.credit == report.credit)
-                {
-                    existing.doctrine_eligible = false;
-                }
-            } else {
-                report.doctrine_eligible = false;
-            }
-        }
-        if prior_credit
-            .as_ref()
-            .is_none_or(|prior| report.contextual_rank() > prior.contextual_rank())
-        {
-            self.record_context(&report, now);
-        }
+        self.record_context(&report, now);
         self.episodes.push(report);
         self.episodes
             .sort_unstable_by_key(|report| (report.finished_at, report.id));
@@ -269,40 +325,70 @@ impl Experience {
         while self.contexts.len() > CONTEXT_LIMIT {
             self.contexts.remove(0);
         }
+        self.refresh_doctrine();
     }
 
     fn record_context(&mut self, report: &EpisodeReport, now: Tick) {
+        let evidence = Evidence::from_report(report);
+        let mut key = report.context;
+        let mut contribution = ContextContribution {
+            credit: report.credit,
+            evidence,
+            doctrine: None,
+        };
+        let prior = self.contexts.iter().find_map(|entry| {
+            entry
+                .contributions
+                .iter()
+                .find(|value| value.credit == report.credit)
+                .map(|value| (entry.key, value.clone()))
+        });
+        if let Some((prior_key, previous)) = &prior {
+            contribution = previous.clone();
+            if contribution.evidence.current(now, self.horizon)
+                && (contribution.evidence.reported_by(report.id)
+                    || contribution.evidence.rank >= evidence.rank)
+            {
+                key = *prior_key;
+            } else {
+                contribution.evidence = evidence;
+            }
+        } else if evidence.rank.0 == 0 {
+            return;
+        }
+        if report.doctrine_eligible
+            && report.confidence >= 750
+            && evidence.score != 0
+            && contribution.doctrine.is_none_or(|(_, prior)| {
+                !prior.reported_by(report.id) && evidence.rank > prior.rank
+            })
+        {
+            contribution.doctrine = Some((report.context.doctrine, evidence));
+        }
+        if prior
+            .as_ref()
+            .is_some_and(|(prior_key, previous)| *prior_key == key && *previous == contribution)
+        {
+            return;
+        }
         self.contexts.retain_mut(|entry| {
             entry
                 .contributions
-                .retain(|contribution| contribution.credit != report.credit);
+                .retain(|value| value.credit != report.credit);
             !entry.contributions.is_empty()
         });
-        let score = report.contribution();
-        if score == 0 {
-            return;
-        }
-        let contribution = ContextContribution {
-            credit: report.credit,
-            score,
-            finished_at: report.finished_at,
-        };
-        if let Some(entry) = self
-            .contexts
-            .iter_mut()
-            .find(|entry| entry.key == report.context)
-        {
+        if let Some(entry) = self.contexts.iter_mut().find(|entry| entry.key == key) {
             entry.contributions.push(contribution);
             entry
                 .contributions
-                .sort_unstable_by_key(|value| (value.finished_at, value.credit));
+                .sort_unstable_by_key(|value| (value.evidence.finished_at(), value.credit));
             if entry.contributions.len() > EPISODE_LIMIT {
                 entry.contributions.remove(0);
             }
             entry.updated_at = now;
         } else {
             self.contexts.push(ContextEntry {
-                key: report.context,
+                key,
                 contributions: vec![contribution],
                 updated_at: now,
             });
@@ -318,8 +404,8 @@ impl Experience {
                 entry.contributions.iter().fold(0, |score, contribution| {
                     (score
                         + decay(
-                            contribution.score,
-                            now.saturating_sub(contribution.finished_at),
+                            contribution.evidence.score,
+                            now.saturating_sub(contribution.evidence.finished_at()),
                             self.horizon,
                         ))
                     .clamp(-SCORE_LIMIT, SCORE_LIMIT)
@@ -327,30 +413,30 @@ impl Experience {
             })
     }
 
-    pub(crate) fn doctrine_score(&self, doctrine: Doctrine) -> i16 {
+    fn refresh_doctrine(&mut self) {
         let now = self.observed_at.unwrap_or(0);
-        let qualified = self.episodes.iter().filter(|report| {
-            report.context.doctrine == doctrine
-                && report.doctrine_eligible
-                && report.confidence >= 750
-                && report.contribution() != 0
-        });
-        let (count, score) = qualified.fold((0, 0_i32), |(count, score), report| {
-            (
-                count + 1,
-                score
-                    + decay(
-                        report.contribution(),
-                        now.saturating_sub(report.finished_at),
-                        self.horizon,
-                    ),
-            )
-        });
-        if count < 2 {
-            0
-        } else {
-            score.clamp(-SCORE_LIMIT, SCORE_LIMIT) as i16
+        let mut values = [(0, 0_i32); 6];
+        for (doctrine, evidence) in self
+            .contexts
+            .iter()
+            .flat_map(|entry| &entry.contributions)
+            .filter_map(|contribution| contribution.doctrine)
+        {
+            let (count, score) = &mut values[doctrine.index()];
+            *count += 1;
+            *score += evidence.score_at(now, self.horizon);
         }
+        self.doctrine_scores = values.map(|(count, score)| {
+            if count < 2 {
+                0
+            } else {
+                score.clamp(-SCORE_LIMIT, SCORE_LIMIT) as i16
+            }
+        });
+    }
+
+    pub(crate) fn doctrine_score(&self, doctrine: Doctrine) -> i16 {
+        self.doctrine_scores[doctrine.index()]
     }
 
     pub(crate) fn score(&self, key: ExperienceKey) -> i16 {
@@ -861,7 +947,7 @@ mod tests {
                 doctrine: Doctrine::Pressure,
                 y: 3,
                 x: 4,
-                subject: 5,
+                subject: ExperienceSubject::Building(Some(BuildingId(5))),
             },
             objective: None,
             started_at: 0,
@@ -1142,14 +1228,157 @@ mod tests {
         let mut memory = memory();
         for serial in 0..200 {
             let mut event = report(serial);
-            event.context.subject = serial;
+            event.context.subject = ExperienceSubject::Building(Some(BuildingId(serial as u32)));
             memory.report(event);
         }
         assert_eq!(memory.episodes.len(), EPISODE_LIMIT);
         assert_eq!(memory.contexts.len(), CONTEXT_LIMIT);
         assert_eq!(memory.episodes[0].id.serial, 136);
-        assert_eq!(memory.contexts[0].key.subject, 72);
+        assert_eq!(
+            memory.contexts[0].key.subject,
+            ExperienceSubject::Building(Some(BuildingId(72)))
+        );
         assert_eq!(memory.doctrine_score(Doctrine::Pressure), -1024);
+    }
+
+    #[test]
+    fn retained_credit_outlives_unrelated_report_history() {
+        let mut memory = memory();
+        let original = report(1);
+        memory.report(original.clone());
+        memory.report(report(2));
+        for serial in 3..=66 {
+            let mut neutral = report(serial);
+            neutral.outcome = Outcome::Invalidated;
+            memory.report(neutral);
+        }
+        assert!(
+            !memory
+                .episodes()
+                .iter()
+                .any(|event| event.id == original.id)
+        );
+        assert_eq!(memory.contextual_score(original.context), -512);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), -512);
+
+        let mut weaker = report(67);
+        weaker.credit = original.credit;
+        weaker.outcome = Outcome::Partial;
+        weaker.context.x += 1;
+        memory.report(weaker.clone());
+        assert_eq!(memory.contextual_score(original.context), -512);
+        assert_eq!(memory.contextual_score(weaker.context), 0);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), -512);
+
+        let mut duplicate = original;
+        duplicate.outcome = Outcome::Complete;
+        memory.report(duplicate);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), -512);
+    }
+
+    #[test]
+    fn non_scoring_evidence_still_prevents_a_weaker_followup() {
+        let mut memory = memory();
+        let mut preempted = report(1);
+        preempted.outcome = Outcome::Aborted;
+        preempted.reason = OutcomeReason::Preempted;
+        memory.report(preempted.clone());
+        for serial in 2..=65 {
+            let mut neutral = report(serial);
+            neutral.outcome = Outcome::Invalidated;
+            memory.report(neutral);
+        }
+        let mut weaker = report(66);
+        weaker.credit = preempted.credit;
+        weaker.outcome = Outcome::Partial;
+        weaker.doctrine_eligible = false;
+        memory.report(weaker);
+        assert_eq!(memory.contextual_score(preempted.context), 0);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), 0);
+    }
+
+    #[test]
+    fn stronger_shared_evidence_moves_only_its_credit_after_history_eviction() {
+        let mut memory = memory();
+        let mut delivery = report(1);
+        delivery.outcome = Outcome::Partial;
+        delivery.doctrine_eligible = false;
+        memory.report(delivery.clone());
+        memory.report(report(2));
+        for serial in 3..=66 {
+            let mut neutral = report(serial);
+            neutral.outcome = Outcome::Invalidated;
+            memory.report(neutral);
+        }
+        let mut assault = report(67);
+        assault.credit = delivery.credit;
+        assault.context.x += 1;
+        memory.report(assault.clone());
+        assert_eq!(memory.contextual_score(delivery.context), -256);
+        assert_eq!(memory.contextual_score(assault.context), -256);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), -512);
+        let mut weaker = report(68);
+        weaker.credit = delivery.credit;
+        weaker.outcome = Outcome::Partial;
+        memory.report(weaker);
+        assert_eq!(memory.contextual_score(delivery.context), -256);
+        assert_eq!(memory.contextual_score(assault.context), -256);
+    }
+
+    #[test]
+    fn context_and_doctrine_evidence_expire_at_their_own_completion_times() {
+        let mut memory = memory();
+        let mut original = report(1);
+        original.doctrine_eligible = false;
+        memory.report(original.clone());
+        let mut obs = crate::test_support::observation_data();
+        obs.map_width = 32;
+        obs.map_height = 32;
+        obs.tick = 3100;
+        memory.observe(&Observation::from_data(obs.clone()), 6000);
+        let mut later = report(2);
+        later.credit = original.credit;
+        later.finished_at = 3100;
+        later.outcome = Outcome::Partial;
+        memory.report(later);
+        let mut independent = report(3);
+        independent.finished_at = 3100;
+        memory.report(independent);
+        assert_eq!(memory.contextual_score(original.context), -384);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), -128);
+        obs.tick = 6100;
+        memory.observe(&Observation::from_data(obs.clone()), 6000);
+        assert_eq!(memory.contextual_score(original.context), -128);
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), -64);
+        obs.tick = 9100;
+        memory.observe(&Observation::from_data(obs), 6000);
+        assert!(memory.contexts.is_empty());
+        assert_eq!(memory.doctrine_score(Doctrine::Pressure), 0);
+    }
+
+    #[test]
+    fn equal_numeric_subjects_do_not_transfer_contextual_credit() {
+        let mut memory = memory();
+        let event = report(1);
+        memory.report(event.clone());
+        for subject in [
+            ExperienceSubject::Unit(UnitId(5)),
+            ExperienceSubject::Construction(BuildingKind::Array),
+            ExperienceSubject::Production(UnitKind::Flakhound),
+            ExperienceSubject::Upgrade(BuildingId(5)),
+            ExperienceSubject::Building(None),
+            ExperienceSubject::Harvest,
+            ExperienceSubject::Reconnaissance,
+        ] {
+            assert_eq!(
+                memory.contextual_score(ExperienceKey {
+                    subject,
+                    ..event.context
+                }),
+                0
+            );
+        }
+        assert_eq!(memory.contextual_score(event.context), -256);
     }
 
     #[test]

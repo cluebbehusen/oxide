@@ -432,7 +432,8 @@ mod tests {
     fn ground_episode_keeps_its_objective_in_the_observation_frame() {
         use crate::executive::ArmyObjective;
         use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, ExperienceSubject,
+            Outcome, OutcomeReason,
         };
         for home in [
             TilePos::new(4, 4),
@@ -463,7 +464,7 @@ mod tests {
                         doctrine: Doctrine::Siege,
                         x: 16,
                         y: 10,
-                        subject: 17,
+                        subject: ExperienceSubject::Building(Some(oxide_sim::BuildingId(17))),
                     },
                     objective: Some(ArmyObjective::from_building(&target)),
                     started_at: 100,

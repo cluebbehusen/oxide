@@ -265,11 +265,12 @@ impl RaidPlanner {
         };
 
         use super::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         let subject = match raid.objective {
-            RaidObjective::Unit { id, .. } => u64::from(id.0),
-            RaidObjective::Building { id, .. } => u64::from(id.0),
+            RaidObjective::Unit { id, .. } => ExperienceSubject::Unit(id),
+            RaidObjective::Building { id, .. } => ExperienceSubject::Building(Some(id)),
         };
         self.outcomes.watch(
             obs,

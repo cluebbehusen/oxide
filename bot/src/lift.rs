@@ -828,7 +828,8 @@ impl LiftPlanner {
             return StrategicDecision::default();
         };
         use super::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         let members: Vec<_> = operation
             .payload
@@ -846,7 +847,7 @@ impl LiftPlanner {
                 doctrine: Doctrine::Air,
                 y: operation.target.y,
                 x: operation.target.x,
-                subject: u64::from(operation.target_id.0),
+                subject: ExperienceSubject::Building(Some(operation.target_id)),
             },
             &members,
             operation.phase as u8,

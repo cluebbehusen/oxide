@@ -1,6 +1,6 @@
 use super::*;
 use crate::executive::{ArmyId, ArmyMission, ArmyObjective, ArmyPurpose};
-use crate::experience::{Doctrine, ExperienceKey};
+use crate::experience::{Doctrine, ExperienceKey, ExperienceSubject};
 use crate::query_work::QueryPurpose;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,7 +540,7 @@ impl UtilityPolicy {
                 doctrine,
                 x: building.anchor.x,
                 y: building.anchor.y,
-                subject: u64::from(building.id.0),
+                subject: ExperienceSubject::Building(Some(building.id)),
             };
             let preference = (1024 + i32::from(experience.score(context)) / 2) as u64;
             let value = building

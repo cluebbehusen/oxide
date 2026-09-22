@@ -51,20 +51,25 @@ pub(crate) enum DomainPayload {
 /// Exact domain payloads compared during cross-domain allocation.
 pub(crate) type DomainInvestmentProposal = InvestmentProposal<DomainPayload>;
 
-pub(super) fn experience_context(key: ProposalKey) -> Option<crate::experience::ExperienceKey> {
+pub(crate) fn experience_context(key: ProposalKey) -> Option<crate::experience::ExperienceKey> {
     use super::StandingForceServiceKey;
-    use crate::experience::{Doctrine, ExperienceKey};
+    use crate::experience::{Doctrine, ExperienceKey, ExperienceSubject};
     use oxide_sim::stats::{Domain, Role};
     let (doctrine, anchor, subject) = match key {
-        ProposalKey::FoundryExpansion(key) => (
-            Doctrine::Expansion,
-            key.anchor,
-            BuildingKind::Foundry as u64,
-        ),
-        ProposalKey::ConnectedOffenseMinimum(key) => {
-            (Doctrine::Air, key.anchor, u64::from(key.objective.0))
+        ProposalKey::FoundryExpansion(key) => {
+            return Some(ExperienceKey::construction(
+                BuildingKind::Foundry,
+                key.anchor,
+            ));
         }
-        ProposalKey::Defense(key) => (Doctrine::Fortification, key.anchor, key.kind as u64),
+        ProposalKey::ConnectedOffenseMinimum(key) => (
+            Doctrine::Air,
+            key.anchor,
+            ExperienceSubject::Building(Some(key.objective)),
+        ),
+        ProposalKey::Defense(key) => {
+            return Some(ExperienceKey::construction(key.kind, key.anchor));
+        }
         ProposalKey::StandingForce(key) | ProposalKey::SupportProcurement(key) => {
             let doctrine = if matches!(
                 key.kind.role(),
@@ -82,29 +87,21 @@ pub(super) fn experience_context(key: ProposalKey) -> Option<crate::experience::
                 StandingForceServiceKey::Point(tile) => tile,
                 StandingForceServiceKey::Footprint { anchor, .. } => anchor,
             };
-            (doctrine, anchor, key.kind as u64)
+            (doctrine, anchor, ExperienceSubject::Production(key.kind))
         }
         ProposalKey::Economy(key) | ProposalKey::SupportConstruction(key) => {
-            let doctrine = if matches!(
-                key,
-                EconomicInvestmentKey::Build {
-                    kind: BuildingKind::RepairBay,
-                    ..
-                }
-            ) {
-                Doctrine::Sustain
-            } else {
-                Doctrine::Expansion
-            };
+            let doctrine = Doctrine::Expansion;
             match key {
-                EconomicInvestmentKey::Build { kind, anchor } => (doctrine, anchor, kind as u64),
+                EconomicInvestmentKey::Build { kind, anchor } => {
+                    return Some(ExperienceKey::construction(kind, anchor));
+                }
                 EconomicInvestmentKey::Train { kind, service, .. } => {
-                    (doctrine, service, kind as u64)
+                    (doctrine, service, ExperienceSubject::Production(kind))
                 }
                 EconomicInvestmentKey::Upgrade { building, .. } => (
                     doctrine,
                     chassis::grid::TilePos::new(0, 0),
-                    u64::from(building.0),
+                    ExperienceSubject::Upgrade(building),
                 ),
             }
         }

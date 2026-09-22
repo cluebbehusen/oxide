@@ -631,8 +631,8 @@ mod tests {
     fn failed_approaches_keep_the_frozen_objective_through_fog() {
         for uncertain in [false, true] {
             use crate::experience::{
-                Doctrine, EpisodeId, EpisodeOwner, Experience, ExperienceKey, Outcome,
-                OutcomeJournal, OutcomeReason,
+                Doctrine, EpisodeId, EpisodeOwner, Experience, ExperienceKey, ExperienceSubject,
+                Outcome, OutcomeJournal, OutcomeReason,
             };
             let mut obs = fixture();
             obs.enemy_units.clear();
@@ -648,7 +648,7 @@ mod tests {
                     doctrine: Doctrine::Air,
                     x: target.anchor.x,
                     y: target.anchor.y,
-                    subject: u64::from(target.id.0),
+                    subject: ExperienceSubject::Building(Some(target.id)),
                 },
                 &[],
                 1,

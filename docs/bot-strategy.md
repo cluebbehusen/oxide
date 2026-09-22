@@ -117,13 +117,15 @@ follow-through observation must not retain ownership of handed-off units. Shared
 operation credit must not multiply one failure across its components.
 
 Initial experience defaults are 64 recent episodes and 128 contextual entries,
-with expired-first and then canonical oldest-first eviction. Context can change
-after one supported event; doctrine needs at least two distinct attributable
-episodes. Signed preferences start at zero and remain within `[-1024, 1024]`;
-one fully supported episode contributes at most 256. Linear decay returns them
-toward neutral within the lesser of 6,000 ticks and the seat's strategic-memory
-horizon. Counterevidence can reverse them sooner. These are implementation
-defaults, not final calibration.
+with expired-first and then canonical oldest-first eviction. Retained learning
+credits own their winning evidence independently of recent report history;
+unrelated reports cannot cause weaker evidence to replace a retained winner.
+Context can change after one supported event; doctrine needs at least two
+distinct attributable credits. Signed preferences start at zero and remain
+within `[-1024, 1024]`; one fully supported episode contributes at most 256.
+Linear decay returns them toward neutral within the lesser of 6,000 ticks and
+the seat's strategic-memory horizon. Counterevidence can reverse them sooner.
+These are implementation defaults, not final calibration.
 
 Expected return may shift at most one named allocation value band at preferences
 of `±512`; continuous preference breaks remaining effective-return ties before

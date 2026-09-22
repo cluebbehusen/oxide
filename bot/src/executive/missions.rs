@@ -125,7 +125,8 @@ impl Executive {
         mission: &ArmyMission,
     ) {
         use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         let Some(body) = self.armies.iter().find(|body| body.id == army) else {
             return;
@@ -141,7 +142,7 @@ impl Executive {
                                 .iter()
                                 .chain(&obs.ally_buildings)
                                 .any(|asset| {
-                                    u64::from(asset.id.0) == context.subject
+                                    ExperienceSubject::Building(Some(asset.id)) == context.subject
                                         && asset.hp > 0
                                         && !obs.enemy_units.iter().any(|enemy| {
                                             ground_strength(enemy.kind, enemy.hp) > 0
@@ -177,16 +178,16 @@ impl Executive {
         let (doctrine, subject) = match mission.purpose {
             ArmyPurpose::Pressure(target) => (
                 crate::experience::ground_doctrine(obs, &body.members),
-                target.id.unwrap_or(BuildingId(u32::MAX)),
+                target.id,
             ),
-            ArmyPurpose::Defend(id) => (Doctrine::Fortification, id),
+            ArmyPurpose::Defend(id) => (Doctrine::Fortification, Some(id)),
             _ => unreachable!(),
         };
         let context = ExperienceKey {
             doctrine,
             x: mission.goal.x,
             y: mission.goal.y,
-            subject: u64::from(subject.0),
+            subject: ExperienceSubject::Building(subject),
         };
         journal.watch(
             obs,

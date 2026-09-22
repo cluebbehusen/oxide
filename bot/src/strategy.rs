@@ -2561,7 +2561,7 @@ impl StrategicPlanner {
                 doctrine: super::experience::Doctrine::Air,
                 x: target.anchor.x,
                 y: target.anchor.y,
-                subject: target.id.map_or(0, |id| u64::from(id.0)),
+                subject: super::experience::ExperienceSubject::Building(target.id),
             };
             let preference = (1024 + i32::from(self.experience.score(context)) / 2) as u64;
             (
@@ -3345,7 +3345,8 @@ impl StrategicPlanner {
             return StrategicThinkResult::default();
         };
         use super::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         let members: Vec<_> = op
             .scout
@@ -3364,7 +3365,7 @@ impl StrategicPlanner {
                 doctrine: Doctrine::Air,
                 y: op.target.y,
                 x: op.target.x,
-                subject: op.target_id.map_or(0, |id| u64::from(id.0)),
+                subject: ExperienceSubject::Building(op.target_id),
             },
             &members,
             op.phase as u8,
