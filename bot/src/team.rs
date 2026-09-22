@@ -458,7 +458,7 @@ impl TeamReliefPlanner {
             .is_none_or(|relief| !pending_assignment_is_available(context, relief))
         {
             if !allow_new_operation {
-                self.clear_pressure();
+                self.pending = None;
                 return;
             }
             let watch = self.watch.as_ref().expect("pressure was just observed");

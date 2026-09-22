@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn failed_allocation_preserves_pressure_age_without_reserving_rejected_members() {
+fn failed_allocation_preserves_pressure_age_through_closed_admission() {
     let home = TilePos::new(3, 10);
-    let mut obs = Observation::from_data(ObservationData {
+    let obs = Observation::from_data(ObservationData {
         tick: 120,
         map_width: 40,
         map_height: 24,
@@ -34,7 +34,7 @@ fn failed_allocation_preserves_pressure_age_without_reserving_rejected_members()
         ..crate::test_support::observation_data()
     });
     let mut setup = SessionProfile::new(prime_profile());
-    setup.dials.minimum_core_equivalents = 0;
+    setup.dials.minimum_core_equivalents = 2;
     let map = connected_briefing(&obs);
     let mut policy = UtilityPolicy::new();
     let mut strategy = StrategicPlanner::new();
@@ -42,7 +42,24 @@ fn failed_allocation_preserves_pressure_age_without_reserving_rejected_members()
     let mut lifts = LiftPlanner::new();
     let mut raids = RaidPlanner::new();
     let first_seen = obs.tick;
-    for fail in [true, false] {
+    let mut paused = obs.clone();
+    paused.tick += setup.tuning.cadence;
+    paused.my_units.retain(|unit| unit.id == UnitId(1));
+    assert!(!combat_core_status(&paused, &[], &[], 2).ready);
+    let mut replenished = obs.clone();
+    replenished.my_units.retain(|unit| unit.id != UnitId(6));
+    for unit in replenished
+        .my_units
+        .iter_mut()
+        .filter(|unit| unit.id != UnitId(1))
+    {
+        unit.id.0 += 100;
+    }
+    replenished.tick = crate::difficulty::strategic_admission_at_or_after(
+        first_seen + u64::from(oxide_sim::TICKS_PER_SECOND) + setup.tuning.reaction_delay,
+    );
+    for (step, obs) in [obs, paused, replenished].into_iter().enumerate() {
+        let fail = step == 0;
         let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
         let mut work = advanced(snapshots);
         if fail {
@@ -68,20 +85,16 @@ fn failed_allocation_preserves_pressure_age_without_reserving_rejected_members()
         )
         .run();
         assert_eq!(outcome.allocation_ok, !fail, "{trace:?}");
-        if fail {
+        if step < 2 {
             assert!(team.operation().is_none());
             assert!(team.reservations().is_empty());
             assert!(outcome.team_decision.intents.is_empty());
-            obs.my_units.retain(|unit| unit.id != UnitId(6));
-            obs.tick = crate::difficulty::strategic_admission_at_or_after(
-                first_seen + u64::from(oxide_sim::TICKS_PER_SECOND) + setup.tuning.reaction_delay,
-            );
         } else {
             let relief = team
                 .operation()
-                .expect("unrelated allocation failure must not restart pressure credibility");
+                .expect("allocation rejection and closed admission must not restart credibility");
             assert_eq!(relief.started_at, first_seen);
-            assert!(!relief.members.contains(&UnitId(6)));
+            assert!(relief.members.iter().all(|id| !(2..=6).contains(&id.0)));
             assert!(!outcome.team_decision.intents.is_empty());
             assert_eq!(team.core_reservations(), outcome.team_decision.reservations);
         }
