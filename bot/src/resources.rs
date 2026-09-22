@@ -1104,12 +1104,6 @@ mod current_reserve_tests {
     fn producer_projection() -> ResourcePlanningProjection {
         ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: 500,
-            observed_at: 0,
-            horizon: 1_000,
-            cadence: 1,
-            forecast_income: Vec::new(),
-            units: Vec::new(),
-            builders: Vec::new(),
             producers: vec![
                 ProducerPlanningProjection::fixture(
                     BuildingId(7),
@@ -1121,6 +1115,7 @@ mod current_reserve_tests {
                 )
                 .expect("the producer fixture is valid"),
             ],
+            ..ResourcePlanningFixture::empty(0..=1_000, 1)
         })
         .expect("the resource fixture is valid")
     }

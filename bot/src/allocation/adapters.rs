@@ -923,13 +923,10 @@ mod tests {
         AllocationCapacity::fixture(
             ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                 current_scrap,
-                observed_at: NOW,
-                horizon: DEADLINE,
-                cadence: 12,
-                forecast_income: Vec::new(),
                 units,
                 builders,
                 producers,
+                ..ResourcePlanningFixture::empty(NOW..=DEADLINE, 12)
             })
             .expect("the adapter fixture uses a valid planning horizon"),
         )
@@ -1360,9 +1357,6 @@ mod tests {
         let resources = AllocationCapacity::fixture(
             ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                 current_scrap: cost - 17,
-                observed_at: NOW,
-                horizon: DEADLINE,
-                cadence: 12,
                 forecast_income: vec![crate::resources::ForecastAvailability {
                     available_at: DEADLINE,
                     amount: 27,
@@ -1373,7 +1367,7 @@ mod tests {
                     kind: UnitKind::Harvester,
                     obligation: None,
                 }],
-                producers: Vec::new(),
+                ..ResourcePlanningFixture::empty(NOW..=DEADLINE, 12)
             })
             .unwrap(),
         );

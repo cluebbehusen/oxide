@@ -4169,15 +4169,13 @@ mod tests {
         builders: Vec<UnitId>,
         producers: Vec<ProducerPlanningProjection>,
     ) -> AllocationCapacity {
+        let horizon = if forecast_horizon == 0 {
+            10_000
+        } else {
+            forecast_horizon
+        };
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap,
-            observed_at: 0,
-            horizon: if forecast_horizon == 0 {
-                10_000
-            } else {
-                forecast_horizon
-            },
-            cadence: 1,
             forecast_income,
             units,
             builders: builders
@@ -4189,6 +4187,7 @@ mod tests {
                 })
                 .collect(),
             producers,
+            ..ResourcePlanningFixture::empty(0..=horizon, 1)
         })
         .expect("the fixture projection is canonical");
         AllocationCapacity::fixture(resources)
@@ -4239,9 +4238,6 @@ mod tests {
     ) -> AllocationCapacity {
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap,
-            observed_at,
-            horizon,
-            cadence,
             forecast_income,
             units: (1..=8).map(UnitId).collect(),
             builders: (1..=4)
@@ -4252,6 +4248,7 @@ mod tests {
                 })
                 .collect(),
             producers,
+            ..ResourcePlanningFixture::empty(observed_at..=horizon, cadence)
         })
         .expect("the timed fixture projection is canonical");
         AllocationCapacity::fixture(resources)
