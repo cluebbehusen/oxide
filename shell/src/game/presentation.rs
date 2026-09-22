@@ -104,8 +104,28 @@ pub(crate) struct Scene<'a> {
     pub scenario: &'a Scenario,
     pub pending: &'a [PlayerCommand],
     pub presentation: &'a Presentation,
+    pub seat_styles: crate::seat_style::SeatStyles,
 }
 impl<'a> Scene<'a> {
+    pub fn new(
+        state: &'a State,
+        scenario: &'a Scenario,
+        pending: &'a [PlayerCommand],
+        presentation: &'a Presentation,
+    ) -> Self {
+        Self {
+            state,
+            scenario,
+            pending,
+            presentation,
+            seat_styles: crate::seat_style::SeatStyles::new(
+                state,
+                presentation.human,
+                crate::render::colorblind(),
+            ),
+        }
+    }
+
     /// Whether the current unit selection is the human's to command.
     /// Empty selections read as own (nothing to gate); a foreign
     /// selection is read-only everywhere a verb would act.

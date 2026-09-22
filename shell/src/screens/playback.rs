@@ -58,12 +58,12 @@ pub struct PlaybackSession {
 
 impl PlaybackSession {
     pub(crate) fn view(&self) -> Scene<'_> {
-        Scene {
-            state: &self.engine.state,
-            scenario: &self.replay.setup,
-            pending: &[],
-            presentation: &self.presentation,
-        }
+        Scene::new(
+            &self.engine.state,
+            &self.replay.setup,
+            &[],
+            &self.presentation,
+        )
     }
 
     pub(crate) fn configure_diagnostics(&mut self, enabled: bool, root: Option<&std::path::Path>) {

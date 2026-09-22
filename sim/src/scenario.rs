@@ -12,6 +12,9 @@ use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Maximum number of seats addressable by authored map anchors.
+pub const MAX_PLAYERS: usize = 16;
+
 /// A match definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -374,7 +377,7 @@ impl Scenario {
     /// declared player table. Shared by state construction and the immutable
     /// pre-match bot briefing so those two views cannot disagree.
     pub fn parse_map_and_anchors(&self) -> Result<(Map, Vec<(PlayerId, TilePos)>), ScenarioError> {
-        if self.players.is_empty() || self.players.len() > 16 {
+        if self.players.is_empty() || self.players.len() > MAX_PLAYERS {
             return Err(ScenarioError::PlayerCount(self.players.len()));
         }
         let (map, anchors) = Map::parse(&self.map)?;
