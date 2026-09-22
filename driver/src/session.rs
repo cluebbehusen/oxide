@@ -41,6 +41,41 @@ pub struct Session {
     pending: Vec<PlayerCommand>,
 }
 
+impl serde::Serialize for Session {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use oxide_kit::checkpoint::{RecordedCheckpoint, SessionCheckpoint};
+        let session = SessionCheckpoint::capture(
+            &self.scenario,
+            &self.state,
+            &self.bots,
+            &self.pending,
+            None,
+        )
+        .and_then(|session| RecordedCheckpoint::capture(session, &self.recorder))
+        .map_err(serde::ser::Error::custom)?;
+        session.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Session {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let checkpoint = oxide_kit::checkpoint::RecordedCheckpoint::deserialize(deserializer)?;
+        let (session, recorder) = checkpoint.restore().map_err(serde::de::Error::custom)?;
+        if session.stats.is_some() {
+            return Err(serde::de::Error::custom(
+                "the headless session does not track live statistics",
+            ));
+        }
+        Ok(Self {
+            scenario: session.scenario,
+            state: session.state,
+            bots: session.bots,
+            recorder,
+            pending: session.pending,
+        })
+    }
+}
+
 impl Session {
     /// Opens a session on a scenario.
     pub fn new(scenario: Scenario) -> Result<Self> {
@@ -64,6 +99,10 @@ impl Session {
         replay
             .validate(Some(SIM_VERSION))
             .map_err(|err| anyhow::anyhow!("{err}"))?;
+        anyhow::ensure!(
+            replay.origin.is_none(),
+            "live continuation requires a session checkpoint for this replay origin"
+        );
         let scenario = replay.setup.clone();
         let mut state = scenario.build().context("building replay setup")?;
         let total = replay.meta.ticks.unwrap_or_else(|| {
@@ -354,6 +393,42 @@ pub fn serve_listener(listener: TcpListener, limits: Limits, mut session: Sessio
 mod tests {
     use super::*;
     use oxide_sim::{Command, PlayerId};
+
+    #[test]
+    fn checkpoint_continuation_keeps_input_order_and_recording() {
+        let mut scenario = Scenario::skirmish();
+        for seat in &mut scenario.players {
+            seat.bot = true;
+            seat.bot_config = Some(oxide_sim::scenario::BotConfig::default());
+        }
+        let mut original = Session::new(scenario).unwrap();
+        for _ in 0..121 {
+            original.step();
+        }
+        original
+            .handle(Request::SendCommand {
+                player: PlayerId(0),
+                command: Command::Stop { units: vec![] },
+            })
+            .unwrap();
+        let before = original.state.hash();
+        let mut restored: Session =
+            serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+        assert_eq!(restored.state.hash(), before);
+        assert_eq!(original.pending, restored.pending);
+        for index in 0..240 {
+            if index == 119 {
+                restored = serde_json::from_slice(&serde_json::to_vec(&restored).unwrap()).unwrap();
+            }
+            assert_eq!(original.step(), restored.step());
+            assert_eq!(original.state.hash(), restored.state.hash());
+        }
+        assert_eq!(
+            serde_json::to_vec(&original.recorder.commands).unwrap(),
+            serde_json::to_vec(&restored.recorder.commands).unwrap()
+        );
+        assert!(original.recorder.commands.len() > 1);
+    }
 
     fn human_scenario(name: &str) -> Scenario {
         let mut scenario = Scenario::skirmish();

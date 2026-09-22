@@ -75,7 +75,7 @@ fn replay_inspect_emits_stable_json_snapshots_and_command_silence() {
     );
 
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["scenario"]["name"], "Skirmish Basin");
     assert_eq!(report["scenario"]["players"][1]["bot"], true);
     assert_eq!(

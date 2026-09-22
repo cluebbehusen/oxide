@@ -4,7 +4,7 @@ use super::observer::PhaseObserver;
 use std::cell::{Cell, RefCell};
 
 /// Required caller identity at a navigation or planning-query boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(usize)]
 pub enum QueryPurpose {

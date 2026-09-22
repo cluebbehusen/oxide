@@ -12,7 +12,7 @@ use oxide_sim::map::{Map, Terrain};
 use oxide_sim::scenario::{Scenario, ScenarioError};
 
 /// One Foundry anchor authored for a player at match start.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StartingFoundry {
     /// Seat that owned the Foundry at tick zero.
     pub player: PlayerId,
@@ -60,8 +60,9 @@ impl Eq for RegionCache {}
 ///
 /// Dynamic facts never enter this type. In particular, `initial_scrap` is not
 /// a live amount and `starting_foundries` is not a list of current targets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublicMapBriefing {
+    #[serde(skip)]
     pub(super) regions: RegionCache,
     pub(super) map_width: i32,
     pub(super) map_height: i32,

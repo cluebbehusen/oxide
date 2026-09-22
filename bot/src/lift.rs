@@ -58,7 +58,9 @@ pub enum LiftAirSupport {
 }
 
 /// Persistent phase of a coordinated lift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum LiftPhase {
     /// Accumulate a carrier requirement that may grow with the available army.
     Provision,
@@ -73,7 +75,7 @@ pub enum LiftPhase {
 }
 
 /// One carrier's immutable assignment within an active operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LiftManifest {
     /// Exact carrier.
     pub carrier: UnitId,
@@ -107,7 +109,7 @@ impl LiftManifest {
 }
 
 /// Inspectable persistent state of one transport wave.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LiftOperation {
     /// Last known owner of the objective.
     pub target_player: PlayerId,
@@ -149,7 +151,7 @@ pub struct LiftOperation {
 }
 
 /// Immutable FIFO timing for one allocator-owned carrier purchase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LiftProducerTiming {
     enqueued_at: Tick,
     starts_at: Tick,
@@ -190,7 +192,7 @@ impl LiftProducerTiming {
 }
 
 /// Observation-relative current and forecast funding for one carrier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LiftProducerFunding {
     current_scrap: u32,
     forecast_scrap: u32,
@@ -206,7 +208,7 @@ impl LiftProducerFunding {
 }
 
 /// One exact allocator-selected future carrier job owned by a Lift operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LiftProducerAssignment {
     request_ordinal: usize,
     producer: BuildingId,
@@ -298,8 +300,20 @@ impl ActiveLiftProductionObligation {
 /// Sorted, deduplicated unit ids. Readers binary-search the slice, so
 /// ordering is a type invariant here rather than a convention every
 /// mutation site re-establishes by hand.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct UnitIdSet(Vec<UnitId>);
+
+impl<'de> serde::Deserialize<'de> for UnitIdSet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let ids = Vec::<UnitId>::deserialize(deserializer)?;
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(serde::de::Error::custom(
+                "unit ids must be strictly increasing",
+            ));
+        }
+        Ok(Self(ids))
+    }
+}
 
 impl UnitIdSet {
     /// Canonicalizes arbitrary ids into a set.
@@ -359,7 +373,7 @@ impl<const N: usize> PartialEq<[UnitId; N]> for UnitIdSet {
 }
 
 /// Controller-local owner of a persistent transport wave.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LiftPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
     operation: Option<LiftOperation>,
@@ -2601,6 +2615,32 @@ mod tests {
             );
         }
         assert!(pickup_slots(&obs, HOME, TilePos::new(-1, -1), 4).is_empty());
+    }
+
+    #[test]
+    fn checkpoint_unit_id_sets_preserve_search_and_insert_invariants() {
+        for json in ["[]", "[3]", "[1,2,3]"] {
+            let ids: UnitIdSet = serde_json::from_str(json).unwrap();
+            let mut restored = crate::checkpoint::round_trip(&ids);
+            for id in ids.iter().copied() {
+                assert!(restored.binary_search(&id).is_ok());
+                assert!(!restored.insert(id));
+            }
+            assert!(restored.insert(UnitId(4)));
+            assert_eq!(restored.pop_last(), Some(UnitId(4)));
+            assert_eq!(restored, ids);
+        }
+        for ids in [vec![3, 1, 2], vec![1, 1], vec![1, 2, 2]] {
+            assert!(serde_json::from_value::<UnitIdSet>(serde_json::json!(ids)).is_err());
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&ids, &mut bytes).unwrap();
+            let error = ciborium::from_reader::<UnitIdSet, _>(bytes.as_slice()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("unit ids must be strictly increasing")
+            );
+        }
     }
 
     #[test]
@@ -5997,6 +6037,7 @@ mod tests {
     #[test]
     fn accepted_carrier_assignment_retains_identity_and_refreshes_only_funding() {
         let (obs, mut planner, producer) = lift_with_unpaid_carrier();
+        planner = crate::checkpoint::round_trip(&planner);
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
         let accepted_at = operation.started_at;

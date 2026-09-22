@@ -1,7 +1,7 @@
 use chassis::grid::TilePos;
 
 /// A positive rectangular footprint with a top-left anchor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SiteFootprint {
     /// Top-left tile.
     anchor: TilePos,

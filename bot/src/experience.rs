@@ -14,7 +14,7 @@ const CONTEXT_LIMIT: usize = 128;
 const SCORE_LIMIT: i32 = 1024;
 const EPISODE_WEIGHT: i32 = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) enum Doctrine {
     Pressure,
     Air,
@@ -37,7 +37,7 @@ impl Doctrine {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) enum EpisodeOwner {
     Ground,
     Air,
@@ -51,13 +51,13 @@ pub(crate) enum EpisodeOwner {
     LiftAssault,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) struct EpisodeId {
     pub(crate) owner: EpisodeOwner,
     pub(crate) serial: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) struct ExperienceKey {
     pub(crate) doctrine: Doctrine,
     pub(crate) y: i32,
@@ -65,7 +65,7 @@ pub(crate) struct ExperienceKey {
     pub(crate) subject: ExperienceSubject,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
 pub(crate) enum ExperienceSubject {
     Building(Option<BuildingId>),
     Unit(UnitId),
@@ -96,7 +96,7 @@ impl ExperienceKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub(crate) enum Outcome {
     Complete,
     Partial,
@@ -106,7 +106,7 @@ pub(crate) enum Outcome {
     Inconclusive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub(crate) enum OutcomeReason {
     ObjectiveObservedGone,
     ServiceCompleted,
@@ -123,7 +123,7 @@ pub(crate) enum OutcomeReason {
     ResourceExhausted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub(crate) struct EpisodeReport {
     pub(crate) id: EpisodeId,
     /// Coordinated components share one credit identity, even after handoff.
@@ -195,21 +195,21 @@ impl EpisodeReport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ContextEntry {
     key: ExperienceKey,
     contributions: Vec<ContextContribution>,
     updated_at: Tick,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ContextContribution {
     credit: EpisodeId,
     evidence: Evidence,
     doctrine: Option<(Doctrine, Evidence)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Evidence {
     rank: (u8, u16, Tick, std::cmp::Reverse<EpisodeId>),
     score: i32,
@@ -240,7 +240,7 @@ impl Evidence {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Experience {
     observed_at: Option<Tick>,
     map: (i32, i32),
@@ -383,7 +383,20 @@ impl Experience {
                 .contributions
                 .sort_unstable_by_key(|value| (value.evidence.finished_at(), value.credit));
             if entry.contributions.len() > EPISODE_LIMIT {
-                entry.contributions.remove(0);
+                let (oldest, _) = entry
+                    .contributions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, value)| {
+                        let newest = value.evidence.finished_at().max(
+                            value
+                                .doctrine
+                                .map_or(0, |(_, evidence)| evidence.finished_at()),
+                        );
+                        (newest, value.credit)
+                    })
+                    .expect("overfull context has contributions");
+                entry.contributions.remove(oldest);
             }
             entry.updated_at = now;
         } else {
@@ -514,7 +527,7 @@ pub(crate) fn ground_doctrine(obs: &Observation, members: &[UnitId]) -> Doctrine
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct EpisodeWatch {
     report: EpisodeReport,
     members: Vec<(UnitId, u32)>,
@@ -524,14 +537,14 @@ struct EpisodeWatch {
     ground_contact_losses: (u32, bool),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ObjectiveWatch {
     watch: EpisodeWatch,
     deadline: Tick,
 }
 
 /// Owners explicitly open and finish episodes; disappearance is not a verdict.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OutcomeJournal {
     watch: Option<EpisodeWatch>,
     follow_through: Vec<ObjectiveWatch>,
@@ -1224,6 +1237,69 @@ mod tests {
     }
 
     #[test]
+    fn capacity_eviction_uses_both_evidence_times_without_reordering_scores() {
+        for (contextual_tick, doctrine_tick, contextual_score, doctrine_score) in
+            [(1, 200, 1024, -128), (200, 1, 768, -133)]
+        {
+            let mut memory = memory();
+            let mut obs = crate::test_support::observation_data();
+            obs.map_width = 32;
+            obs.map_height = 32;
+            obs.tick = 200;
+            memory.observe(&Observation::from_data(obs), 6000);
+            let mut original = report(1);
+            original.finished_at = contextual_tick;
+            original.doctrine_eligible = false;
+            memory.report(original.clone());
+            for serial in 2..=64 {
+                let mut other = report(serial);
+                other.finished_at = 2;
+                other.outcome = Outcome::Complete;
+                other.doctrine_eligible = false;
+                memory.report(other);
+            }
+            let mut later = report(100);
+            later.credit = original.credit;
+            later.finished_at = doctrine_tick;
+            later.outcome = Outcome::Partial;
+            memory.report(later);
+            let mut independent = report(101);
+            independent.context.x += 1;
+            independent.finished_at = 200;
+            memory.report(independent);
+            assert_eq!(memory.doctrine_score(Doctrine::Pressure), doctrine_score);
+            assert_eq!(memory.contextual_score(original.context), contextual_score);
+
+            let mut overflow = report(65);
+            overflow.finished_at = 65;
+            overflow.outcome = Outcome::Aborted;
+            overflow.reason = OutcomeReason::Preempted;
+            overflow.doctrine_eligible = false;
+            memory.report(overflow);
+            assert_eq!(memory.doctrine_score(Doctrine::Pressure), doctrine_score);
+            assert_eq!(memory.contextual_score(original.context), contextual_score);
+            let entry = memory
+                .contexts
+                .iter()
+                .find(|entry| entry.key == original.context)
+                .unwrap();
+            assert_eq!(entry.contributions.len(), EPISODE_LIMIT);
+            assert!(
+                !entry
+                    .contributions
+                    .iter()
+                    .any(|value| value.credit == report(2).credit)
+            );
+            assert!(
+                entry
+                    .contributions
+                    .iter()
+                    .any(|value| value.credit == report(3).credit)
+            );
+        }
+    }
+
+    #[test]
     fn storage_is_bounded_with_canonical_eviction_and_scores_saturate() {
         let mut memory = memory();
         for serial in 0..200 {
@@ -1346,6 +1422,7 @@ mod tests {
         memory.report(independent);
         assert_eq!(memory.contextual_score(original.context), -384);
         assert_eq!(memory.doctrine_score(Doctrine::Pressure), -128);
+        memory = crate::checkpoint::round_trip(&memory);
         obs.tick = 6100;
         memory.observe(&Observation::from_data(obs.clone()), 6000);
         assert_eq!(memory.contextual_score(original.context), -128);

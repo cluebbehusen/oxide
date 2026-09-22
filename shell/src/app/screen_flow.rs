@@ -177,9 +177,7 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
                 .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
-                .and_then(|record| {
-                    Game::from_replay_observed(record.replay, app.game.diagnostics.as_ref())
-                });
+                .and_then(|record| Game::from_recovery(record, app.game.diagnostics.as_ref()));
             match recovered {
                 Ok(fresh) => {
                     app.install_session(fresh, true, None);
@@ -203,12 +201,10 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
             let _scope = app
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
-            // Resume the newest autosave — a replay load, so
-            // it cannot desync from its own history.
             if let Some(fresh) = autosave::latest_compatible()
                 .and_then(|path| resume(&path, app.game.diagnostics.as_ref()).ok())
             {
-                app.install_session(fresh, app.args.paused, None);
+                app.install_session(fresh, true, None);
                 next = Some(Screen::Playing);
             } else {
                 app.game.presentation.toast("that save no longer loads");
@@ -735,7 +731,7 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
                 // The same loader Continue uses, so the two
                 // verbs cannot drift apart.
                 Ok(fresh) => {
-                    app.install_session(fresh, app.args.paused, None);
+                    app.install_session(fresh, true, None);
                     render::draw(&app.game.view(), &app.sprites, &app.input);
                     *rerun = true;
                     leave = Some(Screen::Playing);

@@ -35,7 +35,9 @@ use std::{
 const CACHE_BYTES: usize = 1024 * 1024;
 const ENTRY_ALLOWANCE: usize = 192;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(super) struct BlockedRect {
     pub anchor: TilePos,
     pub size: (i32, i32),
@@ -451,7 +453,7 @@ mod tests;
 /// indices depend on discovery order, while a point or footprint remains stable
 /// across equivalent derivations and can be ordered canonically in row-major
 /// map order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ServiceTarget {
     /// A mobile contact or ordinary movement destination.
     Point(TilePos),

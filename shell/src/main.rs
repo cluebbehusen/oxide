@@ -27,6 +27,7 @@ mod press;
 mod production;
 mod render;
 mod rocket_audio;
+mod saved_game;
 mod saves;
 mod screens;
 mod slide_motion;

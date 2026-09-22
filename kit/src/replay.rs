@@ -13,6 +13,8 @@ struct ReplayWire {
     meta: ReplayMeta,
     setup: ReplayScenarioWire,
     commands: Vec<TimedCommand<PlayerCommand>>,
+    #[serde(default)]
+    origin: Option<crate::recording::WorldOrigin>,
 }
 
 #[derive(Deserialize)]
@@ -174,6 +176,7 @@ pub(crate) fn deserialize_replay<'de, D: serde::Deserializer<'de>>(
         meta,
         setup,
         commands,
+        origin,
     } = ReplayWire::deserialize(decoder)?;
     let setup = setup
         .into_current(&meta.sim_version)
@@ -182,17 +185,20 @@ pub(crate) fn deserialize_replay<'de, D: serde::Deserializer<'de>>(
         meta,
         setup,
         commands,
+        origin,
     })
 }
 
-/// How many ticks a replay runs: its recorded duration, or one past its last
+/// Absolute end tick of a replay: its recorded duration, or one past its last
 /// command when the metadata omits it.
 pub fn replay_duration(replay: &GameReplay) -> u64 {
     replay.meta.ticks.unwrap_or_else(|| {
         replay
             .commands
             .last()
-            .map_or(0, |command| command.tick.saturating_add(1))
+            .map_or(replay.start_tick(), |command| {
+                command.tick.saturating_add(1)
+            })
     })
 }
 
@@ -255,12 +261,14 @@ pub fn load_replay(path: impl AsRef<Path>) -> Result<GameReplay, ReplayError> {
             meta,
             setup,
             commands,
+            origin,
         } = serde_json::from_slice(bytes)?;
         let setup = setup.into_current(&meta.sim_version)?;
         Ok(Replay {
             meta,
             setup,
             commands,
+            origin,
         })
     })
 }
