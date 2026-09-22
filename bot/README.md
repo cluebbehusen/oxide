@@ -8,7 +8,8 @@ ordinary commands and receive no special costs, information, or rules.
 
 - `Brain` decides from an `Observation`. It cannot inspect authoritative state.
 - `SeatBot` adapts a live state for the shell and runner: it gates finished
-  matches, cadence and resignation, then captures a player observation.
+  matches, cadence and resignation, then captures a fog-honest player
+  observation unconditionally.
 - `oxide_sim::observation` owns fog filtering and the serialized knowledge
   schema. `Observation` adds lazy, bot-owned navigation inputs to that data.
 - `PublicMapBriefing` shares immutable authored terrain across seats.
@@ -39,6 +40,13 @@ caches.
 Voluntary defense rejects construction kinds that cannot meet the current
 allocation reserve before searching for sites. Final allocation still owns the
 exact funding and compatibility decision.
+
+Internal operation planners and utility policy are not host entry points. Hosts
+use `SeatBot`; observation-driven tooling can use `Brain`, and diagnostics
+retain public trace and operation value types. Omniscient observation
+construction is explicit QA infrastructure, never a configurable opponent
+capability. Component tests supply admission inputs to the same planning
+implementation as production.
 
 ## Development
 

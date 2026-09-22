@@ -173,36 +173,6 @@ impl TeamReliefPlanner {
             .map_or_else(Vec::new, |operation| operation.members.clone())
     }
 
-    /// Earliest tick at which another relief operation may begin.
-    pub fn cooldown_until(&self) -> Tick {
-        self.cooldown_until
-    }
-
-    /// Advances team conduct from current fog-honest knowledge.
-    pub fn think(
-        &mut self,
-        profile: &ResolvedProfile,
-        tuning: DifficultyTuning,
-        obs: &Observation,
-        home: TilePos,
-        enlisted: &[UnitId],
-        additionally_reserved: &[UnitId],
-    ) -> StrategicDecision {
-        self.think_with_admission(
-            profile,
-            tuning,
-            obs,
-            home,
-            enlisted,
-            TeamReliefAdmission {
-                additionally_reserved,
-                allow_new_operation: true,
-                core_reservations: &[],
-                minimum_core_equivalents: 0,
-            },
-        )
-    }
-
     pub(super) fn think_with_admission(
         &mut self,
         profile: &ResolvedProfile,
@@ -880,6 +850,31 @@ fn cooldown(profile: &ResolvedProfile, tuning: DifficultyTuning) -> Tick {
 
 #[cfg(test)]
 mod tests {
+    impl TeamReliefPlanner {
+        pub(crate) fn think_unrestricted(
+            &mut self,
+            profile: &ResolvedProfile,
+            tuning: DifficultyTuning,
+            obs: &Observation,
+            home: TilePos,
+            enlisted: &[UnitId],
+            additionally_reserved: &[UnitId],
+        ) -> StrategicDecision {
+            self.think_with_admission(
+                profile,
+                tuning,
+                obs,
+                home,
+                enlisted,
+                TeamReliefAdmission {
+                    additionally_reserved,
+                    allow_new_operation: true,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+            )
+        }
+    }
 
     use super::super::profile::{PersonalityTraits, Specialty};
     use super::*;
@@ -985,12 +980,13 @@ mod tests {
         enlisted: &[UnitId],
         additionally_reserved: &[UnitId],
     ) -> StrategicDecision {
-        let pending = planner.think(profile, tuning, obs, HOME, enlisted, additionally_reserved);
+        let pending =
+            planner.think_unrestricted(profile, tuning, obs, HOME, enlisted, additionally_reserved);
         assert!(pending.intents.is_empty());
         assert!(!pending.reservations.is_empty());
         assert!(planner.operation().is_none());
         obs.tick = obs.tick.saturating_add(pressure_response_delay(tuning));
-        planner.think(profile, tuning, obs, HOME, enlisted, additionally_reserved)
+        planner.think_unrestricted(profile, tuning, obs, HOME, enlisted, additionally_reserved)
     }
 
     fn active_three_member_relief() -> (Observation, TeamReliefPlanner, Vec<UnitId>) {
@@ -1434,12 +1430,12 @@ mod tests {
         let profile = profile();
         let tuning = tuning();
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         obs.tick += pressure_response_delay(tuning);
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         assert!(planner.operation().is_none());
@@ -1470,12 +1466,12 @@ mod tests {
         let profile = profile();
         let tuning = tuning();
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         obs.tick += pressure_response_delay(tuning);
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         assert!(planner.operation().is_none());
@@ -1509,7 +1505,7 @@ mod tests {
         let tuning = tuning();
         let mut planner = TeamReliefPlanner::new();
 
-        let watching = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+        let watching = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
         assert!(watching.intents.is_empty());
         assert_eq!(
             watching.reservations,
@@ -1519,7 +1515,7 @@ mod tests {
         assert!(planner.operation().is_none());
 
         obs.tick = obs.tick.saturating_add(pressure_response_delay(tuning));
-        let outbound = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+        let outbound = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
         let operation = planner
             .operation()
             .expect("credible pressure starts relief");
@@ -1538,7 +1534,7 @@ mod tests {
         );
 
         obs.tick += 1;
-        let focus = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+        let focus = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
         assert_eq!(focus.reservations, members);
         assert_eq!(
             focus.intents,
@@ -1575,7 +1571,7 @@ mod tests {
             let tuning = tuning();
             let mut planner = TeamReliefPlanner::new();
 
-            let pending = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+            let pending = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
             assert_eq!(
                 pending.reservations,
                 [UnitId(1), UnitId(2), UnitId(3), UnitId(4)]
@@ -1605,7 +1601,8 @@ mod tests {
             }
 
             obs.tick = first_seen_at + pressure_response_delay(tuning) - 1;
-            let refreshed = planner.think(&identity, tuning, &obs, HOME, &[], &newly_reserved);
+            let refreshed =
+                planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &newly_reserved);
             assert!(refreshed.intents.is_empty(), "{disruption:?}");
             assert_eq!(
                 refreshed.reservations,
@@ -1626,7 +1623,8 @@ mod tests {
             assert_eq!(refreshed_watch.relief.members, [UnitId(4), UnitId(5)]);
 
             obs.tick = first_seen_at + pressure_response_delay(tuning);
-            let committed = planner.think(&identity, tuning, &obs, HOME, &[], &newly_reserved);
+            let committed =
+                planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &newly_reserved);
             let operation = planner
                 .operation()
                 .expect("refreshed relief commits on time");
@@ -1694,7 +1692,7 @@ mod tests {
         let identity = profile();
         let tuning = tuning();
         let mut planner = TeamReliefPlanner::new();
-        let pending = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+        let pending = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
         assert_eq!(planner.reservations(), pending.reservations);
 
         let first_seen_at = planner
@@ -1712,7 +1710,7 @@ mod tests {
         obs.tick = first_seen_at + pressure_response_delay(tuning);
 
         assert_eq!(
-            planner.think(&identity, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         assert!(planner.watch.is_none());
@@ -1853,7 +1851,7 @@ mod tests {
             .clone();
 
         obs.tick += 1;
-        let focus = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let focus = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert_eq!(
             focus.intents,
             [Intent::AttackUnits {
@@ -1863,7 +1861,7 @@ mod tests {
         );
 
         obs.tick += 1;
-        let stable = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let stable = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert!(stable.intents.is_empty());
         assert_eq!(stable.reservations, focus.reservations);
     }
@@ -1884,12 +1882,12 @@ mod tests {
         let profile = profile();
         let tuning = tuning();
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         obs.tick += pressure_response_delay(tuning);
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         assert!(planner.operation().is_none());
@@ -1976,11 +1974,12 @@ mod tests {
         let profile = profile();
         let tuning = tuning();
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[UnitId(4)], &[UnitId(5)],),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[UnitId(4)], &[UnitId(5)],),
             StrategicDecision::default()
         );
         obs.tick += pressure_response_delay(tuning);
-        let decision = planner.think(&profile, tuning, &obs, HOME, &[UnitId(4)], &[UnitId(5)]);
+        let decision =
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[UnitId(4)], &[UnitId(5)]);
 
         assert!(decision.intents.is_empty());
         assert!(decision.reservations.is_empty());
@@ -2015,7 +2014,7 @@ mod tests {
 
         obs.tick += 1;
         obs.enemy_units.clear();
-        let withdrawal = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let withdrawal = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert_eq!(withdrawal.reservations, started.reservations);
         assert_eq!(
             withdrawal.intents,
@@ -2039,7 +2038,7 @@ mod tests {
 
         obs.my_units.retain(|unit| unit.id != UnitId(3));
         obs.tick += 1;
-        planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         let boundary = planner
             .operation()
             .expect("losing exactly one third stays inside the loss budget");
@@ -2058,7 +2057,7 @@ mod tests {
             ),
             "the Warden's surviving hull isolates the member-count exit"
         );
-        let withdrawal = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let withdrawal = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
 
         assert_eq!(withdrawal.reservations, vec![UnitId(5)]);
         assert_eq!(
@@ -2087,7 +2086,7 @@ mod tests {
             .started_at;
         let deadline = started_at.saturating_add(operation_timeout(&profile));
         obs.tick = deadline - 1;
-        planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
         let before_deadline = planner
             .operation()
             .expect("sustained pressure keeps relief active before its deadline");
@@ -2095,7 +2094,7 @@ mod tests {
         assert_eq!(before_deadline.exit_reason, None);
 
         obs.tick = deadline;
-        let withdrawal = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+        let withdrawal = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
 
         assert_eq!(withdrawal.reservations, committed);
         assert_eq!(
@@ -2140,7 +2139,7 @@ mod tests {
         }
         obs.tick += 1;
 
-        let withdrawal = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let withdrawal = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert_eq!(
             withdrawal.intents,
             vec![Intent::MoveUnits {
@@ -2182,7 +2181,7 @@ mod tests {
         obs.ally_buildings
             .retain(|building| building.id != BuildingId(20));
 
-        let withdrawal = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let withdrawal = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert_eq!(
             withdrawal.intents,
             vec![Intent::MoveUnits {
@@ -2221,17 +2220,17 @@ mod tests {
 
         obs.tick += 1;
         obs.enemy_units.clear();
-        planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         for unit in &mut obs.my_units {
             if committed.contains(&unit.id) {
                 unit.tile = HOME;
             }
         }
         obs.tick += 1;
-        let returned = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let returned = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
         assert_eq!(returned.reservations, started.reservations);
         assert!(planner.operation().is_none());
-        assert!(planner.cooldown_until() > obs.tick);
+        assert!(planner.cooldown_until > obs.tick);
 
         obs.enemy_units.push(unit(
             91,
@@ -2241,7 +2240,7 @@ mod tests {
             false,
         ));
         assert_eq!(
-            planner.think(&profile(), tuning(), &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
     }
@@ -2450,7 +2449,7 @@ mod tests {
             let response_delay = pressure_response_delay(tuning);
             let mut planner = TeamReliefPlanner::new();
 
-            let pending = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+            let pending = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
             assert!(
                 pending.intents.is_empty(),
                 "{difficulty:?} must first observe the pressure"
@@ -2466,14 +2465,14 @@ mod tests {
                 ],
             );
             obs.tick += response_delay - 1;
-            let still_pending = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+            let still_pending = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
             assert!(
                 still_pending.intents.is_empty(),
                 "{difficulty:?} acted before credibility plus reaction latency"
             );
             assert_eq!(still_pending.reservations, pending.reservations);
             obs.tick += 1;
-            let committed = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+            let committed = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
             assert!(
                 !committed.intents.is_empty(),
                 "{difficulty:?} did not act once sustained pressure was actionable"
@@ -2508,13 +2507,13 @@ mod tests {
         let tuning = tuning();
         let mut planner = TeamReliefPlanner::new();
 
-        let first_pending = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+        let first_pending = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
         assert!(first_pending.intents.is_empty());
         assert!(!first_pending.reservations.is_empty());
         obs.tick += PRESSURE_CREDIBILITY - 1;
         obs.enemy_units.clear();
         assert_eq!(
-            planner.think(&profile, tuning, &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
 
@@ -2527,11 +2526,11 @@ mod tests {
             false,
         ));
         obs.tick = super::super::difficulty::strategic_admission_at_or_after(obs.tick);
-        let second_pending = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+        let second_pending = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
         assert!(second_pending.intents.is_empty());
         assert_eq!(second_pending.reservations, first_pending.reservations);
         obs.tick += PRESSURE_CREDIBILITY - 1;
-        let still_pending = planner.think(&profile, tuning, &obs, HOME, &[], &[]);
+        let still_pending = planner.think_unrestricted(&profile, tuning, &obs, HOME, &[], &[]);
         assert!(
             still_pending.intents.is_empty(),
             "the second sighting must earn a fresh credibility window"
@@ -2540,7 +2539,7 @@ mod tests {
         obs.tick += 1;
         assert!(
             !planner
-                .think(&profile, tuning, &obs, HOME, &[], &[])
+                .think_unrestricted(&profile, tuning, &obs, HOME, &[], &[])
                 .intents
                 .is_empty()
         );
@@ -2614,7 +2613,7 @@ mod tests {
         let mut planner = TeamReliefPlanner::new();
 
         assert_eq!(
-            planner.think(&profile(), tuning(), &obs, HOME, &[], &[]),
+            planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]),
             StrategicDecision::default()
         );
         assert!(planner.operation().is_none());
@@ -2645,10 +2644,10 @@ mod tests {
 
         obs.tick += 1;
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(14, y)).collect();
-        let decision = planner.think(&profile(), tuning(), &obs, HOME, &[], &[]);
+        let decision = planner.think_unrestricted(&profile(), tuning(), &obs, HOME, &[], &[]);
 
         assert!(decision.intents.is_empty());
         assert!(planner.operation().is_none());
-        assert!(planner.cooldown_until() > obs.tick);
+        assert!(planner.cooldown_until > obs.tick);
     }
 }

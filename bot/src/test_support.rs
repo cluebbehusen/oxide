@@ -141,7 +141,7 @@ pub(crate) fn edit_player(
     });
 }
 
-impl crate::UtilityPolicy {
+impl crate::utility::UtilityPolicy {
     pub(crate) fn think_residual(
         &mut self,
         dials: &crate::Dials,

@@ -52,6 +52,14 @@ fn unseen_enemy_activity_cannot_touch_a_fog_honest_observation() {
     let mut control = scenario.build().unwrap();
     let mut variant = scenario.build().unwrap();
     let wanderer = control.units()[1].id;
+    let briefing = public_map(&scenario);
+    let mut controllers = BotDifficulty::ALL.map(|difficulty| {
+        let config = BotConfig::scripted(difficulty, BotStance::Balanced, 17);
+        (
+            Brain::scripted(PlayerId(0), config, Arc::clone(&briefing)),
+            Brain::scripted(PlayerId(0), config, Arc::clone(&briefing)),
+        )
+    });
 
     for step in 0..10u32 {
         // The variant's enemy wanders its home corner (still in fog).
@@ -69,7 +77,7 @@ fn unseen_enemy_activity_cannot_touch_a_fog_honest_observation() {
             },
         )]);
         control.tick(&[]);
-        for _ in 0..20 {
+        for _ in 0..23 {
             variant.tick(&[]);
             control.tick(&[]);
         }
@@ -82,6 +90,20 @@ fn unseen_enemy_activity_cannot_touch_a_fog_honest_observation() {
         let a = serde_json::to_string(&control_obs).unwrap();
         let b = serde_json::to_string(&variant_obs).unwrap();
         assert_eq!(a, b, "fog-honest observation leaked unseen enemy state");
+        for (control_bot, variant_bot) in &mut controllers {
+            let a = control_bot.act_traced(&control);
+            let b = variant_bot.act_traced(&variant);
+            assert!(
+                a.trace.is_some(),
+                "sample a decision tick at every difficulty"
+            );
+            assert_eq!(a.commands, b.commands);
+            assert_eq!(
+                serde_json::to_value(a.trace).unwrap(),
+                serde_json::to_value(b.trace).unwrap(),
+                "the host adapter must not expose unseen activity at any difficulty"
+            );
+        }
     }
     // Sanity: the worlds themselves really did diverge (observations are
     // tile-resolution; the state hash is not).

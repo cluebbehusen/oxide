@@ -190,31 +190,6 @@ impl RaidPlanner {
             })
     }
 
-    /// Earliest tick at which another raid may begin.
-    pub fn cooldown_until(&self) -> Tick {
-        self.cooldown_until
-    }
-
-    /// Advances one raid using current fog-honest observation only.
-    pub fn think(
-        &mut self,
-        profile: &ResolvedProfile,
-        tuning: DifficultyTuning,
-        obs: &Observation,
-        home: TilePos,
-        enlisted: &[UnitId],
-        additionally_reserved: &[UnitId],
-    ) -> StrategicDecision {
-        self.think_with_admission(RaidPlanningContext::new(
-            profile,
-            tuning,
-            obs,
-            home,
-            enlisted,
-            additionally_reserved,
-        ))
-    }
-
     pub(super) fn think_with_admission(
         &mut self,
         context: RaidPlanningContext<'_>,
@@ -683,6 +658,26 @@ fn cooldown(profile: &ResolvedProfile, tuning: DifficultyTuning) -> Tick {
 
 #[cfg(test)]
 mod tests {
+    impl RaidPlanner {
+        pub(crate) fn think_unrestricted(
+            &mut self,
+            profile: &ResolvedProfile,
+            tuning: DifficultyTuning,
+            obs: &Observation,
+            home: TilePos,
+            enlisted: &[UnitId],
+            additionally_reserved: &[UnitId],
+        ) -> StrategicDecision {
+            self.think_with_admission(RaidPlanningContext::new(
+                profile,
+                tuning,
+                obs,
+                home,
+                enlisted,
+                additionally_reserved,
+            ))
+        }
+    }
     use super::super::observation::BuildingObs;
     use super::super::profile::{PersonalityTraits, Specialty};
     use super::*;
@@ -974,7 +969,7 @@ mod tests {
             let mut expected = planner.reservations().to_vec();
             // A lower id is not a substitute for an accepted live member.
             obs.my_units.push(unit(0, 0, UnitKind::Scuttler, HOME));
-            let decision = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+            let decision = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
             assert_eq!(decision.reservations, expected);
             assert_eq!(planner.paid_claims().len(), 2 - live);
             obs.enemy_units
@@ -1002,7 +997,7 @@ mod tests {
                     committed.deadline
                 );
             }
-            let decision = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+            let decision = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
             assert_eq!(decision.reservations, expected);
             let operation = planner.operation().unwrap();
             assert_eq!(operation.objective, committed.objective);
@@ -1076,7 +1071,7 @@ mod tests {
             assert!(planner.preparation.is_none());
             assert!(planner.paid_claims().is_empty());
             assert!(planner.reservations().is_empty());
-            assert!(planner.cooldown_until() > obs.tick);
+            assert!(planner.cooldown_until > obs.tick);
             assert_eq!(obs.my_queues, queues);
             obs.tick += 24;
             obs.my_units.push(unit(100, 0, UnitKind::Scuttler, HOME));
@@ -1090,7 +1085,7 @@ mod tests {
         let obs = observation(200);
         let mut planner = RaidPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1171,7 +1166,7 @@ mod tests {
         obs.my_units.retain(|unit| unit.id != UnitId(2));
         let mut planner = RaidPlanner::new();
 
-        let partial = planner.think(
+        let partial = planner.think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1187,7 +1182,7 @@ mod tests {
             .push(unit(2, 0, UnitKind::Scuttler, HOME.offset(1, 0)));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick = super::super::difficulty::next_strategic_admission_tick(obs.tick);
-        let complete = planner.think(
+        let complete = planner.think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1212,7 +1207,7 @@ mod tests {
         let turtle = profile_with_stance(0, BotStance::Turtle);
         let mut planner = RaidPlanner::new();
 
-        let waiting = planner.think(
+        let waiting = planner.think_unrestricted(
             &turtle,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1228,7 +1223,7 @@ mod tests {
         obs.my_units
             .extend((10..=13).map(|id| unit(id, 0, UnitKind::Sentinel, HOME)));
         obs.tick = super::super::difficulty::next_strategic_admission_tick(obs.tick);
-        let ready = planner.think(
+        let ready = planner.think_unrestricted(
             &turtle,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1248,17 +1243,17 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut planner = RaidPlanner::new();
 
-        let first = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let first = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(first.intents.len(), 1);
 
         obs.tick += 1;
         obs.enemy_units[0].tile = TARGET.offset(4, 0);
-        let nearby = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let nearby = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert!(nearby.intents.is_empty());
 
         obs.tick += 1;
         obs.enemy_units[0].tile = TARGET.offset(5, 0);
-        let moved = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let moved = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(
             moved.intents,
             [Intent::AttackMoveUnits {
@@ -1268,7 +1263,7 @@ mod tests {
         );
 
         obs.tick += 1;
-        let stable = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let stable = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert!(stable.intents.is_empty());
     }
 
@@ -1277,18 +1272,18 @@ mod tests {
         let mut obs = observation(200);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut planner = RaidPlanner::new();
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         for unit in &mut obs.my_units {
             unit.tile = TARGET.offset(-3, 0);
         }
         obs.tick += tuning.reaction_delay + tuning.commitment_hesitation;
-        let arrival = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let arrival = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert!(arrival.intents.is_empty());
         assert_eq!(planner.operation().unwrap().phase, RaidPhase::Strike);
 
         obs.tick += 1;
-        let strike = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let strike = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(
             strike.intents,
             [Intent::AttackUnits {
@@ -1299,7 +1294,7 @@ mod tests {
         obs.tick += 1;
         assert!(
             planner
-                .think(&profile(80), tuning, &obs, HOME, &[], &[])
+                .think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[])
                 .intents
                 .is_empty()
         );
@@ -1307,7 +1302,7 @@ mod tests {
         obs.enemy_units
             .extend((81..=83).map(|id| unit(id, 1, UnitKind::Sentinel, TARGET)));
         obs.tick += 1;
-        let egress = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let egress = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert!(matches!(
             egress.intents.as_slice(),
             [Intent::MoveUnits { goal, .. }] if *goal == HOME
@@ -1315,7 +1310,7 @@ mod tests {
         obs.tick += 1;
         assert!(
             planner
-                .think(&profile(80), tuning, &obs, HOME, &[], &[])
+                .think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[])
                 .intents
                 .is_empty()
         );
@@ -1327,7 +1322,7 @@ mod tests {
 
         for guile in [0, 40, 68, 80, 100] {
             let mut planner = RaidPlanner::new();
-            let decision = planner.think(
+            let decision = planner.think_unrestricted(
                 &profile(guile),
                 DifficultyTuning::for_level(BotDifficulty::Prime),
                 &obs,
@@ -1364,7 +1359,7 @@ mod tests {
             let mut obs = observation(200);
             let mut planner = RaidPlanner::new();
 
-            planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+            planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
             let pair = planner.operation().unwrap().members.clone();
             assert_eq!(pair, [UnitId(1), UnitId(2)]);
             frozen_pairs.push(pair);
@@ -1379,7 +1374,7 @@ mod tests {
                 if tick >= 264 {
                     obs.my_units[1].tile = TARGET.offset(-1, 0);
                 }
-                let decision = planner.think(&identity, tuning, &obs, HOME, &[], &[]);
+                let decision = planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]);
                 let focused = decision
                     .intents
                     .iter()
@@ -1408,7 +1403,7 @@ mod tests {
         let mut obs = observation(200);
         let mut planner = RaidPlanner::new();
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         obs.tick += 6;
         for unit in &mut obs.my_units {
             unit.tile = TilePos::new(12, 8);
@@ -1416,7 +1411,7 @@ mod tests {
         obs.enemy_units
             .extend((81..=83).map(|id| unit(id, 1, UnitKind::Sentinel, TARGET)));
 
-        let decision = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let decision = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         assert_eq!(
             planner.operation().unwrap().exit_reason,
@@ -1440,8 +1435,8 @@ mod tests {
         let high = profile(80);
         let mut low_planner = RaidPlanner::new();
         let mut high_planner = RaidPlanner::new();
-        low_planner.think(&low, tuning, &low_obs, HOME, &[], &[]);
-        high_planner.think(&high, tuning, &high_obs, HOME, &[], &[]);
+        low_planner.think_unrestricted(&low, tuning, &low_obs, HOME, &[], &[]);
+        high_planner.think_unrestricted(&high, tuning, &high_obs, HOME, &[], &[]);
 
         for obs in [&mut low_obs, &mut high_obs] {
             obs.tick += 1;
@@ -1449,8 +1444,9 @@ mod tests {
             obs.my_units[0].tile = TilePos::new(12, 8);
             obs.my_units[1].tile = TilePos::new(12, 9);
         }
-        let low_decision = low_planner.think(&low, tuning, &low_obs, HOME, &[], &[]);
-        let high_decision = high_planner.think(&high, tuning, &high_obs, HOME, &[], &[]);
+        let low_decision = low_planner.think_unrestricted(&low, tuning, &low_obs, HOME, &[], &[]);
+        let high_decision =
+            high_planner.think_unrestricted(&high, tuning, &high_obs, HOME, &[], &[]);
 
         assert_eq!(low_planner.operation().unwrap().phase, RaidPhase::Ingress);
         assert!(low_decision.intents.is_empty());
@@ -1486,8 +1482,8 @@ mod tests {
         let mut high_obs = low_obs.clone();
         let mut low_planner = RaidPlanner::new();
         let mut high_planner = RaidPlanner::new();
-        let low_launch = low_planner.think(&low, tuning, &low_obs, HOME, &[], &[]);
-        let high_launch = high_planner.think(&high, tuning, &high_obs, HOME, &[], &[]);
+        let low_launch = low_planner.think_unrestricted(&low, tuning, &low_obs, HOME, &[], &[]);
+        let high_launch = high_planner.think_unrestricted(&high, tuning, &high_obs, HOME, &[], &[]);
         for launch in [&low_launch, &high_launch] {
             assert_eq!(launch.reservations, [UnitId(1), UnitId(2)]);
             assert!(matches!(
@@ -1511,8 +1507,9 @@ mod tests {
             obs.my_units[1].tile = TilePos::new(12, 9);
         }
 
-        let low_decision = low_planner.think(&low, tuning, &low_obs, HOME, &[], &[]);
-        let high_decision = high_planner.think(&high, tuning, &high_obs, HOME, &[], &[]);
+        let low_decision = low_planner.think_unrestricted(&low, tuning, &low_obs, HOME, &[], &[]);
+        let high_decision =
+            high_planner.think_unrestricted(&high, tuning, &high_obs, HOME, &[], &[]);
         assert_eq!(low_planner.operation().unwrap().phase, RaidPhase::Ingress);
         assert!(low_decision.intents.is_empty());
         assert_eq!(
@@ -1532,11 +1529,11 @@ mod tests {
         let remaining = |profile: &ResolvedProfile| {
             let mut obs = observation(200);
             let mut planner = RaidPlanner::new();
-            planner.think(profile, tuning, &obs, HOME, &[], &[]);
+            planner.think_unrestricted(profile, tuning, &obs, HOME, &[], &[]);
             obs.tick += 1;
             obs.enemy_units.clear();
-            planner.think(profile, tuning, &obs, HOME, &[], &[]);
-            planner.cooldown_until().saturating_sub(obs.tick)
+            planner.think_unrestricted(profile, tuning, &obs, HOME, &[], &[]);
+            planner.cooldown_until.saturating_sub(obs.tick)
         };
 
         let low = profile(20);
@@ -1551,7 +1548,7 @@ mod tests {
         let mut obs = observation(200);
         let mut planner = RaidPlanner::new();
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         obs.tick += 6;
         for unit in &mut obs.my_units {
             unit.tile = TilePos::new(12, 8);
@@ -1559,7 +1556,7 @@ mod tests {
         obs.enemy_units.clear();
         obs.visible.fill(false);
 
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         assert_eq!(
             planner.operation().unwrap().exit_reason,
@@ -1572,14 +1569,14 @@ mod tests {
         let mut obs = observation(200);
         let mut planner = RaidPlanner::new();
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         obs.tick += 6;
         for unit in &mut obs.my_units {
             unit.tile = TilePos::new(12, 8);
         }
         obs.enemy_units.clear();
 
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         assert_eq!(
             planner.operation().unwrap().exit_reason,
@@ -1596,7 +1593,7 @@ mod tests {
 
         assert_eq!(
             planner
-                .think(&profile(80), tuning, &obs, HOME, &[], &[])
+                .think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[])
                 .intents,
             []
         );
@@ -1604,7 +1601,7 @@ mod tests {
         assert_eq!(planner.reservations(), [UnitId(1), UnitId(2)]);
 
         obs.known_rock.retain(|tile| tile.y != TARGET.y);
-        let decision = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let decision = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(
             decision.intents,
             [Intent::AttackMoveUnits {
@@ -1623,7 +1620,7 @@ mod tests {
         ];
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(10, y)).collect();
 
-        let decision = RaidPlanner::new().think(
+        let decision = RaidPlanner::new().think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1643,15 +1640,15 @@ mod tests {
         let mut obs = observation(200);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut planner = RaidPlanner::new();
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         obs.tick += 1;
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(10, y)).collect();
-        let decision = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let decision = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         assert!(decision.intents.is_empty());
         assert!(planner.operation().is_none());
-        assert!(planner.cooldown_until() > obs.tick);
+        assert!(planner.cooldown_until > obs.tick);
     }
 
     #[test]
@@ -1659,14 +1656,14 @@ mod tests {
         let mut obs = observation(200);
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut planner = RaidPlanner::new();
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         obs.tick += 1;
         obs.my_units.retain(|unit| unit.id != UnitId(2));
         for unit in &mut obs.my_units {
             unit.tile = TilePos::new(12, 8);
         }
-        let decision = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let decision = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         assert_eq!(
             planner.operation().unwrap().exit_reason,
@@ -1691,8 +1688,8 @@ mod tests {
         let mut aggressive_obs = turtle_obs.clone();
         let mut turtle_planner = RaidPlanner::new();
         let mut aggressive_planner = RaidPlanner::new();
-        turtle_planner.think(&turtle, tuning, &turtle_obs, HOME, &[], &[]);
-        aggressive_planner.think(&aggressive, tuning, &aggressive_obs, HOME, &[], &[]);
+        turtle_planner.think_unrestricted(&turtle, tuning, &turtle_obs, HOME, &[], &[]);
+        aggressive_planner.think_unrestricted(&aggressive, tuning, &aggressive_obs, HOME, &[], &[]);
 
         let turtle_deadline = turtle_obs.tick + timeout(&turtle);
         turtle_obs.tick = turtle_deadline;
@@ -1704,9 +1701,16 @@ mod tests {
             unit.tile = TilePos::new(12, 8);
         }
 
-        let turtle_decision = turtle_planner.think(&turtle, tuning, &turtle_obs, HOME, &[], &[]);
-        let aggressive_decision =
-            aggressive_planner.think(&aggressive, tuning, &aggressive_obs, HOME, &[], &[]);
+        let turtle_decision =
+            turtle_planner.think_unrestricted(&turtle, tuning, &turtle_obs, HOME, &[], &[]);
+        let aggressive_decision = aggressive_planner.think_unrestricted(
+            &aggressive,
+            tuning,
+            &aggressive_obs,
+            HOME,
+            &[],
+            &[],
+        );
 
         assert_eq!(
             turtle_planner.operation().unwrap().exit_reason,
@@ -1735,7 +1739,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut planner = RaidPlanner::new();
 
-        let ingress = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let ingress = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(
             planner.operation().unwrap().objective,
             RaidObjective::Building {
@@ -1759,9 +1763,9 @@ mod tests {
             unit.tile = TARGET.offset(-3, 0);
         }
         obs.tick += 1;
-        planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         obs.tick += 1;
-        let strike = planner.think(&profile(80), tuning, &obs, HOME, &[], &[]);
+        let strike = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
 
         assert_eq!(
             strike.intents,
@@ -1783,7 +1787,7 @@ mod tests {
             building(82, 1, BuildingKind::Reclaimer, exposed, true),
         ];
 
-        let decision = RaidPlanner::new().think(
+        let decision = RaidPlanner::new().think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1808,7 +1812,7 @@ mod tests {
             building(82, 1, BuildingKind::Airworks, production, true),
         ];
 
-        let decision = RaidPlanner::new().think(
+        let decision = RaidPlanner::new().think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1829,7 +1833,7 @@ mod tests {
         obs.enemy_units.clear();
         obs.enemy_buildings = vec![building(80, 1, BuildingKind::Fabricator, TARGET, true)];
 
-        let decision = RaidPlanner::new().think(
+        let decision = RaidPlanner::new().think_unrestricted(
             &profile(80),
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -1853,11 +1857,11 @@ mod tests {
         let completion_cooldown = |profile: &ResolvedProfile| {
             let mut obs = observation(200);
             let mut planner = RaidPlanner::new();
-            planner.think(profile, tuning, &obs, HOME, &[], &[]);
+            planner.think_unrestricted(profile, tuning, &obs, HOME, &[], &[]);
             obs.tick += 1;
             obs.enemy_units.clear();
-            planner.think(profile, tuning, &obs, HOME, &[], &[]);
-            planner.cooldown_until().saturating_sub(obs.tick)
+            planner.think_unrestricted(profile, tuning, &obs, HOME, &[], &[]);
+            planner.cooldown_until.saturating_sub(obs.tick)
         };
 
         assert_eq!(completion_cooldown(&turtle), cooldown(&turtle, tuning));

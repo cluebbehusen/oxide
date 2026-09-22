@@ -149,7 +149,6 @@ fn scenario_load_rejects_a_legacy_bot_config() {
 #[test]
 fn standard_uses_the_full_fog_honest_tree() {
     let balanced = Dials::balanced();
-    assert!(balanced.fog_honest);
     assert!(balanced.tech);
     assert!(balanced.turret_response);
     assert!(balanced.scouting);

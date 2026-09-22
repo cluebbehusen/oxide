@@ -1,10 +1,11 @@
 //! Utility-policy contracts: deterministic thinking and budget honesty.
 
+use super::UtilityPolicy;
 use crate::observation::ObservationData;
 use crate::trace::{ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace};
 use crate::{
     BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, Orientation,
-    PublicMapBriefing, SeatBot as Brain, UnitObs, UtilityPolicy,
+    PublicMapBriefing, SeatBot as Brain, UnitObs,
 };
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{

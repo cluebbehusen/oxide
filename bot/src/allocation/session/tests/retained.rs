@@ -6,7 +6,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let (mut observation, _, _) = active_lift_fixture();
         observation.tick = 24;
         let mut lift = LiftPlanner::new();
-        lift.think_with_admission(
+        lift.think_with_admission_and_producer_lanes(
             &observation,
             TilePos::new(5, 15),
             &[],
@@ -17,6 +17,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
                 core_reservations: &[],
                 minimum_core_equivalents: 5,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         let operation = lift.operation().unwrap().clone();
         assert_eq!(operation.started_at, 24);

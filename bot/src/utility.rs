@@ -517,10 +517,8 @@ pub struct Dials {
     pub tech: bool,
     /// Answer harvester raids with turrets.
     pub turret_response: bool,
-    /// Keep a scout sweeping the map (pointless without fog-honesty).
+    /// Keep a scout sweeping the map.
     pub scouting: bool,
-    /// Observe through own vision instead of omnisciently.
-    pub fog_honest: bool,
     /// Answer air threats: anti-air crawlers and flak turrets.
     pub aa_response: bool,
     /// Raise an Array once teched — the eyes for blips and long guns.
@@ -606,7 +604,6 @@ impl Dials {
             tech: true,
             turret_response: true,
             scouting: true,
-            fog_honest: true,
             aa_response: true,
             radar: true,
             reclaimers: true,
@@ -646,7 +643,6 @@ impl Dials {
             tech: true,
             turret_response: true,
             scouting: true,
-            fog_honest: true,
             aa_response: true,
             radar: true,
             reclaimers: true,
@@ -3824,12 +3820,11 @@ mod tests {
         Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime))
     }
 
-    fn strategy_surface(dials: &Dials) -> [bool; 16] {
+    fn strategy_surface(dials: &Dials) -> [bool; 15] {
         [
             dials.tech,
             dials.turret_response,
             dials.scouting,
-            dials.fog_honest,
             dials.aa_response,
             dials.radar,
             dials.reclaimers,
