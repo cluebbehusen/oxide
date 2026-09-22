@@ -1,7 +1,7 @@
 use super::*;
 use crate::experience::{
-    Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, Outcome, OutcomeJournal,
-    OutcomeReason,
+    Doctrine, EpisodeId, EpisodeOwner, EpisodeReport, ExperienceKey, ExperienceSubject, Outcome,
+    OutcomeJournal, OutcomeReason,
 };
 #[cfg(test)]
 use crate::observation::ObservationData;
@@ -118,6 +118,70 @@ mod tests {
             policy.state.work_experience.pending[0].reason,
             OutcomeReason::Preempted
         );
+    }
+
+    #[test]
+    fn construction_failure_is_scored_by_its_proposal_in_both_orientations() {
+        use crate::allocation::{DefenseInvestmentKey, FoundryExpansionKey, ProposalKey};
+        use crate::experience::Experience;
+        for home in [TilePos::new(0, 0), TilePos::new(29, 19)] {
+            for kind in [
+                BuildingKind::Foundry,
+                BuildingKind::Turret,
+                BuildingKind::RepairBay,
+            ] {
+                let mut obs = observation();
+                let anchor = TilePos::new(9, 4);
+                let orientation = crate::Orientation::for_home(&obs, home);
+                let mut policy = UtilityPolicy::new();
+                policy.observe_work_experience(&obs);
+                policy.record_dispatched_work(
+                    &obs,
+                    orientation,
+                    &[oxide_sim::PlayerCommand {
+                        player: obs.me,
+                        command: Command::Build {
+                            units: vec![UnitId(1)],
+                            kind,
+                            anchor: orientation.anchor(anchor, kind.base_stats().size),
+                            queue: false,
+                            defer: true,
+                        },
+                    }],
+                );
+                obs.my_units.clear();
+                obs.tick += 24;
+                policy.observe_work_experience(&obs);
+                let reports = &policy.state.work_experience.pending;
+                assert_eq!(reports.len(), 1);
+                assert_eq!(reports[0].outcome, Outcome::Ineffective);
+                let proposal = match kind {
+                    BuildingKind::Foundry => {
+                        ProposalKey::FoundryExpansion(FoundryExpansionKey { anchor })
+                    }
+                    BuildingKind::Turret => {
+                        ProposalKey::Defense(DefenseInvestmentKey { kind, anchor })
+                    }
+                    _ => ProposalKey::SupportConstruction(EconomicInvestmentKey::Build {
+                        kind,
+                        anchor,
+                    }),
+                };
+                let key = crate::allocation::experience_context(proposal).unwrap();
+                assert_eq!(key, reports[0].context);
+                let mut experience = Experience::default();
+                experience.observe(&obs, 6000);
+                experience.report(reports[0].clone());
+                assert!(experience.score(key) < 0);
+                assert_eq!(
+                    experience.contextual_score(ExperienceKey {
+                        subject: ExperienceSubject::Production(UnitKind::Harvester),
+                        ..key
+                    }),
+                    0
+                );
+            }
+        }
     }
 
     fn observation() -> Observation {
@@ -842,14 +906,14 @@ impl WorkExperience {
                             .iter()
                             .find(|unit| unit.id == id)
                             .map_or(TilePos::new(0, 0), |unit| unit.tile),
-                        u64::from(id.0),
+                        ExperienceSubject::Unit(id),
                     ),
                     Target::Building(id) => (
                         obs.my_buildings
                             .iter()
                             .find(|building| building.id == id)
                             .map_or(TilePos::new(0, 0), |building| building.anchor),
-                        u64::from(id.0),
+                        ExperienceSubject::Building(Some(id)),
                     ),
                 };
                 journal.watch(
@@ -917,7 +981,7 @@ impl WorkExperience {
                         doctrine: Doctrine::Pressure,
                         y: key.y,
                         x: key.x,
-                        subject: 0,
+                        subject: ExperienceSubject::Reconnaissance,
                     },
                     &[unit],
                     0,
@@ -1201,7 +1265,7 @@ impl WorkExperience {
                 doctrine: Doctrine::Expansion,
                 x: tile.x,
                 y: tile.y,
-                subject: 0,
+                subject: ExperienceSubject::Harvest,
             },
             &[worker],
             0,
@@ -1236,7 +1300,7 @@ impl WorkExperience {
                 doctrine: Doctrine::Expansion,
                 x: node.x,
                 y: node.y,
-                subject: 0,
+                subject: ExperienceSubject::Harvest,
             },
             &[worker],
             0,
@@ -1348,21 +1412,7 @@ impl WorkExperience {
         journal.watch(
             obs,
             id,
-            ExperienceKey {
-                doctrine: match kind {
-                    BuildingKind::RepairBay => Doctrine::Sustain,
-                    BuildingKind::Turret
-                    | BuildingKind::FlakTurret
-                    | BuildingKind::Bastion
-                    | BuildingKind::ScuttleCharge
-                    | BuildingKind::Barricade
-                    | BuildingKind::Array => Doctrine::Fortification,
-                    _ => Doctrine::Expansion,
-                },
-                x: anchor.x,
-                y: anchor.y,
-                subject: kind as u64,
-            },
+            ExperienceKey::construction(kind, anchor),
             &[worker.id],
             0,
         );

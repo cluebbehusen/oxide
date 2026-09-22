@@ -3484,7 +3484,8 @@ mod tests {
     #[test]
     fn rollback_preserves_observed_outcomes_without_committing_new_ownership() {
         use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         let mut policy = UtilityPolicy::default();
         let mut strategy = StrategicPlanner::new();
@@ -3504,7 +3505,7 @@ mod tests {
                 doctrine: Doctrine::Pressure,
                 x: 3,
                 y: 3,
-                subject: 4,
+                subject: ExperienceSubject::Building(Some(oxide_sim::BuildingId(4))),
             },
             &[],
             1,
@@ -5179,7 +5180,8 @@ mod tests {
     #[test]
     fn late_foundry_rejection_restores_an_already_committed_connected_operation() {
         use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         let mut observation = connected_observation(1_200, 10_000);
         let builder = UnitId(200);
@@ -5250,7 +5252,7 @@ mod tests {
                     doctrine: Doctrine::Pressure,
                     x: 3,
                     y: 3,
-                    subject: 4,
+                    subject: ExperienceSubject::Building(Some(oxide_sim::BuildingId(4))),
                 },
                 &[],
                 1,

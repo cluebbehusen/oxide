@@ -1118,7 +1118,7 @@ call reports only facts already owned by the fog-honest coordinator while
 returning the same ordinary commands as `Brain::act`. The trace recorder is
 local to that call; traces are not controller memory, authoritative state,
 replay input, or replay metadata. Ticks on which no player-facing decision
-occurs produce no trace. Trace schema version 12 reports current scrap
+occurs produce no trace. Trace schema version 13 reports current scrap
 separately from a bounded forecast based only on completed income sources,
 together with current builder and producer capacity. Proposal and allocation
 evidence records the coordinator's actual inputs and verdicts, including
@@ -1208,28 +1208,46 @@ later observation matching uses one coordinate frame. Defensive service uses a
 provider's movement domain for routing, including parked aircraft; target
 exposure still uses its current body domain.
 
-Contextual return and corroborated doctrine preferences decay toward neutral;
-each contextual contribution keeps its original completion time, including when
-new evidence arrives for the same context. Replacing shared credit removes that
-credit alone. Storage retains at most 64 contributions per context, 128
-contexts, and 64 recent episode reports, with canonical oldest-first eviction.
-These preferences alter candidate ranking and effective allocation return
-without rewriting raw consequence, urgency, confidence, or safety. Retry records
-for dispatched harvest and construction attempts expire and require fresh legal
-preparation. Current footprint occupation invalidates a construction attempt
-without a route penalty; remembered buildings alone cannot establish that
-occupation. Work observation also indexes active builders' occupied tiles once
-per decision. Fresh blocking foundations cannot displace those workers from
-their current work tiles; movement and completion release this protection
-without changing ordinary terrain routing. Contested-harvest quarantine retains
-its separate complete-sweep and safe-return requirements. These components are
-reconstructed by replaying the observed command prefix in the existing replay
-loader. Internal session checkpoints preserve them directly, together with
-unfinished planning and its remaining work allowance. Neither path puts
-controller memory in authoritative `State`. Controller checkpoint restoration
-validates map, configuration, planning storage, and time boundaries before
-exposing a seat; navigation query caches rebuild without changing decision work
-allowances.
+Experience subjects distinguish building and unit identities, construction and
+production kinds, upgrades, harvest, and reconnaissance. Construction reports
+and allocation queries share the same context constructor. Related work shares
+broad doctrine preferences deliberately; matching numeric IDs or enum ordinals
+do not transfer contextual credit. Trace subjects serialize their variant and
+value instead of an untyped integer.
+
+Contextual return and corroborated doctrine preferences decay toward neutral.
+Each retained credit owns its strongest contextual evidence and, independently,
+its strongest qualified doctrine evidence, including report identity,
+confidence, completion time and score. Weaker follow-ups cannot replace either
+winner after the recent report history evicts it. Evidence expires at its own
+completion time; new evidence for another credit cannot renew it. Replacing
+shared credit moves only that credit. Storage retains at most 64 credits per
+context, 128 contexts, and 64 recent episode reports, with canonical
+oldest-first eviction. Credit eviction uses the newer of its retained contextual
+and doctrine evidence timestamps, breaking ties by credit identity. Recent
+reports support diagnostics and approach reconnaissance; both preference scores
+come from retained credit evidence. Context scores fold in canonical completion
+order with saturation so counterevidence can break an entrenched preference.
+Experience refreshes its six doctrine scores after observation or a report
+changes retained evidence. Proposal queries read those prepared scores rather
+than rescanning every credit; contextual lookup inspects at most one bounded
+context's contributions. These preferences alter candidate ranking and effective
+allocation return without rewriting raw consequence, urgency, confidence, or
+safety. Retry records for dispatched harvest and construction attempts expire
+and require fresh legal preparation. Current footprint occupation invalidates a
+construction attempt without a route penalty; remembered buildings alone cannot
+establish that occupation. Work observation also indexes active builders'
+occupied tiles once per decision. Fresh blocking foundations cannot displace
+those workers from their current work tiles; movement and completion release
+this protection without changing ordinary terrain routing. Contested-harvest
+quarantine retains its separate complete-sweep and safe-return requirements.
+These components are reconstructed by replaying the observed command prefix in
+the existing replay loader. Internal session checkpoints preserve them directly,
+together with unfinished planning and its remaining work allowance. Neither path
+puts controller memory in authoritative `State`. Controller checkpoint
+restoration validates map, configuration, planning storage, and time boundaries
+before exposing a seat; navigation query caches rebuild without changing
+decision work allowances.
 
 An unpaid Foundry's recovery interval spans both funding and execution blockage.
 Restored funding permits another readiness check; only a ready builder and site

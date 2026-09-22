@@ -247,7 +247,8 @@ impl TeamReliefPlanner {
         };
 
         use super::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, Outcome, OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
+            OutcomeReason,
         };
         self.outcomes.watch(
             obs,
@@ -259,7 +260,7 @@ impl TeamReliefPlanner {
                 doctrine: Doctrine::Sustain,
                 y: relief.anchor.y,
                 x: relief.anchor.x,
-                subject: u64::from(relief.foundry.0),
+                subject: ExperienceSubject::Building(Some(relief.foundry)),
             },
             &relief.members,
             relief.phase as u8,
