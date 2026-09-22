@@ -87,12 +87,12 @@ fn bot_skirmish() -> Scenario {
 fn recorded_scenario_run_reproduces_from_its_replay() {
     // Exercise the runner recording path with a non-empty current-bot log.
     use chassis::replay::Replay;
-    use oxide_sim::{PlayerCommand, SIM_VERSION};
+    use oxide_sim::SIM_VERSION;
 
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
     let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
-    let mut replay: Replay<Scenario, PlayerCommand> = Replay::new(SIM_VERSION, scenario);
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();
         for bot in &mut bots {
@@ -159,9 +159,8 @@ fn run_without_bots_is_quiet_but_valid() {
 #[test]
 fn forged_marathon_replays_are_refused() {
     use chassis::replay::Replay;
-    use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
-    let mut replay: Replay<Scenario, PlayerCommand> =
-        Replay::new(SIM_VERSION, Scenario::skirmish());
+    use oxide_sim::{SIM_VERSION, Scenario};
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
     replay.meta.ticks = Some(u64::MAX - 1);
     let err = runner::run_replay(&replay, None, false).unwrap_err();
     assert!(err.to_string().contains("--allow-long"), "{err}");
@@ -294,9 +293,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
 #[test]
 fn a_version_mismatched_replay_is_refused_by_default() {
     use chassis::replay::Replay;
-    use oxide_sim::PlayerCommand;
-    let replay: Replay<Scenario, PlayerCommand> =
-        Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
+    let replay: oxide_kit::GameReplay = Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
     let err = runner::run_replay(&replay, None, false).unwrap_err();
     assert!(err.to_string().contains("recorded on sim"), "{err}");
 }
@@ -304,9 +301,7 @@ fn a_version_mismatched_replay_is_refused_by_default() {
 #[test]
 fn a_version_mismatched_replay_plays_when_the_mismatch_is_allowed() {
     use chassis::replay::Replay;
-    use oxide_sim::PlayerCommand;
-    let replay: Replay<Scenario, PlayerCommand> =
-        Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
+    let replay: oxide_kit::GameReplay = Replay::new("0.0.0-not-this-sim", Scenario::skirmish());
     let state = runner::run_replay(&replay, None, true).unwrap();
     assert_eq!(
         state.current_tick(),
@@ -319,8 +314,7 @@ fn a_version_mismatched_replay_plays_when_the_mismatch_is_allowed() {
 fn overriding_the_tick_count_below_the_commands_is_rejected() {
     use chassis::replay::Replay;
     use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, UnitId};
-    let mut replay: Replay<Scenario, PlayerCommand> =
-        Replay::new(SIM_VERSION, Scenario::skirmish());
+    let mut replay: oxide_kit::GameReplay = Replay::new(SIM_VERSION, Scenario::skirmish());
     replay.record(
         100,
         PlayerCommand {

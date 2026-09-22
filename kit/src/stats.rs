@@ -4,7 +4,7 @@
 //! Result screen's data, and a driver subcommand for anyone else.
 
 use crate::GameReplay;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use oxide_sim::{Event, PlayerId, State};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -283,17 +283,18 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     let every = every.max(1);
     let total = crate::bounded_replay_duration(replay)?;
-    let mut state = replay.setup.build().context("building scenario")?;
+    let mut state = crate::recording::initial_state(replay)?;
     let mut playback = crate::ReplayPlayback::new(replay);
 
     let mut stats = blank_players(state.players().len());
     let mut sample_ticks = Vec::new();
 
+    let start = state.current_tick();
     sample(&state, &mut stats, &mut sample_ticks);
-    for _ in 0..total {
+    for _ in start..total {
         let report = playback.step(&mut state);
         accumulate_events(&mut stats, &report.events);
-        if state.current_tick().is_multiple_of(every) {
+        if (state.current_tick() - start).is_multiple_of(every) {
             sample(&state, &mut stats, &mut sample_ticks);
         }
     }

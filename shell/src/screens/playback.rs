@@ -172,7 +172,7 @@ impl PlaybackSession {
     fn toggle_stats(&mut self) {
         self.show_stats = !self.show_stats;
         if self.show_stats && self.stats.is_none() {
-            let every = (self.engine.total() / 240).max(50);
+            let every = ((self.engine.total() - self.engine.start()) / 240).max(50);
             self.stats = oxide_kit::stats::compute(&self.replay, every).ok();
         }
     }
@@ -206,8 +206,8 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
     // seek in flight.
     let bar = scrub_rect(&pb.view(), viewport);
     fill_rect(bar, Color::from_rgba(15, 15, 18, 235));
-    let total = pb.engine.total().max(1) as f32;
-    let frac = pb.engine.position() as f32 / total;
+    let total = (pb.engine.total() - pb.engine.start()).max(1) as f32;
+    let frac = (pb.engine.position() - pb.engine.start()) as f32 / total;
     draw_rectangle(
         bar.x,
         bar.y,
@@ -216,7 +216,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         Color::new(0.55, 0.55, 0.62, 0.9),
     );
     if let Some(target) = pb.seeking {
-        let tfrac = target as f32 / total;
+        let tfrac = target.saturating_sub(pb.engine.start()) as f32 / total;
         draw_rectangle(
             bar.x + bar.w * tfrac - 1.5 * s,
             bar.y - 2.0 * s,
@@ -299,6 +299,20 @@ const BAND_COLORS: [Color; 9] = [
     Color::new(0.55, 0.55, 0.55, 0.95),
 ];
 
+fn composition_interval(ticks: &[u64], column: usize) -> (f32, f32) {
+    let start = ticks[0];
+    let end = ticks[ticks.len() - 1];
+    if start == end {
+        return (0.0, 1.0);
+    }
+    let next = ticks.get(column + 1).copied().unwrap_or(end);
+    let duration = (end - start) as f32;
+    (
+        (ticks[column] - start) as f32 / duration,
+        (next - start) as f32 / duration,
+    )
+}
+
 /// The composition timeline: a stacked share-of-army band per sample
 /// column, all seats pooled, top kinds named and the tail folded into
 /// gray. Rides above the scrub bar and carries a cursor tied to the
@@ -333,18 +347,19 @@ fn composition_band(
 
     let band = macroquad::prelude::Rect::new(bar.x, bar.y - 96.0 * s, bar.w, 72.0 * s);
     fill_rect(band, Color::from_rgba(15, 15, 18, 220));
-    let column_w = band.w / columns as f32;
     for (column, counts) in pooled.iter().enumerate() {
+        let (left, right) = composition_interval(&stats.sample_ticks, column);
+        let column_w = band.w * (right - left);
         let total: u32 = counts.values().sum();
-        if total == 0 {
+        if total == 0 || column_w <= 0.0 {
             continue;
         }
-        let x = band.x + column_w * column as f32;
+        let x = band.x + band.w * left;
         let mut y = band.y + band.h;
         let mut share = |count: u32, color: Color| {
             let h = band.h * count as f32 / total as f32;
             y -= h;
-            draw_rectangle(x, y, column_w + 0.5, h, color);
+            draw_rectangle(x, y, column_w, h, color);
         };
         let mut other = 0u32;
         let mut named_counts: Vec<(usize, u32)> = Vec::new();
@@ -363,7 +378,8 @@ fn composition_band(
         }
     }
     // Transport cursor.
-    let frac = pb.engine.position() as f32 / pb.engine.total().max(1) as f32;
+    let frac = (pb.engine.position() - pb.engine.start()) as f32
+        / (pb.engine.total() - pb.engine.start()).max(1) as f32;
     draw_rectangle(
         band.x + band.w * frac - 1.0 * s,
         band.y,
@@ -386,7 +402,8 @@ impl PlaybackSession {
     /// The tick a scrub-bar x position means.
     fn tick_at(&self, bar: macroquad::prelude::Rect, x: f32) -> u64 {
         let frac = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
-        (frac * self.engine.total() as f32).round() as u64
+        self.engine.start()
+            + (frac * (self.engine.total() - self.engine.start()) as f32).round() as u64
     }
 
     /// Applies transport input without advancing replay time.
@@ -472,7 +489,7 @@ impl PlaybackSession {
                                 seek_to = Some(self.engine.position().saturating_sub(500))
                             }
                             Action::ReplayForward => seek_to = Some(self.engine.position() + 500),
-                            Action::ReplayStart => seek_to = Some(0),
+                            Action::ReplayStart => seek_to = Some(self.engine.start()),
                             Action::ReplayEnd => seek_to = Some(self.engine.total()),
                             Action::ReplaySpeed(n) => self.speed = 0.5 * 2_f32.powi(i32::from(n)),
                             Action::ReplayStats => self.toggle_stats(),
@@ -520,7 +537,7 @@ impl PlaybackSession {
         }
         if let Some(target) = seek_to {
             // A fresh transport command replaces any seek in flight.
-            self.seeking = Some(target);
+            self.seeking = Some(target.clamp(self.engine.start(), self.engine.total()));
             self.accum = 0.0;
         }
         false
@@ -692,6 +709,42 @@ mod tests {
 
     fn session() -> PlaybackSession {
         PlaybackSession::from_replay(replay()).expect("session opens")
+    }
+
+    #[test]
+    fn composition_intervals_align_with_ticks_and_preserve_a_short_final_interval() {
+        for start in [0, 37] {
+            let ticks = [start, start + 3, start + 6, start + 8];
+            assert_eq!(composition_interval(&ticks, 0), (0.0, 3.0 / 8.0));
+            assert_eq!(composition_interval(&ticks, 1), (3.0 / 8.0, 6.0 / 8.0));
+            assert_eq!(composition_interval(&ticks, 2), (6.0 / 8.0, 1.0));
+            assert_eq!(composition_interval(&ticks, 3), (1.0, 1.0));
+        }
+        assert_eq!(composition_interval(&[37], 0), (0.0, 1.0));
+    }
+
+    #[test]
+    fn checkpoint_origin_transport_starts_and_scrubs_at_the_available_boundary() {
+        let scenario = oxide_sim::Scenario::skirmish();
+        let mut state = scenario.build().unwrap();
+        for _ in 0..37 {
+            state.tick(&[]);
+        }
+        let origin = oxide_kit::recording::WorldOrigin::capture(&scenario, &state).unwrap();
+        let mut replay = GameReplay::with_origin(SIM_VERSION, scenario, origin).unwrap();
+        replay.meta.ticks = Some(97);
+        assert!(game::Game::from_replay(replay.clone()).is_err());
+        let mut pb = PlaybackSession::from_replay(replay).unwrap();
+        assert_eq!(pb.engine.position(), 37);
+        let bar = macroquad::prelude::Rect::new(10.0, 10.0, 100.0, 10.0);
+        assert_eq!(pb.tick_at(bar, 10.0), 37);
+        assert_eq!(pb.tick_at(bar, 60.0), 67);
+        assert_eq!(pb.tick_at(bar, 110.0), 97);
+        key(&mut pb, Key::End);
+        assert_eq!(pb.engine.position(), 97);
+        key(&mut pb, Key::Home);
+        assert_eq!(pb.engine.position(), 37);
+        assert_eq!(pb.engine.state.hash(), state.hash());
     }
 
     fn long_session(ticks: u64) -> PlaybackSession {

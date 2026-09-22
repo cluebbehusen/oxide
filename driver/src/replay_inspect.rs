@@ -6,7 +6,7 @@
 //! have not executed yet.
 
 use crate::runner::GameReplay;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chassis::replay::ReplayMeta;
 use oxide_protocol::{FogView, StateFilter, StateView, hash_hex};
 use oxide_sim::scenario::BotConfig;
@@ -15,13 +15,15 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Version of the serialized [`ReplayInspection`] contract.
-pub const REPLAY_INSPECTION_SCHEMA_VERSION: u32 = 1;
+pub const REPLAY_INSPECTION_SCHEMA_VERSION: u32 = 2;
 
 /// A stable machine-readable inspection of one replay or save.
 #[derive(Debug, Serialize)]
 pub struct ReplayInspection {
     /// Serialization contract version.
     pub schema_version: u32,
+    /// First absolute tick available; earlier match history is absent.
+    pub start_tick: u64,
     /// Provenance embedded in the replay.
     pub metadata: ReplayMeta,
     /// Reproducible starting-match facts.
@@ -124,6 +126,8 @@ pub struct CommandSilence {
 pub enum SilenceBoundary {
     /// The replay starts at tick zero.
     MatchStart,
+    /// Earlier match history is unavailable before this checkpoint.
+    Checkpoint,
     /// The seat issued one or more commands at this tick.
     Command,
     /// The replay's recorded duration ends at this tick.
@@ -164,7 +168,7 @@ pub fn inspect(
     replay.validate(Some(SIM_VERSION))?;
     let total = oxide_kit::bounded_replay_duration(replay)?;
 
-    let mut state = replay.setup.build().context("building replay setup")?;
+    let mut state = oxide_kit::recording::initial_state(replay)?;
     if let Some(seat) = fog_seat {
         anyhow::ensure!(
             state.try_player(seat).is_some(),
@@ -185,17 +189,21 @@ pub fn inspect(
         anyhow::bail!("snapshot tick {tick} exceeds replay duration {total}");
     }
 
+    anyhow::ensure!(
+        ticks.iter().all(|tick| *tick >= replay.start_tick()),
+        "snapshot precedes recording origin"
+    );
     let command_activity = command_activity(replay, total);
     let scenario = scenario_summary(replay, &state);
     let mut snapshots = Vec::with_capacity(ticks.len());
     let mut next_snapshot = 0;
-    if ticks.first() == Some(&0) {
+    if ticks.first() == Some(&state.current_tick()) {
         snapshots.push(capture_snapshot(&state, fog_seat, include_map));
         next_snapshot = 1;
     }
 
     let mut playback = oxide_kit::ReplayPlayback::new(replay);
-    for _ in 0..total {
+    for _ in state.current_tick()..total {
         playback.step(&mut state);
         if ticks.get(next_snapshot) == Some(&state.current_tick()) {
             snapshots.push(capture_snapshot(&state, fog_seat, include_map));
@@ -220,6 +228,7 @@ pub fn inspect(
 
     Ok(ReplayInspection {
         schema_version: REPLAY_INSPECTION_SCHEMA_VERSION,
+        start_tick: replay.start_tick(),
         metadata: replay.meta.clone(),
         scenario,
         final_state,
@@ -300,18 +309,23 @@ fn command_activity(replay: &GameReplay, total: u64) -> Vec<SeatCommandActivity>
             first_command_tick: entry.first_command_tick,
             last_command_tick: entry.last_command_tick,
             by_type: entry.by_type,
-            longest_silence: longest_silence(&entry.command_ticks, total),
+            longest_silence: longest_silence(&entry.command_ticks, replay.start_tick(), total),
         })
         .collect()
 }
 
-fn longest_silence(command_ticks: &[u64], total: u64) -> CommandSilence {
+fn longest_silence(command_ticks: &[u64], start: u64, total: u64) -> CommandSilence {
+    let start_boundary = if start == 0 {
+        SilenceBoundary::MatchStart
+    } else {
+        SilenceBoundary::Checkpoint
+    };
     if command_ticks.is_empty() {
         return CommandSilence {
-            from_tick: 0,
+            from_tick: start,
             to_tick: total,
-            duration_ticks: total,
-            start_boundary: SilenceBoundary::MatchStart,
+            duration_ticks: total - start,
+            start_boundary,
             end_boundary: SilenceBoundary::MatchEnd,
         };
     }
@@ -330,11 +344,11 @@ fn longest_silence(command_ticks: &[u64], total: u64) -> CommandSilence {
         }
     };
 
-    if command_ticks[0] > 0 {
+    if command_ticks[0] > start {
         consider(
-            0,
+            start,
             command_ticks[0],
-            SilenceBoundary::MatchStart,
+            start_boundary,
             SilenceBoundary::Command,
         );
     }
@@ -423,7 +437,7 @@ mod tests {
         let report =
             inspect(&fixture(), &[12, 5, 0, 5], Some(PlayerId(1)), true).expect("fixture inspects");
 
-        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.schema_version, 2);
         assert_eq!(report.scenario.name, "Skirmish Basin");
         assert_eq!(report.scenario.players[1].seat, 1);
         assert!(report.scenario.players[1].bot);

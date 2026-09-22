@@ -43,6 +43,82 @@ pub struct RestoredSession {
 }
 
 impl SessionCheckpoint {
+    /// Starts a world-only recording at this session boundary.
+    pub fn recording(&self) -> Result<GameReplay> {
+        self.validate_world()?;
+        Ok(GameReplay::with_origin(
+            SIM_VERSION,
+            self.scenario.clone(),
+            crate::recording::WorldOrigin::capture(&self.scenario, &self.state)?,
+        )?)
+    }
+
+    pub(crate) fn validate_origin(&self, replay: &GameReplay) -> Result<()> {
+        replay.validate(Some(SIM_VERSION))?;
+        self.clone().restore()?;
+        ensure!(
+            replay.origin.is_some()
+                && replay.setup == self.scenario
+                && replay.start_tick() == self.state.current_tick()
+                && crate::recording::initial_state(replay)?.hash() == self.state.hash(),
+            "recovery checkpoint does not match recording origin"
+        );
+        if crate::replay_duration(replay) > replay.start_tick() {
+            let mut first = replay
+                .commands
+                .iter()
+                .take_while(|timed| timed.tick == replay.start_tick());
+            ensure!(
+                self.pending
+                    .iter()
+                    .all(|pending| first.next().is_some_and(|timed| timed.command == *pending)),
+                "recovery batch omits pending checkpoint commands"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_first_batch(&self, commands: &[PlayerCommand]) -> Result<()> {
+        ensure!(
+            commands.starts_with(&self.pending),
+            "recovery batch omits pending checkpoint commands"
+        );
+        Ok(())
+    }
+
+    /// Restores controllers, then observes only the recorded suffix. Pending
+    /// inputs survive an empty suffix; a completed first tick consumes them once.
+    pub fn resume_recording(self, replay: &GameReplay) -> Result<RestoredSession> {
+        self.validate_origin(replay)?;
+        let end = crate::bounded_replay_duration(replay)?;
+        let mut session = self.restore()?;
+        let mut cursor = replay.cursor();
+        for tick in session.state.current_tick()..end {
+            let commands: Vec<_> = cursor
+                .take_tick(tick)
+                .iter()
+                .map(|timed| timed.command.clone())
+                .collect();
+            if tick == replay.start_tick() {
+                ensure!(
+                    commands.starts_with(&session.pending),
+                    "recovery batch omits pending checkpoint commands"
+                );
+                session.pending.clear();
+            }
+            let _ = crate::bot_execution::commands(&session.state, &mut session.bots);
+            let report = session.state.tick(&commands);
+            if let Some(stats) = &mut session.stats {
+                stats.observe(&session.state, &report.events);
+            }
+        }
+        ensure!(
+            cursor.is_finished(),
+            "recovery suffix left unconsumed commands"
+        );
+        Ok(session)
+    }
+
     /// Borrows a quiescent host after its tick and statistics update have finished.
     /// Does not run controllers, drain inputs, or advance the simulation.
     /// The host must supply the scenario that produced this world. The binding
@@ -103,21 +179,7 @@ impl SessionCheckpoint {
             self.snapshot_binding == snapshot_binding(&self.scenario, &self.state),
             "checkpoint scenario/world binding mismatch"
         );
-        let initial = self.scenario.build().context("checkpoint scenario")?;
-        ensure!(
-            initial.map().width() == self.state.map().width()
-                && initial.map().height() == self.state.map().height(),
-            "checkpoint map dimensions mismatch"
-        );
-        ensure!(
-            initial.players().len() == self.state.players().len()
-                && initial
-                    .players()
-                    .iter()
-                    .zip(self.state.players())
-                    .all(|(a, b)| a.faction == b.faction && a.team == b.team),
-            "checkpoint seats mismatch"
-        );
+        validate_setup(&self.scenario, &self.state)?;
         ensure!(
             self.pending.len() <= 65_536
                 && self
@@ -159,12 +221,31 @@ impl SessionCheckpoint {
     }
 }
 
-fn snapshot_binding(scenario: &Scenario, state: &State) -> u64 {
+pub(crate) fn validate_setup(scenario: &Scenario, state: &State) -> Result<()> {
+    let initial = scenario.build().context("checkpoint scenario")?;
+    ensure!(
+        initial.map().width() == state.map().width()
+            && initial.map().height() == state.map().height(),
+        "checkpoint map dimensions mismatch"
+    );
+    ensure!(
+        initial.players().len() == state.players().len()
+            && initial
+                .players()
+                .iter()
+                .zip(state.players())
+                .all(|(a, b)| a.faction == b.faction && a.team == b.team),
+        "checkpoint seats mismatch"
+    );
+    Ok(())
+}
+
+pub(crate) fn snapshot_binding(scenario: &Scenario, state: &State) -> u64 {
     chassis::hash::state_hash(&(scenario, state.hash()))
 }
 
-/// A checkpoint paired with the existing recorder until replay origins support
-/// checkpoints. The core checkpoint itself needs no earlier command history.
+/// A checkpoint paired with its current recording. The recording may start
+/// from a scenario or a world origin; the checkpoint needs no earlier commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordedCheckpoint {
