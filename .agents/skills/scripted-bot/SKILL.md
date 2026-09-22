@@ -40,6 +40,12 @@ remain explicit. Current scrap funds commands; forecast income proves future
 feasibility only. Personality ranks legal choices and never grants or removes a
 capability. Difficulty changes the documented cognitive limits, not game rules.
 
+Policy lives in `oxide-bot`; authoritative observation filtering lives in
+`oxide-sim`. Keep the dependency one-way. `Brain` consumes observations;
+`SeatBot` adapts state on the existing host worker. Do not introduce simulation
+mutation APIs for bot fixtures or serial observation preprocessing before
+parallel seat execution.
+
 ## Choose evidence by boundary
 
 Read only the relevant sections of
@@ -83,10 +89,10 @@ rather than treating a percentage threshold as a verdict.
 Start with the affected module and integration suite. Common controller seams:
 
 ```sh
-cargo test -p oxide-sim --test bot_brain --locked
-cargo test -p oxide-sim --test bot_policy --locked
-cargo test -p oxide-sim --test scripted_bot --locked
-cargo test -p oxide-sim --test bot_frames --locked
+cargo test -p oxide-bot --test bot_brain --locked
+cargo test -p oxide-bot --test bot_policy --locked
+cargo test -p oxide-bot --test scripted_bot --locked
+cargo test -p oxide-bot --test bot_frames --locked
 ```
 
 For battlefield or reconnaissance ownership, include `battlefield_adaptation`,

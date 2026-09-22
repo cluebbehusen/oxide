@@ -576,12 +576,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "oxide-bot"
+version = "0.17.0"
+dependencies = [
+ "chassis",
+ "oxide-sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxide-driver"
 version = "0.17.0"
 dependencies = [
  "anyhow",
  "chassis",
  "clap",
+ "oxide-bot",
  "oxide-kit",
  "oxide-protocol",
  "oxide-sim",
@@ -596,6 +607,7 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "chassis",
+ "oxide-bot",
  "oxide-sim",
  "rayon",
  "serde",
@@ -621,6 +633,7 @@ dependencies = [
  "chassis",
  "clap",
  "macroquad",
+ "oxide-bot",
  "oxide-kit",
  "oxide-protocol",
  "oxide-sim",

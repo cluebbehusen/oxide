@@ -899,7 +899,7 @@ fn main() -> Result<()> {
                 let mut sc = runner::load_scenario(&path)?;
                 oxide_kit::bench::all_bots_with_config(&mut sc, config);
                 let mut state = sc.build()?;
-                let mut bots = oxide_sim::bot::seat_bots(&sc)?;
+                let mut bots = oxide_bot::seat_bots(&sc)?;
                 println!(
                     "controller: {config:?}; sim {}; simulation seed {}",
                     oxide_sim::SIM_VERSION,

@@ -166,7 +166,7 @@ fn team_sight_is_shared() {
         state.can_see(PlayerId(0), spot),
         "an ally's eyes are the team's eyes"
     );
-    let obs = oxide_sim::bot::Observation::fog_honest(&state, PlayerId(0));
+    let obs = oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0));
     assert!(
         obs.enemy_units
             .iter()
@@ -269,25 +269,6 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
     run_until(&mut state, 3000, |s, _| s.result().is_some());
     assert_eq!(state.result(), Some(GameResult::Victory { team: 0 }));
     assert_eq!(state.winners(), vec![PlayerId(0), PlayerId(1)]);
-}
-
-#[test]
-fn a_2v2_scenario_reproduces_bit_identically() {
-    let scenario = Scenario::load("../scenarios/twin-forges.json").unwrap();
-    let run = || {
-        let mut state = scenario.build().unwrap();
-        let mut bots = oxide_sim::bot::seat_bots(&scenario).unwrap();
-        assert!(!bots.is_empty(), "twin-forges fields bot seats");
-        for _ in 0..600 {
-            let mut commands = Vec::new();
-            for bot in bots.iter_mut() {
-                commands.extend(bot.act(&state));
-            }
-            state.tick(&commands);
-        }
-        state.hash()
-    };
-    assert_eq!(run(), run(), "same seed, same commands, same world");
 }
 
 #[test]

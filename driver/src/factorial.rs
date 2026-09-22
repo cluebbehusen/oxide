@@ -725,8 +725,8 @@ pub fn factorial_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bot::seat_bots;
     use oxide_sim::State;
-    use oxide_sim::bot::seat_bots;
 
     fn synthetic(factions: [&str; 2], outcome: SweepOutcome, ticks: u64) -> FactorialMatch {
         FactorialMatch {

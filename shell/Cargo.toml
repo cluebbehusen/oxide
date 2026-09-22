@@ -13,6 +13,7 @@ name = "Oxide"
 path = "src/main.rs"
 
 [dependencies]
+oxide-bot = { workspace = true }
 chassis = { workspace = true }
 oxide-sim = { workspace = true }
 oxide-protocol = { workspace = true }

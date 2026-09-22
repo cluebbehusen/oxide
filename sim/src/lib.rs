@@ -1,10 +1,11 @@
 #![doc = include_str!("../README.md")]
 
-pub mod bot;
 pub mod command;
 pub mod event;
+pub mod geometry;
 pub mod ids;
 pub mod map;
+pub mod observation;
 pub mod scenario;
 pub mod state;
 pub mod stats;

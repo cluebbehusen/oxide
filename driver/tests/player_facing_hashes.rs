@@ -1,6 +1,6 @@
 //! State-hash fixtures for the shipped player-facing controller.
 //!
-//! Representative shipped maps run through `oxide_sim::bot::seat_bots`,
+//! Representative shipped maps run through `oxide_bot::seat_bots`,
 //! the same seating path as the shell and driver, at Prime difficulty,
 //! Balanced stance, and fixed per-seat personality seeds to a combat horizon.
 //! These pin controller behavior independently of the controller-free rule
@@ -94,8 +94,8 @@ fn run_map(name: &str) -> MapRun {
     let mut state = scenario
         .build()
         .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-    let mut bots = oxide_sim::bot::seat_bots(&scenario)
-        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+    let mut bots =
+        oxide_bot::seat_bots(&scenario).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
     assert_eq!(
         bots.len(),
         scenario.players.len(),

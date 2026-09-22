@@ -2112,10 +2112,10 @@ pub const EXTRACTOR_REMOTE_INCOME_PER_MINUTE: u32 = 120;
 pub const EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE: u32 = 180;
 
 /// Remote Extractors pay one scrap every half second.
-pub(crate) const EXTRACTOR_REMOTE_YIELD: (u32, u64) = (1, 10);
+pub const EXTRACTOR_REMOTE_YIELD: (u32, u64) = (1, 10);
 
 /// Supported Extractors pay three scrap every second.
-pub(crate) const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
+pub const EXTRACTOR_SUPPORTED_YIELD: (u32, u64) = (3, 20);
 
 /// Ticks between decay steps on an unattended construction site (one hp
 /// per step, applied while no own harvest-capable machine stands beside
@@ -2134,7 +2134,9 @@ pub const SITE_DECAY_PERIOD: u64 = 8;
 /// salvage from creating scrap.
 pub const REPAIR_COST_PERMILLE: u64 = 850;
 
-pub(crate) fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
+/// Scrap charged for the next unit-repair tick at the given repair progress.
+/// Uses cumulative rounding so consecutive ticks agree with authoritative billing.
+pub fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
     let stats = kind.stats();
     let owed = |ticks: u32| {
         let welded = u64::from(stats.max_hp) * u64::from(ticks) / u64::from(stats.train_ticks);

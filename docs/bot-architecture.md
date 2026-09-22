@@ -7,6 +7,20 @@ The [scripted-bot skill](../.agents/skills/scripted-bot/SKILL.md) owns
 procedures and targeted regression guidance. Schema details live with their Rust
 types.
 
+## Crate boundary
+
+`oxide-bot` depends on `oxide-sim`, never the reverse. Simulation owns the
+observation schema and authoritative fog filtering; bot owns derived caches,
+profile resolution, memory and decisions. Shared command geometry stays with the
+rules so prediction and execution use the same tie-breaks.
+
+`Brain` accepts observations. `SeatBot` is the state-aware host adapter, gating
+finished matches, cadence and resignation before invoking the decision core. The
+existing host worker pool captures each due seat's observation on its worker and
+collects commands in canonical seat order. No observation prepass serializes
+that work, and policy does not create nested workers. A bot-only source edit
+does not invalidate the simulation crate's compiled code.
+
 ## Controller and profiles
 
 Bots live outside `State::tick`. A bot reads a state-derived observation and

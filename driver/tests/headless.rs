@@ -74,7 +74,7 @@ fn play_and_tally(scenario: &Scenario, ticks: u64) -> anyhow::Result<MatchActivi
     use oxide_sim::event::Event;
 
     let mut state = scenario.build()?;
-    let mut bots = oxide_sim::bot::seat_bots(scenario)?;
+    let mut bots = oxide_bot::seat_bots(scenario)?;
     let mut seats = vec![SeatActivity::default(); scenario.players.len()];
     let mut unit_owner: BTreeMap<u32, usize> = state
         .units()
@@ -231,7 +231,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 
     let scenario = bot_skirmish();
     let mut state = scenario.build().unwrap();
-    let mut bots = oxide_sim::bot::seat_bots(&scenario).unwrap();
+    let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
     let mut replay: Replay<Scenario, PlayerCommand> = Replay::new(SIM_VERSION, scenario);
     for _ in 0..900 {
         let mut commands = Vec::new();

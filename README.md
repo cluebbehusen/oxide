@@ -120,7 +120,9 @@ its own README with its purpose, main modules, and focused development commands.
   foundation: fixed-point geometry, stable randomness and hashing, pathfinding,
   replay records, and durable writes. It contains no Oxide rules or rendering.
 - [`sim/`](sim/README.md) is `oxide-sim`, the pure headless game. It owns every
-  rule and bot; `State::tick(&[PlayerCommand])` is its only state transition.
+  rule; `State::tick(&[PlayerCommand])` is its only state transition.
+- [`bot/`](bot/README.md) owns the command-producing opponent. It reads
+  simulation-owned observations and keeps policy and planning outside the rules.
 - [`protocol/`](protocol/README.md) defines the JSON-lines debug contract,
   hardware-neutral input events, state views, fog-honest views, and transport
   shared by live and windowless sessions.

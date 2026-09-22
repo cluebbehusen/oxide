@@ -26,7 +26,7 @@ pub struct PlayerId(pub u8);
 /// mirrored seats different choices. An owner-local rank preserves the
 /// canonical ordering within a seat without carrying that physical-seat
 /// history into the choice.
-pub(crate) fn owner_local_unit_rank(
+pub fn owner_local_unit_rank(
     target: UnitId,
     owner: PlayerId,
     units: impl IntoIterator<Item = (UnitId, PlayerId)>,

@@ -17,12 +17,10 @@ an ordinary command source rather than a separate ruleset.
 - `tick` implements the fixed phase order for commands, production, movement,
   combat, cleanup, and victory.
 - `stats` is the single home for units, buildings, and balance constants.
-- `bot` turns fog-honest observations and an immutable public briefing into
-  ordinary commands. Domains own evidence, proposals and tactics; shared
-  allocation owns exact resources; the Executive owns command lowering. Retained
-  operations and fresh work pass through one admission pipeline. See
-  [Bot architecture](../docs/bot-architecture.md) for current responsibilities
-  and [Bot strategy](../docs/bot-strategy.md) for the intended strategic model.
+- `observation` projects serializable player knowledge through fog and vision
+  memory. It owns information access, not controller policy or navigation
+  caches.
+- `geometry` shares canonical command and production tie rules with predictors.
 - `vision` provides visibility and explored-world state.
 
 Queued construction pays for one site immediately. Fogged footprints remain
@@ -43,22 +41,6 @@ footprint-, or map-relative frames instead of global entity ids or an absolute
 screen corner. Airworks aircraft spawn at the authoritative center of the open
 roof bay, then obey their ordinary orders from there.
 
-`bot::navigation` owns bot route queries, search storage, and cache lifetimes.
-Its `commands` module projects ordinary movement and Build routes from player
-knowledge; `paths` provides canonical endpoint routes and bounds;
-`public_fields` provides terrain and danger-aware travel distances; `service`
-retains producer and target connectivity; `egress` certifies producer exits;
-`flood` handles connectivity and placement witnesses; and `travel` converts a
-route cost into free-flow ticks for a unit kind. Barricade foothold valuation
-asks for costs instead of full paths. Planners supply knowledge, safety rules,
-and target preferences; navigation preserves command orientation, path ties, and
-search limits. Ground, air, and hypothetical layouts retain separate bounded
-caches.
-
-Voluntary defense rejects construction kinds that cannot meet the current
-allocation reserve before searching for sites. Final allocation still owns the
-exact funding and compatibility decision.
-
 ## Development
 
 Run commands from the workspace root:
@@ -68,9 +50,3 @@ cargo test -p oxide-sim --locked
 cargo test -p oxide-sim --test state_integrity --locked
 cargo clippy -p oxide-sim --all-targets --locked -- -D warnings
 ```
-
-Bot observation is an optional callback surface in `bot::observer`. Callbacks
-report paired phase boundaries, deterministic planning-work counts, and opt-in
-caller-attributed query work around the ordinary controller. They do not
-introduce clocks, serialized fields, or alternative planning paths; callers own
-timing and persistence.

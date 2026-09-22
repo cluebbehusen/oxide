@@ -1,0 +1,23 @@
+[package]
+name = "oxide-bot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Fog-honest deterministic command-producing opponent"
+
+[dependencies]
+oxide-sim = { workspace = true }
+chassis = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+float_arithmetic = "deny"
+disallowed_types = "deny"
