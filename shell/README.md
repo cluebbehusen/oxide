@@ -19,10 +19,10 @@ crate-level rustdoc.
   and result report.
 - `game` owns one live session, its recorder, and bots. `game::Presentation`
   holds camera, interpolation, effects, and UI state; rendering borrows the
-  active live or replay world through `game::Scene`. Its internal serde
-  checkpoint adapter restores the shared session, tutorial progress, concession
-  report, and decorative boundary exploration. Restoration opens paused and
-  rebuilds transient presentation at the current viewport.
+  active live or replay world through `game::Scene`. Its serde checkpoint
+  adapter restores the shared session, tutorial progress, concession report, and
+  decorative boundary exploration. Restoration opens paused and rebuilds
+  transient presentation at the current viewport.
 - `input` and `action` form the single hardware and injected-input funnel.
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.
@@ -36,8 +36,9 @@ crate-level rustdoc.
 - `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
   resources.
 - `debug_server` connects the frame loop to `oxide-protocol`.
-- `autosave`, `saves`, and the playback screens manage replay-backed
-  persistence.
+- `saved_game` owns bounded checkpoint files and compatible legacy replay
+  imports. `autosave` owns atomic publication and retention; `saves` classifies
+  checkpoints and recordings for the shelf. Playback screens accept recordings.
 
 ## Development
 

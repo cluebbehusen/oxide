@@ -191,10 +191,17 @@ under [`.agents/skills/`](.agents/skills/).
 
 ## Saves and replays
 
-There is no separate mutable save-state format. A save contains the starting
-scenario and every tick-stamped command. Loading reconstructs the match by
-replaying that record, then continues recording from the same history. Finished
-matches use the same format in a read-only viewer.
+Continue and named saves restore session checkpoints directly and open paused.
+They preserve the world, opponent memory, pending input, and statistics without
+replaying the opening. Compatible legacy saves reconstruct once on load; the
+next save uses a checkpoint and leaves the original file intact.
+
+Recordings contain a starting scenario or world checkpoint and tick-stamped
+commands. Loading a player save starts a new recording segment at the saved
+tick. Finished matches remain watchable, but a segment contains only the history
+recorded since its origin. Saves currently require matching simulation,
+controller, and checkpoint revisions; cross-version migrations are not yet
+supported.
 
 The embedded scenario preserves each opponent's exact difficulty, stance, and
 personality seed. New Match creates new hidden identities; Restart, Rematch,
