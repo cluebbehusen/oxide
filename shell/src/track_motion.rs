@@ -20,7 +20,9 @@ impl TrackMotion {
         }
     }
 
-    pub(crate) fn observe(&mut self, tick: u64, heading: f32, gauge: f32, propulsion: Vec2) {
+    /// `travel` is the body's whole displacement this tick, driven or
+    /// shoved; only its component along the hull rolls the belts.
+    pub(crate) fn observe(&mut self, tick: u64, heading: f32, gauge: f32, travel: Vec2) {
         if self.tick == tick {
             return;
         }
@@ -28,7 +30,7 @@ impl TrackMotion {
             .rem_euclid(std::f32::consts::TAU)
             - std::f32::consts::PI;
         let mid = self.heading + turn * 0.5;
-        let forward = propulsion.dot(Vec2::new(mid.cos(), mid.sin()));
+        let forward = travel.dot(Vec2::new(mid.cos(), mid.sin()));
         self.previous = self.distance;
         self.distance[0] += forward + turn * gauge * 0.5;
         self.distance[1] += forward - turn * gauge * 0.5;
@@ -57,6 +59,15 @@ mod tests {
         assert_eq!(tracks.distances(1.0), [0.04, 0.04]);
         tracks.observe(3, 0.0, 0.8, Vec2::ZERO);
         assert_eq!(tracks.distances(0.5), [0.04, 0.04]);
+    }
+
+    #[test]
+    fn a_shove_rolls_the_belts_only_along_the_hull() {
+        let mut tracks = TrackMotion::new(0, 0.0);
+        tracks.observe(1, 0.0, 0.8, Vec2::new(0.0, 0.05));
+        assert_eq!(tracks.distances(1.0), [0.0, 0.0]);
+        tracks.observe(2, 0.0, 0.8, Vec2::new(-0.03, 0.05));
+        assert_eq!(tracks.distances(1.0), [-0.03, -0.03]);
     }
 
     #[test]
