@@ -112,7 +112,9 @@ mod tests {
         );
         assert!(crate::runner::run_replay(&replay, Some(36), false).is_err());
         let stats = crate::stats::compute(&replay, 3).unwrap();
-        assert_eq!(stats.sample_ticks.first(), Some(&37));
+        assert_eq!(stats.sample_ticks, [37, 40, 43, 46]);
+        let partial = crate::stats::compute(&replay, 4).unwrap();
+        assert_eq!(partial.sample_ticks, [37, 41, 45, 46]);
         assert_eq!(stats.final_tick, 46);
         let mut playback = crate::playback::Playback::load(replay).unwrap();
         assert_eq!(playback.position(), 37);

@@ -299,6 +299,20 @@ const BAND_COLORS: [Color; 9] = [
     Color::new(0.55, 0.55, 0.55, 0.95),
 ];
 
+fn composition_interval(ticks: &[u64], column: usize) -> (f32, f32) {
+    let start = ticks[0];
+    let end = ticks[ticks.len() - 1];
+    if start == end {
+        return (0.0, 1.0);
+    }
+    let next = ticks.get(column + 1).copied().unwrap_or(end);
+    let duration = (end - start) as f32;
+    (
+        (ticks[column] - start) as f32 / duration,
+        (next - start) as f32 / duration,
+    )
+}
+
 /// The composition timeline: a stacked share-of-army band per sample
 /// column, all seats pooled, top kinds named and the tail folded into
 /// gray. Rides above the scrub bar and carries a cursor tied to the
@@ -333,18 +347,19 @@ fn composition_band(
 
     let band = macroquad::prelude::Rect::new(bar.x, bar.y - 96.0 * s, bar.w, 72.0 * s);
     fill_rect(band, Color::from_rgba(15, 15, 18, 220));
-    let column_w = band.w / columns as f32;
     for (column, counts) in pooled.iter().enumerate() {
+        let (left, right) = composition_interval(&stats.sample_ticks, column);
+        let column_w = band.w * (right - left);
         let total: u32 = counts.values().sum();
-        if total == 0 {
+        if total == 0 || column_w <= 0.0 {
             continue;
         }
-        let x = band.x + column_w * column as f32;
+        let x = band.x + band.w * left;
         let mut y = band.y + band.h;
         let mut share = |count: u32, color: Color| {
             let h = band.h * count as f32 / total as f32;
             y -= h;
-            draw_rectangle(x, y, column_w + 0.5, h, color);
+            draw_rectangle(x, y, column_w, h, color);
         };
         let mut other = 0u32;
         let mut named_counts: Vec<(usize, u32)> = Vec::new();
@@ -694,6 +709,18 @@ mod tests {
 
     fn session() -> PlaybackSession {
         PlaybackSession::from_replay(replay()).expect("session opens")
+    }
+
+    #[test]
+    fn composition_intervals_align_with_ticks_and_preserve_a_short_final_interval() {
+        for start in [0, 37] {
+            let ticks = [start, start + 3, start + 6, start + 8];
+            assert_eq!(composition_interval(&ticks, 0), (0.0, 3.0 / 8.0));
+            assert_eq!(composition_interval(&ticks, 1), (3.0 / 8.0, 6.0 / 8.0));
+            assert_eq!(composition_interval(&ticks, 2), (6.0 / 8.0, 1.0));
+            assert_eq!(composition_interval(&ticks, 3), (1.0, 1.0));
+        }
+        assert_eq!(composition_interval(&[37], 0), (0.0, 1.0));
     }
 
     #[test]

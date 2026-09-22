@@ -327,7 +327,8 @@ pub struct SeatDigestRow {
     /// teammates repeat the same figure). `explored_pct` is a map-size
     /// fraction and is not comparable across maps; this and the delta are.
     pub explored_tiles: u64,
-    /// Tiles newly explored since the previous digest.
+    /// Tiles newly explored since the previous digest, or since the checkpoint
+    /// for the first digest of a checkpoint-origin recording.
     pub explored_delta: u64,
     /// Explored share of the map in whole percent.
     pub explored_pct: u32,
@@ -718,7 +719,16 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
     let mut contacted: BTreeSet<(u8, u8)> = BTreeSet::new();
 
     let mut windows: Vec<SeatWindow> = vec![SeatWindow::default(); seat_count];
-    let mut prev_explored: Vec<u64> = vec![0; seat_count];
+    let mut prev_explored: Vec<u64> = if replay.origin.is_some() {
+        let explored = team_exploration(&state);
+        state
+            .players()
+            .iter()
+            .map(|seat| explored[&seat.team].0)
+            .collect()
+    } else {
+        vec![0; seat_count]
+    };
     let mut window_combat: u64 = 0;
     let mut quiet_run: Option<QuietRun> = None;
     let mut prev_boundary = replay.start_tick();
@@ -1190,20 +1200,12 @@ fn built_count(state: &State, seat: u8, kind: BuildingKind) -> u32 {
         .count() as u32
 }
 
-fn capture_digest(
-    state: &State,
-    tick: u64,
-    post_game: bool,
-    windows: &mut [SeatWindow],
-    prev_explored: &mut [u64],
-    with_minimap: bool,
-) -> Digest {
-    let seat_count = state.players().len();
+fn team_exploration(state: &State) -> BTreeMap<u8, (u64, u32)> {
     // Vision is team-shared: compute each team's explored share once.
     let mut team_explored: BTreeMap<u8, (u64, u32)> = BTreeMap::new();
     let map = state.map();
     let tiles = u64::from(map.width().unsigned_abs()) * u64::from(map.height().unsigned_abs());
-    for seat in 0..seat_count {
+    for seat in 0..state.players().len() {
         let team = state.players()[seat].team;
         team_explored.entry(team).or_insert_with(|| {
             let vision = state.vision(PlayerId(seat as u8));
@@ -1218,6 +1220,20 @@ fn capture_digest(
             (explored, ((explored * 100) / tiles.max(1)) as u32)
         });
     }
+
+    team_explored
+}
+
+fn capture_digest(
+    state: &State,
+    tick: u64,
+    post_game: bool,
+    windows: &mut [SeatWindow],
+    prev_explored: &mut [u64],
+    with_minimap: bool,
+) -> Digest {
+    let seat_count = state.players().len();
+    let team_explored = team_exploration(state);
 
     let rows = (0..seat_count)
         .map(|seat| {

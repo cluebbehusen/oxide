@@ -289,11 +289,12 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
     let mut stats = blank_players(state.players().len());
     let mut sample_ticks = Vec::new();
 
+    let start = state.current_tick();
     sample(&state, &mut stats, &mut sample_ticks);
-    for _ in state.current_tick()..total {
+    for _ in start..total {
         let report = playback.step(&mut state);
         accumulate_events(&mut stats, &report.events);
-        if state.current_tick().is_multiple_of(every) {
+        if (state.current_tick() - start).is_multiple_of(every) {
             sample(&state, &mut stats, &mut sample_ticks);
         }
     }
