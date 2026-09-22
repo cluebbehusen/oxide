@@ -2114,7 +2114,7 @@ mod tests {
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let mut relief = TeamReliefPlanner::new();
 
-        let pending = relief.think(&profile, tuning, &obs, TEST_HOME, &[], &[]);
+        let pending = relief.think_unrestricted(&profile, tuning, &obs, TEST_HOME, &[], &[]);
         assert!(relief.operation().is_none());
         assert!(!pending.reservations.is_empty());
         assert_eq!(
@@ -2128,7 +2128,7 @@ mod tests {
             "an unaccepted proposal leaves the opening core available"
         );
         obs.tick += tuning.reaction_delay + oxide_sim::TICKS_PER_SECOND as u64;
-        let accepted = relief.think(&profile, tuning, &obs, TEST_HOME, &[], &[]);
+        let accepted = relief.think_unrestricted(&profile, tuning, &obs, TEST_HOME, &[], &[]);
         assert_eq!(relief.core_reservations(), accepted.reservations);
         assert_eq!(accepted.reservations.len(), 2);
         assert!(!accepted.reservations.contains(&UnitId(1)));
@@ -2240,7 +2240,7 @@ mod tests {
             .anchor;
         let original_riders = planning.my_units.clone();
         let mut lifts = LiftPlanner::new();
-        let _ = lifts.think_with_admission(
+        let _ = lifts.think_with_admission_and_producer_lanes(
             &planning,
             home,
             &[],
@@ -2251,6 +2251,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         let manifests = lifts
             .operation()
@@ -2279,7 +2280,7 @@ mod tests {
                 .sum();
         }
         planning.tick += 1;
-        let _ = lifts.think_with_admission(
+        let _ = lifts.think_with_admission_and_producer_lanes(
             &planning,
             home,
             &[],
@@ -2290,6 +2291,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         assert_eq!(
             lifts.operation().map(|operation| operation.phase),
@@ -2321,7 +2323,7 @@ mod tests {
         }
         planning.my_units.sort_unstable_by_key(|unit| unit.id);
         planning.tick += 1;
-        let _ = lifts.think_with_admission(
+        let _ = lifts.think_with_admission_and_producer_lanes(
             &planning,
             home,
             &[],
@@ -2332,6 +2334,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         let mixed_operation = lifts
             .operation()
@@ -2347,7 +2350,7 @@ mod tests {
         );
 
         planning.tick += 1;
-        let mixed_decision = lifts.think_with_admission(
+        let mixed_decision = lifts.think_with_admission_and_producer_lanes(
             &planning,
             home,
             &[],
@@ -2358,6 +2361,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         assert!(
             first_manifest
@@ -2387,7 +2391,7 @@ mod tests {
         }
         planning.my_units.sort_unstable_by_key(|unit| unit.id);
         planning.tick += 1;
-        let _ = lifts.think_with_admission(
+        let _ = lifts.think_with_admission_and_producer_lanes(
             &planning,
             home,
             &[],
@@ -2398,6 +2402,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 8,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         let operation = lifts
             .operation()
@@ -2625,7 +2630,7 @@ mod tests {
         let lifts = &mut brain.mind_mut().lifts;
         let mut seed_obs = obs.clone();
         seed_obs.scrap = 0;
-        let seeded = lifts.think(&seed_obs, home, &[], LiftAirSupport::Independent);
+        let seeded = lifts.think_unrestricted(&seed_obs, home, &[], LiftAirSupport::Independent);
         assert!(lifts.operation().is_some());
         assert!(seeded.intents.iter().all(|intent| !matches!(
             intent,
@@ -2784,7 +2789,7 @@ mod tests {
         );
 
         let lifts = &mut brain.mind_mut().lifts;
-        let seeded = lifts.think(&obs, home, &[], LiftAirSupport::Independent);
+        let seeded = lifts.think_unrestricted(&obs, home, &[], LiftAirSupport::Independent);
         let operation = lifts
             .operation()
             .expect("the severed enclave starts a lift");
@@ -2883,7 +2888,7 @@ mod tests {
         assert!(orientation.is_identity());
         let oriented = orientation.observe(&raw);
         let mut lift = LiftPlanner::new();
-        let _ = lift.think(&oriented, home, &[], LiftAirSupport::Independent);
+        let _ = lift.think_unrestricted(&oriented, home, &[], LiftAirSupport::Independent);
         let lift_airwork = lift.remaining_airwork_ticks(&oriented, &[]);
         assert!(lift.operation().is_some());
         assert!(lift_airwork > 2_400);
@@ -3026,7 +3031,7 @@ mod tests {
                 .expect("the home Foundry stands")
                 .anchor;
             let mut prior_raid = RaidPlanner::new();
-            let raid_start = prior_raid.think(&profile, tuning, &obs, home, &[], &[]);
+            let raid_start = prior_raid.think_unrestricted(&profile, tuning, &obs, home, &[], &[]);
             assert!(matches!(
                 raid_start.intents.as_slice(),
                 [Intent::AttackMoveUnits { .. }]
@@ -6123,7 +6128,7 @@ mod tests {
         assert!(island_airwork > 0);
 
         let mut lift = LiftPlanner::new();
-        let lift_admission = lift.think_with_admission(
+        let lift_admission = lift.think_with_admission_and_producer_lanes(
             &observed,
             home,
             &[],
@@ -6134,6 +6139,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         assert!(lift_admission.intents.contains(&Intent::TrainAt {
             building: airworks,
@@ -7348,7 +7354,7 @@ mod tests {
             .expect("the home Foundry stands")
             .anchor;
         let mut prior_raid = RaidPlanner::new();
-        prior_raid.think(
+        prior_raid.think_unrestricted(
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Prime),
             &obs,
@@ -7437,7 +7443,7 @@ mod tests {
             .anchor;
 
         let mut team = TeamReliefPlanner::new();
-        let _ = team.think(&profile, tuning, &obs, home, &[], &[]);
+        let _ = team.think_unrestricted(&profile, tuning, &obs, home, &[], &[]);
         assert!(
             !team.reservations().is_empty(),
             "the first current-pressure observation must freeze a credible relief watch: allies={:?}, enemies={:?}",
@@ -7452,14 +7458,14 @@ mod tests {
                 .saturating_add(tuning.reaction_delay),
         );
         crate::test_support::set_tick(&mut state, admitted_obs.tick);
-        let _ = team.think(&profile, tuning, &admitted_obs, home, &[], &[]);
+        let _ = team.think_unrestricted(&profile, tuning, &admitted_obs, home, &[], &[]);
         let team_members = team
             .operation()
             .expect("sustained allied pressure admits a relief")
             .members
             .clone();
         let mut lift = LiftPlanner::new();
-        let _ = lift.think_with_admission(
+        let _ = lift.think_with_admission_and_producer_lanes(
             &admitted_obs,
             home,
             &[],
@@ -7470,6 +7476,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         let lift_payload = lift
             .operation()
@@ -7566,7 +7573,7 @@ mod tests {
         let profile = *brain.profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let raids = &mut brain.mind_mut().raids;
-        let partial = raids.think(&profile, tuning, &obs, TEST_HOME, &[], &[]);
+        let partial = raids.think_unrestricted(&profile, tuning, &obs, TEST_HOME, &[], &[]);
         assert_eq!(partial.reservations, [UnitId(1)]);
         assert!(partial.intents.is_empty());
 
@@ -7595,11 +7602,14 @@ mod tests {
             .push(test_unit(2, UnitKind::Scuttler, TEST_HOME.offset(1, 0)));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         let enlisted: Vec<_> = brain.exec.enlisted().collect();
-        let complete =
-            brain
-                .mind_mut()
-                .raids
-                .think(&profile, tuning, &obs, TEST_HOME, &enlisted, &[]);
+        let complete = brain.mind_mut().raids.think_unrestricted(
+            &profile,
+            tuning,
+            &obs,
+            TEST_HOME,
+            &enlisted,
+            &[],
+        );
         assert_eq!(complete.reservations, [UnitId(1), UnitId(2)]);
         assert!(matches!(
             complete.intents.as_slice(),
@@ -7754,7 +7764,7 @@ mod tests {
         let (obs, planner, manifest) = boarding_complete_lift();
 
         let mut released = planner.clone();
-        let released_decision = released.think(
+        let released_decision = released.think_unrestricted(
             &obs,
             TEST_HOME,
             &[],
@@ -7775,7 +7785,7 @@ mod tests {
         }));
 
         let mut aborted = planner;
-        let aborted_decision = aborted.think(
+        let aborted_decision = aborted.think_unrestricted(
             &obs,
             TEST_HOME,
             &[],
@@ -8265,7 +8275,8 @@ mod tests {
             .expect("the lift fixture retains its home Foundry")
             .anchor;
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&oriented, home, &[], LiftAirSupport::Independent);
+        let decision =
+            planner.think_unrestricted(&oriented, home, &[], LiftAirSupport::Independent);
         assert!(
             planner.operation().is_some(),
             "the bulk lift must be admissible"
@@ -8415,7 +8426,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, TEST_HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, TEST_HOME, &[], LiftAirSupport::Independent);
         let manifest = planner
             .operation()
             .expect("the lift enters boarding")
@@ -8427,7 +8438,7 @@ mod tests {
             .expect("the assigned carrier is observable")
             .tile = manifest.pickup;
         obs.tick += 1;
-        planner.think(&obs, TEST_HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, TEST_HOME, &[], LiftAirSupport::Independent);
         obs.my_units
             .retain(|unit| !manifest.riders.contains(&unit.id));
         obs.my_units

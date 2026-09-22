@@ -714,50 +714,6 @@ impl LiftPlanner {
             .saturating_mul(u64::from(UnitKind::Skyhook.stats().train_ticks))
     }
 
-    /// Advances the lift using only oriented observation knowledge.
-    ///
-    /// `unavailable` contains exact units owned by other strategic channels or
-    /// by non-transferable executive state. A staged army may deliberately be
-    /// omitted because Load lowering removes drafted riders from that army.
-    pub fn think(
-        &mut self,
-        obs: &Observation,
-        home: TilePos,
-        unavailable: &[UnitId],
-        support: LiftAirSupport,
-    ) -> StrategicDecision {
-        self.think_with_admission(
-            obs,
-            home,
-            unavailable,
-            support,
-            LiftAdmission {
-                allow_new_commitments: true,
-                spendable_scrap: obs.scrap,
-                core_reservations: &[],
-                minimum_core_equivalents: 0,
-            },
-        )
-    }
-
-    pub(super) fn think_with_admission(
-        &mut self,
-        obs: &Observation,
-        home: TilePos,
-        unavailable: &[UnitId],
-        support: LiftAirSupport,
-        admission: LiftAdmission<'_>,
-    ) -> StrategicDecision {
-        self.think_with_admission_and_producer_lanes(
-            obs,
-            home,
-            unavailable,
-            support,
-            admission,
-            ProducerLaneReservations::empty(),
-        )
-    }
-
     pub(super) fn think_with_admission_and_producer_lanes(
         &mut self,
         obs: &Observation,
@@ -2540,6 +2496,29 @@ fn footprint_ring(anchor: TilePos, size: (i32, i32)) -> Vec<TilePos> {
 
 #[cfg(test)]
 mod tests {
+    impl LiftPlanner {
+        pub(crate) fn think_unrestricted(
+            &mut self,
+            obs: &Observation,
+            home: TilePos,
+            unavailable: &[UnitId],
+            support: LiftAirSupport,
+        ) -> StrategicDecision {
+            self.think_with_admission_and_producer_lanes(
+                obs,
+                home,
+                unavailable,
+                support,
+                LiftAdmission {
+                    allow_new_commitments: true,
+                    spendable_scrap: obs.scrap,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+                ProducerLaneReservations::empty(),
+            )
+        }
+    }
     use super::super::difficulty::DifficultyTuning;
     use super::*;
     use crate::intelligence::{BuildingContact, ContactEvidence};
@@ -2784,7 +2763,14 @@ mod tests {
         };
         let mut planner = LiftPlanner::new();
 
-        planner.think_with_admission(&obs, HOME, &[], LiftAirSupport::Independent, admission);
+        planner.think_with_admission_and_producer_lanes(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            admission,
+            ProducerLaneReservations::empty(),
+        );
         let initial_payload = planner
             .operation()
             .expect("the four-unit surplus starts a lift")
@@ -2795,7 +2781,14 @@ mod tests {
         let lost = initial_payload[0];
         obs.my_units.retain(|unit| unit.id != lost);
         obs.tick += 1;
-        planner.think_with_admission(&obs, HOME, &[], LiftAirSupport::Independent, admission);
+        planner.think_with_admission_and_producer_lanes(
+            &obs,
+            HOME,
+            &[],
+            LiftAirSupport::Independent,
+            admission,
+            ProducerLaneReservations::empty(),
+        );
 
         let replacement_payload = &planner
             .operation()
@@ -2938,7 +2931,7 @@ mod tests {
         let mut obs = split_staging_obs(5, 20);
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let initial = planner
             .operation()
             .expect("the stronger component starts provisioning")
@@ -2976,7 +2969,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let frozen = planner
             .operation()
             .expect("the grown wave assigns exact manifests")
@@ -3016,7 +3009,7 @@ mod tests {
         }));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let retained = planner.operation().expect("boarding remains active");
         assert_eq!(retained.pickup_component, frozen.pickup_component);
         assert_eq!(retained.payload, frozen.payload);
@@ -3031,7 +3024,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let original_payload = planner.operation().unwrap().payload.clone();
         let reserved_ground: Vec<_> = obs
             .my_units
@@ -3045,7 +3038,7 @@ mod tests {
         obs.my_units
             .retain(|unit| reserved_ground.binary_search(&unit.id).is_err());
         obs.tick += 1;
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap();
         let home_ground_room = obs
             .my_units
@@ -3067,7 +3060,7 @@ mod tests {
         add_fighters(&mut obs, 12);
 
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert_eq!(decision, StrategicDecision::default());
@@ -3101,7 +3094,7 @@ mod tests {
         obs.my_units.push(own(900, UnitKind::Skyhook, HOME));
 
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(desired_carriers(&obs, HOME, &[]), 0);
         assert!(pickup_component_anchors(&obs, HOME).is_empty());
@@ -3115,14 +3108,14 @@ mod tests {
         add_fighters(&mut obs, 12);
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
 
         obs.known_rock = (0..obs.map_height)
             .flat_map(|y| (0..obs.map_width).map(move |x| TilePos::new(x, y)))
             .collect();
         obs.tick += 1;
-        let cancelled = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let cancelled = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert!(planner.retry_not_before > obs.tick);
@@ -3138,7 +3131,7 @@ mod tests {
         obs.my_units.push(own(900, UnitKind::Skyhook, HOME));
 
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert_eq!(decision, StrategicDecision::default());
@@ -3152,7 +3145,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        let decision = planner.think(
+        let decision = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -3177,7 +3170,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
 
         let mut coordinated = LiftPlanner::new();
-        coordinated.think(
+        coordinated.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -3190,7 +3183,7 @@ mod tests {
         assert!(coordinated.support_latched);
 
         let mut unmatched = LiftPlanner::new();
-        unmatched.think(
+        unmatched.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -3212,7 +3205,7 @@ mod tests {
         obs.scrap = 1_000;
 
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let orders: Vec<_> = decision
             .intents
             .iter()
@@ -3307,7 +3300,7 @@ mod tests {
         obs.scrap = 1_000;
 
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(
             decision
@@ -3397,7 +3390,7 @@ mod tests {
         obs.scrap = 1_000;
 
         let mut planner = LiftPlanner::new();
-        let waiting = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let waiting = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().desired_carriers, 4);
         assert!(waiting.intents.is_empty());
@@ -3411,7 +3404,7 @@ mod tests {
         obs.scrap = 900;
 
         let mut planner = LiftPlanner::new();
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(decision.intents.is_empty());
         assert_eq!(decision.committed_scrap(), 0);
@@ -3426,7 +3419,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         obs.scrap = 900;
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
 
         let airworks_index = obs
@@ -3437,7 +3430,7 @@ mod tests {
         obs.my_buildings.remove(airworks_index);
         obs.my_queues.remove(airworks_index);
         obs.tick += 1;
-        let waiting = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let waiting = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
         assert!(waiting.intents.is_empty());
@@ -3453,8 +3446,9 @@ mod tests {
         let mut first = LiftPlanner::new();
         let mut second = LiftPlanner::new();
 
-        let first_decision = first.think(&obs, HOME, &[], LiftAirSupport::Independent);
-        let second_decision = second.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let first_decision = first.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
+        let second_decision =
+            second.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = first.operation().unwrap();
 
         assert_eq!(operation.phase, LiftPhase::Provision);
@@ -3484,7 +3478,7 @@ mod tests {
         let mut blocked = LiftPlanner::new();
 
         assert_eq!(
-            blocked.think_with_admission(
+            blocked.think_with_admission_and_producer_lanes(
                 &obs,
                 HOME,
                 &[],
@@ -3495,6 +3489,7 @@ mod tests {
                     core_reservations: &[],
                     minimum_core_equivalents: 0,
                 },
+                ProducerLaneReservations::empty(),
             ),
             StrategicDecision::default()
         );
@@ -3502,7 +3497,7 @@ mod tests {
 
         obs.scrap = 0;
         let mut active = LiftPlanner::new();
-        active.think_with_admission(
+        active.think_with_admission_and_producer_lanes(
             &obs,
             HOME,
             &[],
@@ -3513,6 +3508,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
+            ProducerLaneReservations::empty(),
         );
         assert_eq!(
             active.operation().map(|operation| operation.phase),
@@ -3521,7 +3517,7 @@ mod tests {
 
         obs.scrap = UnitKind::Skyhook.stats().cost;
         obs.tick += 1;
-        let paused = active.think_with_admission(
+        let paused = active.think_with_admission_and_producer_lanes(
             &obs,
             HOME,
             &[],
@@ -3532,6 +3528,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
+            ProducerLaneReservations::empty(),
         );
         assert_eq!(
             active.operation().map(|operation| operation.phase),
@@ -3551,7 +3548,7 @@ mod tests {
         ]);
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        let continued = active.think_with_admission(
+        let continued = active.think_with_admission_and_producer_lanes(
             &obs,
             HOME,
             &[],
@@ -3562,6 +3559,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 0,
             },
+            ProducerLaneReservations::empty(),
         );
 
         let operation = active
@@ -3597,7 +3595,8 @@ mod tests {
                 shared.tick = tick;
                 add_fighters(&mut shared, u32::try_from(4 + tick / 2).unwrap());
                 add_airworks(&mut shared, 10, Vec::new());
-                decision = planner.think(&shared, HOME, &[], LiftAirSupport::Independent);
+                decision =
+                    planner.think_unrestricted(&shared, HOME, &[], LiftAirSupport::Independent);
                 if tick < 24 {
                     assert!(planner.operation().is_none(), "{difficulty:?} at {tick}");
                 }
@@ -3670,7 +3669,7 @@ mod tests {
 
         assert_eq!(planned_drop_slots(&obs, pickup, TARGET, 2), drops);
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let smaller = planner
             .operation()
             .expect("the feasible wave starts")
@@ -3694,7 +3693,7 @@ mod tests {
             "the larger roster still has only the original two honest landing slots"
         );
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let retained = planner
             .operation()
             .expect("failed growth must not discard the feasible wave");
@@ -3718,7 +3717,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         let mut planner = LiftPlanner::new();
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let frozen = planner
             .operation()
             .expect("the available carriers commit exact manifests")
@@ -3743,7 +3742,7 @@ mod tests {
         obs.tick += 1;
         assert!(initial_payload(&obs, HOME, &[]).2 > frozen.desired_carriers);
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let committed = planner
             .operation()
             .expect("boarding continues with the committed wave");
@@ -3772,13 +3771,13 @@ mod tests {
         add_fighters(&mut obs, 12);
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let original = planner.operation().unwrap().payload.clone();
         let lost = original[0];
 
         obs.my_units.retain(|unit| unit.id != lost);
         obs.tick += 1;
-        let refilled = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let refilled = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap();
         assert_eq!(operation.desired_carriers, 2);
         assert_eq!(operation.payload.len(), 8);
@@ -3794,7 +3793,7 @@ mod tests {
         let survivors: Vec<_> = operation.payload.iter().copied().take(3).collect();
         obs.my_units.retain(|unit| survivors.contains(&unit.id));
         obs.tick += 1;
-        let waiting = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let waiting = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap();
         assert_eq!(operation.phase, LiftPhase::Provision);
         assert_eq!(operation.desired_carriers, 2);
@@ -3805,7 +3804,7 @@ mod tests {
 
         obs.my_units.retain(|unit| unit.id != survivors[0]);
         obs.tick += 1;
-        let aborted = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let aborted = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(aborted.reservations.is_empty());
         assert!(aborted.intents.is_empty());
@@ -3817,7 +3816,7 @@ mod tests {
         add_fighters(&mut obs, 3);
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let frozen = planner.operation().expect("the early lift begins").clone();
         assert_eq!(frozen.phase, LiftPhase::Provision);
         assert_eq!(frozen.desired_carriers, 1);
@@ -3835,7 +3834,7 @@ mod tests {
         assert_eq!(available_room, 12);
         obs.tick += 1;
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert!(planner.retry_not_before > obs.tick);
@@ -3849,7 +3848,7 @@ mod tests {
         add_fighters(&mut obs, 12);
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let planned = planner.operation().unwrap().planned_drops.clone();
 
         obs.enemy_buildings
@@ -3861,7 +3860,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().expect("the wave keeps provisioning");
         assert_eq!(operation.phase, LiftPhase::Provision);
         assert_eq!(operation.planned_drops, planned);
@@ -3908,7 +3907,7 @@ mod tests {
             outcomes: Default::default(),
         };
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().expect("the trimmed wave proceeds");
 
         assert_eq!(operation.phase, LiftPhase::Boarding);
@@ -3958,7 +3957,7 @@ mod tests {
             outcomes: Default::default(),
         };
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().expect("the frozen wave keeps waiting");
 
         assert_eq!(operation.phase, LiftPhase::Provision);
@@ -3981,7 +3980,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap();
         let train_ticks = u64::from(UnitKind::Skyhook.stats().train_ticks);
         assert_eq!(operation.desired_carriers, 2);
@@ -3991,7 +3990,7 @@ mod tests {
         );
 
         obs.tick = operation.deadline;
-        let timed_out = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let timed_out = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(timed_out.intents.is_empty());
         assert!(timed_out.reservations.is_empty());
@@ -4010,7 +4009,7 @@ mod tests {
 
         assert_eq!(planner.remaining_airwork_ticks(&obs, &[]), 0);
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().desired_carriers, 4);
         assert_eq!(
@@ -4038,7 +4037,8 @@ mod tests {
         let unavailable = [UnitId(801)];
         let mut planner = LiftPlanner::new();
 
-        let decision = planner.think(&obs, HOME, &unavailable, LiftAirSupport::Independent);
+        let decision =
+            planner.think_unrestricted(&obs, HOME, &unavailable, LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().desired_carriers, 4);
         assert!(!decision.reservations.contains(&UnitId(800)));
@@ -4076,7 +4076,8 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        let decision = planner.think(&obs, HOME, &[UnitId(900)], LiftAirSupport::Independent);
+        let decision =
+            planner.think_unrestricted(&obs, HOME, &[UnitId(900)], LiftAirSupport::Independent);
 
         assert!(!decision.reservations.contains(&UnitId(900)));
         assert!(decision.reservations.contains(&UnitId(901)));
@@ -4100,7 +4101,7 @@ mod tests {
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
         let mut planner = LiftPlanner::new();
-        let waiting = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let waiting = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(
             waiting
@@ -4118,7 +4119,7 @@ mod tests {
         obs.my_units
             .push(own(900, UnitKind::Skyhook, HOME.offset(0, 8)));
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifest = planner.operation().unwrap().manifests[0].clone();
         let carrier = obs
             .my_units
@@ -4129,7 +4130,7 @@ mod tests {
         carrier.idle = true;
 
         obs.tick += 1;
-        let board_once = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let board_once = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(board_once.intents.contains(&Intent::Load {
             transport: manifest.carrier,
             riders: manifest.riders.clone(),
@@ -4147,7 +4148,7 @@ mod tests {
             }
         }
         obs.tick += 1;
-        let walking = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let walking = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(
             walking.intents.is_empty(),
             "Load and Move are both persistent"
@@ -4155,7 +4156,7 @@ mod tests {
 
         planner.operation.as_mut().unwrap().phase = LiftPhase::Recover;
         obs.tick += 1;
-        let recovered = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let recovered = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(recovered.intents.contains(&Intent::StopUnits {
             units: manifest.riders.clone(),
@@ -4175,7 +4176,7 @@ mod tests {
         obs.my_units
             .push(own(900, UnitKind::Skyhook, HOME.offset(0, 8)));
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifest = planner.operation().unwrap().manifests[0].clone();
         obs.my_units
             .iter_mut()
@@ -4183,7 +4184,7 @@ mod tests {
             .unwrap()
             .tile = manifest.pickup;
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         obs.my_units
             .retain(|unit| !manifest.riders.contains(&unit.id));
@@ -4194,7 +4195,7 @@ mod tests {
             .unwrap();
         carrier.cargo = 2;
         obs.tick += 1;
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
         assert!(!planner.operation().unwrap().launched);
@@ -4208,7 +4209,7 @@ mod tests {
     fn one_loaded_carrier_cannot_turn_a_four_carrier_wave_into_a_trickle() {
         let (obs, mut planner, manifests) = resolved_four_carrier_wave(1);
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let operation = planner.operation().unwrap();
         assert_eq!(operation.phase, LiftPhase::Recover);
@@ -4223,7 +4224,7 @@ mod tests {
     fn half_of_a_four_carrier_wave_is_the_smallest_launch_quorum() {
         let (obs, mut planner, manifests) = resolved_four_carrier_wave(2);
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let operation = planner.operation().unwrap();
         assert_eq!(operation.phase, LiftPhase::Landing);
@@ -4250,7 +4251,7 @@ mod tests {
         obs.my_units
             .push(own(900, UnitKind::Skyhook, HOME.offset(0, 8)));
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifest = planner.operation().unwrap().manifests[0].clone();
         obs.my_units
             .iter_mut()
@@ -4258,7 +4259,7 @@ mod tests {
             .unwrap()
             .tile = manifest.pickup;
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let failed = *manifest.riders.last().unwrap();
         let transported: Vec<_> = manifest
@@ -4275,7 +4276,7 @@ mod tests {
             .unwrap();
         carrier.cargo = 3;
         obs.tick += 1;
-        let launch = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let launch = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Landing);
         assert!(launch.intents.contains(&Intent::Unload {
             transport: manifest.carrier,
@@ -4295,7 +4296,7 @@ mod tests {
         }
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        let handoff = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let handoff = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(handoff.intents.contains(&Intent::AttackMoveUnits {
             units: transported.clone(),
@@ -4324,7 +4325,7 @@ mod tests {
             .collect();
 
         let mut planner = LiftPlanner::new();
-        let initial = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let initial = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap().clone();
         assert_eq!(operation.phase, LiftPhase::Boarding);
         assert_eq!(operation.manifests.len(), 2);
@@ -4353,7 +4354,7 @@ mod tests {
             carrier.tile = manifest.pickup;
         }
         obs.tick += 1;
-        let boarding = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let boarding = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let loads = initial
             .intents
             .iter()
@@ -4368,7 +4369,7 @@ mod tests {
             }
         }
         obs.tick += 1;
-        let walking = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let walking = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(
             walking
                 .intents
@@ -4386,7 +4387,7 @@ mod tests {
                 .cargo = 4;
         }
         obs.tick += 1;
-        let held = planner.think(
+        let held = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -4403,7 +4404,7 @@ mod tests {
         );
 
         obs.tick += 1;
-        let released = planner.think(
+        let released = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -4443,7 +4444,7 @@ mod tests {
         }
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        let assault = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let assault = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
         assert_eq!(
             assault
@@ -4463,7 +4464,7 @@ mod tests {
                 .idle = false;
         }
         obs.tick += 1;
-        let no_repeat = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let no_repeat = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(
             no_repeat
                 .intents
@@ -4486,7 +4487,7 @@ mod tests {
             carrier.idle = true;
         }
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_some());
     }
 
@@ -4514,7 +4515,7 @@ mod tests {
         assert!(!routes.reaches(naive[0], naive[2]));
 
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap();
 
         assert_eq!(operation.desired_carriers, 3);
@@ -4552,7 +4553,7 @@ mod tests {
             own(901, UnitKind::Skyhook, HOME.offset(1, 0)),
         ]);
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner.operation().unwrap().clone();
         for manifest in &operation.manifests {
             obs.my_units
@@ -4563,7 +4564,7 @@ mod tests {
         }
         obs.my_units.retain(|unit| unit.id != UnitId(900));
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert!(planner.retry_not_before > obs.tick);
@@ -4583,7 +4584,7 @@ mod tests {
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Boarding);
 
         obs.my_units.retain(|unit| unit.id != lost.carrier);
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let operation = planner
             .operation()
@@ -4630,7 +4631,7 @@ mod tests {
         }
         obs.my_units.retain(|unit| unit.id != lost.carrier);
 
-        let launch = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let launch = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let operation = planner
             .operation()
@@ -4692,7 +4693,7 @@ mod tests {
         }
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        let landed = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let landed = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
         assert_eq!(
             landed
@@ -4720,7 +4721,7 @@ mod tests {
             carrier.idle = true;
         }
         obs.tick += 1;
-        let recovered = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let recovered = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_some());
         assert!(!recovered.reservations.contains(&lost.carrier));
         assert!(surviving.iter().all(|manifest| {
@@ -4744,7 +4745,7 @@ mod tests {
 
         obs.enemy_buildings.clear();
         obs.tick += 1;
-        let idle = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let idle = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(idle.reservations.is_empty());
         assert!(idle.intents.is_empty());
@@ -4756,7 +4757,7 @@ mod tests {
         add_fighters(&mut obs, 3);
         obs.my_units.push(own(900, UnitKind::Skyhook, HOME));
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifest = planner.operation().unwrap().manifests[0].clone();
         obs.my_units
             .retain(|unit| !manifest.riders.contains(&unit.id));
@@ -4769,7 +4770,7 @@ mod tests {
         carrier.tile = manifest.drop;
         obs.enemy_buildings.clear();
 
-        let returning = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let returning = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
         assert!(returning.intents.iter().any(|intent| matches!(
             intent,
@@ -4797,7 +4798,7 @@ mod tests {
                 .push(own(id.0, UnitKind::Sentinel, manifest.pickup));
         }
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
-        let released = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let released = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(
             released
@@ -4815,7 +4816,7 @@ mod tests {
             .push(own(900, UnitKind::Skyhook, TARGET.offset(-2, 0)));
         let mut planner = recovering_empty_lift();
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert!(decision.intents.is_empty());
@@ -4831,7 +4832,7 @@ mod tests {
         let mut moves = 0usize;
 
         for _ in 0..=usize::from(DROP_ATTEMPTS) {
-            let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+            let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
             moves += decision
                 .intents
                 .iter()
@@ -4901,7 +4902,7 @@ mod tests {
         let mut all_unloads = 0usize;
 
         for _ in 0..=usize::from(DROP_ATTEMPTS * 2) {
-            let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+            let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
             for intent in decision.intents {
                 if let Intent::Unload { at, .. } = intent {
                     all_unloads += 1;
@@ -4972,7 +4973,7 @@ mod tests {
             outcomes: Default::default(),
         };
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
         assert!(decision.intents.contains(&Intent::AttackMoveUnits {
@@ -4985,7 +4986,7 @@ mod tests {
     #[test]
     fn a_carrier_lost_during_recovery_still_hands_off_landed_survivors() {
         let (mut obs, mut planner, manifest) = loaded_single_lift();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().unwrap().launched);
 
         obs.my_units.retain(|unit| unit.id != manifest.carrier);
@@ -4999,7 +5000,7 @@ mod tests {
         planner.operation.as_mut().unwrap().phase = LiftPhase::Recover;
         obs.tick += 1;
 
-        let recovered = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let recovered = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
         assert!(recovered.intents.contains(&Intent::AttackMoveUnits {
@@ -5033,8 +5034,9 @@ mod tests {
         let mut first = planner.clone();
         let mut second = planner;
 
-        let first_decision = first.think(&obs, HOME, &[], LiftAirSupport::Independent);
-        let second_decision = second.think(&reversed_obs, HOME, &[], LiftAirSupport::Independent);
+        let first_decision = first.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
+        let second_decision =
+            second.think_unrestricted(&reversed_obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(first_decision, second_decision);
         assert_eq!(first, second, "input order cannot choose the replacement");
@@ -5064,7 +5066,7 @@ mod tests {
         set_explored(&mut obs, first_goal, false);
         set_explored(&mut obs, second_goal, false);
 
-        let first = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let first = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
         assert!(first.intents.contains(&Intent::AttackMoveUnits {
@@ -5085,7 +5087,7 @@ mod tests {
         }
         set_explored(&mut obs, first_goal, true);
         obs.tick += 1;
-        let second = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let second = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(second.intents.contains(&Intent::AttackMoveUnits {
             units: riders.clone(),
@@ -5113,7 +5115,7 @@ mod tests {
             }
         }
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
         assert!(decision.intents.is_empty());
@@ -5135,7 +5137,7 @@ mod tests {
             building(502, 1, BuildingKind::Reclaimer, HOME.offset(8, -8)),
         ]);
 
-        let decision = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_none());
         assert!(decision.intents.is_empty());
@@ -5149,7 +5151,7 @@ mod tests {
     #[test]
     fn a_latched_suppression_requires_a_matching_release() {
         let (mut obs, mut planner, manifest) = loaded_single_lift();
-        let held = planner.think(
+        let held = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5167,12 +5169,12 @@ mod tests {
         );
 
         obs.tick += 1;
-        let missing = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let missing = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::AwaitSupport);
         assert!(missing.intents.is_empty());
 
         obs.tick += 1;
-        let mismatched = planner.think(
+        let mismatched = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5185,7 +5187,7 @@ mod tests {
         assert!(mismatched.intents.is_empty());
 
         obs.tick += 1;
-        let released = planner.think(
+        let released = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5213,7 +5215,7 @@ mod tests {
 
         for support in unsupported {
             let (mut obs, mut planner, manifest) = loaded_single_lift();
-            planner.think(
+            planner.think_unrestricted(
                 &obs,
                 HOME,
                 &[],
@@ -5226,7 +5228,7 @@ mod tests {
             assert_eq!(planner.operation().unwrap().phase, LiftPhase::AwaitSupport);
 
             obs.tick = waiting_since.saturating_add(support_grace());
-            let timed_out = planner.think(&obs, HOME, &[], support);
+            let timed_out = planner.think_unrestricted(&obs, HOME, &[], support);
             let operation = planner
                 .operation()
                 .expect("loaded recovery needs a later unload at home");
@@ -5264,7 +5266,7 @@ mod tests {
 
         for support in unrelated {
             let mut independent = planner.clone();
-            let decision = independent.think(&obs, HOME, &[], support);
+            let decision = independent.think_unrestricted(&obs, HOME, &[], support);
             let operation = independent.operation().unwrap();
             assert_eq!(operation.phase, LiftPhase::Landing);
             assert!(operation.launched);
@@ -5279,7 +5281,7 @@ mod tests {
     fn a_matching_release_launches_a_ready_wave_immediately() {
         let (obs, mut planner, manifest) = loaded_single_lift();
 
-        let released = planner.think(
+        let released = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5301,7 +5303,7 @@ mod tests {
     #[test]
     fn a_busy_carrier_does_not_receive_repeated_unload_orders() {
         let (mut obs, mut planner, manifest) = loaded_single_lift();
-        let launched = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let launched = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(launched.intents.contains(&Intent::Unload {
             transport: manifest.carrier,
             at: manifest.drop,
@@ -5313,7 +5315,7 @@ mod tests {
             .unwrap()
             .idle = false;
         obs.tick += 1;
-        let in_flight = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let in_flight = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Landing);
         assert!(
@@ -5331,7 +5333,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5344,7 +5346,7 @@ mod tests {
         assert!(planner.support_latched);
 
         obs.tick += 1;
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5361,7 +5363,7 @@ mod tests {
         ]);
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifests = planner.operation().unwrap().manifests.clone();
         assert_eq!(manifests.len(), 2);
 
@@ -5381,7 +5383,7 @@ mod tests {
             }
         }
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let riders: Vec<_> = manifests
             .iter()
@@ -5396,7 +5398,7 @@ mod tests {
                 .cargo = 4;
         }
         obs.tick += 1;
-        let launch = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let launch = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Landing);
         assert_eq!(
@@ -5417,7 +5419,7 @@ mod tests {
         obs.scrap = 500;
         let mut planner = LiftPlanner::new();
 
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5427,7 +5429,7 @@ mod tests {
             },
         );
         obs.tick += 1;
-        let independent = planner.think(
+        let independent = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5463,7 +5465,7 @@ mod tests {
         }));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifests = planner
             .operation()
             .expect("the independent operation assigns the completed carriers")
@@ -5479,7 +5481,7 @@ mod tests {
                 .tile = manifest.pickup;
         }
         obs.tick += 1;
-        let boarding = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let boarding = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(
             boarding
                 .intents
@@ -5505,7 +5507,7 @@ mod tests {
                 .cargo = cargo;
         }
         obs.tick += 1;
-        let launched = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let launched = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let operation = planner
             .operation()
             .expect("the independently viable wave remains active in flight");
@@ -5529,7 +5531,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        let remembered = planner.think(
+        let remembered = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5543,7 +5545,7 @@ mod tests {
 
         obs.enemy_buildings[0].seen = true;
         obs.tick = super::super::difficulty::next_strategic_admission_tick(obs.tick);
-        let admitted = planner.think(
+        let admitted = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5565,7 +5567,7 @@ mod tests {
         add_airworks(&mut obs, 10, Vec::new());
         let mut planner = LiftPlanner::new();
 
-        let preparing = planner.think(
+        let preparing = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5583,7 +5585,7 @@ mod tests {
 
         obs.tick += 1;
         obs.enemy_buildings[0].seen = false;
-        let aborted = planner.think(
+        let aborted = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5603,7 +5605,7 @@ mod tests {
     #[test]
     fn a_matching_support_abort_recovers_a_small_wave_without_launching() {
         let (mut obs, mut planner, manifest) = loaded_single_lift();
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5613,7 +5615,7 @@ mod tests {
             },
         );
         obs.tick += 1;
-        let aborted = planner.think(
+        let aborted = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5632,7 +5634,7 @@ mod tests {
         )));
 
         obs.tick += 1;
-        let recovering = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let recovering = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(recovering.intents.contains(&Intent::Unload {
             transport: manifest.carrier,
             at: manifest.pickup,
@@ -5643,7 +5645,7 @@ mod tests {
     fn a_matching_support_abort_recovers_when_only_two_of_three_carriers_loaded() {
         let (obs, mut planner, manifests) = resolved_carrier_wave(15, 3, 2);
 
-        let decision = planner.think(
+        let decision = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5668,7 +5670,7 @@ mod tests {
     fn a_matching_support_abort_launches_a_prepared_bulk_wave_independently() {
         let (obs, mut planner, manifests) = resolved_carrier_wave(15, 3, 3);
 
-        let decision = planner.think(
+        let decision = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5700,7 +5702,7 @@ mod tests {
     fn a_matching_support_abort_still_recovers_a_two_carrier_wave() {
         let (mut obs, mut planner, manifests) = resolved_carrier_wave(12, 2, 2);
 
-        let aborted = planner.think(
+        let aborted = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5722,7 +5724,7 @@ mod tests {
         );
 
         obs.tick += 1;
-        let recovering = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let recovering = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(
             recovering
                 .intents
@@ -5745,7 +5747,7 @@ mod tests {
     #[test]
     fn support_timeout_launches_a_fully_boarded_two_carrier_wave_at_the_deadline() {
         let (mut obs, mut planner, manifests) = resolved_carrier_wave(12, 2, 2);
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5760,7 +5762,7 @@ mod tests {
         obs.tick = waiting_since
             .saturating_add(support_grace())
             .saturating_sub(1);
-        let before_deadline = planner.think(
+        let before_deadline = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5780,7 +5782,7 @@ mod tests {
         );
 
         obs.tick = waiting_since.saturating_add(support_grace());
-        let launched = planner.think(
+        let launched = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5813,7 +5815,7 @@ mod tests {
     #[test]
     fn support_timeout_recovers_when_only_one_of_two_carriers_remains_loaded() {
         let (mut obs, mut planner, manifests) = resolved_carrier_wave(12, 2, 2);
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5831,7 +5833,7 @@ mod tests {
             .unwrap()
             .cargo = 0;
         obs.tick = waiting_since.saturating_add(support_grace());
-        let timed_out = planner.think(
+        let timed_out = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5852,7 +5854,7 @@ mod tests {
         );
 
         obs.tick += 1;
-        let recovering = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let recovering = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(
             recovering
                 .intents
@@ -5875,7 +5877,7 @@ mod tests {
     #[test]
     fn continuous_support_hold_releases_a_prepared_bulk_wave_at_the_original_deadline() {
         let (mut obs, mut planner, manifests) = resolved_carrier_wave(15, 3, 3);
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5890,7 +5892,7 @@ mod tests {
         obs.tick = waiting_since
             .saturating_add(support_grace())
             .saturating_sub(1);
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5904,7 +5906,7 @@ mod tests {
         assert_eq!(operation.phase_started_at, waiting_since);
 
         obs.tick = waiting_since.saturating_add(support_grace());
-        let released = planner.think(
+        let released = planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5935,7 +5937,7 @@ mod tests {
         let (obs, mut planner, manifests) = resolved_carrier_wave(15, 3, 3);
         assert!(!planner.support_latched);
 
-        let launched = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let launched = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         let operation = planner.operation().unwrap();
         assert_eq!(operation.phase, LiftPhase::Landing);
@@ -5961,7 +5963,7 @@ mod tests {
         obs.my_units
             .push(own(900, UnitKind::Skyhook, HOME.offset(0, 8)));
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifest = planner.operation().unwrap().manifests[0].clone();
         obs.my_units
             .iter_mut()
@@ -5969,7 +5971,7 @@ mod tests {
             .unwrap()
             .tile = manifest.pickup;
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         for rider in &mut obs.my_units {
             if manifest.riders.contains(&rider.id) {
                 rider.idle = false;
@@ -5977,7 +5979,7 @@ mod tests {
         }
 
         obs.tick += 1;
-        planner.think(
+        planner.think_unrestricted(
             &obs,
             HOME,
             &[],
@@ -5996,7 +5998,7 @@ mod tests {
             .unwrap()
             .cargo = 3;
         obs.tick += 1;
-        let missing = planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        let missing = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::AwaitSupport);
         assert!(
             missing
@@ -6027,8 +6029,8 @@ mod tests {
         let mut second = LiftPlanner::new();
 
         assert_eq!(
-            first.think(&obs, HOME, &[], LiftAirSupport::Independent),
-            second.think(&obs, HOME, &[], LiftAirSupport::Independent)
+            first.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent),
+            second.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent)
         );
         assert_eq!(first, second);
     }
@@ -6217,7 +6219,7 @@ mod tests {
         }));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
 
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
         assert_eq!(
@@ -6292,7 +6294,7 @@ mod tests {
         ));
         planner.recover_invalid_production(late.tick);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
-        planner.think(&late, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&late, HOME, &[], LiftAirSupport::Independent);
         assert!(planner.operation().is_none());
         assert!(planner.retry_not_before > late.tick);
     }
@@ -6303,7 +6305,7 @@ mod tests {
         let producer = BuildingId(200);
         add_airworks(&mut obs, producer.0, Vec::new());
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
         (obs, planner, producer)
     }
@@ -6405,7 +6407,7 @@ mod tests {
         obs.my_units
             .push(own(900, UnitKind::Skyhook, HOME.offset(0, 8)));
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifest = planner.operation().unwrap().manifests[0].clone();
         obs.my_units
             .iter_mut()
@@ -6413,7 +6415,7 @@ mod tests {
             .unwrap()
             .tile = manifest.pickup;
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         obs.my_units
             .retain(|unit| !manifest.riders.contains(&unit.id));
         obs.my_units
@@ -6545,7 +6547,7 @@ mod tests {
         }));
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
         let mut planner = LiftPlanner::new();
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         let manifests = planner.operation().unwrap().manifests.clone();
         assert_eq!(manifests.len(), usize::try_from(carrier_count).unwrap());
 
@@ -6557,7 +6559,7 @@ mod tests {
                 .tile = manifest.pickup;
         }
         obs.tick += 1;
-        planner.think(&obs, HOME, &[], LiftAirSupport::Independent);
+        planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         for manifest in manifests.iter().take(loaded_manifests) {
             let cargo = manifest
                 .riders

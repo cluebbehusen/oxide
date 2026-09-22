@@ -3576,7 +3576,7 @@ mod tests {
             )
         }));
         let mut lift = LiftPlanner::new();
-        lift.think_with_admission(
+        lift.think_with_admission_and_producer_lanes(
             &observation,
             HOME,
             &[],
@@ -3587,6 +3587,7 @@ mod tests {
                 core_reservations: &[],
                 minimum_core_equivalents: 5,
             },
+            crate::resources::ProducerLaneReservations::empty(),
         );
         let remaining = lift.remaining_airwork_ticks(&observation, &[]);
         assert!(
@@ -6461,7 +6462,7 @@ mod tests {
                 .collect();
 
             let mut lift = LiftPlanner::new();
-            lift.think_with_admission(
+            lift.think_with_admission_and_producer_lanes(
                 &observation,
                 HOME,
                 &[],
@@ -6472,6 +6473,7 @@ mod tests {
                     core_reservations: &[],
                     minimum_core_equivalents: 5,
                 },
+                crate::resources::ProducerLaneReservations::empty(),
             );
             let lift_operation = lift
                 .operation()

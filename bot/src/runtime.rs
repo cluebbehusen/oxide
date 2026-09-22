@@ -77,11 +77,7 @@ impl SeatBot {
             return None;
         }
         let scope = observer::PhaseScope::new(observer, observer::BotPhase::Observation);
-        let obs = if self.0.dials().fog_honest {
-            Observation::fog_honest(state, self.player())
-        } else {
-            Observation::omniscient(state, self.player())
-        };
+        let obs = Observation::fog_honest(state, self.player());
         drop(scope);
         if state.player(self.player()).resigned {
             let _capture = crate::query_work::Capture::new(observer);

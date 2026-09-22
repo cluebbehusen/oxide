@@ -2470,11 +2470,6 @@ impl StrategicPlanner {
         self.air.as_mut().map(|active| &mut active.plan)
     }
 
-    /// Earliest tick at which another operation may start.
-    pub fn cooldown_until(&self) -> Tick {
-        self.cooldown_until
-    }
-
     pub(super) fn terminal_outcome(&self) -> Option<AirOperationOutcome> {
         self.terminal_outcome
     }
@@ -8816,7 +8811,7 @@ mod tests {
             operation.recovery_reason,
             Some(AirRecoveryReason::RequiredUnitLost)
         );
-        assert!(planner.cooldown_until() > observation.tick);
+        assert!(planner.cooldown_until > observation.tick);
         assert_eq!(decision.reservations, [UnitId(2), UnitId(3), UnitId(4)]);
         assert!(!decision.reservations.contains(&UnitId(5)));
         assert!(decision.intents.iter().all(|intent| !matches!(
@@ -8929,7 +8924,7 @@ mod tests {
                 ..
             }
         )));
-        let cooldown_until = planner.cooldown_until();
+        let cooldown_until = planner.cooldown_until;
         assert_eq!(
             cooldown_until,
             observation
@@ -10053,7 +10048,7 @@ mod tests {
             op.recovery_reason,
             Some(AirRecoveryReason::RequiredUnitLost)
         );
-        assert!(planner.cooldown_until() > battle.tick);
+        assert!(planner.cooldown_until > battle.tick);
         assert!(out.intents.contains(&Intent::MoveUnits {
             units: vec![UnitId(1), UnitId(2)],
             goal: HOME,
@@ -11010,7 +11005,7 @@ mod tests {
             operation.recovery_reason,
             Some(AirRecoveryReason::UnreachableAirRoute)
         );
-        assert!(planner.cooldown_until() > observation.tick);
+        assert!(planner.cooldown_until > observation.tick);
         assert!(failed.intents.iter().all(|intent| !matches!(
             intent,
             Intent::MoveUnits { units, goal }
@@ -11034,7 +11029,7 @@ mod tests {
         );
 
         observation.tick += 1;
-        assert!(observation.tick < planner.cooldown_until());
+        assert!(observation.tick < planner.cooldown_until);
         intelligence.update(&observation);
         let cooling_down = think(&mut planner, &observation, &intelligence);
         assert!(planner.air_operation().is_none());
@@ -16073,7 +16068,7 @@ mod tests {
             planner.air_operation().map(|operation| operation.phase),
             Some(AirOperationPhase::Verify),
             "decision={verification:?}, cooldown={}",
-            planner.cooldown_until()
+            planner.cooldown_until
         );
         assert!(verification.intents.iter().all(|intent| !matches!(
             intent,
@@ -17219,7 +17214,7 @@ mod tests {
             Some(AirRecoveryReason::RequiredUnitLost)
         );
         assert_eq!(operation.scout_dispatch, None);
-        assert!(planner.cooldown_until() > battle.tick);
+        assert!(planner.cooldown_until > battle.tick);
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
             Intent::MoveUnits { units, .. } if units.contains(&UnitId(1))

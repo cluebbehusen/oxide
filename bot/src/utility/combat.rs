@@ -1267,10 +1267,9 @@ impl UtilityPolicy {
         // Seeing no enemy strength is not the same as the enemy having
         // none — fog hides armies. Floor the estimate by how fresh the
         // intel is: a recent peek at their base earns trust in the count,
-        // blindness demands mass. Omniscience is permanently fresh.
-        let intel_fresh = !dials.fog_honest
-            || (self.state.scouted_at > 0
-                && obs.tick.saturating_sub(self.state.scouted_at) < 2 * SCOUT_REFRESH);
+        // blindness demands mass.
+        let intel_fresh = self.state.scouted_at > 0
+            && obs.tick.saturating_sub(self.state.scouted_at) < 2 * SCOUT_REFRESH;
         let sentinel = UnitKind::Sentinel.stats();
         let atk = sentinel.weapons.first().expect("sentinels fight");
         let sentinel_worth =
@@ -4797,7 +4796,6 @@ mod tests {
                         Dials::scripted(&profile, DifficultyTuning::for_level(difficulty))
                     })
                     .collect();
-            assert!(dials.iter().all(|dial| dial.fog_honest));
             assert!(
                 dials
                     .iter()

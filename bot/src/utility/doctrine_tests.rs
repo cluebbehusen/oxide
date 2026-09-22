@@ -208,7 +208,8 @@ fn positioned_intents_flip_and_positionless_ones_pass() {
 
 // --- channel tests: drive the utility policy on synthetic worlds -----
 
-use crate::{Dials, UtilityPolicy};
+use super::UtilityPolicy;
+use crate::Dials;
 
 /// A base observation with a built home Foundry (the policy's anchor).
 fn obs_with_home() -> Observation {
