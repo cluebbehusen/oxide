@@ -1100,11 +1100,14 @@ impl UtilityPolicy {
     ) {
         if let Some(inputs) = mode.ground_missions {
             self.mission_army(
-                dials,
                 obs,
                 armies,
-                home,
-                missions::MissionContext { mode, inputs },
+                missions::MissionContext {
+                    mode,
+                    inputs,
+                    dials,
+                    home,
+                },
                 intents,
             );
             return;
