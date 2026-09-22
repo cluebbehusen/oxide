@@ -447,9 +447,9 @@ impl UtilityPolicy {
 }
 
 fn array_ready_at(now: chassis::Tick, worker: &UnitObs, travel: u32) -> chassis::Tick {
-    now.saturating_add(super::defense::travel_ticks(
+    now.saturating_add(crate::bot::navigation::travel::travel_ticks(
+        worker.kind,
         travel,
-        worker.kind.stats().speed,
     ))
     .saturating_add(u64::from(
         BuildingKind::Array

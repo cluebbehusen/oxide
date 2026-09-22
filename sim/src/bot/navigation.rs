@@ -16,6 +16,7 @@ pub(super) mod regions;
 mod safety;
 pub(super) mod search;
 pub(super) mod service;
+pub(super) mod travel;
 
 #[cfg(test)]
 pub(super) mod work;

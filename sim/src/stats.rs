@@ -540,6 +540,22 @@ impl UnitKind {
         }
     }
 
+    /// Ticks a ground chassis loses leaving a stop on the opposite bearing,
+    /// against covering the same ground at full speed: the pivot in place
+    /// through a half turn, plus the ramps up to speed and back down to rest.
+    pub fn ground_reversal_ticks(self) -> u64 {
+        let rate = u64::from(self.ground_turn_rate());
+        if rate == 0 {
+            return 0;
+        }
+        let pivot = u64::from(128 - GROUND_ALIGNED_STEPS)
+            .div_ceil(rate)
+            .saturating_sub(1);
+        // A linear ramp over `n` ticks covers the ground of `(n + 1) / 2`.
+        let ramps = u64::from(GROUND_ACCEL_TICKS + GROUND_BRAKE_TICKS - 2).div_ceil(2);
+        pivot + ramps
+    }
+
     /// Ground gun mounts whose bearing is independent of the chassis.
     pub const fn has_ground_turret(self) -> bool {
         matches!(self, Self::Sentinel | Self::Warden | Self::Lancer)
@@ -2251,6 +2267,16 @@ pub const WAYPOINT_ACCEPT: Fx = Fx::lit("0.35");
 /// steps is 135 degrees: right-angle corners are driven as arcs; a reversal
 /// stops first.
 pub const GROUND_PIVOT_THRESHOLD: u8 = 96;
+
+/// Heading error, in compass steps, inside which a ground chassis is on its
+/// bearing: it rolls from rest and tracks its target point directly.
+pub const GROUND_ALIGNED_STEPS: u8 = 8;
+
+/// Ticks a ground motor takes from rest to full speed.
+pub const GROUND_ACCEL_TICKS: u8 = 6;
+
+/// Ticks a ground motor takes from full speed to rest.
+pub const GROUND_BRAKE_TICKS: u8 = 3;
 
 /// Running ticks of contact cancelling most of a ground body's intended
 /// progress before it drops its route and its brain plans again from where

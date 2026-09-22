@@ -15,6 +15,7 @@ use super::construction_checks::*;
 use super::*;
 use crate::bot::intelligence::ContactEvidence;
 use crate::bot::navigation::paths::{EndpointRoutes, path_cost};
+use crate::bot::navigation::travel::travel_ticks;
 use crate::bot::{Orientation, PublicMapBriefing, StartingFoundry};
 #[cfg(test)]
 use crate::map::Terrain;
@@ -1751,18 +1752,10 @@ fn approach_contributes_marginal_protection(
 
 fn source_threat_arrival_ticks(source: ThreatOrigin, baseline_cost: u32) -> Option<u64> {
     match source.capability {
-        ThreatCapability::Mobile(kind) => Some(travel_ticks(baseline_cost, kind.stats().speed)),
+        ThreatCapability::Mobile(kind) => Some(travel_ticks(kind, baseline_cost)),
         ThreatCapability::StaticDefense { .. } => Some(0),
         ThreatCapability::Foothold => None,
     }
-}
-
-pub(super) fn travel_ticks(path_cost_tenths: u32, speed: Fx) -> u64 {
-    if path_cost_tenths == 0 {
-        return 0;
-    }
-    let distance = Fx::from_num(path_cost_tenths) / Fx::from_num(10);
-    (distance / speed).ceil().to_num::<u64>()
 }
 
 fn defended_assets(
@@ -6073,11 +6066,10 @@ mod tests {
         assert_eq!(summary.evidence_count, 1);
         assert_eq!(
             summary.threat_arrival_ticks,
-            Some(travel_ticks(far_cost, UnitKind::Sentinel.stats().speed))
+            Some(travel_ticks(UnitKind::Sentinel, far_cost))
         );
         assert!(
-            travel_ticks(near_cost, UnitKind::Sentinel.stats().speed)
-                < summary.threat_arrival_ticks.unwrap(),
+            travel_ticks(UnitKind::Sentinel, near_cost) < summary.threat_arrival_ticks.unwrap(),
             "the uncovered near lane must not make this exact site look imminent"
         );
     }

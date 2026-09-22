@@ -505,7 +505,10 @@ impl UtilityPolicy {
             };
             let arrival_at = obs
                 .tick
-                .saturating_add(super::economic_value::travel_ticks(member.kind, cost));
+                .saturating_add(crate::bot::navigation::travel::travel_ticks(
+                    member.kind,
+                    cost,
+                ));
             if arrival_at >= obs.tick + HORIZON {
                 continue;
             }

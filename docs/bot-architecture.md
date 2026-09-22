@@ -408,61 +408,66 @@ Worker value is finite harvest output or recovery of orphaned paid construction,
 net of reachable existing and queued workers. Technology and factories serve
 capability demand derived before prerequisite eligibility, with construction and
 production delay, missing-chain costs, and eventual capacity accounted for. Live
-harvest workers pay initial travel to visible work before contributing output.
-Harvest valuation separates drop-off service geometry from finite resource work
-and live or queued worker returns. One fog-honest navigation projection supplies
-connectivity, danger-avoiding distance fields, and bidirectional canonical
-command-route safety. Each source contributes once to its selected service
-region; overlapping work tiles count once. Live workers pay initial travel, and
-paid worker occurrences retain their producer readiness. One controller-local
-cache retains the latest service geometry and at most 4,096 corridor answers per
-service region. Its exact equality key includes ordinary passability, allowed
-passability, the danger mask, orientation, public map knowledge, and completed
-drop-offs. Changed blockers or danger discard the old service evidence. Resource
-amounts, visibility, work eligibility, live workers, and producer schedules are
-evaluated afresh; cached geometry grants no resource or worker credit. Canonical
-command paths beneath those corridor verdicts have a separate navigation-owned
-lifetime. Their cache keys contain ordinary passability in the command
-coordinate frame and directed endpoints, so changed danger can reuse a path
-while checking every step against the current safety projection. Service
-connectivity and danger-avoiding distances still invalidate with danger.
-Concurrent air and lift demand share each Airworks lane's time once, bounded by
-readiness, customer deadlines, and route reachability. Local Foundry throughput
-opportunities reuse the expansion admission and security path. Additional
-throughput is capped by current unprotected capital and completed income after
-the candidate and its missing prerequisites are paid. Capacity confidence and
-urgency come from the demand contributing its marginal return; an
-already-covered current need cannot strengthen a speculative capacity case. A
-proposed first Airworks tries current targets by value and regional distance
-until it finds a complete connected scout, suppression, and strike minimum. This
-witness excludes optional force growth and target-cluster expansion. The
-hypothetical factory exists only inside this pure sizing calculation: its
-construction capital and delay are removed before the ordinary package and route
-checks run, and existing live units are excluded from speculative ownership.
-Retained obligations must fit the post-construction capacity before campaign and
-route derivation begins. The complete minimum must fit alongside retained
-capital promises and producer jobs in shared allocation. This supported
-investment value cannot justify duplicate Airworks, issue a production command,
-or admit an operation before its real prerequisites exist. Recurring-income
-investments are capped by unfunded useful work; completed income alone supplies
-spendable forecasts. Self-refits own exact building ids and withhold their
-offline source income separately from purchase capital. Defensive refit
-valuation estimates protection at nearby asset approaches, using actual weapon
-coverage, redundancy, health, and offline time. Public terrain connectivity
-filters ground-threat priors; nearby current attackers prevent refitting. This
-estimate does not reconstruct remote army routes or credit distant choke-point
-protection. The residual technology scalar and the operational Airworks capital
-tax are absent. Economic purchases keep a fixed funding deadline separate from
-their return horizon. Shared allocation rebalances their current and forecast
-capital alongside fixed producer payments; a missed funding deadline releases
-the unpaid plan for reconsideration. Issuing a build pays for its site
-immediately, including travel through fog; paid foundations and refits follow
-ordinary simulation rules. Extractor development compares explored, safe frame
-groups around a common Foundry site by their total return after restoration,
-support, travel, and build costs. The existing expansion security check must
-admit the shared support site. Only the next restoration owns capital and a
-builder; later steps are re-evaluated as construction completes, and their
-projected income never becomes spendable forecast credit.
+harvest workers pay initial travel to visible work before contributing output. A
+harvest cycle is gathering, the haul out and back at full speed, and the
+reversal a ground chassis makes from rest at each end: its half-turn pivot plus
+the motor's ramps, from `UnitKind::ground_reversal_ticks`. When work and
+drop-off share a tile, the cycle is gathering plus one deposit tick, with no
+travel or reversal charge. Harvest valuation separates drop-off service geometry
+from finite resource work and live or queued worker returns. One fog-honest
+navigation projection supplies connectivity, danger-avoiding distance fields,
+and bidirectional canonical command-route safety. Each source contributes once
+to its selected service region; overlapping work tiles count once. Live workers
+pay initial travel, and paid worker occurrences retain their producer readiness.
+One controller-local cache retains the latest service geometry and at most 4,096
+corridor answers per service region. Its exact equality key includes ordinary
+passability, allowed passability, the danger mask, orientation, public map
+knowledge, and completed drop-offs. Changed blockers or danger discard the old
+service evidence. Resource amounts, visibility, work eligibility, live workers,
+and producer schedules are evaluated afresh; cached geometry grants no resource
+or worker credit. Canonical command paths beneath those corridor verdicts have a
+separate navigation-owned lifetime. Their cache keys contain ordinary
+passability in the command coordinate frame and directed endpoints, so changed
+danger can reuse a path while checking every step against the current safety
+projection. Service connectivity and danger-avoiding distances still invalidate
+with danger. Concurrent air and lift demand share each Airworks lane's time
+once, bounded by readiness, customer deadlines, and route reachability. Local
+Foundry throughput opportunities reuse the expansion admission and security
+path. Additional throughput is capped by current unprotected capital and
+completed income after the candidate and its missing prerequisites are paid.
+Capacity confidence and urgency come from the demand contributing its marginal
+return; an already-covered current need cannot strengthen a speculative capacity
+case. A proposed first Airworks tries current targets by value and regional
+distance until it finds a complete connected scout, suppression, and strike
+minimum. This witness excludes optional force growth and target-cluster
+expansion. The hypothetical factory exists only inside this pure sizing
+calculation: its construction capital and delay are removed before the ordinary
+package and route checks run, and existing live units are excluded from
+speculative ownership. Retained obligations must fit the post-construction
+capacity before campaign and route derivation begins. The complete minimum must
+fit alongside retained capital promises and producer jobs in shared allocation.
+This supported investment value cannot justify duplicate Airworks, issue a
+production command, or admit an operation before its real prerequisites exist.
+Recurring-income investments are capped by unfunded useful work; completed
+income alone supplies spendable forecasts. Self-refits own exact building ids
+and withhold their offline source income separately from purchase capital.
+Defensive refit valuation estimates protection at nearby asset approaches, using
+actual weapon coverage, redundancy, health, and offline time. Public terrain
+connectivity filters ground-threat priors; nearby current attackers prevent
+refitting. This estimate does not reconstruct remote army routes or credit
+distant choke-point protection. The residual technology scalar and the
+operational Airworks capital tax are absent. Economic purchases keep a fixed
+funding deadline separate from their return horizon. Shared allocation
+rebalances their current and forecast capital alongside fixed producer payments;
+a missed funding deadline releases the unpaid plan for reconsideration. Issuing
+a build pays for its site immediately, including travel through fog; paid
+foundations and refits follow ordinary simulation rules. Extractor development
+compares explored, safe frame groups around a common Foundry site by their total
+return after restoration, support, travel, and build costs. The existing
+expansion security check must admit the shared support site. Only the next
+restoration owns capital and a builder; later steps are re-evaluated as
+construction completes, and their projected income never becomes spendable
+forecast credit.
 
 `EconomicQuotes` owns one quotation pass over an immutable observation, resource
 snapshot, retained obligations, and capability demand. Capacity-Foundry fallback
