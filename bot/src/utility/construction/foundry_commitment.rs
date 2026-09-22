@@ -7,7 +7,7 @@ use super::*;
 pub(crate) struct ExistingFoundryCommitment;
 
 /// Accepted expansion whose exact build has not yet survived command lowering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::utility) struct FoundrySavingCommitment {
     pub(in crate::utility) plan: FoundryExpansionPlan,
     pub(in crate::utility) accepted_at: Tick,
@@ -18,7 +18,7 @@ pub(in crate::utility) struct FoundrySavingCommitment {
 
 /// The immutable economic basis under which cross-domain allocation admitted
 /// a Foundry that may need future completed-source income.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::utility) struct FoundryForecastBasis {
     pub(in crate::utility) planning_scrap: u32,
     pub(in crate::utility) protected_reserve: u32,

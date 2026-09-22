@@ -10,6 +10,21 @@ while reusable game-independent primitives stay in `chassis`.
 
 ## Main pieces
 
+- `checkpoint` captures a completed tick boundary: scenario, validated world,
+  canonical controller roster, pending inputs, and optional incremental
+  statistics. Restoration installs those parts without executing historical
+  ticks. The session, simulation, and controller revisions are checked
+  independently. A fingerprint binds the captured scenario and world, rejecting
+  later mismatches even if both scenario copies change. Capture trusts the
+  host's pairing; the fingerprint neither authenticates data nor proves
+  historical origin. `RecordedCheckpoint` carries the existing recorder
+  alongside this core so current hosts can continue exporting complete legacy
+  replays. Recorder setup and duration are checked; restoration does not
+  re-execute the log to prove its correspondence to the world. This internal
+  contract remains useful for headless session adapters. Player saves use the
+  core checkpoint without historical commands; recovery pairs it with a world
+  origin and a completed command suffix.
+
 - `bot_execution` collects commands in input seat order, using a shared pool of
   up to four workers when multiple bots are due. A busy or unavailable pool uses
   serial execution, so independent headless matches do not queue behind it.
@@ -24,8 +39,15 @@ while reusable game-independent primitives stay in `chassis`.
 - `runner` executes scenarios and replays headlessly through the same
   record-then-tick composition. Its opt-in traced step returns player-facing bot
   diagnostics without changing replay input or the ordinary step path.
-- `playback` provides bounded seeking and replay-viewer state.
-- `stats` derives match summaries from simulation truth.
+- `recording` supplies a validated world-only origin for replay segments.
+  Scenario-start records retain their original JSON shape. Checkpoint-origin
+  records retain absolute ticks; their first available tick can be nonzero.
+  Playback and replay statistics never execute controllers. A world-only segment
+  cannot resume live play without its separate session checkpoint.
+- `playback` provides bounded seeking between the recording origin and its end.
+- `stats` derives match summaries from simulation truth. Replay statistics cover
+  the available segment; live checkpoint statistics retain earlier session
+  totals.
 - `render` is the deterministic CPU renderer used for previews and goldens.
 - `matchup` and `bench` build controlled combat and scale fixtures.
 - `perceptual` compares rendered images without entering gameplay logic.

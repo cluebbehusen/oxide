@@ -6,7 +6,7 @@ use oxide_sim::ids::{BuildingId, UnitId};
 use oxide_sim::stats::{Domain, QUEUE_CAP, UnitKind};
 
 /// Forecast income at the first decision tick on which it may fund a command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ForecastAvailability {
     /// Cadence-aligned command tick whose opening bank includes this income.
     pub(crate) available_at: Tick,
@@ -73,7 +73,7 @@ pub(crate) enum PlanningProjectionError {
 }
 
 /// Mutable projection of one completed producer's FIFO and queue slots.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProducerPlanningProjection {
     producer: BuildingId,
     observed_at: Tick,
@@ -85,6 +85,23 @@ pub(crate) struct ProducerPlanningProjection {
 }
 
 impl ProducerPlanningProjection {
+    pub(crate) fn valid_checkpoint(&self, tick: Tick) -> bool {
+        self.observed_at <= tick
+            && self.cadence > 0
+            && self.slot_available_at.len() == QUEUE_CAP
+            && self
+                .slot_available_at
+                .windows(2)
+                .all(|pair| pair[0] <= pair[1])
+            && self.trainable.windows(2).all(|pair| pair[0] < pair[1])
+            && self.production_available_at < Tick::MAX / 2
+            && self.last_enqueue_at < Tick::MAX / 2
+            && self
+                .slot_available_at
+                .iter()
+                .all(|value| *value < Tick::MAX / 2)
+    }
+
     fn from_lane(lane: &ProducerLane, cadence: Tick) -> Result<Self, PlanningProjectionError> {
         if lane.queued.len() > QUEUE_CAP {
             return Err(PlanningProjectionError::QueueBeyondCapacity {
@@ -229,7 +246,7 @@ impl ProducerPlanningProjection {
 }
 
 /// Resource-owned evidence for one bounded cross-domain allocation pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ResourcePlanningProjection {
     current_scrap: u32,
     observed_at: Tick,
@@ -263,6 +280,26 @@ pub(crate) struct ResourcePlanningFixture {
 }
 
 impl ResourcePlanningProjection {
+    pub(crate) fn valid_checkpoint(&self, tick: Tick) -> bool {
+        self.observed_at <= tick
+            && self.horizon >= self.observed_at
+            && self.horizon < Tick::MAX / 2
+            && self.cadence > 0
+            && self.cadence < Tick::MAX / 2
+            && self
+                .producers
+                .windows(2)
+                .all(|pair| pair[0].producer < pair[1].producer)
+            && self
+                .producers
+                .iter()
+                .all(|producer| producer.valid_checkpoint(tick))
+            && self
+                .forecast_income
+                .windows(2)
+                .all(|pair| pair[0].available_at < pair[1].available_at)
+    }
+
     /// Observation boundary shared by every resource in this projection.
     pub(crate) const fn observed_at(&self) -> Tick {
         self.observed_at

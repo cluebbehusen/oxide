@@ -9,6 +9,20 @@ use std::sync::Arc;
 pub struct SeatBot(Box<Brain>);
 
 impl SeatBot {
+    /// Captures controller memory and unfinished planning without running a decision.
+    pub fn checkpoint(&self) -> Result<crate::checkpoint::BotCheckpoint, String> {
+        self.0.checkpoint()
+    }
+
+    /// Restores a validated controller at a completed simulation boundary.
+    pub fn from_checkpoint(
+        checkpoint: &crate::checkpoint::BotCheckpoint,
+        scenario: &oxide_sim::Scenario,
+        state: &oxide_sim::State,
+    ) -> Result<Self, String> {
+        Brain::from_checkpoint(checkpoint, scenario, state).map(|brain| Self(Box::new(brain)))
+    }
+
     /// Creates a seat running the configurable player-facing controller.
     pub fn scripted(
         player: oxide_sim::ids::PlayerId,

@@ -4,7 +4,7 @@ use super::Progress;
 
 const LIFETIME: u64 = 120;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Alternatives<Key> {
     cursor: usize,
     incumbent: Option<(u64, Key)>,
@@ -24,6 +24,12 @@ impl<Key> Default for Alternatives<Key> {
 }
 
 impl<Key: Copy + Eq> Alternatives<Key> {
+    pub(super) fn valid_checkpoint(&self, tick: u64, limit: usize) -> bool {
+        self.tick.is_none_or(|t| t <= tick)
+            && self.incumbent.is_none_or(|(t, _)| t <= tick)
+            && self.remaining <= limit
+    }
+
     pub(super) fn retained(&self, tick: u64) -> Option<Key> {
         self.incumbent
             .filter(|(started, _)| tick.saturating_sub(*started) < LIFETIME)

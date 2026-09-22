@@ -82,7 +82,7 @@ const MOBILE_AA_EXPOSURE_TICKS: u64 = 200;
 const MOBILE_AA_SURVIVAL_MARGIN: u64 = 2;
 const DEDICATED_MOBILE_AA_WEIGHT: u64 = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum AirSuppression {
     GroundArtillery,
     Airborne,
@@ -175,7 +175,7 @@ struct SuppressionEngagement {
     firing_stands: Vec<(UnitId, TilePos)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum SuppressionDispatch {
     Position {
         target: Target,
@@ -327,7 +327,7 @@ impl ConnectedProductionResources {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct AirPlan {
     admitted_at: Tick,
     suppression: AirSuppression,
@@ -345,7 +345,7 @@ struct AirPlan {
     paid_connected_production: Vec<ConnectedPurchase>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum AirStrikeDispatch {
     Attack { target: BuildingId, anchor: TilePos },
     AttackMove(TilePos),
@@ -890,7 +890,9 @@ fn multiset_difference<T: Ord + Copy>(left: &[T], right: &[T]) -> Vec<T> {
 }
 
 /// A phase of the coordinated air playbook.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum AirOperationPhase {
     /// Put current sight over the objective.
     Recon,
@@ -908,7 +910,7 @@ pub enum AirOperationPhase {
 }
 
 /// Why an operation entered recovery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AirRecoveryReason {
     /// Current sight confirmed the strike's objective was gone.
     Complete,
@@ -1005,13 +1007,13 @@ fn recovery_for_rejection(rejection: ConnectedPlanRejection) -> AirRecoveryReaso
 }
 
 /// One-think terminal signal for a coordinated lift targeting the same base.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum AirOperationOutcome {
     Released { player: PlayerId, target: TilePos },
     Aborted { player: PlayerId, target: TilePos },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum AirStage {
     Watching,
     Recon,
@@ -1026,7 +1028,7 @@ pub(super) enum AirStage {
 }
 
 /// Inspectable persistent state of the active operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AirOperation {
     /// Last known target owner.
     pub target_player: PlayerId,
@@ -1109,7 +1111,7 @@ impl AirOperation {
 }
 
 /// Role-preserving survivors held only through the operation cooldown.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct AirStandby {
     scout: Option<UnitId>,
     artillery: Vec<UnitId>,
@@ -1238,7 +1240,7 @@ pub(super) struct StrategicCoordination<'a> {
 /// together; holding them as one value makes the half-set state — which
 /// a fallback once papered over by silently substituting a combined
 /// plan for a possibly-island one — unrepresentable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ActiveAirOperation {
     op: AirOperation,
     plan: AirPlan,
@@ -1268,7 +1270,7 @@ impl ConnectedOffenseIdentity {
 
 /// A purchase already emitted through shared allocation. Predicted completion
 /// only releases ownership after the observed queue can actually advance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ConnectedPurchase {
     producer: BuildingId,
     kind: UnitKind,
@@ -2431,7 +2433,7 @@ pub(super) struct ConnectedPackageDiagnostics {
 }
 
 /// Controller-local owner of the active operation and its cooldown.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StrategicPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
     pub(crate) experience: std::sync::Arc<super::experience::Experience>,
@@ -16845,6 +16847,7 @@ mod tests {
             target: Target::Building(BuildingId(80)),
         }));
 
+        planner = crate::checkpoint::round_trip(&planner);
         for bomber in battle
             .my_units
             .iter_mut()

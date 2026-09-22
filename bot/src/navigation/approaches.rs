@@ -12,7 +12,7 @@ use crate::planning::{Progress, WorkBudget};
 use crate::query_work::QueryPurpose;
 use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ApproachField {
     width: i32,
     height: i32,
@@ -20,6 +20,12 @@ pub(crate) struct ApproachField {
 }
 
 impl ApproachField {
+    pub(crate) fn valid_checkpoint(&self, width: i32, height: i32) -> bool {
+        self.width == width
+            && self.height == height
+            && self.distances.len() == width as usize * height as usize
+    }
+
     pub(crate) fn from_distances(width: i32, height: i32, distances: Vec<u32>) -> Self {
         #[cfg(test)]
         super::work::record(|work| work.fields += 1);

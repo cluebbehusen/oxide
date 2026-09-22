@@ -19,7 +19,7 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
             queue: false,
         },
     );
-    let mut replay = Replay::new(SIM_VERSION, scenario);
+    let mut replay = Replay::<_, _, ()>::new(SIM_VERSION, scenario);
     replay.record(live.current_tick(), advance.clone());
     live.tick(&[advance]);
     assert_eq!(live.unit(mover).unwrap().order, Order::Advance { goal });
