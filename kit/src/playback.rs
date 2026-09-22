@@ -112,36 +112,7 @@ impl Playback {
     /// nearest checkpoint at or before the target and re-simulate the
     /// suffix — bit-identical to having played straight there.
     pub fn seek(&mut self, target: u64) {
-        let target = target.min(self.total);
-        // The best launch point is the richest checkpoint at or before
-        // the target — used for backward seeks AND long forward jumps,
-        // and never discarded: a deterministic stream keeps every
-        // recorded checkpoint valid, so End → Home → End replays a
-        // suffix, not the whole record.
-        let best = self
-            .checkpoints
-            .iter()
-            .rev()
-            .find(|(t, _)| *t <= target)
-            .cloned();
-        let restore = match &best {
-            _ if target < self.position() => true,
-            Some((t, _)) => *t > self.position(),
-            None => false,
-        };
-        if restore {
-            let (_, state) =
-                best.unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
-            self.state = state;
-            self.last_motion.clear();
-            self.next_cmd = self
-                .replay
-                .commands
-                .partition_point(|c| c.tick < self.state.current_tick());
-        }
-        while self.position() < target {
-            self.step();
-        }
+        self.seek_step(target, u64::MAX);
     }
 
     /// One budgeted slice of a seek toward `target`: restores the best
@@ -151,23 +122,18 @@ impl Playback {
     /// progress bar instead of a frozen render thread.
     pub fn seek_step(&mut self, target: u64, budget: u64) -> bool {
         let target = target.min(self.total);
-        // Restoring is cheap and idempotent; re-deciding it every slice
-        // keeps this a plain resumable loop with no extra state.
-        let best = self
-            .checkpoints
-            .iter()
-            .rev()
-            .find(|(t, _)| *t <= target)
-            .cloned();
+        // Inspect checkpoints by reference: most forward slices need no restore.
+        let best = self.checkpoints.iter().rev().find(|(t, _)| *t <= target);
         let restore = match &best {
             _ if target < self.position() => true,
             Some((t, _)) => *t > self.position(),
             None => false,
         };
         if restore {
-            let (_, state) =
-                best.unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
-            self.state = state;
+            self.state = best.map_or_else(
+                || self.replay.setup.build().expect("validated at load"),
+                |(_, state)| state.clone(),
+            );
             self.last_motion.clear();
             self.next_cmd = self
                 .replay
@@ -274,6 +240,31 @@ mod tests {
                 total / cadence <= MAX_CHECKPOINTS,
                 "{total} ticks at cadence {cadence} keeps too many clones"
             );
+        }
+    }
+
+    #[test]
+    fn mixed_seek_budgets_restore_real_checkpoints_without_replaying_commands_twice() {
+        let mut replay = recorded_match();
+        replay.meta.ticks = Some(5_000);
+        let mut sliced = Playback::load(replay.clone()).unwrap();
+        sliced.seek(5_000);
+        assert!(sliced.checkpoints.len() >= 4);
+        for target in [0, 2_048, 4_100, 1_024, 4_096, 5_000, u64::MAX] {
+            let mut straight = Playback::load(replay.clone()).unwrap();
+            straight.advance(target.min(5_000));
+            sliced.seek_step(target, 0);
+            let mut slices = 0;
+            while !sliced.seek_step(target, 17) {
+                slices += 1;
+                assert!(slices < 300);
+            }
+            assert_eq!(sliced.state.hash(), straight.state.hash());
+            assert_eq!(sliced.next_cmd, straight.next_cmd);
+            let position = sliced.position();
+            let hash = sliced.state.hash();
+            assert!(sliced.seek_step(position, 0));
+            assert_eq!(sliced.state.hash(), hash);
         }
     }
 
