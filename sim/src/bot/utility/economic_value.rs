@@ -44,13 +44,17 @@ impl WorkerService {
         cycles.saturating_mul(load).min(work.amount)
     }
 
-    /// One full load: gathering, the haul out and back, and the reversal a
-    /// worker makes from rest at each end.
+    /// One full load: gathering and delivery, with travel and reversals only
+    /// when the work tile is separate from the drop-off.
     fn cycle_ticks(self, work: HarvestWork) -> u64 {
         let Some(harvest) = self.kind.stats().harvest else {
             return u64::MAX;
         };
         let gather = u64::from(harvest.capacity).saturating_mul(u64::from(harvest.ticks_per_scrap));
+        if work.haul_cost == 0 {
+            // A full worker deposits on the tick after gathering its last scrap.
+            return gather.saturating_add(1);
+        }
         travel_ticks(self.kind, work.haul_cost)
             .saturating_mul(2)
             .saturating_add(gather)
@@ -326,7 +330,11 @@ mod tests {
 
     /// Ticks between a lone worker's steady deposits in the real simulation,
     /// beside the cycle quoted for the same work.
-    fn measured_and_quoted_cycle(kind: UnitKind, node: chassis::grid::TilePos) -> (u64, u64) {
+    fn measured_and_quoted_cycle(
+        kind: UnitKind,
+        node: chassis::grid::TilePos,
+        start: chassis::grid::TilePos,
+    ) -> (u32, u64, u64) {
         use super::super::test_world as world;
         use super::super::{Observation, PublicMapBriefing, UtilityPolicy};
         use crate::bot::orient::Orientation;
@@ -341,8 +349,8 @@ mod tests {
             UnitSpec {
                 player: 0,
                 kind,
-                x: 7,
-                y: 13,
+                x: start.x,
+                y: start.y,
             },
             UnitSpec {
                 player: 0,
@@ -363,7 +371,8 @@ mod tests {
             (&[], &[]),
         );
         assert_eq!(regions.len(), 1);
-        let quoted = worker(kind, 0).cycle_ticks(regions[0].work);
+        let work = regions[0].work;
+        let quoted = worker(kind, 0).cycle_ticks(work);
 
         state.tick(&[PlayerCommand {
             player: PlayerId(0),
@@ -374,6 +383,7 @@ mod tests {
             },
         }]);
         let mut deposits = Vec::new();
+        let mut settled_pose = None;
         for tick in 1..6_000u64 {
             let deposited =
                 state.tick(&[]).events.iter().any(
@@ -382,14 +392,54 @@ mod tests {
             if deposited {
                 deposits.push(tick);
             }
-            if deposits.len() == 3 {
+            if work.haul_cost == 0 && deposits.len() >= 3 {
+                let unit = state.unit(id).unwrap();
+                let pose = (unit.pos, unit.heading);
+                assert_eq!(*settled_pose.get_or_insert(pose), pose);
+            }
+            if deposits.len() == 5 {
                 break;
             }
         }
-        assert_eq!(deposits.len(), 3, "{kind:?} {node:?}");
-        let measured = deposits[2] - deposits[1];
-        assert_eq!(measured, deposits[1] - deposits[0], "{kind:?} {node:?}");
-        (measured, quoted)
+        assert_eq!(deposits.len(), 5, "{kind:?} {node:?}");
+        // Initial delivery can reposition the worker before its steady route settles.
+        let measured = deposits[4] - deposits[3];
+        assert_eq!(measured, deposits[3] - deposits[2], "{kind:?} {node:?}");
+        (work.haul_cost, measured, quoted)
+    }
+
+    #[test]
+    fn a_shared_work_and_drop_off_tile_pays_only_for_gathering_and_deposit() {
+        use super::super::test_world::LEFT_HOME;
+
+        for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+            for reach in [2, 3] {
+                let node = LEFT_HOME.offset(reach, 0);
+                let (haul_cost, measured, quoted) =
+                    measured_and_quoted_cycle(kind, node, LEFT_HOME.offset(2, 1));
+                assert_eq!(haul_cost, 0);
+                assert_eq!(quoted, measured, "{kind:?} {node:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_one_tile_haul_still_pays_for_travel_and_reversals() {
+        use super::super::test_world::LEFT_HOME;
+
+        for kind in [UnitKind::Harvester, UnitKind::Excavator] {
+            let (haul_cost, measured, quoted) =
+                measured_and_quoted_cycle(kind, LEFT_HOME.offset(4, 0), LEFT_HOME.offset(3, 3));
+            assert_eq!(haul_cost, 10);
+            let harvest = kind.stats().harvest.unwrap();
+            let free_flow = u64::from(harvest.capacity) * u64::from(harvest.ticks_per_scrap)
+                + travel_ticks(kind, haul_cost) * 2;
+            assert!(quoted > free_flow);
+            assert!(
+                quoted.abs_diff(measured) * 100 <= measured * 6,
+                "{kind:?}: {quoted} against {measured}"
+            );
+        }
     }
 
     #[test]
@@ -400,7 +450,8 @@ mod tests {
         for kind in [UnitKind::Harvester, UnitKind::Excavator] {
             for (reach, row) in [(6, 10), (9, 10), (14, 10), (9, 14), (14, 17)] {
                 let node = TilePos::new(LEFT_HOME.x + reach, row);
-                let (measured, quoted) = measured_and_quoted_cycle(kind, node);
+                let (_, measured, quoted) =
+                    measured_and_quoted_cycle(kind, node, LEFT_HOME.offset(3, 3));
                 assert!(
                     quoted >= measured,
                     "{kind:?} {node:?}: {quoted} < {measured}"
