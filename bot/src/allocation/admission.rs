@@ -67,7 +67,6 @@ pub(crate) struct UtilityGrant {
     foundry: FoundryHandoff,
     voluntary_guard: u32,
     producer_lanes: ProducerLaneReservations,
-    air_production_ticks: Option<u64>,
 }
 
 impl UtilityGrant {
@@ -78,7 +77,7 @@ impl UtilityGrant {
         public_map: &'a PublicMapBriefing,
         evidence: DecisionEvidence<'a>,
     ) -> StrategicUtilityContext<'a> {
-        let context = StrategicUtilityContext::new(
+        StrategicUtilityContext::new(
             &self.reservations,
             intelligence.units(),
             intelligence.buildings(),
@@ -90,11 +89,7 @@ impl UtilityGrant {
         .with_prior_scrap_commitment(self.prior_commitment)
         .with_foundry_handoff(self.foundry)
         .with_voluntary_scrap_guard(self.voluntary_guard)
-        .with_producer_lane_reservations(&self.producer_lanes);
-        match self.air_production_ticks {
-            Some(ticks) => context.with_outstanding_air_production_ticks(ticks),
-            None => context,
-        }
+        .with_producer_lane_reservations(&self.producer_lanes)
     }
 }
 
@@ -396,12 +391,9 @@ pub(crate) fn admit_decision(
         team_relief_core_ready,
         lift_rejected,
         raid_attention,
-        air_active,
-        lift_active,
         prospective_carrier_hold,
         utility_prior_commitment,
         utility_spendable,
-        outstanding_air_production_ticks,
     } = settle_operations(
         OperationContext {
             cadence: dials.cadence,
@@ -531,8 +523,6 @@ pub(crate) fn admit_decision(
             foundry: foundry_handoff,
             voluntary_guard: voluntary_scrap_guard.saturating_sub(prospective_carrier_hold),
             producer_lanes: producer_lane_reservations,
-            air_production_ticks: (air_active || lift_active)
-                .then_some(outstanding_air_production_ticks),
         },
     }
 }

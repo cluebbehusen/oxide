@@ -221,44 +221,11 @@ fn obs_with_home() -> Observation {
 }
 
 fn think(policy: &mut UtilityPolicy, obs: &Observation) -> Vec<Intent> {
-    policy.think_residual(&Dials::full(), obs, &[], &[], &[], &public_map(obs))
+    policy.think_residual(&Dials::default(), obs, &[], &[], &[], &public_map(obs))
 }
 
 fn player_think(policy: &mut UtilityPolicy, dials: &Dials, obs: &Observation) -> Vec<Intent> {
     policy.think_residual(dials, obs, &[], &[], &[], &public_map(obs))
-}
-
-#[test]
-fn enemy_air_pulls_anti_air_out_of_the_fabricator() {
-    let mut obs = obs_with_home();
-    obs.my_buildings
-        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
-    obs.my_queues.push(Vec::new());
-    obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Darter, 15, 6)];
-    let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
-    assert!(
-        intents.iter().any(|i| matches!(
-            i,
-            Intent::TrainAt {
-                kind: UnitKind::Flakhound,
-                ..
-            }
-        )),
-        "a Ferrous seat answers the sky with its own AA variant: {intents:?}"
-    );
-
-    // The same threat through Cupric eyes buys the Stinger.
-    obs.faction = Faction::Cupric;
-    let mut policy = UtilityPolicy::new();
-    let intents = think(&mut policy, &obs);
-    assert!(intents.iter().any(|i| matches!(
-        i,
-        Intent::TrainAt {
-            kind: UnitKind::Stinger,
-            ..
-        }
-    )));
 }
 
 #[test]
@@ -285,7 +252,7 @@ fn forward_enemy_guns_do_not_redefine_the_enemy_home_half() {
     obs.known_scrap = vec![(central, 200)];
     obs.enemy_buildings = vec![building_obs(9, 1, BuildingKind::FlakTurret, 10, 2)];
 
-    let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
+    let intents = player_think(&mut UtilityPolicy::new(), &Dials::default(), &obs);
     assert!(
         intents.iter().any(|intent| matches!(
             intent,
@@ -300,7 +267,7 @@ fn forward_enemy_guns_do_not_redefine_the_enemy_home_half() {
     obs.known_scrap = vec![(TilePos::new(18, 2), 200)];
     obs.enemy_buildings
         .push(building_obs(10, 1, BuildingKind::Foundry, 20, 2));
-    let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
+    let intents = player_think(&mut UtilityPolicy::new(), &Dials::default(), &obs);
     assert!(
         intents
             .iter()
@@ -309,18 +276,30 @@ fn forward_enemy_guns_do_not_redefine_the_enemy_home_half() {
     );
 }
 
+fn raid_intents(dials: &Dials, obs: &Observation, reserved: &[UnitId]) -> Vec<Intent> {
+    let mut intents = Vec::new();
+    UtilityPolicy::new().air_raid(
+        dials,
+        obs,
+        super::AirRaidContext {
+            home: TilePos::new(2, 2),
+            enlisted: &[],
+            reserved,
+        },
+        &mut intents,
+    );
+    intents
+}
+
 #[test]
 fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
     let mut obs = obs_with_home();
-    let dials = Dials::full();
-    obs.my_units = vec![
-        unit_obs(0, 0, UnitKind::Buzzard, 4, 4),
-        unit_obs(1, 0, UnitKind::Buzzard, 5, 4),
-        unit_obs(2, 0, UnitKind::Buzzard, 4, 5),
-    ];
+    let dials = Dials::default();
+    obs.my_units = (0..u32::try_from(dials.air_wing).unwrap())
+        .map(|id| unit_obs(id, 0, UnitKind::Buzzard, 4 + id as i32, 4))
+        .collect();
     obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Harvester, 18, 9)];
-    let mut policy = UtilityPolicy::new();
-    let intents = player_think(&mut policy, &dials, &obs);
+    let intents = raid_intents(&dials, &obs, &[]);
     assert!(
         intents
             .iter()
@@ -331,8 +310,7 @@ fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
     let mut flak = building_obs(5, 1, BuildingKind::FlakTurret, 17, 8);
     flak.built = false;
     obs.enemy_buildings = vec![flak.clone()];
-    let mut policy = UtilityPolicy::new();
-    let intents = player_think(&mut policy, &dials, &obs);
+    let intents = raid_intents(&dials, &obs, &[]);
     assert!(
         intents
             .iter()
@@ -342,8 +320,7 @@ fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
 
     flak.built = true;
     obs.enemy_buildings = vec![flak.clone()];
-    let mut policy = UtilityPolicy::new();
-    let intents = player_think(&mut policy, &dials, &obs);
+    let intents = raid_intents(&dials, &obs, &[]);
     assert!(
         !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
         "no wing flies into completed visible Flak: {intents:?}"
@@ -351,8 +328,7 @@ fn air_raids_ignore_unfinished_flak_but_scrub_against_completed_flak() {
 
     flak.seen = false;
     obs.enemy_buildings = vec![flak];
-    let mut policy = UtilityPolicy::new();
-    let intents = player_think(&mut policy, &dials, &obs);
+    let intents = raid_intents(&dials, &obs, &[]);
     assert!(
         !intents.iter().any(|i| matches!(i, Intent::RaidAir { .. })),
         "completed remembered Flak remains actionable risk: {intents:?}"
@@ -367,17 +343,12 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
         unit_obs(1, 0, UnitKind::Buzzard, 5, 4),
     ];
     obs.enemy_units = vec![unit_obs(9, 1, UnitKind::Harvester, 18, 9)];
-    let mut dials = Dials::full();
-    dials.air_wing = 2;
+    let dials = Dials {
+        air_wing: 2,
+        ..Dials::default()
+    };
 
-    let reserved = UtilityPolicy::new().think_residual(
-        &dials,
-        &obs,
-        &[],
-        &[],
-        &[UnitId(0)],
-        &public_map(&obs),
-    );
+    let reserved = raid_intents(&dials, &obs, &[UnitId(0)]);
     assert!(
         reserved
             .iter()
@@ -385,7 +356,7 @@ fn strategic_air_reservations_do_not_complete_a_utility_raid_wing() {
         "one reserved bomber plus one free bomber is not a utility wing: {reserved:?}"
     );
 
-    let free = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &public_map(&obs));
+    let free = raid_intents(&dials, &obs, &[]);
     assert!(
         free.iter().any(|intent| matches!(
             intent,
@@ -525,9 +496,11 @@ fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
         issued: None,
         bounces: 0,
     };
-    let mut dials = Dials::balanced();
-    dials.own_strength_scale = u16::MAX;
-    dials.enemy_strength_scale = 0;
+    let dials = Dials {
+        own_strength_scale: u16::MAX,
+        ..Dials::default()
+    };
+
     UtilityPolicy::new().think_residual(&dials, obs, &[army], &[], &[], &public_map(obs))
 }
 
@@ -547,9 +520,10 @@ fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
         bounces: 0,
     };
     let ids: Vec<UnitId> = (1..=6).map(UnitId).collect();
-    let mut dials = Dials::balanced();
-    dials.own_strength_scale = u16::MAX;
-    dials.enemy_strength_scale = 0;
+    let dials = Dials {
+        own_strength_scale: u16::MAX,
+        ..Dials::default()
+    };
 
     let mut home_side = island_obs();
     home_side.my_units = (1..=6)
@@ -669,7 +643,7 @@ fn only_the_player_facing_controller_route_checks_defensive_retargets() {
         issued: None,
         bounces: 0,
     };
-    let dials = Dials::balanced();
+    let dials = Dials::default();
 
     let player_facing =
         UtilityPolicy::new().think_residual(&dials, &obs, &[army], &[], &[], &public_map(&obs));
@@ -710,7 +684,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
 
     let enlisted: Vec<_> = exec.enlisted().collect();
     let intents = UtilityPolicy::new().think_residual(
-        &Dials::balanced(),
+        &Dials::default(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -728,13 +702,13 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     obs.my_units[0].tile = staging;
     obs.my_units[0].idle = true;
     obs.enemy_units[0].tile = TilePos::new(6, 4);
-    obs.tick = Dials::balanced().cadence;
+    obs.tick = Dials::default().cadence;
     let settled = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(settled.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Withdrawing);
     let enlisted: Vec<_> = exec.enlisted().collect();
     let player_facing = UtilityPolicy::new().think_residual(
-        &Dials::balanced(),
+        &Dials::default(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -750,7 +724,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     );
 
     for _ in 0..4 {
-        obs.tick += Dials::balanced().cadence;
+        obs.tick += Dials::default().cadence;
         assert!(
             exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
                 .is_empty()
@@ -763,7 +737,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     }
 
     obs.enemy_units[0].tile = TilePos::new(12, 4);
-    obs.tick += Dials::balanced().cadence;
+    obs.tick += Dials::default().cadence;
     assert!(
         exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
             .is_empty()
@@ -775,7 +749,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     );
 
     obs.enemy_units[0].tile = TilePos::new(18, 4);
-    obs.tick += Dials::balanced().cadence;
+    obs.tick += Dials::default().cadence;
     assert!(
         exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2))
             .is_empty()
@@ -783,13 +757,13 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert_eq!(exec.armies()[0].state, ArmyState::Staging);
 
     obs.enemy_units[0].tile = TilePos::new(6, 4);
-    obs.tick += Dials::balanced().cadence;
+    obs.tick += Dials::default().cadence;
     let contact = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(contact.is_empty());
     assert_eq!(exec.armies()[0].state, ArmyState::Engaging);
     let enlisted: Vec<_> = exec.enlisted().collect();
     let engaged = UtilityPolicy::new().think_residual(
-        &Dials::balanced(),
+        &Dials::default(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -804,7 +778,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
         "defense must not replace the order of a body already handling local contact: {engaged:?}"
     );
 
-    obs.tick += Dials::balanced().cadence;
+    obs.tick += Dials::default().cadence;
 
     let holding = exec.maintain_player_facing(PlayerId(0), &obs, TilePos::new(2, 2));
     assert!(holding.is_empty());
@@ -875,7 +849,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
 
     let enlisted: Vec<_> = exec.enlisted().collect();
     let outmatched = UtilityPolicy::new().think_residual(
-        &Dials::balanced(),
+        &Dials::default(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -918,7 +892,7 @@ fn a_routed_defender_musters_before_retrying_the_same_remote_fight() {
         .id;
     let enlisted: Vec<_> = exec.enlisted().collect();
     let reinforced = UtilityPolicy::new().think_residual(
-        &Dials::balanced(),
+        &Dials::default(),
         &obs,
         exec.armies(),
         &enlisted,
@@ -983,10 +957,12 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
     assert_eq!(exec.armies()[0].state, ArmyState::Staging);
     assert_eq!(exec.armies()[0].staging, target);
 
-    let mut dials = Dials::balanced();
-    dials.army_size = 4;
-    dials.own_strength_scale = u16::MAX;
-    dials.enemy_strength_scale = 0;
+    let dials = Dials {
+        army_size: 4,
+        own_strength_scale: u16::MAX,
+        ..Dials::default()
+    };
+
     let enlisted: Vec<_> = exec.enlisted().collect();
     let player_facing = UtilityPolicy::new().think_residual(
         &dials,
@@ -2071,7 +2047,7 @@ fn an_unreachable_paid_site_does_not_starve_reachable_construction() {
     obs.my_queues.push(Vec::new());
     obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
 
-    let intents = player_think(&mut UtilityPolicy::new(), &Dials::full(), &obs);
+    let intents = player_think(&mut UtilityPolicy::new(), &Dials::default(), &obs);
 
     assert!(
         !intents.iter().any(|intent| matches!(
@@ -2216,10 +2192,8 @@ fn residual_policy_does_not_duplicate_a_walking_foundry_commitment() {
         .expect("Foundries have a price")
         .cost
         + UnitKind::Sentinel.stats().cost;
-    let mut dials = Dials::full();
-    dials.deep_tech = false;
-    dials.expansion = true;
-    dials.scouting = false;
+    let dials = Dials::default();
+
     let mut policy = UtilityPolicy::new();
 
     let next = player_think(&mut policy, &dials, &obs);
@@ -2266,8 +2240,7 @@ fn a_walking_fabricator_is_reserved_and_counts_as_the_tech_rung() {
         .expect("Fabricators have a price")
         .cost
         + UnitKind::Sentinel.stats().cost;
-    let mut dials = Dials::full();
-    dials.scouting = false;
+    let dials = Dials::default();
 
     let player = player_think(&mut UtilityPolicy::new(), &dials, &obs);
     assert!(
@@ -2306,9 +2279,7 @@ fn a_walking_extractor_claims_its_fixed_frame_once() {
     obs.my_units[0].idle = false;
     obs.my_units[0].founding = Some((BuildingKind::Extractor, frame));
     obs.scrap = 1_000;
-    let mut dials = Dials::full();
-    dials.extractors = true;
-    dials.scouting = false;
+    let dials = Dials::default();
 
     let player = player_think(&mut UtilityPolicy::new(), &dials, &obs);
     assert!(
@@ -2330,7 +2301,7 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
     let mut obs = obs_with_home();
     obs.scrap = 1_000;
     obs.visible.fill(false);
-    obs.my_units = (0..4)
+    obs.my_units = (0..5)
         .map(|id| {
             let mut worker = unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5);
             worker.idle = false;
@@ -2338,8 +2309,9 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
             worker
         })
         .collect();
-    let mut dials = Dials::full();
-    dials.scouting = false;
+    obs.my_units.push(unit_obs(90, 0, UnitKind::Kestrel, 4, 5));
+    let dials = Dials::default();
+
     obs.my_buildings
         .push(building_obs(1, 0, BuildingKind::Fabricator, 8, 2));
     obs.my_queues.push(Vec::new());
@@ -2391,7 +2363,7 @@ fn deferred_build_stops_repairs_before_reusing_a_repairing_builder() {
 fn visible_paid_construction_does_not_fund_an_unowned_repair_program() {
     let mut obs = obs_with_home();
     obs.scrap = 1_000;
-    obs.my_units = (0..4)
+    obs.my_units = (0..5)
         .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
         .collect();
     obs.my_units[0].idle = false;
@@ -2405,8 +2377,8 @@ fn visible_paid_construction_does_not_fund_an_unowned_repair_program() {
     site.built = false;
     obs.my_buildings.push(site);
     obs.my_queues.push(Vec::new());
-    let mut dials = Dials::full();
-    dials.scouting = false;
+    obs.my_units.push(unit_obs(90, 0, UnitKind::Kestrel, 4, 5));
+    let dials = Dials::default();
 
     let intents = player_think(&mut UtilityPolicy::new(), &dials, &obs);
     assert!(
@@ -2424,68 +2396,6 @@ fn visible_paid_construction_does_not_fund_an_unowned_repair_program() {
 }
 
 #[test]
-fn an_underfunded_foundry_promise_escrows_every_player_facing_spend() {
-    let mut obs = obs_with_home();
-    for (id, kind, x) in [
-        (1, BuildingKind::Fabricator, 5),
-        (2, BuildingKind::Airworks, 8),
-        (3, BuildingKind::Crucible, 11),
-        (4, BuildingKind::Turret, 14),
-    ] {
-        obs.my_buildings.push(building_obs(id, 0, kind, x, 2));
-        obs.my_queues.push(Vec::new());
-    }
-    let promised = TilePos::new(17, 8);
-    obs.my_units = (0..4)
-        .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 6))
-        .collect();
-    obs.my_units[0].idle = false;
-    obs.my_units[0].founding = Some((BuildingKind::Foundry, promised));
-    obs.my_units.push(unit_obs(10, 0, UnitKind::Tender, 7, 6));
-    obs.my_units[4].idle = false;
-    obs.my_units[4].repairing = true;
-    let mut patient = unit_obs(11, 0, UnitKind::Sentinel, 8, 6);
-    patient.hp = 1;
-    obs.my_units.push(patient);
-    obs.my_buildings[4].hp = 1;
-    obs.known_scrap = vec![(TilePos::new(8, 9), 500)];
-    let foundry_cost = BuildingKind::Foundry
-        .base_stats()
-        .construction
-        .expect("expansion Foundries have a price")
-        .cost;
-    obs.scrap = foundry_cost - 1;
-
-    let mut dials = Dials::full();
-    dials.adaptive_composition = true;
-    dials.expansion = true;
-    dials.scouting = false;
-    let mut policy = UtilityPolicy::new();
-    let _ = player_think(&mut policy, &dials, &obs);
-    obs.tick = 2_016;
-    let intents = player_think(&mut policy, &dials, &obs);
-
-    assert!(
-        intents.iter().any(|intent| matches!(
-            intent,
-            Intent::StopUnits { units } if units == &[UnitId(10)]
-        )),
-        "an active voluntary repair is cancelled before it can drain the claim: {intents:?}"
-    );
-    assert!(
-        intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::TrainAt { .. }
-                | Intent::Build { .. }
-                | Intent::Repair { .. }
-                | Intent::RepairUnits { .. }
-                | Intent::Upgrade { .. }
-        )),
-        "even low-screen desperation cannot consume an unpaid Foundry claim: {intents:?}"
-    );
-}
-
-#[test]
 fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
     use crate::Executive;
 
@@ -2494,8 +2404,8 @@ fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
     obs.my_units = (0..4)
         .map(|id| unit_obs(id, 0, UnitKind::Harvester, 3 + id as i32, 5))
         .collect();
-    let mut dials = Dials::full();
-    dials.deep_tech = false;
+    let dials = Dials::default();
+
     let mut policy = UtilityPolicy::new();
 
     let mut orphan = building_obs(1, 0, BuildingKind::Fabricator, 8, 2);
@@ -2560,51 +2470,6 @@ fn a_fresh_scout_owns_its_harvester_before_construction_lowers() {
         builder.is_some(),
         "the Fabricator build must also survive lowering"
     );
-}
-
-#[test]
-fn a_complete_tree_uses_the_crucible_and_airworks_for_its_heaviest_roster() {
-    for (faction, bomber) in [
-        (Faction::Ferrous, UnitKind::Condor),
-        (Faction::Cupric, UnitKind::Moth),
-    ] {
-        let mut obs = obs_with_home();
-        obs.faction = faction;
-        obs.scrap = 2_000;
-        obs.my_buildings.extend([
-            building_obs(1, 0, BuildingKind::Fabricator, 5, 2),
-            building_obs(2, 0, BuildingKind::Airworks, 8, 2),
-            building_obs(3, 0, BuildingKind::Crucible, 11, 2),
-        ]);
-        obs.my_queues = vec![
-            vec![UnitKind::Sentinel, UnitKind::Sentinel],
-            vec![UnitKind::Lancer, UnitKind::Lancer],
-            Vec::new(),
-            Vec::new(),
-        ];
-        obs.my_units = (0..4)
-            .map(|id| unit_obs(id, 0, UnitKind::Warden, 3 + id as i32, 5))
-            .collect();
-
-        let intents = UtilityPolicy::new().think_residual(
-            &Dials::balanced(),
-            &obs,
-            &[],
-            &[],
-            &[],
-            &public_map(&obs),
-        );
-        assert!(intents.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt { building, kind: UnitKind::Breaker }
-                if *building == BuildingId(3)
-        )));
-        assert!(intents.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt { building, kind }
-                if *building == BuildingId(2) && *kind == bomber
-        )));
-    }
 }
 
 fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {

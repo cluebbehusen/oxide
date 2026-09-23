@@ -330,10 +330,7 @@ impl UtilityPolicy {
                     )
                 })
                 .map_or(pressure.anchor, |unit| unit.tile);
-            let required = pressure
-                .ground
-                .saturating_mul(u64::from(dials.enemy_strength_scale))
-                / 10_000;
+            let required = pressure.ground;
             let mut candidates: Vec<_> = armies
                 .iter()
                 .filter(|army| army.eligible(inputs))
@@ -763,15 +760,13 @@ impl UtilityPolicy {
                 else {
                     continue;
                 };
-                let enemies: u64 = (obs
+                let enemies: u64 = obs
                     .enemy_units
                     .iter()
                     .filter(|unit| unit.tile.chebyshev(goal) <= 8)
                     .map(crate::executive::unit_strength)
                     .sum::<u64>()
-                    + approach_defenses)
-                    .saturating_mul(u64::from(dials.enemy_strength_scale))
-                    / 10_000;
+                    + approach_defenses;
                 let floor = crate::executive::full_ground_strength(UnitKind::Sentinel)
                     * if self.state.desperate {
                         1

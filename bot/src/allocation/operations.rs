@@ -94,12 +94,9 @@ pub(super) struct OperationSettlement {
     pub(super) team_relief_core_ready: Option<bool>,
     pub(super) lift_rejected: bool,
     pub(super) raid_attention: RaidAttentionDecision,
-    pub(super) air_active: bool,
-    pub(super) lift_active: bool,
     pub(super) prospective_carrier_hold: u32,
     pub(super) utility_prior_commitment: u32,
     pub(super) utility_spendable: u32,
-    pub(super) outstanding_air_production_ticks: u64,
 }
 
 pub(super) fn settle_operations(
@@ -283,10 +280,6 @@ pub(super) fn settle_operations(
         .committed_scrap
         .saturating_add(prospective_carrier_hold);
 
-    let outstanding_air_production_ticks =
-        { strategy.remaining_airwork_ticks(context.observation) }.saturating_add(
-            lifts.remaining_airwork_ticks(context.observation, &lift_unavailable_after_raid),
-        );
     let utility_prior_commitment = funds.utility_commitment();
     let utility_spendable = context
         .observation
@@ -304,12 +297,9 @@ pub(super) fn settle_operations(
             attention_slots: context.tuning.attention_slots,
             admitted: can_begin_raid,
         },
-        air_active,
-        lift_active,
         prospective_carrier_hold,
         utility_prior_commitment,
         utility_spendable,
-        outstanding_air_production_ticks,
     }
 }
 

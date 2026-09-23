@@ -17,7 +17,9 @@ transaction boundaries, execution, and focused domain references.
   schema. `Observation` adds lazy, bot-owned navigation inputs to that data.
 - `PublicMapBriefing` shares immutable authored terrain across seats.
 - `ResolvedProfile` resolves the scenario's difficulty, stance and personality
-  seed. The scenario stores configuration without invoking bot policy.
+  seed. The scenario stores configuration without invoking bot policy. Derived
+  `Dials` contain only live policy controls; their default uses the same
+  Standard Balanced configuration as `BotConfig::default()`.
 - Domains own evidence, proposals and tactics; allocation owns exact resources;
   the Executive owns command lowering. Retained and fresh work use one admission
   pipeline.
@@ -32,10 +34,11 @@ adds no threads and no wall-clock decisions.
 borrowing the seat. Restoration checks a separately versioned CBOR payload
 against the scenario, configuration, and world boundary. Decision memory and
 budgeted search progress survive; observational query caches and public-map
-navigation caches rebuild. The payload is an internal same-version continuation
-format; changes to its layout or interpretation require a controller revision
-and an explicit compatibility decision. It is separate from policy rollback
-checkpoints and never enters authoritative `State` or its hash.
+navigation caches and policy dials rebuild from the scenario configuration. The
+payload is an internal same-version continuation format. It remains at revision
+1 while the save system is unpublished; no legacy layout migration is provided.
+It is separate from policy rollback checkpoints and never enters authoritative
+`State` or its hash.
 
 `navigation` owns bot route queries, search storage, and cache lifetimes. Its
 `commands` module projects ordinary movement and Build routes from player

@@ -525,9 +525,6 @@ impl UtilityPolicy {
         context: AirRaidContext<'_>,
         intents: &mut Vec<Intent>,
     ) {
-        if !dials.air_harass {
-            return;
-        }
         let wings = obs
             .my_units
             .iter()
@@ -1264,9 +1261,7 @@ impl UtilityPolicy {
                         .sum::<u64>()
             })
             .unwrap_or(0)
-            .max(opponent_force_risk)
-            .saturating_mul(u64::from(dials.enemy_strength_scale))
-            / 10_000;
+            .max(opponent_force_risk);
         // Seeing no enemy strength is not the same as the enemy having
         // none — fog hides armies. Floor the estimate by how fresh the
         // intel is: a recent peek at their base earns trust in the count,
@@ -1902,9 +1897,12 @@ mod tests {
             },
             experience: Default::default(),
         };
-        let mut dials = Dials::full();
-        dials.army_size = 3;
-        dials.minimum_core_equivalents = 2;
+        let dials = Dials {
+            army_size: 3,
+            minimum_core_equivalents: 2,
+            ..Dials::default()
+        };
+
         (obs, armies, UtilityPolicy::new(), dials, mission)
     }
 
@@ -2977,7 +2975,7 @@ mod tests {
             PublicScoutPrior::Extractor(frame),
         ));
 
-        let intents = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let intents = policy.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map);
 
         assert_eq!(policy.state.scout, Some(UnitId(1)));
         assert!(!policy.state.public_prior_air_scout_needed);
@@ -2996,6 +2994,22 @@ mod tests {
         let mut obs = recon_observation(home, UnitKind::Harvester);
         obs.tick = 2_016;
         obs.scrap = 1_000;
+        for id in 100..106 {
+            obs.my_units.push(crate::test_support::unit(
+                id,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                home.offset(2, 2),
+            ));
+        }
+        for id in 110..114 {
+            obs.my_units.push(crate::test_support::unit(
+                id,
+                PlayerId(0),
+                UnitKind::Harvester,
+                home.offset(2, 4),
+            ));
+        }
         obs.my_buildings = vec![
             own_foundry(10, home),
             crate::test_support::building(
@@ -3012,7 +3026,7 @@ mod tests {
         control.state.persistent_air_scout_needed = true;
 
         let control_intents =
-            control.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+            control.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map);
         assert!(control_intents.iter().any(|intent| matches!(
             intent,
             Intent::TrainAt { kind, .. } if *kind == scout_kind
@@ -3025,7 +3039,7 @@ mod tests {
         policy.state.scout_dispatch =
             Some(ScoutDispatch::solo_air(missing, home, home.offset(8, 0)));
 
-        let intents = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let intents = policy.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map);
 
         assert_eq!(policy.state.scout, None);
         assert!(policy.state.solo_air_scout_suspended);
@@ -3037,12 +3051,12 @@ mod tests {
 
         obs.tick += super::super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
         obs.enemy_buildings[0].seen = false;
-        let _ = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let _ = policy.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map);
         assert_eq!(policy.state.solo_air_scout_dark_since, Some(obs.tick));
 
         obs.tick += super::super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
         obs.enemy_buildings[0].seen = true;
-        let _ = policy.think_residual(&Dials::balanced(), &obs, &[], &[], &[], &public_map);
+        let _ = policy.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map);
         assert!(
             !policy.state.solo_air_scout_suspended,
             "current sight after a dark interval must rearm scouting even below worker admission"
@@ -3461,8 +3475,8 @@ mod tests {
                 set_visible(&mut obs, hostile.offset(dx, dy), true);
             }
         }
-        let mut dials = Dials::full();
-        dials.scouting = false;
+        let dials = Dials::default();
+
         let mut policy = UtilityPolicy::new();
 
         let _ = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map);
@@ -4198,8 +4212,11 @@ mod tests {
         army.staging = target;
         army.target = Some(target);
 
-        let mut dials = Dials::full();
-        dials.army_size = 5;
+        let dials = Dials {
+            army_size: 5,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
@@ -4262,8 +4279,10 @@ mod tests {
             explored: vec![true; 40 * 24],
             ..crate::test_support::observation_data()
         });
-        let mut dials = Dials::full();
-        dials.army_size = 5;
+        let dials = Dials {
+            army_size: 5,
+            ..Dials::default()
+        };
 
         let defend = |observation: &Observation, body: &Army| {
             let mut intents = Vec::new();
@@ -4412,8 +4431,11 @@ mod tests {
             explored: vec![true; 40 * 24],
             ..crate::test_support::observation_data()
         });
-        let mut dials = Dials::full();
-        dials.army_size = 5;
+        let dials = Dials {
+            army_size: 5,
+            ..Dials::default()
+        };
+
         let defend = |observation: &Observation| {
             let mut intents = Vec::new();
             UtilityPolicy::new().army(
@@ -4534,8 +4556,11 @@ mod tests {
         let mut nearer_allied_foundry = own_foundry(2, TilePos::new(22, 12));
         nearer_allied_foundry.player = PlayerId(2);
         obs.ally_buildings = vec![nearer_allied_foundry];
-        let mut dials = Dials::full();
-        dials.army_size = 5;
+        let dials = Dials {
+            army_size: 5,
+            ..Dials::default()
+        };
+
         let target = |observation: &Observation| {
             let mut intents = Vec::new();
             UtilityPolicy::new().army(
@@ -4662,8 +4687,11 @@ mod tests {
                 ..crate::test_support::observation_data()
             })
         };
-        let mut dials = Dials::full();
-        dials.army_size = 5;
+        let dials = Dials {
+            army_size: 5,
+            ..Dials::default()
+        };
+
         let decide = |obs: &Observation, army: &Army| {
             let mut intents = Vec::new();
             UtilityPolicy::new().army(
@@ -4734,8 +4762,11 @@ mod tests {
         let reserve = fighter(5, TilePos::new(7, 6));
         army.members.push(reserve.id);
         obs.my_units.push(reserve);
-        let mut dials = Dials::full();
-        dials.army_size = 4;
+        let dials = Dials {
+            army_size: 4,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
@@ -4755,8 +4786,11 @@ mod tests {
     #[test]
     fn defenses_clustered_around_the_objective_keep_the_push_gate_closed() {
         let (obs, army) = offensive_position(TilePos::new(14, 7));
-        let mut dials = Dials::full();
-        dials.army_size = 4;
+        let dials = Dials {
+            army_size: 4,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
@@ -5430,8 +5464,11 @@ mod tests {
         let (seen, army) = offensive_position(TilePos::new(14, 7));
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&seen);
-        let mut dials = Dials::full();
-        dials.army_size = 4;
+        let dials = Dials {
+            army_size: 4,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = seen.tick;
         let mut intents = Vec::new();
@@ -5489,8 +5526,11 @@ mod tests {
                 .all(|contact| contact.confidence_at(hidden.tick) == 0)
         );
 
-        let mut dials = Dials::full();
-        dials.army_size = 4;
+        let dials = Dials {
+            army_size: 4,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = hidden.tick;
         let mut intents = Vec::new();
@@ -5517,8 +5557,11 @@ mod tests {
 
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&seen);
-        let mut dials = Dials::full();
-        dials.army_size = 4;
+        let dials = Dials {
+            army_size: 4,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = seen.tick;
         let mut intents = Vec::new();
@@ -5575,8 +5618,10 @@ mod tests {
                 .iter()
                 .all(|contact| contact.confidence_at(hidden.tick) == 0)
         );
-        let mut dials = Dials::full();
-        dials.army_size = 4;
+        let dials = Dials {
+            army_size: 4,
+            ..Dials::default()
+        };
 
         let mut current_policy = UtilityPolicy::new();
         current_policy.state.scouted_at = hidden.tick;
@@ -5620,8 +5665,11 @@ mod tests {
             escort_strength,
             "the parked guns contribute no deployable strength"
         );
-        let mut dials = Dials::full();
-        dials.army_size = 23;
+        let dials = Dials {
+            army_size: 23,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();
@@ -5662,8 +5710,11 @@ mod tests {
             .map(crate::executive::unit_strength)
             .sum();
         assert!(crate::executive::marching_strength(&army, &obs) > escort_strength);
-        let mut dials = Dials::full();
-        dials.army_size = 6;
+        let dials = Dials {
+            army_size: 6,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         policy.state.scouted_at = obs.tick;
         let mut intents = Vec::new();

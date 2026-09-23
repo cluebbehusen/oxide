@@ -9,13 +9,6 @@ use super::*;
 use crate::observation::ObservationData;
 use crate::production::ImmediateProduction;
 use crate::query_work::QueryPurpose;
-use oxide_sim::stats::Role;
-
-#[derive(Clone, Copy)]
-struct ProductionGuards {
-    voluntary: u32,
-    capital: u32,
-}
 
 impl UtilityPolicy {
     /// Economy channel: idle harvesters back to work on the nearest
@@ -221,7 +214,7 @@ impl UtilityPolicy {
             .with_intelligence(unit_contacts, building_contacts)
             .with_public_map(public_map);
         let home_extractor_reserve =
-            self.opening_home_extractor_reserve(dials, obs, capital_context, intents);
+            self.opening_home_extractor_reserve(obs, capital_context, intents);
 
         let queued_harvesters = obs
             .my_queues
@@ -305,13 +298,11 @@ impl UtilityPolicy {
         } else {
             0
         };
-        harvester_reserve
-            .saturating_add(self.opening_home_extractor_reserve(dials, obs, context, intents))
+        harvester_reserve.saturating_add(self.opening_home_extractor_reserve(obs, context, intents))
     }
 
     fn opening_home_extractor_reserve(
         &self,
-        dials: &Dials,
         obs: &Observation,
         context: ConstructionContext<'_>,
         intents: &[Intent],
@@ -329,7 +320,6 @@ impl UtilityPolicy {
             )
         });
         if !extractor_planned
-            && dials.extractors
             && self
                 .starting_home_frame_restoration_claim(obs, context)
                 .is_some()
@@ -353,163 +343,6 @@ impl UtilityPolicy {
             .flat_map(|q| q.iter())
             .filter(|k| **k == kind)
             .count()
-    }
-
-    /// One Warden per think from a standing Fabricator, and one Breaker
-    /// whenever the Crucible is idle and the bank can take it. Deep-tech
-    /// production runs before the basic military drip.
-    fn deep_tech_drip(
-        dials: &Dials,
-        obs: &Observation,
-        production: &mut ImmediateProduction<'_>,
-        voluntary_guard: u32,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) {
-        if !dials.deep_tech || dials.adaptive_composition {
-            return;
-        }
-        let alive = |kind| Self::alive_count(obs, kind);
-        let queued = |kind| Self::queued_count(obs, kind);
-        let crucible = production.lowest_id(UnitKind::Breaker, 1);
-        if let Some(crucible) = crucible
-            && alive(UnitKind::Breaker) + queued(UnitKind::Breaker) < 2
-            && *budget
-                >= UnitKind::Breaker
-                    .stats()
-                    .cost
-                    .saturating_add(TECH_RESERVE)
-                    .saturating_add(voluntary_guard)
-        {
-            *budget -= UnitKind::Breaker.stats().cost;
-            intents.push(production.append(crucible));
-        }
-        let fabricator = production.lowest_id(UnitKind::Warden, SHALLOW_QUEUE_DEPTH);
-        if let Some(fabricator) = fabricator
-            && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
-            && *budget
-                >= UnitKind::Warden
-                    .stats()
-                    .cost
-                    .saturating_add(UnitKind::Harvester.stats().cost)
-                    .saturating_add(voluntary_guard)
-        {
-            *budget -= UnitKind::Warden.stats().cost;
-            intents.push(production.append(fabricator));
-        }
-        // Once the whole tree stands, a small bomber wing: the payload
-        // that decides sieges — and island wars, where no crawler ever
-        // crosses.
-        let bomber_kind = Role::Bomber.unit_for(obs.faction);
-        let airworks = production.lowest_id(bomber_kind, SHALLOW_QUEUE_DEPTH);
-        let crucible_stands = obs
-            .my_buildings
-            .iter()
-            .any(|b| b.kind == BuildingKind::Crucible && b.built);
-        if let Some(airworks) = airworks
-            && crucible_stands
-            && alive(bomber_kind) + queued(bomber_kind) < 2
-            && *budget
-                >= bomber_kind
-                    .stats()
-                    .cost
-                    .saturating_add(TECH_RESERVE)
-                    .saturating_add(voluntary_guard)
-        {
-            *budget -= bomber_kind.stats().cost;
-            intents.push(production.append(airworks));
-        }
-    }
-
-    /// The Fabricator-era priority ladder: anti-air first, turret
-    /// breakers, then the closed tree's raiders, harass wing, and
-    /// repeatable Lancer drip.
-    fn fabricator_drip(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        production: &mut ImmediateProduction<'_>,
-        guards: ProductionGuards,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) {
-        let ProductionGuards {
-            voluntary: voluntary_guard,
-            capital,
-        } = guards;
-        let alive = |kind| Self::alive_count(obs, kind);
-        let queued = |kind| Self::queued_count(obs, kind);
-        let enemy_turrets = obs
-            .enemy_buildings
-            .iter()
-            .filter(|b| b.kind == BuildingKind::Turret && b.built)
-            .count();
-        let enemy_harvesters = obs
-            .enemy_units
-            .iter()
-            .filter(|u| u.kind.stats().harvest.is_some())
-            .count();
-        let aa_kind = Role::AntiAir.unit_for(obs.faction);
-        let wing_kind = Role::AirGround.unit_for(obs.faction);
-        let open = |unit_kind| production.lowest_id(unit_kind, SHALLOW_QUEUE_DEPTH);
-        let lancer = UnitKind::Lancer.stats().cost;
-        let scuttler = UnitKind::Scuttler.stats().cost;
-        let reserve = UnitKind::Sentinel.stats().cost;
-        // The sky answers first: enemy air on the field (or ever
-        // sighted) wants a dedicated gun per two known wings, before
-        // any ground purchase.
-        let enemy_air = obs
-            .enemy_units
-            .iter()
-            .filter(|unit| super::is_air_threat(unit))
-            .count();
-        let want_aa = if enemy_air > 0 {
-            enemy_air.div_ceil(2) + 1
-        } else {
-            usize::from(self.state.seen_air)
-        };
-        if dials.aa_response
-            && alive(aa_kind) + queued(aa_kind) < want_aa
-            && *budget >= aa_kind.stats().cost.saturating_add(voluntary_guard)
-            && let Some(fabricator) = open(aa_kind)
-        {
-            *budget -= aa_kind.stats().cost;
-            intents.push(production.append(fabricator));
-        } else if enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
-            && *budget >= lancer.saturating_add(voluntary_guard)
-            && let Some(fabricator) = open(UnitKind::Lancer)
-        {
-            *budget -= lancer;
-            intents.push(production.append(fabricator));
-        } else if !dials.adaptive_composition
-            && alive(UnitKind::Scuttler) < 4
-            && enemy_harvesters >= 2
-            && *budget >= scuttler + reserve
-            && let Some(raid_bay) = open(UnitKind::Scuttler)
-        {
-            // The Scuttler homes at the Foundry on the closed tree.
-            *budget -= scuttler;
-            intents.push(production.append(raid_bay));
-        } else if !dials.adaptive_composition
-            && dials.air_harass
-            && alive(wing_kind) + queued(wing_kind) < AIR_WING
-            && (enemy_harvesters >= 2 || !obs.enemy_buildings.is_empty())
-            && *budget >= wing_kind.stats().cost + reserve
-            && let Some(airworks) = open(wing_kind)
-        {
-            // A wing for the harvest line — bought once raiding has
-            // something to eat OR the enemy base is known at all
-            // (on an island map the wing IS the reach), and only
-            // from a standing Airworks.
-            *budget -= wing_kind.stats().cost;
-            intents.push(production.append(airworks));
-        } else if !dials.adaptive_composition
-            && *budget >= lancer + reserve + capital
-            && let Some(fabricator) = open(UnitKind::Lancer)
-        {
-            *budget -= lancer;
-            intents.push(production.append(fabricator));
-        }
     }
 
     #[cfg(test)]
@@ -540,16 +373,6 @@ impl UtilityPolicy {
         foundry: FoundryHandoff,
         intents: &mut Vec<Intent>,
     ) -> bool {
-        let ProductionContext {
-            home,
-            claims: _,
-            combat_core_exclusions: _,
-            unit_contacts: _,
-            building_contacts: _,
-            public_map,
-            voluntary_scrap_guard,
-            producer_lane_reservations,
-        } = context;
         let queued = |kind| Self::queued_count(obs, kind);
         let alive = |kind| Self::alive_count(obs, kind);
         let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
@@ -557,17 +380,14 @@ impl UtilityPolicy {
             self.finish_foundry_safety(dials, obs, context, foundry, intents);
             return true;
         }
-        let mut production = ImmediateProduction::new(obs, producer_lane_reservations, intents);
-        let voluntary_guard = voluntary_scrap_guard.amount(0);
-        let capital = voluntary_guard;
-        let allow_repeatable_ground =
-            self.has_honest_ground_objective(dials, obs, home, public_map);
+        let mut production =
+            ImmediateProduction::new(obs, context.producer_lane_reservations, intents);
+        let voluntary_guard = context.voluntary_scrap_guard.amount(0);
 
         // Current public-map or contested work may require air, while a failed
         // ground look preserves the same demand durably. Keep exactly one
         // faction scout alive or queued once an Airworks can build it.
         if self.state.reconnaissance.observed_at.is_none()
-            && dials.scouting
             && self.air_scout_needed()
             && !self.state.solo_air_scout_suspended
         {
@@ -599,58 +419,14 @@ impl UtilityPolicy {
             }
         }
 
-        // The ferry fund: with a built Airworks, a known island target,
-        // a squad worth lifting, and no lifter, the Skyhook's price is
-        // banked ahead of every other military purchase — the wing and
-        // AA arms otherwise skim the bank at their own smaller reserves
-        // forever and the lifter never arrives (the Severance probe's
-        // exact stall). Bought the moment the Airworks has room; the
-        // hold ends with the purchase. The squad gate keeps the order
-        // right and the seat alive: a lifter without riders is dead
-        // capital, so while the last squad lies dead on the far shore
-        // the fund stands down and the drip rebuilds fighters first.
-
-        Self::deep_tech_drip(
-            dials,
-            obs,
-            &mut production,
-            voluntary_guard,
-            budget,
-            intents,
-        );
-
         if harvesters < immediate_harvester_target(dials) as usize
             && *budget >= UnitKind::Harvester.stats().cost
+            && let Some(foundry) = production.lowest_id(UnitKind::Harvester, SHALLOW_QUEUE_DEPTH)
         {
-            if let Some(foundry) = production.lowest_id(UnitKind::Harvester, SHALLOW_QUEUE_DEPTH) {
-                *budget -= UnitKind::Harvester.stats().cost;
-                intents.push(production.append(foundry));
-            }
-        } else if !dials.adaptive_composition
-            && allow_repeatable_ground
-            && *budget >= UnitKind::Sentinel.stats().cost + capital
-            && let Some(foundry) = production.lowest_id(UnitKind::Sentinel, SHALLOW_QUEUE_DEPTH)
-        {
-            *budget -= UnitKind::Sentinel.stats().cost;
+            *budget -= UnitKind::Harvester.stats().cost;
             intents.push(production.append(foundry));
         }
 
-        if !dials.tech {
-            return false;
-        }
-        if !dials.adaptive_composition {
-            self.fabricator_drip(
-                dials,
-                obs,
-                &mut production,
-                ProductionGuards {
-                    voluntary: voluntary_guard,
-                    capital,
-                },
-                budget,
-                intents,
-            );
-        }
         false
     }
 
@@ -661,12 +437,7 @@ impl UtilityPolicy {
     /// hundreds of idle bodies. A current island objective also qualifies
     /// while ordinary transport capacity exists, but a dark ghost alone does
     /// not authorize an endless next wave.
-    pub(super) fn ordinary_ground_has_work(
-        &self,
-        dials: &Dials,
-        obs: &Observation,
-        home: TilePos,
-    ) -> bool {
+    pub(super) fn ordinary_ground_has_work(&self, obs: &Observation, home: TilePos) -> bool {
         if self.state.desperate && self.state.desperate_road {
             return true;
         }
@@ -699,8 +470,7 @@ impl UtilityPolicy {
                 .iter()
                 .flatten()
                 .any(|kind| *kind == UnitKind::Skyhook);
-        dials.ferry
-            && transport_capable
+        transport_capable
             && obs.enemy_buildings.iter().any(|building| {
                 building.seen
                     && building.built
@@ -1120,8 +890,8 @@ mod tests {
                     support_extractors: obs.my_buildings.iter().any(|building| {
                         building.kind == BuildingKind::Fabricator && building.built
                     }),
-                    ordinary_frontiers: !dials.deep_tech
-                        || UtilityPolicy::projected_count(obs, BuildingKind::Airworks) > 0,
+                    ordinary_frontiers: UtilityPolicy::projected_count(obs, BuildingKind::Airworks)
+                        > 0,
                     unit_contacts,
                     building_contacts: Some(&[]),
                 },
@@ -1182,7 +952,6 @@ mod tests {
     #[test]
     fn repeatable_ground_requires_a_reachable_or_current_transport_objective() {
         let home = TilePos::new(1, 1);
-        let mut dials = Dials::balanced();
         let mut policy = UtilityPolicy::new();
 
         let mut connected = observation();
@@ -1194,7 +963,7 @@ mod tests {
             false,
         );
         assert!(
-            policy.ordinary_ground_has_work(&dials, &connected, home),
+            policy.ordinary_ground_has_work(&connected, home),
             "a remembered building on the explored home component remains a deployable job"
         );
         for y in 0..connected.map_height {
@@ -1204,7 +973,7 @@ mod tests {
             }
         }
         assert!(
-            !policy.ordinary_ground_has_work(&dials, &connected, home),
+            !policy.ordinary_ground_has_work(&connected, home),
             "an unexplored corridor is not an honestly known ground deployment route"
         );
         for y in 0..connected.map_height {
@@ -1213,7 +982,7 @@ mod tests {
                 connected.explored[(y * connected.map_width + 3) as usize] = true;
             }
         }
-        assert!(policy.ordinary_ground_has_work(&dials, &connected, home));
+        assert!(policy.ordinary_ground_has_work(&connected, home));
 
         let mut island = observation();
         add_enemy_building(
@@ -1223,7 +992,7 @@ mod tests {
             TilePos::new(11, 5),
             true,
         );
-        assert!(!policy.ordinary_ground_has_work(&dials, &island, home));
+        assert!(!policy.ordinary_ground_has_work(&island, home));
         add_building(
             &mut island,
             2,
@@ -1232,38 +1001,33 @@ mod tests {
             true,
         );
         assert!(
-            policy.ordinary_ground_has_work(&dials, &island, home),
+            policy.ordinary_ground_has_work(&island, home),
             "a current disconnected objective plus real transport capacity can consume another wave"
         );
 
         island.enemy_buildings[0].seen = false;
         assert!(
-            !policy.ordinary_ground_has_work(&dials, &island, home),
+            !policy.ordinary_ground_has_work(&island, home),
             "a dark island ghost cannot fund an unbounded next wave"
         );
         island.enemy_buildings[0].seen = true;
-        dials.ferry = false;
-        assert!(
-            !policy.ordinary_ground_has_work(&dials, &island, home),
-            "transport capacity is not a deployment plan when ferry play is disabled"
-        );
 
         island.enemy_buildings.clear();
         island.enemy_units.push(UnitObs {
             idle: false,
             ..crate::test_support::unit(90, PlayerId(1), UnitKind::Sentinel, TilePos::new(4, 5))
         });
-        assert!(policy.ordinary_ground_has_work(&dials, &island, home));
+        assert!(policy.ordinary_ground_has_work(&island, home));
         island.enemy_units[0].kind = oxide_sim::stats::Role::Scout.unit_for(island.faction);
         assert!(
-            !policy.ordinary_ground_has_work(&dials, &island, home),
+            !policy.ordinary_ground_has_work(&island, home),
             "a ground army cannot prosecute an aircraft contact"
         );
 
         policy.state.desperate = true;
         policy.state.desperate_road = true;
         assert!(
-            policy.ordinary_ground_has_work(&dials, &island, home),
+            policy.ordinary_ground_has_work(&island, home),
             "a fully explored mirror road keeps a dark connected endgame live"
         );
     }
@@ -1284,12 +1048,12 @@ mod tests {
         let sentinel_cost = UnitKind::Sentinel.stats().cost;
         obs.scrap = sentinel_cost * 2;
 
-        let mut dials = Dials::full();
-        dials.tech = false;
-        dials.adaptive_composition = true;
-        dials.harvester_target = 4;
-        dials.raider_target = 1;
-        dials.army_size = 2;
+        let dials = Dials {
+            harvester_target: 4,
+            army_size: 2,
+            ..Dials::default()
+        };
+
         add_unit(&mut obs, 7, UnitKind::Scuttler, TilePos::new(7, 4));
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
@@ -1330,11 +1094,11 @@ mod tests {
             );
         }
         add_unit(&mut obs, 7, UnitKind::Scuttler, TilePos::new(7, 4));
-        let mut dials = Dials::full();
-        dials.tech = false;
-        dials.adaptive_composition = true;
-        dials.harvester_target = 5;
-        dials.raider_target = 1;
+        let dials = Dials {
+            harvester_target: 5,
+            ..Dials::default()
+        };
+
         let decide = |current: &Observation| {
             let mut budget = UnitKind::Harvester.stats().cost;
             let mut intents = Vec::new();
@@ -1391,8 +1155,8 @@ mod tests {
         ];
         let mut policy = UtilityPolicy::new();
         policy.state.persistent_air_scout_needed = true;
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
+        let dials = Dials::default();
+
         let mut budget = obs.scrap;
 
         policy.production_with_air_demand(
@@ -1443,8 +1207,8 @@ mod tests {
         let scout_cost = scout.stats().cost;
         assert!(UnitKind::Harvester.stats().cost < scout_cost);
 
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
+        let dials = Dials::default();
+
         let decide = |public_start_demand: bool, persistent_demand: bool, scrap: u32| {
             let mut policy = UtilityPolicy::new();
             policy.state.public_prior_air_scout_needed = public_start_demand;
@@ -1509,8 +1273,7 @@ mod tests {
         let guard = UnitKind::Sentinel.stats().cost;
         let scout = oxide_sim::stats::Role::Scout.unit_for(Faction::Ferrous);
         let scout_cost = scout.stats().cost;
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
+        let dials = Dials::default();
 
         let scout_decision = |scrap| {
             let mut obs = completed_tree();
@@ -1568,8 +1331,8 @@ mod tests {
                 enemy_base,
             )
         });
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
+        let dials = Dials::default();
+
         let produce = |policy: &mut UtilityPolicy, observation: &Observation| {
             let mut budget = scout_cost;
             let mut intents = Vec::new();
@@ -1723,18 +1486,11 @@ mod tests {
         );
         add_building(&mut obs, 11, BuildingKind::Extractor, extractor, true);
 
-        let mut dials = Dials::full();
-        dials.deep_tech = true;
-        dials.expansion = true;
-        dials.harvester_target = 5;
-        dials.army_size = 3;
-        dials.scouting = false;
-        dials.radar = false;
-        dials.reclaimers = false;
-        dials.repair = false;
-        dials.air_harass = false;
-        dials.ferry = false;
-        dials.mines = false;
+        let dials = Dials {
+            harvester_target: 5,
+            army_size: 3,
+            ..Dials::default()
+        };
 
         let public_map = expansion_briefing(&obs, home, TilePos::new(44, 20));
         (home, extractor, obs, dials, public_map)
@@ -1742,10 +1498,13 @@ mod tests {
 
     #[test]
     fn supported_extractor_and_expansion_offer_separate_exact_investments() {
-        let (home, extractor, mut obs, mut dials, public_map) = competing_expansion_fixture();
+        let (home, extractor, mut obs, dials, public_map) = competing_expansion_fixture();
+        for id in 100..106 {
+            add_unit(&mut obs, id, UnitKind::Sentinel, home.offset(2, 4));
+        }
         let frame = TilePos::new(9, 1);
         obs.known_frames = vec![frame];
-        dials.extractors = true;
+
         let claims = ConstructionClaims {
             cancellations: FoundationCancellations::default(),
             enlisted: &[],
@@ -1873,7 +1632,7 @@ mod tests {
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
         dials.harvester_target = 4;
-        dials.scouting = false;
+
         assert_eq!((profile.traits.greed, dials.expansion_greed), (64, 64));
 
         let foundry_fund = BuildingKind::Foundry
@@ -1963,21 +1722,6 @@ mod tests {
             "residual policy cannot dispatch a fresh adjudicated Foundry"
         );
         assert!(adjudicated_policy.state.foundry_saving.is_none());
-        let mut no_expansion_dials = dials.clone();
-        no_expansion_dials.expansion = false;
-        let mut no_expansion_policy = UtilityPolicy::new();
-        let mut no_expansion_budget = obs.scrap;
-        let mut no_expansion_intents = Vec::new();
-        no_expansion_policy.production_with_air_demand(
-            &no_expansion_dials,
-            &obs,
-            ProductionContext::new(home, claims).with_public_map(Some(&public_map)),
-            &mut no_expansion_budget,
-            &mut no_expansion_intents,
-        );
-        assert_eq!(adjudicated_intents, no_expansion_intents);
-        assert_eq!(adjudicated_budget, no_expansion_budget);
-
         let after = player_expansion_assessment(
             &policy,
             &dials,
@@ -2037,12 +1781,9 @@ mod tests {
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        dials.extractors = false;
-        dials.upgrades = false;
+
         dials.harvester_target = 4;
-        dials.scouting = false;
-        dials.turret_response = false;
-        dials.aa_response = false;
+
         dials.own_strength_scale = 2_500;
 
         let sentinel_cost = UnitKind::Sentinel.stats().cost;
@@ -2134,10 +1875,9 @@ mod tests {
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        dials.extractors = false;
-        dials.upgrades = false;
+
         dials.harvester_target = 4;
-        dials.scouting = false;
+
         assert_eq!(dials.army_size, 7);
         assert_eq!(dials.expansion_greed, profile.traits.greed);
 
@@ -2248,147 +1988,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unadmitted_supported_extractor_never_creates_a_residual_capital_floor() {
-        let home = TilePos::new(1, 1);
-        let frame = TilePos::new(9, 1);
-        let mut obs = completed_tree();
-        obs.known_rock.clear();
-        obs.known_frames = vec![frame];
-        add_enemy_building(
-            &mut obs,
-            90,
-            BuildingKind::Foundry,
-            TilePos::new(12, 7),
-            true,
-        );
-        obs.scrap = UnitKind::Sentinel.stats().cost;
-
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = false;
-        dials.expansion = false;
-        dials.upgrades = false;
-        let open_claims = ConstructionClaims {
-            cancellations: FoundationCancellations::default(),
-            enlisted: &[],
-            reserved: &[],
-        };
-        let policy = UtilityPolicy::new();
-        assert!(UtilityPolicy::foundry_supports_extractor(home, frame));
-        assert!(
-            policy
-                .supported_frame_restoration_claim(
-                    &obs,
-                    ConstructionContext::new(home, open_claims),
-                )
-                .is_some(),
-            "the clear supported frame must have an exact safe builder before testing reserve release"
-        );
-
-        let mut safe_budget = obs.scrap;
-        let mut safe_intents = Vec::new();
-        UtilityPolicy::new().production(
-            &dials,
-            &obs,
-            home,
-            open_claims,
-            &mut safe_budget,
-            &mut safe_intents,
-        );
-        assert!(safe_intents.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt {
-                kind: UnitKind::Sentinel,
-                ..
-            }
-        )));
-        assert_eq!(
-            safe_budget, 0,
-            "an available site without an admitted economic claim must not silently own the bank"
-        );
-
-        let harvesters: Vec<_> = obs
-            .my_units
-            .iter()
-            .filter(|unit| unit.kind.stats().harvest.is_some())
-            .map(|unit| unit.id)
-            .collect();
-        let claimed_builders = ConstructionClaims {
-            cancellations: FoundationCancellations::default(),
-            enlisted: &harvesters,
-            reserved: &[],
-        };
-        assert!(
-            policy
-                .supported_frame_restoration_claim(
-                    &obs,
-                    ConstructionContext::new(home, claimed_builders),
-                )
-                .is_none(),
-            "a frame without one available exact builder is not an actionable capital claim"
-        );
-        let mut claimed_budget = obs.scrap;
-        let mut claimed_intents = Vec::new();
-        UtilityPolicy::new().production(
-            &dials,
-            &obs,
-            home,
-            claimed_builders,
-            &mut claimed_budget,
-            &mut claimed_intents,
-        );
-        assert_eq!(
-            claimed_intents,
-            vec![Intent::TrainAt {
-                building: BuildingId(0),
-                kind: UnitKind::Sentinel,
-            }],
-            "claimed builders must release the unusable restoration fund into the missing core fighter"
-        );
-        assert_eq!(claimed_budget, 0);
-
-        let contact_tile = TilePos::new(7, 2);
-        let contact_index = usize::try_from(contact_tile.y * obs.map_width + contact_tile.x)
-            .expect("the remembered contact index is nonnegative");
-        obs.visible[contact_index] = false;
-        let contacts = [UnitContact {
-            id: UnitId(91),
-            player: PlayerId(1),
-            kind: UnitKind::Avalanche,
-            tile: contact_tile,
-            hp: UnitKind::Avalanche.stats().max_hp,
-            grounded: false,
-            last_seen: obs.tick,
-            evidence: ContactEvidence::Remembered,
-        }];
-        let remembered_context = ConstructionContext::new(home, open_claims)
-            .with_intelligence(Some(&contacts), Some(&[]));
-        assert!(
-            policy
-                .supported_frame_restoration_claim(&obs, remembered_context)
-                .is_none(),
-            "remembered long-range fire must invalidate every unsafe exact route to the frame"
-        );
-        let mut remembered_budget = obs.scrap;
-        let mut remembered_intents = Vec::new();
-        UtilityPolicy::new().production_with_air_demand(
-            &dials,
-            &obs,
-            ProductionContext::new(home, open_claims).with_intelligence(Some(&contacts), Some(&[])),
-            &mut remembered_budget,
-            &mut remembered_intents,
-        );
-        assert_eq!(
-            remembered_intents,
-            vec![Intent::TrainAt {
-                building: BuildingId(0),
-                kind: UnitKind::Sentinel,
-            }],
-            "remembered route danger must release the unusable restoration fund into the missing core fighter"
-        );
-        assert_eq!(remembered_budget, 0);
-    }
-
-    #[test]
     fn ready_expansion_commits_the_assessed_builder_and_site_before_other_spending() {
         let home = TilePos::new(1, 1);
         let extractor = TilePos::new(30, 16);
@@ -2424,10 +2023,9 @@ mod tests {
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        dials.extractors = false;
-        dials.upgrades = false;
+
         dials.harvester_target = 4;
-        dials.scouting = false;
+
         let fund = BuildingKind::Foundry
             .base_stats()
             .construction
@@ -2559,10 +2157,9 @@ mod tests {
             &profile,
             DifficultyTuning::for_level(BotDifficulty::Standard),
         );
-        dials.extractors = false;
-        dials.upgrades = false;
+
         dials.harvester_target = 4;
-        dials.scouting = false;
+
         let foundry_cost = BuildingKind::Foundry
             .base_stats()
             .construction
@@ -2721,10 +2318,9 @@ mod tests {
             .find(|unit| unit.id == UnitId(102))
             .expect("the support patient was added")
             .hp /= 2;
-        assert!(fixture.dials.adaptive_composition && fixture.dials.repair);
+
         let mut gross_bank_control = Vec::new();
         UtilityPolicy::new().test_admit_mobile_repairs(
-            &fixture.dials,
             &fixture.obs,
             fixture.obs.scrap,
             &mut gross_bank_control,
@@ -2984,14 +2580,20 @@ mod tests {
     #[test]
     fn scouting_cannot_steal_a_saved_foundry_builder() {
         let mut fixture = saved_foundry_fixture();
+        add_unit(
+            &mut fixture.obs,
+            100,
+            UnitKind::Harvester,
+            TilePos::new(4, 4),
+        );
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
         let mut scout_due = fixture.obs.clone();
         scout_due.tick = crate::difficulty::next_strategic_admission_tick(fixture.obs.tick);
-        let original_dispatch = policy.state.scout_dispatch;
+
         let original_anchor = saving.plan.anchor;
         let original_builder = saving.plan.builder;
         let dials = &mut fixture.dials;
-        dials.scouting = true;
+
         let unavailable_scouts: Vec<_> = scout_due
             .my_units
             .iter()
@@ -3021,7 +2623,10 @@ mod tests {
             )),
             "the scouting channel cannot dispatch the saved founder: {scout_intents:?}"
         );
-        assert_eq!(policy.state.scout_dispatch, original_dispatch);
+        assert_eq!(
+            policy.state.scout_dispatch, None,
+            "the enlisted prior scout releases its old dispatch"
+        );
         assert_eq!(
             policy
                 .state
@@ -4902,7 +4507,6 @@ mod tests {
 
         let mut budget = obs.scrap;
         policy.test_admit_building_repairs(
-            &Dials::full(),
             &obs,
             PolicyMode {
                 evidence: Default::default(),
@@ -4925,7 +4529,6 @@ mod tests {
         obs.visible.fill(true);
         policy.refresh_contested_harvest_regions(&obs, None, None);
         policy.test_admit_building_repairs(
-            &Dials::full(),
             &obs,
             PolicyMode {
                 evidence: Default::default(),
@@ -4972,7 +4575,6 @@ mod tests {
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
         policy.test_admit_building_repairs(
-            &Dials::full(),
             &obs,
             PolicyMode {
                 evidence: Default::default(),
@@ -4991,7 +4593,6 @@ mod tests {
         );
 
         policy.test_admit_building_repairs(
-            &Dials::full(),
             &obs,
             PolicyMode {
                 evidence: Default::default(),

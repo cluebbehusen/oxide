@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 struct BrainV1 {
     player: PlayerId,
-    dials: Dials,
     mind: Box<PlayerFacingMind>,
     policy: UtilityPolicy,
     exec: Executive,
@@ -15,7 +14,6 @@ struct BrainV1 {
 #[derive(Serialize)]
 struct BrainRef<'a> {
     player: PlayerId,
-    dials: &'a Dials,
     mind: &'a PlayerFacingMind,
     policy: &'a UtilityPolicy,
     exec: &'a Executive,
@@ -26,7 +24,7 @@ impl Brain {
     pub(crate) fn checkpoint(&self) -> Result<BotCheckpoint, String> {
         let Self {
             player,
-            dials,
+            dials: _,
             mind,
             policy,
             exec,
@@ -34,7 +32,6 @@ impl Brain {
         } = self;
         let wire = BrainRef {
             player: *player,
-            dials,
             mind,
             policy,
             exec,
@@ -68,7 +65,6 @@ impl Brain {
         }
         let BrainV1 {
             player,
-            dials,
             mind,
             policy,
             exec,
@@ -84,10 +80,7 @@ impl Brain {
             .ok_or("checkpoint seat is not a configured bot")?;
         let map = PublicMapBriefing::from_scenario(scenario).map_err(|error| error.to_string())?;
         let expected = Self::scripted(player, config, Arc::new(map.clone()));
-        if dials != expected.dials
-            || mind.profile != expected.mind.profile
-            || *mind.public_map != map
-        {
+        if mind.profile != expected.mind.profile || *mind.public_map != map {
             return Err("controller checkpoint disagrees with scenario".into());
         }
         if state.map().width() != map.map_width() || state.map().height() != map.map_height() {
@@ -120,7 +113,7 @@ impl Brain {
         }
         Ok(Self {
             player,
-            dials,
+            dials: expected.dials,
             mind,
             policy,
             exec,
@@ -142,28 +135,38 @@ mod tests {
 
     #[test]
     fn checkpoint_continues_an_active_controller() {
-        let mut scenario = oxide_sim::Scenario::skirmish();
-        scenario.players[1].bot = true;
-        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::default());
-        let mut state = scenario.build().unwrap();
-        let mut bots = seat_bots(&scenario).unwrap();
-        assert_eq!(bots.len(), 1);
-        let mut produced = 0;
-        for _ in 0..361 {
-            let bot = &mut bots[0];
-            let checkpoint = bot.checkpoint().unwrap();
-            let mut restored =
-                crate::SeatBot::from_checkpoint(&checkpoint, &scenario, &state).unwrap();
-            let commands = bot.act(&state);
-            assert_eq!(commands, restored.act(&state));
-            produced += commands.len();
-            assert_eq!(
-                bot.checkpoint().unwrap().payload,
-                restored.checkpoint().unwrap().payload
-            );
-            state.tick(&commands);
+        for config in [
+            oxide_sim::scenario::BotConfig::default(),
+            oxide_sim::scenario::BotConfig::scripted(
+                oxide_sim::scenario::BotDifficulty::Prime,
+                oxide_sim::scenario::BotStance::Aggressive,
+                93,
+            ),
+        ] {
+            let mut scenario = oxide_sim::Scenario::skirmish();
+            scenario.players[1].bot = true;
+            scenario.players[1].bot_config = Some(config);
+            let mut state = scenario.build().unwrap();
+            let mut bots = seat_bots(&scenario).unwrap();
+            assert_eq!(bots.len(), 1);
+            let mut produced = 0;
+            for _ in 0..361 {
+                let bot = &mut bots[0];
+                let checkpoint = bot.checkpoint().unwrap();
+                let mut restored =
+                    crate::SeatBot::from_checkpoint(&checkpoint, &scenario, &state).unwrap();
+                assert_eq!(bot.dials(), restored.dials());
+                let commands = bot.act(&state);
+                assert_eq!(commands, restored.act(&state));
+                produced += commands.len();
+                assert_eq!(
+                    bot.checkpoint().unwrap().payload,
+                    restored.checkpoint().unwrap().payload
+                );
+                state.tick(&commands);
+            }
+            assert!(produced > 1, "continuation must exercise real bot commands");
         }
-        assert!(produced > 1, "continuation must exercise real bot commands");
     }
 
     #[test]

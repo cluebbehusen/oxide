@@ -4216,6 +4216,11 @@ mod tests {
     #[test]
     fn opening_emergency_defense_and_core_recovery_commit_once_through_state() {
         let mut scenario = Scenario::skirmish();
+        scenario.map = scenario
+            .map
+            .iter()
+            .map(|row| row.replace('E', "."))
+            .collect();
         scenario.name = "opening emergency defense transaction".into();
         scenario.players[0].scrap = BuildingKind::Turret
             .base_stats()
@@ -4240,17 +4245,6 @@ mod tests {
         let mut brain = scripted_brain(&scenario, PlayerId(0), config);
         brain.dials.minimum_core_equivalents = 1;
         brain.dials.harvester_target = 3;
-        brain.dials.turret_response = true;
-        brain.dials.scouting = false;
-        brain.dials.aa_response = false;
-        brain.dials.tech = false;
-        brain.dials.deep_tech = false;
-        brain.dials.radar = false;
-        brain.dials.reclaimers = false;
-        brain.dials.upgrades = false;
-        brain.dials.expansion = false;
-        brain.dials.extractors = false;
-        brain.dials.mines = false;
 
         let first = brain.act_traced(&state);
         let trace = first.trace.expect("the emergency allocation is traced");
@@ -4535,9 +4529,7 @@ mod tests {
         brain.dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
         brain.dials.harvester_target = 4;
         brain.dials.army_size = 100;
-        brain.dials.scouting = false;
-        brain.dials.extractors = false;
-        brain.dials.upgrades = false;
+
         let mind = brain.mind_mut();
         mind.profile = profile;
 
@@ -4559,7 +4551,6 @@ mod tests {
             oriented.my_units.len(),
             oriented.known_frames,
         );
-        brain.dials.expansion = false;
 
         let mut continuation = scenario.clone();
         let scout = continuation
@@ -4817,7 +4808,7 @@ mod tests {
         });
 
         let mut brain = foundry_competition_brain(&scenario);
-        brain.dials.expansion = false;
+
         brain.dials.minimum_core_equivalents = 0;
         let mut funded_brain = brain.clone();
         let mut funded_state = state.clone();
@@ -4942,9 +4933,7 @@ mod tests {
         brain.dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
         brain.dials.harvester_target = 4;
         brain.dials.army_size = 100;
-        brain.dials.scouting = false;
-        brain.dials.extractors = false;
-        brain.dials.upgrades = false;
+
         let mind = brain.mind_mut();
         mind.profile = profile;
 
@@ -5320,6 +5309,14 @@ mod tests {
                 )
                 .saturating_add(UnitKind::Sentinel.stats().cost),
         );
+        scenario
+            .buildings
+            .retain(|building| building.kind != BuildingKind::Extractor);
+        scenario.map = scenario
+            .map
+            .iter()
+            .map(|row| row.replace('E', "."))
+            .collect();
         scenario.name = "connected procurement at the next decision".into();
         scenario.buildings.push(BuildingSpec {
             player: 1,
@@ -5333,26 +5330,12 @@ mod tests {
             .find(|unit| unit.player == 0 && unit.kind == UnitKind::Kestrel)
             .expect("the scenario has one connected-operation scout");
         (scout.x, scout.y) = (42, 19);
-        scenario.units.extend([
-            UnitSpec {
-                player: 0,
-                kind: UnitKind::Bombard,
-                x: 9,
-                y: 17,
-            },
-            UnitSpec {
-                player: 0,
-                kind: UnitKind::Condor,
-                x: 10,
-                y: 18,
-            },
-            UnitSpec {
-                player: 0,
-                kind: UnitKind::Condor,
-                x: 11,
-                y: 18,
-            },
-        ]);
+        scenario.units.push(UnitSpec {
+            player: 0,
+            kind: UnitKind::Bombard,
+            x: 9,
+            y: 17,
+        });
         let mut state = scenario
             .build()
             .expect("the delayed connected-provider scenario builds");
@@ -5373,7 +5356,6 @@ mod tests {
         });
 
         let mut brain = foundry_competition_brain(&scenario);
-        brain.dials.expansion = false;
 
         let admission = brain.act_traced(&state);
         let admission_trace = admission
@@ -5415,7 +5397,9 @@ mod tests {
             })
             .min_by_key(|job| job.enqueued_at)
             .cloned()
-            .expect("the full queue defers connected procurement");
+            .unwrap_or_else(|| {
+                panic!("the full queue defers connected procurement: {admission_trace:#?}")
+            });
         assert_eq!(
             due.enqueued_at, brain.dials.cadence,
             "the nearly complete front item should expose one slot at the next decision"
@@ -5755,7 +5739,7 @@ mod tests {
         let lift = seeded_bulk_lift(&state, orientation);
 
         let mut baseline_brain = foundry_competition_brain(&scenario);
-        baseline_brain.dials.expansion = false;
+
         baseline_brain.dials.minimum_core_equivalents = 0;
         baseline_brain.orientation = Some(orientation);
 
@@ -5768,7 +5752,7 @@ mod tests {
             .expect("the unprefixed control admits the wealthy-island operation");
 
         let mut brain = foundry_competition_brain(&scenario);
-        brain.dials.expansion = false;
+
         brain.dials.minimum_core_equivalents = 0;
         brain.orientation = Some(orientation);
         assert!(brain.mind().strategy.air_operation().is_none());
@@ -6083,7 +6067,7 @@ mod tests {
         });
 
         let mut brain = foundry_competition_brain(&scenario);
-        brain.dials.expansion = false;
+
         brain.dials.minimum_core_equivalents = 0;
         let profile = *brain.profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
@@ -6613,6 +6597,12 @@ mod tests {
         );
 
         let mut visible_scenario = scenario.clone();
+        visible_scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Array,
+            x: 40,
+            y: 19,
+        });
         let scout = visible_scenario
             .units
             .iter_mut()
@@ -6668,10 +6658,31 @@ mod tests {
         while visible_state.current_tick() < next_admission {
             visible_state.tick(&[]);
         }
-        crate::test_support::edit_player(&mut visible_state, PlayerId(0), |item| {
-            item.scrap = saved - 1
-        });
-        let continued = brain.act_traced(&visible_state);
+        let continued = loop {
+            crate::test_support::edit_player(&mut visible_state, PlayerId(0), |item| {
+                item.scrap = saved - 1
+            });
+            let decision = brain.act_traced(&visible_state);
+            if decision
+                .trace
+                .as_ref()
+                .is_some_and(|trace| trace.budget.as_ref().is_some_and(|budget| !budget.frozen))
+            {
+                break decision;
+            }
+            assert!(
+                visible_state.current_tick() < next_admission + 120,
+                "retained procurement must finish refinement: {:?}",
+                decision.trace
+            );
+            visible_state.tick(&decision.commands);
+            while !visible_state
+                .current_tick()
+                .is_multiple_of(brain.dials.cadence)
+            {
+                visible_state.tick(&[]);
+            }
+        };
         let trace = continued
             .trace
             .expect("the post-promotion decision is traced");
@@ -6700,7 +6711,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             !connected_jobs.is_empty(),
-            "the promoted operation must retain its procurement priority"
+            "the promoted operation must retain its procurement priority: {trace:#?}"
         );
         assert!(
             connected_jobs
@@ -6783,7 +6794,7 @@ mod tests {
                             && job.kind == expected.kind
                             && job.ready_before == expected.ready_before
                     }),
-                "the retained force remains funded before its original deadline"
+                "the retained force remains funded before its original deadline: expected {expected:#?}; {due_trace:#?}"
             );
         }
         let mut due_pairs = future_due
@@ -7163,7 +7174,6 @@ mod tests {
                 .operation_precedes_foundry_saving(later_lift_admitted_at)
         );
         later_brain.mind_mut().lifts = later_lift;
-        later_brain.dials.expansion = false;
 
         let blocked = later_brain.act_traced(&later_state);
         let blocked_trace = blocked
@@ -8244,9 +8254,7 @@ mod tests {
         brain.dials = Dials::scripted(&profile, DifficultyTuning::for_level(profile.difficulty));
         brain.dials.harvester_target = 4;
         brain.dials.army_size = 100;
-        brain.dials.scouting = false;
-        brain.dials.extractors = false;
-        brain.dials.upgrades = false;
+
         let mind = brain.mind_mut();
         mind.profile = profile;
         brain

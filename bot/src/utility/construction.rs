@@ -1125,8 +1125,7 @@ impl UtilityPolicy {
                 .iter()
                 .any(|building| building.kind == kind && building.built)
         };
-        if !dials.expansion
-            || !has_built(BuildingKind::Foundry)
+        if !has_built(BuildingKind::Foundry)
             || !has_built(BuildingKind::Fabricator)
             || self.state.foundry_saving.is_some()
         {
@@ -1296,20 +1295,6 @@ impl UtilityPolicy {
         standing.saturating_add(deferred)
     }
 
-    /// Construction channel: recover paid work first, then choose at most one
-    /// economy, tech, support, or role-specific fortification project.
-    #[cfg(test)]
-    pub(super) fn construction(
-        &mut self,
-        dials: &Dials,
-        obs: &Observation,
-        context: ConstructionContext<'_>,
-        budget: &mut u32,
-        intents: &mut Vec<Intent>,
-    ) {
-        self.residual_construction(dials, obs, context, budget, intents);
-    }
-
     fn opening_construction_recovery(
         &self,
         obs: &Observation,
@@ -1421,10 +1406,7 @@ impl UtilityPolicy {
         let bootstrap_reserve =
             self.opening_bootstrap_reserve(dials, obs, bootstrap_context, same_think_intents);
 
-        for (allowed, kind) in [
-            (dials.turret_response, BuildingKind::Turret),
-            (dials.aa_response, BuildingKind::FlakTurret),
-        ] {
+        for kind in [BuildingKind::Turret, BuildingKind::FlakTurret] {
             let already_planned = same_think_intents.iter().any(|intent| {
                 matches!(
                     intent,
@@ -1437,8 +1419,7 @@ impl UtilityPolicy {
                 .base_stats()
                 .construction
                 .map_or(0, |construction| construction.cost);
-            if allowed
-                && !already_planned
+            if !already_planned
                 && Self::projected_count(obs, kind) == 0
                 && current_scrap >= cost.saturating_add(bootstrap_reserve)
                 && let Some(placement) = self.emergency_defense_placement(
@@ -1481,7 +1462,6 @@ impl UtilityPolicy {
 
     pub(super) fn residual_construction(
         &mut self,
-        dials: &Dials,
         obs: &Observation,
         context: ConstructionContext<'_>,
         budget: &mut u32,
@@ -1514,8 +1494,7 @@ impl UtilityPolicy {
                 .base_stats()
                 .construction
                 .map_or(0, |construction| construction.cost);
-            if dials.extractors
-                && *budget >= extractor_cost
+            if *budget >= extractor_cost
                 && let Some((anchor, builder)) =
                     self.starting_home_frame_restoration_claim(obs, context)
             {
@@ -1541,14 +1520,10 @@ impl UtilityPolicy {
     /// defenses during an otherwise sustainable siege.
     pub(super) fn salvage(
         &mut self,
-        dials: &Dials,
         obs: &Observation,
         admission_scrap: u32,
         intents: &mut Vec<Intent>,
     ) {
-        if !dials.salvage {
-            return;
-        }
         if admission_scrap >= UnitKind::Harvester.stats().cost {
             return;
         }
@@ -1627,28 +1602,6 @@ mod tests {
         crate::test_support::building(id, player, kind, anchor)
     }
 
-    fn focused_dials() -> Dials {
-        let mut dials = Dials::full();
-        dials.tech = false;
-        dials.turret_response = false;
-        dials.aa_response = false;
-        dials.radar = false;
-        dials.reclaimers = false;
-        dials.deep_tech = false;
-        dials.extractors = false;
-        dials.upgrades = false;
-        dials.expansion = false;
-        dials.mines = false;
-        dials.adaptive_composition = false;
-        dials
-    }
-
-    fn array_dials() -> Dials {
-        let mut dials = focused_dials();
-        dials.radar = true;
-        dials
-    }
-
     #[test]
     fn foundry_logistics_layout_unions_projected_and_contested_danger() {
         let mut obs = observation();
@@ -1722,23 +1675,10 @@ mod tests {
             .count()
     }
 
-    fn construction_intents(
-        policy: &mut UtilityPolicy,
-        dials: &Dials,
-        obs: &Observation,
-    ) -> Vec<Intent> {
-        construction_intents_for(policy, dials, obs)
-    }
-
-    fn construction_intents_for(
-        policy: &mut UtilityPolicy,
-        dials: &Dials,
-        obs: &Observation,
-    ) -> Vec<Intent> {
+    fn construction_intents(policy: &mut UtilityPolicy, obs: &Observation) -> Vec<Intent> {
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
-        policy.construction(
-            dials,
+        policy.residual_construction(
             obs,
             ConstructionContext::new(
                 HOME,
@@ -2238,14 +2178,12 @@ mod tests {
 
     fn construction_intents_with_public_map(
         policy: &mut UtilityPolicy,
-        dials: &Dials,
         obs: &Observation,
         public_map: &PublicMapBriefing,
     ) -> Vec<Intent> {
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
-        policy.construction(
-            dials,
+        policy.residual_construction(
             obs,
             ConstructionContext::new(
                 HOME,
@@ -2308,6 +2246,10 @@ mod tests {
             obs.my_queues.push(Vec::new());
         }
         obs.known_scrap = vec![(TilePos::new(32, 12), 800), (TilePos::new(62, 12), 800)];
+        for id in 1000..1006 {
+            obs.my_units
+                .push(sentinel(id, TilePos::new(6 + (id - 1000) as i32, 8)));
+        }
         obs
     }
 
@@ -2323,12 +2265,10 @@ mod tests {
     }
 
     fn expansion_dials() -> Dials {
-        let mut dials = focused_dials();
-        dials.tech = true;
-        dials.deep_tech = true;
-        dials.expansion = true;
-        dials.expansion_greed = 100;
-        dials
+        Dials {
+            expansion_greed: 100,
+            ..Dials::default()
+        }
     }
 
     fn fresh_expansion_investment(
@@ -2452,10 +2392,13 @@ mod tests {
         obs.explored = vec![true; 48 * 24];
         obs.known_scrap.clear();
         obs.my_units.push(harvester(2, TilePos::new(28, 10), None));
-        obs.my_units.extend((0..3).map(|index| {
+        obs.my_units.extend((0..12).map(|index| {
             sentinel(
                 20 + index,
-                HOME.offset(i32::try_from(index).expect("small fixture index"), 4),
+                TilePos::new(
+                    39 + i32::try_from(index % 4).expect("small fixture index"),
+                    2,
+                ),
             )
         }));
         for (id, kind, anchor) in [
@@ -2485,8 +2428,7 @@ mod tests {
             TilePos::new(44, 20),
             |_| '.',
         );
-        let mut dials = expansion_dials();
-        dials.deep_tech = false;
+        let dials = expansion_dials();
 
         let proposal = expect_ready_foundry(
             fresh_expansion_investment(
@@ -3424,11 +3366,10 @@ mod tests {
             TilePos::new(obs.map_width - 4, obs.map_height - 4),
             |_| '.',
         );
-        let run = |policy: &mut UtilityPolicy, _mode: bool| {
+        let run = |policy: &mut UtilityPolicy| {
             let mut budget = obs.scrap;
             let mut intents = Vec::new();
-            policy.construction(
-                &dials,
+            policy.residual_construction(
                 &obs,
                 ConstructionContext::new(
                     HOME,
@@ -3446,7 +3387,7 @@ mod tests {
         };
 
         assert!(
-            run(&mut UtilityPolicy::new(), true).is_empty(),
+            run(&mut UtilityPolicy::new()).is_empty(),
             "player-facing Foundries must enter through the shared proposal path"
         );
         let residual =
@@ -4150,8 +4091,7 @@ mod tests {
 
         let mut budget = obs.scrap;
         let mut intents = Vec::new();
-        policy.construction(
-            &expansion_dials(),
+        policy.residual_construction(
             &obs,
             ConstructionContext::new(
                 HOME,
@@ -4245,7 +4185,6 @@ mod tests {
         patient.expansion_greed = 100;
         let mut impatient = patient.clone();
         impatient.expansion_greed = 0;
-        assert!(impatient.expansion && patient.expansion);
 
         let (impatient_investment, impatient_intents) =
             expansion_construction_intents(&mut UtilityPolicy::new(), &impatient, &obs);
@@ -4611,7 +4550,7 @@ mod tests {
 
         let salvage = |obs: &Observation| {
             let mut intents = Vec::new();
-            UtilityPolicy::new().salvage(&Dials::full(), obs, obs.scrap, &mut intents);
+            UtilityPolicy::new().salvage(obs, obs.scrap, &mut intents);
             intents
         };
         assert_eq!(
@@ -4639,23 +4578,19 @@ mod tests {
 
     #[test]
     fn residual_player_facing_repair_bays_require_allocation() {
-        let mut dials = focused_dials();
-        dials.adaptive_composition = true;
-        dials.support_target = 3;
-
         let mut unfinished = observation();
         let mut fabricator = building(1, PlayerId(0), BuildingKind::Fabricator, HOME.offset(5, -5));
         fabricator.built = false;
         unfinished.my_buildings.push(fabricator.clone());
         assert_build_kind(
-            &construction_intents(&mut UtilityPolicy::new(), &dials, &unfinished),
+            &construction_intents(&mut UtilityPolicy::new(), &unfinished),
             BuildingKind::Fabricator,
         );
 
         let mut developed = unfinished;
         developed.my_buildings.last_mut().unwrap().built = true;
         assert!(
-            construction_intents(&mut UtilityPolicy::new(), &dials, &developed).is_empty(),
+            construction_intents(&mut UtilityPolicy::new(), &developed).is_empty(),
             "completed technology does not authorize a residual repair purchase"
         );
         let anchor = HOME.offset(4, 4);
@@ -4666,7 +4601,7 @@ mod tests {
             Some((BuildingKind::RepairBay, anchor)),
         ));
         assert!(
-            construction_intents(&mut UtilityPolicy::new(), &dials, &developed).is_empty(),
+            construction_intents(&mut UtilityPolicy::new(), &developed).is_empty(),
             "residual construction must not duplicate an admitted Repair Bay"
         );
     }
@@ -4689,59 +4624,23 @@ mod tests {
             TilePos::new(32, 10),
         ));
         obs.blips.push(TilePos::new(20, 10));
-        let assert_absent = |label: &str, dials: &Dials, policy: &mut UtilityPolicy| {
+        for seen_air in [false, true] {
+            let mut policy = UtilityPolicy::new();
+            policy.state.seen_air = seen_air;
             assert!(
-                construction_intents_with_public_map(policy, dials, &obs, &public_map).is_empty(),
-                "residual Utility must not originate a player-facing {label}"
+                construction_intents_with_public_map(&mut policy, &obs, &public_map).is_empty(),
+                "current threats require an admitted defensive investment"
             );
-        };
-
-        let mut turret_dials = focused_dials();
-        turret_dials.turret_response = true;
-        turret_dials.adaptive_composition = true;
-
-        let mut turret_policy = UtilityPolicy::new();
-
-        assert_absent("Turret", &turret_dials, &mut turret_policy);
-
-        let mut barricade_dials = focused_dials();
-        barricade_dials.harvester_target = 1;
-
-        let mut barricade_policy = UtilityPolicy::new();
-
-        assert_absent("Barricade", &barricade_dials, &mut barricade_policy);
-
-        let mut mine_dials = focused_dials();
-        mine_dials.harvester_target = 1;
-        mine_dials.mines = true;
-
-        let mut mine_policy = UtilityPolicy::new();
-
-        assert_absent("Scuttle Charge", &mine_dials, &mut mine_policy);
-
-        let mut flak_dials = focused_dials();
-        flak_dials.aa_response = true;
-
-        let mut flak_policy = UtilityPolicy::new();
-        flak_policy.state.seen_air = true;
-        assert_absent("Flak Turret", &flak_dials, &mut flak_policy);
-
-        let mut bastion_dials = focused_dials();
-        bastion_dials.adaptive_composition = true;
-        bastion_dials.siege_target = 3;
-        bastion_dials.support_target = 0;
-        assert_absent("Bastion", &bastion_dials, &mut UtilityPolicy::new());
-
-        assert_absent("Array", &array_dials(), &mut UtilityPolicy::new());
+        }
     }
 
     #[test]
     fn fresh_emergency_defense_freezes_the_ranked_site_and_builder() {
         let public_map = construction_briefing();
-        let mut dials = focused_dials();
-        dials.turret_response = true;
-        dials.aa_response = true;
-        dials.harvester_target = 3;
+        let dials = Dials {
+            harvester_target: 3,
+            ..Dials::default()
+        };
 
         let mut obs = observation();
         obs.my_units.push(harvester(2, TilePos::new(7, 16), None));
@@ -4828,9 +4727,11 @@ mod tests {
     #[test]
     fn fresh_emergency_defense_does_not_claim_an_evacuating_worker() {
         let public_map = construction_briefing();
-        let mut dials = focused_dials();
-        dials.turret_response = true;
-        dials.harvester_target = 1;
+        let dials = Dials {
+            harvester_target: 1,
+            ..Dials::default()
+        };
+
         let mut obs = observation();
         let mut threat = sentinel(20, TilePos::new(4, 2));
         threat.player = PlayerId(1);
@@ -4859,10 +4760,11 @@ mod tests {
 
     #[test]
     fn residual_opening_construction_keeps_orphan_and_home_extractor_recovery() {
-        let mut dials = focused_dials();
-        dials.extractors = true;
-        dials.harvester_target = 1;
-        dials.turret_response = true;
+        let dials = Dials {
+            harvester_target: 1,
+            ..Dials::default()
+        };
+
         let frame = HOME.offset(5, 4);
         let public_map = array_briefing(40, 24, HOME, TilePos::new(32, 10), |tile| {
             if tile == frame { 'E' } else { '.' }
@@ -4891,8 +4793,7 @@ mod tests {
         unsafe_site.enemy_units.push(threat);
         let mut budget = unsafe_site.scrap;
         let mut intents = Vec::new();
-        UtilityPolicy::new().construction(
-            &dials,
+        UtilityPolicy::new().residual_construction(
             &unsafe_site,
             context(),
             &mut budget,
@@ -4934,7 +4835,7 @@ mod tests {
         );
         let mut budget = orphaned.scrap;
         let mut intents = Vec::new();
-        UtilityPolicy::new().construction(&dials, &orphaned, context(), &mut budget, &mut intents);
+        UtilityPolicy::new().residual_construction(&orphaned, context(), &mut budget, &mut intents);
         assert_eq!(
             intents,
             vec![Intent::Build {
@@ -4948,7 +4849,12 @@ mod tests {
         extractor.known_frames.push(frame);
         let mut budget = extractor.scrap;
         let mut intents = Vec::new();
-        UtilityPolicy::new().construction(&dials, &extractor, context(), &mut budget, &mut intents);
+        UtilityPolicy::new().residual_construction(
+            &extractor,
+            context(),
+            &mut budget,
+            &mut intents,
+        );
         assert!(matches!(
             intents.as_slice(),
             [Intent::BuildWith {
@@ -4977,9 +4883,11 @@ mod tests {
             .with_public_map(Some(&public_map))
             .during_opening_core()
         };
-        let mut dials = focused_dials();
-        dials.extractors = true;
-        dials.harvester_target = 1;
+        let dials = Dials {
+            harvester_target: 1,
+            ..Dials::default()
+        };
+
         let mut obs = observation();
         obs.known_frames.push(frame);
         let policy = UtilityPolicy::new();

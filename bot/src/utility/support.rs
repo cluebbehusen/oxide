@@ -60,40 +60,34 @@ impl UtilityPolicy {
 
     pub(super) fn test_admit_building_repairs(
         &mut self,
-        dials: &Dials,
         obs: &Observation,
         mode: PolicyMode<'_>,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) {
-        if dials.repair {
-            self.test_admit_repairs(obs, mode, *budget, true, intents);
-        }
+        self.test_admit_repairs(obs, mode, *budget, true, intents);
     }
 
     pub(super) fn test_admit_mobile_repairs(
         &mut self,
-        dials: &Dials,
         obs: &Observation,
         available: u32,
         intents: &mut Vec<Intent>,
     ) {
-        if dials.repair {
-            self.test_admit_repairs(
-                obs,
-                PolicyMode {
-                    evidence: Default::default(),
-                    ground_missions: None,
-                    admit_voluntary_macro: true,
-                    unit_contacts: None,
-                    building_contacts: None,
-                    public_map: None,
-                },
-                available,
-                false,
-                intents,
-            );
-        }
+        self.test_admit_repairs(
+            obs,
+            PolicyMode {
+                evidence: Default::default(),
+                ground_missions: None,
+                admit_voluntary_macro: true,
+                unit_contacts: None,
+                building_contacts: None,
+                public_map: None,
+            },
+            available,
+            false,
+            intents,
+        );
     }
 }
 
@@ -142,7 +136,6 @@ mod tests {
         let admit = |obs: &Observation, budget| {
             let mut intents = Vec::new();
             UtilityPolicy::new().test_admit_building_repairs(
-                &Dials::full(),
                 obs,
                 PolicyMode {
                     evidence: Default::default(),
@@ -169,12 +162,9 @@ mod tests {
 
     #[test]
     fn idle_tenders_pair_with_wounded_combatants_by_need_then_distance() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
-        dials.support_target = 2;
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &observation(), 200, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&observation(), 200, &mut intents);
 
         assert_eq!(
             intents,
@@ -193,20 +183,16 @@ mod tests {
 
     #[test]
     fn mobile_support_uses_the_uncommitted_budget_not_the_gross_bank() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
         let obs = observation();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, 0, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&obs, 0, &mut intents);
 
         assert!(intents.is_empty());
     }
 
     #[test]
     fn player_facing_support_refuses_a_patient_behind_a_known_wall() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
         let mut obs = observation();
         obs.my_units = vec![
             unit(2, UnitKind::Tender, TilePos::new(2, 5), 150),
@@ -215,15 +201,13 @@ mod tests {
         obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(8, y)).collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&obs, obs.scrap, &mut intents);
 
         assert!(intents.is_empty());
     }
 
     #[test]
     fn support_uses_authored_terrain_through_unexplored_ground() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
         let mut obs = observation();
         obs.my_units = vec![
             unit(2, UnitKind::Tender, TilePos::new(2, 5), 150),
@@ -239,7 +223,7 @@ mod tests {
         }
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&obs, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,
@@ -252,8 +236,6 @@ mod tests {
 
     #[test]
     fn player_facing_support_uses_a_local_route_on_an_otherwise_unknown_map() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
         let mut obs = observation();
         obs.my_units = vec![
             unit(2, UnitKind::Tender, TilePos::new(2, 5), 150),
@@ -268,7 +250,7 @@ mod tests {
         }
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&obs, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,
@@ -281,8 +263,6 @@ mod tests {
 
     #[test]
     fn player_facing_support_uses_a_known_gap() {
-        let mut dials = Dials::balanced();
-        dials.adaptive_composition = true;
         let mut obs = observation();
         obs.my_units = vec![
             unit(2, UnitKind::Tender, TilePos::new(2, 5), 150),
@@ -294,7 +274,7 @@ mod tests {
             .collect();
         let mut intents = Vec::new();
 
-        UtilityPolicy::new().test_admit_mobile_repairs(&dials, &obs, obs.scrap, &mut intents);
+        UtilityPolicy::new().test_admit_mobile_repairs(&obs, obs.scrap, &mut intents);
 
         assert_eq!(
             intents,
