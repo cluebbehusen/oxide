@@ -101,7 +101,6 @@ pub struct TeamReliefOperation {
 struct PressureWatch {
     foundry: BuildingId,
     first_seen_at: Tick,
-    relief: TeamReliefOperation,
 }
 
 /// Controller-local owner of team-pressure evidence, relief, and cooldown.
@@ -110,6 +109,13 @@ pub struct TeamReliefPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
     active: Option<TeamReliefOperation>,
     watch: Option<PressureWatch>,
+    pending: Option<TeamReliefOperation>,
+    cooldown_until: Tick,
+}
+
+#[derive(Clone)]
+pub(crate) struct TeamReliefCheckpoint {
+    active: Option<TeamReliefOperation>,
     cooldown_until: Tick,
 }
 
@@ -147,6 +153,20 @@ impl TeamReliefPlanner {
         Self::default()
     }
 
+    pub(crate) fn ownership_checkpoint(&self) -> TeamReliefCheckpoint {
+        TeamReliefCheckpoint {
+            active: self.active.clone(),
+            cooldown_until: self.cooldown_until,
+        }
+    }
+
+    pub(crate) fn restore_ownership(&mut self, checkpoint: TeamReliefCheckpoint) {
+        self.active = checkpoint.active;
+        self.cooldown_until = checkpoint.cooldown_until;
+        // Pressure age and outcome evidence survive rejection; proposed members do not.
+        self.pending = None;
+    }
+
     /// The currently active relief operation, if any.
     pub fn operation(&self) -> Option<&TeamReliefOperation> {
         self.active.as_ref()
@@ -157,9 +177,9 @@ impl TeamReliefPlanner {
     pub(super) fn reservations(&self) -> Vec<UnitId> {
         self.active.as_ref().map_or_else(
             || {
-                self.watch
+                self.pending
                     .as_ref()
-                    .map_or_else(Vec::new, |watch| pending_reservations(&watch.relief))
+                    .map_or_else(Vec::new, pending_reservations)
             },
             |operation| operation.members.clone(),
         )
@@ -209,9 +229,9 @@ impl TeamReliefPlanner {
         let Some(mut relief) = self.active.take() else {
             return StrategicDecision {
                 reservations: self
-                    .watch
+                    .pending
                     .as_ref()
-                    .map_or_else(Vec::new, |watch| pending_reservations(&watch.relief)),
+                    .map_or_else(Vec::new, pending_reservations),
                 ..StrategicDecision::default()
             };
         };
@@ -400,7 +420,7 @@ impl TeamReliefPlanner {
     ) {
         let ReliefContext { tuning, obs, .. } = *context;
         if obs.tick < self.cooldown_until {
-            self.watch = None;
+            self.clear_pressure();
             return;
         }
 
@@ -414,8 +434,8 @@ impl TeamReliefPlanner {
             self.watch = Some(PressureWatch {
                 foundry: relief.foundry,
                 first_seen_at: obs.tick,
-                relief,
             });
+            self.pending = Some(relief);
         }
 
         let still_pressured = self.watch.as_ref().is_some_and(|watch| {
@@ -428,46 +448,45 @@ impl TeamReliefPlanner {
             })
         });
         if !still_pressured {
-            self.watch = None;
+            self.clear_pressure();
             return;
         }
 
-        let refresh = self
-            .watch
+        if self
+            .pending
             .as_ref()
-            .is_some_and(|watch| !pending_assignment_is_available(context, &watch.relief));
-        if refresh {
+            .is_none_or(|relief| !pending_assignment_is_available(context, relief))
+        {
             if !allow_new_operation {
-                self.watch = None;
+                self.pending = None;
                 return;
             }
-            let watch = self
-                .watch
-                .take()
-                .expect("the pending relief was just inspected");
+            let watch = self.watch.as_ref().expect("pressure was just observed");
             let replacement = obs
                 .ally_buildings
                 .iter()
                 .find(|building| building.id == watch.foundry)
                 .and_then(|foundry| begin(context, foundry, routes));
             let Some(mut relief) = replacement else {
+                self.clear_pressure();
                 return;
             };
-            relief.started_at = watch.relief.started_at;
-            relief.phase_started_at = watch.relief.phase_started_at;
-            self.watch = Some(PressureWatch {
-                foundry: watch.foundry,
-                first_seen_at: watch.first_seen_at,
-                relief,
-            });
+            relief.started_at = watch.first_seen_at;
+            relief.phase_started_at = watch.first_seen_at;
+            self.pending = Some(relief);
         }
 
         let ready = self.watch.as_ref().is_some_and(|watch| {
             obs.tick.saturating_sub(watch.first_seen_at) >= pressure_response_delay(tuning)
         });
         if ready && allow_launch {
-            self.active = self.watch.take().map(|watch| watch.relief);
+            self.active = self.pending.take();
         }
+    }
+
+    fn clear_pressure(&mut self) {
+        self.watch = None;
+        self.pending = None;
     }
 
     pub(super) fn prepare_relief(
@@ -486,7 +505,7 @@ impl TeamReliefPlanner {
             return None;
         }
         if obs.ally_buildings.is_empty() {
-            self.watch = None;
+            self.clear_pressure();
             return None;
         }
         let context = ReliefContext {
@@ -506,32 +525,29 @@ impl TeamReliefPlanner {
             orientation,
         );
         self.observe_pressure(&context, &mut routes, admission.allow_new_operation, false);
-        if self.watch.as_ref().is_some_and(|watch| {
-            !routes.group_reaches_command_goal(&watch.relief.members, watch.relief.anchor)
+        if self.pending.as_ref().is_some_and(|relief| {
+            !routes.group_reaches_command_goal(&relief.members, relief.anchor)
         }) {
-            self.watch = None;
+            self.clear_pressure();
         }
-        self.watch
+        self.pending
             .as_ref()
-            .filter(|watch| {
+            .filter(|_| {
                 admission.allow_new_operation
                     && strategic_admission_tick(obs.tick)
-                    && obs.tick.saturating_sub(watch.first_seen_at)
-                        >= pressure_response_delay(tuning)
+                    && self.watch.as_ref().is_some_and(|watch| {
+                        obs.tick.saturating_sub(watch.first_seen_at)
+                            >= pressure_response_delay(tuning)
+                    })
             })
-            .map(|watch| watch.relief.clone())
+            .cloned()
     }
 
     pub(super) fn commit_relief(
         &mut self,
         mut relief: TeamReliefOperation,
     ) -> Option<StrategicDecision> {
-        if self.active.is_some()
-            || self
-                .watch
-                .as_ref()
-                .is_none_or(|watch| watch.relief != relief)
-        {
+        if self.active.is_some() || self.pending.as_ref() != Some(&relief) {
             return None;
         }
         let decision = StrategicDecision {
@@ -544,7 +560,7 @@ impl TeamReliefPlanner {
         };
         relief.dispatch = Some(TeamReliefDispatch::Outbound(relief.anchor));
         self.active = Some(relief);
-        self.watch = None;
+        self.pending = None;
         Some(decision)
     }
 }
@@ -1070,6 +1086,7 @@ mod tests {
         let orientation = super::super::orient::Orientation::for_home(&obs, HOME);
         let tuning = tuning();
         let mut planner = TeamReliefPlanner::new();
+        let checkpoint = planner.ownership_checkpoint();
         let prepare = |planner: &mut TeamReliefPlanner, obs: &Observation| {
             planner.prepare_relief(TeamReliefPreparation {
                 tuning,
@@ -1108,9 +1125,17 @@ mod tests {
         assert_eq!(committed.reservations, proposal.members);
         assert_eq!(committed.intents.len(), 1);
         assert!(
-            planner.commit_relief(proposal).is_none(),
+            planner.commit_relief(proposal.clone()).is_none(),
             "one acceptance dispatches once"
         );
+        planner.restore_ownership(checkpoint);
+        assert!(planner.operation().is_none());
+        assert!(planner.reservations().is_empty());
+        assert!(planner.commit_relief(proposal.clone()).is_none());
+        let retry = prepare(&mut planner, &obs).expect("observed pressure remains credible");
+        assert_eq!(retry.started_at, proposal.started_at);
+        assert_eq!(retry.members, proposal.members);
+        assert!(planner.commit_relief(retry).is_some());
         obs.tick += tuning.cadence;
         let continued = planner.think_with_admission(
             &profile(),
@@ -1316,7 +1341,7 @@ mod tests {
 
         for (fighters, expected_members) in [(10, 2), (11, 2)] {
             let (obs, planner, decision) = decision_for(fighters);
-            let members = planner.watch.as_ref().unwrap().relief.members.clone();
+            let members = planner.pending.as_ref().unwrap().members.clone();
             assert_eq!(members.len(), expected_members, "{fighters} fighters");
             assert!(!decision.reservations.is_empty(), "{fighters} fighters");
             assert!(
@@ -1391,7 +1416,7 @@ mod tests {
         );
 
         assert_eq!(
-            planner.watch.as_ref().unwrap().relief.members,
+            planner.pending.as_ref().unwrap().members,
             [UnitId(20), UnitId(21)]
         );
         assert_eq!(
@@ -1399,15 +1424,7 @@ mod tests {
             [UnitId(1), UnitId(2), UnitId(20), UnitId(21)],
             "the credibility watch keeps its home screen and enough noncore service for the pressure"
         );
-        assert!(
-            combat_core_status(
-                &obs,
-                &planner.watch.as_ref().unwrap().relief.members,
-                &[],
-                8
-            )
-            .ready
-        );
+        assert!(combat_core_status(&obs, &planner.pending.as_ref().unwrap().members, &[], 8).ready);
     }
 
     #[test]
@@ -1579,8 +1596,11 @@ mod tests {
             assert_eq!(planner.reservations(), pending.reservations);
             let watch = planner.watch.as_ref().expect("pressure starts a watch");
             let first_seen_at = watch.first_seen_at;
-            let started_at = watch.relief.started_at;
-            assert_eq!(watch.relief.members, [UnitId(3), UnitId(4)]);
+            let started_at = planner.pending.as_ref().unwrap().started_at;
+            assert_eq!(
+                planner.pending.as_ref().unwrap().members,
+                [UnitId(3), UnitId(4)]
+            );
 
             let newly_reserved = if matches!(disruption, Disruption::Reserved) {
                 vec![UnitId(3)]
@@ -1619,8 +1639,11 @@ mod tests {
             );
             let refreshed_watch = planner.watch.as_ref().expect("replacement group is viable");
             assert_eq!(refreshed_watch.first_seen_at, first_seen_at);
-            assert_eq!(refreshed_watch.relief.started_at, started_at);
-            assert_eq!(refreshed_watch.relief.members, [UnitId(4), UnitId(5)]);
+            assert_eq!(planner.pending.as_ref().unwrap().started_at, started_at);
+            assert_eq!(
+                planner.pending.as_ref().unwrap().members,
+                [UnitId(4), UnitId(5)]
+            );
 
             obs.tick = first_seen_at + pressure_response_delay(tuning);
             let committed =
@@ -1730,6 +1753,7 @@ mod tests {
             map[y] = String::from_utf8(row).expect("the authored row is ASCII");
         }
         Scenario {
+            mode: Default::default(),
             name: "team relief command acceptance".into(),
             seed: 19,
             map,
@@ -2456,7 +2480,7 @@ mod tests {
                 "{difficulty:?} must first observe the pressure"
             );
             assert!(!pending.reservations.is_empty());
-            let frozen = planner.watch.as_ref().unwrap().relief.clone();
+            let frozen = planner.pending.as_ref().unwrap().clone();
             add_fighters(
                 &mut obs,
                 &[

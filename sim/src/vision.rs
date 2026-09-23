@@ -1061,6 +1061,7 @@ mod danger_tests {
 
     fn allied_incident_state() -> State {
         Scenario {
+            mode: Default::default(),
             name: "allied-incidents".into(),
             seed: 5,
             map: vec![
@@ -1116,6 +1117,7 @@ mod danger_tests {
             });
         }
         let state = Scenario {
+            mode: Default::default(),
             name: "screened-salvage".into(),
             seed: 4,
             map: vec![

@@ -597,6 +597,11 @@ impl Building {
 /// below.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::scenario::ScenarioMode::is_match"
+    )]
+    pub(crate) mode: crate::scenario::ScenarioMode,
     pub(crate) tick: Tick,
     pub(crate) rng: Pcg32,
     pub(crate) map: Map,
@@ -677,6 +682,7 @@ impl State {
             .map(|_| crate::vision::Vision::new(map.width(), map.height()))
             .collect();
         Self {
+            mode: crate::scenario::ScenarioMode::Match,
             tick: 0,
             rng: Pcg32::new(seed, 0),
             map,
@@ -703,6 +709,24 @@ impl State {
     /// [`State::tick`]; this is the counter it advances.)
     pub fn current_tick(&self) -> Tick {
         self.tick
+    }
+
+    /// Setup and completion rules carried by this world.
+    pub fn mode(&self) -> crate::scenario::ScenarioMode {
+        self.mode
+    }
+
+    /// Whether a seat can issue commands. Each command still validates its own
+    /// ownership, resources and other prerequisites.
+    pub fn accepts_commands(&self, player: PlayerId) -> bool {
+        self.result.is_none()
+            && self.try_player(player).is_some_and(|seat| !seat.resigned)
+            && (self.mode == crate::scenario::ScenarioMode::Sandbox
+                || self.buildings.iter().any(|building| {
+                    building.player == player
+                        && !building.provisional
+                        && building.kind == crate::stats::BuildingKind::Foundry
+                }))
     }
 
     /// Whether an active seat can currently receive recurring automatic
@@ -944,6 +968,15 @@ impl State {
                     && (player.recovery_allowance != 0 || player.recovery_target != 0))
         }) {
             return Err(E::InvalidRecoveryLedger(PlayerId(i as u8)));
+        }
+        if self.mode == crate::scenario::ScenarioMode::Sandbox
+            && (self.result.is_some()
+                || self
+                    .players
+                    .iter()
+                    .any(|player| player.eliminated_at.is_some()))
+        {
+            return Err(E::SandboxElimination);
         }
         if let Some(GameResult::Victory { team }) = self.result
             && !self.players.iter().any(|player| player.team == team)
@@ -2233,6 +2266,9 @@ mod tests {
 /// one names the entity that broke it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StateIntegrityError {
+    /// Open-ended sandboxes cannot carry match elimination or victory state.
+    #[error("sandbox contains an elimination stamp or a game result")]
+    SandboxElimination,
     /// A walking or transported unit holds more scrap than its harvest gear permits.
     #[error("unit {0} carries scrap beyond its harvest capacity")]
     ScrapBeyondCapacity(UnitId),
@@ -2588,6 +2624,8 @@ impl ProjectileKind {
 #[derive(Deserialize)]
 #[serde(rename = "State")]
 struct StateWire {
+    #[serde(default)]
+    mode: crate::scenario::ScenarioMode,
     tick: Tick,
     rng: Pcg32,
     map: Map,
@@ -2607,6 +2645,7 @@ impl From<StateWire> for State {
     fn from(w: StateWire) -> Self {
         // Every field named on both sides: drift breaks the build.
         let StateWire {
+            mode,
             tick,
             rng,
             map,
@@ -2621,6 +2660,7 @@ impl From<StateWire> for State {
             next_building_id,
         } = w;
         State {
+            mode,
             building_occupancy: Vec::new(),
             tick,
             rng,

@@ -10,62 +10,45 @@ description:
 
 # Oxide sandbox matches
 
-A sandbox is a throwaway scenario that stages an exact scene: chosen units and
-structures at chosen positions, against an opponent that never acts. Reach for
-it when competitive fairness would only get in the way — a user practice drill,
-a staged scene for screenshots or native animation capture, an isolated combat
-or mechanic repro, or a quick "ten of X versus one Y" probe.
-
-A sandbox proves mechanics and presentation, not opponent credibility. Bot
-behavior judgments go through the scripted-bot skill's evaluation paths, and a
-sandbox never ships: promotion into `scenarios/` means authoring a real map
-under the map-authoring skill instead.
+A sandbox stages chosen units and structures without requiring an opponent,
+Foundries, or a victory condition. It uses ordinary simulation commands and
+rules, so saves and replays reproduce the scene. A sandbox proves mechanics and
+presentation, not opponent credibility; use the scripted-bot skill for that.
+Keep throwaway scenes outside the shipped scenario pool.
 
 ## Build the scenario
 
-Sandboxes use the ordinary scenario schema in `sim/src/scenario.rs` and the
-terrain bytes documented in the map-authoring skill. The sandbox-specific moves:
+Use the ordinary scenario schema in `sim/src/scenario.rs`, with
+`"mode": "sandbox"`. This makes Foundry anchors optional, permits allied-only or
+disconnected scenes, and disables automatic elimination and victory. It does not
+bypass terrain, placement, ownership, cost, or command validation.
 
-- A passive seat is `"bot": true` with no `bot_config`: a documented empty chair
-  (`seat_bots` in `bot/src/runtime.rs`) that never issues commands, so it cannot
-  build, train, harvest, or maneuver — but its units and turrets still
-  auto-defend, because return fire is simulation behavior, not controller
-  behavior. Never mark a passive seat `"bot": false`: the shell's playable
-  session demands exactly one non-bot seat and refuses to launch with two
-  humans.
-- `units` places starting units per seat at tile coordinates. Walkers need open
-  ground; flyers may legally start over any tile they could hover over in play.
-- `buildings` places completed structures beyond the Foundries. Coordinates are
-  the top-left anchor; the full footprint must fit passable ground, and overlaps
-  are rejected.
+- At least one player seat is required because units need an owner. A seat does
+  not require a human or a bot controller.
+- Use `"bot": false` for a passive seat. A `"bot": true` seat without
+  `bot_config` is also an empty chair. A configured bot runs normally; the
+  strategic controller currently needs a Foundry to act, so omit it when only
+  staging units. Units and turrets still auto-defend without a controller.
+- Local input controls the first non-bot seat, falling back to seat zero if
+  every seat is bot-controlled. This does not disable any configured bot. Debug
+  commands explicitly identify their seat.
+- `units` places starting units at tile coordinates. Walkers need open ground;
+  flyers may start over terrain they can legally hover over.
+- `buildings` places completed structures by top-left anchor. Their full
+  footprint must fit passable ground without overlapping another structure.
+- Optional map anchor bytes place Foundries. Omit them for a unit-only scene.
+  Without sandbox mode, ordinary Foundry and victory requirements still apply.
 
-Validation still enforces the invariants that make the match runnable, even in a
-sandbox:
-
-- Every seat needs its Foundry anchor byte in the map text
-  (`ScenarioError::MissingAnchor`), so a passive seat always owns at least a
-  Foundry.
-- With two or more players, at least two hostile teams must exist
-  (`ScenarioError::OneTeam`). A one-player scenario is legal and never resolves,
-  so a truly enemy-free stage — pure scenery, movement, or screenshot work —
-  needs no opponent seat at all.
-- Every pair of Foundries must share a route some mover can take.
-
-A team with no Foundries left is eliminated, and a lone surviving team wins.
-Make the passive seat's Foundry the drill's victory target, or keep it away from
-the action when the scene must outlive the fight.
-
-A verified minimal sandbox — one human seat with a Scuttler against a passive
-seat holding a Bastion:
+A minimal unit-only sandbox:
 
 ```json
 {
-  "name": "Bastion Drill",
+  "name": "Movement Drill",
+  "mode": "sandbox",
   "seed": 1,
   "map": [
     "....................",
     "....................",
-    "..1.............2...",
     "....................",
     "....................",
     "....................",
@@ -74,16 +57,17 @@ seat holding a Bastion:
     "...................."
   ],
   "players": [
-    { "name": "You", "faction": "ferrous", "scrap": 150, "bot": false },
-    { "name": "Target", "faction": "cupric", "scrap": 0, "bot": true }
+    { "name": "Local", "faction": "ferrous", "scrap": 0, "bot": false }
   ],
-  "units": [{ "player": 0, "kind": "scuttler", "x": 5, "y": 5 }],
-  "buildings": [{ "player": 1, "kind": "bastion", "x": 16, "y": 5 }]
+  "units": [{ "player": 0, "kind": "scuttler", "x": 5, "y": 4 }]
 }
 ```
 
-Repeat the unit spec at distinct standable tiles for each extra unit. Kind
-strings are the lowercase names from `sim/src/stats.rs`.
+Add passive seats and enemy entities when needed. Sandbox combat continues
+without declaring a winner after a side loses its units or buildings. Explicit
+surrender still relinquishes command authority for that seat. Repeat unit specs
+at distinct standable tiles for larger scenes; kind names come from
+`sim/src/stats.rs`.
 
 ## Stage a manual art review
 

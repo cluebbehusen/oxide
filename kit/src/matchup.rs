@@ -514,6 +514,7 @@ fn siege_leg(
         }
     }
     let scenario = Scenario {
+        mode: Default::default(),
         name: "arena-duel".into(),
         seed: arena.seed,
         map,

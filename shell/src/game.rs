@@ -179,8 +179,8 @@ impl Game {
         self.presentation.reset_after_jump(&self.state);
     }
 
-    /// Starts a session from a scenario, at the injected window size
-    /// (headless callers get the default without a window).
+    /// Starts a session from a scenario. Local input uses the first non-bot
+    /// seat, or seat zero for an all-bot scene; configured bots keep running.
     pub fn new(scenario: Scenario) -> Result<Self> {
         Self::with_viewport(scenario, crate::render::viewport())
     }
@@ -188,25 +188,18 @@ impl Game {
     /// `new` with the window injected — the only constructor tests use,
     /// because it never touches macroquad.
     pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
-        let human = Self::human_seat(&scenario)?;
+        let human = Self::local_seat(&scenario);
         Self::assemble(scenario, viewport, human)
     }
 
-    fn human_seat(scenario: &Scenario) -> Result<PlayerId> {
-        let humans: Vec<PlayerId> = scenario
-            .players
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| !p.bot)
-            .map(|(i, _)| PlayerId(i as u8))
-            .collect();
-        match humans.as_slice() {
-            [seat] => Ok(*seat),
-            _ => anyhow::bail!(
-                "a session wants exactly one non-bot seat, got {}",
-                humans.len()
-            ),
-        }
+    fn local_seat(scenario: &Scenario) -> PlayerId {
+        PlayerId(
+            scenario
+                .players
+                .iter()
+                .position(|player| !player.bot)
+                .unwrap_or(0) as u8,
+        )
     }
 
     fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
@@ -806,8 +799,7 @@ mod tests {
     /// FUTURE diverges, which is exactly what this pins.
     #[test]
     fn a_resumed_session_plays_the_same_future_as_an_unsaved_one() {
-        // Seat 0 stays human (a session wants exactly one), seat 1
-        // is the shipped bot whose memory the watch-back rebuilds.
+        // Seat 1 is the shipped bot whose memory the watch-back rebuilds.
         let mut scenario = oxide_sim::Scenario::skirmish();
         oxide_kit::bench::all_bots(&mut scenario);
         scenario.players[0].bot = false;
@@ -858,37 +850,83 @@ mod tests {
     use oxide_sim::{Command, Scenario, Target, UnitKind};
 
     #[test]
-    fn playable_sessions_require_exactly_one_human_but_spectators_do_not() {
-        let viewport = macroquad::prelude::vec2(1280.0, 800.0);
-        let mut all_bots = Scenario::skirmish();
-        for player in &mut all_bots.players {
-            player.bot = true;
-            player.bot_config = Some(oxide_sim::scenario::BotConfig::default());
+    fn foundry_free_sandbox_accepts_local_input_and_restores_checkpoint() {
+        let mut scenario = Scenario::skirmish();
+        scenario.mode = oxide_sim::scenario::ScenarioMode::Sandbox;
+        for row in &mut scenario.map {
+            *row = row.replace(['1', '2'], ".");
         }
-        let err = Game::with_viewport(all_bots.clone(), viewport)
-            .err()
-            .expect("an all-bot match has no command seat");
-        assert!(err.to_string().contains("got 0"));
-        assert_eq!(
-            crate::screens::playback::PlaybackSession::from_replay(Replay::new(
-                SIM_VERSION,
-                all_bots
-            ))
-            .expect("spectator")
-            .presentation
-            .human,
-            PlayerId(0)
-        );
-
-        let mut two_humans = Scenario::skirmish();
-        for player in &mut two_humans.players {
+        for player in &mut scenario.players {
             player.bot = false;
             player.bot_config = None;
         }
-        let err = Game::with_viewport(two_humans, viewport)
-            .err()
-            .expect("two command seats are ambiguous");
-        assert!(err.to_string().contains("got 2"));
+        let mut original = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
+        assert!(original.bots.is_empty());
+        assert!(original.home_foundry().is_none());
+        let unit = original
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player == PlayerId(0))
+            .unwrap()
+            .id;
+        original.issue(Command::Move {
+            units: vec![unit],
+            goal: chassis::grid::TilePos::new(8, 6),
+            queue: false,
+        });
+        let mut resumed: Game =
+            serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
+        for game in [&mut original, &mut resumed] {
+            assert!(game.state.accepts_commands(PlayerId(0)));
+            let report = game.do_tick();
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, Event::CommandRejected { .. }))
+            );
+            game.advance_ticks(120);
+            assert!(game.state.result().is_none());
+        }
+        assert_eq!(original.hash_hex(), resumed.hash_hex());
+    }
+
+    #[test]
+    fn local_sessions_accept_any_bot_roster_and_resume() {
+        for (bot_flags, local_seat) in [
+            ([true, true], PlayerId(0)),
+            ([false, false], PlayerId(0)),
+            ([true, false], PlayerId(1)),
+        ] {
+            let mut scenario = Scenario::skirmish();
+            for (player, bot) in scenario.players.iter_mut().zip(bot_flags) {
+                player.bot = bot;
+                player.bot_config = bot.then(oxide_sim::scenario::BotConfig::default);
+            }
+            let mut original = Game::with_viewport(scenario, vec2(1280.0, 800.0))
+                .expect("bot assignment does not constrain the local session");
+            assert_eq!(original.presentation.human, local_seat);
+            assert_eq!(
+                original.bots.len(),
+                bot_flags.into_iter().filter(|bot| *bot).count()
+            );
+            original.advance_ticks(180);
+            let mut snapshot = original.recorder.clone();
+            snapshot.meta.ticks = Some(180);
+            let mut resumed = Game::from_replay(snapshot).expect("the session resumes");
+            assert_eq!(resumed.presentation.human, local_seat);
+            original.advance_ticks(120);
+            resumed.advance_ticks(120);
+            assert_eq!(original.hash_hex(), resumed.hash_hex());
+            assert_eq!(
+                serde_json::to_vec(&original.recorder.commands).unwrap(),
+                serde_json::to_vec(&resumed.recorder.commands).unwrap()
+            );
+            if bot_flags == [false, false] {
+                assert!(original.recorder.commands.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -1515,6 +1553,7 @@ mod tests {
             bot_config: bot.then_some(oxide_sim::scenario::BotConfig::default()),
         };
         let scenario = Scenario {
+            mode: Default::default(),
             name: "concede-arena".into(),
             seed: 42,
             map: vec![

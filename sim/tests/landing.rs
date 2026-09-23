@@ -20,6 +20,7 @@ use chassis::grid::TilePos;
 /// Foundry on the west wall is a live target for any run-in that passes it.
 fn hostile_arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "landing-arena".into(),
         seed: 11,
         // Both Foundries hug the west wall, well clear of the pads around

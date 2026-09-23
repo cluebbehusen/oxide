@@ -77,6 +77,11 @@ Tests comparing completed packages explicitly resume partial work within the
 unchanged decision allowance. The exhaustive funding reference is only an
 independent oracle, never a fallback inside the planner.
 
+Team relief keeps observed pressure age separate from its proposed force.
+Allocation rollback restores accepted relief ownership and cooldown, retains
+pressure and outcome evidence, and discards the unaccepted proposal. A retry
+revalidates current members without restarting pressure credibility.
+
 ```sh
 cargo test -p oxide-bot --locked
 cargo test -p oxide-bot --lib utility::policy_tests --locked

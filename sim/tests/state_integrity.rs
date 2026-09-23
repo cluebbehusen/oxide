@@ -23,10 +23,30 @@ use oxide_sim::{
 };
 use serde_json::{Value, json};
 
+#[test]
+fn sandbox_cannot_restore_a_match_result_or_elimination_stamp() {
+    let mut scenario = Scenario::skirmish();
+    scenario.mode = oxide_sim::scenario::ScenarioMode::Sandbox;
+    let original = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    for (pointer, value) in [
+        ("/result", json!({"outcome": "draw"})),
+        ("/players/0/eliminated_at", json!(0)),
+    ] {
+        let mut forged = original.clone();
+        *forged.pointer_mut(pointer).unwrap() = value;
+        let error = serde_json::from_value::<State>(forged).unwrap_err();
+        assert!(error.to_string().contains("sandbox contains"), "{error}");
+    }
+    let mut forged = original;
+    forged["mode"] = json!("unknown");
+    assert!(serde_json::from_value::<State>(forged).is_err());
+}
+
 /// A two-seat arena with a standing Fabricator (a producer whose roster
 /// spans both factions) and enough open ground for siege.
 fn arena() -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "integrity-arena".into(),
         seed: 11,
         map: vec![
@@ -378,10 +398,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ScrapBeyondCapacity(_) => 76,
         E::InvalidStallTicks(_) => 77,
         E::InvalidLeashClock(_) => 78,
+        E::SandboxElimination => 79,
     }
 }
 
-const ROWS: usize = 79;
+const ROWS: usize = 80;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -473,6 +494,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ScrapBeyondCapacity(UnitId(0)),
         E::InvalidStallTicks(UnitId(0)),
         E::InvalidLeashClock(UnitId(0)),
+        E::SandboxElimination,
     ]
 }
 
@@ -644,6 +666,14 @@ fn leash_clocks_are_bounded_at_deserialization() {
 #[test]
 fn every_checklist_row_refuses_its_forgery() {
     let fixtures: Vec<Forgery> = vec![
+        (
+            "sandbox match result",
+            |d| {
+                d["mode"] = json!("sandbox");
+                d["result"] = json!({"outcome": "draw"});
+            },
+            "sandbox contains an elimination stamp or a game result",
+        ),
         (
             "an oversized chase allowance",
             |d| d["units"][0]["leash"] = json!({"anchor": {"x": 4, "y": 4}, "patience": u16::MAX}),

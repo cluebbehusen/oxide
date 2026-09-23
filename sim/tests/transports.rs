@@ -12,6 +12,7 @@ use oxide_sim::{Command, Event, Faction, Scenario, Target, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>) -> Scenario {
     Scenario {
+        mode: Default::default(),
         name: "sling-arena".into(),
         seed: 13,
         map,

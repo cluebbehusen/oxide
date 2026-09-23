@@ -2,7 +2,9 @@
 
 use crate::GameReplay;
 use chassis::replay::{Replay, ReplayError, ReplayMeta, TimedCommand};
-use oxide_sim::scenario::{BotConfig, BuildingSpec, PlayerSpec, ScenarioMeta, UnitSpec};
+use oxide_sim::scenario::{
+    BotConfig, BuildingSpec, PlayerSpec, ScenarioMeta, ScenarioMode, UnitSpec,
+};
 use oxide_sim::{Faction, PlayerCommand, SIM_VERSION, Scenario};
 use serde::Deserialize;
 use std::path::Path;
@@ -20,6 +22,8 @@ struct ReplayWire {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReplayScenarioWire {
+    #[serde(default)]
+    mode: ScenarioMode,
     name: String,
     seed: u64,
     map: Vec<String>,
@@ -41,6 +45,7 @@ impl ReplayScenarioWire {
             .map(|(seat, player)| player.into_current(recorded_version, seat))
             .collect::<Result<_, _>>()?;
         Ok(Scenario {
+            mode: self.mode,
             name: self.name,
             seed: self.seed,
             map: self.map,
@@ -310,6 +315,24 @@ mod tests {
     fn current_document() -> Value {
         serde_json::to_value(GameReplay::new(SIM_VERSION, Scenario::skirmish()))
             .expect("current replay serializes")
+    }
+
+    #[test]
+    fn sandbox_replay_preserves_rules_through_the_strict_wire() {
+        let mut setup = Scenario::skirmish();
+        setup.mode = ScenarioMode::Sandbox;
+        for row in &mut setup.map {
+            *row = row.replace(['1', '2'], ".");
+        }
+        let mut replay = GameReplay::new(SIM_VERSION, setup.clone());
+        replay.meta.ticks = Some(20);
+        let fixture = write_fixture(&serde_json::to_vec(&replay).unwrap());
+        let loaded = load_replay(&fixture.0).unwrap();
+        assert_eq!(loaded.setup, setup);
+        let world = crate::runner::run_replay(&loaded, None, false).unwrap();
+        assert_eq!(world.current_tick(), 20);
+        assert_eq!(world.mode(), ScenarioMode::Sandbox);
+        assert!(world.result().is_none());
     }
 
     #[test]

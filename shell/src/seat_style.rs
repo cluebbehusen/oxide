@@ -149,6 +149,7 @@ mod tests {
             map[3 + (seat / 4) * 16][3 + (seat % 4) * 16] = anchor;
         }
         Scenario {
+            mode: Default::default(),
             name: "Seat presentation".into(),
             seed: 1,
             map: map

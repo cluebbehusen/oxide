@@ -250,6 +250,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
         }
     }
     let scenario = Scenario {
+        mode: Default::default(),
         name: "firing-squad".into(),
         seed: 7,
         map,

@@ -63,6 +63,7 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
         });
     }
     Scenario {
+        mode: Default::default(),
         name: format!("mass-battle-{per_side}"),
         seed,
         map,

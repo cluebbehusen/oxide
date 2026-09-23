@@ -325,6 +325,7 @@ mod tests {
         map[17][27] = '2';
         map[3][5] = 's';
         let scenario = Scenario {
+            mode: Default::default(),
             name: "statistics activity".into(),
             seed: 42,
             map: map

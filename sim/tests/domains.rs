@@ -446,6 +446,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     // at (10,3) holds the sight line; no other friendly eye reaches (the
     // Foundry's 8 falls short).
     let scenario = Scenario {
+        mode: Default::default(),
         name: "spotter-wall".into(),
         seed: 42,
         map: vec![

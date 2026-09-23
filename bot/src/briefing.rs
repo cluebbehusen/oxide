@@ -226,6 +226,7 @@ mod tests {
 
     fn briefing_scenario() -> Scenario {
         Scenario {
+            mode: Default::default(),
             name: "briefing".into(),
             seed: 4,
             map: [
@@ -383,6 +384,7 @@ mod tests {
         let width = anchors.len() + 2;
         let border = "#".repeat(width);
         let scenario = Scenario {
+            mode: Default::default(),
             name: "sixteen starts".into(),
             seed: 0,
             map: vec![

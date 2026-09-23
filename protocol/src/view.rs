@@ -767,6 +767,7 @@ mod tests {
             bot_config: None,
         };
         let scenario = oxide_sim::Scenario {
+            mode: Default::default(),
             name: "landing-fog".into(),
             seed: 11,
             map: vec![

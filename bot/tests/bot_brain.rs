@@ -513,6 +513,7 @@ fn fog_honest_shows_ghosts_not_live_enemies() {
 #[test]
 fn allied_observations_reveal_presence_but_not_private_programs() {
     let scenario = Scenario {
+        mode: Default::default(),
         name: "allied-observation".into(),
         seed: 17,
         map: vec![
@@ -1945,6 +1946,7 @@ fn artillery_arena(observer_units: Vec<UnitSpec>) -> Scenario {
         y: 9,
     });
     Scenario {
+        mode: Default::default(),
         name: "artillery-fog-arena".into(),
         seed: 42,
         map: vec![

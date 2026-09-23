@@ -153,10 +153,6 @@ pub fn inspect(path: &Path) -> Result<RecordInfo> {
                     replay.origin.is_none(),
                     "recording has no controller checkpoint for live continuation"
                 );
-                ensure!(
-                    replay.setup.players.iter().filter(|seat| !seat.bot).count() == 1,
-                    "save requires exactly one human seat"
-                );
             }
             Ok(())
         })()
@@ -206,6 +202,25 @@ mod tests {
         meta.ticks = Some(game.state.current_tick());
         meta.saved_at = Some(42);
         meta
+    }
+
+    #[test]
+    fn legacy_saves_with_no_human_or_multiple_passive_seats_remain_resumable() {
+        for bot in [false, true] {
+            let path = Fixture::new();
+            let mut scenario = Scenario::skirmish();
+            for player in &mut scenario.players {
+                player.bot = bot;
+                player.bot_config = None;
+            }
+            let mut replay = oxide_kit::GameReplay::new(SIM_VERSION, scenario);
+            replay.meta.kind = Some("save".into());
+            replay.meta.ticks = Some(0);
+            std::fs::write(&path.0, serde_json::to_vec(&replay).unwrap()).unwrap();
+            assert!(inspect(&path.0).unwrap().problem.is_none());
+            let game = load(&path.0, None).unwrap();
+            assert_eq!(game.presentation.human, oxide_sim::PlayerId(0));
+        }
     }
 
     #[test]
