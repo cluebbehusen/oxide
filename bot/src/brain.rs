@@ -292,7 +292,6 @@ impl Brain {
             }
             mind.battlefield
                 .review_approaches(&oriented, &mind.experience);
-            mind.strategy.experience = Arc::new(mind.experience.clone());
             if let Some(recorder) = recorder.as_deref_mut() {
                 recorder.trace_mut().battlefield = Some(mind.battlefield.assessment().clone());
                 recorder.trace_mut().experience = mind.experience.trace();

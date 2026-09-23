@@ -836,6 +836,7 @@ impl<'a> AllocationSession<'a> {
             && !obligations.invalid_active_connected
         {
             match self.participants.strategy.fresh_connected_minimum_proposal(
+                self.context.evidence.experience,
                 FreshConnectedProposalRequest::new(
                     self.context.profile,
                     self.context.tuning,
@@ -3885,24 +3886,27 @@ mod tests {
         intelligence.update(observation);
         let resources = ResourceSnapshot::from_observation(observation);
         StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile,
-                tuning,
-                observation,
-                &resources,
-                &intelligence,
-                HOME,
-                StrategicCoordination {
-                    planning: Some(&crate::planning::PlanningWork::default()),
-                    enlisted: &[],
-                    lift_support: None,
-                    allow_new_operation: true,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
-                    public_map: Some(&briefing),
-                    orientation: Orientation::for_home(observation, HOME),
-                },
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile,
+                    tuning,
+                    observation,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    StrategicCoordination {
+                        planning: Some(&crate::planning::PlanningWork::default()),
+                        enlisted: &[],
+                        lift_support: None,
+                        allow_new_operation: true,
+                        protected_current_scrap: 0,
+                        protected_forecast_scrap: 0,
+                        public_map: Some(&briefing),
+                        orientation: Orientation::for_home(observation, HOME),
+                    },
+                ),
+            )
             .expect("the current connected opportunity is feasible")
             .expect("the current connected opportunity needs a force package")
     }

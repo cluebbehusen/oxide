@@ -198,6 +198,7 @@ impl EpisodeReport {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ContextEntry {
     key: ExperienceKey,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, EPISODE_LIMIT>")]
     contributions: Vec<ContextContribution>,
     updated_at: Tick,
 }
@@ -245,7 +246,9 @@ pub(crate) struct Experience {
     observed_at: Option<Tick>,
     map: (i32, i32),
     horizon: Tick,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, EPISODE_LIMIT>")]
     episodes: Vec<EpisodeReport>,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, CONTEXT_LIMIT>")]
     contexts: Vec<ContextEntry>,
     doctrine_scores: [i16; 6],
 }
@@ -414,21 +417,24 @@ impl Experience {
             .iter()
             .find(|entry| entry.key == key)
             .map_or(0, |entry| {
-                entry.contributions.iter().fold(0, |score, contribution| {
-                    (score
-                        + decay(
-                            contribution.evidence.score,
-                            now.saturating_sub(contribution.evidence.finished_at()),
-                            self.horizon,
-                        ))
-                    .clamp(-SCORE_LIMIT, SCORE_LIMIT)
-                }) as i16
+                entry
+                    .contributions
+                    .iter()
+                    .fold(0_i32, |score, contribution| {
+                        score
+                            .saturating_add(decay(
+                                contribution.evidence.score,
+                                now.saturating_sub(contribution.evidence.finished_at()),
+                                self.horizon,
+                            ))
+                            .clamp(-SCORE_LIMIT, SCORE_LIMIT)
+                    }) as i16
             })
     }
 
     fn refresh_doctrine(&mut self) {
         let now = self.observed_at.unwrap_or(0);
-        let mut values = [(0, 0_i32); 6];
+        let mut values = [(0, 0_i64); 6];
         for (doctrine, evidence) in self
             .contexts
             .iter()
@@ -437,13 +443,13 @@ impl Experience {
         {
             let (count, score) = &mut values[doctrine.index()];
             *count += 1;
-            *score += evidence.score_at(now, self.horizon);
+            *score = score.saturating_add(i64::from(evidence.score_at(now, self.horizon)));
         }
         self.doctrine_scores = values.map(|(count, score)| {
             if count < 2 {
                 0
             } else {
-                score.clamp(-SCORE_LIMIT, SCORE_LIMIT) as i16
+                score.clamp(-i64::from(SCORE_LIMIT), i64::from(SCORE_LIMIT)) as i16
             }
         });
     }
@@ -489,7 +495,7 @@ fn decay(score: i32, age: Tick, horizon: Tick) -> i32 {
     if horizon == 0 || age >= horizon {
         return 0;
     }
-    (i64::from(score) * (horizon - age) as i64 / horizon as i64) as i32
+    (i128::from(score) * i128::from(horizon - age) / i128::from(horizon)) as i32
 }
 
 /// Presence includes sealed own cargo, but never grants availability to it.
@@ -528,18 +534,31 @@ pub(crate) fn ground_doctrine(obs: &Observation, members: &[UnitId]) -> Doctrine
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct EpisodeWatch {
+struct EpisodeWatch<O = Option<super::observation::BuildingObs>> {
     report: EpisodeReport,
     members: Vec<(UnitId, u32)>,
     finished: bool,
-    objective: Option<super::observation::BuildingObs>,
+    objective: O,
     doctrine_allowed: bool,
     ground_contact_losses: (u32, bool),
 }
 
+impl<O> EpisodeWatch<O> {
+    fn map_objective<T>(self, map: impl FnOnce(O) -> T) -> EpisodeWatch<T> {
+        EpisodeWatch {
+            report: self.report,
+            members: self.members,
+            finished: self.finished,
+            objective: map(self.objective),
+            doctrine_allowed: self.doctrine_allowed,
+            ground_contact_losses: self.ground_contact_losses,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ObjectiveWatch {
-    watch: EpisodeWatch,
+    watch: EpisodeWatch<super::observation::BuildingObs>,
     deadline: Tick,
 }
 
@@ -547,6 +566,7 @@ struct ObjectiveWatch {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OutcomeJournal {
     watch: Option<EpisodeWatch>,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, EPISODE_LIMIT>")]
     follow_through: Vec<ObjectiveWatch>,
     pub(crate) pending: Vec<EpisodeReport>,
 }
@@ -574,9 +594,13 @@ impl OutcomeJournal {
     }
 
     pub(crate) fn handoff_objective(&mut self, obs: &Observation, participants: &[UnitId]) {
-        let Some(mut watch) = self.watch.clone().filter(|watch| watch.objective.is_some()) else {
+        let Some(watch) = self.watch.clone() else {
             return;
         };
+        let Some(objective) = watch.objective.clone() else {
+            return;
+        };
+        let mut watch = watch.map_objective(|_| objective);
         watch.report.id.owner = EpisodeOwner::LiftAssault;
         if self
             .follow_through
@@ -606,19 +630,15 @@ impl OutcomeJournal {
 
     pub(crate) fn observe_follow_through(&mut self, obs: &Observation) {
         for watch in std::mem::take(&mut self.follow_through) {
-            let id = watch
-                .watch
-                .objective
-                .as_ref()
-                .expect("objective watch has a baseline")
-                .id;
+            let baseline = watch.watch.objective.clone();
+            let id = baseline.id;
             let lost = watch
                 .watch
                 .members
                 .iter()
                 .all(|(id, _)| own_unit_health(obs, *id).is_none_or(|hp| hp == 0));
             let mut journal = Self {
-                watch: Some(watch.watch),
+                watch: Some(watch.watch.map_objective(Some)),
                 ..Self::default()
             };
             if journal.observe_objective(obs, id) {
@@ -657,7 +677,11 @@ impl OutcomeJournal {
                 );
             } else {
                 self.follow_through.push(ObjectiveWatch {
-                    watch: journal.watch.take().expect("active watch"),
+                    watch: journal
+                        .watch
+                        .take()
+                        .expect("active watch")
+                        .map_objective(|_| baseline),
                     deadline: watch.deadline,
                 });
             }
@@ -750,8 +774,7 @@ impl OutcomeJournal {
                 .members
                 .iter()
                 .filter(|(id, _)| own_unit_health(obs, *id).is_none_or(|hp| hp == 0))
-                .map(|(_, cost)| cost)
-                .sum()
+                .fold(0_u32, |lost, (_, cost)| lost.saturating_add(*cost))
         })
     }
 
@@ -988,6 +1011,74 @@ mod tests {
             12_000,
         );
         memory
+    }
+
+    #[test]
+    fn restored_extreme_evidence_has_bounded_scores_without_overflow() {
+        for score in [i32::MIN, i32::MAX] {
+            let mut memory = memory();
+            memory.report(report(1));
+            memory.report(report(2));
+            for contribution in &mut memory.contexts[0].contributions {
+                contribution.evidence.score = score;
+                contribution.doctrine.as_mut().unwrap().1.score = score;
+            }
+            let mut memory = crate::checkpoint::round_trip(&memory);
+            memory.refresh_doctrine();
+            let expected = if score < 0 { -1024 } else { 1024 };
+            assert_eq!(memory.contextual_score(report(1).context), expected);
+            assert_eq!(memory.doctrine_score(Doctrine::Pressure), expected);
+            for horizon in [1, 6000, i64::MAX as u64, u64::MAX] {
+                assert_eq!(decay(score, 0, horizon), score);
+                assert_eq!(decay(score, horizon, horizon), 0);
+            }
+            assert_eq!(decay(score, u64::MAX / 2, u64::MAX), score / 2);
+        }
+    }
+
+    #[test]
+    fn restored_learning_collections_respect_runtime_storage_bounds() {
+        let mut original = memory();
+        original.report(report(1));
+        for (field, limit) in [("episodes", EPISODE_LIMIT), ("contexts", CONTEXT_LIMIT)] {
+            let mut wire = serde_json::to_value(&original).unwrap();
+            let item = wire[field][0].clone();
+            wire[field] = serde_json::json!(vec![item.clone(); limit]);
+            assert!(serde_json::from_value::<Experience>(wire.clone()).is_ok());
+            wire[field].as_array_mut().unwrap().push(item);
+            assert!(serde_json::from_value::<Experience>(wire).is_err());
+        }
+        let mut wire = serde_json::to_value(&original).unwrap();
+        let rows = &mut wire["contexts"][0]["contributions"];
+        let contribution = rows[0].clone();
+        *rows = serde_json::json!(vec![contribution.clone(); EPISODE_LIMIT]);
+        assert!(serde_json::from_value::<Experience>(wire.clone()).is_ok());
+        wire["contexts"][0]["contributions"]
+            .as_array_mut()
+            .unwrap()
+            .push(contribution);
+        assert!(serde_json::from_value::<Experience>(wire).is_err());
+    }
+
+    #[test]
+    fn restored_casualty_costs_saturate_when_an_episode_finishes() {
+        let obs = Observation::from_data(crate::test_support::observation_data());
+        let episode = report(1);
+        let mut journal = OutcomeJournal::default();
+        journal.watch(&obs, episode.id, episode.context, &[], 0);
+        journal.watch.as_mut().unwrap().members = vec![
+            (UnitId(u32::MAX - 1), u32::MAX),
+            (UnitId(u32::MAX), u32::MAX),
+        ];
+        let mut restored = crate::checkpoint::round_trip(&journal);
+        restored.finish(
+            &obs,
+            Outcome::Ineffective,
+            OutcomeReason::RequiredUnitLost,
+            1000,
+            true,
+        );
+        assert_eq!(restored.pending[0].own_lost_value, u32::MAX);
     }
 
     #[test]
@@ -1559,6 +1650,27 @@ mod tests {
         delivery.watch(&obs, episode.id, episode.context, &[UnitId(1)], 1);
         delivery.observe_objective(&obs, BuildingId(5));
         delivery.handoff_objective(&obs, &[UnitId(1)]);
+        delivery = crate::checkpoint::round_trip(&delivery);
+        let wire = serde_json::to_value(&delivery).unwrap();
+        for missing in [false, true] {
+            let mut bad = wire.clone();
+            let watch = bad["follow_through"][0]["watch"].as_object_mut().unwrap();
+            if missing {
+                watch.remove("objective");
+            } else {
+                watch.insert("objective".into(), serde_json::Value::Null);
+            }
+            assert!(serde_json::from_value::<OutcomeJournal>(bad).is_err());
+        }
+        let mut bounded = wire;
+        let watch = bounded["follow_through"][0].clone();
+        bounded["follow_through"] = serde_json::json!(vec![watch.clone(); EPISODE_LIMIT]);
+        assert!(serde_json::from_value::<OutcomeJournal>(bounded.clone()).is_ok());
+        bounded["follow_through"]
+            .as_array_mut()
+            .unwrap()
+            .push(watch);
+        assert!(serde_json::from_value::<OutcomeJournal>(bounded).is_err());
         delivery.finish(
             &obs,
             Outcome::Partial,

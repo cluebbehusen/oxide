@@ -2436,7 +2436,6 @@ pub(super) struct ConnectedPackageDiagnostics {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StrategicPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
-    pub(crate) experience: std::sync::Arc<super::experience::Experience>,
     air: Option<ActiveAirOperation>,
     standby: AirStandby,
     cooldown_until: Tick,
@@ -2548,6 +2547,7 @@ impl StrategicPlanner {
     /// on the ordinary lifecycle path.
     pub(crate) fn fresh_connected_minimum_proposal(
         &self,
+        experience: &super::experience::Experience,
         request: FreshConnectedProposalRequest<'_>,
     ) -> Result<Option<FreshConnectedProposal>, RejectedConnectedCandidate> {
         let FreshConnectedProposalRequest {
@@ -2626,7 +2626,7 @@ impl StrategicPlanner {
                 y: target.anchor.y,
                 subject: super::experience::ExperienceSubject::Building(target.id),
             };
-            let preference = (1024 + i32::from(self.experience.score(context)) / 2) as u64;
+            let preference = (1024 + i32::from(experience.score(context)) / 2) as u64;
             (
                 Reverse(u64::from(building_value(target.kind)) * preference),
                 Reverse(target.confidence_at(obs.tick)),
@@ -7393,6 +7393,7 @@ mod tests {
                         Some(rejected)
                     }
                     Ok(None) => match self.fresh_connected_minimum_proposal(
+                        &crate::experience::Experience::default(),
                         FreshConnectedProposalRequest::new(
                             profile,
                             tuning,
@@ -8204,15 +8205,18 @@ mod tests {
         obs.my_queues.push(Vec::new());
         let mut planner = StrategicPlanner::new();
         let proposal = planner
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &obs,
-                &ResourceSnapshot::from_observation(&obs),
-                &knowledge(&obs),
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &obs,
+                    &ResourceSnapshot::from_observation(&obs),
+                    &knowledge(&obs),
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .unwrap()
             .unwrap();
         let deadline = proposal.deadline();
@@ -8247,15 +8251,18 @@ mod tests {
         add_renewable_economy(&mut obs, 1);
         let mut planner = StrategicPlanner::new();
         let proposal = planner
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &obs,
-                &ResourceSnapshot::from_observation(&obs),
-                &knowledge(&obs),
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &obs,
+                    &ResourceSnapshot::from_observation(&obs),
+                    &knowledge(&obs),
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .unwrap()
             .unwrap();
         planner.commit_connected_proposal(proposal).unwrap();
@@ -8303,15 +8310,18 @@ mod tests {
         let identity = profile();
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let proposal = planner
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &identity,
-                tuning,
-                &obs,
-                &ResourceSnapshot::from_observation(&obs),
-                &knowledge(&obs),
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &identity,
+                    tuning,
+                    &obs,
+                    &ResourceSnapshot::from_observation(&obs),
+                    &knowledge(&obs),
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .unwrap()
             .unwrap();
         let deadline = proposal.deadline();
@@ -8403,15 +8413,18 @@ mod tests {
 
         let mut planner = StrategicPlanner::new();
         let proposal = planner
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                obs,
-                &ResourceSnapshot::from_observation(obs),
-                &knowledge(obs),
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    obs,
+                    &ResourceSnapshot::from_observation(obs),
+                    &knowledge(obs),
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .unwrap()
             .unwrap();
         let jobs = proposal.minimum_claims().provider_jobs().to_vec();
@@ -11801,15 +11814,18 @@ mod tests {
         let mut intelligence = knowledge(&initial);
         let resources = ResourceSnapshot::from_observation(&initial);
         let mut proposal = StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &initial,
-                &resources,
-                &intelligence,
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &initial,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .expect("the complete current cluster is admissible")
             .expect("the current cluster produces an exact proposal");
         let richest = proposal.marginal_variants().last().cloned();
@@ -11922,15 +11938,18 @@ mod tests {
         let before = planner.clone();
         let propose = || {
             planner
-                .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                    &profile(),
-                    DifficultyTuning::for_level(BotDifficulty::Prime),
-                    &battle,
-                    &resources,
-                    &intelligence,
-                    HOME,
-                    coordination(&fixture_planning, None),
-                ))
+                .fresh_connected_minimum_proposal(
+                    &crate::experience::Experience::default(),
+                    FreshConnectedProposalRequest::new(
+                        &profile(),
+                        DifficultyTuning::for_level(BotDifficulty::Prime),
+                        &battle,
+                        &resources,
+                        &intelligence,
+                        HOME,
+                        coordination(&fixture_planning, None),
+                    ),
+                )
                 .expect("the current connected opportunity is admissible")
                 .expect("the current connected opportunity produces a proposal")
         };
@@ -12031,15 +12050,18 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&current);
         let before_proposal = planner.clone();
         let proposal = planner
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &identity,
-                tuning,
-                &current,
-                &resources,
-                &intelligence,
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &identity,
+                    tuning,
+                    &current,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .expect("the reacquired connected objective is admissible")
             .expect("reacquisition produces a fresh proposal");
         assert_eq!(proposal.accepted_at(), hidden.tick);
@@ -12085,6 +12107,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&unfunded_evidence);
 
         let result = StrategicPlanner::new().fresh_connected_minimum_proposal(
+            &crate::experience::Experience::default(),
             FreshConnectedProposalRequest::new(
                 &profile(),
                 DifficultyTuning::for_level(BotDifficulty::Prime),
@@ -12121,6 +12144,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&battle);
         let proposal = StrategicPlanner::new()
             .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
                 FreshConnectedProposalRequest::new(
                     &profile(),
                     DifficultyTuning::for_level(BotDifficulty::Prime),
@@ -12184,6 +12208,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&battle);
         let proposal = StrategicPlanner::new()
             .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
                 FreshConnectedProposalRequest::new(
                     &profile(),
                     DifficultyTuning::for_level(BotDifficulty::Prime),
@@ -12234,19 +12259,22 @@ mod tests {
         let before = planner.clone();
 
         let proposal = planner
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &battle,
-                &resources,
-                &intelligence,
-                HOME,
-                StrategicCoordination {
-                    planning: Some(&fixture_planning),
-                    public_map: Some(&public_map),
-                    ..coordination(&fixture_planning, None)
-                },
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &battle,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    StrategicCoordination {
+                        planning: Some(&fixture_planning),
+                        public_map: Some(&public_map),
+                        ..coordination(&fixture_planning, None)
+                    },
+                ),
+            )
             .expect("the lower-ranked reachable target remains admissible")
             .expect("the lower-ranked reachable target produces a proposal");
 
@@ -12269,15 +12297,18 @@ mod tests {
         let intelligence = knowledge(&battle);
         let resources = ResourceSnapshot::from_observation(&battle);
         let proposal = StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &battle,
-                &resources,
-                &intelligence,
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &battle,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .expect("completed Extractors make the minimum forecast-feasible")
             .expect("the forecast-funded operation produces a proposal");
         let minimum = &proposal.variants[0];
@@ -12342,15 +12373,18 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&battle);
 
         let proposal = StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &battle,
-                &resources,
-                &intelligence,
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &battle,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .expect("the paid Bombard makes the minimum feasible")
             .expect("the current objective produces a connected proposal");
 
@@ -12387,15 +12421,18 @@ mod tests {
         let intelligence = knowledge(&rich);
         let rich_resources = ResourceSnapshot::from_observation(&rich);
         let rich_proposal = StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &rich,
-                &rich_resources,
-                &intelligence,
-                HOME,
-                coordination(&fixture_planning, None),
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile(),
+                    DifficultyTuning::for_level(BotDifficulty::Prime),
+                    &rich,
+                    &rich_resources,
+                    &intelligence,
+                    HOME,
+                    coordination(&fixture_planning, None),
+                ),
+            )
             .expect("the rich opportunity is admissible")
             .expect("the rich opportunity produces a proposal");
         let richest_cost = rich_proposal
@@ -12419,6 +12456,7 @@ mod tests {
         let exact_resources = ResourceSnapshot::from_observation(&rich);
         let derive_with_reserve = |reserve| {
             StrategicPlanner::new().fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
                 FreshConnectedProposalRequest::new(
                     &profile(),
                     DifficultyTuning::for_level(BotDifficulty::Prime),

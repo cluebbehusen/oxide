@@ -40,6 +40,13 @@ payload is an internal same-version continuation format. It remains at revision
 It is separate from policy rollback checkpoints and never enters authoritative
 `State` or its hash.
 
+Experience has one owner; connected-target ranking borrows that history.
+Decision trace receipts are not persisted. Follow-through watches require their
+objective baseline in the decoded type, and retained learning collections use
+the same storage bounds as live insertion. These safety constraints do not
+authenticate controller history or enforce current policy tuning on forged
+memory.
+
 `navigation` owns bot route queries, search storage, and cache lifetimes. Its
 `commands` module projects ordinary movement and Build routes from player
 knowledge; `paths` provides canonical endpoint routes and bounds;
