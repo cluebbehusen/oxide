@@ -18,6 +18,11 @@ type CampaignAlternatives = std::collections::BTreeMap<
     (u64, alternatives::Alternatives<CampaignTarget>),
 >;
 
+type PortfolioAlternatives = std::collections::BTreeMap<
+    crate::allocation::ConnectedOffenseKey,
+    (u64, alternatives::Alternatives<usize>),
+>;
+
 const DECISION_WORK: usize = 128_000;
 const PRODUCTION_RESERVE: usize = DECISION_WORK / 4;
 
@@ -35,6 +40,7 @@ pub(crate) struct PlanningWork {
     infrastructure:
         RefCell<std::collections::BTreeMap<oxide_sim::stats::BuildingKind, RankedRotation>>,
     campaigns: RefCell<CampaignAlternatives>,
+    portfolios: RefCell<PortfolioAlternatives>,
     campaign_sites: RefCell<RankedRotation>,
     campaign_selection: RefCell<(Option<u64>, Vec<chassis::grid::TilePos>)>,
     campaign_checks: Cell<(u64, usize)>,
@@ -55,6 +61,7 @@ impl Default for PlanningWork {
             foundry: RefCell::default(),
             infrastructure: RefCell::default(),
             campaigns: RefCell::default(),
+            portfolios: RefCell::default(),
             campaign_sites: RefCell::default(),
             campaign_selection: RefCell::default(),
             campaign_checks: Cell::default(),
@@ -93,6 +100,15 @@ impl PlanningWork {
                 .borrow()
                 .values()
                 .all(|(used, work)| *used <= tick && work.valid_checkpoint(tick, 2))
+            && self.portfolios.borrow().len() <= 16
+            && self.portfolios.borrow().iter().all(|(key, (used, work))| {
+                key.anchor.x >= 0
+                    && key.anchor.y >= 0
+                    && key.anchor.x < map.map_width()
+                    && key.anchor.y < map.map_height()
+                    && *used <= tick
+                    && work.valid_checkpoint(tick, 2)
+            })
             && self.campaign_selection.borrow().0.is_none_or(|t| t <= tick)
             && self.campaign_selection.borrow().1.len() <= 2
             && self.campaign_checks.get().0 <= tick
@@ -152,6 +168,48 @@ impl PlanningWork {
             );
         }
         selection.1.contains(&site)
+    }
+
+    pub(crate) fn portfolio_candidate<T>(
+        &self,
+        tick: u64,
+        key: crate::allocation::ConnectedOffenseKey,
+        count: usize,
+        mut evaluate: impl FnMut(usize) -> Progress<T>,
+    ) -> Progress<T> {
+        self.begin(tick);
+        let mut portfolios = self.portfolios.borrow_mut();
+        portfolios.retain(|_, (used, _)| tick.saturating_sub(*used) < 120);
+        if !portfolios.contains_key(&key) && portfolios.len() == 16 {
+            let victim = *portfolios
+                .iter()
+                .min_by_key(|(key, (used, _))| (*used, **key))
+                .unwrap()
+                .0;
+            portfolios.remove(&victim);
+        }
+        let (used, alternatives) = portfolios.entry(key).or_default();
+        *used = tick;
+        // Indices are traversal hints, never cached feasibility. Every candidate
+        // is rebuilt and its witness validated against the current observation.
+        match alternatives.advance(
+            tick,
+            &(0..count).collect::<Vec<_>>(),
+            2,
+            |index| match evaluate(index) {
+                Progress::Ready(value) => Progress::Ready((index, value)),
+                Progress::Deferred => Progress::Deferred,
+                Progress::Exhausted => Progress::Exhausted,
+                Progress::ProvenInfeasible => Progress::ProvenInfeasible,
+            },
+            |(index, _), (prior, _)| index < prior,
+            || self.budget.borrow_mut().charge(1),
+        ) {
+            Progress::Ready((_, value)) => Progress::Ready(value),
+            Progress::Deferred => Progress::Deferred,
+            Progress::Exhausted => Progress::Exhausted,
+            Progress::ProvenInfeasible => Progress::ProvenInfeasible,
+        }
     }
 
     pub(crate) fn campaign_candidate<T>(
@@ -479,6 +537,8 @@ pub(super) enum Progress<T> {
     Ready(T),
     ProvenInfeasible,
     Deferred,
+    /// The search allowance was exhausted without proving feasibility or infeasibility.
+    Exhausted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -527,6 +587,54 @@ impl WorkBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portfolio_rotation_survives_task_expiry_and_revalidates_its_incumbent() {
+        let map =
+            crate::PublicMapBriefing::from_scenario(&oxide_sim::Scenario::skirmish()).unwrap();
+        let work = PlanningWork::default();
+        let key = crate::allocation::ConnectedOffenseKey {
+            objective: oxide_sim::ids::BuildingId(1),
+            anchor: chassis::grid::TilePos::new(2, 2),
+        };
+        let mut selected = None;
+        for tick in (0..800).step_by(12) {
+            selected = match work.portfolio_candidate(tick, key, 65, |index| {
+                if index == 64 {
+                    Progress::Ready(index)
+                } else {
+                    Progress::Exhausted
+                }
+            }) {
+                Progress::Ready(index) => Some(index),
+                Progress::Deferred => None,
+                other => panic!("unknown candidates must not be infeasible: {other:?}"),
+            };
+            assert!(work.valid_checkpoint(&map, tick));
+            if selected.is_some() {
+                break;
+            }
+        }
+        assert_eq!(selected, Some(64));
+        let tick = work.tick.get().unwrap();
+        assert!(tick > 120, "traversal must outlive production-task expiry");
+        assert_eq!(
+            work.portfolio_candidate(tick + 12, key, 65, |index| {
+                if index == 64 {
+                    Progress::ProvenInfeasible
+                } else {
+                    Progress::Ready(index)
+                }
+            }),
+            Progress::Ready(1)
+        );
+        assert_eq!(
+            work.portfolio_candidate(tick + 24, key, 0, |_| Progress::<usize>::Ready(0)),
+            Progress::ProvenInfeasible
+        );
+        work.portfolios.borrow_mut().get_mut(&key).unwrap().0 = tick + 25;
+        assert!(!work.valid_checkpoint(&map, tick + 24));
+    }
 
     #[test]
     fn campaign_site_admission_is_shared_across_calls_and_rotates_past_failures() {

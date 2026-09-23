@@ -29,6 +29,7 @@ pub(crate) fn refine(
     match planning.production_forecast(capacity.resources.observed_at(), capacity, &claims) {
         Ok(Progress::Ready(_)) => Progress::Ready(()),
         Ok(Progress::Deferred) => Progress::Deferred,
+        Ok(Progress::Exhausted) => Progress::Exhausted,
         Ok(Progress::ProvenInfeasible) | Err(_) => Progress::ProvenInfeasible,
     }
 }
@@ -50,6 +51,7 @@ pub(crate) fn refine_obligation(
     ) {
         Progress::Ready(()) => Progress::Ready(candidate),
         Progress::Deferred => Progress::Deferred,
+        Progress::Exhausted => Progress::Exhausted,
         Progress::ProvenInfeasible => Progress::ProvenInfeasible,
     }
 }
@@ -81,6 +83,7 @@ pub(crate) fn refine_obligations(
     }) {
         Ok(Progress::Ready(_)) => Progress::Ready(()),
         Ok(Progress::Deferred) => Progress::Deferred,
+        Ok(Progress::Exhausted) => Progress::Exhausted,
         Ok(Progress::ProvenInfeasible) | Err(_) => Progress::ProvenInfeasible,
     }
 }

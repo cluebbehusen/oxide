@@ -280,6 +280,49 @@ pub(crate) struct ResourcePlanningFixture {
 }
 
 impl ResourcePlanningProjection {
+    /// Compares production inputs relative to each observation boundary.
+    pub(crate) fn same_production_basis(&self, other: &Self) -> bool {
+        let income =
+            |row: &ForecastAvailability, tick| (row.available_at.saturating_sub(tick), row.amount);
+        self.current_scrap == other.current_scrap
+            && self.cadence == other.cadence
+            && self.horizon.saturating_sub(self.observed_at)
+                == other.horizon.saturating_sub(other.observed_at)
+            && self
+                .forecast_income
+                .iter()
+                .map(|row| income(row, self.observed_at))
+                .eq(other
+                    .forecast_income
+                    .iter()
+                    .map(|row| income(row, other.observed_at)))
+            && self.producers.len() == other.producers.len()
+            && self
+                .producers
+                .iter()
+                .zip(&other.producers)
+                .all(|(prior, current)| {
+                    let timing = |lane: &ProducerPlanningProjection, at: Tick| {
+                        at.saturating_sub(lane.observed_at)
+                    };
+                    prior.producer == current.producer
+                        && prior.cadence == current.cadence
+                        && prior.trainable == current.trainable
+                        && timing(prior, prior.production_available_at)
+                            == timing(current, current.production_available_at)
+                        && timing(prior, prior.last_enqueue_at)
+                            == timing(current, current.last_enqueue_at)
+                        && prior
+                            .slot_available_at
+                            .iter()
+                            .map(|at| timing(prior, *at))
+                            .eq(current
+                                .slot_available_at
+                                .iter()
+                                .map(|at| timing(current, *at)))
+                })
+    }
+
     pub(crate) fn valid_checkpoint(&self, tick: Tick) -> bool {
         self.observed_at <= tick
             && self.horizon >= self.observed_at
@@ -574,6 +617,43 @@ fn validate_cadence(observed_at: Tick, cadence: Tick) -> Result<(), PlanningProj
 mod tests {
     use super::*;
     use oxide_sim::stats::BuildingKind;
+
+    #[test]
+    fn exhausted_production_basis_tracks_current_funding_queues_and_eligibility() {
+        let project = |tick| {
+            snapshot(
+                tick,
+                vec![income(tick + 10, 100, 25)],
+                vec![lane(
+                    7,
+                    tick,
+                    vec![],
+                    None,
+                    vec![UnitKind::Sentinel],
+                    ProducerEgress::Open,
+                )],
+            )
+            .planning_projection(tick + 1_000, 12)
+            .unwrap()
+        };
+        let initial = project(0);
+        let shifted = project(12);
+        assert!(initial.same_production_basis(&shifted));
+        for change in 0..7 {
+            let mut changed = shifted.clone();
+            match change {
+                0 => changed.current_scrap -= 1,
+                1 => changed.forecast_income[0].amount += 1,
+                2 => changed.producers[0].production_available_at += 1,
+                3 => changed.producers[0].slot_available_at[0] += 1,
+                4 => changed.producers[0].trainable.clear(),
+                5 => changed.horizon += 1,
+                6 => changed.producers.clear(),
+                _ => unreachable!(),
+            }
+            assert!(!initial.same_production_basis(&changed), "change={change}");
+        }
+    }
 
     fn lane(
         producer: u32,

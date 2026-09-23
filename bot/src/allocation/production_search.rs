@@ -57,10 +57,12 @@ impl Continuation {
                         .all(|(a, b)| a.producer() == b.producer() && a.valid_checkpoint(tick))
                     && frame.placements.values().all(placement)
                     && frame.preparation.as_ref().is_none_or(|preparation| {
-                        preparation.job <= jobs
+                        preparation.frontier_index
+                            <= frontier_jobs(&claims.producer_jobs, &frame.remaining).len()
                             && preparation.placements.values().all(placement)
                             && preparation.lane.as_ref().is_none_or(|lane| {
-                                preparation.job < jobs
+                                preparation.frontier_index
+                                    < frontier_jobs(&claims.producer_jobs, &frame.remaining).len()
                                     && lane.index < producers.len()
                                     && lane.income <= lane.income_end
                                     && lane.income_end <= capacity.resources.forecast_income().len()
@@ -118,7 +120,7 @@ impl Continuation {
                         frame.placements = placements;
                         frame.preparation = None;
                     }
-                    Progress::Deferred => return Progress::Deferred,
+                    Progress::Deferred | Progress::Exhausted => return Progress::Deferred,
                     Progress::ProvenInfeasible => {
                         unreachable!("placement enumeration returns an empty set")
                     }
@@ -275,7 +277,7 @@ type PlacementKey = (
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PlacementPreparation {
-    job: usize,
+    frontier_index: usize,
     producer: usize,
     lane: Option<LaneCandidates>,
     placements: BTreeMap<PlacementKey, ProductionPlacement>,
@@ -302,11 +304,12 @@ impl PlacementPreparation {
         budget: &mut WorkBudget,
         constructive: bool,
     ) -> Progress<BTreeMap<PlacementKey, ProductionPlacement>> {
-        while self.job < search.jobs.len() {
+        let frontier = frontier_jobs(search.jobs, remaining);
+        while let Some(&job_index) = frontier.get(self.frontier_index) {
             if !budget.charge(1) {
                 return Progress::Deferred;
             }
-            let job = &search.jobs[self.job];
+            let job = &search.jobs[job_index];
             if let Some(lane) = self.lane.as_mut() {
                 let (enqueued_at, probe) = if lane.initial {
                     lane.initial = false;
@@ -317,7 +320,7 @@ impl PlacementPreparation {
                         self.lane = None;
                         self.producer += 1;
                         if let Some(best) = best {
-                            self.insert(search, best);
+                            self.insert(search, best, schedule, constructive);
                         }
                         continue;
                     }
@@ -364,7 +367,7 @@ impl PlacementPreparation {
                 }
                 let producer = lane_after.producer();
                 let placement = ProductionPlacement {
-                    job_index: self.job,
+                    job_index,
                     lane_index: lane.index,
                     lane_after,
                     row: ScheduledProducerJob {
@@ -418,16 +421,11 @@ impl PlacementPreparation {
                     self.lane = None;
                     self.producer += 1;
                 }
-                self.insert(search, placement);
-                continue;
-            }
-            if !remaining[self.job] || !search.is_frontier(self.job, remaining) {
-                self.job += 1;
-                self.producer = 0;
+                self.insert(search, placement, schedule, constructive);
                 continue;
             }
             let Some(&producer) = job.claim.access.producers().get(self.producer) else {
-                self.job += 1;
+                self.frontier_index += 1;
                 self.producer = 0;
                 continue;
             };
@@ -455,7 +453,7 @@ impl PlacementPreparation {
                     search
                         .bounds
                         .latest()
-                        .map_or(Tick::MAX, |bounds| bounds[self.job].enqueued_at),
+                        .map_or(Tick::MAX, |bounds| bounds[job_index].enqueued_at),
                 );
             let fixed = job.claim.fixed_assignment();
             let candidate = fixed
@@ -487,8 +485,29 @@ impl PlacementPreparation {
         Progress::Ready(core::mem::take(&mut self.placements))
     }
 
-    fn insert(&mut self, search: &ProductionPortfolioSearch<'_>, placement: ProductionPlacement) {
+    fn insert(
+        &mut self,
+        search: &ProductionPortfolioSearch<'_>,
+        placement: ProductionPlacement,
+        schedule: &[ScheduledProducerJob],
+        constructive: bool,
+    ) {
         let job = &search.jobs[placement.job_index];
+        if constructive && placement.row.enqueued_at == placement.row.starts_at {
+            let floor = schedule
+                .iter()
+                .filter(|row| row.owner == job.owner && row.request_ordinal < job.ordinal)
+                .map(|row| row.enqueued_at)
+                .max()
+                .unwrap_or(0)
+                .max(job.claim.enqueue_not_before);
+            if search.capacity.resources.decision_at_or_after(floor)
+                == Some(placement.row.enqueued_at)
+            {
+                // Later producer IDs cannot beat this job's earliest possible start.
+                self.producer = job.claim.access.producers().len();
+            }
+        }
         self.placements.insert(
             (
                 placement.row.enqueued_at,
@@ -501,5 +520,98 @@ impl PlacementPreparation {
             ),
             placement,
         );
+    }
+}
+
+fn frontier_jobs(jobs: &[OwnedProducerJob], remaining: &[bool]) -> Vec<usize> {
+    let mut owners = BTreeMap::new();
+    let mut fixed_lanes = BTreeMap::new();
+    let fixed_key = |job: &OwnedProducerJob, fixed: FixedProducerJob| {
+        (
+            fixed.enqueued_at,
+            fixed.starts_at,
+            job.funding_priority,
+            job.owner,
+            job.ordinal,
+        )
+    };
+    for (job, &remaining) in jobs.iter().zip(remaining) {
+        if !remaining {
+            continue;
+        }
+        owners
+            .entry(job.owner)
+            .and_modify(|ordinal: &mut usize| *ordinal = (*ordinal).min(job.ordinal))
+            .or_insert(job.ordinal);
+        if let Some(fixed) = job.claim.fixed_assignment() {
+            let key = fixed_key(job, fixed);
+            let prior = fixed_lanes.entry(fixed.producer).or_insert(key);
+            *prior = (*prior).min(key);
+        }
+    }
+    jobs.iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            (remaining[index]
+                && owners.get(&job.owner) == Some(&job.ordinal)
+                && job.claim.fixed_assignment().is_none_or(|fixed| {
+                    fixed_lanes.get(&fixed.producer) == Some(&fixed_key(job, fixed))
+                }))
+            .then_some(index)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resources::ResourcePlanningFixture;
+
+    #[test]
+    fn checkpoint_cursor_is_bounded_by_eligible_jobs_not_the_full_roster() {
+        let producer = BuildingId(7);
+        let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
+            current_scrap: 1_000,
+            producers: vec![
+                ProducerPlanningProjection::fixture(
+                    producer,
+                    0,
+                    1,
+                    0,
+                    vec![0; oxide_sim::stats::QUEUE_CAP],
+                    vec![UnitKind::Sentinel],
+                )
+                .unwrap(),
+            ],
+            ..ResourcePlanningFixture::empty(0..=1_000, 1)
+        })
+        .unwrap();
+        let capacity = AllocationCapacity::fixture(resources);
+        let owner = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
+            UnitKind::Sentinel,
+        )));
+        let claims = ClaimState {
+            producer_jobs: (0..2)
+                .map(|ordinal| OwnedProducerJob {
+                    claim: ProducerJobClaim::flexible(UnitKind::Sentinel, 0, 1_000, vec![producer]),
+                    owner,
+                    ordinal,
+                    funding_priority: FundingPriority::fallback(owner),
+                })
+                .collect(),
+            ..ClaimState::default()
+        };
+        let mut search = Continuation::constructive(capacity.resources.producers(), 2);
+        search.frames[0].preparation = Some(PlacementPreparation {
+            frontier_index: 1,
+            ..PlacementPreparation::default()
+        });
+        assert!(search.valid_checkpoint(&capacity, &claims, 0));
+        search.frames[0]
+            .preparation
+            .as_mut()
+            .unwrap()
+            .frontier_index = 2;
+        assert!(!search.valid_checkpoint(&capacity, &claims, 0));
     }
 }

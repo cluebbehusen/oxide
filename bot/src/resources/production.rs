@@ -205,33 +205,45 @@ fn remaining_work_fits_canonical_capacity(
         return false;
     }
 
-    // Work assigned to one lane is a sum of its eligible train durations and
-    // therefore a multiple of their GCD. Capacity below the next such multiple
-    // is unusable even when the raw aggregate has enough ticks.
-    let modular_available_ticks = lane_classes
-        .iter()
-        .map(|class| {
-            let divisor = class
-                .eligible_kinds
-                .iter()
-                .filter_map(|kind| {
-                    let kind_index = kinds
-                        .binary_search(kind)
-                        .expect("lane eligibility contains only problem kinds");
-                    (remaining_counts[kind_index] > 0)
-                        .then_some(Tick::from(kind.stats().train_ticks))
-                })
-                .reduce(greatest_common_divisor);
-            class
-                .remaining_capacities
-                .iter()
-                .map(|&capacity| divisor.map_or(0, |divisor| capacity - capacity % divisor))
-                .map(u128::from)
-                .sum::<u128>()
-        })
-        .sum::<u128>();
-    if requested_ticks > modular_available_ticks {
-        return false;
+    // Check both the whole roster and each shared-lane group. Spare time in
+    // unrelated factories cannot make an overloaded Airworks feasible.
+    for group in core::iter::once(kinds).chain(
+        lane_classes
+            .iter()
+            .map(|lane| lane.eligible_kinds.as_slice()),
+    ) {
+        let requested = kinds
+            .iter()
+            .zip(remaining_counts)
+            .filter(|(kind, _)| group.binary_search(kind).is_ok())
+            .map(|(kind, &count)| u128::from(kind.stats().train_ticks) * count as u128)
+            .sum::<u128>();
+        let available = lane_classes
+            .iter()
+            .map(|lane| {
+                // Durations assigned to one lane sum to a multiple of their
+                // GCD; any smaller capacity remainder is unusable.
+                let divisor = lane
+                    .eligible_kinds
+                    .iter()
+                    .filter_map(|kind| {
+                        let index = kinds
+                            .binary_search(kind)
+                            .expect("lane kinds belong to the problem");
+                        (remaining_counts[index] > 0 && group.binary_search(kind).is_ok())
+                            .then_some(Tick::from(kind.stats().train_ticks))
+                    })
+                    .reduce(greatest_common_divisor);
+                lane.remaining_capacities
+                    .iter()
+                    .map(|&capacity| divisor.map_or(0, |divisor| capacity - capacity % divisor))
+                    .map(u128::from)
+                    .sum::<u128>()
+            })
+            .sum::<u128>();
+        if requested > available {
+            return false;
+        }
     }
 
     kinds.iter().zip(remaining_counts).all(|(&kind, &count)| {

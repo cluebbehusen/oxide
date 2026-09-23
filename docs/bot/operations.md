@@ -81,14 +81,17 @@ divided between air, siege, direct strike, and attack-run bombing. Personality
 never gates a provider or family. One beam slot preserves the cheapest
 alternative; existing useful providers remain eligible at minimum strength, and
 every extension recomputes its canonical funding order. Speculative compositions
-use necessary throughput bounds; complete minima and the selected growth ladder
-receive funded FIFO refinement before they are offered. The offered growth
-ladder is rebuilt in that final order, so enlarging or revising a package keeps
-earlier job identities and payment times intact. Fully refined comparisons
-preserve the monotonic opportunity checks for more scrap, time, or completed
-production capability. Fresh admission may offer a verified prefix while larger
-variants remain pending. Pending refinement cannot prune an active roster: an
-unfinished revision preserves the accepted operation and its exact orders.
+use necessary funding-time and shared-lane throughput bounds. Complete minima
+receive funded FIFO refinement; explored growth candidates are then refined in
+score order until one is feasible. An infeasible favorite does not discard the
+other explored compositions, while deferred work keeps a verified minimum
+available. The offered growth ladder is rebuilt in that final order, so
+enlarging or revising a package keeps earlier job identities and payment times
+intact. Fully refined comparisons preserve the monotonic opportunity checks for
+more scrap, time, or completed production capability. Fresh admission may offer
+a verified prefix while larger variants remain pending. Pending refinement
+cannot prune an active roster: an unfinished revision preserves the accepted
+operation and its exact orders.
 
 Current connected targets are ranked canonically and admitted only with a
 complete package. A route-feasible optional member of its bounded current

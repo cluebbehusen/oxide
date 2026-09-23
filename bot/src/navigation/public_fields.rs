@@ -98,7 +98,7 @@ impl PublicFieldWork {
             .unwrap()
             .advance(query_purpose, budget)
         {
-            Progress::Deferred => Progress::Deferred,
+            Progress::Deferred | Progress::Exhausted => Progress::Deferred,
             Progress::ProvenInfeasible => unreachable!("a field retains unreachable cells"),
             Progress::Ready(()) => {
                 let distances = self.traversal.take().unwrap().into_distances();
@@ -682,7 +682,9 @@ mod tests {
                             assert_eq!(spent, full_budget.spent());
                             break;
                         }
-                        Progress::Deferred => assert!(spent < full_budget.spent()),
+                        Progress::Deferred | Progress::Exhausted => {
+                            assert!(spent < full_budget.spent())
+                        }
                         Progress::ProvenInfeasible => panic!("fields retain disconnected cells"),
                     }
                 }

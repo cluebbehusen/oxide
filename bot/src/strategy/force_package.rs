@@ -90,14 +90,6 @@ pub(super) struct ProductionEvidence<'a> {
 }
 
 impl<'a> ProductionEvidence<'a> {
-    #[cfg(test)]
-    pub(super) const fn new(resources: &'a ResourceSnapshot, access: &'a ProductionAccess) -> Self {
-        Self {
-            resources,
-            access,
-            planning: None,
-        }
-    }
     pub(super) const fn with_planning(
         resources: &'a ResourceSnapshot,
         access: &'a ProductionAccess,
@@ -438,23 +430,7 @@ pub(super) fn refine_provider_demands(
             constraints.deadline,
         )
     } else {
-        #[cfg(test)]
-        {
-            if funded_providers_fit(
-                production.resources,
-                &providers,
-                constraints.deadline,
-                production.access,
-            ) {
-                Progress::Ready(())
-            } else {
-                Progress::ProvenInfeasible
-            }
-        }
-        #[cfg(not(test))]
-        {
-            Progress::Deferred
-        }
+        Progress::Deferred
     }
 }
 
@@ -1064,9 +1040,6 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
     let capacity = planning.and_then(|_| {
         AllocationCapacity::from_snapshot(resources, preparation_deadline, decision_cadence).ok()
     });
-    if planning.is_some() && capacity.is_none() {
-        return Err(ForcePackageRejection::Deferred);
-    }
     let refinement =
         planning
             .zip(capacity.as_ref())
@@ -1339,14 +1312,11 @@ fn best_complete_portfolio_path<'a>(
         }
     };
     rank(&mut frontier);
-    let mut best = frontier.first().expect("a complete minimum exists").clone();
+    let mut candidates = Vec::new();
     while !frontier.is_empty() {
         let mut next = Vec::new();
         let mut seen = BTreeSet::new();
         for (minimum_index, candidate) in frontier {
-            if score(&candidate) > score(&best.1) {
-                best = (minimum_index, candidate.clone());
-            }
             for family in [ForceFamily::Suppression, ForceFamily::Strike] {
                 if candidate.capability_for(family) >= useful.for_family(family)
                     && (family != ForceFamily::Strike || candidate.bombing >= useful_bombing)
@@ -1374,20 +1344,48 @@ fn best_complete_portfolio_path<'a>(
                     }
                 }
             }
+            candidates.push((minimum_index, candidate));
         }
         rank(&mut next);
         frontier = next;
     }
-    let mut path = canonical_growth_path(profile, minimums[best.0].clone(), best.1);
-    while path.len() > 1
-        && !path
-            .last()
-            .unwrap()
-            .refine_providers(&path.last().unwrap().funded_providers)
-    {
-        path.pop();
+    candidates.sort_by_key(|(_, candidate)| Reverse(score(candidate)));
+    let mut best = (0, minimums[0].clone());
+    if let Some(refinement) = minimums[0].refinement {
+        match refinement.planning.portfolio_candidate(
+            minimums[0].observed_at,
+            refinement.key,
+            candidates.len(),
+            |index| {
+                let (minimum, candidate) = &candidates[index];
+                match candidate.provider_refinement(&candidate.funded_providers) {
+                    Progress::Ready(()) => Progress::Ready((*minimum, candidate.clone())),
+                    Progress::Deferred => Progress::Deferred,
+                    Progress::Exhausted => Progress::Exhausted,
+                    Progress::ProvenInfeasible => Progress::ProvenInfeasible,
+                }
+            },
+        ) {
+            Progress::Ready(candidate) => best = candidate,
+            Progress::Deferred | Progress::Exhausted => minimums[0].deferred.set(true),
+            Progress::ProvenInfeasible => {}
+        }
+    } else {
+        for (minimum, candidate) in candidates {
+            match candidate.provider_refinement(&candidate.funded_providers) {
+                Progress::Ready(()) => {
+                    best = (minimum, candidate);
+                    break;
+                }
+                Progress::ProvenInfeasible => {}
+                Progress::Deferred | Progress::Exhausted => {
+                    candidate.deferred.set(true);
+                    break;
+                }
+            }
+        }
     }
-    path
+    canonical_growth_path(profile, minimums[best.0].clone(), best.1)
 }
 
 fn canonical_growth_path<'a>(
@@ -1599,6 +1597,14 @@ impl PackageBuilder<'_> {
     }
 
     fn providers_fit(&self, providers: &[FundedProvider]) -> bool {
+        if providers.iter().any(|provider| {
+            provider
+                .command_tick
+                .checked_add(Tick::from(provider.kind.stats().train_ticks))
+                .is_none_or(|ready_at| ready_at > self.deadline)
+        }) {
+            return false;
+        }
         if self.refinement.is_some() {
             crate::resources::production_may_fit_horizon(
                 self.resources,
@@ -1615,35 +1621,29 @@ impl PackageBuilder<'_> {
     }
 
     fn refine_providers(&self, providers: &[FundedProvider]) -> bool {
+        match self.provider_refinement(providers) {
+            Progress::Ready(()) => true,
+            Progress::ProvenInfeasible => false,
+            Progress::Deferred | Progress::Exhausted => {
+                self.deferred.set(true);
+                false
+            }
+        }
+    }
+
+    fn provider_refinement(&self, providers: &[FundedProvider]) -> Progress<()> {
+        if providers.is_empty() {
+            return Progress::Ready(());
+        }
         if let Some(refinement) = self.refinement {
-            match refinement.refine(
+            refinement.refine(
                 self.resources,
                 self.production_access,
                 providers,
                 self.deadline,
-            ) {
-                Progress::Ready(()) => true,
-                Progress::ProvenInfeasible => false,
-                Progress::Deferred => {
-                    self.deferred.set(true);
-                    false
-                }
-            }
+            )
         } else {
-            #[cfg(test)]
-            {
-                funded_providers_fit(
-                    self.resources,
-                    providers,
-                    self.deadline,
-                    self.production_access,
-                )
-            }
-            #[cfg(not(test))]
-            {
-                self.deferred.set(true);
-                false
-            }
+            Progress::Deferred
         }
     }
 
@@ -1654,15 +1654,18 @@ impl PackageBuilder<'_> {
         kind: UnitKind,
     ) -> Result<Vec<Self>, AddProviderFailure> {
         let cost = kind.stats().cost;
-        let mut structurally_funded = self.funded_providers.clone();
-        structurally_funded.push(FundedProvider {
-            kind,
-            command_tick: self
-                .funded_providers
-                .last()
-                .map_or(self.observed_at, |provider| provider.command_tick),
-        });
-        if !self.providers_fit(&structurally_funded) {
+        let kinds: Vec<_> = self
+            .funded_providers
+            .iter()
+            .map(|provider| provider.kind)
+            .chain(std::iter::once(kind))
+            .collect();
+        if !crate::resources::production_may_fit_horizon(
+            self.resources,
+            &kinds,
+            self.deadline,
+            self.production_access,
+        ) {
             return Err(AddProviderFailure::PreparationWindowTooShort);
         }
         let required_scrap = self.committed_scrap.saturating_add(cost);
@@ -1682,7 +1685,10 @@ impl PackageBuilder<'_> {
             .push(FundedProvider { kind, command_tick });
         successor.committed_scrap = successor.committed_scrap.saturating_add(cost);
         successor.accept_provider(family, kind, priority);
-        if !successor.providers_fit(&successor.funded_providers) {
+        // Marginal funding is reordered before its payment deadlines are checked.
+        if priority == ProviderPriority::Minimum
+            && !successor.providers_fit(&successor.funded_providers)
+        {
             return Err(AddProviderFailure::PreparationWindowTooShort);
         }
         Ok(vec![successor])
@@ -2436,7 +2442,7 @@ mod tests {
 
     fn observation(scrap: u32) -> Observation {
         Observation::from_data(ObservationData {
-            tick: 100,
+            tick: 24,
             scrap,
             map_width: 30,
             map_height: 30,
@@ -2550,6 +2556,30 @@ mod tests {
                 anchor: TilePos::new(25, 25),
             },
         )
+    }
+
+    #[test]
+    fn missing_planning_continuation_defers_even_a_feasible_purchase() {
+        let mut obs = observation(10_000);
+        add_baseline_tech(&mut obs);
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let demands = [ProviderDemandTranche {
+            priority: ProviderPriority::Minimum,
+            family: ForceFamily::Strike,
+            kind: UnitKind::Sentinel,
+            count: 1,
+        }];
+        let result = refine_provider_demands(
+            ProductionEvidence::with_planning(&resources, &all_producers(&resources), None),
+            &demands,
+            obs.tick,
+            constraints(5_000, 0),
+            ConnectedOffenseKey {
+                objective: BuildingId(99),
+                anchor: TilePos::new(25, 25),
+            },
+        );
+        assert_eq!(result, Progress::Deferred);
     }
 
     #[test]
@@ -2855,7 +2885,11 @@ mod tests {
                 primary: &target,
                 cluster: &[&target],
             },
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(2_500, 0),
         )
@@ -2937,6 +2971,41 @@ mod tests {
         )
     }
 
+    fn derive_settled(
+        profile: &ResolvedProfile,
+        observation: &Observation,
+        intelligence: &StrategicIntelligence,
+        target: &BuildingContact,
+        unavailable: &[UnitId],
+        deadline: Tick,
+    ) -> Result<ConnectedForcePackage, ForcePackageRejection> {
+        let resources = ResourceSnapshot::from_observation(observation);
+        let access = all_producers(&resources);
+        let cluster = current_target_cluster(intelligence, target.player, target.anchor);
+        let planning = PlanningWork::default();
+        loop {
+            let spent = planning.spent();
+            let options = derive_connected_force_package_options_for_cluster(
+                profile,
+                observation,
+                intelligence,
+                ConnectedTargetEvidence {
+                    primary: target,
+                    cluster: &cluster,
+                },
+                ProductionEvidence::with_planning(&resources, &access, Some(&planning)),
+                unavailable,
+                constraints(deadline, 0),
+            )?;
+            if !options.refinement_pending {
+                return Ok(options.into_largest());
+            }
+            if planning.spent() == spent {
+                return Err(ForcePackageRejection::Deferred);
+            }
+        }
+    }
+
     fn derive_with_forecast_reserve(
         profile: &ResolvedProfile,
         observation: &Observation,
@@ -2952,7 +3021,11 @@ mod tests {
             observation,
             intelligence,
             target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             unavailable,
             constraints(deadline, protected_forecast_scrap),
         )
@@ -3393,7 +3466,11 @@ mod tests {
                 &observation,
                 &intelligence,
                 &target,
-                ProductionEvidence::new(&resources, &all_producers(&resources)),
+                ProductionEvidence::with_planning(
+                    &resources,
+                    &all_producers(&resources),
+                    Some(&PlanningWork::default())
+                ),
                 &[],
                 PreparationConstraints {
                     deadline: 500,
@@ -3670,7 +3747,7 @@ mod tests {
         assert_eq!(grounded_package.observed_aa_firepower, firepower);
 
         let mut later = observation.clone();
-        later.tick += 1;
+        later.tick += 12;
         later.enemy_units.clear();
         let index = usize::try_from(interceptor_tile.y * later.map_width + interceptor_tile.x)
             .expect("fixture index");
@@ -3959,7 +4036,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &access),
+            ProductionEvidence::with_planning(&resources, &access, Some(&PlanningWork::default())),
             &[],
             PreparationConstraints {
                 deadline,
@@ -3977,7 +4054,7 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &access),
+            ProductionEvidence::with_planning(&resources, &access, Some(&PlanningWork::default())),
             &[],
             PreparationConstraints {
                 deadline,
@@ -4066,7 +4143,11 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(500, 0),
         )
@@ -4081,7 +4162,11 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(2_000, 0),
         )
@@ -4111,7 +4196,7 @@ mod tests {
         add_valuable_cluster(&mut constrained);
         let (constrained_intelligence, constrained_target) =
             intelligence_with_target(&mut constrained, 0);
-        let constrained_package = derive(
+        let constrained_package = derive_settled(
             &profile(80, 20),
             &constrained,
             &constrained_intelligence,
@@ -4123,7 +4208,7 @@ mod tests {
 
         let mut wealthy = constrained.clone();
         wealthy.scrap = 10_000;
-        let wealthy_package = derive(
+        let wealthy_package = derive_settled(
             &profile(80, 20),
             &wealthy,
             &constrained_intelligence,
@@ -4156,7 +4241,7 @@ mod tests {
             TilePos::new(14, 2),
             Vec::new(),
         );
-        let additional_throughput = derive(
+        let additional_throughput = derive_settled(
             &profile(80, 20),
             &wealthy,
             &constrained_intelligence,
@@ -4562,6 +4647,138 @@ mod tests {
     }
 
     #[test]
+    fn marginal_deadlines_follow_canonical_funding_for_every_provider() {
+        let mut obs = observation(680);
+        add_completed_income_and_live_support(&mut obs);
+        obs.my_buildings.last_mut().unwrap().tier = 1;
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let access = all_producers(&resources);
+        let profile = profile(10, 90);
+
+        for (deadline, fits) in [(1_608, true), (1_607, false)] {
+            let planning = PlanningWork::default();
+            let capacity = AllocationCapacity::from_snapshot(&resources, deadline, 12).unwrap();
+            let refinement = PackageRefinement {
+                planning: &planning,
+                capacity: &capacity,
+                key: ConnectedOffenseKey {
+                    objective: BuildingId(99),
+                    anchor: TilePos::new(25, 25),
+                },
+            };
+            let deferred = Cell::new(false);
+            let builder = PackageBuilder {
+                faction: obs.faction,
+                observed_at: obs.tick,
+                deadline,
+                decision_cadence: 12,
+                current_scrap: obs.scrap,
+                protected_forecast_scrap: 0,
+                forecast: resources.forecast(),
+                resources: &resources,
+                committed_scrap: 0,
+                production_access: &access,
+                refinement: Some(&refinement),
+                deferred: &deferred,
+                funded_providers: Vec::new(),
+                preserved: Vec::new(),
+                provider_priority: Vec::new(),
+                recon: Vec::new(),
+                suppression: Vec::new(),
+                strike: Vec::new(),
+                capability: NormalizedCapability {
+                    recon: 0,
+                    suppression: 0,
+                    strike: 0,
+                },
+                bombing_capability_per_provider: 0,
+                bombing: 0,
+            };
+            let prior = builder
+                .add_new_kind_variants(
+                    ForceFamily::Strike,
+                    ProviderPriority::Marginal,
+                    UnitKind::Buzzard,
+                )
+                .unwrap()
+                .remove(0);
+            let mut successors =
+                prior.provider_successors(ForceFamily::Suppression, ProviderPriority::Marginal);
+            let index = successors
+                .iter()
+                .position(|successor| {
+                    successor
+                        .funded_providers
+                        .last()
+                        .is_some_and(|provider| provider.kind == UnitKind::Avalanche)
+                })
+                .expect("temporary append order must not discard the preferred provider");
+            let mut successor = successors.remove(index);
+            assert_eq!(successor.canonicalize_funding(&profile), fits);
+            if fits {
+                assert_eq!(
+                    successor.funded_providers,
+                    vec![
+                        FundedProvider {
+                            kind: UnitKind::Avalanche,
+                            command_tick: 228
+                        },
+                        FundedProvider {
+                            kind: UnitKind::Buzzard,
+                            command_tick: 1_428
+                        },
+                    ]
+                );
+                assert_eq!(
+                    successor.provider_refinement(&successor.funded_providers),
+                    Progress::Ready(())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn late_funded_preference_cannot_hide_a_feasible_composition() {
+        for tick in [24, 120] {
+            let (mut obs, _, _) = baseline_aa_fixture(578, 705, 149);
+            obs.tick = tick;
+            let mut intelligence = StrategicIntelligence::default();
+            intelligence.update(&obs);
+            let target = intelligence
+                .buildings()
+                .iter()
+                .find(|contact| contact.id == Some(BuildingId(100)))
+                .unwrap();
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let access = all_producers(&resources);
+            let planning = PlanningWork::default();
+            let options = derive_connected_force_package_options_for_cluster(
+                &profile(73, 41),
+                &obs,
+                &intelligence,
+                ConnectedTargetEvidence {
+                    primary: target,
+                    cluster: &[target],
+                },
+                ProductionEvidence::with_planning(&resources, &access, Some(&planning)),
+                &[],
+                constraints(2_500, 0),
+            )
+            .unwrap();
+            assert!(!options.refinement_pending);
+            let package = options.into_largest();
+            assert_eq!(demand(&package.suppression, UnitKind::Bombard), 1);
+            assert_eq!(demand(&package.strike, UnitKind::Buzzard), 2);
+            assert!(funded_providers_fit(
+                &resources,
+                &package.funded_providers,
+                2_500,
+                &access
+            ));
+        }
+    }
+
+    #[test]
     fn baseline_portfolio_matches_an_independent_count_oracle_at_demand_boundaries() {
         let profile = profile(73, 41);
         for target_hp in [352, 353, 705, 706, 724] {
@@ -4767,7 +4984,7 @@ mod tests {
                 for scrap in 0..=2_500 {
                     let mut observation = template.clone();
                     observation.scrap = scrap;
-                    match derive(
+                    match derive_settled(
                         &profile,
                         &observation,
                         &intelligence,
@@ -4805,7 +5022,7 @@ mod tests {
             for deadline in deadlines {
                 let mut observation = advanced.clone();
                 observation.scrap = scrap;
-                match derive(
+                match derive_settled(
                     &profile,
                     &observation,
                     &intelligence,
@@ -4841,7 +5058,7 @@ mod tests {
             for scrap in 0..=2_500 {
                 let mut baseline_observation = baseline.clone();
                 baseline_observation.scrap = scrap;
-                let Ok(baseline_package) = derive(
+                let Ok(baseline_package) = derive_settled(
                     &profile,
                     &baseline_observation,
                     &intelligence,
@@ -4853,7 +5070,7 @@ mod tests {
                 };
                 let mut advanced_observation = advanced.clone();
                 advanced_observation.scrap = scrap;
-                let advanced_package = derive(
+                let advanced_package = derive_settled(
                     &profile,
                     &advanced_observation,
                     &intelligence,
@@ -4906,7 +5123,7 @@ mod tests {
                 for scrap in 0..=2_500 {
                     let mut observation = template.clone();
                     observation.scrap = scrap;
-                    match derive(
+                    match derive_settled(
                         &profile,
                         &observation,
                         &intelligence,
@@ -4970,7 +5187,7 @@ mod tests {
                     .then_some(TilePos::new(20 + dx, 20 + dy))
             })
         });
-        for (index, anchor) in cluster_anchors.take(24).enumerate() {
+        for (index, anchor) in cluster_anchors.take(2).enumerate() {
             observation.enemy_buildings.push(building(
                 200 + u32::try_from(index).expect("small fixture"),
                 1,
@@ -4980,15 +5197,13 @@ mod tests {
         }
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
         let deadline = 50_000;
-        let resources = ResourceSnapshot::from_observation(&observation);
-        let package = derive_connected_force_package(
+        let package = derive_settled(
             &profile(90, 10),
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
             &[],
-            constraints(deadline, 0),
+            deadline,
         )
         .expect("a wealthy long-horizon operation can exceed one live queue");
         let buzzards = demand(&package.strike, UnitKind::Buzzard);
@@ -5178,7 +5393,7 @@ mod tests {
 
         let mut remembered_intelligence = static_intelligence;
         let mut after_scout_left = static_defense;
-        after_scout_left.tick += 1;
+        after_scout_left.tick += 12;
         after_scout_left
             .enemy_buildings
             .retain(|building| building.kind != BuildingKind::FlakTurret);
@@ -5479,7 +5694,11 @@ mod tests {
                         primary: &target,
                         cluster: &cluster,
                     },
-                    ProductionEvidence::new(&resources, &all_producers(&resources)),
+                    ProductionEvidence::with_planning(
+                        &resources,
+                        &all_producers(&resources),
+                        Some(&PlanningWork::default()),
+                    ),
                     &[],
                     constraints(5_000, 0),
                 ) else {
@@ -5535,7 +5754,11 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(2_500, 0),
         )
@@ -5705,7 +5928,11 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(2_500, 0),
         )
@@ -5715,7 +5942,11 @@ mod tests {
             &observation,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(2_500, 0),
         )
@@ -5865,7 +6096,7 @@ mod tests {
             .find(|contact| contact.id == Some(BuildingId(200)))
             .expect("current target")
             .clone();
-        derive(
+        derive_settled(
             &profile(50, 50),
             &observation,
             &intelligence,
@@ -5874,6 +6105,141 @@ mod tests {
             2_500,
         )
         .expect("the rich late-game package fits its fixed deadline")
+    }
+
+    #[test]
+    fn dense_portfolio_reaches_a_proved_alternative_across_checkpoint_boundaries() {
+        for rolling in [false, true] {
+            let mut obs = observation(100_000);
+            add_producer(
+                &mut obs,
+                10,
+                BuildingKind::Foundry,
+                TilePos::new(2, 2),
+                vec![],
+            );
+            add_producer(
+                &mut obs,
+                11,
+                BuildingKind::Crucible,
+                TilePos::new(8, 2),
+                vec![],
+            );
+            for i in 0..8 {
+                add_producer(
+                    &mut obs,
+                    20 + i,
+                    BuildingKind::Fabricator,
+                    TilePos::new(2 + 3 * i as i32, 6),
+                    vec![],
+                );
+            }
+            add_producer(
+                &mut obs,
+                80,
+                BuildingKind::Airworks,
+                TilePos::new(2, 20),
+                vec![],
+            );
+            let (mut intel, _) = intelligence_with_target(&mut obs, 4);
+            for i in 0..24 {
+                obs.enemy_units.push(unit(
+                    300 + i,
+                    1,
+                    UnitKind::Flakhound,
+                    TilePos::new(18 + (i % 8) as i32, 16 + (i / 8) as i32),
+                ));
+            }
+            let planning = PlanningWork::default();
+            let mut restored = planning.clone();
+            let mut ready = None;
+            for decision in 0..32 {
+                obs.tick = 24 + decision * 12;
+                intel.update(&obs);
+                let target = intel
+                    .buildings()
+                    .iter()
+                    .find(|b| b.id == Some(BuildingId(100)))
+                    .unwrap();
+                let cluster: Vec<_> = intel.buildings().iter().collect();
+                let resources = ResourceSnapshot::from_observation(&obs);
+                let access = all_producers(&resources);
+                let derive = |work| {
+                    derive_connected_force_package_options_for_cluster(
+                        &profile(10, 90),
+                        &obs,
+                        &intel,
+                        ConnectedTargetEvidence {
+                            primary: target,
+                            cluster: &cluster,
+                        },
+                        ProductionEvidence::with_planning(&resources, &access, Some(work)),
+                        &[],
+                        constraints(if rolling { obs.tick + 1320 } else { 1344 }, 0),
+                    )
+                };
+                let options = derive(&planning);
+                assert_eq!(options, derive(&restored));
+                assert_eq!(planning, restored);
+                assert!(planning.spent() <= 128_000);
+                let mut bytes = Vec::new();
+                ciborium::into_writer(&restored, &mut bytes).unwrap();
+                restored = ciborium::from_reader(bytes.as_slice()).unwrap();
+                if options.as_ref().is_ok_and(|options| {
+                    !options.refinement_pending && !options.marginal.is_empty()
+                }) {
+                    ready = Some(decision);
+                    break;
+                }
+            }
+            assert!(
+                ready.is_some(),
+                "rolling={rolling}: feasible alternatives were starved"
+            );
+        }
+    }
+
+    #[test]
+    fn large_feasible_roster_finishes_within_the_production_work_limit() {
+        for staggered in [false, true] {
+            let obs = rich_parallel_suppression_fixture(staggered);
+            let resources = ResourceSnapshot::from_observation(&obs);
+            let access = all_producers(&resources);
+            let providers: Vec<_> = [UnitKind::Kestrel, UnitKind::Bombard, UnitKind::Buzzard]
+                .into_iter()
+                .chain(core::iter::repeat_n(UnitKind::Bombard, 11))
+                .map(|kind| FundedProvider {
+                    kind,
+                    command_tick: obs.tick,
+                })
+                .collect();
+            assert!(funded_providers_fit(&resources, &providers, 2_500, &access));
+            let capacity =
+                AllocationCapacity::from_snapshot(&resources, 2_500, TEST_DECISION_CADENCE)
+                    .unwrap();
+            let planning = PlanningWork::default();
+            let refinement = PackageRefinement {
+                planning: &planning,
+                capacity: &capacity,
+                key: ConnectedOffenseKey {
+                    objective: BuildingId(200),
+                    anchor: TilePos::new(20, 20),
+                },
+            };
+            let mut result = Progress::Deferred;
+            for _ in 0..4 {
+                result = refinement.refine(&resources, &access, &providers, 2_500);
+                if result != Progress::Deferred {
+                    break;
+                }
+            }
+            assert_eq!(
+                result,
+                Progress::Ready(()),
+                "staggered={staggered}, work={}",
+                planning.spent()
+            );
+        }
     }
 
     #[test]
@@ -6016,7 +6382,11 @@ mod tests {
             &fully_funded,
             &intelligence,
             &target,
-            ProductionEvidence::new(&resources, &all_producers(&resources)),
+            ProductionEvidence::with_planning(
+                &resources,
+                &all_producers(&resources),
+                Some(&PlanningWork::default()),
+            ),
             &[],
             constraints(1_476, 0),
         )

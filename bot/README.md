@@ -71,7 +71,11 @@ scheduler; they do not exercise portfolio competition or controller admission.
 `Brain` tests own command-level funding, preemption and cross-domain ownership;
 allocation-session tests own transactional rejection and rollback. Test-only
 roster references and work counters verify query equivalence and bounds without
-adding another runtime execution mode.
+adding another runtime execution mode. Force-package fixtures supply the same
+bounded `PlanningWork` as production; missing planning state defers purchases.
+Tests comparing completed packages explicitly resume partial work within the
+unchanged decision allowance. The exhaustive funding reference is only an
+independent oracle, never a fallback inside the planner.
 
 Team relief keeps observed pressure age separate from its proposed force.
 Allocation rollback restores accepted relief ownership and cooldown, retains
