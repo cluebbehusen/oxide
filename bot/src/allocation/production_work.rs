@@ -456,6 +456,16 @@ mod tests {
             let restored: ProductionWork = ciborium::from_reader(bytes.as_slice()).unwrap();
             assert_eq!(work, restored);
             assert!(restored.valid_checkpoint(0));
+            let mut cloned = work.clone();
+            let mut resumed = restored.clone();
+            let mut clone_budget = WorkBudget::new(1_024);
+            let mut restore_budget = WorkBudget::new(1_024);
+            assert_eq!(
+                cloned.resolve(&capacity, &claims, &mut clone_budget),
+                resumed.resolve(&capacity, &claims, &mut restore_budget),
+            );
+            assert_eq!(cloned, resumed);
+            assert_eq!(clone_budget.spent(), restore_budget.spent());
             work = restored;
             assert!(slices < 200);
         };

@@ -40,6 +40,22 @@ Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in
 input seat order before commands are recorded. `State::tick` remains serial.
 
+Between ordinary live ticks, `Game` may submit one background decision. It keeps
+the pre-decision controllers and gives the worker a cloned working set plus an
+`Arc<State>` shared with rendering. At consumption, world identity, tick and
+seat order must match. The worker releases its world reference before publishing
+complete controllers and commands; mutation requires unique world ownership. A
+late decision is joined at its tick, never skipped or replaced by a timeout.
+Bulk advancement and replay reconstruction collect synchronously when no job
+exists. Both modes use the same bounded executor admission gate.
+
+Save and controller inspection read the retained pre-decision controllers even
+when the job has finished. Restored sessions recompute that decision once;
+prepared work is not persisted and saving does not join it. Pause retains the
+job; replacing the session or world discards it. Discarding its result does not
+cancel the worker, which retains executor admission until computation finishes.
+Outstanding work shares diagnostic recorder ownership with the live session.
+
 The shell may use floats, frame time, and interpolation to interpret interaction
 and present a match. Only the resulting tick-stamped `PlayerCommand` crosses the
 simulation boundary. Camera, audio, selection, and presentation caches cannot

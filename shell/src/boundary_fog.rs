@@ -217,8 +217,11 @@ mod tests {
         scenario.units.truncate(1);
         scenario.units[0].x = 3;
         scenario.units[0].y = 3;
+        for player in &mut scenario.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
         let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap();
-        game.bots.clear();
         let tile = TilePos::new(3, -1);
         assert!(game.presentation.boundary_fog.visible(tile));
         let id = game.state.units()[0].id;

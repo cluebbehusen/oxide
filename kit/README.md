@@ -29,7 +29,12 @@ while reusable game-independent primitives stay in `chassis`.
   up to four workers when multiple bots are due. A busy or unavailable pool uses
   serial execution, so independent headless matches do not queue behind it.
   Batch workers that already run matches concurrently use `serially` to avoid
-  adding bot threads to a saturated workload.
+  adding bot threads to a saturated workload. Live sessions can submit one
+  speculative controller clone against an immutable shared world. Owned jobs
+  retain the same admission permit until completion, including when their
+  session discards the result. Collection validates the world/tick/roster and
+  installs complete controllers before returning commands; snapshots remain
+  available for saves while work runs.
 
 - `recovery` keeps a bounded incremental command journal, distinguishes prepared
   commands from completed ticks, and exports verified replay prefixes with build

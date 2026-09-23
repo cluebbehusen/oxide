@@ -177,7 +177,7 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
                 .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
-                .and_then(|record| Game::from_recovery(record, app.game.diagnostics.as_ref()));
+                .and_then(|record| Game::from_recovery(record, app.game.diagnostics.as_deref()));
             match recovered {
                 Ok(fresh) => {
                     app.install_session(fresh, true, None);
@@ -202,7 +202,7 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
                 .game
                 .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
             if let Some(fresh) = autosave::latest_compatible()
-                .and_then(|path| resume(&path, app.game.diagnostics.as_ref()).ok())
+                .and_then(|path| resume(&path, app.game.diagnostics.as_deref()).ok())
             {
                 app.install_session(fresh, true, None);
                 next = Some(Screen::Playing);
@@ -727,7 +727,7 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
             }
         },
         screens::shelf::Out::Load(path) => {
-            match resume(&path, app.game.diagnostics.as_ref()) {
+            match resume(&path, app.game.diagnostics.as_deref()) {
                 // The same loader Continue uses, so the two
                 // verbs cannot drift apart.
                 Ok(fresh) => {

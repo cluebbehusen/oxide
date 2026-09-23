@@ -8,7 +8,7 @@ use crate::query_work::QueryPurpose;
 use chassis::grid::TilePos;
 use std::{collections::BTreeMap, sync::Arc};
 
-const RETAINED_FIELDS: usize = 16;
+const PENDING_FIELDS: usize = 16;
 const READY_BYTES: usize = 32 * 1024 * 1024;
 const IDLE_LIFETIME: u64 = 120;
 
@@ -91,7 +91,8 @@ pub(super) struct ApproachPreparation {
 impl ApproachPreparation {
     pub(super) fn valid_checkpoint(&self, width: i32, height: i32, tick: u64) -> bool {
         let cells = width as usize * height as usize;
-        self.jobs.len() <= RETAINED_FIELDS
+        self.counts().0 <= PENDING_FIELDS
+            && self.ready_bytes() <= READY_BYTES
             && match &self.generation {
                 None => self.jobs.is_empty(),
                 Some(generation) => {
@@ -178,7 +179,7 @@ impl ApproachPreparation {
         goals.sort_unstable_by_key(|tile| (tile.y, tile.x));
         goals.dedup();
         let key = (overlay, goals);
-        if !self.jobs.contains_key(&key) && self.counts().0 == RETAINED_FIELDS {
+        if !self.jobs.contains_key(&key) && self.counts().0 == PENDING_FIELDS {
             return Progress::Deferred;
         }
         let job = self.jobs.entry(key.clone()).or_insert_with(|| Job {
@@ -200,18 +201,24 @@ impl ApproachPreparation {
         result
     }
 
-    fn trim_ready(&mut self) {
+    fn field_bytes(&self, goals: &[TilePos]) -> usize {
         let cells = self
             .generation
             .as_ref()
             .map_or(0, |generation| generation.blocked.len());
-        let bytes = |goals: &[TilePos]| cells * size_of::<u32>() + size_of_val(goals) + 512;
-        let mut retained: usize = self
-            .jobs
+        cells * size_of::<u32>() + size_of_val(goals) + 512
+    }
+
+    fn ready_bytes(&self) -> usize {
+        self.jobs
             .iter()
             .filter(|(_, job)| job.ready.is_some())
-            .map(|((_, goals), _)| bytes(goals))
-            .sum();
+            .map(|((_, goals), _)| self.field_bytes(goals))
+            .sum()
+    }
+
+    fn trim_ready(&mut self) {
+        let mut retained = self.ready_bytes();
         while retained > READY_BYTES {
             let victim = self
                 .jobs
@@ -221,7 +228,7 @@ impl ApproachPreparation {
                 .unwrap()
                 .0
                 .clone();
-            retained -= bytes(&victim.1);
+            retained -= self.field_bytes(&victim.1);
             self.jobs.remove(&victim);
         }
     }
@@ -231,6 +238,46 @@ impl ApproachPreparation {
 mod tests {
     use super::*;
     use crate::planning::PlanningWork;
+
+    #[test]
+    fn checkpoint_accepts_completed_fields_beyond_the_pending_limit() {
+        let blocked = vec![false; 8 * 8];
+        let grid = KnownGrid::new(8, 8, &blocked).unwrap();
+        let mut work = ApproachPreparation::default();
+        for index in 0..PENDING_FIELDS + 1 {
+            assert!(matches!(
+                work.advance(
+                    QueryPurpose::NavigationTest,
+                    0,
+                    grid,
+                    &[TilePos::new((index % 8) as i32, (index / 8) as i32)],
+                    None,
+                    &mut WorkBudget::new(usize::MAX),
+                ),
+                Progress::Ready(_)
+            ));
+        }
+        assert_eq!(work.counts(), (0, PENDING_FIELDS + 1));
+        assert!(work.valid_checkpoint(8, 8, 0));
+        let restored = crate::checkpoint::round_trip(&work);
+        assert!(restored.valid_checkpoint(8, 8, 0));
+        let mut oversized = work.clone();
+        let (_, job) = oversized.jobs.pop_first().unwrap();
+        oversized.jobs.clear();
+        oversized.jobs.insert(
+            (
+                None,
+                vec![TilePos::new(0, 0); READY_BYTES / size_of::<TilePos>()],
+            ),
+            job,
+        );
+        assert!(oversized.ready_bytes() > READY_BYTES);
+        assert!(!oversized.valid_checkpoint(8, 8, 0));
+        for job in work.jobs.values_mut() {
+            job.ready = None;
+        }
+        assert!(!work.valid_checkpoint(8, 8, 0));
+    }
 
     #[test]
     fn candidate_overlays_do_not_replace_each_others_pending_work() {
@@ -294,7 +341,7 @@ mod tests {
                     completed += 1;
                 }
             }
-            assert!(work.stats().pending_approach_fields <= RETAINED_FIELDS);
+            assert!(work.stats().pending_approach_fields <= PENDING_FIELDS);
             if completed == 32 {
                 return;
             }
@@ -422,7 +469,7 @@ mod tests {
                 ),
                 Progress::Deferred
             ));
-            assert!(empty.stats().retained_approach_fields <= RETAINED_FIELDS);
+            assert!(empty.stats().retained_approach_fields <= PENDING_FIELDS);
         }
         assert_eq!(empty.spent(), 0);
         empty.begin(120);

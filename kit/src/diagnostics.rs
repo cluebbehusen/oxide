@@ -39,6 +39,10 @@ pub enum Phase {
     Save,
     /// Entire native frame CPU work before presentation handoff.
     Frame,
+    /// Snapshot creation and early worker submission on the frame thread.
+    BotDispatch = 28,
+    /// Residual wait for a previously dispatched decision.
+    BotJoin = 31,
 }
 #[derive(Default)]
 struct Slot {
@@ -211,7 +215,8 @@ impl Inner {
             .collect()
     }
     fn context(&self) -> serde_json::Value {
-        serde_json::json!({"format":1,"capture_started_us":self.capture_started.load(Ordering::Relaxed),"build":self.recording.build(),"diagnostics":self.enabled.load(Ordering::Acquire),"live_tick":self.frame_tick.load(Ordering::Relaxed),"units":self.units.load(Ordering::Relaxed),"buildings":self.buildings.load(Ordering::Relaxed),"screen":self.mode.load(Ordering::Relaxed),"paused":self.paused.load(Ordering::Relaxed),"reported_minimized":match self.minimized.load(Ordering::Relaxed) { 1 => Some(false), 2 => Some(true), _ => None },"speed":f64::from_bits(self.speed_bits.load(Ordering::Relaxed)),"window":[self.width.load(Ordering::Relaxed),self.height.load(Ordering::Relaxed)],"dpi":f64::from_bits(self.dpi.load(Ordering::Relaxed)),"writer":self.recording.status(),"dropped_timing_events":self.dropped.load(Ordering::Relaxed),"phase_names":{"1":"bot observation","2":"bot maintenance","3":"bot strategy","4":"bot allocation","5":"bot defense","6":"bot economy","7":"bot executive","10":"input/debug requests","11":"bot collection wall time","12":"simulation","13":"presentation/statistics","14":"screen/draw/audio","15":"presentation/OS wait","16":"replay reconstruction","17":"save","18":"frame CPU work","19":"frame start interval (not exclusive)","20":"bot seat total","21":"bot Foundry assessment","22":"bot standing force","23":"bot portfolio selection","24":"bot combined layouts","25":"bot reconnaissance maintenance","26":"bot support demand","27":"bot rollback snapshot"},"screen_names":{"0":"other","1":"playing","2":"paused","3":"playback","4":"home","5":"settings","6":"wizard","7":"codex","8":"replays","9":"results","10":"final_map"}})
+        let phase_names = serde_json::json!({"1":"bot observation","2":"bot maintenance","3":"bot strategy","4":"bot allocation","5":"bot defense","6":"bot economy","7":"bot executive","10":"input/debug requests","11":"bot collection wall time","12":"simulation","13":"presentation/statistics","14":"screen/draw/audio","15":"presentation/OS wait","16":"replay reconstruction","17":"save","18":"frame CPU work","19":"frame start interval (not exclusive)","20":"bot seat total","21":"bot Foundry assessment","22":"bot standing force","23":"bot portfolio selection","24":"bot combined layouts","25":"bot reconnaissance maintenance","26":"bot support demand","27":"bot rollback snapshot","28":"bot early dispatch","30":"bot ready lead (not exclusive)","31":"bot residual join"});
+        serde_json::json!({"format":1,"capture_started_us":self.capture_started.load(Ordering::Relaxed),"build":self.recording.build(),"diagnostics":self.enabled.load(Ordering::Acquire),"live_tick":self.frame_tick.load(Ordering::Relaxed),"units":self.units.load(Ordering::Relaxed),"buildings":self.buildings.load(Ordering::Relaxed),"screen":self.mode.load(Ordering::Relaxed),"paused":self.paused.load(Ordering::Relaxed),"reported_minimized":match self.minimized.load(Ordering::Relaxed) { 1 => Some(false), 2 => Some(true), _ => None },"speed":f64::from_bits(self.speed_bits.load(Ordering::Relaxed)),"window":[self.width.load(Ordering::Relaxed),self.height.load(Ordering::Relaxed)],"dpi":f64::from_bits(self.dpi.load(Ordering::Relaxed)),"writer":self.recording.status(),"dropped_timing_events":self.dropped.load(Ordering::Relaxed),"phase_names":phase_names,"screen_names":{"0":"other","1":"playing","2":"paused","3":"playback","4":"home","5":"settings","6":"wizard","7":"codex","8":"replays","9":"results","10":"final_map"}})
     }
 }
 
@@ -418,6 +423,27 @@ impl Recorder {
         let commands = bot.act_observed(state, &observer);
         scope.planning_work = observer.planning_work.get();
         commands
+    }
+    /// Time a prepared decision was ready before the tick requested it. This
+    /// observational interval is not nested frame work; zero includes late jobs.
+    pub(crate) fn bot_lead(&self, tick: u64, lead: Duration) {
+        if self.enabled()
+            && self
+                .inner
+                .sender
+                .try_send(Timing {
+                    end_us: self.inner.micros(),
+                    duration_us: lead.as_micros() as u64,
+                    exclusive_us: 0,
+                    slot: 0,
+                    phase: 30,
+                    tick,
+                    planning_work: None,
+                })
+                .is_err()
+        {
+            self.inner.dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
     /// Register this recorder with a single chained, nonblocking panic hook.
     pub fn install_panic_hook(&self) {
