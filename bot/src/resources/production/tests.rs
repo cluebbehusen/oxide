@@ -170,6 +170,33 @@ fn speculative_capacity_bounds_never_exclude_a_feasible_mixed_roster() {
 }
 
 #[test]
+fn unrelated_factory_capacity_cannot_fund_an_overloaded_mixed_air_lane() {
+    let air_capacity = Tick::from(UnitKind::Condor.stats().train_ticks);
+    let resources = snapshot(
+        10_000,
+        vec![
+            lane_with_horizon_capacity(1, air_capacity, vec![UnitKind::Buzzard, UnitKind::Condor]),
+            lane_with_horizon_capacity(2, 2_400, vec![UnitKind::Bombard]),
+        ],
+    );
+    let deadline = OBSERVED_AT + 2_400;
+    let access = all_producers(&resources);
+    for air in [UnitKind::Buzzard, UnitKind::Condor] {
+        assert!(production_may_fit_horizon(
+            &resources,
+            &[air, UnitKind::Bombard],
+            deadline,
+            &access
+        ));
+    }
+    let mixed = [UnitKind::Buzzard, UnitKind::Condor, UnitKind::Bombard];
+    assert!(!brute_horizon_fits(&resources, &mixed, deadline));
+    assert!(!production_may_fit_horizon(
+        &resources, &mixed, deadline, &access
+    ));
+}
+
+#[test]
 fn horizon_timing_reuses_queue_slots_without_opening_them_now() {
     let queued = vec![UnitKind::Lancer; oxide_sim::stats::QUEUE_CAP];
     let lane = lane(

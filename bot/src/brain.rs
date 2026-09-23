@@ -5903,7 +5903,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&crate::planning::PlanningWork::default()),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -6004,7 +6004,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&crate::planning::PlanningWork::default()),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -6093,7 +6093,7 @@ mod tests {
                 &intelligence,
                 home,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&crate::planning::PlanningWork::default()),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -6341,7 +6341,7 @@ mod tests {
             &intelligence,
             home,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&crate::planning::PlanningWork::default()),
                 enlisted: &[],
                 lift_support: None,
                 allow_new_operation: true,

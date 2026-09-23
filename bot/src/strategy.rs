@@ -7338,6 +7338,8 @@ mod tests {
             home: TilePos,
             enlisted: &[UnitId],
         ) -> StrategicDecision {
+            let fixture_planning = crate::planning::PlanningWork::default();
+
             self.think_alone_with(
                 profile,
                 tuning,
@@ -7345,7 +7347,7 @@ mod tests {
                 intel,
                 home,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     enlisted,
                     lift_support: None,
                     allow_new_operation: true,
@@ -7468,6 +7470,7 @@ mod tests {
     }
 
     fn planning_context<'a>(
+        fixture_planning: &'a crate::planning::PlanningWork,
         identity: &'a ResolvedProfile,
         observation: &'a Observation,
         intelligence: &'a StrategicIntelligence,
@@ -7478,7 +7481,7 @@ mod tests {
             .find(|contact| contact.anchor == TARGET)
             .expect("the fixture has a current strategic target");
         AirPlanningContext {
-            planning: None,
+            planning: Some(fixture_planning),
             profile: identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: observation,
@@ -7661,6 +7664,8 @@ mod tests {
         identity: &ResolvedProfile,
         observation: &Observation,
     ) -> Option<AirPlan> {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let intelligence = knowledge(observation);
         let target = intelligence
             .buildings()
@@ -7688,7 +7693,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -7923,9 +7928,12 @@ mod tests {
         )
     }
 
-    fn coordination(lift_support: Option<&LiftSupportRequest>) -> StrategicCoordination<'_> {
+    fn coordination<'a>(
+        fixture_planning: &'a crate::planning::PlanningWork,
+        lift_support: Option<&'a LiftSupportRequest>,
+    ) -> StrategicCoordination<'a> {
         StrategicCoordination {
-            planning: None,
+            planning: Some(fixture_planning),
             enlisted: &[],
             lift_support,
             allow_new_operation: true,
@@ -8069,6 +8077,8 @@ mod tests {
         planner: &mut StrategicPlanner,
         obs: &Observation,
     ) -> Option<ActiveConnectedObligation> {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let resources = ResourceSnapshot::from_observation(obs);
         let intel = knowledge(obs);
         planner.active_connected_obligation(FreshConnectedProposalRequest::new(
@@ -8078,7 +8088,7 @@ mod tests {
             &resources,
             &intel,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         ))
     }
 
@@ -8181,6 +8191,8 @@ mod tests {
 
     #[test]
     fn unpaid_connected_demand_reassigns_factory_without_extending_deadline() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut obs = production_hungry_connected_obs(120, 10_000);
         obs.my_buildings.push(building(
             13,
@@ -8199,7 +8211,7 @@ mod tests {
                 &ResourceSnapshot::from_observation(&obs),
                 &knowledge(&obs),
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .unwrap()
             .unwrap();
@@ -8229,6 +8241,8 @@ mod tests {
 
     #[test]
     fn unpaid_connected_demand_can_buy_earlier_and_does_not_expire_after_rollback() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut obs = production_hungry_connected_obs(120, 10_000);
         add_renewable_economy(&mut obs, 1);
         let mut planner = StrategicPlanner::new();
@@ -8240,7 +8254,7 @@ mod tests {
                 &ResourceSnapshot::from_observation(&obs),
                 &knowledge(&obs),
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .unwrap()
             .unwrap();
@@ -8282,6 +8296,8 @@ mod tests {
     }
     #[test]
     fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut obs = production_hungry_connected_obs(120, 10_000);
         let mut planner = StrategicPlanner::new();
         let identity = profile();
@@ -8294,7 +8310,7 @@ mod tests {
                 &ResourceSnapshot::from_observation(&obs),
                 &knowledge(&obs),
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .unwrap()
             .unwrap();
@@ -8328,7 +8344,7 @@ mod tests {
                 &ResourceSnapshot::from_observation(&obs),
                 &knowledge(&obs),
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .unwrap()
             .unwrap();
@@ -8383,6 +8399,8 @@ mod tests {
     fn unpaid_connected_operation(
         obs: &Observation,
     ) -> (StrategicPlanner, Vec<ConnectedProviderJob>) {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut planner = StrategicPlanner::new();
         let proposal = planner
             .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
@@ -8392,7 +8410,7 @@ mod tests {
                 &ResourceSnapshot::from_observation(obs),
                 &knowledge(obs),
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .unwrap()
             .unwrap();
@@ -8510,6 +8528,8 @@ mod tests {
 
     #[test]
     fn active_operation_keeps_members_already_claimed_by_the_coordinator() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(100);
         see_approach(&mut observation);
         let intelligence = knowledge(&observation);
@@ -8528,9 +8548,9 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     enlisted: &owned,
-                    ..coordination(None)
+                    ..coordination(&fixture_planning, None)
                 },
             )
             .decision;
@@ -8552,6 +8572,8 @@ mod tests {
 
     #[test]
     fn provider_visible_on_the_deadline_can_complete_assembly() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(2_500);
         see_approach(&mut observation);
         observation.explored.fill(true);
@@ -8578,7 +8600,7 @@ mod tests {
                 &observation,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             )
             .decision;
 
@@ -8597,6 +8619,8 @@ mod tests {
 
     #[test]
     fn provider_first_visible_on_the_deadline_survives_the_recon_transition() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(2_500);
         see_approach(&mut observation);
         observation.explored.fill(true);
@@ -8623,7 +8647,7 @@ mod tests {
                 &observation,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             )
             .decision;
 
@@ -8647,7 +8671,7 @@ mod tests {
                 &observation,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             )
             .decision;
 
@@ -8676,6 +8700,8 @@ mod tests {
 
     #[test]
     fn closed_admission_blocks_a_new_air_plan_but_an_active_plan_reaches_strike() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let eligible = wealthy_island_obs(
             super::super::difficulty::strategic_admission_at_or_after(5_000),
             2,
@@ -8692,7 +8718,7 @@ mod tests {
                     &eligible_intelligence,
                     HOME,
                     StrategicCoordination {
-                        planning: None,
+                        planning: Some(&fixture_planning),
                         enlisted: &[],
                         lift_support: None,
                         allow_new_operation: false,
@@ -8720,7 +8746,7 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: false,
@@ -8767,7 +8793,7 @@ mod tests {
                 &incomplete_intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: false,
@@ -8801,7 +8827,7 @@ mod tests {
                 &damaged_intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: false,
@@ -9197,6 +9223,8 @@ mod tests {
 
     #[test]
     fn artillery_staging_is_dispatched_once_until_the_goal_or_mission_changes() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut operation = operation(AirOperationPhase::Strike, 100);
         let first_goal = TilePos::new(12, 10);
 
@@ -9245,7 +9273,7 @@ mod tests {
         let identity = profile();
         let mut plan = connected_test_plan(&suppression_observation);
         let context = AirPlanningContext {
-            planning: None,
+            planning: Some(&fixture_planning),
             profile: &identity,
             tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
             obs: &suppression_observation,
@@ -9289,7 +9317,7 @@ mod tests {
     fn a_late_recon_scout_receives_a_fresh_flight_window() {
         let seen = obs(990);
         let mut intel = knowledge(&seen);
-        let mut waiting = obs(1_000);
+        let mut waiting = obs(1_008);
         waiting.enemy_buildings[0].seen = false;
         waiting.my_units.remove(0);
         waiting.my_buildings = vec![building(
@@ -9316,7 +9344,7 @@ mod tests {
             AirOperationPhase::Recon
         );
 
-        waiting.tick = 1_006;
+        waiting.tick = 1_020;
         waiting
             .my_units
             .push(own(5, UnitKind::Kestrel, TilePos::new(4, 10)));
@@ -9335,6 +9363,8 @@ mod tests {
 
     #[test]
     fn current_sight_cannot_skip_recon_while_the_required_scout_trains() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
         let mut current = obs(240);
         current.explored.fill(true);
@@ -9418,7 +9448,7 @@ mod tests {
         )));
 
         let mut reacquired = ready;
-        reacquired.tick += 1;
+        reacquired.tick += 12;
         reacquired.enemy_buildings[0].seen = true;
         reacquired
             .my_units
@@ -9434,7 +9464,7 @@ mod tests {
             &reacquired,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert_eq!(
@@ -9453,7 +9483,7 @@ mod tests {
             };
             for difficulty in [lower, higher] {
                 let tuning = DifficultyTuning::for_level(difficulty);
-                let mut observation = obs(500);
+                let mut observation = obs(504);
                 observation.my_units.retain(|unit| unit.id != UnitId(1));
                 observation.my_buildings = vec![building(
                     10,
@@ -9675,6 +9705,8 @@ mod tests {
 
     #[test]
     fn immediate_air_scheduling_preserves_staged_order_depth_and_protected_capital() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(200);
         observation.my_buildings = vec![
             building(7, 0, BuildingKind::Airworks, TilePos::new(2, 2), true),
@@ -9699,7 +9731,8 @@ mod tests {
             (cost + 17, vec![train(3)], cost + 17),
         ] {
             observation.scrap = bank + 53;
-            let mut context = planning_context(&identity, &observation, &intelligence);
+            let mut context =
+                planning_context(&fixture_planning, &identity, &observation, &intelligence);
             context.production.prior_intents = &prior;
             context.protected_current_scrap = 53;
             let mut out = StrategicDecision::default();
@@ -9711,6 +9744,8 @@ mod tests {
 
     #[test]
     fn shared_procurement_spreads_work_and_refuses_an_unfundable_package() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut obs = obs(204);
         obs.visible.fill(true);
         obs.explored.fill(true);
@@ -9735,7 +9770,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &obs, &intelligence),
+            &planning_context(&fixture_planning, &identity, &obs, &intelligence),
             &mut out,
         );
         assert_eq!(out.committed_scrap(), full, "{out:?}");
@@ -9757,7 +9792,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &obs, &intelligence),
+            &planning_context(&fixture_planning, &identity, &obs, &intelligence),
             &mut partial,
         );
         assert_eq!(partial.committed_scrap(), 0);
@@ -9769,6 +9804,8 @@ mod tests {
 
     #[test]
     fn a_full_operation_queue_holds_the_next_provider_cost_until_a_slot_opens() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(204);
         observation.visible.fill(true);
         observation.explored.fill(true);
@@ -9794,7 +9831,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &observation, &intelligence),
+            &planning_context(&fixture_planning, &identity, &observation, &intelligence),
             &mut decision,
         );
 
@@ -9811,6 +9848,8 @@ mod tests {
 
     #[test]
     fn shared_procurement_protects_capital_for_the_complete_blocked_package() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(204);
         observation.visible.fill(true);
         observation.explored.fill(true);
@@ -9862,7 +9901,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &observation, &intelligence),
+            &planning_context(&fixture_planning, &identity, &observation, &intelligence),
             &mut decision,
         );
 
@@ -9884,7 +9923,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &observation, &intelligence),
+            &planning_context(&fixture_planning, &identity, &observation, &intelligence),
             &mut parallel,
         );
 
@@ -9903,6 +9942,8 @@ mod tests {
 
     #[test]
     fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut identity = profile();
         identity.primary = Specialty::Siege;
         identity.secondary = Specialty::Air;
@@ -9955,7 +9996,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -10005,7 +10046,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &observation, &intelligence),
+            &planning_context(&fixture_planning, &identity, &observation, &intelligence),
             &mut decision,
         );
 
@@ -11083,6 +11124,8 @@ mod tests {
 
     #[test]
     fn connected_strike_refuses_an_air_route_blocked_only_in_the_public_briefing() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(300);
         see_approach(&mut observation);
         explore(&mut observation, staging(HOME, TARGET));
@@ -11108,9 +11151,9 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     public_map: Some(&public_map),
-                    ..coordination(None)
+                    ..coordination(&fixture_planning, None)
                 },
             )
             .decision;
@@ -11327,6 +11370,8 @@ mod tests {
 
     #[test]
     fn connected_recovery_releases_a_survivor_stranded_by_public_peaks() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let battle = obs(400);
         let public_map = public_map_with_terrain(
             &battle,
@@ -11344,9 +11389,9 @@ mod tests {
                 &intel,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     public_map: Some(&public_map),
-                    ..coordination(None)
+                    ..coordination(&fixture_planning, None)
                 },
             )
             .decision;
@@ -11556,6 +11601,8 @@ mod tests {
 
     #[test]
     fn connected_admission_tries_a_reachable_current_target_after_the_best_is_cut_off() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = developed_connected_obs(120);
         let reachable = TilePos::new(12, 10);
         battle.enemy_buildings = vec![
@@ -11582,9 +11629,9 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&fixture_planning),
                 public_map: Some(&public_map),
-                ..coordination(None)
+                ..coordination(&fixture_planning, None)
             },
         );
 
@@ -11597,6 +11644,8 @@ mod tests {
 
     #[test]
     fn precommit_package_rebase_preserves_every_surviving_frozen_target() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let admitted_at = 120;
         let left_survivor = TARGET.offset(-3, 0);
         let right_survivor = TARGET.offset(3, 0);
@@ -11654,7 +11703,7 @@ mod tests {
                 orientation: test_orientation(),
             },
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -11735,6 +11784,8 @@ mod tests {
 
     #[test]
     fn adjudicated_precommit_rebase_preserves_exact_package_and_surviving_targets() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let admitted_at = 120;
         let left_survivor = TARGET.offset(-3, 0);
         let right_survivor = TARGET.offset(3, 0);
@@ -11757,7 +11808,7 @@ mod tests {
                 &resources,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .expect("the complete current cluster is admissible")
             .expect("the current cluster produces an exact proposal");
@@ -11792,9 +11843,9 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&fixture_planning),
                 allow_new_operation: false,
-                ..coordination(None)
+                ..coordination(&fixture_planning, None)
             },
         ));
 
@@ -11821,9 +11872,9 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&fixture_planning),
                 allow_new_operation: false,
-                ..coordination(None)
+                ..coordination(&fixture_planning, None)
             },
         ));
 
@@ -11862,6 +11913,8 @@ mod tests {
 
     #[test]
     fn fresh_connected_proposal_is_pure_repeatable_and_keeps_one_minimum_basis() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let battle = production_hungry_connected_obs(120, 10_000);
         let intelligence = knowledge(&battle);
         let resources = ResourceSnapshot::from_observation(&battle);
@@ -11876,7 +11929,7 @@ mod tests {
                     &resources,
                     &intelligence,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 ))
                 .expect("the current connected opportunity is admissible")
                 .expect("the current connected opportunity produces a proposal")
@@ -11933,6 +11986,8 @@ mod tests {
 
     #[test]
     fn reacquired_remembered_target_requires_fresh_connected_adjudication() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let reveal_ground_route = |observation: &mut Observation| {
             observation.known_rock.clear();
             observation.my_buildings.push(building(
@@ -11983,7 +12038,7 @@ mod tests {
                 &resources,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .expect("the reacquired connected objective is admissible")
             .expect("reacquisition produces a fresh proposal");
@@ -11997,7 +12052,7 @@ mod tests {
             &current,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         ));
         assert!(without_acceptance.air_operation().is_some_and(|operation| {
             !operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
@@ -12021,6 +12076,8 @@ mod tests {
 
     #[test]
     fn fresh_connected_proposal_uses_the_coordinators_exact_resource_snapshot() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let battle = production_hungry_connected_obs(120, 10_000);
         let intelligence = knowledge(&battle);
         let mut unfunded_evidence = battle.clone();
@@ -12035,7 +12092,7 @@ mod tests {
                 &resources,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ),
         );
 
@@ -12047,6 +12104,8 @@ mod tests {
 
     #[test]
     fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = production_hungry_connected_obs(120, 1000);
         battle
             .my_units
@@ -12069,7 +12128,7 @@ mod tests {
                     &resources,
                     &intelligence,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 )
                 .with_paid_exclusions(&[(producer, UnitKind::Kestrel, 0)]),
             )
@@ -12108,6 +12167,8 @@ mod tests {
 
     #[test]
     fn connected_package_funds_a_scout_when_reconnaissance_holds_the_only_queued_one() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = production_hungry_connected_obs(120, 1000);
         battle
             .my_units
@@ -12130,7 +12191,7 @@ mod tests {
                     &resources,
                     &intelligence,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 )
                 .with_paid_exclusions(&[(producer, UnitKind::Kestrel, 0)]),
             )
@@ -12155,6 +12216,8 @@ mod tests {
 
     #[test]
     fn fresh_connected_proposal_falls_back_without_committing_the_rejected_target() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = production_hungry_connected_obs(120, 10_000);
         let reachable = TilePos::new(12, 10);
         battle.enemy_buildings = vec![
@@ -12179,9 +12242,9 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     public_map: Some(&public_map),
-                    ..coordination(None)
+                    ..coordination(&fixture_planning, None)
                 },
             ))
             .expect("the lower-ranked reachable target remains admissible")
@@ -12194,6 +12257,8 @@ mod tests {
 
     #[test]
     fn connected_proposal_uses_completed_income_without_double_counting_provider_costs() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = production_hungry_connected_obs(120, 0);
         for (id, anchor) in [(20, TilePos::new(2, 15)), (21, TilePos::new(8, 15))] {
             battle
@@ -12211,7 +12276,7 @@ mod tests {
                 &resources,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .expect("completed Extractors make the minimum forecast-feasible")
             .expect("the forecast-funded operation produces a proposal");
@@ -12264,6 +12329,8 @@ mod tests {
 
     #[test]
     fn connected_claims_retain_only_the_paid_queue_occurrences_the_package_uses() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = production_hungry_connected_obs(120, 10_000);
         let fabricator = battle
             .my_buildings
@@ -12282,7 +12349,7 @@ mod tests {
                 &resources,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .expect("the paid Bombard makes the minimum feasible")
             .expect("the current objective produces a connected proposal");
@@ -12309,6 +12376,8 @@ mod tests {
 
     #[test]
     fn protected_current_scrap_monotonically_reduces_connected_scaling() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut rich = production_hungry_connected_obs(120, 10_000);
         rich.enemy_buildings.extend([
             building(81, 1, BuildingKind::Foundry, TARGET.offset(-2, -2), true),
@@ -12325,7 +12394,7 @@ mod tests {
                 &rich_resources,
                 &intelligence,
                 HOME,
-                coordination(None),
+                coordination(&fixture_planning, None),
             ))
             .expect("the rich opportunity is admissible")
             .expect("the rich opportunity produces a proposal");
@@ -12358,9 +12427,9 @@ mod tests {
                     &intelligence,
                     HOME,
                     StrategicCoordination {
-                        planning: None,
+                        planning: Some(&fixture_planning),
                         protected_current_scrap: reserve,
-                        ..coordination(None)
+                        ..coordination(&fixture_planning, None)
                     },
                 ),
             )
@@ -12380,6 +12449,8 @@ mod tests {
 
     #[test]
     fn connected_admission_reports_the_best_current_target_when_every_candidate_is_rejected() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = developed_connected_obs(120);
         let lower_value = TARGET.offset(0, 5);
         battle.map_height = 26;
@@ -12403,9 +12474,9 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&fixture_planning),
                 public_map: Some(&public_map),
-                ..coordination(None)
+                ..coordination(&fixture_planning, None)
             },
         );
 
@@ -12422,6 +12493,8 @@ mod tests {
 
     #[test]
     fn current_connected_candidate_reports_the_standing_force_gate_only_at_admission() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut on_boundary = obs(120);
         see_approach(&mut on_boundary);
         let current = combat_roster(&on_boundary);
@@ -12435,7 +12508,7 @@ mod tests {
             &on_boundary,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert_eq!(rejected.decision, StrategicDecision::default());
@@ -12461,7 +12534,7 @@ mod tests {
             &off_boundary,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
         assert!(not_considered.rejected_connected_candidate.is_none());
         assert!(planner.air_operation().is_none());
@@ -12469,6 +12542,8 @@ mod tests {
 
     #[test]
     fn no_target_is_idle_without_fabricating_a_connected_rejection() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = developed_connected_obs(120);
         observation.enemy_buildings.clear();
         let intelligence = knowledge(&observation);
@@ -12480,7 +12555,7 @@ mod tests {
             &observation,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert_eq!(result, StrategicThinkResult::default());
@@ -12489,6 +12564,8 @@ mod tests {
 
     #[test]
     fn current_connected_candidate_reports_a_disconnected_ground_route() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = developed_connected_obs(120);
         observation.known_rock = (0..observation.map_height)
             .map(|y| TilePos::new(16, y))
@@ -12503,7 +12580,7 @@ mod tests {
             &observation,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert_eq!(
@@ -12518,6 +12595,8 @@ mod tests {
 
     #[test]
     fn current_connected_candidate_reports_a_missing_completed_provider() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = developed_connected_obs(120);
         observation.my_buildings.clear();
         observation.my_queues.clear();
@@ -12533,9 +12612,9 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&fixture_planning),
                 enlisted: &enlisted,
-                ..coordination(None)
+                ..coordination(&fixture_planning, None)
             },
         );
 
@@ -12875,6 +12954,8 @@ mod tests {
 
     #[test]
     fn connected_package_uses_only_producers_that_can_reach_the_operation() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = developed_connected_obs(120);
         observation
             .my_units
@@ -12954,7 +13035,7 @@ mod tests {
             &target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -12977,7 +13058,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &observation, &intelligence),
+            &planning_context(&fixture_planning, &identity, &observation, &intelligence),
             &mut decision,
         );
 
@@ -13108,6 +13189,8 @@ mod tests {
 
     #[test]
     fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let secondary = TARGET.offset(0, 4);
         let mut observation = developed_connected_obs(120);
         observation.enemy_buildings = vec![
@@ -13187,7 +13270,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -13420,10 +13503,12 @@ mod tests {
 
     #[test]
     fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let primary = TARGET;
         let secondary = TARGET.offset(4, 0);
         let flak = TARGET.offset(9, 0);
-        let mut battle = developed_connected_obs(400);
+        let mut battle = developed_connected_obs(408);
         battle.map_width = 40;
         battle.map_height = 24;
         battle.visible = vec![true; 40 * 24];
@@ -13481,7 +13566,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -13513,7 +13598,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -13540,6 +13625,8 @@ mod tests {
 
     #[test]
     fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let flak_anchor = TARGET.offset(-4, 0);
         let mut observation = developed_connected_obs(120);
         observation
@@ -13611,7 +13698,7 @@ mod tests {
             target,
             &[],
             ConnectedPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 minimum_only: false,
                 campaign_routes: None,
                 orientation: test_orientation(),
@@ -13636,7 +13723,7 @@ mod tests {
             .as_mut()
             .expect("connected package")
             .target_anchors = vec![TARGET];
-        let mut coordination = coordination(None);
+        let mut coordination = coordination(&fixture_planning, None);
         coordination.public_map = Some(&public_map);
         let positioning = planner
             .think_alone_with(
@@ -13737,6 +13824,8 @@ mod tests {
 
     #[test]
     fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let primary = TilePos::new(20, 20);
         let secondary = TilePos::new(24, 20);
         let flak = TilePos::new(29, 20);
@@ -13788,7 +13877,7 @@ mod tests {
             &mut operation,
             &mut plan,
             &AirPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 profile: &identity,
                 tuning: DifficultyTuning::for_level(identity.difficulty),
                 obs: &hidden,
@@ -13830,7 +13919,7 @@ mod tests {
             &mut operation,
             &mut plan,
             &AirPlanningContext {
-                planning: None,
+                planning: Some(&fixture_planning),
                 profile: &identity,
                 tuning: DifficultyTuning::for_level(identity.difficulty),
                 obs: &cleared,
@@ -13852,6 +13941,8 @@ mod tests {
 
     #[test]
     fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa_evidence() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let secondary = TARGET.offset(0, 4);
         let mut observation = obs(120);
         observation
@@ -13874,7 +13965,7 @@ mod tests {
             .target_anchors = vec![TARGET, secondary];
         let identity = profile();
         let context = AirPlanningContext {
-            planning: None,
+            planning: Some(&fixture_planning),
             profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &observation,
@@ -13914,7 +14005,7 @@ mod tests {
         observation.visible[far_index] = true;
         intelligence.update(&observation);
         let context = AirPlanningContext {
-            planning: None,
+            planning: Some(&fixture_planning),
             profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &observation,
@@ -13937,6 +14028,8 @@ mod tests {
 
     #[test]
     fn connected_verify_checks_the_selected_secondary_approach_before_striking() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let secondary = TARGET.offset(0, 4);
         let mut observation = obs(120);
         observation.enemy_buildings =
@@ -13963,7 +14056,7 @@ mod tests {
             .expect("connected package")
             .target_anchors = vec![TARGET, secondary];
         let context = AirPlanningContext {
-            planning: None,
+            planning: Some(&fixture_planning),
             profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &observation,
@@ -14099,6 +14192,8 @@ mod tests {
 
     #[test]
     fn precommit_rederivation_reports_and_recovers_from_untargetable_air_defense() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = obs(301);
         battle.explored.fill(true);
         see_approach(&mut battle);
@@ -14114,7 +14209,7 @@ mod tests {
             &battle,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert!(
@@ -14145,6 +14240,8 @@ mod tests {
 
     #[test]
     fn current_air_defense_first_seen_on_the_deadline_prevents_stale_force_freeze() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = obs(2_500);
         battle.explored.fill(true);
         see_approach(&mut battle);
@@ -14168,7 +14265,7 @@ mod tests {
             &battle,
             &intelligence,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert!(
@@ -14313,6 +14410,8 @@ mod tests {
 
     #[test]
     fn retained_connected_feasibility_defers_without_recovering_but_rejects_lost_producers() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = developed_connected_obs(120);
         observation.scrap = 10_000;
         observation.my_units.clear();
@@ -14321,7 +14420,8 @@ mod tests {
         let plan = connected_test_plan(&observation);
         let op = operation(AirOperationPhase::Assemble, observation.tick);
         let zero = crate::planning::PlanningWork::with_allowance(0);
-        let mut context = planning_context(&identity, &observation, &intelligence);
+        let mut context =
+            planning_context(&fixture_planning, &identity, &observation, &intelligence);
         context.planning = Some(&zero);
         assert!(!connected_package_is_proven_infeasible(
             &op, &plan, &context
@@ -14337,7 +14437,8 @@ mod tests {
         observation.my_buildings.clear();
         observation.my_queues.clear();
         observation.my_queue_progress.clear();
-        let mut context = planning_context(&identity, &observation, &intelligence);
+        let mut context =
+            planning_context(&fixture_planning, &identity, &observation, &intelligence);
         context.planning = Some(&work);
         assert!(connected_package_is_proven_infeasible(&op, &plan, &context));
     }
@@ -14939,6 +15040,8 @@ mod tests {
 
     #[test]
     fn a_wealthy_scattering_like_bot_starts_airborne_bombers_without_lift_support() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let observation = wealthy_island_obs(5_016, 1);
         let intel = knowledge(&observation);
         let mut identity = profile();
@@ -14954,7 +15057,7 @@ mod tests {
             &observation,
             &intel,
             HOME,
-            coordination(None),
+            coordination(&fixture_planning, None),
         );
 
         assert_eq!(
@@ -15011,6 +15114,8 @@ mod tests {
 
     #[test]
     fn a_preexisting_lift_makes_the_second_starting_air_operation_inherit_its_exact_objective() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = wealthy_island_obs(5_016, 1);
         let lift_target = TilePos::new(24, 15);
         observation
@@ -15030,7 +15135,7 @@ mod tests {
             &observation,
             &intel,
             HOME,
-            coordination(Some(&request)),
+            coordination(&fixture_planning, Some(&request)),
         );
 
         let operation = planner
@@ -15144,6 +15249,8 @@ mod tests {
 
     #[test]
     fn an_unexplored_remembered_target_on_the_public_home_landmass_uses_connected_recon() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut first_sighting = wealthy_island_obs(4_992, 1);
         first_sighting.known_rock.clear();
         let mut intel = knowledge(&first_sighting);
@@ -15163,9 +15270,9 @@ mod tests {
             &intel,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&fixture_planning),
                 public_map: Some(&public_map),
-                ..coordination(None)
+                ..coordination(&fixture_planning, None)
             },
         );
 
@@ -15394,6 +15501,8 @@ mod tests {
 
     #[test]
     fn remembered_recon_buys_only_the_scout_not_owned_by_another_question() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let first_sighting = wealthy_island_obs(4800, 1);
         let mut intelligence = knowledge(&first_sighting);
         let mut ghost = wealthy_island_obs(4992, 1);
@@ -15418,7 +15527,7 @@ mod tests {
                     &ghost,
                     &intelligence,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 )
                 .with_paid_exclusions(&foreign),
             );
@@ -15445,6 +15554,8 @@ mod tests {
 
     #[test]
     fn remembered_recon_aborts_when_the_scout_cannot_cross_known_peaks() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let first_sighting = wealthy_island_obs(4_800, 1);
         let mut intel = knowledge(&first_sighting);
         let mut ghost = wealthy_island_obs(4_992, 1);
@@ -15468,7 +15579,7 @@ mod tests {
                     &ghost,
                     &intel,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 ))
                 .is_none(),
             "an unreachable live scout cannot create a phantom carrier floor"
@@ -15500,6 +15611,8 @@ mod tests {
 
     #[test]
     fn prospective_recon_releases_the_carrier_floor_past_the_active_memory_boundary() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let seen = obs(100);
         let mut intel = knowledge(&seen);
         let boundary = seen.tick + ACTIVE_OPERATION_TARGET_MEMORY;
@@ -15524,7 +15637,7 @@ mod tests {
                     &hidden,
                     &intel,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 ))
                 .is_some(),
             "the active-operation memory boundary remains inclusive"
@@ -15540,7 +15653,7 @@ mod tests {
                     &hidden,
                     &intel,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 ))
                 .is_none(),
             "expired active Recon cannot create a phantom carrier floor"
@@ -15560,6 +15673,8 @@ mod tests {
 
     #[test]
     fn prospective_recon_releases_the_carrier_floor_for_a_lost_dispatched_scout() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let seen = obs(100);
         let mut intel = knowledge(&seen);
         let mut hidden = obs(120);
@@ -15589,7 +15704,7 @@ mod tests {
                     &hidden,
                     &intel,
                     HOME,
-                    coordination(None),
+                    coordination(&fixture_planning, None),
                 ))
                 .is_none(),
             "a lost dispatched scout cannot reserve carrier capital for its replacement"
@@ -15610,6 +15725,8 @@ mod tests {
 
     #[test]
     fn remembered_connected_recon_respects_publicly_known_peaks_before_sighting_them() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let first_sighting = developed_connected_obs(96);
         let mut intel = knowledge(&first_sighting);
         let mut ghost = developed_connected_obs(120);
@@ -15634,9 +15751,9 @@ mod tests {
                 &intel,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&fixture_planning),
                     public_map: Some(&public_map),
-                    ..coordination(None)
+                    ..coordination(&fixture_planning, None)
                 },
             )
             .decision;
@@ -16637,6 +16754,8 @@ mod tests {
 
     #[test]
     fn shared_air_support_clears_and_reconnoiters_the_frozen_drop_envelope_before_release() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = wealthy_island_obs(5_000, 1);
         see_approach(&mut battle);
         battle.my_units[0].tile = HOME;
@@ -16676,7 +16795,7 @@ mod tests {
                 &battle,
                 &intel,
                 HOME,
-                coordination(Some(&request)),
+                coordination(&fixture_planning, Some(&request)),
             )
             .decision;
         assert_eq!(
@@ -16714,7 +16833,7 @@ mod tests {
                 &battle,
                 &intel,
                 HOME,
-                coordination(Some(&request)),
+                coordination(&fixture_planning, Some(&request)),
             )
             .decision;
         assert_eq!(
@@ -16747,7 +16866,7 @@ mod tests {
             &battle,
             &intel,
             HOME,
-            coordination(Some(&request)),
+            coordination(&fixture_planning, Some(&request)),
         );
         assert_eq!(
             planner.air_operation().unwrap().phase(),
@@ -16768,7 +16887,7 @@ mod tests {
                 &battle,
                 &intel,
                 HOME,
-                coordination(Some(&request)),
+                coordination(&fixture_planning, Some(&request)),
             )
             .decision;
         assert_eq!(
@@ -16919,6 +17038,8 @@ mod tests {
 
     #[test]
     fn an_opportunistic_strike_does_not_move_the_shared_coordination_anchor() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = wealthy_island_obs(5_000, 1);
         see_approach(&mut battle);
         battle.enemy_buildings = vec![building(
@@ -16949,7 +17070,7 @@ mod tests {
                 &battle,
                 &intel,
                 HOME,
-                coordination(Some(&request)),
+                coordination(&fixture_planning, Some(&request)),
             )
             .decision;
 
@@ -16966,6 +17087,8 @@ mod tests {
 
     #[test]
     fn an_exact_strike_validates_the_selected_cluster_target_not_the_operation_anchor() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut battle = obs(5_000);
         see_approach(&mut battle);
         let secondary = TARGET.offset(3, 0);
@@ -16990,7 +17113,7 @@ mod tests {
             live_strike_target(&active.op, &active.plan, &intel).map(|target| target.anchor),
             Some(secondary)
         );
-        let mut coordination = coordination(None);
+        let mut coordination = coordination(&fixture_planning, None);
         coordination.public_map = Some(&public_map);
 
         let decision = planner
@@ -17543,6 +17666,8 @@ mod tests {
 
     #[test]
     fn connected_selection_excludes_secondary_aa_sealed_by_peaks() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let primary = TilePos::new(20, 20);
         let secondary = TilePos::new(24, 20);
         let flak = TilePos::new(29, 20);
@@ -17595,7 +17720,7 @@ mod tests {
             .as_mut()
             .expect("connected package")
             .target_anchors = selection.target_anchors;
-        let mut coordination = coordination(None);
+        let mut coordination = coordination(&fixture_planning, None);
         coordination.public_map = Some(&public_map);
 
         let decision = planner
@@ -18033,6 +18158,8 @@ mod tests {
 
     #[test]
     fn a_siege_identity_trains_available_avalanches_for_its_operation() {
+        let fixture_planning = crate::planning::PlanningWork::default();
+
         let mut observation = obs(300);
         observation.visible.fill(true);
         observation.explored.fill(true);
@@ -18061,7 +18188,7 @@ mod tests {
         procure_connected_in_test(
             &operation,
             &plan,
-            &planning_context(&identity, &observation, &intelligence),
+            &planning_context(&fixture_planning, &identity, &observation, &intelligence),
             &mut decision,
         );
 
@@ -18352,7 +18479,7 @@ mod tests {
 
     #[test]
     fn active_paid_operations_share_one_stale_target_boundary_across_difficulties() {
-        let seen = obs(100);
+        let seen = obs(132);
         let mut intel = knowledge(&seen);
         let boundary = seen.tick + ACTIVE_OPERATION_TARGET_MEMORY;
         let mut hidden = obs(boundary);

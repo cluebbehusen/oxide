@@ -3595,6 +3595,7 @@ impl<'a> ProductionPortfolioSearch<'a> {
         })
     }
 
+    #[cfg(test)]
     fn is_frontier(&self, job_index: usize, remaining: &[bool]) -> bool {
         let job = &self.jobs[job_index];
         if self.jobs.iter().enumerate().any(|(index, other)| {

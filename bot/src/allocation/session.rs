@@ -3890,7 +3890,7 @@ mod tests {
                 &intelligence,
                 HOME,
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&crate::planning::PlanningWork::default()),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: true,
@@ -3953,7 +3953,7 @@ mod tests {
                 &intelligence,
                 TilePos::new(3, 10),
                 StrategicCoordination {
-                    planning: None,
+                    planning: Some(&crate::planning::PlanningWork::default()),
                     enlisted: &[],
                     lift_support: None,
                     allow_new_operation: false,
@@ -4258,7 +4258,7 @@ mod tests {
             &intelligence,
             HOME,
             StrategicCoordination {
-                planning: None,
+                planning: Some(&crate::planning::PlanningWork::default()),
                 enlisted: &outcome.planner_claims,
                 lift_support: None,
                 allow_new_operation: outcome.connected_continues
