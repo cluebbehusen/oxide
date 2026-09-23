@@ -14,9 +14,9 @@ pub enum BotPhase {
     Strategy,
     /// Cross-domain prepare, resolve, and commit.
     Allocation,
-    /// Ground and rank optional defensive construction.
+    /// Check layout eligibility, ground, rank, and filter fresh defensive construction.
     Defense,
-    /// Ground and rank optional economic investment.
+    /// Prepare worker exclusions and air work, then ground and rank fresh economic investment.
     Economy,
     /// Lower funded intentions to ordinary commands.
     Executive,

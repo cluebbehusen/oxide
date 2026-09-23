@@ -4,7 +4,7 @@ use oxide_protocol::{FrameProfileView, FrameProfileWindowView, SlowFrameView, Ti
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-const MAX_SAMPLES: usize = 16_384;
+const MAX_SAMPLES: usize = 65_536;
 
 #[derive(Debug, Clone)]
 struct FrameSample {
@@ -243,6 +243,34 @@ fn summarize(mut values: Vec<f64>) -> TimingSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_window_retains_high_rate_frames_between_simulation_ticks() {
+        let mut profiler = FrameProfiler::new(true);
+        profiler.arm(0, 480).unwrap();
+        assert!(profiler.take_start_barrier());
+        for tick in 0..480 {
+            for frame in 0..64 {
+                profiler.record(FrameObservation {
+                    mode: "playing",
+                    active_playing: true,
+                    tick_start: tick,
+                    tick_end: tick + u64::from(frame == 63),
+                    work_ms: 0.2,
+                    units: 1,
+                    buildings: 1,
+                });
+            }
+        }
+        let view = profiler.snapshot(false);
+        assert_eq!(view.frames, 480 * 64);
+        assert_eq!(view.tick_start, 0);
+        assert_eq!(view.tick_end, 480);
+        assert_eq!(view.ticks_presented, 480);
+        let window = view.window.unwrap();
+        assert!(window.complete);
+        assert!(!window.truncated);
+    }
 
     #[test]
     fn snapshot_reports_native_work_and_can_reset_the_window() {
