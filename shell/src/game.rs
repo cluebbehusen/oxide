@@ -10,7 +10,7 @@ use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
     TICKS_PER_SECOND, UnitId, UnitKind,
 };
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
 
 pub(crate) fn finish_recording(writer: &oxide_kit::recovery::RecoveryWriter, tick: u64) {
     writer.finish(tick);
@@ -27,15 +27,14 @@ pub(crate) fn finish_recording(writer: &oxide_kit::recovery::RecoveryWriter, tic
 
 /// Seconds per sim tick.
 pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
-/// Ticks a single frame may run before we let rendering catch up. Sized
-/// so the advertised 64x speed cap is real at 60 fps (64 × 20 tps ÷ 60);
-/// ticks are cheap enough that a full frame of them costs well under 1 ms.
+/// Catch-up limit before returning to presentation. Supports the 64x speed cap
+/// at 60 fps; expensive ticks can still exceed the frame budget.
 const MAX_TICKS_PER_FRAME: u32 = 24;
 
 pub use oxide_kit::GameReplay;
 
 /// Immutable access to the authoritative simulation outside this module.
-pub(crate) struct ReadOnlyState(State);
+pub(crate) struct ReadOnlyState(Arc<State>);
 
 impl Deref for ReadOnlyState {
     type Target = State;
@@ -48,7 +47,7 @@ impl Deref for ReadOnlyState {
 #[cfg(test)]
 impl std::ops::DerefMut for ReadOnlyState {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        Arc::get_mut(&mut self.0).expect("bot decision must finish before world mutation")
     }
 }
 
@@ -109,7 +108,8 @@ pub struct Game {
     /// The sim. Mutable access stays inside `Game` outside test fixtures.
     pub(crate) state: ReadOnlyState,
     /// Command sources for bot-flagged players.
-    pub bots: Vec<SeatBot>,
+    bots: Vec<SeatBot>,
+    bot_decision: Option<oxide_kit::bot_execution::PendingDecision>,
     /// Every command of the session, tick-stamped — always recording.
     pub recorder: GameReplay,
     pub(crate) recovery_root: Option<std::path::PathBuf>,
@@ -117,7 +117,7 @@ pub struct Game {
     recovery_warned: bool,
     diagnostics_warned: bool,
     pub(crate) recovery_source: Option<std::path::PathBuf>,
-    pub(crate) diagnostics: Option<oxide_kit::diagnostics::Recorder>,
+    pub(crate) diagnostics: Option<Arc<oxide_kit::diagnostics::Recorder>>,
     /// Commands staged for the next tick (human + debug socket).
     pub(crate) pending: PendingCommands,
     /// Whether the current session content is already autosaved; a new
@@ -175,7 +175,8 @@ impl Game {
         self.presentation.drop_presentation(&self.state);
     }
     pub(crate) fn replace_state_after_jump(&mut self, state: &State) {
-        self.state.0 = state.clone();
+        self.bot_decision = None;
+        self.state.0 = Arc::new(state.clone());
         self.presentation.reset_after_jump(&self.state);
     }
 
@@ -210,8 +211,9 @@ impl Game {
         let presentation = Presentation::new(&state, human, viewport);
         Ok(Self {
             scenario,
-            state: ReadOnlyState(state),
+            state: ReadOnlyState(Arc::new(state)),
             bots,
+            bot_decision: None,
             recorder,
             pending: PendingCommands(Vec::new()),
             autosave_done: false,
@@ -355,7 +357,7 @@ impl Game {
                 match oxide_kit::diagnostics::Recorder::start(recording.clone()) {
                     Ok(recorder) => {
                         recorder.install_panic_hook();
-                        self.diagnostics = Some(recorder);
+                        self.diagnostics = Some(Arc::new(recorder));
                     }
                     Err(error) => {
                         self.diagnostics_warned = true;
@@ -453,8 +455,8 @@ impl Game {
     }
 
     /// Runs exactly one tick: bots think, staged commands drain, everything
-    /// is recorded, presentation caches update. The only place `state.current_tick()`
-    /// is called.
+    /// is recorded, and presentation caches update. This owns the live world's
+    /// only authoritative state transition.
     pub fn do_tick(&mut self) -> oxide_sim::TickReport {
         self.start_recovery();
         // New ticks make any earlier autosave stale.
@@ -472,13 +474,15 @@ impl Game {
             .map(|pc| pc.command.clone())
             .collect();
         let bot_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Bots);
-        commands.extend(oxide_kit::bot_execution::commands_observed(
-            &self.state,
-            &mut self.bots,
-            self.diagnostics
-                .as_ref()
-                .filter(|recorder| recorder.enabled()),
-        ));
+        let observer = self
+            .diagnostics
+            .as_deref()
+            .filter(|recorder| recorder.enabled());
+        commands.extend(if let Some(decision) = self.bot_decision.take() {
+            decision.finish(&self.state.0, &mut self.bots, observer)
+        } else {
+            oxide_kit::bot_execution::commands_observed(&self.state, &mut self.bots, observer)
+        });
         drop(bot_scope);
         for command in &commands {
             self.recorder
@@ -488,7 +492,9 @@ impl Game {
             recovery.prepared(self.state.current_tick(), &commands);
         }
         let sim_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Simulation);
-        let report = self.state.0.tick(&commands);
+        let report = Arc::get_mut(&mut self.state.0)
+            .expect("bot decision retained the world after collection")
+            .tick(&commands);
         drop(sim_scope);
         if let Some(recovery) = &self.recovery {
             recovery.completed(self.state.current_tick());
@@ -620,7 +626,20 @@ impl Game {
         if ran == MAX_TICKS_PER_FRAME {
             self.presentation.accum = self.presentation.accum.min(TICK_DT);
         }
+        if self.presentation.accum < TICK_DT {
+            self.prepare_bot_decision();
+        }
         false
+    }
+
+    fn prepare_bot_decision(&mut self) {
+        if self.bot_decision.is_none() {
+            self.bot_decision = oxide_kit::bot_execution::prepare(
+                &self.state.0,
+                &self.bots,
+                self.diagnostics.clone(),
+            );
+        }
     }
 
     /// Fast-forwards `n` ticks immediately, pause state notwithstanding
@@ -771,7 +790,7 @@ mod tests {
             .unwrap()
             .replay;
         let mut resumed =
-            Game::from_replay_observed(replay, original.diagnostics.as_ref()).unwrap();
+            Game::from_replay_observed(replay, original.diagnostics.as_deref()).unwrap();
         assert_eq!(original.hash_hex(), resumed.hash_hex());
         original.advance_ticks(120);
         resumed.advance_ticks(120);
@@ -1221,7 +1240,7 @@ mod tests {
         assert!(
             angle_delta(game.view().draw_hull_heading(id, 1.0), std::f32::consts::PI).abs() < 1e-5
         );
-        game.replace_state_after_jump(&game.state.0.clone());
+        game.replace_state_after_jump(&(*game.state).clone());
         assert_eq!(
             game.view().draw_hull_heading(id, 0.0),
             game.view().draw_hull_heading(id, 1.0)
@@ -1465,7 +1484,7 @@ mod tests {
         assert!(parked.landed, "premise: the idle Condor parks itself");
         let expected =
             f32::from(parked.heading) * std::f32::consts::TAU / 256.0 + std::f32::consts::FRAC_PI_2;
-        let snapshot = game.state.0.clone();
+        let snapshot = (*game.state).clone();
 
         game.replace_state_after_jump(&snapshot);
         assert_eq!(

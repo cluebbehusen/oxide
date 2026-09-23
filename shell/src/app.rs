@@ -604,7 +604,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             Game::from_replay(replay)?
         };
         game.recovery = recording;
-        game.diagnostics = diagnostics;
+        game.diagnostics = diagnostics.map(std::sync::Arc::new);
         game
     } else {
         let scenario = match &args.scenario {
@@ -1045,7 +1045,7 @@ fn visible_diagnostics<'a>(
 ) -> Option<&'a oxide_kit::diagnostics::Recorder> {
     match screen {
         Screen::Playback(playback) => playback.diagnostics.as_ref(),
-        _ => app.game.diagnostics.as_ref(),
+        _ => app.game.diagnostics.as_deref(),
     }
 }
 
@@ -1572,7 +1572,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             Request::LoadReplay { path } => oxide_kit::load_replay(&path)
                 .map_err(|err| format!("loading replay {path}: {err}"))
                 .and_then(|replay| {
-                    Game::from_replay_observed(replay, game.diagnostics.as_ref())
+                    Game::from_replay_observed(replay, game.diagnostics.as_deref())
                         .map_err(|err| format!("resuming replay: {err:#}"))
                 })
                 .map(|fresh| {

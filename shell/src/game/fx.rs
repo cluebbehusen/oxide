@@ -1514,13 +1514,13 @@ mod tests {
             let mut live = Game::with_viewport(scenario, Vec2::new(1280.0, 800.0)).unwrap();
             let mut wire = serde_json::to_value(&*live.state).unwrap();
             wire["units"][0]["hp"] = serde_json::json!(1);
-            live.state.0 = serde_json::from_value(wire).unwrap();
+            live.state.0 = std::sync::Arc::new(serde_json::from_value(wire).unwrap());
             let mut playback = Presentation::new(
                 &live.state,
                 live.presentation.human,
                 Vec2::new(1280.0, 800.0),
             );
-            let mut reference = live.state.0.clone();
+            let mut reference = (*live.state).clone();
             let mut died = false;
             for _ in 0..80 {
                 let expected_body = UnitBody::capture(
@@ -1846,13 +1846,13 @@ mod tests {
             .find(|b| b["kind"] == "bastion")
             .unwrap();
         casualty["hp"] = serde_json::json!(1);
-        live.state.0 = serde_json::from_value(wire).unwrap();
+        live.state.0 = std::sync::Arc::new(serde_json::from_value(wire).unwrap());
         let mut playback = Presentation::new(
             &live.state,
             live.presentation.human,
             Vec2::new(1280.0, 800.0),
         );
-        let mut reference = live.state.0.clone();
+        let mut reference = (*live.state).clone();
         let id = live
             .state
             .buildings()
@@ -2136,7 +2136,7 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .unwrap();
-        game.state.0.tick(&[]);
+        game.state.tick(&[]);
         let at = game.state.units()[0].pos;
         for kind in [
             oxide_sim::ProjectileKind::Missile,
