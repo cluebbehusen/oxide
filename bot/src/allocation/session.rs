@@ -243,7 +243,7 @@ pub(crate) struct AdvancedPlannerWork {
 #[derive(Clone)]
 pub(crate) struct PlannerSnapshots {
     strategy: StrategicPlanner,
-    team: TeamReliefPlanner,
+    team: crate::team::TeamReliefCheckpoint,
     lifts: LiftPlanner,
     raids: RaidPlanner,
 }
@@ -257,7 +257,7 @@ impl PlannerSnapshots {
     ) -> Self {
         Self {
             strategy: strategy.clone(),
-            team: team.clone(),
+            team: team.ownership_checkpoint(),
             lifts: lifts.clone(),
             raids: raids.clone(),
         }
@@ -267,9 +267,7 @@ impl PlannerSnapshots {
         restore_ownership(self.strategy, participants.strategy, |planner| {
             &mut planner.outcomes
         });
-        restore_ownership(self.team, participants.team, |planner| {
-            &mut planner.outcomes
-        });
+        participants.team.restore_ownership(self.team);
         restore_ownership(self.lifts, participants.lifts, |planner| {
             &mut planner.outcomes
         });
@@ -3392,6 +3390,7 @@ pub(crate) fn test_allocate_policy(
 
 #[cfg(test)]
 mod tests {
+    mod relief;
     mod retained;
     use super::super::{
         Confidence, DeferrableCapitalClaim, ExecutionSafety, ProposalCase, StrategicValue,
@@ -4989,7 +4988,7 @@ mod tests {
             },
             advanced(PlannerSnapshots {
                 strategy: original_strategy,
-                team: original_team,
+                team: original_team.ownership_checkpoint(),
                 lifts: original_lifts,
                 raids: original_raids,
             }),
@@ -5387,7 +5386,7 @@ mod tests {
             },
             advanced(PlannerSnapshots {
                 strategy: original_strategy.clone(),
-                team: original_team.clone(),
+                team: original_team.ownership_checkpoint(),
                 lifts: original_lifts.clone(),
                 raids: original_raids.clone(),
             }),
