@@ -316,7 +316,7 @@ fn identical_inputs_think_identical_intents() {
     let scenario = Scenario::skirmish();
     let state = scenario.build().unwrap();
     let obs = Observation::omniscient(&state, PlayerId(0));
-    let dials = Dials::full();
+    let dials = Dials::default();
     let mut first = UtilityPolicy::new();
     let mut second = UtilityPolicy::new();
     assert_eq!(
@@ -334,7 +334,8 @@ fn a_think_never_plans_past_the_bank() {
         let me = PlayerId(player);
         let obs = Observation::omniscient(&state, me);
         let mut policy = UtilityPolicy::new();
-        let intents = policy.think_residual(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
+        let intents =
+            policy.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map(&obs));
         let planned: u32 = intents.iter().map(planned_cost).sum();
         assert!(
             planned <= obs.scrap,
@@ -577,7 +578,7 @@ fn a_starved_commander_liquidates_its_walls_for_one_more_wave() {
     let state = scenario.build().unwrap();
     let obs = Observation::fog_honest(&state, PlayerId(0));
     let mut policy = UtilityPolicy::new();
-    let intents = policy.think_residual(&Dials::full(), &obs, &[], &[], &[], &public_map(&obs));
+    let intents = policy.think_residual(&Dials::default(), &obs, &[], &[], &[], &public_map(&obs));
     let turret = state
         .buildings()
         .iter()
@@ -1646,12 +1647,8 @@ fn idle_producers_do_not_originate_residual_reclaimers() {
     ] {
         add_building(&mut obs, observed_building(id, kind, anchor, true));
     }
-    let mut dials = Dials::full();
-    dials.tech = false;
-    dials.scouting = false;
-    dials.turret_response = false;
-    dials.upgrades = false;
-    dials.radar = false;
+    let dials = Dials::default();
+
     for offset in 0..3 {
         add_building(
             &mut obs,
@@ -1719,12 +1716,7 @@ fn pending_reclaimers_count_once_toward_future_income() {
     );
     obs.my_units[0].site = Some(site);
     obs.my_units[1].founding = Some((BuildingKind::Reclaimer, TilePos::new(16, 3)));
-    let mut dials = Dials::full();
-    dials.tech = false;
-    dials.scouting = false;
-    dials.turret_response = false;
-    dials.upgrades = false;
-    dials.radar = false;
+    let dials = Dials::default();
 
     let projected_sites = player_facing_intents(&dials, &obs);
     assert!(

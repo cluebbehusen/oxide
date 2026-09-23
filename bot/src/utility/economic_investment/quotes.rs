@@ -39,8 +39,7 @@ impl<'a> EconomicQuotes<'a> {
         let context = self.context;
 
         let obs = context.obs;
-        if !dials.expansion
-            || policy.state.foundry_saving.is_some()
+        if policy.state.foundry_saving.is_some()
             || foundry_context.available_builders.is_empty()
             || !obs
                 .my_buildings

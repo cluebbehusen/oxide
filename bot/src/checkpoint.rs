@@ -1,8 +1,7 @@
 //! Versioned controller persistence. Query caches are rebuilt; planning progress is retained.
 use serde::{Deserialize, Serialize};
 
-/// Wire and controller-continuation revision. Changes to persisted layouts or
-/// their interpretation require a new revision and an explicit migration.
+/// Wire and controller-continuation revision.
 pub const VERSION: u32 = 1;
 /// Maximum encoded memory accepted for one controller.
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;

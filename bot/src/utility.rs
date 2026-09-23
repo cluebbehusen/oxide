@@ -114,8 +114,6 @@ const TECH_RESERVE: u32 = 70;
 /// hoard scrap in trains that cannot be redirected. The strategic air
 /// and lift planners keep their own equal constants for their queues.
 pub(crate) const SHALLOW_QUEUE_DEPTH: usize = 2;
-/// Ground-attack wings gathered before an air raid launches.
-const AIR_WING: usize = 3;
 /// How far around home the policy counts remaining salvage (Chebyshev)
 /// when judging whether the patches are running dry.
 const HOME_SALVAGE_RADIUS: i32 = 14;
@@ -451,7 +449,7 @@ struct DeferredClaimContext<'a> {
     building_contacts: Option<&'a [BuildingContact]>,
     public_map: Option<&'a PublicMapBriefing>,
 }
-const ADAPTIVE_HARVESTER_BOOTSTRAP: u32 = 4;
+const HARVESTER_BOOTSTRAP: u32 = 4;
 
 /// Static assets the bot may liquidate when its economy is exhausted,
 /// ordered from least to most strategically costly.
@@ -466,45 +464,31 @@ const SALVAGE_PRIORITY: [BuildingKind; 6] = [
 
 /// The policy's tunable considerations. The fairness rule is that
 /// dials change *thinking* — never income, vision, or combat math.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dials {
     /// Think every N ticks.
     pub cadence: u64,
-    /// Harvesters eventually wanted alive or queued. Adaptive identities share
+    /// Harvesters eventually wanted alive or queued. All identities share
     /// a four-worker bootstrap before renewable income lets this appetite vary.
     pub harvester_target: u32,
     /// Fighters gathered before an army is committed.
     pub army_size: u32,
     /// Ordinary ground strength required before voluntary capital spending,
-    /// measured in full-health Sentinel equivalents. Focused policy fixtures
-    /// can use zero to isolate work from the opening commitment.
+    /// measured in full-health Sentinel equivalents.
     pub minimum_core_equivalents: u32,
     /// Ground-attack flyers gathered before an ordinary harassment sortie.
     pub air_wing: usize,
-    /// Bombers kept alive or queued once the late-tech gate stands.
-    pub bomber_target: usize,
-    /// Mobile artillery kept alive or queued.
-    pub siege_target: usize,
-    /// Ceiling on Tenders kept alive or queued. One is the baseline; each
-    /// additional Tender requires a distinct reachable wounded combatant.
-    pub support_target: usize,
-    /// Fast ground raiders kept alive or queued.
-    pub raider_target: usize,
 
     /// Appetite for expansion payback and its supporting security investment.
     /// This changes when a legal expansion becomes worthwhile, never whether
     /// the controller is allowed to build one.
     pub expansion_greed: u8,
-    /// Use the player-facing multi-factory composition scheduler.
-    pub adaptive_composition: bool,
+
     /// Fixed difficulty estimate scale for own ground strength, in
     /// ten-thousandths. Easier rungs are deliberately conservative;
     /// personality never changes this value.
     pub own_strength_scale: u16,
-    /// Estimate scale for observed hostile strength, in ten-thousandths.
-    /// Player-facing rungs use the same exact hostile observation; custom and
-    /// QA policies retain the dial for focused probes.
-    pub enemy_strength_scale: u16,
+
     /// Ticks for which the largest recently observed hostile ground force
     /// remains available to strategic planning. The voluntary attack gate
     /// consumes only the shared short-lived portion of this memory.
@@ -513,47 +497,10 @@ pub struct Dials {
     pub coordinated_focus: bool,
     /// Coordinate overlapping static defenses onto one visible threat.
     pub coordinated_defense_focus: bool,
-    /// Build a Fabricator and use the advanced roster.
-    pub tech: bool,
-    /// Answer harvester raids with turrets.
-    pub turret_response: bool,
-    /// Keep a scout sweeping the map.
-    pub scouting: bool,
-    /// Answer air threats: anti-air crawlers and flak turrets.
-    pub aa_response: bool,
-    /// Raise an Array once teched — the eyes for blips and long guns.
-    pub radar: bool,
-    /// Build Reclaimers when the patches near home run dry.
-    pub reclaimers: bool,
-    /// Weld wounded buildings instead of watching them rust.
-    pub repair: bool,
-    /// Fly ground-attack wings at the enemy economy.
-    pub air_harass: bool,
-    /// Liquidate static defense when the war outlives the economy.
-    pub salvage: bool,
-    /// Climb the full tree: Airworks after the Fabricator, Crucible
-    /// after that, and tier-three metal once the Crucible stands.
-    pub deep_tech: bool,
-    /// Restore derelict Extractor frames when known and affordable.
-    pub extractors: bool,
-    /// Lift Reclaimers and Turrets one rung when the bank runs rich.
-    pub upgrades: bool,
-    /// Raise expansion Foundries toward unserved salvage frontiers.
-    pub expansion: bool,
-    /// Run a Skyhook shuttle at a known enemy base no ground route
-    /// reaches: buy the lifter, load a squad, drop it on their shore.
-    pub ferry: bool,
-    /// Bury Scuttle Charges along the ground approach once raided or
-    /// once the enemy's road home is known.
-    pub mines: bool,
 }
 
 fn immediate_harvester_target(dials: &Dials) -> u32 {
-    if dials.adaptive_composition {
-        dials.harvester_target.min(ADAPTIVE_HARVESTER_BOOTSTRAP)
-    } else {
-        dials.harvester_target
-    }
+    dials.harvester_target.min(HARVESTER_BOOTSTRAP)
 }
 
 fn expansion_economy(
@@ -580,84 +527,17 @@ fn expansion_economy(
     }
 }
 
+impl Default for Dials {
+    fn default() -> Self {
+        let config = oxide_sim::scenario::BotConfig::default();
+        Self::scripted(
+            &ResolvedProfile::resolve(config),
+            DifficultyTuning::for_level(config.difficulty),
+        )
+    }
+}
+
 impl Dials {
-    /// Default strategic channels before difficulty and personality shaping.
-    pub fn balanced() -> Self {
-        Self {
-            cadence: 8,
-            harvester_target: 5,
-            army_size: 5,
-            minimum_core_equivalents: 0,
-            air_wing: AIR_WING,
-            bomber_target: 2,
-            siege_target: 2,
-            support_target: 1,
-            raider_target: 4,
-
-            expansion_greed: 50,
-            adaptive_composition: false,
-            own_strength_scale: 10_000,
-            enemy_strength_scale: 10_000,
-            opponent_force_memory: 0,
-            coordinated_focus: true,
-            coordinated_defense_focus: false,
-            tech: true,
-            turret_response: true,
-            scouting: true,
-            aa_response: true,
-            radar: true,
-            reclaimers: true,
-            repair: true,
-            air_harass: true,
-            salvage: true,
-            deep_tech: true,
-            extractors: true,
-            upgrades: true,
-            expansion: true,
-            ferry: true,
-            mines: true,
-        }
-    }
-
-    /// The core channel set used by focused policy tests. Later strategic
-    /// channels stay off so each test can enable them deliberately.
-    pub fn full() -> Self {
-        Self {
-            cadence: 8,
-            harvester_target: 4,
-            army_size: 5,
-            minimum_core_equivalents: 0,
-            air_wing: AIR_WING,
-            bomber_target: 2,
-            siege_target: 2,
-            support_target: 1,
-            raider_target: 4,
-
-            expansion_greed: 50,
-            adaptive_composition: false,
-            own_strength_scale: 10_000,
-            enemy_strength_scale: 10_000,
-            opponent_force_memory: 0,
-            coordinated_focus: true,
-            coordinated_defense_focus: false,
-            tech: true,
-            turret_response: true,
-            scouting: true,
-            aa_response: true,
-            radar: true,
-            reclaimers: true,
-            repair: true,
-            air_harass: true,
-            salvage: true,
-            deep_tech: false,
-            extractors: false,
-            upgrades: false,
-            expansion: false,
-            ferry: false,
-            mines: false,
-        }
-    }
-
     /// The full legal strategy surface shaped by one player-facing identity.
     /// Trait scores redistribute priorities under a fixed budget; they never
     /// alter costs, prerequisites, information, or combat rules.
@@ -682,30 +562,14 @@ impl Dials {
             army_size: stance_army,
             minimum_core_equivalents: tuning.minimum_core_equivalents,
             air_wing: (5usize.saturating_sub(usize::from(traits.air) / 25)).clamp(2, 4),
-            bomber_target: (1 + usize::from(traits.air) / 30).clamp(1, 4),
-            siege_target: 1
-                + usize::from(traits.siege >= 45)
-                + usize::from(traits.siege >= 60)
-                + usize::from(traits.siege >= 75),
-            support_target: 1
-                + usize::from(traits.support >= 50)
-                + usize::from(traits.support >= 65),
-            // Guile changes how often a small raid forms and how jealously it
-            // preserves its force, not how much combat strength it removes
-            // from the ordinary army channel.
-            raider_target: 2,
-
             expansion_greed: traits.greed,
-            adaptive_composition: true,
             own_strength_scale: tuning
                 .underestimate_own(10_000)
                 .try_into()
                 .expect("bounded strength scale fits u16"),
-            enemy_strength_scale: 10_000,
             opponent_force_memory: tuning.opponent_force_memory,
             coordinated_focus: tuning.coordinated_focus,
             coordinated_defense_focus: tuning.coordinated_defense_focus,
-            ..Self::balanced()
         }
     }
 }
@@ -881,7 +745,6 @@ struct ThinkContext<'a> {
     enlisted: &'a [UnitId],
     reserved: &'a [UnitId],
     combat_core_exclusions: &'a [UnitId],
-    outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
     foundry: FoundryHandoff,
     voluntary_scrap_guard: Option<u32>,
@@ -923,7 +786,6 @@ pub(super) struct StrategicUtilityContext<'a> {
     unit_contacts: &'a [UnitContact],
     building_contacts: &'a [BuildingContact],
     public_map: &'a PublicMapBriefing,
-    outstanding_air_production_ticks: Option<u64>,
     prior_scrap_commitment: u32,
     foundry: FoundryHandoff,
     voluntary_scrap_guard: Option<u32>,
@@ -953,7 +815,6 @@ impl<'a> StrategicUtilityContext<'a> {
             unit_contacts,
             building_contacts,
             public_map,
-            outstanding_air_production_ticks: None,
             prior_scrap_commitment: 0,
             foundry: FoundryHandoff::default(),
             voluntary_scrap_guard: None,
@@ -964,15 +825,6 @@ impl<'a> StrategicUtilityContext<'a> {
 
     pub(super) const fn with_combat_core_exclusions(mut self, exclusions: &'a [UnitId]) -> Self {
         self.combat_core_exclusions = exclusions;
-        self
-    }
-
-    /// Supplies the work still owed by one active, justified strategic air
-    /// plan. The utility layer uses this only to buy ordinary production
-    /// capacity; `None` keeps speculative or inactive plans from raising
-    /// factories on their own.
-    pub(super) fn with_outstanding_air_production_ticks(mut self, ticks: u64) -> Self {
-        self.outstanding_air_production_ticks = Some(ticks);
         self
     }
 
@@ -1080,12 +932,11 @@ impl UtilityPolicy {
 
     fn has_honest_ground_objective(
         &self,
-        dials: &Dials,
         obs: &Observation,
         home: TilePos,
         public_map: Option<&PublicMapBriefing>,
     ) -> bool {
-        if self.ordinary_ground_has_work(dials, obs, home) {
+        if self.ordinary_ground_has_work(obs, home) {
             return true;
         }
         let Some(briefing) = public_map else {
@@ -1155,7 +1006,7 @@ impl UtilityPolicy {
         intents: &[Intent],
     ) -> u32 {
         if dials.minimum_core_equivalents == 0
-            || !self.has_honest_ground_objective(dials, obs, home, Some(public_map))
+            || !self.has_honest_ground_objective(obs, home, Some(public_map))
             || Self::shallow_sentinel_reinforcement(obs, intents)
         {
             return 0;
@@ -1524,7 +1375,6 @@ impl UtilityPolicy {
     fn opening_core_deferred_claims(
         &self,
         obs: &Observation,
-        dials: &Dials,
         context: DeferredClaimContext<'_>,
         intents: &mut Vec<Intent>,
     ) -> Vec<(BuildingKind, TilePos)> {
@@ -1548,10 +1398,10 @@ impl UtilityPolicy {
             return Vec::new();
         };
 
-        let ground_emergency = dials.turret_response
-            && self.current_emergency_defense_required(BuildingKind::Turret, obs, public_map);
-        let air_emergency = dials.aa_response
-            && self.current_emergency_defense_required(BuildingKind::FlakTurret, obs, public_map);
+        let ground_emergency =
+            self.current_emergency_defense_required(BuildingKind::Turret, obs, public_map);
+        let air_emergency =
+            self.current_emergency_defense_required(BuildingKind::FlakTurret, obs, public_map);
         let mut kept_home_extractor = false;
         let mut kept_ground_emergency = false;
         let mut kept_air_emergency = false;
@@ -1803,7 +1653,6 @@ impl UtilityPolicy {
                 enlisted,
                 reserved: context.reserved,
                 combat_core_exclusions: context.combat_core_exclusions,
-                outstanding_air_production_ticks: context.outstanding_air_production_ticks,
                 prior_scrap_commitment: context.prior_scrap_commitment,
                 foundry: context.foundry,
                 voluntary_scrap_guard: context.voluntary_scrap_guard,
@@ -1832,7 +1681,6 @@ impl UtilityPolicy {
             enlisted,
             reserved,
             combat_core_exclusions,
-            outstanding_air_production_ticks,
             prior_scrap_commitment,
             foundry,
             voluntary_scrap_guard,
@@ -1893,14 +1741,12 @@ impl UtilityPolicy {
             );
         }
         let mut protected = strategic_reserved.to_vec();
-        {
-            protected.extend(self.state.evacuating_workers.iter().copied());
-            protected.extend(
-                self.state
-                    .retreating_contested_scout
-                    .map(|retreat| retreat.unit),
-            );
-        }
+        protected.extend(self.state.evacuating_workers.iter().copied());
+        protected.extend(
+            self.state
+                .retreating_contested_scout
+                .map(|retreat| retreat.unit),
+        );
         protected.sort_unstable();
         protected.dedup();
         let reserved = protected.as_slice();
@@ -1934,7 +1780,7 @@ impl UtilityPolicy {
         }
 
         let has_ground_objective = dials.minimum_core_equivalents > 0
-            && self.has_honest_ground_objective(dials, obs, home_tile, mode.public_map);
+            && self.has_honest_ground_objective(obs, home_tile, mode.public_map);
 
         let opening_core_at_start = combat_core_status(
             obs,
@@ -1947,7 +1793,6 @@ impl UtilityPolicy {
         let retained_deferred_claims = if opening_core_active {
             self.opening_core_deferred_claims(
                 obs,
-                dials,
                 DeferredClaimContext {
                     home: home_tile,
                     unit_contacts: mode.unit_contacts,
@@ -1986,19 +1831,15 @@ impl UtilityPolicy {
         foundry.current_scrap = utility_admission_scrap.saturating_sub(deferred_scrap);
         let mut budget =
             foundry.spending_after(utility_admission_scrap.saturating_sub(deferred_scrap));
-        let expansion_capital_promised;
 
         let harvesters = obs
             .my_units
             .iter()
             .filter(|u| u.kind.stats().harvest.is_some())
             .count();
-        let contested_recon = true
-            .then(|| self.contested_recon_target(obs, home_tile))
-            .flatten();
-        let scouting_admitted = dials.scouting
-            && (harvesters >= immediate_harvester_target(dials) as usize
-                || contested_recon.is_some());
+        let contested_recon = self.contested_recon_target(obs, home_tile);
+        let scouting_admitted =
+            harvesters >= immediate_harvester_target(dials) as usize || contested_recon.is_some();
         if scouting_admitted && self.state.reconnaissance.observed_at != Some(obs.tick) {
             // Exact scout ownership precedes every implicit utility claim.
             let mut unavailable = enlisted.to_vec();
@@ -2058,7 +1899,6 @@ impl UtilityPolicy {
 
         if manages_opening {
             self.residual_construction(
-                dials,
                 obs,
                 construction_context.during_opening_core(),
                 &mut budget,
@@ -2098,7 +1938,7 @@ impl UtilityPolicy {
         });
         if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
             let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
-            expansion_capital_promised = self.residual_production(
+            let expansion_capital_promised = self.residual_production(
                 dials,
                 obs,
                 ProductionContext::new(home_tile, construction_claims)
@@ -2114,7 +1954,6 @@ impl UtilityPolicy {
 
             if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
                 self.residual_construction(
-                    dials,
                     obs,
                     construction_context
                         .with_voluntary_scrap_guard(Reserve::Exact(production_guard)),
@@ -2122,69 +1961,9 @@ impl UtilityPolicy {
                     &mut intents,
                 );
             }
-        } else if dials.minimum_core_equivalents == 0 {
-            // Zero-floor fixtures isolate residual work from the opening
-            // commitment while preserving the same residual budget.
-            let healthy_home_screen = obs
-                .my_units
-                .iter()
-                .filter(|unit| {
-                    let stats = unit.kind.stats();
-                    stats.domain == Domain::Ground && stats.can_fight()
-                })
-                .count()
-                >= 3;
-            let construction_precedes_discretionary =
-                healthy_home_screen && outstanding_air_production_ticks.is_none();
-            let mut planned_construction = Vec::new();
-            if construction_precedes_discretionary {
-                let mut construction_budget = budget;
-                self.residual_construction(
-                    dials,
-                    obs,
-                    construction_context,
-                    &mut construction_budget,
-                    &mut planned_construction,
-                );
-                budget = construction_budget;
-            }
-            if outstanding_air_production_ticks.is_some() {
-                expansion_capital_promised = self.residual_production(
-                    dials,
-                    obs,
-                    ProductionContext::new(home_tile, construction_claims)
-                        .with_combat_core_exclusions(combat_core_exclusions)
-                        .with_intelligence(mode.unit_contacts, mode.building_contacts)
-                        .with_public_map(mode.public_map)
-                        .with_producer_lane_reservations(producer_lane_reservations),
-                    &mut budget,
-                    foundry,
-                    &mut intents,
-                );
-            } else {
-                expansion_capital_promised = self.residual_production(
-                    dials,
-                    obs,
-                    ProductionContext::new(home_tile, construction_claims)
-                        .with_producer_lane_reservations(producer_lane_reservations),
-                    &mut budget,
-                    foundry,
-                    &mut intents,
-                );
-            }
-            if construction_precedes_discretionary {
-                intents.extend(planned_construction);
-            } else if !expansion_capital_promised && !Self::construction_channel_spent(&intents) {
-                self.residual_construction(
-                    dials,
-                    obs,
-                    construction_context,
-                    &mut budget,
-                    &mut intents,
-                );
-            }
         }
-        self.salvage(dials, obs, utility_admission_scrap, &mut intents);
+
+        self.salvage(obs, utility_admission_scrap, &mut intents);
         self.army(dials, obs, armies, home_tile, mode, &mut intents);
         if !opening_core_deficient {
             self.air_raid(
@@ -2849,7 +2628,6 @@ mod tests {
         obs.my_buildings = vec![standing_building(0, BuildingKind::Foundry, home)];
         obs.my_queues = vec![Vec::new()];
         let policy = UtilityPolicy::new();
-        let dials = Dials::full();
 
         let scrap_choke = corridor_briefing(home, enemy_start, 's');
         assert!(!UtilityPolicy::public_start_ground_connected(
@@ -2858,7 +2636,7 @@ mod tests {
             home,
             enemy_start
         ));
-        assert!(policy.has_honest_ground_objective(&dials, &obs, home, Some(&scrap_choke)));
+        assert!(policy.has_honest_ground_objective(&obs, home, Some(&scrap_choke)));
 
         let mut cleared = policy;
         cleared.state.cleared_hostile_starts.push(PlayerId(1));
@@ -2868,15 +2646,15 @@ mod tests {
             BuildingKind::Foundry,
             enemy_start.offset(-4, 0),
         ));
-        assert!(!cleared.ordinary_ground_has_work(&dials, &obs, home));
+        assert!(!cleared.ordinary_ground_has_work(&obs, home));
         assert!(
-            cleared.has_honest_ground_objective(&dials, &obs, home, Some(&scrap_choke)),
+            cleared.has_honest_ground_objective(&obs, home, Some(&scrap_choke)),
             "a known expansion across unexplored but public open terrain still needs reinforcement"
         );
 
         let divided = corridor_briefing(home, enemy_start, '#');
         assert!(
-            !cleared.has_honest_ground_objective(&dials, &obs, home, Some(&divided)),
+            !cleared.has_honest_ground_objective(&obs, home, Some(&divided)),
             "only permanent public terrain disconnection may waive the shallow guard"
         );
     }
@@ -2942,12 +2720,10 @@ mod tests {
         obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
         obs.my_queues = vec![Vec::new()];
         let map = public_map_with_home_and_frames(&obs, home, &[frame]);
-        let dials = Dials::full();
 
         let mut safe_intents = Vec::new();
         let safe = UtilityPolicy::new().opening_core_deferred_claims(
             &obs,
-            &dials,
             DeferredClaimContext {
                 home,
                 unit_contacts: None,
@@ -2966,7 +2742,6 @@ mod tests {
         let mut occupied_intents = Vec::new();
         let retained = UtilityPolicy::new().opening_core_deferred_claims(
             &occupied,
-            &dials,
             DeferredClaimContext {
                 home,
                 unit_contacts: None,
@@ -2992,7 +2767,6 @@ mod tests {
         let mut contested_intents = Vec::new();
         let retained = contested_policy.opening_core_deferred_claims(
             &obs,
-            &dials,
             DeferredClaimContext {
                 home,
                 unit_contacts: None,
@@ -3036,12 +2810,10 @@ mod tests {
             crate::test_support::unit(21, PlayerId(1), UnitKind::Condor, TilePos::new(9, 9)),
         ];
         let map = public_map_with_home_and_frames(&obs, home, &[]);
-        let dials = Dials::full();
 
         let mut current_intents = Vec::new();
         let retained = UtilityPolicy::new().opening_core_deferred_claims(
             &obs,
-            &dials,
             DeferredClaimContext {
                 home,
                 unit_contacts: None,
@@ -3066,7 +2838,6 @@ mod tests {
         let mut noncurrent_intents = Vec::new();
         let retained = UtilityPolicy::new().opening_core_deferred_claims(
             &noncurrent,
-            &dials,
             DeferredClaimContext {
                 home,
                 unit_contacts: None,
@@ -3092,7 +2863,6 @@ mod tests {
         obs.my_buildings = vec![standing_building(10, BuildingKind::Foundry, home)];
         obs.my_queues = vec![Vec::new()];
         let map = public_map_with_home_and_frames(&obs, home, &[]);
-        let dials = Dials::full();
         let mut intents = vec![Intent::TrainAt {
             building: BuildingId(10),
             kind: UnitKind::Sentinel,
@@ -3100,7 +2870,6 @@ mod tests {
 
         let retained = UtilityPolicy::new().opening_core_deferred_claims(
             &obs,
-            &dials,
             DeferredClaimContext {
                 home,
                 unit_contacts: None,
@@ -3217,7 +2986,7 @@ mod tests {
         obs.my_queues = vec![Vec::new()];
         obs.scrap = 100;
         let map = public_map(&obs);
-        let dials = Dials::full();
+        let dials = Dials::default();
         let mut policy = UtilityPolicy::new();
         let first =
             StrategicUtilityContext::new(&[], &[], &[], &map, Vec::new(), Default::default())
@@ -3266,21 +3035,11 @@ mod tests {
             .cost;
         obs.scrap = foundry_cost;
         let map = public_map(&obs);
-        let mut dials = Dials::full();
-        dials.adaptive_composition = true;
-        dials.harvester_target = 0;
-        dials.army_size = 0;
-        dials.tech = false;
-        dials.deep_tech = false;
-        dials.scouting = false;
-        dials.salvage = false;
-        dials.radar = false;
-        dials.reclaimers = false;
-        dials.extractors = false;
-        dials.upgrades = false;
-        dials.expansion = false;
-        dials.mines = false;
-        dials.support_target = 1;
+        let dials = Dials {
+            harvester_target: 0,
+            army_size: 0,
+            ..Dials::default()
+        };
 
         let mut funded_policy = UtilityPolicy::new();
         let mut funded_prelude = Vec::new();
@@ -3347,15 +3106,7 @@ mod tests {
         obs.enemy_units
             .push(fighter(20, PlayerId(1), TilePos::new(3, 12)));
         let map = public_map(&obs);
-        let mut dials = Dials::full();
-        dials.extractors = false;
-        dials.tech = false;
-        dials.deep_tech = false;
-        dials.radar = false;
-        dials.reclaimers = false;
-        dials.upgrades = false;
-        dials.expansion = false;
-        dials.mines = false;
+        let dials = Dials::default();
 
         let residual = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &map);
         assert!(
@@ -3443,11 +3194,10 @@ mod tests {
         obs.my_queues = vec![Vec::new(), Vec::new()];
         obs.scrap = UnitKind::Harvester.stats().cost;
         let map = public_map(&obs);
-        let mut dials = Dials::full();
-        dials.harvester_target = 0;
-        dials.tech = false;
-        dials.scouting = false;
-        dials.repair = false;
+        let dials = Dials {
+            harvester_target: 0,
+            ..Dials::default()
+        };
 
         let raw = UtilityPolicy::new().think_with_intelligence(
             &dials,
@@ -3594,9 +3344,8 @@ mod tests {
         ));
         let mut dials =
             Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        dials.air_harass = true;
+
         dials.air_wing = 2;
-        dials.extractors = false;
 
         let blocked = UtilityPolicy::new().think_residual(&dials, &obs, &[], &[], &[], &map);
         assert!(
@@ -3658,21 +3407,7 @@ mod tests {
         let mut dials =
             Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
         dials.harvester_target = 0;
-        dials.tech = false;
-        dials.turret_response = false;
-        dials.scouting = false;
-        dials.aa_response = false;
-        dials.radar = false;
-        dials.reclaimers = false;
-        dials.repair = false;
-        dials.air_harass = false;
-        dials.salvage = false;
-        dials.deep_tech = false;
-        dials.extractors = false;
-        dials.upgrades = false;
-        dials.expansion = false;
-        dials.ferry = false;
-        dials.mines = false;
+
         (obs, dials)
     }
 
@@ -3825,36 +3560,11 @@ mod tests {
         Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime))
     }
 
-    fn strategy_surface(dials: &Dials) -> [bool; 15] {
-        [
-            dials.tech,
-            dials.turret_response,
-            dials.scouting,
-            dials.aa_response,
-            dials.radar,
-            dials.reclaimers,
-            dials.repair,
-            dials.air_harass,
-            dials.salvage,
-            dials.deep_tech,
-            dials.extractors,
-            dials.upgrades,
-            dials.expansion,
-            dials.ferry,
-            dials.mines,
-        ]
-    }
-
     fn assert_only_expected_dials_change(
         low: &Dials,
         high: &Dials,
         normalize_expected: impl FnOnce(&mut Dials, &Dials),
     ) {
-        assert_eq!(strategy_surface(low), strategy_surface(high));
-        assert!(
-            strategy_surface(low).into_iter().all(|enabled| enabled),
-            "personality may rank a strategy but cannot remove it"
-        );
         let mut normalized = high.clone();
         normalize_expected(&mut normalized, low);
         assert_eq!(
@@ -4394,16 +4104,11 @@ mod tests {
             sweep_started_at: None,
         }];
         let mut executive = Executive::new();
-        let mut dials = Dials::full();
-        dials.harvester_target = 1;
-        dials.tech = false;
-        dials.turret_response = false;
-        dials.aa_response = false;
-        dials.radar = false;
-        dials.reclaimers = false;
-        dials.repair = false;
-        dials.air_harass = false;
-        dials.salvage = false;
+        let dials = Dials {
+            harvester_target: 1,
+            ..Dials::default()
+        };
+
         let mut moved = false;
         let mut stamped_both_corners = false;
         let mut harvest_dispatched = false;
@@ -4738,7 +4443,7 @@ mod tests {
             observation.my_units[1].hp -= 1;
             observation.salvage_incidents = initial;
             policy.think_residual(
-                &Dials::full(),
+                &Dials::default(),
                 &observation,
                 &[],
                 &[],
@@ -4751,7 +4456,7 @@ mod tests {
             observation.my_units[0].hp -= 1;
             observation.salvage_incidents = vec![left];
             policy.think_residual(
-                &Dials::full(),
+                &Dials::default(),
                 &observation,
                 &[],
                 &[],
@@ -4979,34 +4684,6 @@ mod tests {
     }
 
     #[test]
-    fn strategic_utility_context_requires_explicit_active_air_work() {
-        let units = Vec::new();
-        let buildings = Vec::new();
-        let observation = obs_with(Vec::new());
-        let public_map = public_map(&observation);
-        let inactive = StrategicUtilityContext::new(
-            &[],
-            &units,
-            &buildings,
-            &public_map,
-            Vec::new(),
-            Default::default(),
-        );
-        assert_eq!(inactive.outstanding_air_production_ticks, None);
-
-        let active = StrategicUtilityContext::new(
-            &[],
-            &units,
-            &buildings,
-            &public_map,
-            Vec::new(),
-            Default::default(),
-        )
-        .with_outstanding_air_production_ticks(4_801);
-        assert_eq!(active.outstanding_air_production_ticks, Some(4_801));
-    }
-
-    #[test]
     fn active_air_capacity_owns_the_sole_builder_before_frame_restoration() {
         let home = TilePos::new(12, 16);
         let frame = home.offset(8, 0);
@@ -5028,9 +4705,8 @@ mod tests {
             obs.my_buildings.push(standing_building(id, kind, anchor));
             obs.my_queues.push(Vec::new());
         }
-        let mut dials = Dials::full();
-        dials.deep_tech = true;
-        dials.extractors = true;
+        let dials = Dials::default();
+
         let mut policy = UtilityPolicy::new();
         assert!(has_supported_restoration(&policy, &obs, home));
         let capacity_site = policy
@@ -5105,8 +4781,7 @@ mod tests {
             &public_map,
             prelude,
             Default::default(),
-        )
-        .with_outstanding_air_production_ticks(30_000);
+        );
         let mut intents = policy.think_with_intelligence(&dials, &obs, &[], &[], context);
         policy.bind_player_facing_builders(&obs, &[], &[], &[], &[], &mut intents);
 
@@ -5165,10 +4840,11 @@ mod tests {
             obs.my_buildings
                 .push(standing_building(10, BuildingKind::Foundry, home));
             obs.my_queues.push(Vec::new());
-            let mut dials = Dials::full();
-            dials.extractors = true;
-            dials.adaptive_composition = true;
-            dials.minimum_core_equivalents = 4;
+            let dials = Dials {
+                minimum_core_equivalents: 4,
+                ..Dials::default()
+            };
+
             let mut policy = UtilityPolicy::new();
             if founding.is_none() {
                 assert!(
@@ -5261,6 +4937,12 @@ mod tests {
         let mut fourth = harvester(4, None);
         fourth.tile = home.offset(2, 4);
         let mut units = vec![founder, other_repairer, third, fourth];
+        units.push(crate::test_support::unit(
+            5,
+            PlayerId(0),
+            UnitKind::Kestrel,
+            home.offset(2, 4),
+        ));
         units.extend((0..3).map(|index| {
             fighter(
                 20 + index,
@@ -5287,11 +4969,11 @@ mod tests {
                 obs.visible[index] = false;
             }
         }
-        let mut dials = Dials::full();
-        dials.extractors = true;
-        dials.adaptive_composition = true;
-        dials.minimum_core_equivalents = 4;
-        dials.scouting = false;
+        let dials = Dials {
+            minimum_core_equivalents: 4,
+            ..Dials::default()
+        };
+
         let mut policy = UtilityPolicy::new();
         assert!(
             has_supported_restoration(&policy, &obs, home),
@@ -5353,7 +5035,7 @@ mod tests {
         obs.my_queues.push(Vec::new());
 
         let intents = UtilityPolicy::new().think_residual(
-            &Dials::full(),
+            &Dials::default(),
             &obs,
             &[],
             &[],
@@ -5373,7 +5055,7 @@ mod tests {
         assert!(
             UtilityPolicy::new()
                 .think_residual(
-                    &Dials::full(),
+                    &Dials::default(),
                     &eliminated,
                     &[],
                     &[],
@@ -5400,8 +5082,7 @@ mod tests {
         let mut budget = 0;
         let mut intents = Vec::new();
 
-        policy.construction(
-            &Dials::full(),
+        policy.residual_construction(
             &obs,
             ConstructionContext::new(
                 TilePos::new(2, 2),
@@ -5424,7 +5105,7 @@ mod tests {
     }
 
     #[test]
-    fn healthy_support_identities_do_not_buy_timer_driven_repair_bays() {
+    fn residual_construction_does_not_buy_timer_driven_repair_bays() {
         let home = TilePos::new(3, 3);
         let mut obs = obs_with(vec![harvester(0, None)]);
         for (id, kind, anchor) in [
@@ -5439,29 +5120,10 @@ mod tests {
         }
         obs.scrap = 10_000;
 
-        let dials = |seed| {
-            let difficulty = BotDifficulty::Prime;
-            let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
-                difficulty,
-                BotStance::Balanced,
-                seed,
-            ));
-            let dials = Dials::scripted(&profile, DifficultyTuning::for_level(difficulty));
-            (profile, dials)
-        };
-        let (high_profile, high) = dials(20_042);
-        let (low_profile, low) = dials(20_044);
-        assert_eq!(
-            (high_profile.primary, high.support_target),
-            (Specialty::Support, 3)
-        );
-        assert_eq!(low.support_target, 1, "premise: {low_profile:?}");
-
-        let construct = |dials: &Dials, world: &Observation| {
+        let construct = |world: &Observation| {
             let mut budget = world.scrap;
             let mut intents = Vec::new();
-            UtilityPolicy::new().construction(
-                dials,
+            UtilityPolicy::new().residual_construction(
                 world,
                 ConstructionContext::new(
                     home,
@@ -5476,26 +5138,15 @@ mod tests {
             );
             intents
         };
-        assert!(construct(&high, &obs).iter().all(|intent| !matches!(
+        assert!(construct(&obs).iter().all(|intent| !matches!(
             intent,
             Intent::Build {
                 kind: BuildingKind::RepairBay,
                 ..
             }
         )));
-        assert!(
-            construct(&low, &obs).iter().all(|intent| !matches!(
-                intent,
-                Intent::Build {
-                    kind: BuildingKind::RepairBay,
-                    ..
-                }
-            )),
-            "traits cannot manufacture repair demand"
-        );
-
         obs.tick = 6_000;
-        assert!(construct(&low, &obs).iter().all(|intent| !matches!(
+        assert!(construct(&obs).iter().all(|intent| !matches!(
             intent,
             Intent::Build {
                 kind: BuildingKind::RepairBay,
@@ -5676,8 +5327,11 @@ mod tests {
             "the fixture must detect accidentally subtracting the home watch"
         );
 
-        let mut dials = Dials::full();
-        dials.minimum_core_equivalents = 8;
+        let dials = Dials {
+            minimum_core_equivalents: 8,
+            ..Dials::default()
+        };
+
         let map = public_map(&obs);
         let decide = |separate_core_exclusions| {
             let context = StrategicUtilityContext::new(
@@ -5784,10 +5438,7 @@ mod tests {
             20_042,
         ));
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(difficulty));
-        assert_eq!(
-            (profile.primary, dials.support_target),
-            (Specialty::Support, 3)
-        );
+        assert_eq!(profile.primary, Specialty::Support);
         let foundry_cost = BuildingKind::Foundry
             .base_stats()
             .construction
@@ -5903,14 +5554,12 @@ mod tests {
         crate::test_support::edit_player(&mut state, me, |player| player.scrap = 1_000);
 
         let mut policy = UtilityPolicy::new();
-        let dials = Dials::full();
         let mut executive = Executive::new();
 
         let first_obs = Observation::omniscient(&state, me);
         let mut first_budget = first_obs.scrap;
         let mut first_intents = Vec::new();
         policy.test_admit_building_repairs(
-            &dials,
             &first_obs,
             PolicyMode {
                 evidence: Default::default(),
@@ -5961,7 +5610,6 @@ mod tests {
         let mut persistent_budget = persistent_obs.scrap;
         let mut persistent_intents = Vec::new();
         policy.test_admit_building_repairs(
-            &dials,
             &persistent_obs,
             PolicyMode {
                 evidence: Default::default(),
@@ -6001,7 +5649,6 @@ mod tests {
         let mut resumed_budget = stopped_obs.scrap;
         let mut resumed_intents = Vec::new();
         policy.test_admit_building_repairs(
-            &dials,
             &stopped_obs,
             PolicyMode {
                 evidence: Default::default(),
@@ -6077,10 +5724,9 @@ mod tests {
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
         assert_eq!((low.air_wing, high.air_wing), (4, 2));
-        assert_eq!((low.bomber_target, high.bomber_target), (1, 3));
+
         assert_only_expected_dials_change(&low, &high, |candidate, expected| {
             candidate.air_wing = expected.air_wing;
-            candidate.bomber_target = expected.bomber_target;
         });
 
         low_traits = baseline;
@@ -6089,10 +5735,8 @@ mod tests {
         high_traits.siege = 80;
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
-        assert_eq!((low.siege_target, high.siege_target), (1, 4));
-        assert_only_expected_dials_change(&low, &high, |candidate, expected| {
-            candidate.siege_target = expected.siege_target;
-        });
+
+        assert_eq!(low, high);
 
         low_traits = baseline;
         low_traits.support = 34;
@@ -6100,11 +5744,8 @@ mod tests {
         high_traits.support = 80;
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
-        assert_eq!((low.support_target, high.support_target), (1, 3));
 
-        assert_only_expected_dials_change(&low, &high, |candidate, expected| {
-            candidate.support_target = expected.support_target;
-        });
+        assert_eq!(low, high);
 
         low_traits = baseline;
         low_traits.fortification = 24;
@@ -6136,7 +5777,6 @@ mod tests {
         high_traits.guile = 80;
         let low = dials_for_traits(low_traits);
         let high = dials_for_traits(high_traits);
-        assert_eq!((low.raider_target, high.raider_target), (2, 2));
 
         assert_eq!(low, high);
     }
@@ -6162,13 +5802,10 @@ mod tests {
         let high_dials = Dials::scripted(&high_profile, tuning);
         assert_eq!(low_dials.expansion_greed, low_profile.traits.greed);
         assert_eq!(high_dials.expansion_greed, high_profile.traits.greed);
-        assert!(low_dials.expansion && high_dials.expansion);
     }
 
     #[test]
     fn scripted_identity_changes_bounded_priorities_not_the_strategy_surface() {
-        let mut siege_targets = std::collections::BTreeSet::new();
-        let mut support_targets = std::collections::BTreeSet::new();
         for stance in BotStance::ALL {
             for seed in 0..2_000 {
                 let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
@@ -6180,22 +5817,10 @@ mod tests {
                     Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
                 assert!((4..=7).contains(&dials.harvester_target));
                 assert!((2..=4).contains(&dials.air_wing));
-                assert!((1..=4).contains(&dials.bomber_target));
-                assert!((1..=4).contains(&dials.siege_target));
-                assert!((1..=3).contains(&dials.support_target));
-                assert_eq!(dials.raider_target, 2);
 
                 assert_eq!(dials.expansion_greed, profile.traits.greed);
-                assert!(dials.tech && dials.deep_tech && dials.scouting);
-                assert!(dials.repair && dials.aa_response && dials.turret_response);
-                assert!(dials.expansion && dials.extractors && dials.reclaimers);
-                assert!(dials.air_harass && dials.ferry && dials.mines);
-                siege_targets.insert(dials.siege_target);
-                support_targets.insert(dials.support_target);
             }
         }
-        assert_eq!(siege_targets, [1, 2, 3, 4].into_iter().collect());
-        assert_eq!(support_targets, [1, 2, 3].into_iter().collect());
     }
 
     #[test]
@@ -6216,7 +5841,7 @@ mod tests {
                 unreachable!()
             };
             assert!(lower.own_strength_scale <= higher.own_strength_scale);
-            assert_eq!(lower.enemy_strength_scale, higher.enemy_strength_scale);
+
             assert!(lower.opponent_force_memory <= higher.opponent_force_memory);
             assert!(!lower.coordinated_focus || higher.coordinated_focus);
             assert!(!lower.coordinated_defense_focus || higher.coordinated_defense_focus);
@@ -6225,7 +5850,7 @@ mod tests {
         let prime = &dials[3];
         assert!(scrapheap.cadence > prime.cadence);
         assert!(scrapheap.own_strength_scale < prime.own_strength_scale);
-        assert_eq!(scrapheap.enemy_strength_scale, prime.enemy_strength_scale);
+
         assert!(scrapheap.opponent_force_memory < prime.opponent_force_memory);
         assert!(!scrapheap.coordinated_focus);
         assert!(prime.coordinated_focus);
@@ -6233,7 +5858,7 @@ mod tests {
         assert!(prime.coordinated_defense_focus);
         scrapheap.cadence = prime.cadence;
         scrapheap.own_strength_scale = prime.own_strength_scale;
-        scrapheap.enemy_strength_scale = prime.enemy_strength_scale;
+
         scrapheap.opponent_force_memory = prime.opponent_force_memory;
         scrapheap.coordinated_focus = prime.coordinated_focus;
         scrapheap.coordinated_defense_focus = prime.coordinated_defense_focus;
@@ -6262,10 +5887,6 @@ mod tests {
             assert_eq!(
                 dials[0].own_strength_scale, dials[1].own_strength_scale,
                 "personality changed {difficulty:?} own-strength competence"
-            );
-            assert_eq!(
-                dials[0].enemy_strength_scale, dials[1].enemy_strength_scale,
-                "personality changed {difficulty:?} hostile-strength competence"
             );
         }
     }

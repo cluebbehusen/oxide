@@ -358,7 +358,7 @@ impl UtilityPolicy {
             Self::foundry_funding_revalidation(&resources, &saving, handoff.current_scrap);
         let assessment = context
             .public_map
-            .filter(|_| dials.expansion && pending == 0 && funding.viable)
+            .filter(|_| pending == 0 && funding.viable)
             .and_then(|public_map| {
                 self.player_facing_foundry_assessment(
                     dials,

@@ -147,24 +147,7 @@ fn scenario_load_rejects_a_legacy_bot_config() {
 }
 
 #[test]
-fn standard_uses_the_full_fog_honest_tree() {
-    let balanced = Dials::balanced();
-    assert!(balanced.tech);
-    assert!(balanced.turret_response);
-    assert!(balanced.scouting);
-    assert!(balanced.aa_response);
-    assert!(balanced.radar);
-    assert!(balanced.reclaimers);
-    assert!(balanced.repair);
-    assert!(balanced.air_harass);
-    assert!(balanced.salvage);
-    assert!(balanced.deep_tech);
-    assert!(balanced.extractors);
-    assert!(balanced.upgrades);
-    assert!(balanced.expansion);
-    assert!(balanced.ferry);
-    assert!(balanced.mines);
-
+fn default_brain_resolves_the_standard_balanced_profile() {
     let scenario = Scenario::skirmish();
     let scripted = Brain::balanced(PlayerId(1), public_map(&scenario));
     let profile = scripted.profile();
@@ -173,6 +156,7 @@ fn standard_uses_the_full_fog_honest_tree() {
         oxide_bot::DifficultyTuning::for_level(BotDifficulty::Standard),
     );
     assert_eq!(scripted.dials(), &scripted_expected);
+    assert_eq!(Dials::default(), scripted_expected);
     assert_eq!(profile.difficulty, BotDifficulty::Standard);
     assert_eq!(profile.stance, BotStance::Balanced);
 }

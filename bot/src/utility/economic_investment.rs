@@ -1037,7 +1037,7 @@ mod tests {
         let quote = |obs: &Observation, unmet| {
             let resources = ResourceSnapshot::from_observation(obs);
             let demands = [demand(UnitKind::Sentinel, unmet)];
-            let dials = Dials::balanced();
+            let dials = Dials::default();
             policy
                 .economic_quotes(EconomicInvestmentContext {
                     evidence: Default::default(),
@@ -1137,7 +1137,7 @@ mod tests {
             current_scrap: obs.scrap,
             protected_reserve: 0,
         };
-        let dials = Dials::balanced();
+        let dials = Dials::default();
         let shared_policy = UtilityPolicy::new();
         let separate_policy = shared_policy.clone();
         let expected_foundry = separate_policy
@@ -1402,7 +1402,7 @@ mod tests {
         };
         let saved = fabricator(quotes(&policy, &obs, &map, &profile, &demands))
             .expect("the unclaimed map offers a technology site");
-        let economy = expansion_economy(&Dials::balanced(), &obs, obs.scrap, Reserve::Exact(0));
+        let economy = expansion_economy(&Dials::default(), &obs, obs.scrap, Reserve::Exact(0));
         policy
             .commit_adjudicated_foundry(
                 FreshFoundryProposal::fixture(

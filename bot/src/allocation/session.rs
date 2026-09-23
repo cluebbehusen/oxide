@@ -592,32 +592,28 @@ impl<'a> AllocationSession<'a> {
                     paid: operational_scout_queues.clone(),
                 })
             });
-        let fresh_reconnaissance = if self.context.dials.scouting {
-            self.participants.policy.prepare_reconnaissance(
-                EconomicInvestmentContext {
-                    evidence: self.context.evidence,
-                    obligations: &[],
-                    obs: self.context.observation,
-                    resources: &obligations.resources,
-                    profile: self.context.profile,
-                    briefing: self.context.public_map,
-                    orientation: self.context.orientation,
-                    unavailable: &recon_unavailable,
-                    demands: &[],
-                    cadence: self.context.dials.cadence,
-                    unit_contacts: self.context.intelligence.units(),
-                    building_contacts: self.context.intelligence.buildings(),
-                    protected_scrap: 0,
-                    air_work: &[],
-                },
-                self.context.tuning,
-                self.context.dials.minimum_core_equivalents,
-                claims.opening_core.ready && self.participants.policy.economic_saving().is_none(),
-                &operational_scout_queues,
-            )
-        } else {
-            Vec::new()
-        };
+        let fresh_reconnaissance = self.participants.policy.prepare_reconnaissance(
+            EconomicInvestmentContext {
+                evidence: self.context.evidence,
+                obligations: &[],
+                obs: self.context.observation,
+                resources: &obligations.resources,
+                profile: self.context.profile,
+                briefing: self.context.public_map,
+                orientation: self.context.orientation,
+                unavailable: &recon_unavailable,
+                demands: &[],
+                cadence: self.context.dials.cadence,
+                unit_contacts: self.context.intelligence.units(),
+                building_contacts: self.context.intelligence.buildings(),
+                protected_scrap: 0,
+                air_work: &[],
+            },
+            self.context.tuning,
+            self.context.dials.minimum_core_equivalents,
+            claims.opening_core.ready && self.participants.policy.economic_saving().is_none(),
+            &operational_scout_queues,
+        );
         // Revision recovery can release imported claims after quote generation.
         let defense_admission_reserve = active_revision
             .defense_admission_reserve(air_lift.voluntary_scrap_guard, prospective_carrier_floor);
@@ -721,7 +717,7 @@ impl<'a> AllocationSession<'a> {
         support_snapshot: &SupportWorkSnapshot,
     ) -> SupportPreparation {
         let context = support_context(&self.context, claims, &obligations.resources);
-        let allow_repair = claims.opening_core.ready && self.context.dials.repair;
+        let allow_repair = claims.opening_core.ready;
         if allow_repair
             && strategic_admission_tick(self.context.observation.tick)
             && self.participants.policy.economic_saving().is_none()

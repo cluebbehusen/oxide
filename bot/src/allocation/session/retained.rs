@@ -289,7 +289,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             &[],
         ));
         let context = support_context(self.context, claims, &obligations.resources);
-        let allow_repair = claims.opening_core.ready && self.context.dials.repair;
+        let allow_repair = claims.opening_core.ready;
         let renewal_unavailable: Vec<_> = claims
             .planner_claims
             .iter()
