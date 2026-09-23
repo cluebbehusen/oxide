@@ -901,14 +901,14 @@ impl<'a> AllocationSession<'a> {
                     .saturating_add(connected_preparation_horizon())
             });
         let committed_production = self.committed_standing_production();
+        let defense_scope =
+            crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Defense);
         let saved_layout_allows_defense = saved.obligation.is_none_or(|foundry| {
             !UtilityPolicy::build_layout_covers_assigned_builder(
                 self.context.observation,
                 &[(BuildingKind::Foundry, foundry.anchor(), foundry.builder())],
             )
         });
-        let defense_scope =
-            crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Defense);
         let mut defense = if admission_tick && saved_layout_allows_defense {
             self.participants.policy.fresh_defense_proposals(
                 self.context.profile,
@@ -967,6 +967,8 @@ impl<'a> AllocationSession<'a> {
                 &committed_production,
             )
             .prepare(&claims.strategic_core_exclusions, connected.as_ref());
+        let economy_scope =
+            crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Economy);
         let unavailable_economy_workers = self
             .context
             .observation
@@ -980,8 +982,6 @@ impl<'a> AllocationSession<'a> {
             &self.participants,
             &self.advanced.lift_unavailable,
         );
-        let economy_scope =
-            crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Economy);
         let economy = if admission_tick
             && claims.opening_core.ready
             && self.participants.policy.economic_saving().is_none()
