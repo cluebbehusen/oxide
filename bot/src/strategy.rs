@@ -2150,7 +2150,7 @@ pub(crate) fn prospective_airworks_package_value(
     });
     match result {
         Progress::Ready(value) => Some(value),
-        Progress::Deferred | Progress::ProvenInfeasible => None,
+        Progress::Deferred | Progress::Exhausted | Progress::ProvenInfeasible => None,
     }
 }
 

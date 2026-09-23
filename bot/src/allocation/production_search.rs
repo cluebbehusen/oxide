@@ -120,7 +120,7 @@ impl Continuation {
                         frame.placements = placements;
                         frame.preparation = None;
                     }
-                    Progress::Deferred => return Progress::Deferred,
+                    Progress::Deferred | Progress::Exhausted => return Progress::Deferred,
                     Progress::ProvenInfeasible => {
                         unreachable!("placement enumeration returns an empty set")
                     }

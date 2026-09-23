@@ -2787,7 +2787,9 @@ fn feasible_active_lift_current_production_prefix(
     )? {
         Progress::Ready(()) => {}
         Progress::ProvenInfeasible => return Ok(decision.clone()),
-        Progress::Deferred => return Ok(strategic_decision_with_production_prefix(decision, 0)),
+        Progress::Deferred | Progress::Exhausted => {
+            return Ok(strategic_decision_with_production_prefix(decision, 0));
+        }
     }
 
     let mut feasible = 0_usize;
@@ -2825,7 +2827,7 @@ fn feasible_active_lift_current_production_prefix(
         )? {
             Progress::Ready(()) => feasible = candidate_count,
             Progress::ProvenInfeasible => infeasible = candidate_count,
-            Progress::Deferred => break,
+            Progress::Deferred | Progress::Exhausted => break,
         }
     }
     Ok(strategic_decision_with_production_prefix(
@@ -3057,7 +3059,9 @@ fn feasible_active_lift_future_production_obligation(
                 feasible = candidate_count;
                 best = Some(candidate);
             }
-            crate::planning::Progress::Deferred => return Ok(best),
+            crate::planning::Progress::Deferred | crate::planning::Progress::Exhausted => {
+                return Ok(best);
+            }
             crate::planning::Progress::ProvenInfeasible => infeasible = candidate_count,
         }
     }

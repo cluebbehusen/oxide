@@ -63,7 +63,7 @@ impl<Key: Copy + Eq> Alternatives<Key> {
             match evaluate(key) {
                 Progress::Ready(value) => return Progress::Ready(value),
                 Progress::Deferred => pending = self.incumbent,
-                Progress::ProvenInfeasible => {}
+                Progress::ProvenInfeasible | Progress::Exhausted => {}
             }
         }
         self.clear();
@@ -73,8 +73,9 @@ impl<Key: Copy + Eq> Alternatives<Key> {
                 break;
             }
             self.remaining -= 1;
-            let key = candidates[self.cursor % candidates.len()];
-            self.cursor = (self.cursor + 1) % candidates.len();
+            let index = self.cursor % candidates.len();
+            let key = candidates[index];
+            self.cursor = (index + 1) % candidates.len();
             if Some(key) == retained {
                 continue;
             }
@@ -103,6 +104,24 @@ impl<Key: Copy + Eq> Alternatives<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_rotation_indices_are_normalized_before_advancing() {
+        let mut work = Alternatives {
+            cursor: usize::MAX,
+            ..Alternatives::default()
+        };
+        assert!(work.valid_checkpoint(0, 4));
+        assert_eq!(
+            work.advance(0, &[1, 2], 4, Progress::Ready, |a, b| a < b, || true),
+            Progress::Ready(1)
+        );
+        work.remaining = 5;
+        assert!(!work.valid_checkpoint(0, 4));
+        work.remaining = 4;
+        work.incumbent = Some((1, 1));
+        assert!(!work.valid_checkpoint(0, 4));
+    }
 
     #[test]
     fn pending_work_resumes_without_starving_other_candidates_or_refilling_the_pass() {

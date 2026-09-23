@@ -1327,6 +1327,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                         ) {
                             crate::planning::Progress::Ready(refined) => Ok(refined),
                             crate::planning::Progress::Deferred
+                            | crate::planning::Progress::Exhausted
                             | crate::planning::Progress::ProvenInfeasible => {
                                 return ActiveRevisionPreparation::default();
                             }

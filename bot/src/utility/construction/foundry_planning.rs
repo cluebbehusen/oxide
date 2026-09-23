@@ -214,7 +214,9 @@ impl UtilityPolicy {
                 .collect();
             match field(planning, sources) {
                 crate::planning::Progress::Ready(field) => Some(field),
-                crate::planning::Progress::Deferred => return Vec::new(),
+                crate::planning::Progress::Deferred | crate::planning::Progress::Exhausted => {
+                    return Vec::new();
+                }
                 crate::planning::Progress::ProvenInfeasible => {
                     unreachable!("field completion is distinct from reachability")
                 }
@@ -229,7 +231,9 @@ impl UtilityPolicy {
                     .collect();
                 let next = match field(planning, sources) {
                     crate::planning::Progress::Ready(field) => field,
-                    crate::planning::Progress::Deferred => continue,
+                    crate::planning::Progress::Deferred | crate::planning::Progress::Exhausted => {
+                        continue;
+                    }
                     crate::planning::Progress::ProvenInfeasible => {
                         unreachable!("field completion is distinct from reachability")
                     }

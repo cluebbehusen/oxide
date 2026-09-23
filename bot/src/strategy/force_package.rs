@@ -1351,16 +1351,37 @@ fn best_complete_portfolio_path<'a>(
     }
     candidates.sort_by_key(|(_, candidate)| Reverse(score(candidate)));
     let mut best = (0, minimums[0].clone());
-    for (minimum, candidate) in candidates {
-        match candidate.provider_refinement(&candidate.funded_providers) {
-            Progress::Ready(()) => {
-                best = (minimum, candidate);
-                break;
-            }
+    if let Some(refinement) = minimums[0].refinement {
+        match refinement.planning.portfolio_candidate(
+            minimums[0].observed_at,
+            refinement.key,
+            candidates.len(),
+            |index| {
+                let (minimum, candidate) = &candidates[index];
+                match candidate.provider_refinement(&candidate.funded_providers) {
+                    Progress::Ready(()) => Progress::Ready((*minimum, candidate.clone())),
+                    Progress::Deferred => Progress::Deferred,
+                    Progress::Exhausted => Progress::Exhausted,
+                    Progress::ProvenInfeasible => Progress::ProvenInfeasible,
+                }
+            },
+        ) {
+            Progress::Ready(candidate) => best = candidate,
+            Progress::Deferred | Progress::Exhausted => minimums[0].deferred.set(true),
             Progress::ProvenInfeasible => {}
-            Progress::Deferred => {
-                candidate.deferred.set(true);
-                break;
+        }
+    } else {
+        for (minimum, candidate) in candidates {
+            match candidate.provider_refinement(&candidate.funded_providers) {
+                Progress::Ready(()) => {
+                    best = (minimum, candidate);
+                    break;
+                }
+                Progress::ProvenInfeasible => {}
+                Progress::Deferred | Progress::Exhausted => {
+                    candidate.deferred.set(true);
+                    break;
+                }
             }
         }
     }
@@ -1603,7 +1624,7 @@ impl PackageBuilder<'_> {
         match self.provider_refinement(providers) {
             Progress::Ready(()) => true,
             Progress::ProvenInfeasible => false,
-            Progress::Deferred => {
+            Progress::Deferred | Progress::Exhausted => {
                 self.deferred.set(true);
                 false
             }
@@ -1633,15 +1654,18 @@ impl PackageBuilder<'_> {
         kind: UnitKind,
     ) -> Result<Vec<Self>, AddProviderFailure> {
         let cost = kind.stats().cost;
-        let mut structurally_funded = self.funded_providers.clone();
-        structurally_funded.push(FundedProvider {
-            kind,
-            command_tick: self
-                .funded_providers
-                .last()
-                .map_or(self.observed_at, |provider| provider.command_tick),
-        });
-        if !self.providers_fit(&structurally_funded) {
+        let kinds: Vec<_> = self
+            .funded_providers
+            .iter()
+            .map(|provider| provider.kind)
+            .chain(std::iter::once(kind))
+            .collect();
+        if !crate::resources::production_may_fit_horizon(
+            self.resources,
+            &kinds,
+            self.deadline,
+            self.production_access,
+        ) {
             return Err(AddProviderFailure::PreparationWindowTooShort);
         }
         let required_scrap = self.committed_scrap.saturating_add(cost);
@@ -1661,7 +1685,10 @@ impl PackageBuilder<'_> {
             .push(FundedProvider { kind, command_tick });
         successor.committed_scrap = successor.committed_scrap.saturating_add(cost);
         successor.accept_provider(family, kind, priority);
-        if !successor.providers_fit(&successor.funded_providers) {
+        // Marginal funding is reordered before its payment deadlines are checked.
+        if priority == ProviderPriority::Minimum
+            && !successor.providers_fit(&successor.funded_providers)
+        {
             return Err(AddProviderFailure::PreparationWindowTooShort);
         }
         Ok(vec![successor])
@@ -4620,6 +4647,97 @@ mod tests {
     }
 
     #[test]
+    fn marginal_deadlines_follow_canonical_funding_for_every_provider() {
+        let mut obs = observation(680);
+        add_completed_income_and_live_support(&mut obs);
+        obs.my_buildings.last_mut().unwrap().tier = 1;
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let access = all_producers(&resources);
+        let profile = profile(10, 90);
+
+        for (deadline, fits) in [(1_608, true), (1_607, false)] {
+            let planning = PlanningWork::default();
+            let capacity = AllocationCapacity::from_snapshot(&resources, deadline, 12).unwrap();
+            let refinement = PackageRefinement {
+                planning: &planning,
+                capacity: &capacity,
+                key: ConnectedOffenseKey {
+                    objective: BuildingId(99),
+                    anchor: TilePos::new(25, 25),
+                },
+            };
+            let deferred = Cell::new(false);
+            let builder = PackageBuilder {
+                faction: obs.faction,
+                observed_at: obs.tick,
+                deadline,
+                decision_cadence: 12,
+                current_scrap: obs.scrap,
+                protected_forecast_scrap: 0,
+                forecast: resources.forecast(),
+                resources: &resources,
+                committed_scrap: 0,
+                production_access: &access,
+                refinement: Some(&refinement),
+                deferred: &deferred,
+                funded_providers: Vec::new(),
+                preserved: Vec::new(),
+                provider_priority: Vec::new(),
+                recon: Vec::new(),
+                suppression: Vec::new(),
+                strike: Vec::new(),
+                capability: NormalizedCapability {
+                    recon: 0,
+                    suppression: 0,
+                    strike: 0,
+                },
+                bombing_capability_per_provider: 0,
+                bombing: 0,
+            };
+            let prior = builder
+                .add_new_kind_variants(
+                    ForceFamily::Strike,
+                    ProviderPriority::Marginal,
+                    UnitKind::Buzzard,
+                )
+                .unwrap()
+                .remove(0);
+            let mut successors =
+                prior.provider_successors(ForceFamily::Suppression, ProviderPriority::Marginal);
+            let index = successors
+                .iter()
+                .position(|successor| {
+                    successor
+                        .funded_providers
+                        .last()
+                        .is_some_and(|provider| provider.kind == UnitKind::Avalanche)
+                })
+                .expect("temporary append order must not discard the preferred provider");
+            let mut successor = successors.remove(index);
+            assert_eq!(successor.canonicalize_funding(&profile), fits);
+            if fits {
+                assert_eq!(
+                    successor.funded_providers,
+                    vec![
+                        FundedProvider {
+                            kind: UnitKind::Avalanche,
+                            command_tick: 228
+                        },
+                        FundedProvider {
+                            kind: UnitKind::Buzzard,
+                            command_tick: 1_428
+                        },
+                    ]
+                );
+                assert_eq!(
+                    successor.provider_refinement(&successor.funded_providers),
+                    Progress::Ready(())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn late_funded_preference_cannot_hide_a_feasible_composition() {
         for tick in [24, 120] {
             let (mut obs, _, _) = baseline_aa_fixture(578, 705, 149);
@@ -5987,6 +6105,98 @@ mod tests {
             2_500,
         )
         .expect("the rich late-game package fits its fixed deadline")
+    }
+
+    #[test]
+    fn dense_portfolio_reaches_a_proved_alternative_across_checkpoint_boundaries() {
+        for rolling in [false, true] {
+            let mut obs = observation(100_000);
+            add_producer(
+                &mut obs,
+                10,
+                BuildingKind::Foundry,
+                TilePos::new(2, 2),
+                vec![],
+            );
+            add_producer(
+                &mut obs,
+                11,
+                BuildingKind::Crucible,
+                TilePos::new(8, 2),
+                vec![],
+            );
+            for i in 0..8 {
+                add_producer(
+                    &mut obs,
+                    20 + i,
+                    BuildingKind::Fabricator,
+                    TilePos::new(2 + 3 * i as i32, 6),
+                    vec![],
+                );
+            }
+            add_producer(
+                &mut obs,
+                80,
+                BuildingKind::Airworks,
+                TilePos::new(2, 20),
+                vec![],
+            );
+            let (mut intel, _) = intelligence_with_target(&mut obs, 4);
+            for i in 0..24 {
+                obs.enemy_units.push(unit(
+                    300 + i,
+                    1,
+                    UnitKind::Flakhound,
+                    TilePos::new(18 + (i % 8) as i32, 16 + (i / 8) as i32),
+                ));
+            }
+            let planning = PlanningWork::default();
+            let mut restored = planning.clone();
+            let mut ready = None;
+            for decision in 0..32 {
+                obs.tick = 24 + decision * 12;
+                intel.update(&obs);
+                let target = intel
+                    .buildings()
+                    .iter()
+                    .find(|b| b.id == Some(BuildingId(100)))
+                    .unwrap();
+                let cluster: Vec<_> = intel.buildings().iter().collect();
+                let resources = ResourceSnapshot::from_observation(&obs);
+                let access = all_producers(&resources);
+                let derive = |work| {
+                    derive_connected_force_package_options_for_cluster(
+                        &profile(10, 90),
+                        &obs,
+                        &intel,
+                        ConnectedTargetEvidence {
+                            primary: target,
+                            cluster: &cluster,
+                        },
+                        ProductionEvidence::with_planning(&resources, &access, Some(work)),
+                        &[],
+                        constraints(if rolling { obs.tick + 1320 } else { 1344 }, 0),
+                    )
+                };
+                let options = derive(&planning);
+                assert_eq!(options, derive(&restored));
+                assert_eq!(planning, restored);
+                assert!(planning.spent() <= 128_000);
+                let mut bytes = Vec::new();
+                ciborium::into_writer(&restored, &mut bytes).unwrap();
+                restored = ciborium::from_reader(bytes.as_slice()).unwrap();
+                if options.as_ref().is_ok_and(|options| {
+                    !options.refinement_pending && !options.marginal.is_empty()
+                }) {
+                    ready = Some(decision);
+                    break;
+                }
+            }
+            assert!(
+                ready.is_some(),
+                "rolling={rolling}: feasible alternatives were starved"
+            );
+        }
     }
 
     #[test]

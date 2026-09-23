@@ -23,7 +23,6 @@ struct Task {
     funding_mode: JointFundingMode,
     constructing: bool,
     spent: usize,
-    retired: bool,
     result: Progress<production_search::Solution>,
 }
 
@@ -49,7 +48,6 @@ impl Task {
             funding_mode: JointFundingMode::PreferPriority,
             constructing: true,
             spent: 0,
-            retired: false,
             result: Progress::Deferred,
         }
     }
@@ -71,6 +69,14 @@ impl Task {
                 && prior.owner == current.owner
                 && time_matches(prior.accepted_at, current.accepted_at)
         };
+        if matches!(self.result, Progress::Exhausted)
+            && !self
+                .capacity
+                .resources
+                .same_production_basis(&capacity.resources)
+        {
+            return false;
+        }
         let prior = &self.claims;
         prior.current_scrap == claims.current_scrap
             && prior.minimum_residual_scrap == claims.minimum_residual_scrap
@@ -123,7 +129,7 @@ impl Task {
     }
 
     fn advance(&mut self, budget: &mut WorkBudget) {
-        if self.retired {
+        if !matches!(self.result, Progress::Deferred) {
             return;
         }
         loop {
@@ -134,7 +140,7 @@ impl Task {
             if matches!(self.result, Progress::Deferred)
                 && TASK_WORK - self.spent < self.work_cost()
             {
-                self.retired = true;
+                self.result = Progress::Exhausted;
                 self.continuation.discard();
                 self.failed.clear();
                 return;
@@ -154,7 +160,7 @@ impl Task {
     }
 
     fn pending(&self) -> bool {
-        !self.retired && matches!(self.result, Progress::Deferred)
+        matches!(self.result, Progress::Deferred)
     }
 
     fn advance_phase(&mut self, budget: &mut WorkBudget) {
@@ -231,6 +237,8 @@ impl ProductionWork {
                 task.started_at <= task.used_at
                     && task.used_at <= tick
                     && task.spent <= TASK_WORK
+                    && (!matches!(task.result, Progress::Exhausted)
+                        || TASK_WORK - task.spent < task.work_cost())
                     && task.capacity.resources.valid_checkpoint(tick)
                     && task.claims.producer_jobs.iter().all(|job| {
                         job.claim.access.producers().iter().all(|id| {
@@ -337,9 +345,8 @@ impl ProductionWork {
             Progress::ProvenInfeasible if task.capacity == *capacity && task.claims == *claims => {
                 return Err(producer_schedule_conflict(&claims.producer_jobs));
             }
-            Progress::Deferred => {
-                return Ok(Progress::Deferred);
-            }
+            Progress::Deferred => return Ok(Progress::Deferred),
+            Progress::Exhausted => return Ok(Progress::Exhausted),
             Progress::ProvenInfeasible => {}
         }
         if budget.charge(1 + claims.producer_jobs.len() + capacity.resources.producers().len()) {
@@ -629,6 +636,9 @@ mod tests {
                             Err(error) => Some(Err(error)),
                             Ok(Progress::Deferred) => None,
                             Ok(Progress::ProvenInfeasible) => unreachable!(),
+                            Ok(Progress::Exhausted) => {
+                                panic!("compact fixture exhausted its search allowance")
+                            }
                         }
                     })
                     .expect("small searches terminate within the test allowance");
@@ -691,9 +701,8 @@ mod tests {
         let mut task = Task::new(&capacity, &claims);
         task.spent = TASK_WORK;
         task.advance(&mut WorkBudget::new(TASK_WORK));
-        assert!(task.retired);
         assert!(!task.pending());
-        assert_eq!(task.result, Progress::Deferred);
+        assert_eq!(task.result, Progress::Exhausted);
         assert!(task.failed.is_empty());
         let mut work = ProductionWork {
             tasks: vec![task],
@@ -702,8 +711,35 @@ mod tests {
         let mut budget = WorkBudget::new(TASK_WORK);
         assert_eq!(
             work.resolve(&capacity, &claims, &mut budget).unwrap(),
-            Progress::Deferred
+            Progress::Exhausted
         );
         assert_eq!(budget.spent(), 0);
+        assert!(work.valid_checkpoint(0));
+        let (shifted, shifted_claims) = fixture(12, 12);
+        assert_eq!(
+            work.resolve(&shifted, &shifted_claims, &mut WorkBudget::new(TASK_WORK))
+                .unwrap(),
+            Progress::Exhausted
+        );
+        let mut changed = shifted.clone();
+        changed.resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
+            current_scrap: 9_999,
+            producers: shifted.resources.producers().to_vec(),
+            ..ResourcePlanningFixture::empty(12..=10_012, 1)
+        })
+        .unwrap();
+        let mut retry = WorkBudget::new(TASK_WORK);
+        assert!(!matches!(
+            work.resolve(&changed, &shifted_claims, &mut retry).unwrap(),
+            Progress::Exhausted
+        ));
+        assert!(retry.spent() > 0);
+        assert!(work.valid_checkpoint(12));
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&work, &mut bytes).unwrap();
+        let restored: ProductionWork = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(restored, work);
+        work.tasks[0].spent = 0;
+        assert!(!work.valid_checkpoint(12));
     }
 }

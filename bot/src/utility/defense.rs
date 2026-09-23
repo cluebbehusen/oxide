@@ -1281,7 +1281,9 @@ fn strategic_lane_projection<'a>(
         domain,
     ) {
         crate::planning::Progress::Ready(projection) => projection,
-        crate::planning::Progress::Deferred | crate::planning::Progress::ProvenInfeasible => None,
+        crate::planning::Progress::Deferred
+        | crate::planning::Progress::Exhausted
+        | crate::planning::Progress::ProvenInfeasible => None,
     }
 }
 
@@ -1313,7 +1315,7 @@ fn prepare_strategic_lane_projection<'a>(
             domain,
         ) {
             crate::planning::Progress::Ready(approaches) => approaches,
-            crate::planning::Progress::Deferred => {
+            crate::planning::Progress::Deferred | crate::planning::Progress::Exhausted => {
                 return crate::planning::Progress::Deferred;
             }
             crate::planning::Progress::ProvenInfeasible => continue,
@@ -1564,6 +1566,7 @@ fn strategic_defense_quote_from_projection(
                 ) {
                     crate::planning::Progress::Ready(candidate) => Some(candidate),
                     crate::planning::Progress::Deferred
+                    | crate::planning::Progress::Exhausted
                     | crate::planning::Progress::ProvenInfeasible => None,
                 }
             }
@@ -2230,9 +2233,9 @@ fn approach_path(
             )
         }) {
             crate::planning::Progress::Ready(field) => field.path(&starts),
-            crate::planning::Progress::Deferred | crate::planning::Progress::ProvenInfeasible => {
-                None
-            }
+            crate::planning::Progress::Deferred
+            | crate::planning::Progress::Exhausted
+            | crate::planning::Progress::ProvenInfeasible => None,
         },
         None => shortest_path_between(ground, &starts, goals, candidate, domain)
             .map(|(_, goal, path)| (goal, path)),

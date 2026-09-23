@@ -384,9 +384,9 @@ impl UtilityPolicy {
         );
         match progress {
             crate::planning::Progress::Ready((_, quote)) => Some(quote),
-            crate::planning::Progress::Deferred | crate::planning::Progress::ProvenInfeasible => {
-                None
-            }
+            crate::planning::Progress::Deferred
+            | crate::planning::Progress::Exhausted
+            | crate::planning::Progress::ProvenInfeasible => None,
         }
     }
 

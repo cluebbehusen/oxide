@@ -126,28 +126,41 @@ Production refinement first constructs an earliest-funded schedule, then resumes
 repair if that attempt fails. Income probes seek the funding boundary inside
 each job's legal enqueue window. Work charges scale with the problem's job and
 producer counts. Sixteen retained tasks share background progress, expire after
-120 ticks, and stop after a bounded total repair allowance. Exhaustion means
-unrefined, not infeasible. Claim identities include capital reservations and
-funding priorities; a retained schedule must pass current queue, deadline, and
-funding checks before acceptance. Portfolio selection, standing-force wait
-binding, connected growth, and prospective Airworks allocation use this service.
-Complete campaign candidates and active provider forecasts use this same
-production service, including queue slots, timing, current funding, and shared
-work limits. Composition exploration uses shared necessary capacity bounds
-instead of scheduling every intermediate roster. The separate recursive
-funded-lane scheduler is a test-only oracle. A pending minimum remains a
-deferred target; a pending active revision preserves its operation, paid work
-and deadline. Forecasts never reserve resources themselves. Fixed obligations
-reuse the same witness validator directly; they do not search for an alternative
-schedule. It checks current queue state, request identity, owner order, exact
-timing, and rebased funding. Unassigned mandatory purchases use the same bounded
-service. If they remain pending, the session can settle only independently
-committed claims, restoring the prior operation instead of accepting its
-replacement and leaving new transport requests unbound. Retained connected
-demand prevents this fallback from releasing unpriced commitments; that decision
-freezes spending until refinement can settle. Read-only funding checks preserve
-existing plans on deferred results. The exhaustive production solver is compiled
-only as a test oracle.
+120 ticks, and stop after a bounded total repair allowance. Exhausted tasks
+release search storage and report terminal unknown work separately from
+resumable work; neither result proves infeasibility. Changed funding, queue
+availability, producer eligibility or horizon permits a fresh attempt at
+exhausted work; shifting otherwise identical observation-relative inputs does
+not. Claim identities include capital reservations and funding priorities; a
+retained schedule must pass current queue, deadline, and funding checks before
+acceptance. Portfolio selection, standing-force wait binding, connected growth,
+and prospective Airworks allocation use this service. Complete campaign
+candidates and active provider forecasts use this same production service,
+including queue slots, timing, current funding, and shared work limits.
+Composition exploration uses shared necessary capacity bounds instead of
+scheduling every intermediate roster. The separate recursive funded-lane
+scheduler is a test-only oracle. A pending minimum remains a deferred target; a
+pending active revision preserves its operation, paid work and deadline.
+Forecasts never reserve resources themselves. Fixed obligations reuse the same
+witness validator directly; they do not search for an alternative schedule. It
+checks current queue state, request identity, owner order, exact timing, and
+rebased funding. Unassigned mandatory purchases use the same bounded service. If
+they remain pending, the session can settle only independently committed claims,
+restoring the prior operation instead of accepting its replacement and leaving
+new transport requests unbound. Retained connected demand prevents this fallback
+from releasing unpriced commitments; that decision freezes spending until
+refinement can settle. Read-only funding checks preserve existing plans on
+deferred results. The exhaustive production solver is compiled only as a test
+oracle.
+
+Connected package selection retains a per-objective candidate cursor separately
+from production tasks, so task retirement and expiry cannot repeatedly restart
+ranking at the first candidate. It examines two new ranked alternatives per
+decision while rechecking a retained candidate. Indices are traversal hints:
+current observations rebuild every composition, and only a currently validated
+schedule can select it. Up to sixteen objective comparisons survive checkpoint
+restoration; inactive comparisons and incumbents expire after 120 ticks. A
+proved minimum remains available while marginal alternatives are unresolved.
 
 Site refinement and prospective Airworks targets use the same bounded candidate
 cursor. Airworks valuation admits two candidate factory sites and examines two

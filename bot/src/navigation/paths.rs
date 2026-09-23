@@ -515,7 +515,9 @@ impl<'a> CandidatePaths<'a> {
             &[goal],
         ) {
             crate::planning::Progress::Ready(field) => Ok(Some(field)),
-            crate::planning::Progress::Deferred => Err(PendingRoute),
+            crate::planning::Progress::Deferred | crate::planning::Progress::Exhausted => {
+                Err(PendingRoute)
+            }
             crate::planning::Progress::ProvenInfeasible => {
                 unreachable!("fields retain unreachable cells")
             }

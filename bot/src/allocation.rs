@@ -1656,7 +1656,9 @@ impl<Payload> AllocationResult<Payload> {
         extended.stage(capacity, owner, claims, FundingPriority::marginal(owner))?;
         let resolved = match refine(capacity, &extended)? {
             super::planning::Progress::Ready(resolved) => resolved,
-            super::planning::Progress::Deferred => return Ok(false),
+            super::planning::Progress::Deferred | super::planning::Progress::Exhausted => {
+                return Ok(false);
+            }
             super::planning::Progress::ProvenInfeasible => {
                 unreachable!("infeasible schedules carry their conflict")
             }
@@ -1846,7 +1848,9 @@ fn allocate_refined<Payload>(
 
     let mandatory_resolution = match mandatory.refine(capacity, refinement.production) {
         Ok(super::planning::Progress::Ready(resolved)) => resolved,
-        Ok(super::planning::Progress::Deferred) => return Err(AllocationError::Deferred),
+        Ok(super::planning::Progress::Deferred | super::planning::Progress::Exhausted) => {
+            return Err(AllocationError::Deferred);
+        }
         Ok(super::planning::Progress::ProvenInfeasible) => {
             unreachable!("infeasible schedules carry their conflict")
         }
@@ -1959,7 +1963,9 @@ fn allocate_refined<Payload>(
         };
         let resolved = match resolution {
             Ok(super::planning::Progress::Ready(resolved)) => resolved,
-            Ok(super::planning::Progress::Deferred) => return None,
+            Ok(super::planning::Progress::Deferred | super::planning::Progress::Exhausted) => {
+                return None;
+            }
             Ok(super::planning::Progress::ProvenInfeasible) => {
                 unreachable!("infeasible schedules carry their conflict")
             }
@@ -3267,7 +3273,7 @@ impl<'a> ProductionPortfolioSearch<'a> {
                     return true;
                 }
                 super::planning::Progress::ProvenInfeasible => return false,
-                super::planning::Progress::Deferred => {}
+                super::planning::Progress::Deferred | super::planning::Progress::Exhausted => {}
             }
         }
     }
@@ -8483,7 +8489,7 @@ mod tests {
                         break true;
                     }
                     Progress::ProvenInfeasible => break false,
-                    Progress::Deferred => {}
+                    Progress::Deferred | Progress::Exhausted => {}
                 }
             }
         } else {
