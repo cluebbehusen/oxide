@@ -52,7 +52,7 @@ fn restore(checkpoint: GameCheckpoint) -> Result<Game> {
     let recorder = checkpoint.session.recording()?;
     let core = checkpoint.session.restore()?;
     anyhow::ensure!(
-        checkpoint.human == Game::human_seat(&core.scenario)?,
+        checkpoint.human == Game::local_seat(&core.scenario),
         "invalid local seat"
     );
     anyhow::ensure!(
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_requires_the_scenarios_single_human_seat() {
+    fn checkpoint_requires_the_scenarios_default_local_seat() {
         for human in [0, 1] {
             let mut scenario = Scenario::skirmish();
             for (seat, player) in scenario.players.iter_mut().enumerate() {
@@ -257,8 +257,8 @@ mod tests {
                 concede_stats: None,
                 boundary_fog: crate::boundary_fog::BoundaryFog::new(&state, PlayerId(0)),
             };
-            let error = restore(checkpoint).err().unwrap();
-            assert!(error.to_string().contains("exactly one non-bot seat"));
+            let game = restore(checkpoint).unwrap();
+            assert_eq!(game.presentation.human, PlayerId(0));
         }
     }
 }

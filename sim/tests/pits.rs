@@ -34,6 +34,7 @@ fn chasm(width: i32, units: Vec<UnitSpec>) -> Scenario {
     }
     map.push("#".repeat(24));
     Scenario {
+        mode: Default::default(),
         name: "chasm".into(),
         seed: 9,
         map,
@@ -342,6 +343,7 @@ fn a_chasm_severs_ground_but_the_sky_keeps_the_map_legal() {
     }
     map.push("#".repeat(24));
     let scenario = Scenario {
+        mode: Default::default(),
         name: "severed".into(),
         seed: 9,
         map,
@@ -377,6 +379,7 @@ fn a_mesa_seal_still_refuses_to_build() {
     }
     map.push(border);
     let scenario = Scenario {
+        mode: Default::default(),
         name: "sealed".into(),
         seed: 9,
         map,

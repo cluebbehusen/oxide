@@ -247,6 +247,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
     // survivors (ids 0, 1, 4, 6, 7) crowd one node — the economy must keep
     // flowing exactly as it does with dense ids.
     let scenario = Scenario {
+        mode: Default::default(),
         name: "id-gaps".into(),
         seed: 42,
         map: vec![
@@ -602,6 +603,7 @@ fn stalled_leg_drops_the_whole_program() {
     // The queued second leg targets a sealed pocket: no route. The stall
     // must abandon the entire program, not limp to the next leg.
     let scenario = Scenario {
+        mode: Default::default(),
         name: "sealed-pocket".into(),
         seed: 42,
         map: vec![

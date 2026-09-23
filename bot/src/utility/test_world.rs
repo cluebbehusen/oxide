@@ -38,6 +38,7 @@ pub(super) fn scenario_with_starts(
         rows.push(String::from_utf8(row).expect("ASCII fixture row"));
     }
     Scenario {
+        mode: Default::default(),
         name: "defense fixture".into(),
         seed: 7,
         map: rows,

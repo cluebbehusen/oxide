@@ -780,6 +780,7 @@ mod tests {
             map.push(String::from_utf8(row).expect("ASCII fixture row"));
         }
         let scenario = Scenario {
+            mode: Default::default(),
             name: "defense opportunity fixture".into(),
             seed: 7,
             map,

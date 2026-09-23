@@ -29,6 +29,13 @@ calls `State::tick`, then updates statistics and presentation from the result.
 Fast advancement can suppress intermediate presentation work but uses the same
 recorded tick path.
 
+Local input uses the first non-bot seat in scenario order, or seat zero for an
+all-bot scene. This choice does not change the configured controllers. Live
+scenarios, replay continuation and checkpoint restoration accept any valid bot
+roster, including no bots; the New Match wizard still authors one local seat.
+Sandbox completion rules belong to the simulation, so headless and native
+sessions reproduce the same open-ended scene.
+
 Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in
 input seat order before commands are recorded. `State::tick` remains serial.

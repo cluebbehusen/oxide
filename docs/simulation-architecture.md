@@ -44,6 +44,14 @@ The simulation never reads an event back.
 data, normalizes team ids, places Foundries and starting entities, and builds
 tick-zero vision.
 
+Scenario mode defaults to an ordinary match. Explicit sandbox mode makes Foundry
+anchors optional and permits allied-only or disconnected scenes. It disables
+automatic elimination and victory, but preserves ordinary command, placement,
+ownership and cost checks. A sandbox seat can issue commands without a Foundry
+until it surrenders. Mode is authoritative serialized state; a sandbox cannot
+deserialize with match elimination stamps or a final result, and session
+checkpoints require matching scenario and world modes.
+
 All `State` fields are crate-private. External crates receive narrow immutable
 accessors and can change the world only by supplying commands to `tick`.
 `inspect_command_phase` is a deliberate exception for prediction: it clones the

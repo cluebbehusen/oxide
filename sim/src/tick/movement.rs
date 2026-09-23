@@ -1280,6 +1280,7 @@ mod tests {
 
     fn boundary_pair() -> State {
         Scenario {
+            mode: Default::default(),
             name: "boundary-pair".into(),
             seed: 1,
             map: vec![
@@ -1366,6 +1367,7 @@ mod tests {
         );
 
         let mut state = Scenario {
+            mode: Default::default(),
             name: name.into(),
             seed: 24_722,
             map,
@@ -1452,6 +1454,7 @@ mod tests {
 
     fn collision_trio() -> State {
         Scenario {
+            mode: Default::default(),
             name: "collision-trio".into(),
             seed: 3,
             map: vec![
@@ -1500,6 +1503,7 @@ mod tests {
         map[5].replace_range(5..6, "1");
         map[24].replace_range(42..43, "2");
         let mut state = Scenario {
+            mode: Default::default(),
             name: "replay-center-crossing".into(),
             seed: 1_616_101,
             map,
@@ -1662,6 +1666,7 @@ mod tests {
     #[test]
     fn mirrored_seat_stacks_ignore_global_id_blocks() {
         let mut state = Scenario {
+            mode: Default::default(),
             name: "mirrored-seat-stacks".into(),
             seed: 4,
             map: vec![
@@ -1925,6 +1930,7 @@ mod tests {
     #[test]
     fn passed_waypoint_still_rejects_a_blocked_next_step() {
         let mut state = Scenario {
+            mode: Default::default(),
             name: "blocked-next-waypoint".into(),
             seed: 2,
             map: vec![

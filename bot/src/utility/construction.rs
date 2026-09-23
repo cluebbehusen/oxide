@@ -1812,6 +1812,7 @@ mod tests {
             [usize::try_from(HOSTILE.x).expect("hostile x is in bounds")] = b'2';
         rows[10][10] = b's';
         let scenario = Scenario {
+            mode: Default::default(),
             name: "construction fixture".into(),
             seed: 0,
             map: rows
@@ -1861,6 +1862,7 @@ mod tests {
             })
             .collect();
         let scenario = Scenario {
+            mode: Default::default(),
             name: "Array placement fixture".into(),
             seed: 0,
             map: rows,

@@ -15,6 +15,7 @@ fn a_mirrored_seat_claims_the_real_frame() {
     // Extractor at all; the shipped maps put mirrored seats in this
     // position on every 180-degree pair.
     let mut scenario = Scenario {
+        mode: Default::default(),
         name: "mirrored-frame-claim".into(),
         seed: 41,
         map: vec![

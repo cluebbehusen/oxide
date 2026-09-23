@@ -38,6 +38,11 @@ fn every_map_seats_a_human_and_live_opponents() {
     // Continental Divide once shipped with both seats bot:false — an
     // advertised 1v1 whose opponent never harvested, trained, or moved.
     for (name, scenario) in shipped() {
+        assert_eq!(
+            scenario.mode,
+            oxide_sim::scenario::ScenarioMode::Match,
+            "{name}: shipped maps use match rules"
+        );
         assert!(
             !scenario.players[0].bot,
             "{name}: seat 0 is the human chair"

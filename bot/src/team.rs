@@ -1753,6 +1753,7 @@ mod tests {
             map[y] = String::from_utf8(row).expect("the authored row is ASCII");
         }
         Scenario {
+            mode: Default::default(),
             name: "team relief command acceptance".into(),
             seed: 19,
             map,

@@ -79,16 +79,7 @@ impl CommandPhaseView<'_> {
 
     /// Whether `player` may issue another command after the projected batch.
     pub fn accepts_commands(&self, player: crate::ids::PlayerId) -> bool {
-        self.state.result.is_none()
-            && self
-                .state
-                .try_player(player)
-                .is_some_and(|seat| !seat.resigned)
-            && self.state.buildings.iter().any(|building| {
-                building.player == player
-                    && !building.provisional
-                    && building.kind == crate::stats::BuildingKind::Foundry
-            })
+        self.state.accepts_commands(player)
     }
 
     /// Projected scrap in `player`'s bank.
@@ -363,7 +354,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
 /// a foundry-less or resigned seat on a living team spectates while
 /// its team plays on.
 fn victory(state: &mut State, events: &mut Vec<Event>) {
-    if state.result.is_some() {
+    if state.mode == crate::scenario::ScenarioMode::Sandbox || state.result.is_some() {
         return;
     }
     // Stamp each seat's first tick out of the match — resigned, or
@@ -940,6 +931,7 @@ mod tests {
         use crate::{Faction, UnitKind};
 
         crate::Scenario {
+            mode: Default::default(),
             name: "Calibration Open - Cupric".into(),
             seed: 1_616_101,
             map: [

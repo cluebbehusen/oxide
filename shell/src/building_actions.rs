@@ -47,7 +47,7 @@ impl SelectedBuildings {
             snapshot(
                 game.state.buildings(),
                 player.scrap,
-                game.state.result().is_none() && !player.resigned && game.home_foundry().is_some(),
+                game.state.accepts_commands(game.presentation.human),
             )
         } else {
             game.state.inspect_command_phase(game.pending, |state| {

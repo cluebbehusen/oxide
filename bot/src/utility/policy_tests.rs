@@ -93,6 +93,7 @@ fn public_map(obs: &Observation) -> PublicMapBriefing {
         map[frame.y as usize].replace_range(frame.x as usize..frame.x as usize + 1, "E");
     }
     PublicMapBriefing::from_scenario(&Scenario {
+        mode: Default::default(),
         name: "policy test map".into(),
         seed: 0,
         map,
@@ -524,6 +525,7 @@ fn a_starved_commander_liquidates_its_walls_for_one_more_wave() {
     use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
     use oxide_sim::stats::BuildingKind;
     let scenario = Scenario {
+        mode: Default::default(),
         name: "starved".into(),
         seed: 5,
         map: vec![

@@ -2058,6 +2058,7 @@ mod tests {
 
     fn boundary_duel() -> State {
         Scenario {
+            mode: Default::default(),
             name: "boundary-duel".into(),
             seed: 1,
             map: vec![
@@ -2178,6 +2179,7 @@ mod tests {
             });
         }
         let scenario = Scenario {
+            mode: Default::default(),
             name: "acquisition-differential".into(),
             seed: 7,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
@@ -2315,6 +2317,7 @@ mod tests {
             });
         }
         let scenario = Scenario {
+            mode: Default::default(),
             name: "sidearm-differential".into(),
             seed: 11,
             map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),

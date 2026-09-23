@@ -56,6 +56,21 @@ cargo test -p oxide-shell --locked
 cargo run -p oxide-driver -- smoke --spawn
 ```
 
+## Sandbox sessions
+
+Launch an authored scene with `--scenario path/to/scene.json`. Set its `mode` to
+`"sandbox"` for optional Foundries and open-ended play without automatic
+elimination or victory. Bots are optional: `bot: false` is a passive seat unless
+local or debug input commands it. Local input uses the first non-bot seat, or
+seat zero when every seat is bot-controlled. Launching a scene does not enable
+or disable any configured controller. Normal New Match setup still chooses one
+local seat and its opponents.
+
+Saves and replays retain sandbox rules. Ownership, terrain, costs and ordinary
+command validation still apply; sandbox mode does not grant free production or
+control of other players' units. The debug protocol can explicitly attribute
+commands to any seat, as in ordinary sessions.
+
 ## Recovery and diagnostics
 
 Ordinary play preserves a recent completed match prefix in the platform data

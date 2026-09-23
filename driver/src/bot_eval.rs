@@ -1327,6 +1327,7 @@ mod tests {
             }
         }
         Scenario {
+            mode: Default::default(),
             name: "firing-squad".into(),
             seed: 7,
             map: vec![

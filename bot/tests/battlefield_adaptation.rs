@@ -39,6 +39,7 @@ fn arena() -> Scenario {
         y: 25,
     });
     Scenario {
+        mode: Default::default(),
         name: "battlefield-adaptation".into(),
         seed: 981,
         map: map

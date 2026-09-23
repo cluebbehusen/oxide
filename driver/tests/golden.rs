@@ -332,6 +332,7 @@ fn showcase_scenario() -> (Scenario, Cast) {
     ];
 
     let scenario = Scenario {
+        mode: Default::default(),
         name: "renderer showcase".into(),
         seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),

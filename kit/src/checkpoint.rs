@@ -224,6 +224,10 @@ impl SessionCheckpoint {
 pub(crate) fn validate_setup(scenario: &Scenario, state: &State) -> Result<()> {
     let initial = scenario.build().context("checkpoint scenario")?;
     ensure!(
+        initial.mode() == state.mode(),
+        "checkpoint scenario mode mismatch"
+    );
+    ensure!(
         initial.map().width() == state.map().width()
             && initial.map().height() == state.map().height(),
         "checkpoint map dimensions mismatch"
@@ -338,6 +342,28 @@ mod tests {
                 b.stats.as_ref().unwrap().snapshot(&b.state)
             );
         }
+    }
+
+    #[test]
+    fn checkpoint_rejects_a_world_with_different_scenario_rules() {
+        let mut scenario = Scenario::skirmish();
+        for player in &mut scenario.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
+        let state = scenario.build().unwrap();
+        scenario.mode = oxide_sim::scenario::ScenarioMode::Sandbox;
+        let error = SessionCheckpoint::capture(&scenario, &state, &[], &[], None).unwrap_err();
+        assert!(error.to_string().contains("scenario mode mismatch"));
+        let state = scenario.build().unwrap();
+        let restored = SessionCheckpoint::capture(&scenario, &state, &[], &[], None)
+            .unwrap()
+            .restore()
+            .unwrap();
+        assert_eq!(
+            restored.state.mode(),
+            oxide_sim::scenario::ScenarioMode::Sandbox
+        );
     }
 
     #[test]

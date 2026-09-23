@@ -1710,6 +1710,7 @@ mod tests {
                 b'1' + u8::try_from(index).expect("at most eight starts");
         }
         Scenario {
+            mode: Default::default(),
             name: "public recon fixture".into(),
             seed: 0,
             map: rows
