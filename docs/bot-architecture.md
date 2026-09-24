@@ -9,18 +9,18 @@ procedures, and agent notes retain historical investigations.
 
 ## Ownership map
 
-| Owner                      | Responsibility                                                                 | Boundary                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `oxide-sim`                | Rules, command validation, authoritative state, player-knowledge projection    | Knows nothing about bot policy. `State::tick` alone changes the game.                |
-| `SeatBot`                  | Finished-match, cadence and resignation gates; fog-honest observation capture  | Host adapter on the seat's worker. `Brain` receives observations.                    |
-| `Brain`                    | Coordinate observation, memory, maintenance, allocation, utility and lowering  | Owns one seat's decision state; no direct simulation mutation.                       |
-| Domain planners            | Propose investments; retain objectives, cohorts and operation lifecycle        | Describe exact needs using player knowledge; do not own a second resource scheduler. |
-| `AllocationSession`        | Reconcile obligations, compare proposals, fund exact claims, commit or restore | Canonical authority for shared capital, actors, sites and producer schedules.        |
-| `UtilityPolicy`            | Economic/support assessment and residual tactical planning                     | Uses the resources and exclusions granted by admission.                              |
-| `Executive`                | Army lifecycle, mission ownership, intent-to-command lowering                  | Preserves ordered actor claims and produces ordinary commands.                       |
-| `resources`                | Paid inventory, queue projections, capacity and egress                         | Predicts ordinary rules; allocation owns funded scheduling.                          |
-| `navigation` / `planning`  | Prepared geometry, bounded queries and retained refinement                     | Cache lifetime and work allowance follow explicit knowledge and decision boundaries. |
-| `oxide-kit::bot_execution` | Parallel seat execution and canonical command collection                       | No worker completion order enters a decision or simulation result.                   |
+| Owner                      | Responsibility                                                                   | Boundary                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `oxide-sim`                | Rules, command validation, authoritative state, player-knowledge projection      | Knows nothing about bot policy. `State::tick` alone changes the game.                |
+| `SeatBot`                  | Finished-match, cadence and resignation gates; fog-honest observation capture    | Host adapter on the seat's worker. `Brain` receives observations.                    |
+| `Brain`                    | Coordinate observation, memory, maintenance, allocation, utility and lowering    | Owns one seat's decision state; no direct simulation mutation.                       |
+| Domain planners            | Propose investments; retain objectives, cohorts and operation lifecycle          | Describe exact needs using player knowledge; do not own a second resource scheduler. |
+| `AllocationSession`        | Reconcile obligations, compare proposals, fund exact claims, validate and commit | Canonical authority for shared capital, actors, sites and producer schedules.        |
+| `UtilityPolicy`            | Economic/support assessment and residual tactical planning                       | Uses the resources and exclusions granted by admission.                              |
+| `Executive`                | Army lifecycle, mission ownership, intent-to-command lowering                    | Preserves ordered actor claims and produces ordinary commands.                       |
+| `resources`                | Paid inventory, queue projections, capacity and egress                           | Predicts ordinary rules; allocation owns funded scheduling.                          |
+| `navigation` / `planning`  | Prepared geometry, bounded queries and retained refinement                       | Cache lifetime and work allowance follow explicit knowledge and decision boundaries. |
+| `oxide-kit::bot_execution` | Parallel seat execution and canonical command collection                         | No worker completion order enters a decision or simulation result.                   |
 
 ## Decision and transaction boundaries
 
