@@ -107,7 +107,6 @@ impl ValidatedFoundryObligation {
 
     pub(crate) fn site(self) -> SiteFootprint {
         SiteFootprint::new(self.anchor, BuildingKind::Foundry.base_stats().size)
-            .expect("Foundries have a positive footprint")
     }
 }
 

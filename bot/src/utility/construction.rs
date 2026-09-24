@@ -3011,7 +3011,6 @@ mod tests {
         assert_eq!(
             obligation.site(),
             SiteFootprint::new(expected.0, BuildingKind::Foundry.base_stats().size)
-                .expect("Foundries have a positive footprint")
         );
         assert!(!obligation.blocked());
     }

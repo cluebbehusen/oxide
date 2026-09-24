@@ -404,17 +404,14 @@ fn resources_and_claims_use_canonical_id_and_row_major_order() {
 }
 
 #[test]
-fn site_footprints_reject_invalid_sizes_and_use_overflow_safe_row_major_geometry() {
-    for size in [(0, 1), (1, 0), (-1, 2)] {
-        assert!(SiteFootprint::new(TilePos::new(4, 7), size).is_none());
-    }
-    let edge = SiteFootprint::new(TilePos::new(i32::MAX, i32::MIN), (2, 2)).unwrap();
+fn site_footprints_use_overflow_safe_row_major_geometry() {
+    let edge = SiteFootprint::new(TilePos::new(i32::MAX, i32::MIN), (2, 2));
     assert!(edge.overlaps(edge));
-    let a = SiteFootprint::new(TilePos::new(1, 8), (1, 1)).unwrap();
-    let b = SiteFootprint::new(TilePos::new(9, 2), (1, 1)).unwrap();
+    let a = SiteFootprint::new(TilePos::new(1, 8), (1, 1));
+    let b = SiteFootprint::new(TilePos::new(9, 2), (1, 1));
     assert!(!a.overlaps(b));
     assert!(b < a);
-    assert!(!a.overlaps(SiteFootprint::new(TilePos::new(2, 8), (1, 1)).unwrap()));
+    assert!(!a.overlaps(SiteFootprint::new(TilePos::new(2, 8), (1, 1))));
 }
 
 #[test]

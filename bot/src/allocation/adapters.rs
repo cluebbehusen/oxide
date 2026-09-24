@@ -171,10 +171,10 @@ pub(crate) fn economic_investment_claims(
             Vec::new(),
             proposal.builder.into_iter().collect(),
             Vec::new(),
-            vec![
-                crate::resources::SiteFootprint::new(anchor, kind.base_stats().size)
-                    .expect("economic foundations have positive footprints"),
-            ],
+            vec![crate::resources::SiteFootprint::new(
+                anchor,
+                kind.base_stats().size,
+            )],
             Vec::new(),
         )?,
         EconomicInvestmentKey::Upgrade { building, .. } => ClaimBundle::new(
@@ -488,7 +488,6 @@ fn connected_claim_bundle(claims: &ConnectedOffenseClaims) -> ClaimBundle {
 
 fn proposal_site(proposal: &FreshFoundryProposal) -> crate::resources::SiteFootprint {
     crate::resources::SiteFootprint::new(proposal.anchor(), BuildingKind::Foundry.base_stats().size)
-        .expect("Foundries have a positive footprint")
 }
 
 impl From<FoundryOpportunityCase> for ProposalCase {

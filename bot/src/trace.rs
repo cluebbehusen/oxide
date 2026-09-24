@@ -499,17 +499,6 @@ pub enum ConnectedRejectionReasonTrace {
         /// Exact suppression-provider count requested by the package.
         requested: u32,
     },
-    /// The configured decision cadence cannot schedule future production.
-    InvalidDecisionCadence,
-    /// The preparation deadline is before this observation.
-    InvalidDeadline {
-        /// Tick that supplied the rejected observation.
-        observed_at: Tick,
-        /// Rejected absolute preparation deadline.
-        deadline: Tick,
-    },
-    /// The candidate no longer has current evidence.
-    TargetNotCurrent,
     /// The current contact is not a live, completed, valuable target.
     TargetNotActionable,
     /// Earlier accepted commitments own enough real capital to explain the
@@ -3194,17 +3183,6 @@ fn package_rejection_trace(
 ) -> ConnectedRejectionReasonTrace {
     match rejection {
         ForcePackageRejection::Deferred => ConnectedRejectionReasonTrace::Deferred,
-        ForcePackageRejection::InvalidDecisionCadence => {
-            ConnectedRejectionReasonTrace::InvalidDecisionCadence
-        }
-        ForcePackageRejection::InvalidDeadline {
-            observed_at,
-            deadline,
-        } => ConnectedRejectionReasonTrace::InvalidDeadline {
-            observed_at,
-            deadline,
-        },
-        ForcePackageRejection::TargetNotCurrent => ConnectedRejectionReasonTrace::TargetNotCurrent,
         ForcePackageRejection::TargetNotActionable => {
             ConnectedRejectionReasonTrace::TargetNotActionable
         }
@@ -3656,8 +3634,8 @@ mod tests {
 
     #[test]
     fn allocation_claim_trace_preserves_exact_capital_actors_sites_and_job_access() {
-        let first_site = SiteFootprint::new(TilePos::new(8, 3), (2, 3)).unwrap();
-        let second_site = SiteFootprint::new(TilePos::new(2, 9), (1, 1)).unwrap();
+        let first_site = SiteFootprint::new(TilePos::new(8, 3), (2, 3));
+        let second_site = SiteFootprint::new(TilePos::new(2, 9), (1, 1));
         let claims = ClaimBundle::new(
             77,
             vec![
@@ -3921,8 +3899,8 @@ mod tests {
 
     #[test]
     fn coordinator_claim_and_projection_errors_retain_their_evidence() {
-        let first = SiteFootprint::new(TilePos::new(2, 3), (2, 2)).unwrap();
-        let second = SiteFootprint::new(TilePos::new(3, 4), (1, 1)).unwrap();
+        let first = SiteFootprint::new(TilePos::new(2, 3), (2, 2));
+        let second = SiteFootprint::new(TilePos::new(3, 4), (1, 1));
         let claim_cases = [
             (
                 ClaimBundleError::DuplicateUnit(UnitId(1)),

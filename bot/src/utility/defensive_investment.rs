@@ -141,8 +141,7 @@ impl FreshDefenseProposal {
             anchor,
             builder,
             construction_capital: stats.cost,
-            site: SiteFootprint::new(anchor, kind.base_stats().size)
-                .expect("building footprints are positive"),
+            site: SiteFootprint::new(anchor, kind.base_stats().size),
             case,
             minimum_residual_scrap,
             personality_emphasis,
@@ -486,7 +485,7 @@ fn make_proposal(
         anchor,
         builder,
         construction_capital: stats.cost,
-        site: SiteFootprint::new(anchor, kind.base_stats().size)?,
+        site: SiteFootprint::new(anchor, kind.base_stats().size),
         case,
         minimum_residual_scrap,
         personality_emphasis: construction.personality_emphasis(profile),

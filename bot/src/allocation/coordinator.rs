@@ -829,8 +829,7 @@ pub(crate) fn fresh_emergency_defense_obligation(
     accepted_at: Tick,
     defense: FreshEmergencyDefense,
 ) -> ImportedObligation {
-    let site = SiteFootprint::new(defense.anchor(), defense.kind().base_stats().size)
-        .expect("building footprints are positive");
+    let site = SiteFootprint::new(defense.anchor(), defense.kind().base_stats().size);
     imported_obligation(
         ObligationClass::Survival,
         accepted_at,
@@ -1018,7 +1017,6 @@ pub(crate) fn observed_builder_obligations(
                     .find(|site| site.id == building)
                     .map(|site| {
                         SiteFootprint::new(site.anchor, site.kind.tier_stats(site.tier).size)
-                            .expect("building footprints are positive")
                     });
                 (
                     ObligationClass::PaidWork,
@@ -1056,10 +1054,7 @@ pub(crate) fn observed_builder_obligations(
                     },
                     current_cost,
                     forecast_cost,
-                    vec![
-                        SiteFootprint::new(anchor, kind.base_stats().size)
-                            .expect("building footprints are positive"),
-                    ],
+                    vec![SiteFootprint::new(anchor, kind.base_stats().size)],
                 )
             }
             BuilderObligation::Salvage(_)

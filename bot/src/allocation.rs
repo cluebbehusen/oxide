@@ -4182,7 +4182,7 @@ mod tests {
     }
 
     fn site(x: i32, y: i32) -> SiteFootprint {
-        SiteFootprint::new(TilePos::new(x, y), (2, 2)).expect("the fixture site is positive")
+        SiteFootprint::new(TilePos::new(x, y), (2, 2))
     }
 
     fn bundle(
@@ -4468,8 +4468,7 @@ mod tests {
         current_scrap: u32,
         case: ProposalCase,
     ) -> InvestmentProposal<&'static str> {
-        let footprint = SiteFootprint::new(anchor, kind.base_stats().size)
-            .expect("the defensive fixture has a positive footprint");
+        let footprint = SiteFootprint::new(anchor, kind.base_stats().size);
         InvestmentProposal::fresh(
             ProposalKey::Defense(DefenseInvestmentKey { kind, anchor }),
             case,
@@ -4744,7 +4743,10 @@ mod tests {
         assert_eq!(proposal.claims().builders(), &[UnitId(2)]);
         assert_eq!(
             proposal.claims().sites(),
-            &[SiteFootprint::new(anchor, BuildingKind::FlakTurret.base_stats().size).unwrap()]
+            &[SiteFootprint::new(
+                anchor,
+                BuildingKind::FlakTurret.base_stats().size
+            )]
         );
     }
 
