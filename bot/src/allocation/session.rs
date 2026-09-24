@@ -1622,22 +1622,8 @@ impl<'a> AllocationSession<'a> {
             });
         bind_saved_foundry_funding(prepared, &settlement);
         dispatch_ready_saved_foundry(prepared, &mut effects);
-        let lift = self.prepare_lift_commit(prepared, &producer_schedule)?;
         let mut payloads = settlement.into_payloads();
-        let connected = payloads
-            .take_connected()
-            .map(|proposal| {
-                self.participants
-                    .strategy
-                    .prepare_connected_commit(proposal)
-                    .map_err(|error| {
-                        (
-                            AllocationCoordinatorStageTrace::ConnectedProposalCommit,
-                            error.into(),
-                        )
-                    })
-            })
-            .transpose()?;
+        let connected = payloads.take_connected();
         let air_membership = if connected.is_none() {
             prepared
                 .active_connected
@@ -1652,12 +1638,6 @@ impl<'a> AllocationSession<'a> {
         } else {
             None
         };
-        if air_membership
-            .as_ref()
-            .is_some_and(|membership| !membership.matches(self.participants.strategy))
-        {
-            return Err(rejected());
-        }
         let standing_force = payloads.take_standing_force();
         let raid = standing_force
             .as_ref()
@@ -1715,12 +1695,12 @@ impl<'a> AllocationSession<'a> {
         if let Some(membership) = air_membership {
             membership.apply(self.participants.strategy, self.context.observation.tick);
         }
-        lift.apply(self.participants.lifts);
+        self.commit_lift(prepared, &producer_schedule);
         if let Some(membership) = prepared.lift_membership.take() {
             membership.apply(self.participants.lifts);
         }
-        if let Some(commit) = connected {
-            commit.apply(self.participants.strategy);
+        if let Some(proposal) = connected {
+            self.participants.strategy.commit_connected(proposal);
             effects.accepted_connected = true;
         }
         self.participants
@@ -1834,68 +1814,31 @@ impl<'a> AllocationSession<'a> {
         Ok(effects)
     }
 
-    fn prepare_lift_commit(
-        &self,
+    fn commit_lift(
+        &mut self,
         prepared: &PreparedAllocation,
         producer_schedule: &[super::ScheduledProducerJob],
-    ) -> Result<LiftCommit, CoordinatorFailure> {
-        let planner = &*self.participants.lifts;
-        if prepared
-            .lift_membership
-            .as_ref()
-            .is_some_and(|proposal| !proposal.matches(planner))
-        {
-            return Err((
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-            ));
-        }
-        let rejected = |_| {
-            (
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-            )
-        };
+    ) {
+        let planner = &mut *self.participants.lifts;
         let mut due_ordinals = Vec::new();
-        let funding = prepared
-            .active_lift
-            .as_ref()
-            .map(|active| {
-                let assignments = active_lift_producer_assignments(active, producer_schedule);
-                due_ordinals.extend(assignments.iter().filter_map(|assignment| {
-                    (assignment.timing().enqueued_at() == self.context.observation.tick)
-                        .then_some(assignment.request_ordinal())
-                }));
-                planner
-                    .prepare_production_funding(active, assignments)
-                    .map_err(rejected)
-            })
-            .transpose()?;
-        let binding = if prepared.fresh_lift_producer_jobs > 0 {
-            let operation = planner
+        if let Some(active) = prepared.active_lift.as_ref() {
+            let assignments = active_lift_producer_assignments(active, producer_schedule);
+            due_ordinals.extend(assignments.iter().filter_map(|assignment| {
+                (assignment.timing().enqueued_at() == self.context.observation.tick)
+                    .then_some(assignment.request_ordinal())
+            }));
+            planner.refund_producers(assignments);
+        }
+        if prepared.fresh_lift_producer_jobs > 0 {
+            let started_at = planner
                 .operation()
-                .expect("fresh Lift production belongs to an active operation");
+                .expect("fresh Lift production belongs to an active operation")
+                .started_at;
             let assignments =
-                fresh_lift_producer_assignments(planner, operation.started_at, producer_schedule);
-            if assignments.len() != prepared.fresh_lift_producer_jobs {
-                return Err((
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-                ));
-            }
-            Some(
-                planner
-                    .prepare_producer_binding(operation.started_at, operation.deadline, assignments)
-                    .map_err(rejected)?,
-            )
-        } else {
-            None
-        };
-        Ok(LiftCommit {
-            funding,
-            binding,
-            due_ordinals,
-        })
+                fresh_lift_producer_assignments(planner, started_at, producer_schedule);
+            planner.bind_producers(assignments);
+        }
+        planner.mark_producers_issued(&due_ordinals);
     }
 
     fn commit_emergency_defense(
@@ -2306,24 +2249,6 @@ impl FreshInvestmentPreparation {
             horizon = horizon.max(proposal.reservation_deadline());
         });
         horizon
-    }
-}
-
-struct LiftCommit {
-    funding: Option<crate::lift::LiftFunding>,
-    binding: Option<crate::lift::LiftBinding>,
-    due_ordinals: Vec<usize>,
-}
-
-impl LiftCommit {
-    fn apply(self, planner: &mut LiftPlanner) {
-        if let Some(funding) = self.funding {
-            funding.apply(planner);
-        }
-        if let Some(binding) = self.binding {
-            binding.apply(planner);
-        }
-        planner.mark_producers_issued(&self.due_ordinals);
     }
 }
 
@@ -3744,10 +3669,7 @@ mod tests {
         let proposal = current_connected_proposal(observation);
         let jobs = proposal.minimum_claims().provider_jobs().to_vec();
         let mut planner = StrategicPlanner::new();
-        planner
-            .prepare_connected_commit(proposal)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         (planner, jobs)
     }
 
@@ -5264,10 +5186,7 @@ mod tests {
         let proposal = current_connected_proposal(&observation);
         let revision = revising.then(|| proposal.clone().into_active_revision_fixture());
         let mut planner = StrategicPlanner::new();
-        planner
-            .prepare_connected_commit(proposal)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         let active = connected_obligation(&mut planner, &observation);
         let setup = SessionProfile::new(prime_profile());
         let public_map = connected_briefing(&observation);
@@ -6030,10 +5949,7 @@ mod tests {
             let connected_assignments = settlement.producer_schedule().to_vec();
             let mut payloads = settlement.into_payloads();
             let mut strategy = StrategicPlanner::new();
-            strategy
-                .prepare_connected_commit(payloads.take_connected().unwrap())
-                .unwrap()
-                .apply(&mut strategy);
+            strategy.commit_connected(payloads.take_connected().unwrap());
             let shift = 24;
             let airworks = BuildingId(12);
             let lift_starts_at = connected_assignments
@@ -6059,13 +5975,7 @@ mod tests {
                 ),
                 LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
             );
-            lift.prepare_producer_binding(
-                lift_operation.started_at,
-                lift_operation.deadline,
-                vec![lift_assignment],
-            )
-            .expect("the later exact Lift assignment binds")
-            .apply(&mut lift);
+            lift.bind_producers(vec![lift_assignment]);
             let resources = ResourceSnapshot::from_observation(&observation);
             assert!(
                 !lift

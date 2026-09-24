@@ -22,24 +22,18 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let operation = lift.operation().unwrap().clone();
         assert_eq!(operation.started_at, 24);
         let enqueued_at = 72;
-        lift.prepare_producer_binding(
-            operation.started_at,
-            operation.deadline,
-            vec![LiftProducerAssignment::new(
-                0,
-                BuildingId(2),
-                UnitKind::Skyhook,
-                LiftProducerTiming::new(
-                    enqueued_at,
-                    enqueued_at,
-                    enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                    operation.deadline,
-                ),
-                LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-            )],
-        )
-        .unwrap()
-        .apply(&mut lift);
+        lift.bind_producers(vec![LiftProducerAssignment::new(
+            0,
+            BuildingId(2),
+            UnitKind::Skyhook,
+            LiftProducerTiming::new(
+                enqueued_at,
+                enqueued_at,
+                enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                operation.deadline,
+            ),
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        )]);
         let active = lift.active_production_obligation().unwrap();
         let production = active_lift_production_obligation(&active).unwrap();
         let builder = UnitId(200);
@@ -157,26 +151,19 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
 fn lost_lift_payload_discards_unpaid_work_before_committing_other_owners() {
     let (mut observation, mut lift, _) = active_lift_fixture();
     let operation = lift.operation().unwrap();
-    let accepted_at = operation.started_at;
     let deadline = operation.deadline;
-    lift.prepare_producer_binding(
-        accepted_at,
-        deadline,
-        vec![LiftProducerAssignment::new(
-            0,
-            BuildingId(2),
-            UnitKind::Skyhook,
-            LiftProducerTiming::new(
-                24,
-                24,
-                24 + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                deadline,
-            ),
-            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-        )],
-    )
-    .unwrap()
-    .apply(&mut lift);
+    lift.bind_producers(vec![LiftProducerAssignment::new(
+        0,
+        BuildingId(2),
+        UnitKind::Skyhook,
+        LiftProducerTiming::new(
+            24,
+            24,
+            24 + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+            deadline,
+        ),
+        LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+    )]);
     observation.tick = 12;
     observation
         .my_units
@@ -205,24 +192,18 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     observation.scrap = 300;
     let operation = lift.operation().unwrap().clone();
     let enqueued_at = 24;
-    lift.prepare_producer_binding(
-        operation.started_at,
-        operation.deadline,
-        vec![LiftProducerAssignment::new(
-            0,
-            BuildingId(2),
-            UnitKind::Skyhook,
-            LiftProducerTiming::new(
-                enqueued_at,
-                enqueued_at,
-                enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                operation.deadline,
-            ),
-            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-        )],
-    )
-    .unwrap()
-    .apply(&mut lift);
+    lift.bind_producers(vec![LiftProducerAssignment::new(
+        0,
+        BuildingId(2),
+        UnitKind::Skyhook,
+        LiftProducerTiming::new(
+            enqueued_at,
+            enqueued_at,
+            enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+            operation.deadline,
+        ),
+        LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+    )]);
     let members = lift.operation().unwrap().payload.clone();
     let active = lift.active_production_obligation().unwrap();
     let production = active_lift_production_obligation(&active).unwrap();
@@ -425,10 +406,7 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
     let proposal = current_connected_proposal(&observation);
     let fixed_deadline = proposal.deadline();
     let mut planner = StrategicPlanner::new();
-    planner
-        .prepare_connected_commit(proposal)
-        .unwrap()
-        .apply(&mut planner);
+    planner.commit_connected(proposal);
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction

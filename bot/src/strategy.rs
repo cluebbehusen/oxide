@@ -1495,16 +1495,9 @@ struct ConnectedProposalVariant {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConnectedProposalOrigin {
-    Idle {
-        air: Option<ActiveAirOperation>,
-        standby: AirStandby,
-    },
-    Remembered {
-        active: ActiveAirOperation,
-    },
-    Active {
-        active: ActiveAirOperation,
-    },
+    Idle { standby: AirStandby },
+    Remembered { active: ActiveAirOperation },
+    Active { active: ActiveAirOperation },
 }
 
 /// One deterministic cumulative addition above an accepted connected minimum.
@@ -1693,7 +1686,6 @@ impl FreshConnectedProposal {
         }
         Self {
             origin: ConnectedProposalOrigin::Idle {
-                air: None,
                 standby: AirStandby::default(),
             },
             target: BuildingContact {
@@ -1742,19 +1734,8 @@ pub(crate) struct FreshConnectedProposalFixture {
     pub(crate) protected_forecast_scrap: u32,
 }
 
-/// Why an accepted connected proposal could not be installed exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConnectedProposalCommitError {
-    /// Planner state changed after the pure proposal was derived.
-    StalePlanner,
-    /// A previously admitted connected assault already owns the planner.
-    ExistingAssault,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AirMembership {
-    accepted_at: Tick,
-    phase: AirOperationPhase,
     scout: Option<UnitId>,
     artillery: Vec<UnitId>,
     strike_aircraft: Vec<UnitId>,
@@ -1764,8 +1745,6 @@ pub(crate) struct AirMembership {
 impl AirMembership {
     fn from_active(active: &ActiveAirOperation) -> Self {
         Self {
-            accepted_at: active.plan.admitted_at,
-            phase: active.op.phase(),
             scout: active.op.scout,
             artillery: active.op.artillery.clone(),
             strike_aircraft: active.op.strike_aircraft.clone(),
@@ -1785,12 +1764,6 @@ impl AirMembership {
         units.sort_unstable();
         units.dedup();
         units
-    }
-
-    pub(crate) fn matches(&self, planner: &StrategicPlanner) -> bool {
-        planner.air.as_ref().is_some_and(|active| {
-            active.plan.admitted_at == self.accepted_at && active.op.phase() == self.phase
-        })
     }
 
     pub(crate) fn apply(self, planner: &mut StrategicPlanner, now: Tick) {
@@ -2223,7 +2196,6 @@ pub(crate) fn prospective_airworks_package_value(
             context,
             target,
             ConnectedProposalOrigin::Idle {
-                air: None,
                 standby: AirStandby::default(),
             },
             initial,
@@ -2555,21 +2527,6 @@ pub struct StrategicPlanner {
     terminal_outcome: Option<AirOperationOutcome>,
 }
 
-pub(crate) struct ConnectedCommit {
-    active: ActiveAirOperation,
-    revises_active: bool,
-}
-
-impl ConnectedCommit {
-    pub(crate) fn apply(self, planner: &mut StrategicPlanner) {
-        planner.air = Some(self.active);
-        if !self.revises_active {
-            planner.standby = AirStandby::default();
-        }
-        planner.terminal_outcome = None;
-    }
-}
-
 impl StrategicPlanner {
     /// Creates an idle planner.
     pub fn new() -> Self {
@@ -2869,7 +2826,6 @@ impl StrategicPlanner {
         standby.prune(obs);
         let unavailable = excluding_owned(coordination.enlisted, &standby.reservations());
         let origin = ConnectedProposalOrigin::Idle {
-            air: self.air.clone(),
             standby: self.standby.clone(),
         };
         let mut first_rejection = None;
@@ -3042,10 +2998,7 @@ impl StrategicPlanner {
     /// Installs the exact proposal selected by cross-domain adjudication. No
     /// observation is accepted here, so commitment cannot rerank its target,
     /// rebuild its package, or change its producer basis.
-    pub(crate) fn prepare_connected_commit(
-        &self,
-        proposal: FreshConnectedProposal,
-    ) -> Result<ConnectedCommit, ConnectedProposalCommitError> {
+    pub(crate) fn commit_connected(&mut self, proposal: FreshConnectedProposal) {
         let revises_active = proposal.revises_active_operation();
         let paid = match &proposal.origin {
             ConnectedProposalOrigin::Active { active } => {
@@ -3053,34 +3006,17 @@ impl StrategicPlanner {
             }
             _ => Vec::new(),
         };
-        if !revises_active
-            && self
-                .air
-                .as_ref()
-                .is_some_and(|active| active.op.assault_admitted())
-        {
-            return Err(ConnectedProposalCommitError::ExistingAssault);
-        }
-        let origin_matches = match &proposal.origin {
-            ConnectedProposalOrigin::Idle { air, standby } => {
-                &self.air == air && &self.standby == standby
-            }
-            ConnectedProposalOrigin::Remembered { active } => self.air.as_ref() == Some(active),
-            ConnectedProposalOrigin::Active { active } => self.air.as_ref() == Some(active),
-        };
-        if !origin_matches {
-            return Err(ConnectedProposalCommitError::StalePlanner);
-        }
         let mut selected = proposal
             .variants
             .into_iter()
             .nth(proposal.selected_variant)
             .expect("a selected proposal variant came from its retained ladder");
         selected.active.plan.paid_connected_production = paid;
-        Ok(ConnectedCommit {
-            active: selected.active,
-            revises_active,
-        })
+        self.air = Some(selected.active);
+        if !revises_active {
+            self.standby = AirStandby::default();
+        }
+        self.terminal_outcome = None;
     }
 
     /// Reconstructs unpaid demand from the retained package and current inventory.
@@ -8215,10 +8151,7 @@ mod tests {
         planner: &mut StrategicPlanner,
         proposal: FreshConnectedProposal,
     ) {
-        planner
-            .prepare_connected_commit(proposal)
-            .expect("the unchanged planner accepts its own proposal")
-            .apply(planner);
+        planner.commit_connected(proposal);
     }
 
     fn allocate_connected_in_test(
@@ -8437,10 +8370,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let deadline = proposal.deadline();
-        planner
-            .prepare_connected_commit(proposal)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         let initial = settle_active(&mut planner, &obs);
         let lost = initial
             .iter()
@@ -8485,10 +8415,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        planner
-            .prepare_connected_commit(proposal)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         let bank = obs.scrap;
         let rich = settle_active(&mut planner, &obs);
         obs.scrap = rich.iter().map(|job| job.kind.stats().cost).sum::<u32>() - 1;
@@ -8548,10 +8475,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let deadline = proposal.deadline();
-        planner
-            .prepare_connected_commit(proposal)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         let schedule = settle_active(&mut planner, &obs);
         planner.record_connected_purchases(&schedule, obs.tick);
         let paid = planner.paid_connected_production(&obs);
@@ -8585,10 +8509,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(revision.deadline(), deadline);
-        planner
-            .prepare_connected_commit(revision)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(revision);
         assert_eq!(planner.paid_connected_production(&obs), paid);
         let before = active_obligation(&mut planner, &obs)
             .unwrap()
@@ -8658,10 +8579,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let jobs = proposal.minimum_claims().provider_jobs().to_vec();
-        planner
-            .prepare_connected_commit(proposal)
-            .unwrap()
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         assert!(
             planner.paid_connected_production(obs).is_empty(),
             "the fixture buys nothing, so the package is wholly outstanding"
@@ -12083,10 +12001,7 @@ mod tests {
             .clone()
             .expect("the selected proposal retains its exact package");
         let mut planner = StrategicPlanner::new();
-        planner
-            .prepare_connected_commit(proposal)
-            .expect("the exact connected proposal commits")
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         let _ = planner.think_after_connected_adjudication(StrategicThinkContext::new(
             &profile(),
             DifficultyTuning::for_level(BotDifficulty::Prime),
@@ -12315,10 +12230,7 @@ mod tests {
             !operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
         }));
 
-        planner
-            .prepare_connected_commit(proposal)
-            .expect("the unchanged remembered origin accepts the proposal")
-            .apply(&mut planner);
+        planner.commit_connected(proposal);
         assert!(planner.air_operation().is_some_and(|operation| {
             operation.assault_admitted() && operation.target_id == Some(BuildingId(80))
         }));

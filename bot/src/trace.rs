@@ -19,8 +19,7 @@ use super::resources::{
 use super::strategy::force_package::{ForceFamily, ForcePackageRejection};
 use super::strategy::{
     AirOperation, AirOperationOutcome, AirRecoveryReason, ConnectedPackageDiagnostics,
-    ConnectedPlanRejection, ConnectedProposalCommitError, RejectedConnectedCandidate,
-    StrategicPlanner,
+    ConnectedPlanRejection, RejectedConnectedCandidate, StrategicPlanner,
 };
 use super::{BuildingContact, ContactEvidence, StrategicIntelligence};
 #[cfg(test)]
@@ -2688,8 +2687,6 @@ pub enum AllocationCoordinatorStageTrace {
     StandingForceProposalAdaptation,
     /// A retained saved Foundry could not emit its exact build command.
     SavedFoundryDispatch,
-    /// A selected connected payload could not be installed into its domain planner.
-    ConnectedProposalCommit,
 }
 
 /// One typed failure outside the allocator's portfolio search.
@@ -2722,11 +2719,6 @@ pub enum AllocationCoordinatorFailureReasonTrace {
         /// Unit the command attempted to enqueue.
         kind: UnitKind,
     },
-    /// A selected connected proposal could not be committed unchanged.
-    ConnectedProposalCommit {
-        /// Commit error.
-        error: ConnectedProposalCommitErrorTrace,
-    },
     /// A retained payload no longer matched the exact plan it was meant to dispatch.
     ExactDispatchRejected,
 }
@@ -2753,14 +2745,6 @@ impl From<&CoordinatorInputError> for AllocationCoordinatorFailureReasonTrace {
 impl From<ClaimBundleError> for AllocationCoordinatorFailureReasonTrace {
     fn from(value: ClaimBundleError) -> Self {
         Self::Claims {
-            error: value.into(),
-        }
-    }
-}
-
-impl From<ConnectedProposalCommitError> for AllocationCoordinatorFailureReasonTrace {
-    fn from(value: ConnectedProposalCommitError) -> Self {
-        Self::ConnectedProposalCommit {
             error: value.into(),
         }
     }
@@ -2912,25 +2896,6 @@ impl From<PlanningProjectionError> for PlanningProjectionErrorTrace {
             PlanningProjectionError::ZeroIncomePeriod { source } => {
                 Self::ZeroIncomePeriod { source }
             }
-        }
-    }
-}
-
-/// Why exact connected producer assignments could not be retained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectedProposalCommitErrorTrace {
-    /// Planner state changed after derivation.
-    StalePlanner,
-    /// Another connected assault already owned the planner.
-    ExistingAssault,
-}
-
-impl From<ConnectedProposalCommitError> for ConnectedProposalCommitErrorTrace {
-    fn from(value: ConnectedProposalCommitError) -> Self {
-        match value {
-            ConnectedProposalCommitError::StalePlanner => Self::StalePlanner,
-            ConnectedProposalCommitError::ExistingAssault => Self::ExistingAssault,
         }
     }
 }
@@ -4132,29 +4097,6 @@ mod tests {
                     error
                 )),
                 AllocationCoordinatorFailureReasonTrace::Projection { error: expected }
-            );
-        }
-    }
-
-    #[test]
-    fn connected_commit_errors_remain_distinguishable() {
-        let commit_cases = [
-            (
-                ConnectedProposalCommitError::StalePlanner,
-                ConnectedProposalCommitErrorTrace::StalePlanner,
-            ),
-            (
-                ConnectedProposalCommitError::ExistingAssault,
-                ConnectedProposalCommitErrorTrace::ExistingAssault,
-            ),
-        ];
-        for (error, expected) in commit_cases {
-            assert_eq!(ConnectedProposalCommitErrorTrace::from(error), expected);
-            assert_eq!(
-                AllocationCoordinatorFailureReasonTrace::from(error),
-                AllocationCoordinatorFailureReasonTrace::ConnectedProposalCommit {
-                    error: expected,
-                }
             );
         }
     }

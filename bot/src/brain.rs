@@ -6153,24 +6153,18 @@ mod tests {
             cancelled
                 .mind_mut()
                 .lifts
-                .prepare_producer_binding(
-                    operation.started_at,
-                    operation.deadline,
-                    vec![LiftProducerAssignment::new(
-                        0,
-                        airworks,
-                        UnitKind::Skyhook,
-                        LiftProducerTiming::new(
-                            observed.tick + tuning.cadence,
-                            starts_at,
-                            starts_at + u64::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                            operation.deadline,
-                        ),
-                        LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
-                    )],
-                )
-                .unwrap()
-                .apply(&mut cancelled.mind_mut().lifts);
+                .bind_producers(vec![LiftProducerAssignment::new(
+                    0,
+                    airworks,
+                    UnitKind::Skyhook,
+                    LiftProducerTiming::new(
+                        observed.tick + tuning.cadence,
+                        starts_at,
+                        starts_at + u64::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                        operation.deadline,
+                    ),
+                    LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
+                )]);
             assert!(
                 cancelled
                     .mind_mut()

@@ -260,18 +260,6 @@ pub(crate) struct ActiveLiftProductionObligation {
     producer_jobs: Vec<LiftProducerAssignment>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LiftProducerBindingError {
-    StaleOperation,
-    ExistingUnpaidAssignments,
-    RequestOrdinal { expected: usize, actual: usize },
-    Kind { request_ordinal: usize },
-    Timing { request_ordinal: usize },
-    Funding { request_ordinal: usize },
-    JobCount { expected: usize, actual: usize },
-    Producer { request_ordinal: usize },
-}
-
 impl ActiveLiftProductionObligation {
     pub(crate) const fn accepted_at(&self) -> Tick {
         self.accepted_at
@@ -394,38 +382,6 @@ pub(super) struct LiftAdmission<'a> {
     pub(super) minimum_core_equivalents: u64,
 }
 
-pub(crate) struct LiftBinding(Vec<LiftProducerAssignment>);
-
-impl LiftBinding {
-    pub(crate) fn apply(self, planner: &mut LiftPlanner) {
-        planner
-            .operation
-            .as_mut()
-            .expect("validated lift remains active")
-            .producer_assignments
-            .extend(self.0);
-    }
-}
-
-pub(crate) struct LiftFunding(Vec<LiftProducerAssignment>);
-
-impl LiftFunding {
-    pub(crate) fn apply(self, planner: &mut LiftPlanner) {
-        let operation = planner
-            .operation
-            .as_mut()
-            .expect("the validated Lift operation remains active");
-        for assignment in self.0 {
-            operation
-                .producer_assignments
-                .iter_mut()
-                .find(|candidate| candidate.request_ordinal == assignment.request_ordinal)
-                .expect("the validated Lift assignment remains bound")
-                .funding = assignment.funding;
-        }
-    }
-}
-
 impl LiftOperation {
     pub(crate) fn owned_units(&self) -> impl Iterator<Item = UnitId> + '_ {
         self.payload
@@ -448,8 +404,6 @@ impl LiftOperation {
 }
 
 pub(crate) struct LiftMembership {
-    accepted_at: Tick,
-    deadline: Tick,
     payload: UnitIdSet,
     manifests: Option<Vec<LiftManifest>>,
 }
@@ -463,14 +417,6 @@ impl LiftMembership {
         units.sort_unstable();
         units.dedup();
         units
-    }
-
-    pub(crate) fn matches(&self, planner: &LiftPlanner) -> bool {
-        planner.operation.as_ref().is_some_and(|operation| {
-            operation.started_at == self.accepted_at
-                && operation.deadline == self.deadline
-                && operation.phase == LiftPhase::Provision
-        })
     }
 
     pub(crate) fn apply(self, planner: &mut LiftPlanner) {
@@ -604,133 +550,28 @@ impl LiftPlanner {
 
     /// Retains a successful allocator schedule without changing its lane,
     /// timing, deadline, or current-versus-forecast funding split.
-    pub(crate) fn prepare_producer_binding(
-        &self,
-        accepted_at: Tick,
-        deadline: Tick,
-        assignments: Vec<LiftProducerAssignment>,
-    ) -> Result<LiftBinding, LiftProducerBindingError> {
-        let Some(operation) = self.operation.as_ref().filter(|operation| {
-            operation.phase == LiftPhase::Provision
-                && operation.started_at == accepted_at
-                && operation.deadline == deadline
-        }) else {
-            return Err(LiftProducerBindingError::StaleOperation);
-        };
-        if operation.producer_assignments.iter().any(|assignment| {
-            operation
-                .issued_producers
-                .binary_search(&assignment.request_ordinal)
-                .is_err()
-        }) {
-            return Err(LiftProducerBindingError::ExistingUnpaidAssignments);
-        }
-        let first_ordinal = operation.producer_assignments.len();
-        for (offset, assignment) in assignments.iter().enumerate() {
-            let expected = first_ordinal.saturating_add(offset);
-            if assignment.request_ordinal != expected {
-                return Err(LiftProducerBindingError::RequestOrdinal {
-                    expected,
-                    actual: assignment.request_ordinal,
-                });
-            }
-            if assignment.kind != UnitKind::Skyhook {
-                return Err(LiftProducerBindingError::Kind {
-                    request_ordinal: assignment.request_ordinal,
-                });
-            }
-            let timing = assignment.timing;
-            let expected_ready = timing
-                .starts_at
-                .checked_add(Tick::from(assignment.kind.stats().train_ticks))
-                .and_then(|tick| tick.checked_sub(1));
-            if timing.starts_at < timing.enqueued_at
-                || expected_ready != Some(timing.ready_at)
-                || timing.ready_at >= timing.ready_before
-                || timing.ready_before != deadline
-            {
-                return Err(LiftProducerBindingError::Timing {
-                    request_ordinal: assignment.request_ordinal,
-                });
-            }
-            if assignment
-                .funding
-                .current_scrap
-                .checked_add(assignment.funding.forecast_scrap)
-                != Some(assignment.kind.stats().cost)
-            {
-                return Err(LiftProducerBindingError::Funding {
-                    request_ordinal: assignment.request_ordinal,
-                });
-            }
-        }
-        Ok(LiftBinding(assignments))
+    pub(crate) fn bind_producers(&mut self, assignments: Vec<LiftProducerAssignment>) {
+        self.operation
+            .as_mut()
+            .expect("fresh Lift production belongs to an active operation")
+            .producer_assignments
+            .extend(assignments);
     }
 
     /// Refreshes only the funding split of still-unpaid immutable assignments.
-    pub(crate) fn prepare_production_funding(
-        &self,
-        obligation: &ActiveLiftProductionObligation,
-        assignments: Vec<LiftProducerAssignment>,
-    ) -> Result<LiftFunding, LiftProducerBindingError> {
-        let Some(operation) = self.operation.as_ref() else {
-            return Err(LiftProducerBindingError::StaleOperation);
-        };
-        if operation.phase != LiftPhase::Provision
-            || operation.started_at != obligation.accepted_at
-            || operation.deadline != obligation.deadline
-        {
-            return Err(LiftProducerBindingError::StaleOperation);
-        }
-        if assignments.len() != obligation.producer_jobs.len() {
-            return Err(LiftProducerBindingError::JobCount {
-                expected: obligation.producer_jobs.len(),
-                actual: assignments.len(),
-            });
-        }
-        for (expected, assignment) in obligation.producer_jobs.iter().zip(&assignments) {
-            let ordinal = expected.request_ordinal;
-            if operation
+    pub(crate) fn refund_producers(&mut self, assignments: Vec<LiftProducerAssignment>) {
+        let operation = self
+            .operation
+            .as_mut()
+            .expect("retained Lift production belongs to an active operation");
+        for assignment in assignments {
+            operation
                 .producer_assignments
-                .iter()
-                .find(|candidate| candidate.request_ordinal == ordinal)
-                != Some(expected)
-            {
-                return Err(LiftProducerBindingError::StaleOperation);
-            }
-            if assignment.request_ordinal != ordinal {
-                return Err(LiftProducerBindingError::RequestOrdinal {
-                    expected: ordinal,
-                    actual: assignment.request_ordinal,
-                });
-            }
-            if assignment.kind != expected.kind {
-                return Err(LiftProducerBindingError::Kind {
-                    request_ordinal: ordinal,
-                });
-            }
-            if assignment.producer != expected.producer {
-                return Err(LiftProducerBindingError::Producer {
-                    request_ordinal: ordinal,
-                });
-            }
-            if assignment.timing != expected.timing {
-                return Err(LiftProducerBindingError::Timing {
-                    request_ordinal: ordinal,
-                });
-            }
-            if assignment
-                .funding
-                .current_scrap
-                .checked_add(assignment.funding.forecast_scrap)
-                != Some(assignment.kind.stats().cost)
-            {
-                return Err(LiftProducerBindingError::Funding {
-                    request_ordinal: ordinal,
-                });
-            }
+                .iter_mut()
+                .find(|candidate| candidate.request_ordinal == assignment.request_ordinal)
+                .expect("retained Lift production keeps its assignment")
+                .funding = assignment.funding;
         }
-        Ok(LiftFunding(assignments))
     }
 
     /// Records only exact allocator-owned commands retained for lowering.
@@ -967,12 +808,7 @@ impl LiftPlanner {
         } else {
             None
         };
-        Some(LiftMembership {
-            accepted_at: operation.started_at,
-            deadline: operation.deadline,
-            payload,
-            manifests,
-        })
+        Some(LiftMembership { payload, manifests })
     }
 
     pub(crate) fn prepare_purchases(
@@ -6582,7 +6418,6 @@ mod tests {
         planner = crate::checkpoint::round_trip(&planner);
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
-        let accepted_at = operation.started_at;
         let timing = lift_test_timing(obs.tick + 12, deadline);
         let cost = UnitKind::Skyhook.stats().cost;
         let accepted = LiftProducerAssignment::new(
@@ -6593,10 +6428,7 @@ mod tests {
             LiftProducerFunding::new(0, cost),
         );
 
-        planner
-            .prepare_producer_binding(accepted_at, deadline, vec![accepted])
-            .expect("the exact future carrier binds")
-            .apply(&mut planner);
+        planner.bind_producers(vec![accepted]);
         let obligation = planner
             .active_production_obligation()
             .expect("the unpaid carrier remains mandatory");
@@ -6609,10 +6441,7 @@ mod tests {
             timing,
             LiftProducerFunding::new(cost, 0),
         );
-        planner
-            .prepare_production_funding(&obligation, vec![refreshed])
-            .expect("current income may replace forecast funding")
-            .apply(&mut planner);
+        planner.refund_producers(vec![refreshed]);
         assert_eq!(
             planner
                 .active_production_obligation()
@@ -6628,21 +6457,13 @@ mod tests {
         let (obs, mut planner, producer) = lift_with_unpaid_carrier();
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
-        let accepted_at = operation.started_at;
-        planner
-            .prepare_producer_binding(
-                accepted_at,
-                deadline,
-                vec![LiftProducerAssignment::new(
-                    0,
-                    producer,
-                    UnitKind::Skyhook,
-                    lift_test_timing(obs.tick + 12, deadline),
-                    LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-                )],
-            )
-            .expect("the exact future carrier binds")
-            .apply(&mut planner);
+        planner.bind_producers(vec![LiftProducerAssignment::new(
+            0,
+            producer,
+            UnitKind::Skyhook,
+            lift_test_timing(obs.tick + 12, deadline),
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        )]);
 
         planner.mark_producers_issued(&[1]);
         assert!(
@@ -6662,7 +6483,6 @@ mod tests {
         let (obs, mut planner, producer) = lift_with_unpaid_carrier();
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
-        let accepted_at = operation.started_at;
         let enqueued_at = obs.tick + 12;
         let train_ticks = Tick::from(UnitKind::Skyhook.stats().train_ticks);
         let first_ready = enqueued_at.saturating_add(train_ticks).saturating_sub(1);
@@ -6685,10 +6505,7 @@ mod tests {
                 LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
             ),
         ];
-        planner
-            .prepare_producer_binding(accepted_at, deadline, assignments.clone())
-            .expect("two exact carrier assignments bind to the active Lift")
-            .apply(&mut planner);
+        planner.bind_producers(assignments.clone());
 
         assert!(
             planner
@@ -6742,7 +6559,6 @@ mod tests {
         let (mut obs, mut planner, producer) = lift_with_unpaid_carrier();
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
-        let accepted_at = operation.started_at;
         let timing = lift_test_timing(obs.tick + 12, deadline);
         let assignment = LiftProducerAssignment::new(
             0,
@@ -6751,10 +6567,7 @@ mod tests {
             timing,
             LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
         );
-        planner
-            .prepare_producer_binding(accepted_at, deadline, vec![assignment])
-            .expect("the exact future carrier binds")
-            .apply(&mut planner);
+        planner.bind_producers(vec![assignment]);
         let desired_carriers = planner.operation().unwrap().desired_carriers;
         obs.my_units.extend((0..desired_carriers).map(|index| {
             own(
@@ -6782,7 +6595,6 @@ mod tests {
         let (obs, mut planner, producer) = lift_with_unpaid_carrier();
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
-        let accepted_at = operation.started_at;
         let assignment = LiftProducerAssignment::new(
             0,
             producer,
@@ -6790,10 +6602,7 @@ mod tests {
             lift_test_timing(obs.tick + 12, deadline),
             LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
         );
-        planner
-            .prepare_producer_binding(accepted_at, deadline, vec![assignment])
-            .expect("the exact future carrier binds")
-            .apply(&mut planner);
+        planner.bind_producers(vec![assignment]);
 
         let obligation = planner.active_production_obligation().unwrap();
         let mut without_producer = obs.clone();
@@ -6816,22 +6625,14 @@ mod tests {
         let (obs, mut planner, producer) = lift_with_unpaid_carrier();
         let operation = planner.operation().expect("the Lift is active");
         let deadline = operation.deadline;
-        let accepted_at = operation.started_at;
         let timing = lift_test_timing(obs.tick + 12, deadline);
-        planner
-            .prepare_producer_binding(
-                accepted_at,
-                deadline,
-                vec![LiftProducerAssignment::new(
-                    0,
-                    producer,
-                    UnitKind::Skyhook,
-                    timing,
-                    LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-                )],
-            )
-            .expect("the exact future carrier binds")
-            .apply(&mut planner);
+        planner.bind_producers(vec![LiftProducerAssignment::new(
+            0,
+            producer,
+            UnitKind::Skyhook,
+            timing,
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        )]);
         let obligation = planner.active_production_obligation().unwrap();
         let mut late = obs;
         late.tick = timing.enqueued_at() + 1;
