@@ -2,6 +2,63 @@
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, OBSERVATION_VERSION, ObservationData, UnitObs};
 use oxide_sim::{BuildingId, BuildingKind, PlayerId, UnitId, UnitKind};
+
+pub(crate) fn unit_spec(
+    player: u8,
+    kind: UnitKind,
+    x: i32,
+    y: i32,
+) -> oxide_sim::scenario::UnitSpec {
+    oxide_sim::scenario::UnitSpec { player, kind, x, y }
+}
+
+pub(crate) fn building_spec(
+    player: u8,
+    kind: BuildingKind,
+    x: i32,
+    y: i32,
+) -> oxide_sim::scenario::BuildingSpec {
+    oxide_sim::scenario::BuildingSpec { player, kind, x, y }
+}
+
+pub(crate) fn player_spec(
+    name: &str,
+    faction: oxide_sim::Faction,
+    scrap: u32,
+    team: Option<u8>,
+) -> oxide_sim::scenario::PlayerSpec {
+    oxide_sim::scenario::PlayerSpec {
+        name: name.into(),
+        faction,
+        team,
+        scrap,
+        bot: false,
+        bot_config: None,
+    }
+}
+
+#[track_caller]
+pub(crate) fn assert_commands_accepted(report: &oxide_sim::TickReport, player: PlayerId) {
+    assert!(
+        report.events.iter().all(|event| !matches!(
+            event,
+            oxide_sim::Event::CommandRejected { player: rejected, .. } if *rejected == player
+        )),
+        "{player} issued rejected commands: {:?}",
+        report.events
+    );
+}
+
+#[track_caller]
+pub(crate) fn home_foundry(obs: &crate::Observation) -> TilePos {
+    obs.my_buildings
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Foundry)
+        .min_by_key(|building| building.id)
+        .expect("the home Foundry stands")
+        .anchor
+}
+
 pub(crate) fn observation_data() -> ObservationData {
     ObservationData {
         version: OBSERVATION_VERSION,
@@ -216,3 +273,5 @@ pub(crate) fn briefing(
         initial_scrap: Vec::new(),
     }
 }
+
+pub(crate) mod operations;

@@ -3144,6 +3144,7 @@ fn dispatch_ready_saved_foundry(prepared: &PreparedAllocation, effects: &mut Com
 #[cfg(test)]
 mod tests {
     mod commit;
+    mod ownership;
     mod relief;
     mod retained;
     use super::super::{

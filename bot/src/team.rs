@@ -768,6 +768,7 @@ fn cooldown(profile: &ResolvedProfile, tuning: DifficultyTuning) -> Tick {
 
 #[cfg(test)]
 mod tests {
+    mod admission;
     impl TeamReliefPlanner {
         pub(crate) fn think_with_admission(
             &mut self,
