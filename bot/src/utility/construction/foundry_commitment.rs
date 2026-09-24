@@ -2,6 +2,30 @@
 
 use super::*;
 
+pub(crate) struct FoundryCommit {
+    saving: FoundrySavingCommitment,
+    build: bool,
+}
+
+impl FoundryCommit {
+    pub(crate) fn apply(self, policy: &mut UtilityPolicy, intents: &mut Vec<Intent>) {
+        if self.build {
+            let plan = &self.saving.plan;
+            UtilityPolicy::insert_build_before_harvest(
+                intents,
+                BuildingKind::Foundry,
+                plan.anchor,
+                Intent::BuildWith {
+                    builder: plan.builder,
+                    kind: BuildingKind::Foundry,
+                    anchor: plan.anchor,
+                },
+            );
+        }
+        policy.state.foundry_saving = Some(self.saving);
+    }
+}
+
 /// A fresh proposal cannot replace another persistent Foundry obligation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExistingFoundryCommitment;
@@ -539,12 +563,11 @@ impl UtilityPolicy {
     /// Freezes and optionally dispatches the exact proposal selected by the
     /// cross-domain allocator. No observation is accepted here, so commitment
     /// cannot silently rerank the proposal to a different site or builder.
-    pub(crate) fn commit_adjudicated_foundry(
-        &mut self,
+    pub(crate) fn prepare_adjudicated_foundry(
+        &self,
         proposal: FreshFoundryProposal,
         accepted_at: Tick,
-        intents: &mut Vec<Intent>,
-    ) -> Result<(), ExistingFoundryCommitment> {
+    ) -> Result<FoundryCommit, ExistingFoundryCommitment> {
         if self.state.foundry_saving.is_some() {
             return Err(ExistingFoundryCommitment);
         }
@@ -558,26 +581,17 @@ impl UtilityPolicy {
             decision_cadence: proposal.decision_cadence,
         };
         let plan = proposal.plan;
-        self.state.foundry_saving = Some(FoundrySavingCommitment {
-            plan: plan.clone(),
+        let saving = FoundrySavingCommitment {
+            plan,
             accepted_at,
             required_scrap,
             forecast_basis,
             blocked_since: None,
-        });
-        if disposition == AdjudicatedFoundryCommit::Build {
-            Self::insert_build_before_harvest(
-                intents,
-                BuildingKind::Foundry,
-                plan.anchor,
-                Intent::BuildWith {
-                    builder: plan.builder,
-                    kind: BuildingKind::Foundry,
-                    anchor: plan.anchor,
-                },
-            );
-        }
-        Ok(())
+        };
+        Ok(FoundryCommit {
+            saving,
+            build: disposition == AdjudicatedFoundryCommit::Build,
+        })
     }
 
     /// Releases a frozen expansion lease only once its exact construction

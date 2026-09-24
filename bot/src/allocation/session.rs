@@ -2,21 +2,21 @@
 //!
 //! The domain planners still decide what work is worth doing. This module owns
 //! the lifecycle around those decisions: assemble exact prior claims, resolve
-//! the shared portfolio once, then either commit every accepted payload or
-//! restore every speculative planner mutation.
+//! the shared portfolio once, and validate every selected update before writing.
+//! Rejection discards proposals while preserving accepted operation maintenance.
 
 use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
     CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
-    ImportedObligation, LegacyChannel, ObligationClass, ObligationKey, OperationProductionRequest,
+    ImportedObligation, ObligationClass, ObligationKey, OperationProductionRequest,
     ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
     active_connected_revision_investment_proposal, active_connected_revision_obligation,
     clamped_current_reserve_obligation, connected_investment_proposal, current_reserve_at,
     defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
     fixed_production_current_reserve, forecast_reserve_through, foundry_investment_proposal,
-    fresh_emergency_defense_obligation, imported_obligation, legacy_unit_obligation,
-    observed_builder_obligations, operation_production_obligation, saved_foundry_obligation,
+    fresh_emergency_defense_obligation, imported_obligation, observed_builder_obligations,
+    operation_production_obligation, retained_unit_obligation, saved_foundry_obligation,
     standing_force_investment_proposals,
 };
 use crate::PublicMapBriefing;
@@ -44,7 +44,7 @@ use crate::strategy::{
     ActiveConnectedObligation, AirOperation, AirOperationOutcome, AirOperationPhase,
     FreshConnectedProposal, FreshConnectedProposalRequest, LiftSupportRequest,
     RejectedConnectedCandidate, StrategicCoordination, StrategicDecision, StrategicPlanner,
-    StrategicThinkContext, StrategicThinkResult, connected_preparation_horizon,
+    StrategicThinkContext, connected_preparation_horizon,
 };
 use crate::team::TeamReliefPlanner;
 use crate::trace::{
@@ -110,8 +110,8 @@ impl<'a> PlannerClaims<'a> {
         }
     }
 
-    fn air(&self) -> Option<&crate::strategy::AirOperation> {
-        self.strategy.air_operation()
+    fn air(&self) -> impl Iterator<Item = UnitId> + '_ {
+        self.strategy.owned_units()
     }
 
     fn raid_reservations(&self) -> &[UnitId] {
@@ -154,6 +154,16 @@ impl<'a> PlannerClaims<'a> {
         prior_planner_claims(&[], self.air(), relief, self.raid_reservations(), None)
     }
 
+    pub(crate) fn without_air(&self, relief: &[UnitId]) -> Vec<UnitId> {
+        prior_planner_claims(
+            self.enlisted,
+            [],
+            relief,
+            self.raid_reservations(),
+            self.lift(),
+        )
+    }
+
     /// External owners from the raid planner's point of view.
     pub(crate) fn without_raid(&self, relief: &[UnitId]) -> Vec<UnitId> {
         prior_planner_claims(self.enlisted, self.air(), relief, &[], self.lift())
@@ -173,32 +183,17 @@ impl<'a> PlannerClaims<'a> {
 
 pub(crate) fn prior_planner_claims(
     enlisted: &[UnitId],
-    air: Option<&crate::strategy::AirOperation>,
+    air: impl IntoIterator<Item = UnitId>,
     relief: &[UnitId],
     raid: &[UnitId],
     lift: Option<&LiftOperation>,
 ) -> Vec<UnitId> {
     let mut claims = enlisted.to_vec();
-    if let Some(operation) = air {
-        claims.extend(operation.scout);
-        claims.extend(operation.artillery.iter().copied());
-        claims.extend(operation.strike_aircraft.iter().copied());
-    }
+    claims.extend(air);
     claims.extend_from_slice(relief);
     claims.extend_from_slice(raid);
     if let Some(operation) = lift {
-        if operation.manifests.is_empty() {
-            claims.extend(operation.payload.iter().copied());
-        } else {
-            for manifest in &operation.manifests {
-                if !manifest.closed {
-                    claims.push(manifest.carrier);
-                }
-                if manifest.retains_rider_ownership() {
-                    claims.extend(manifest.riders.iter().copied());
-                }
-            }
-        }
+        claims.extend(operation.owned_units());
     }
     claims.sort_unstable();
     claims.dedup();
@@ -222,70 +217,17 @@ fn residual_current_after_obligations(
         .map(|settlement| settlement.residual_current_scrap())
 }
 
-/// Planner mutations made before the shared allocation verdict.
-///
-/// Decisions are values, while the original planner snapshots provide the
-/// atomic restore point if any exact claim or payload fails later in the pass.
-pub(crate) struct AdvancedPlannerWork {
+/// Accepted operation maintenance and exclusions entering shared allocation.
+pub(crate) struct RetainedOperationWork {
     pub(crate) team_decision: StrategicDecision,
     pub(crate) raid_decision: StrategicDecision,
     pub(crate) team_started_at: Tick,
     pub(crate) lift_started_at: Tick,
     pub(crate) raid_started_at: Tick,
     pub(crate) lift_was_active: bool,
-    pub(crate) initial_lift_support: LiftAirSupport,
     pub(crate) lift_unavailable: Vec<UnitId>,
     pub(crate) preliminary_core: CombatCoreStatus,
     pub(crate) preliminary_core_exclusions: Vec<UnitId>,
-    pub(crate) snapshots: PlannerSnapshots,
-}
-
-#[derive(Clone)]
-pub(crate) struct PlannerSnapshots {
-    strategy: StrategicPlanner,
-    team: crate::team::TeamReliefCheckpoint,
-    lifts: LiftPlanner,
-    raids: RaidPlanner,
-}
-
-impl PlannerSnapshots {
-    pub(crate) fn capture(
-        strategy: &StrategicPlanner,
-        team: &TeamReliefPlanner,
-        lifts: &LiftPlanner,
-        raids: &RaidPlanner,
-    ) -> Self {
-        Self {
-            strategy: strategy.clone(),
-            team: team.ownership_checkpoint(),
-            lifts: lifts.clone(),
-            raids: raids.clone(),
-        }
-    }
-
-    fn restore(self, participants: &mut AllocationParticipants<'_>) {
-        restore_ownership(self.strategy, participants.strategy, |planner| {
-            &mut planner.outcomes
-        });
-        participants.team.restore_ownership(self.team);
-        restore_ownership(self.lifts, participants.lifts, |planner| {
-            &mut planner.outcomes
-        });
-        restore_ownership(self.raids, participants.raids, |planner| {
-            &mut planner.outcomes
-        });
-    }
-}
-
-fn restore_ownership<T>(
-    mut snapshot: T,
-    current: &mut T,
-    outcomes: fn(&mut T) -> &mut crate::experience::OutcomeJournal,
-) {
-    // Commit adapters do not observe outcomes. Retained-work observations are
-    // facts even when speculative capital or membership must be rolled back.
-    *outcomes(&mut snapshot) = std::mem::take(outcomes(current));
-    *current = snapshot;
 }
 
 /// Immutable evidence shared by every phase of one allocation pass.
@@ -303,20 +245,21 @@ pub(crate) struct AllocationSessionContext<'a> {
     pub(crate) lift_support: Option<&'a LiftSupportRequest>,
 }
 
-struct LegacyPlannerClaim<'a> {
+struct OperationClaim<'a> {
     cadence: Tick,
     accepted_at: Tick,
     decision_at: Tick,
     retained_at: Tick,
-    channel: LegacyChannel,
-    decision: &'a StrategicDecision,
+    member_key: ObligationKey,
+    purchase_key: ObligationKey,
+    purchases: &'a crate::production::ProductionPlan,
     protect_unspent_current_scrap: bool,
     prior_producer_intents: &'a [Intent],
     retained_units: Vec<UnitId>,
     production_deadline: Tick,
 }
 
-/// Mutable participants covered by one all-or-nothing allocation verdict.
+/// Owners whose selected changes share one allocation verdict.
 pub(crate) struct AllocationParticipants<'a> {
     pub(crate) policy: &'a mut UtilityPolicy,
     pub(crate) strategy: &'a mut StrategicPlanner,
@@ -352,19 +295,17 @@ impl AllocationBudgetOutcome {
     }
 }
 
-/// Complete result of one transaction, whether committed or restored.
+/// Selected work and residual resources after allocation.
 pub(crate) struct AllocationSessionOutcome {
     pub(crate) opening_core: CombatCoreStatus,
     pub(crate) allow_new_voluntary_operations: bool,
     pub(crate) team_decision: StrategicDecision,
-    pub(crate) lift_decision: StrategicDecision,
     pub(crate) raid_decision: StrategicDecision,
     pub(crate) planner_claims: Vec<UnitId>,
-    pub(crate) strategic_core_exclusions: Vec<UnitId>,
     pub(crate) connected_continues: bool,
     pub(crate) connected_accepted_at: Option<Tick>,
     pub(crate) rejected_connected_candidate: Option<RejectedConnectedCandidate>,
-    pub(crate) staged_strategy: Option<StrategicThinkResult>,
+    pub(crate) island_allocated: bool,
     pub(crate) fresh_emergency_defense_intents: Vec<Intent>,
     pub(crate) fresh_foundry_intents: Vec<Intent>,
     pub(crate) fresh_defense_intents: Vec<Intent>,
@@ -379,12 +320,12 @@ pub(crate) struct AllocationSessionOutcome {
     pub(crate) foundry_handoff: crate::utility::FoundryHandoff,
 }
 
-/// One typed allocation transaction over already-advanced legacy planners.
+/// One allocation pass over accepted owners and exact proposals.
 pub(crate) struct AllocationSession<'a> {
     observer: Option<&'a dyn crate::observer::PhaseObserver>,
     context: AllocationSessionContext<'a>,
     participants: AllocationParticipants<'a>,
-    advanced: AdvancedPlannerWork,
+    advanced: RetainedOperationWork,
     trace: Option<&'a mut AllocationTrace>,
 }
 
@@ -392,7 +333,7 @@ impl<'a> AllocationSession<'a> {
     pub(crate) fn new(
         context: AllocationSessionContext<'a>,
         participants: AllocationParticipants<'a>,
-        advanced: AdvancedPlannerWork,
+        advanced: RetainedOperationWork,
         trace: Option<&'a mut AllocationTrace>,
     ) -> Self {
         Self {
@@ -412,21 +353,15 @@ impl<'a> AllocationSession<'a> {
         self
     }
 
-    /// Observes retained work, then prepares, resolves, and commits or restores
-    /// once. No domain is asked to rerank a payload after preparation.
+    /// Observes retained work, then prepares and resolves once. No domain
+    /// reranks a selected payload during commit.
     pub(crate) fn run(mut self) -> AllocationSessionOutcome {
         let _scope =
             crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Allocation);
         let observed = self.observe_retained_work();
-        let snapshot_scope =
-            crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Snapshot);
-        let snapshots = CommitSnapshots {
-            policy: self.participants.policy.speculative_checkpoint(),
-        };
-        drop(snapshot_scope);
         let prepared = self.prepare(observed);
-        let resolved = self.resolve(prepared, snapshots);
-        self.commit_or_restore(resolved)
+        let resolved = self.resolve(prepared);
+        self.finish_allocation(resolved)
     }
 
     fn retained_work(&mut self) -> RetainedWork<'_, 'a> {
@@ -508,6 +443,7 @@ impl<'a> AllocationSession<'a> {
             active_revision,
             prospective_carrier_floor,
             emergency_defense,
+            repair_renewals,
         } = self
             .retained_work()
             .prepare(resources, &mut recon_paid_exclusions, &support_snapshot);
@@ -574,22 +510,10 @@ impl<'a> AllocationSession<'a> {
             })
             .take(self.context.tuning.attention_slots)
             .collect();
-        self.participants.policy.state.reconnaissance.operational = self
-            .participants
-            .strategy
-            .air_operation()
-            .and_then(|operation| {
-                if operation.phase() == crate::strategy::AirOperationPhase::Recover {
-                    return None;
-                }
-                Some(crate::utility::OperationalReconWork {
-                    target: operation.target,
-                    scout: operation.scout,
-                    goal: operation.scout_dispatch.map(|(_, goal)| goal),
-                    deadline: self.participants.strategy.air_capacity_deadline()?,
-                    paid: operational_scout_queues.clone(),
-                })
-            });
+        Self::refresh_operational_reconnaissance(
+            &mut self.participants,
+            operational_scout_queues.clone(),
+        );
         let fresh_reconnaissance = self.participants.policy.prepare_reconnaissance(
             EconomicInvestmentContext {
                 evidence: self.context.evidence,
@@ -667,6 +591,7 @@ impl<'a> AllocationSession<'a> {
         );
 
         PreparedAllocation {
+            lift_membership: air_lift.lift_membership,
             resources: obligations.resources,
             maintenance_intents,
             obligations: obligations.obligations,
@@ -675,7 +600,6 @@ impl<'a> AllocationSession<'a> {
             allow_new_voluntary_operations: claims.opening_core.ready
                 && self.participants.policy.economic_saving().is_none(),
             planner_claims: claims.planner_claims,
-            strategic_core_exclusions: claims.strategic_core_exclusions,
             active_connected: obligations.active_connected,
             active_lift: obligations.active_lift,
             fresh_lift_producer_jobs: air_lift.fresh_lift_producer_jobs,
@@ -700,12 +624,31 @@ impl<'a> AllocationSession<'a> {
             voluntary_scrap_guard: air_lift.voluntary_scrap_guard,
             prospective_carrier_floor,
             rejected_connected_candidate: fresh.rejected_connected_candidate,
-            staged_strategy: obligations.staged_strategy,
+            island_preparation: obligations.island_preparation,
             emergency_defense,
+            repair_renewals,
             team_decision: core::mem::take(&mut self.advanced.team_decision),
-            lift_decision: air_lift.lift_decision,
             raid_decision: core::mem::take(&mut self.advanced.raid_decision),
         }
+    }
+
+    fn refresh_operational_reconnaissance(
+        participants: &mut AllocationParticipants<'_>,
+        paid: Vec<super::PaidQueueClaim>,
+    ) {
+        participants.policy.state.reconnaissance.operational =
+            participants.strategy.air_operation().and_then(|operation| {
+                if operation.phase() == crate::strategy::AirOperationPhase::Recover {
+                    return None;
+                }
+                Some(crate::utility::OperationalReconWork {
+                    target: operation.target,
+                    scout: operation.scout,
+                    goal: operation.scout_dispatch.map(|(_, goal)| goal),
+                    deadline: participants.strategy.air_capacity_deadline()?,
+                    paid,
+                })
+            });
     }
 
     fn prepare_support(
@@ -744,7 +687,7 @@ impl<'a> AllocationSession<'a> {
     fn prepare_support_relief(
         &mut self,
         claims: &ClaimSnapshot,
-    ) -> Option<crate::team::TeamReliefOperation> {
+    ) -> Option<crate::team::ReliefProposal> {
         self.participants
             .team
             .prepare_relief(crate::team::TeamReliefPreparation {
@@ -832,10 +775,11 @@ impl<'a> AllocationSession<'a> {
         let connected_candidate = if active_revision.proposal.is_some() {
             active_revision.proposal
         } else if admission_tick
-            && obligations.staged_strategy.is_none()
+            && obligations.island_preparation.is_none()
             && !obligations.invalid_active_connected
         {
             match self.participants.strategy.fresh_connected_minimum_proposal(
+                self.context.evidence.experience,
                 FreshConnectedProposalRequest::new(
                     self.context.profile,
                     self.context.tuning,
@@ -883,7 +827,7 @@ impl<'a> AllocationSession<'a> {
             .map(ActiveConnectedObligation::accepted_at)
             .or_else(|| connected.as_ref().map(FreshConnectedProposal::accepted_at));
         if connected.is_none() {
-            self.retained_work().retain_legacy_air(obligations);
+            self.retained_work().retain_air_members(obligations);
         }
         let connected_reserve_deadline = connected
             .as_ref()
@@ -981,6 +925,16 @@ impl<'a> AllocationSession<'a> {
             &self.context,
             &self.participants,
             &self.advanced.lift_unavailable,
+            obligations
+                .active_connected
+                .as_ref()
+                .map(|active| &active.membership)
+                .or_else(|| {
+                    obligations
+                        .island_preparation
+                        .as_ref()
+                        .map(|island| &island.membership)
+                }),
         );
         let economy = if admission_tick
             && claims.opening_core.ready
@@ -1167,18 +1121,13 @@ impl<'a> AllocationSession<'a> {
 
     /// Resolves the complete prepared portfolio once. Domain payloads stay
     /// opaque and retain their exact original ranking and identity.
-    fn resolve(
-        &mut self,
-        mut prepared: PreparedAllocation,
-        snapshots: CommitSnapshots,
-    ) -> ResolvedAllocation {
+    fn resolve(&mut self, mut prepared: PreparedAllocation) -> ResolvedAllocation {
         let _scope =
             crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Portfolio);
         let settlement = self.resolve_portfolio(&mut prepared);
         ResolvedAllocation {
             prepared,
             settlement,
-            snapshots,
         }
     }
 
@@ -1268,7 +1217,7 @@ impl<'a> AllocationSession<'a> {
         if let Some(relief) = prepared.fresh_support_relief.clone() {
             allocation.offer(
                 super::InvestmentProposal::fresh(
-                    ProposalKey::SupportRelief(relief.foundry),
+                    ProposalKey::SupportRelief(relief.operation().foundry),
                     super::ProposalCase {
                         urgency: super::Urgency::Pressing,
                         confidence: super::Confidence::Current,
@@ -1276,8 +1225,15 @@ impl<'a> AllocationSession<'a> {
                         time_to_impact: super::TimeToImpact::Near,
                         safety: super::ExecutionSafety::Managed,
                     },
-                    ClaimBundle::new(0, vec![], vec![], relief.members.clone(), vec![], vec![])
-                        .expect("frozen relief members are canonical"),
+                    ClaimBundle::new(
+                        0,
+                        vec![],
+                        vec![],
+                        relief.operation().reservations(),
+                        vec![],
+                        vec![],
+                    )
+                    .expect("frozen relief members are canonical"),
                     super::DomainPayload::SupportRelief(relief),
                 )
                 .with_personality_preference(u16::from(self.context.profile.traits.support)),
@@ -1610,7 +1566,7 @@ impl<'a> AllocationSession<'a> {
             .raw_residual_scrap
             .saturating_sub(voluntary_scrap_guard);
         effects.budget.connected_spendable =
-            if prepared.active_connected.is_some() || prepared.staged_strategy.is_some() {
+            if prepared.active_connected.is_some() || prepared.island_preparation.is_some() {
                 settlement.connected_current_scrap()
             } else {
                 settlement
@@ -1642,154 +1598,134 @@ impl<'a> AllocationSession<'a> {
             })
             .collect();
         effects.producer_lane_reservations = settlement.producer_lane_reservations().clone();
-        if self.participants.policy.state.standing_saving.as_ref().is_some_and(|saving|
-            producer_schedule.iter().any(|job| job.enqueued_at == self.context.observation.tick
-                && matches!(job.owner, ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(key), .. }
-                    if key == saving.proposal.key()))) {
-            self.participants.policy.state.standing_saving = None;
-        }
-
-        if let Some(saved) = self.participants.policy.economic_saving().cloned() {
-            let current = settlement
-                .capital_assignment(ClaimOwner::Obligation {
-                    class: ObligationClass::PersistentPlan,
-                    accepted_at: saved.observed_at,
-                    key: ObligationKey::SavedEconomy(saved.key),
-                })
-                .expect("retained economic capital is allocated")
-                .current_scrap;
-            self.participants.policy.commit_economic_investment(
-                saved,
-                current,
-                &mut effects.fresh_economy_intents,
-            );
-        }
-
-        self.commit_emergency_defense(prepared, &mut effects);
-        self.bind_saved_foundry_funding(prepared, &settlement)?;
-        self.refresh_and_bind_lift(prepared, &producer_schedule)?;
-        let mut payloads = settlement.into_payloads();
-        self.dispatch_ready_saved_foundry(prepared, &mut effects)?;
-        self.commit_fresh_connected(&mut payloads, &mut effects)?;
-        self.participants
-            .strategy
-            .record_connected_purchases(&producer_schedule, self.context.observation.tick);
-        self.commit_fresh_foundry(prepared, &mut payloads, &mut effects)?;
-        for job in &producer_schedule {
-            if let ClaimOwner::Obligation {
-                key: ObligationKey::Reconnaissance(key),
-                ..
-            } = job.owner
-                && !self.participants.policy.bind_reconnaissance_funding(
-                    key,
-                    *job,
-                    self.context.observation,
-                )
-            {
-                return Err((
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-                ));
-            }
-        }
-        if let Some(recon) = payloads.take_reconnaissance() {
-            let funding = producer_schedule
-                .iter()
-                .find(|job| {
-                    job.owner == ClaimOwner::Proposal(ProposalKey::Reconnaissance(recon.key()))
-                })
-                .copied();
-            let scheduled = match recon.observer {
-                crate::utility::ReconObserver::Live(_) => true,
-                crate::utility::ReconObserver::Queued { .. } => true,
-                crate::utility::ReconObserver::Purchase { producer, kind, .. } => {
-                    producer_schedule.iter().any(|job| {
-                        job.owner == ClaimOwner::Proposal(ProposalKey::Reconnaissance(recon.key()))
-                            && job.producer == producer
-                            && job.kind == kind
-                            && job.ready_at < recon.funding_deadline()
+        let rejected = || {
+            (
+                AllocationCoordinatorStageTrace::ObligationCollection,
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            )
+        };
+        let saved_economy = self
+            .participants
+            .policy
+            .economic_saving()
+            .cloned()
+            .map(|saved| {
+                let current = settlement
+                    .capital_assignment(ClaimOwner::Obligation {
+                        class: ObligationClass::PersistentPlan,
+                        accepted_at: saved.observed_at,
+                        key: ObligationKey::SavedEconomy(saved.key),
                     })
-                }
-            };
-            if !scheduled
-                || !self.participants.policy.commit_reconnaissance(
-                    recon,
-                    funding,
-                    self.context.observation,
-                    &mut effects.fresh_economy_intents,
-                )
-            {
-                return Err((
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-                ));
-            }
-        }
-        if let Some(economy) = payloads.take_economy() {
-            let current = economy.current_capital;
-            self.participants.policy.commit_economic_investment(
-                economy,
-                current,
-                &mut effects.fresh_economy_intents,
-            );
-        }
-        if let Some(deployment) = payloads.take_support_deployment()
-            && !self.participants.policy.commit_support_deployment(
-                deployment,
-                self.context.observation,
-                &mut effects.fresh_economy_intents,
-            )
-        {
-            return Err((
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-            ));
-        }
-        if let Some(defense) = payloads.take_defense() {
-            self.participants
-                .policy
-                .commit_adjudicated_defense(defense, &mut effects.fresh_defense_intents);
-        }
-        if let Some(repair) = payloads.take_support()
-            && !self.participants.policy.commit_repair_assignment(
-                repair,
-                self.context.observation,
-                &mut effects.fresh_economy_intents,
-            )
-        {
-            return Err((
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-            ));
-        }
-        if let Some(standing_force) = payloads.take_standing_force() {
-            if standing_force.accumulation().is_some()
-                && let Some(job) = producer_schedule.iter().find(|job| {
-                    job.owner
-                        == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
-                        && job.enqueued_at > self.context.observation.tick
-                })
-            {
-                self.participants.policy.state.standing_saving =
-                    Some(crate::standing_force::StandingForceCommitment {
-                        proposal: standing_force.clone(),
-                        job: *job,
-                    });
-            }
-            let scheduled = producer_schedule.iter().any(|job| {
-                job.owner == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
-                    && job.enqueued_at == self.context.observation.tick
-                    && job.kind == standing_force.key_kind()
+                    .expect("retained economic capital is allocated")
+                    .current_scrap;
+                (saved, current)
             });
-            debug_assert!(
-                standing_force.accumulation().is_some()
-                    || scheduled
-                        == standing_force
-                            .raid
-                            .as_ref()
-                            .is_none_or(|raid| raid.missing > 0)
-            );
-            if let Some(request) = standing_force.raid {
+        self.bind_saved_foundry_funding(prepared, &settlement)?;
+        self.dispatch_ready_saved_foundry(prepared, &mut effects)?;
+        let lift = self.prepare_lift_commit(prepared, &producer_schedule)?;
+        let mut payloads = settlement.into_payloads();
+        let connected = payloads
+            .take_connected()
+            .map(|proposal| {
+                self.participants
+                    .strategy
+                    .prepare_connected_commit(proposal)
+                    .map_err(|error| {
+                        (
+                            AllocationCoordinatorStageTrace::ConnectedProposalCommit,
+                            error.into(),
+                        )
+                    })
+            })
+            .transpose()?;
+        let air_membership = if connected.is_none() {
+            prepared
+                .active_connected
+                .as_ref()
+                .map(|active| active.membership.clone())
+                .or_else(|| {
+                    prepared
+                        .island_preparation
+                        .as_ref()
+                        .map(|island| island.membership.clone())
+                })
+        } else {
+            None
+        };
+        if air_membership
+            .as_ref()
+            .is_some_and(|membership| !membership.matches(self.participants.strategy))
+        {
+            return Err(rejected());
+        }
+        let foundry = payloads
+            .take_foundry()
+            .map(|proposal| {
+                self.participants
+                    .policy
+                    .prepare_adjudicated_foundry(proposal, self.context.observation.tick)
+                    .map_err(|_| {
+                        (
+                            AllocationCoordinatorStageTrace::FoundryProposalCommit,
+                            AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment,
+                        )
+                    })
+            })
+            .transpose()?;
+        let recon_funding = producer_schedule
+            .iter()
+            .filter_map(|job| match job.owner {
+                ClaimOwner::Obligation {
+                    key: ObligationKey::Reconnaissance(key),
+                    ..
+                } => Some(
+                    self.participants
+                        .policy
+                        .prepare_reconnaissance_funding(key, *job, self.context.observation)
+                        .ok_or_else(rejected),
+                ),
+                _ => None,
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let recon = payloads
+            .take_reconnaissance()
+            .map(|proposal| {
+                let funding = producer_schedule
+                    .iter()
+                    .find(|job| {
+                        job.owner
+                            == ClaimOwner::Proposal(ProposalKey::Reconnaissance(proposal.key()))
+                    })
+                    .copied();
+                self.participants
+                    .policy
+                    .prepare_reconnaissance_commit(proposal, funding, self.context.observation)
+                    .ok_or_else(rejected)
+            })
+            .transpose()?;
+        let deployment = payloads
+            .take_support_deployment()
+            .map(|proposal| {
+                self.participants
+                    .policy
+                    .prepare_support_deployment(proposal, self.context.observation)
+                    .ok_or_else(rejected)
+            })
+            .transpose()?;
+        let repair = payloads
+            .take_support()
+            .map(|proposal| {
+                self.participants
+                    .policy
+                    .prepare_repair_assignment(proposal, self.context.observation)
+                    .ok_or_else(rejected)
+            })
+            .transpose()?;
+        let standing_force = payloads.take_standing_force();
+        let raid = standing_force
+            .as_ref()
+            .and_then(|proposal| proposal.raid.as_ref())
+            .map(|request| {
                 let count = producer_schedule
                     .iter()
                     .filter(|job| {
@@ -1803,25 +1739,123 @@ impl<'a> AllocationSession<'a> {
                             && job.enqueued_at == self.context.observation.tick
                     })
                     .count();
-                if count != request.missing
-                    || !{
-                        self.participants
-                            .raids
-                            .commit_procurement(request, self.context.observation.tick)
-                            && self.participants.raids.bind_procurement(
-                                self.context.observation,
-                                &producer_schedule,
-                                self.context.public_map,
-                                self.context.orientation,
-                            )
-                    }
-                {
-                    return Err((
-                        AllocationCoordinatorStageTrace::ObligationCollection,
-                        AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-                    ));
+                if count != request.missing {
+                    return Err(rejected());
                 }
+                self.participants
+                    .raids
+                    .prepare_procurement_commit(
+                        request.clone(),
+                        self.context.observation,
+                        &producer_schedule,
+                        self.context.public_map,
+                        self.context.orientation,
+                    )
+                    .ok_or_else(rejected)
+            })
+            .transpose()?;
+        let relief = payloads
+            .take_support_relief()
+            .map(|proposal| {
+                self.participants
+                    .team
+                    .prepare_relief_commit(proposal)
+                    .ok_or_else(rejected)
+            })
+            .transpose()?;
+
+        // Every selected owner update is now validated. No participant changes
+        // between these checks and application of their exact values.
+        if self.participants.policy.state.standing_saving.as_ref().is_some_and(|saving|
+            producer_schedule.iter().any(|job| job.enqueued_at == self.context.observation.tick
+                && matches!(job.owner, ClaimOwner::Obligation { key: ObligationKey::StandingForceSaving(key), .. }
+                    if key == saving.proposal.key()))) {
+            self.participants.policy.state.standing_saving = None;
+        }
+        if let Some((saved, current)) = saved_economy {
+            self.participants.policy.commit_economic_investment(
+                saved,
+                current,
+                &mut effects.fresh_economy_intents,
+            );
+        }
+        self.participants.policy.commit_repair_renewals(
+            core::mem::take(&mut prepared.repair_renewals),
+            self.context.observation.tick,
+        );
+        self.commit_emergency_defense(prepared, &mut effects);
+        if let Some(membership) = air_membership {
+            membership.apply(self.participants.strategy, self.context.observation.tick);
+        }
+        lift.apply(self.participants.lifts);
+        if let Some(membership) = prepared.lift_membership.take() {
+            membership.apply(self.participants.lifts);
+        }
+        if let Some(commit) = connected {
+            commit.apply(self.participants.strategy);
+            effects.accepted_connected = true;
+        }
+        self.participants
+            .strategy
+            .record_connected_purchases(&producer_schedule, self.context.observation.tick);
+        if let Some(commit) = foundry {
+            if prepared
+                .connected_accepted_at
+                .is_some_and(|accepted_at| accepted_at <= self.context.observation.tick)
+            {
+                effects.budget.prior_operation_spendable = effects
+                    .budget
+                    .prior_operation_spendable
+                    .max(effects.budget.connected_spendable);
             }
+            if prepared.active_lift_precedes_foundry {
+                effects.budget.prior_operation_spendable = effects
+                    .budget
+                    .prior_operation_spendable
+                    .max(prepared.active_lift_spendable);
+            }
+            commit.apply(self.participants.policy, &mut effects.fresh_foundry_intents);
+        }
+        for commit in recon_funding {
+            commit.apply(self.participants.policy);
+        }
+        if let Some(commit) = recon {
+            commit.apply(self.participants.policy, &mut effects.fresh_economy_intents);
+        }
+        if let Some(economy) = payloads.take_economy() {
+            let current = economy.current_capital;
+            self.participants.policy.commit_economic_investment(
+                economy,
+                current,
+                &mut effects.fresh_economy_intents,
+            );
+        }
+        if let Some(commit) = deployment {
+            commit.apply(self.participants.policy, &mut effects.fresh_economy_intents);
+        }
+        if let Some(defense) = payloads.take_defense() {
+            self.participants
+                .policy
+                .commit_adjudicated_defense(defense, &mut effects.fresh_defense_intents);
+        }
+        if let Some(commit) = repair {
+            commit.apply(self.participants.policy, &mut effects.fresh_economy_intents);
+        }
+        if let Some(standing_force) = standing_force
+            && standing_force.accumulation().is_some()
+            && let Some(job) = producer_schedule.iter().find(|job| {
+                job.owner == ClaimOwner::Proposal(ProposalKey::StandingForce(standing_force.key()))
+                    && job.enqueued_at > self.context.observation.tick
+            })
+        {
+            self.participants.policy.state.standing_saving =
+                Some(crate::standing_force::StandingForceCommitment {
+                    proposal: standing_force,
+                    job: *job,
+                });
+        }
+        if let Some(commit) = raid {
+            commit.apply(self.participants.raids);
         }
         if let Some(support) = payloads.take_support_procurement() {
             let scheduled = producer_schedule.iter().any(|job| {
@@ -1834,15 +1868,8 @@ impl<'a> AllocationSession<'a> {
         if let Some(bay) = payloads.take_support_construction() {
             effects.fresh_economy_intents.push(bay.intent());
         }
-        if let Some(relief) = payloads.take_support_relief() {
-            if let Some(decision) = { self.participants.team.commit_relief(relief) } {
-                prepared.team_decision = decision;
-            } else {
-                return Err((
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-                ));
-            }
+        if let Some(commit) = relief {
+            prepared.team_decision = commit.apply(self.participants.team);
         }
         self.participants
             .policy
@@ -1850,56 +1877,68 @@ impl<'a> AllocationSession<'a> {
         Ok(effects)
     }
 
-    fn refresh_and_bind_lift(
-        &mut self,
+    fn prepare_lift_commit(
+        &self,
         prepared: &PreparedAllocation,
         producer_schedule: &[super::ScheduledProducerJob],
-    ) -> Result<(), CoordinatorFailure> {
-        if prepared.active_lift.is_none() && prepared.fresh_lift_producer_jobs == 0 {
-            return Ok(());
+    ) -> Result<LiftCommit, CoordinatorFailure> {
+        let planner = &*self.participants.lifts;
+        if prepared
+            .lift_membership
+            .as_ref()
+            .is_some_and(|proposal| !proposal.matches(planner))
+        {
+            return Err((
+                AllocationCoordinatorStageTrace::ObligationCollection,
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            ));
         }
-        let planner = &mut *self.participants.lifts;
+        let rejected = |_| {
+            (
+                AllocationCoordinatorStageTrace::ObligationCollection,
+                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+            )
+        };
         let mut due_ordinals = Vec::new();
-        if let Some(active) = prepared.active_lift.as_ref() {
-            let assignments = active_lift_producer_assignments(active, producer_schedule);
-            if planner
-                .refresh_active_production_funding(active, &assignments)
-                .is_err()
-            {
-                return Err((
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-                ));
-            }
-            due_ordinals.extend(assignments.iter().filter_map(|assignment| {
-                (assignment.timing().enqueued_at() == self.context.observation.tick)
-                    .then_some(assignment.request_ordinal())
-            }));
-        }
-        if prepared.fresh_lift_producer_jobs > 0 {
-            let accepted_at = planner
+        let funding = prepared
+            .active_lift
+            .as_ref()
+            .map(|active| {
+                let assignments = active_lift_producer_assignments(active, producer_schedule);
+                due_ordinals.extend(assignments.iter().filter_map(|assignment| {
+                    (assignment.timing().enqueued_at() == self.context.observation.tick)
+                        .then_some(assignment.request_ordinal())
+                }));
+                planner
+                    .prepare_production_funding(active, assignments)
+                    .map_err(rejected)
+            })
+            .transpose()?;
+        let binding = if prepared.fresh_lift_producer_jobs > 0 {
+            let operation = planner
                 .operation()
-                .expect("fresh Lift production belongs to an active operation")
-                .started_at;
-            let deadline = planner
-                .operation()
-                .expect("fresh Lift production belongs to an active operation")
-                .deadline;
+                .expect("fresh Lift production belongs to an active operation");
             let assignments =
-                fresh_lift_producer_assignments(planner, accepted_at, producer_schedule);
-            if assignments.len() != prepared.fresh_lift_producer_jobs
-                || planner
-                    .bind_producer_assignments(accepted_at, deadline, assignments)
-                    .is_err()
-            {
+                fresh_lift_producer_assignments(planner, operation.started_at, producer_schedule);
+            if assignments.len() != prepared.fresh_lift_producer_jobs {
                 return Err((
                     AllocationCoordinatorStageTrace::ObligationCollection,
                     AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
                 ));
             }
-        }
-        planner.mark_producers_issued(&due_ordinals);
-        Ok(())
+            Some(
+                planner
+                    .prepare_producer_binding(operation.started_at, operation.deadline, assignments)
+                    .map_err(rejected)?,
+            )
+        } else {
+            None
+        };
+        Ok(LiftCommit {
+            funding,
+            binding,
+            due_ordinals,
+        })
     }
 
     fn commit_emergency_defense(
@@ -1968,76 +2007,11 @@ impl<'a> AllocationSession<'a> {
         Ok(())
     }
 
-    fn commit_fresh_connected(
-        &mut self,
-        payloads: &mut super::AcceptedDomainPayloads,
-        effects: &mut CommitEffects,
-    ) -> Result<(), CoordinatorFailure> {
-        let Some(connected) = payloads.take_connected() else {
-            return Ok(());
-        };
-        let planner = &mut *self.participants.strategy;
-        planner
-            .commit_connected_proposal(connected)
-            .map_err(|error| {
-                (
-                    AllocationCoordinatorStageTrace::ConnectedProposalCommit,
-                    error.into(),
-                )
-            })?;
-        effects.accepted_connected = true;
-        Ok(())
-    }
-
-    fn commit_fresh_foundry(
-        &mut self,
-        prepared: &PreparedAllocation,
-        payloads: &mut super::AcceptedDomainPayloads,
-        effects: &mut CommitEffects,
-    ) -> Result<(), CoordinatorFailure> {
-        let Some(foundry) = payloads.take_foundry() else {
-            return Ok(());
-        };
-        if prepared
-            .connected_accepted_at
-            .is_some_and(|accepted_at| accepted_at <= self.context.observation.tick)
-        {
-            effects.budget.prior_operation_spendable = effects
-                .budget
-                .prior_operation_spendable
-                .max(effects.budget.connected_spendable);
-        }
-        if prepared.active_lift_precedes_foundry {
-            effects.budget.prior_operation_spendable = effects
-                .budget
-                .prior_operation_spendable
-                .max(prepared.active_lift_spendable);
-        }
-        if self
-            .participants
-            .policy
-            .commit_adjudicated_foundry(
-                foundry,
-                self.context.observation.tick,
-                &mut effects.fresh_foundry_intents,
-            )
-            .is_err()
-        {
-            return Err((
-                AllocationCoordinatorStageTrace::FoundryProposalCommit,
-                AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment,
-            ));
-        }
-        Ok(())
-    }
-
-    /// Applies every exact selected payload, or restores every participant to
-    /// the transaction snapshots when any adaptation or dispatch fails.
-    fn commit_or_restore(mut self, resolved: ResolvedAllocation) -> AllocationSessionOutcome {
+    /// Applies selected updates only after all checks; observed ownership survives rejection.
+    fn finish_allocation(mut self, resolved: ResolvedAllocation) -> AllocationSessionOutcome {
         let ResolvedAllocation {
             mut prepared,
             settlement,
-            snapshots,
         } = resolved;
         let committed = settlement.and_then(|settlement| {
             self.commit_settlement(&mut prepared, settlement)
@@ -2056,63 +2030,32 @@ impl<'a> AllocationSession<'a> {
             }
         };
 
-        let mut planner_claims = core::mem::take(&mut prepared.planner_claims);
-        let mut strategic_core_exclusions =
-            core::mem::take(&mut prepared.strategic_core_exclusions);
-        let mut team_decision = core::mem::take(&mut prepared.team_decision);
-        let mut lift_decision = core::mem::take(&mut prepared.lift_decision);
-        let mut raid_decision = core::mem::take(&mut prepared.raid_decision);
-        let mut staged_strategy = prepared.staged_strategy.take();
-        if !allocation_ok {
-            self.participants
-                .policy
-                .restore_checkpoint(snapshots.policy);
-            self.advanced.snapshots.restore(&mut self.participants);
-            team_decision = StrategicDecision::default();
-            lift_decision = StrategicDecision::default();
-            raid_decision = StrategicDecision::default();
-            if staged_strategy.is_some() {
-                staged_strategy = Some(StrategicThinkResult::default());
-            }
-            let restored_claims = PlannerClaims::new(
-                self.context.enlisted,
-                self.participants.strategy,
-                self.participants.raids,
-                self.participants.lifts,
-            );
-            let restored_team_core = self.participants.team.core_reservations();
-            planner_claims = restored_claims.all(&restored_team_core);
-            strategic_core_exclusions = restored_claims.core_exclusions(&restored_team_core);
-        }
-
+        let team_decision = core::mem::take(&mut prepared.team_decision);
+        let raid_decision = core::mem::take(&mut prepared.raid_decision);
+        let island_allocated = allocation_ok && prepared.island_preparation.is_some();
         let committed = PlannerClaims::new(
             self.context.enlisted,
             self.participants.strategy,
             self.participants.raids,
             self.participants.lifts,
         );
-        let team_members = self.participants.team.core_reservations();
-        planner_claims.extend(committed.all(&team_members));
-        strategic_core_exclusions.extend(committed.core_exclusions(&team_members));
-        for claims in [&mut planner_claims, &mut strategic_core_exclusions] {
-            claims.extend(self.participants.policy.state.reconnaissance.reservations());
-            claims.extend(self.participants.policy.support_reservations());
-            claims.sort_unstable();
-            claims.dedup();
-        }
+        let team_members = self.participants.team.reservations();
+        let mut planner_claims = committed.all(&team_members);
+        planner_claims.extend(self.participants.policy.state.reconnaissance.reservations());
+        planner_claims.extend(self.participants.policy.support_reservations());
+        planner_claims.sort_unstable();
+        planner_claims.dedup();
 
         AllocationSessionOutcome {
             opening_core: prepared.opening_core,
             allow_new_voluntary_operations: prepared.allow_new_voluntary_operations,
             team_decision,
-            lift_decision,
             raid_decision,
             planner_claims,
-            strategic_core_exclusions,
             connected_continues: prepared.active_connected.is_some(),
             connected_accepted_at: prepared.connected_accepted_at,
             rejected_connected_candidate: prepared.rejected_connected_candidate.take(),
-            staged_strategy,
+            island_allocated,
             fresh_emergency_defense_intents: effects.fresh_emergency_defense_intents,
             fresh_foundry_intents: effects.fresh_foundry_intents,
             fresh_defense_intents: effects.fresh_defense_intents,
@@ -2139,7 +2082,7 @@ fn snapshot_claims(
         participants.lifts,
     );
     let team_core_claims = participants.team.core_reservations();
-    let mut planner_claims = claims.all(&team_core_claims);
+    let mut planner_claims = claims.all(&participants.team.reservations());
     let mut strategic_core_exclusions = claims.core_exclusions(&team_core_claims);
     append_utility_assignments(participants, &mut planner_claims);
     append_utility_assignments(participants, &mut strategic_core_exclusions);
@@ -2168,13 +2111,14 @@ fn economic_air_work(
     context: &AllocationSessionContext<'_>,
     participants: &AllocationParticipants<'_>,
     lift_unavailable: &[UnitId],
+    air_membership: Option<&crate::strategy::AirMembership>,
 ) -> Vec<AirCapacityDemand> {
     let mut demands = Vec::new();
     let planner = &*participants.strategy;
     if let Some(operation) = planner.air_operation()
         && let Some(deadline) = planner.air_capacity_deadline()
     {
-        let work_ticks = planner.remaining_airwork_ticks(context.observation);
+        let work_ticks = planner.remaining_airwork_ticks(context.observation, air_membership);
         if work_ticks > 0 {
             demands.push(AirCapacityDemand {
                 work_ticks,
@@ -2387,12 +2331,13 @@ struct ObligationPreparation {
     active_lift: Option<ActiveLiftProductionObligation>,
     invalid_active_connected: bool,
     invalid_active_lift: bool,
-    legacy_air_claims: Option<(Tick, Vec<UnitId>)>,
-    staged_strategy: Option<StrategicThinkResult>,
+    retained_air_claims: Option<(Tick, Vec<UnitId>)>,
+    island_preparation: Option<crate::strategy::IslandPreparation>,
 }
 
 struct AirLiftPreparation {
-    lift_decision: StrategicDecision,
+    lift_membership: Option<crate::lift::LiftMembership>,
+    lift_purchases: crate::production::ProductionPlan,
     opening_bootstrap: u32,
     active_lift_precedes_foundry: bool,
     active_lift_spendable: u32,
@@ -2458,6 +2403,24 @@ impl FreshInvestmentPreparation {
     }
 }
 
+struct LiftCommit {
+    funding: Option<crate::lift::LiftFunding>,
+    binding: Option<crate::lift::LiftBinding>,
+    due_ordinals: Vec<usize>,
+}
+
+impl LiftCommit {
+    fn apply(self, planner: &mut LiftPlanner) {
+        if let Some(funding) = self.funding {
+            funding.apply(planner);
+        }
+        if let Some(binding) = self.binding {
+            binding.apply(planner);
+        }
+        planner.mark_producers_issued(&self.due_ordinals);
+    }
+}
+
 struct CommitEffects {
     accepted_connected: bool,
     producer_lane_reservations: ProducerLaneReservations,
@@ -2496,6 +2459,7 @@ struct ObservedAllocation {
 }
 
 struct PreparedAllocation {
+    lift_membership: Option<crate::lift::LiftMembership>,
     resources: ResourceSnapshot,
     maintenance_intents: Vec<Intent>,
     obligations: Vec<ImportedObligation>,
@@ -2503,7 +2467,6 @@ struct PreparedAllocation {
     opening_core: CombatCoreStatus,
     allow_new_voluntary_operations: bool,
     planner_claims: Vec<UnitId>,
-    strategic_core_exclusions: Vec<UnitId>,
     active_connected: Option<ActiveConnectedObligation>,
     active_lift: Option<ActiveLiftProductionObligation>,
     fresh_lift_producer_jobs: usize,
@@ -2513,7 +2476,7 @@ struct PreparedAllocation {
     fresh_economy: Vec<EconomicInvestment>,
     fresh_support: Vec<crate::utility::RepairAssignment>,
     fresh_support_construction: Vec<EconomicInvestment>,
-    fresh_support_relief: Option<crate::team::TeamReliefOperation>,
+    fresh_support_relief: Option<crate::team::ReliefProposal>,
     fresh_support_deployments: Vec<crate::utility::SupportDeployment>,
     fresh_reconnaissance: Vec<crate::utility::ReconProposal>,
     fresh_connected: Option<FreshConnectedProposal>,
@@ -2528,15 +2491,11 @@ struct PreparedAllocation {
     voluntary_scrap_guard: u32,
     prospective_carrier_floor: u32,
     rejected_connected_candidate: Option<RejectedConnectedCandidate>,
-    staged_strategy: Option<StrategicThinkResult>,
+    island_preparation: Option<crate::strategy::IslandPreparation>,
     emergency_defense: Option<FreshEmergencyDefense>,
+    repair_renewals: Vec<crate::utility::RepairAssignment>,
     team_decision: StrategicDecision,
-    lift_decision: StrategicDecision,
     raid_decision: StrategicDecision,
-}
-
-struct CommitSnapshots {
-    policy: crate::utility::PolicyCheckpoint,
 }
 
 #[derive(Debug)]
@@ -2549,7 +2508,6 @@ enum AllocationFailure {
 struct ResolvedAllocation {
     prepared: PreparedAllocation,
     settlement: Result<CrossDomainSettlement, AllocationFailure>,
-    snapshots: CommitSnapshots,
 }
 
 fn push_obligation(
@@ -2602,18 +2560,19 @@ fn push_clamped_current_reserve(
     }
 }
 
-fn push_legacy_planner_claim(
+fn push_operation_claim(
     obligations: &mut Vec<ImportedObligation>,
     resources: &ResourceSnapshot,
-    claim: LegacyPlannerClaim<'_>,
+    claim: OperationClaim<'_>,
 ) -> Result<(), AllocationCoordinatorFailureReasonTrace> {
-    let LegacyPlannerClaim {
+    let OperationClaim {
         cadence,
         accepted_at,
         decision_at,
         retained_at,
-        channel,
-        decision,
+        member_key,
+        purchase_key,
+        purchases,
         protect_unspent_current_scrap,
         prior_producer_intents,
         mut retained_units,
@@ -2625,11 +2584,11 @@ fn push_legacy_planner_claim(
     } else {
         push_obligation(
             obligations,
-            legacy_unit_obligation(retained_at, channel, 0, retained_units),
+            retained_unit_obligation(retained_at, member_key, retained_units),
         )
     };
-    if (!protect_unspent_current_scrap || decision.reserved_scrap == 0)
-        && decision.production().next().is_none()
+    if (!protect_unspent_current_scrap || purchases.reserved_scrap == 0)
+        && purchases.purchases.is_empty()
     {
         return retained_valid;
     }
@@ -2639,9 +2598,8 @@ fn push_legacy_planner_claim(
             cadence,
             accepted_at,
             decision_tick: decision_at,
-            channel,
-            sequence: 1,
-            decision,
+            key: purchase_key,
+            purchases,
             protect_reserve: protect_unspent_current_scrap,
             prior_producer_intents,
             production_deadline,
@@ -2666,9 +2624,9 @@ fn remove_active_connected_obligation(obligations: &mut Vec<ImportedObligation>)
 }
 
 fn active_air_units(planner: &StrategicPlanner, observation: &Observation) -> Vec<UnitId> {
-    let mut units = planner.air_operation().map_or_else(Vec::new, |operation| {
-        prior_planner_claims(&[], Some(operation), &[], &[], None)
-    });
+    let mut units: Vec<_> = planner.owned_units().collect();
+    units.sort_unstable();
+    units.dedup();
     let resources = ResourceSnapshot::from_observation(observation);
     retain_observed_units(&resources, &mut units);
     units
@@ -2726,7 +2684,7 @@ fn observable_lift_operation_reservations(
         .collect::<Vec<_>>();
     observable.sort_unstable();
     observable.dedup();
-    prior_planner_claims(&[], None, &[], &[], Some(operation))
+    prior_planner_claims(&[], [], &[], &[], Some(operation))
         .into_iter()
         .filter(|unit| observable.binary_search(unit).is_ok())
         .collect()
@@ -2739,7 +2697,7 @@ struct ActiveLiftFutureProductionContext<'a> {
     operation: &'a LiftOperation,
     unavailable: &'a [UnitId],
     prior_producer_intents: &'a [Intent],
-    lift_decision: &'a StrategicDecision,
+    lift_purchases: &'a crate::production::ProductionPlan,
     cadence: Tick,
     accepted_at: Tick,
 }
@@ -2750,7 +2708,7 @@ struct ActiveLiftCurrentProductionContext<'a> {
     cadence: Tick,
     decision_tick: Tick,
     retained_at: Tick,
-    decision: &'a StrategicDecision,
+    purchases: &'a crate::production::ProductionPlan,
     prior_producer_intents: &'a [Intent],
     production_deadline: Tick,
 }
@@ -2759,24 +2717,20 @@ fn feasible_active_lift_current_production_prefix(
     context: ActiveLiftCurrentProductionContext<'_>,
     prior_obligations: &[ImportedObligation],
     planning: &crate::planning::PlanningWork,
-) -> Result<StrategicDecision, AllocationCoordinatorFailureReasonTrace> {
+) -> Result<crate::production::ProductionPlan, AllocationCoordinatorFailureReasonTrace> {
     let ActiveLiftCurrentProductionContext {
         resources,
         cadence,
         decision_tick,
         retained_at,
-        decision,
+        purchases,
         prior_producer_intents,
         production_deadline,
     } = context;
-    let requested = decision
-        .intents
-        .iter()
-        .filter(|intent| matches!(intent, Intent::TrainAt { .. }))
-        .count();
+    let requested = purchases.purchases.len();
     use crate::planning::Progress;
     if requested == 0 {
-        return Ok(decision.clone());
+        return Ok(purchases.clone());
     }
     match obligations_resolve(
         resources,
@@ -2786,9 +2740,9 @@ fn feasible_active_lift_current_production_prefix(
         planning,
     )? {
         Progress::Ready(()) => {}
-        Progress::ProvenInfeasible => return Ok(decision.clone()),
+        Progress::ProvenInfeasible => return Ok(purchases.clone()),
         Progress::Deferred | Progress::Exhausted => {
-            return Ok(strategic_decision_with_production_prefix(decision, 0));
+            return Ok(purchases.prefix(0));
         }
     }
 
@@ -2796,18 +2750,19 @@ fn feasible_active_lift_current_production_prefix(
     let mut infeasible = requested.saturating_add(1);
     while feasible.saturating_add(1) < infeasible {
         let candidate_count = feasible.saturating_add(infeasible).div_ceil(2);
-        let candidate = strategic_decision_with_production_prefix(decision, candidate_count);
+        let candidate = purchases.prefix(candidate_count);
         let mut obligations = prior_obligations.to_vec();
-        let imported = push_legacy_planner_claim(
+        let imported = push_operation_claim(
             &mut obligations,
             resources,
-            LegacyPlannerClaim {
+            OperationClaim {
                 cadence,
                 accepted_at: decision_tick,
                 decision_at: decision_tick,
                 retained_at,
-                channel: LegacyChannel::Lift,
-                decision: &candidate,
+                member_key: ObligationKey::LiftMembers,
+                purchase_key: ObligationKey::LiftPurchases,
+                purchases: &candidate,
                 protect_unspent_current_scrap: false,
                 prior_producer_intents,
                 retained_units: Vec::new(),
@@ -2830,9 +2785,7 @@ fn feasible_active_lift_current_production_prefix(
             Progress::Deferred | Progress::Exhausted => break,
         }
     }
-    Ok(strategic_decision_with_production_prefix(
-        decision, feasible,
-    ))
+    Ok(purchases.prefix(feasible))
 }
 
 fn obligations_resolve(
@@ -2892,26 +2845,6 @@ fn obligation_horizon(obligations: &[ImportedObligation], minimum: Tick) -> Tick
     })
 }
 
-fn strategic_decision_with_production_prefix(
-    decision: &StrategicDecision,
-    production_limit: usize,
-) -> StrategicDecision {
-    let mut result = decision.clone();
-    let mut retained = 0_usize;
-    result.intents.retain(|intent| {
-        let Intent::TrainAt { .. } = intent else {
-            return true;
-        };
-        if retained < production_limit {
-            retained = retained.saturating_add(1);
-            true
-        } else {
-            false
-        }
-    });
-    result
-}
-
 fn active_lift_future_production_obligation(
     context: ActiveLiftFutureProductionContext<'_>,
 ) -> Result<Option<ImportedObligation>, CoordinatorInputError> {
@@ -2928,7 +2861,7 @@ fn active_lift_future_production_obligation_with_limit(
         operation,
         unavailable,
         prior_producer_intents,
-        lift_decision,
+        lift_purchases,
         cadence,
         accepted_at,
     } = context;
@@ -2958,8 +2891,16 @@ fn active_lift_future_production_obligation_with_limit(
         .producers()
         .to_vec();
     let mut same_think = 0_usize;
-    for intent in prior_producer_intents.iter().chain(&lift_decision.intents) {
-        let Intent::TrainAt { building, kind } = intent else {
+    for intent in prior_producer_intents
+        .iter()
+        .cloned()
+        .chain(lift_purchases.intents())
+    {
+        let Intent::TrainAt {
+            ref building,
+            ref kind,
+        } = intent
+        else {
             continue;
         };
         let Some(index) = producers
@@ -3019,10 +2960,7 @@ fn active_lift_future_production_obligation_with_limit(
     Ok(Some(imported_obligation(
         ObligationClass::PersistentPlan,
         accepted_at,
-        ObligationKey::Legacy {
-            channel: LegacyChannel::Lift,
-            sequence: 2,
-        },
+        ObligationKey::LiftProduction,
         claims,
     )))
 }
@@ -3074,10 +3012,7 @@ fn active_lift_production_obligation(
     Ok(imported_obligation(
         ObligationClass::PersistentPlan,
         obligation.accepted_at(),
-        ObligationKey::Legacy {
-            channel: LegacyChannel::Lift,
-            sequence: 2,
-        },
+        ObligationKey::LiftProduction,
         ClaimBundle::new(
             0,
             Vec::new(),
@@ -3150,10 +3085,7 @@ fn fresh_lift_producer_assignments(
     let owner = ClaimOwner::Obligation {
         class: ObligationClass::PersistentPlan,
         accepted_at,
-        key: ObligationKey::Legacy {
-            channel: LegacyChannel::Lift,
-            sequence: 2,
-        },
+        key: ObligationKey::LiftProduction,
     };
     let first_ordinal = planner.next_producer_request_ordinal().unwrap_or(0);
     let mut jobs = schedule
@@ -3174,10 +3106,7 @@ fn active_lift_producer_assignments(
     let owner = ClaimOwner::Obligation {
         class: ObligationClass::PersistentPlan,
         accepted_at: obligation.accepted_at(),
-        key: ObligationKey::Legacy {
-            channel: LegacyChannel::Lift,
-            sequence: 2,
-        },
+        key: ObligationKey::LiftProduction,
     };
     let mut jobs = schedule
         .iter()
@@ -3335,7 +3264,7 @@ pub(crate) fn test_allocate_policy(
     let mut lifts = LiftPlanner::new();
     let mut team = TeamReliefPlanner::new();
     let mut raids = RaidPlanner::new();
-    let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
     let mut trace = AllocationTrace::default();
     let outcome = AllocationSession::new(
         AllocationSessionContext {
@@ -3358,14 +3287,13 @@ pub(crate) fn test_allocate_policy(
             team: &mut team,
             raids: &mut raids,
         },
-        AdvancedPlannerWork {
+        RetainedOperationWork {
             team_decision: StrategicDecision::default(),
             raid_decision: StrategicDecision::default(),
             team_started_at: observation.tick,
             lift_started_at: observation.tick,
             raid_started_at: observation.tick,
             lift_was_active: false,
-            initial_lift_support: LiftAirSupport::Independent,
             lift_unavailable: enlisted.to_vec(),
             preliminary_core: crate::utility::combat_core_status(
                 observation,
@@ -3374,7 +3302,6 @@ pub(crate) fn test_allocate_policy(
                 u64::from(dials.minimum_core_equivalents),
             ),
             preliminary_core_exclusions: enlisted.to_vec(),
-            snapshots,
         },
         Some(&mut trace),
     )
@@ -3390,6 +3317,7 @@ pub(crate) fn test_allocate_policy(
 
 #[cfg(test)]
 mod tests {
+    mod commit;
     mod relief;
     mod retained;
     use super::super::{
@@ -3455,54 +3383,6 @@ mod tests {
                 lift_support: None,
             }
         }
-    }
-
-    #[test]
-    fn rollback_preserves_observed_outcomes_without_committing_new_ownership() {
-        use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
-            OutcomeReason,
-        };
-        let mut policy = UtilityPolicy::default();
-        let mut strategy = StrategicPlanner::new();
-        let mut team = TeamReliefPlanner::new();
-        let mut lifts = LiftPlanner::new();
-        let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let obs = observation();
-        let journal = &mut raids.outcomes;
-        journal.watch(
-            &obs,
-            EpisodeId {
-                owner: EpisodeOwner::Raid,
-                serial: 1,
-            },
-            ExperienceKey {
-                doctrine: Doctrine::Pressure,
-                x: 3,
-                y: 3,
-                subject: ExperienceSubject::Building(Some(oxide_sim::BuildingId(4))),
-            },
-            &[],
-            1,
-        );
-        journal.finish(
-            &obs,
-            Outcome::Aborted,
-            OutcomeReason::UnsafeApproach,
-            750,
-            false,
-        );
-        let observed = journal.clone();
-        snapshots.restore(&mut AllocationParticipants {
-            policy: &mut policy,
-            strategy: &mut strategy,
-            team: &mut team,
-            lifts: &mut lifts,
-            raids: &mut raids,
-        });
-        assert_eq!(raids.outcomes, observed);
-        assert!(raids.operation().is_none());
     }
 
     fn observation() -> Observation {
@@ -3620,8 +3500,8 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut advanced = advanced(snapshots);
+
+        let mut advanced = advanced();
         if let Some(operation) = (lifts).operation() {
             advanced.lift_was_active = true;
             advanced.lift_started_at = operation.started_at;
@@ -3652,6 +3532,7 @@ mod tests {
         coordinator_failure: Option<CoordinatorFailure>,
     ) -> PreparedAllocation {
         PreparedAllocation {
+            lift_membership: None,
             resources: ResourceSnapshot::from_observation(observation),
             maintenance_intents: Vec::new(),
             obligations: Vec::new(),
@@ -3665,7 +3546,6 @@ mod tests {
             },
             allow_new_voluntary_operations: true,
             planner_claims: vec![UnitId(99)],
-            strategic_core_exclusions: vec![UnitId(98)],
             active_connected: None,
             active_lift: None,
             fresh_lift_producer_jobs: 0,
@@ -3691,32 +3571,22 @@ mod tests {
             voluntary_scrap_guard: 0,
             prospective_carrier_floor: 0,
             rejected_connected_candidate: None,
-            staged_strategy: None,
+            island_preparation: None,
             emergency_defense: None,
-            team_decision: StrategicDecision {
-                reserved_scrap: 1,
-                ..StrategicDecision::default()
-            },
-            lift_decision: StrategicDecision {
-                reserved_scrap: 2,
-                ..StrategicDecision::default()
-            },
-            raid_decision: StrategicDecision {
-                reserved_scrap: 3,
-                ..StrategicDecision::default()
-            },
+            repair_renewals: Vec::new(),
+            team_decision: StrategicDecision::default(),
+            raid_decision: StrategicDecision::default(),
         }
     }
 
-    fn advanced(snapshots: PlannerSnapshots) -> AdvancedPlannerWork {
-        AdvancedPlannerWork {
+    fn advanced() -> RetainedOperationWork {
+        RetainedOperationWork {
             team_decision: StrategicDecision::default(),
             raid_decision: StrategicDecision::default(),
             team_started_at: 0,
             lift_started_at: 0,
             raid_started_at: 0,
             lift_was_active: false,
-            initial_lift_support: LiftAirSupport::Independent,
             lift_unavailable: Vec::new(),
             preliminary_core: CombatCoreStatus {
                 projected_strength: 0,
@@ -3726,7 +3596,6 @@ mod tests {
                 ready: true,
             },
             preliminary_core_exclusions: Vec::new(),
-            snapshots,
         }
     }
 
@@ -3885,24 +3754,27 @@ mod tests {
         intelligence.update(observation);
         let resources = ResourceSnapshot::from_observation(observation);
         StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(FreshConnectedProposalRequest::new(
-                &profile,
-                tuning,
-                observation,
-                &resources,
-                &intelligence,
-                HOME,
-                StrategicCoordination {
-                    planning: Some(&crate::planning::PlanningWork::default()),
-                    enlisted: &[],
-                    lift_support: None,
-                    allow_new_operation: true,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
-                    public_map: Some(&briefing),
-                    orientation: Orientation::for_home(observation, HOME),
-                },
-            ))
+            .fresh_connected_minimum_proposal(
+                &crate::experience::Experience::default(),
+                FreshConnectedProposalRequest::new(
+                    &profile,
+                    tuning,
+                    observation,
+                    &resources,
+                    &intelligence,
+                    HOME,
+                    StrategicCoordination {
+                        planning: Some(&crate::planning::PlanningWork::default()),
+                        enlisted: &[],
+                        lift_support: None,
+                        allow_new_operation: true,
+                        protected_current_scrap: 0,
+                        protected_forecast_scrap: 0,
+                        public_map: Some(&briefing),
+                        orientation: Orientation::for_home(observation, HOME),
+                    },
+                ),
+            )
             .expect("the current connected opportunity is feasible")
             .expect("the current connected opportunity needs a force package")
     }
@@ -3935,7 +3807,10 @@ mod tests {
         let proposal = current_connected_proposal(observation);
         let jobs = proposal.minimum_claims().provider_jobs().to_vec();
         let mut planner = StrategicPlanner::new();
-        planner.commit_connected_proposal(proposal).unwrap();
+        planner
+            .prepare_connected_commit(proposal)
+            .unwrap()
+            .apply(&mut planner);
         (planner, jobs)
     }
 
@@ -3974,7 +3849,7 @@ mod tests {
         policy: &mut UtilityPolicy,
         strategy: &mut StrategicPlanner,
     ) -> AllocationSessionOutcome {
-        run_connected_session_with_team_decision_and_trace(
+        run_connected_session_with_producer_work_and_trace(
             observation,
             policy,
             strategy,
@@ -4007,7 +3882,7 @@ mod tests {
         }
         let mut policy = UtilityPolicy::new();
         let mut trace = AllocationTrace::default();
-        let first = run_connected_session_with_team_decision_and_trace(
+        let first = run_connected_session_with_producer_work_and_trace(
             &obs,
             &mut policy,
             &mut StrategicPlanner::new(),
@@ -4116,8 +3991,9 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(request.missing, 0);
-            assert!(raid.commit_procurement(request, obs.tick));
-            assert!(raid.bind_procurement(&obs, &[], &map, orientation));
+            raid.prepare_procurement_commit(request, &obs, &[], &map, orientation)
+                .unwrap()
+                .apply(&mut raid);
             let paid = raid.paid_claims().to_vec();
             obs.tick += 24;
             let mut intelligence = StrategicIntelligence::new();
@@ -4127,7 +4003,7 @@ mod tests {
             let mut lifts = LiftPlanner::new();
             let mut team = TeamReliefPlanner::new();
             let mut raids = raid;
-            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
             let mut session = AllocationSession::new(
                 AllocationSessionContext {
                     orientation,
@@ -4140,7 +4016,7 @@ mod tests {
                     team: &mut team,
                     raids: &mut raids,
                 },
-                advanced(snapshots),
+                advanced(),
                 None,
             );
             let observed = session.observe_retained_work();
@@ -4149,15 +4025,7 @@ mod tests {
             let claim = prepared
                 .obligations
                 .iter()
-                .find(|obligation| {
-                    matches!(
-                        obligation.key,
-                        ObligationKey::Legacy {
-                            channel: LegacyChannel::Raid,
-                            sequence: 2
-                        }
-                    )
-                })
+                .find(|obligation| matches!(obligation.key, ObligationKey::RaidPaid))
                 .unwrap();
             assert_eq!(claim.claims.paid_queue(), paid);
             assert!(
@@ -4181,27 +4049,21 @@ mod tests {
                             && claim.occurrence == provider.occurrence())
                 );
             }
-            let original_policy = session.participants.policy.clone();
-            let resolved = session.resolve(
-                prepared,
-                CommitSnapshots {
-                    policy: original_policy.speculative_checkpoint(),
-                },
-            );
-            let outcome = session.commit_or_restore(resolved);
+            let resolved = session.resolve(prepared);
+            let outcome = session.finish_allocation(resolved);
             assert!(outcome.allocation_ok);
             assert_eq!(raids.paid_claims(), paid);
             assert_eq!(raids.reservations().len(), live);
         }
     }
 
-    fn run_connected_session_with_team_decision(
+    fn run_connected_session_with_producer_work(
         observation: &Observation,
         policy: &mut UtilityPolicy,
         strategy: &mut StrategicPlanner,
         team_decision: StrategicDecision,
     ) -> AllocationSessionOutcome {
-        run_connected_session_with_team_decision_and_trace(
+        run_connected_session_with_producer_work_and_trace(
             observation,
             policy,
             strategy,
@@ -4210,11 +4072,11 @@ mod tests {
         )
     }
 
-    fn run_connected_session_with_team_decision_and_trace(
+    fn run_connected_session_with_producer_work_and_trace(
         observation: &Observation,
         policy: &mut UtilityPolicy,
         strategy: &mut StrategicPlanner,
-        team_decision: StrategicDecision,
+        producer_work: StrategicDecision,
         trace: Option<&mut AllocationTrace>,
     ) -> AllocationSessionOutcome {
         const HOME: TilePos = TilePos::new(3, 10);
@@ -4225,10 +4087,8 @@ mod tests {
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(strategy, &team, &lifts, &raids);
-        let mut work = advanced(snapshots);
-        work.team_decision = team_decision;
-        AllocationSession::new(
+
+        let mut session = AllocationSession::new(
             setup.context(observation, HOME, &briefing, &intelligence),
             AllocationParticipants {
                 policy,
@@ -4237,17 +4097,41 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            work,
+            advanced(),
             trace,
-        )
-        .run()
+        );
+        let observed = session.observe_retained_work();
+        let mut prepared = session.prepare(observed);
+        let extra = operation_production_obligation(
+            &prepared.resources,
+            OperationProductionRequest {
+                cadence: setup.dials.cadence,
+                accepted_at: observation.tick,
+                decision_tick: observation.tick,
+                key: ObligationKey::LiftPurchases,
+                purchases: &crate::production::ProductionPlan {
+                    purchases: producer_work.production().collect(),
+                    reserved_scrap: producer_work.reserved_scrap,
+                },
+                protect_reserve: true,
+                prior_producer_intents: &[],
+                production_deadline: prepared.allocation_horizon,
+            },
+        );
+        retain_first_coordinator_failure(
+            &mut prepared.coordinator_failure,
+            AllocationCoordinatorStageTrace::ObligationCollection,
+            push_coordinator_obligation(&mut prepared.obligations, extra),
+        );
+        let resolved = session.resolve(prepared);
+        session.finish_allocation(resolved)
     }
 
     fn advance_connected_after_allocation(
         observation: &Observation,
         strategy: &mut StrategicPlanner,
         outcome: &AllocationSessionOutcome,
-    ) -> StrategicThinkResult {
+    ) -> crate::strategy::StrategicThinkResult {
         const HOME: TilePos = TilePos::new(3, 10);
         let profile = prime_profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
@@ -4281,7 +4165,7 @@ mod tests {
         context: &str,
     ) {
         let mut trace = AllocationTrace::default();
-        let first = run_connected_session_with_team_decision_and_trace(
+        let first = run_connected_session_with_producer_work_and_trace(
             observation,
             policy,
             strategy,
@@ -4346,12 +4230,9 @@ mod tests {
             building: BuildingId(2),
             kind: UnitKind::Skyhook,
         }];
-        let decision = StrategicDecision {
-            intents: vec![Intent::TrainAt {
-                building: BuildingId(2),
-                kind: UnitKind::Skyhook,
-            }],
-            ..StrategicDecision::default()
+        let decision = crate::production::ProductionPlan {
+            purchases: vec![(BuildingId(2), UnitKind::Skyhook)],
+            ..crate::production::ProductionPlan::default()
         };
         let resources = ResourceSnapshot::from_observation(&observation);
 
@@ -4362,7 +4243,7 @@ mod tests {
                 operation: &operation,
                 unavailable: &[UnitId(901)],
                 prior_producer_intents: &prior,
-                lift_decision: &decision,
+                lift_purchases: &decision,
                 cadence: 12,
                 accepted_at: operation.started_at,
             })
@@ -4386,24 +4267,16 @@ mod tests {
     fn active_lift_current_production_keeps_the_maximal_schedulable_prefix() {
         let (mut observation, _, _) = active_lift_fixture();
         observation.tick = 120;
-        let cost = UnitKind::Skyhook.stats().cost;
         let first_ready = observation
             .tick
             .saturating_add(Tick::from(UnitKind::Skyhook.stats().train_ticks))
             .saturating_sub(1);
         let deadline = first_ready.saturating_add(1);
-        let decision = StrategicDecision {
-            intents: vec![
-                Intent::TrainAt {
-                    building: BuildingId(2),
-                    kind: UnitKind::Skyhook,
-                },
-                Intent::TrainAt {
-                    building: BuildingId(2),
-                    kind: UnitKind::Skyhook,
-                },
+        let decision = crate::production::ProductionPlan {
+            purchases: vec![
+                (BuildingId(2), UnitKind::Skyhook),
+                (BuildingId(2), UnitKind::Skyhook),
             ],
-            reservations: vec![UnitId(7)],
             reserved_scrap: 0,
         };
         let resources = ResourceSnapshot::from_observation(&observation);
@@ -4414,7 +4287,7 @@ mod tests {
                 cadence: 12,
                 decision_tick: observation.tick,
                 retained_at: 0,
-                decision: &decision,
+                purchases: &decision,
                 prior_producer_intents: &[],
                 production_deadline: deadline,
             },
@@ -4423,12 +4296,11 @@ mod tests {
         )
         .expect("the exact producer projection is valid");
 
-        assert_eq!(prefix.reservations, decision.reservations);
-        assert_eq!(prefix.committed_scrap(), cost);
+        assert_eq!(prefix.purchases, [(BuildingId(2), UnitKind::Skyhook)]);
+        assert_eq!(prefix.reserved_scrap, 0);
         assert_eq!(
             prefix
-                .intents
-                .iter()
+                .intents()
                 .filter(|intent| matches!(intent, Intent::TrainAt { .. }))
                 .count(),
             1,
@@ -4452,7 +4324,7 @@ mod tests {
             operation: &operation,
             unavailable: &[],
             prior_producer_intents: &[],
-            lift_decision: &StrategicDecision::default(),
+            lift_purchases: &crate::production::ProductionPlan::default(),
             cadence: 12,
             accepted_at: operation.started_at,
         };
@@ -4528,7 +4400,7 @@ mod tests {
                 operation: &operation,
                 unavailable: &[],
                 prior_producer_intents: &late_current,
-                lift_decision: &StrategicDecision::default(),
+                lift_purchases: &crate::production::ProductionPlan::default(),
                 cadence: 12,
                 accepted_at: operation.started_at,
             })
@@ -4608,11 +4480,12 @@ mod tests {
             active_lift: None,
             invalid_active_connected: false,
             invalid_active_lift: false,
-            legacy_air_claims: None,
-            staged_strategy: None,
+            retained_air_claims: None,
+            island_preparation: None,
         };
         let mut air_lift = AirLiftPreparation {
-            lift_decision: StrategicDecision::default(),
+            lift_membership: None,
+            lift_purchases: crate::production::ProductionPlan::default(),
             opening_bootstrap: 0,
 
             active_lift_precedes_foundry: false,
@@ -4631,8 +4504,8 @@ mod tests {
         let mut lifts = lift;
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut work = advanced(snapshots);
+
+        let mut work = advanced();
         work.lift_was_active = true;
         work.lift_started_at = operation.started_at;
         let mut session = AllocationSession::new(
@@ -4656,9 +4529,8 @@ mod tests {
 
         assert_eq!(
             air_lift
-                .lift_decision
-                .intents
-                .iter()
+                .lift_purchases
+                .intents()
                 .filter(|intent| matches!(
                     intent,
                     Intent::TrainAt {
@@ -4699,10 +4571,7 @@ mod tests {
             .find(|obligation| {
                 matches!(
                     obligation.key,
-                    crate::trace::ObligationKeyTrace::Legacy {
-                        channel: crate::trace::LegacyChannelTrace::Lift,
-                        sequence: 2,
-                    }
+                    crate::trace::ObligationKeyTrace::LiftProduction
                 )
             })
             .expect("the active lift retains its unpaid Skyhook demand");
@@ -4739,10 +4608,8 @@ mod tests {
                     && matches!(
                         job.owner,
                         crate::trace::ClaimOwnerTrace::Obligation {
-                            key: crate::trace::ObligationKeyTrace::Legacy {
-                                channel: crate::trace::LegacyChannelTrace::Lift,
-                                ..
-                            },
+                            key: crate::trace::ObligationKeyTrace::LiftPurchases
+                                | crate::trace::ObligationKeyTrace::LiftProduction,
                             ..
                         }
                     )
@@ -4761,10 +4628,8 @@ mod tests {
                 matches!(
                     job.owner,
                     crate::trace::ClaimOwnerTrace::Obligation {
-                        key: crate::trace::ObligationKeyTrace::Legacy {
-                            channel: crate::trace::LegacyChannelTrace::Lift,
-                            ..
-                        },
+                        key: crate::trace::ObligationKeyTrace::LiftPurchases
+                            | crate::trace::ObligationKeyTrace::LiftProduction,
                         ..
                     }
                 )
@@ -4807,7 +4672,7 @@ mod tests {
                 operation: &operation,
                 unavailable: &[],
                 prior_producer_intents: &[],
-                lift_decision: &StrategicDecision::default(),
+                lift_purchases: &crate::production::ProductionPlan::default(),
                 cadence: 12,
                 accepted_at: operation.started_at,
             })
@@ -4878,10 +4743,7 @@ mod tests {
                 && matches!(
                     job.owner,
                     crate::trace::ClaimOwnerTrace::Obligation {
-                        key: crate::trace::ObligationKeyTrace::Legacy {
-                            channel: crate::trace::LegacyChannelTrace::Lift,
-                            sequence: 2,
-                        },
+                        key: crate::trace::ObligationKeyTrace::LiftProduction,
                         ..
                     }
                 )
@@ -4915,7 +4777,7 @@ mod tests {
         let mut team = TeamReliefPlanner::new();
         let mut lifts = LiftPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut trace = AllocationTrace::default();
         let outcome = AllocationSession::new(
             setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
@@ -4926,7 +4788,7 @@ mod tests {
                 lifts: &mut lifts,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             Some(&mut trace),
         )
         .run();
@@ -4938,13 +4800,12 @@ mod tests {
         );
         assert!(
             outcome.planner_claims.contains(&UnitId(100)),
-            "the legacy island operation must see the scout accepted earlier in this think"
+            "the retained island operation must see the scout accepted earlier in this think"
         );
-        assert!(outcome.strategic_core_exclusions.contains(&UnitId(100)));
     }
 
     #[test]
-    fn successful_commit_retains_speculative_planners_and_prepared_output() {
+    fn successful_commit_retains_policy_and_projects_committed_owner_claims() {
         let mut observation = observation();
         observation
             .my_units
@@ -4964,13 +4825,9 @@ mod tests {
         );
         assert_ne!(policy, original_policy);
         let committed_policy = policy.clone();
-        let original_strategy = StrategicPlanner::new();
         let mut strategy = StrategicPlanner::new();
-        let original_team = TeamReliefPlanner::new();
         let mut team = TeamReliefPlanner::new();
-        let original_lifts = LiftPlanner::new();
         let mut lifts = LiftPlanner::new();
-        let original_raids = RaidPlanner::new();
         let mut raids = RaidPlanner::new();
         let resources = ResourceSnapshot::from_observation(&observation);
         let settlement = CrossDomainAllocation::new(&resources, 120, setup.dials.cadence)
@@ -4986,28 +4843,18 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(PlannerSnapshots {
-                strategy: original_strategy,
-                team: original_team.ownership_checkpoint(),
-                lifts: original_lifts,
-                raids: original_raids,
-            }),
+            advanced(),
             None,
         );
-        let outcome = session.commit_or_restore(ResolvedAllocation {
+        let outcome = session.finish_allocation(ResolvedAllocation {
             prepared: prepared(&observation, None),
             settlement: Ok(settlement),
-            snapshots: CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
         });
 
         assert!(outcome.allocation_ok);
-        assert_eq!(outcome.team_decision.committed_scrap(), 1);
-        assert_eq!(outcome.lift_decision.committed_scrap(), 2);
-        assert_eq!(outcome.raid_decision.committed_scrap(), 3);
-        assert_eq!(outcome.planner_claims, vec![UnitId(99)]);
-        assert_eq!(outcome.strategic_core_exclusions, vec![UnitId(98)]);
+        assert_eq!(outcome.team_decision.committed_scrap(), 0);
+        assert_eq!(outcome.raid_decision.committed_scrap(), 0);
+        assert!(outcome.planner_claims.is_empty());
         assert_eq!(policy, committed_policy);
         assert_eq!(strategy, StrategicPlanner::new());
         assert_eq!(team, TeamReliefPlanner::new());
@@ -5034,20 +4881,12 @@ mod tests {
         ));
         let deadline = observation.tick.saturating_add(1_000);
         let resources = ResourceSnapshot::from_observation(&observation);
-        let delayed_decision = StrategicDecision {
-            intents: vec![Intent::TrainAt {
-                building: delayed,
-                kind: UnitKind::Harvester,
-            }],
-            reservations: Vec::new(),
+        let delayed_decision = crate::production::ProductionPlan {
+            purchases: vec![(delayed, UnitKind::Harvester)],
             reserved_scrap: 0,
         };
-        let immediate_decision = StrategicDecision {
-            intents: vec![Intent::TrainAt {
-                building: immediate,
-                kind: UnitKind::Sentinel,
-            }],
-            reservations: Vec::new(),
+        let immediate_decision = crate::production::ProductionPlan {
+            purchases: vec![(immediate, UnitKind::Sentinel)],
             reserved_scrap: 0,
         };
         let mut allocation = CrossDomainAllocation::new(&resources, deadline, setup.dials.cadence)
@@ -5060,9 +4899,8 @@ mod tests {
                     cadence: setup.dials.cadence,
                     accepted_at: 12,
                     decision_tick: observation.tick,
-                    channel: LegacyChannel::TeamRelief,
-                    sequence: 1,
-                    decision: &delayed_decision,
+                    key: ObligationKey::LiftPurchases,
+                    purchases: &delayed_decision,
                     prior_producer_intents: &[],
                     production_deadline: deadline,
                 },
@@ -5077,9 +4915,8 @@ mod tests {
                     cadence: setup.dials.cadence,
                     accepted_at: 24,
                     decision_tick: observation.tick,
-                    channel: LegacyChannel::Lift,
-                    sequence: 1,
-                    decision: &immediate_decision,
+                    key: ObligationKey::LiftPurchases,
+                    purchases: &immediate_decision,
                     prior_producer_intents: &[],
                     production_deadline: deadline,
                 },
@@ -5121,7 +4958,7 @@ mod tests {
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let session = AllocationSession::new(
             setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
             AllocationParticipants {
@@ -5131,15 +4968,12 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             None,
         );
-        let outcome = session.commit_or_restore(ResolvedAllocation {
+        let outcome = session.finish_allocation(ResolvedAllocation {
             prepared: prepared(&observation, None),
             settlement: Ok(settlement),
-            snapshots: CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
         });
 
         assert!(outcome.allocation_ok);
@@ -5157,7 +4991,7 @@ mod tests {
     }
 
     #[test]
-    fn late_foundry_rejection_restores_an_already_committed_connected_operation() {
+    fn late_foundry_rejection_precedes_connected_commit() {
         use crate::experience::{
             Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
             OutcomeReason,
@@ -5195,9 +5029,9 @@ mod tests {
         for restore in [false, true] {
             let mut policy = UtilityPolicy::new();
             policy
-                .commit_adjudicated_foundry(foundry.clone(), observation.tick, &mut Vec::new())
-                .unwrap();
-            let checkpoint = policy.speculative_checkpoint();
+                .prepare_adjudicated_foundry(foundry.clone(), observation.tick)
+                .unwrap()
+                .apply(&mut policy, &mut Vec::new());
             policy.planning = crate::planning::PlanningWork::with_allowance(1);
             let blocked = crate::navigation::public_fields::BlockedGroundLayout::from_predicate(
                 &briefing,
@@ -5219,7 +5053,7 @@ mod tests {
             let mut team = TeamReliefPlanner::new();
             let mut lifts = LiftPlanner::new();
             let mut raids = RaidPlanner::new();
-            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
             let journal = &mut raids.outcomes;
             journal.watch(
                 &observation,
@@ -5268,14 +5102,13 @@ mod tests {
                     team: &mut team,
                     raids: &mut raids,
                 },
-                advanced(snapshots),
+                advanced(),
                 Some(&mut trace),
             );
             if restore {
-                let outcome = session.commit_or_restore(ResolvedAllocation {
+                let outcome = session.finish_allocation(ResolvedAllocation {
                     prepared: input,
                     settlement: Ok(settlement),
-                    snapshots: CommitSnapshots { policy: checkpoint },
                 });
                 assert!(!outcome.allocation_ok);
                 assert!(!outcome.accepted_connected);
@@ -5286,7 +5119,6 @@ mod tests {
                 assert!(outcome.fresh_defense_intents.is_empty());
                 assert!(outcome.fresh_emergency_defense_intents.is_empty());
                 assert_eq!(outcome.team_decision, StrategicDecision::default());
-                assert_eq!(outcome.lift_decision, StrategicDecision::default());
                 assert_eq!(outcome.raid_decision, StrategicDecision::default());
                 assert_eq!(
                     outcome.producer_lane_reservations,
@@ -5309,14 +5141,14 @@ mod tests {
                 );
             } else {
                 let Err(failure) = session.commit_settlement(&mut input, settlement) else {
-                    panic!("the stale Foundry quote must reject after connected commitment");
+                    panic!("the stale Foundry quote must reject before connected commitment");
                 };
                 assert!(
                     session
                         .participants
                         .strategy
                         .connected_package_diagnostics()
-                        .is_some()
+                        .is_none()
                 );
                 assert_eq!(
                     failure,
@@ -5330,7 +5162,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_allocation_restores_participants_and_preserves_maintenance() {
+    fn rejected_allocation_retains_policy_evidence_and_unfinished_search() {
         let mut observation = observation();
         observation
             .my_units
@@ -5358,15 +5190,14 @@ mod tests {
             crate::planning::Progress::Deferred
         );
         let pending = policy.planning.clone();
-        let checkpoint = policy.speculative_checkpoint();
         assert_eq!(policy.planning, pending);
-        assert_eq!(checkpoint, original_policy.speculative_checkpoint());
         policy.state.work_experience.record_exact_build_attempt(
             &observation,
             &[UnitId(1)],
             BuildingKind::Turret,
             TilePos::new(4, 4),
         );
+        let observed_state = policy.state.clone();
         let original_strategy = StrategicPlanner::new();
         let mut strategy = StrategicPlanner::new();
         let original_team = TeamReliefPlanner::new();
@@ -5384,12 +5215,7 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(PlannerSnapshots {
-                strategy: original_strategy.clone(),
-                team: original_team.ownership_checkpoint(),
-                lifts: original_lifts.clone(),
-                raids: original_raids.clone(),
-            }),
+            advanced(),
             None,
         );
         let mut prepared = prepared(
@@ -5399,17 +5225,6 @@ mod tests {
                 AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
             )),
         );
-        prepared.staged_strategy = Some(StrategicThinkResult {
-            decision: StrategicDecision {
-                intents: vec![Intent::TrainAt {
-                    building: BuildingId(9),
-                    kind: UnitKind::Sentinel,
-                }],
-                reservations: vec![UnitId(91)],
-                reserved_scrap: 0,
-            },
-            rejected_connected_candidate: None,
-        });
         prepared.emergency_defense = Some(FreshEmergencyDefense::fixture(
             BuildingKind::Turret,
             TilePos::new(4, 4),
@@ -5425,25 +5240,15 @@ mod tests {
             },
         ];
         prepared.maintenance_intents = maintenance.clone();
-        let resolved = session.resolve(
-            prepared,
-            CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
-        );
-        let outcome = session.commit_or_restore(resolved);
+        let resolved = session.resolve(prepared);
+        let outcome = session.finish_allocation(resolved);
 
         assert!(!outcome.allocation_ok);
         assert_eq!(outcome.maintenance_intents, maintenance);
         assert_eq!(outcome.team_decision, StrategicDecision::default());
-        assert_eq!(outcome.lift_decision, StrategicDecision::default());
         assert_eq!(outcome.raid_decision, StrategicDecision::default());
-        assert_eq!(
-            outcome.staged_strategy,
-            Some(StrategicThinkResult::default())
-        );
+        assert!(!outcome.island_allocated);
         assert!(outcome.planner_claims.is_empty());
-        assert!(outcome.strategic_core_exclusions.is_empty());
         assert!(outcome.fresh_emergency_defense_intents.is_empty());
         assert!(outcome.fresh_foundry_intents.is_empty());
         assert!(outcome.fresh_defense_intents.is_empty());
@@ -5457,7 +5262,7 @@ mod tests {
         assert_eq!(outcome.budget.utility_spendable, 0);
         assert_eq!(outcome.budget.connected_forecast_hold, u32::MAX);
         assert_eq!(policy.planning, pending);
-        assert_eq!(policy.state, original_policy.state);
+        assert_eq!(policy.state, observed_state);
         assert_eq!(strategy, original_strategy);
         assert_eq!(team, original_team);
         assert_eq!(lifts, original_lifts);
@@ -5465,7 +5270,7 @@ mod tests {
     }
 
     #[test]
-    fn allocation_failure_restores_policy_state_mutated_during_prepare() {
+    fn allocation_failure_keeps_the_release_of_a_missing_foundry_builder() {
         let observation = observation();
         let briefing = briefing();
         let setup = SessionProfile::new(prime_profile());
@@ -5477,7 +5282,7 @@ mod tests {
             .cost;
         let mut policy = UtilityPolicy::new();
         policy
-            .commit_adjudicated_foundry(
+            .prepare_adjudicated_foundry(
                 FreshFoundryProposal::fixture(
                     TilePos::new(8, 8),
                     UnitId(777),
@@ -5488,9 +5293,9 @@ mod tests {
                     foundry_case(),
                 ),
                 observation.tick,
-                &mut Vec::new(),
             )
-            .expect("the fixture installs one exact saved Foundry");
+            .expect("the fixture installs one exact saved Foundry")
+            .apply(&mut policy, &mut Vec::new());
         let resources = ResourceSnapshot::from_observation(&observation);
         let observed_context = EconomicInvestmentContext {
             evidence: Default::default(),
@@ -5529,17 +5334,9 @@ mod tests {
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-        let mut work = advanced(snapshots);
-        work.team_decision = StrategicDecision {
-            intents: vec![Intent::TrainAt {
-                building: BuildingId(999),
-                kind: UnitKind::Sentinel,
-            }],
-            reservations: Vec::new(),
-            reserved_scrap: 0,
-        };
-        let outcome = AllocationSession::new(
+
+        let work = advanced();
+        let mut session = AllocationSession::new(
             setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
             AllocationParticipants {
                 policy: &mut policy,
@@ -5550,13 +5347,21 @@ mod tests {
             },
             work,
             None,
-        )
-        .run();
+        );
+        let observed = session.observe_retained_work();
+        let mut prepared = session.prepare(observed);
+        prepared.coordinator_failure = Some((
+            AllocationCoordinatorStageTrace::ObligationCollection,
+            AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
+        ));
+        let resolved = session.resolve(prepared);
+        let outcome = session.finish_allocation(resolved);
 
         assert!(!outcome.allocation_ok);
         assert_eq!(
-            policy.state, original_policy.state,
-            "rollback must start before prepare can clear or age retained policy state"
+            policy.foundry_handoff(),
+            crate::utility::FoundryHandoff::default(),
+            "a rejected unrelated producer request cannot resurrect the missing builder's claim"
         );
     }
 
@@ -5569,12 +5374,9 @@ mod tests {
         let mut allocation = CrossDomainAllocation::new(&resources, active.deadline(), 12).unwrap();
         allocation.import(active_connected_obligation(&active).unwrap());
         allocation.import(imported_obligation(
-            ObligationClass::Legacy,
+            ObligationClass::PersistentPlan,
             observation.tick,
-            ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 2,
-            },
+            ObligationKey::LiftProduction,
             ClaimBundle::new(
                 0,
                 vec![],
@@ -5698,7 +5500,10 @@ mod tests {
         let proposal = current_connected_proposal(&observation);
         let revision = revising.then(|| proposal.clone().into_active_revision_fixture());
         let mut planner = StrategicPlanner::new();
-        planner.commit_connected_proposal(proposal).unwrap();
+        planner
+            .prepare_connected_commit(proposal)
+            .unwrap()
+            .apply(&mut planner);
         let active = connected_obligation(&mut planner, &observation);
         let setup = SessionProfile::new(prime_profile());
         let public_map = connected_briefing(&observation);
@@ -5706,12 +5511,11 @@ mod tests {
         intelligence.update(&observation);
         let mut policy = UtilityPolicy::new();
         policy.planning = crate::planning::PlanningWork::with_allowance(0);
-        let original_policy = policy.clone();
         let mut strategy = planner;
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut input = prepared(&observation, None);
         input.allocation_horizon = active.deadline();
         input.connected_reserve_deadline = active.deadline();
@@ -5730,10 +5534,7 @@ mod tests {
         input.obligations.push(imported_obligation(
             ObligationClass::PersistentPlan,
             observation.tick,
-            ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 2,
-            },
+            ObligationKey::LiftProduction,
             ClaimBundle::new(
                 0,
                 vec![],
@@ -5765,17 +5566,12 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             Some(&mut trace),
         );
-        let resolved = session.resolve(
-            input,
-            CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
-        );
+        let resolved = session.resolve(input);
         assert!(resolved.settlement.is_err());
-        let outcome = session.commit_or_restore(resolved);
+        let outcome = session.finish_allocation(resolved);
         assert!(!outcome.allocation_ok);
         assert!(outcome.allocated_producer_intents.is_empty());
         assert_eq!(outcome.budget.utility_spendable, 0);
@@ -5825,12 +5621,11 @@ mod tests {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
         let mut policy = UtilityPolicy::new();
-        let original_policy = policy.clone();
         let mut strategy = StrategicPlanner::new();
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut input = prepared(&observation, None);
         input.prospective_carrier_floor = carrier_floor;
         input.fresh_defense = vec![FreshDefenseProposal::fixture(
@@ -5857,16 +5652,11 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             Some(&mut trace),
         );
-        let resolved = session.resolve(
-            input,
-            CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
-        );
-        let outcome = session.commit_or_restore(resolved);
+        let resolved = session.resolve(input);
+        let outcome = session.finish_allocation(resolved);
 
         assert!(outcome.allocation_ok);
         assert_eq!(
@@ -6086,12 +5876,11 @@ mod tests {
             &[foundry_build, safe_defense_build],
         ));
 
-        let original_policy = policy.clone();
         let mut strategy = StrategicPlanner::new();
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut input = prepared(&observation, None);
         input.fresh_foundry = Some(FreshFoundryProposal::fixture(
             foundry_anchor,
@@ -6137,16 +5926,11 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             Some(&mut trace),
         );
-        let resolved = session.resolve(
-            input,
-            CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
-        );
-        let outcome = session.commit_or_restore(resolved);
+        let resolved = session.resolve(input);
+        let outcome = session.finish_allocation(resolved);
 
         assert!(outcome.allocation_ok, "{trace:#?}");
         assert_eq!(
@@ -6300,12 +6084,11 @@ mod tests {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
         let mut policy = UtilityPolicy::new();
-        let original_policy = policy.clone();
         let mut strategy = StrategicPlanner::new();
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut input = prepared(&observation, None);
         input.fresh_connected = Some(proposal);
         input.standing_force = StandingForcePreparation::ConnectedContexts(vec![
@@ -6335,15 +6118,10 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             None,
         );
-        let resolved = session.resolve(
-            input,
-            CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
-        );
+        let resolved = session.resolve(input);
         let settlement = resolved
             .settlement
             .expect("the guarded active revision has a feasible minimum context");
@@ -6408,12 +6186,11 @@ mod tests {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&observation);
         let mut policy = UtilityPolicy::new();
-        let original_policy = policy.clone();
         let mut strategy = StrategicPlanner::new();
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut input = prepared(&observation, None);
         input.resources = ResourceSnapshot::from_observation(&observation);
         input.fresh_connected = Some(fixture_connected_proposal(deadline, Vec::new()));
@@ -6428,16 +6205,11 @@ mod tests {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             None,
         );
-        let resolved = session.resolve(
-            input,
-            CommitSnapshots {
-                policy: original_policy.speculative_checkpoint(),
-            },
-        );
-        let outcome = session.commit_or_restore(resolved);
+        let resolved = session.resolve(input);
+        let outcome = session.finish_allocation(resolved);
 
         assert!(outcome.allocation_ok);
         assert!(outcome.accepted_connected);
@@ -6495,8 +6267,9 @@ mod tests {
             let mut payloads = settlement.into_payloads();
             let mut strategy = StrategicPlanner::new();
             strategy
-                .commit_connected_proposal(payloads.take_connected().unwrap())
-                .unwrap();
+                .prepare_connected_commit(payloads.take_connected().unwrap())
+                .unwrap()
+                .apply(&mut strategy);
             let shift = 24;
             let airworks = BuildingId(12);
             let lift_starts_at = connected_assignments
@@ -6522,12 +6295,13 @@ mod tests {
                 ),
                 LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
             );
-            lift.bind_producer_assignments(
+            lift.prepare_producer_binding(
                 lift_operation.started_at,
                 lift_operation.deadline,
                 vec![lift_assignment],
             )
-            .expect("the later exact Lift assignment binds");
+            .expect("the later exact Lift assignment binds")
+            .apply(&mut lift);
             let resources = ResourceSnapshot::from_observation(&observation);
             assert!(
                 !lift
@@ -6564,8 +6338,8 @@ mod tests {
             let mut lifts = lift;
             let mut team = TeamReliefPlanner::new();
             let mut raids = RaidPlanner::new();
-            let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
-            let mut work = advanced(snapshots);
+
+            let mut work = advanced();
             work.lift_was_active = true;
             work.lift_started_at = lift_operation.started_at;
             let mut trace = AllocationTrace::default();
@@ -6723,7 +6497,7 @@ mod tests {
         let mut strategy = StrategicPlanner::new();
         let mut trace = AllocationTrace::default();
 
-        let outcome = run_connected_session_with_team_decision_and_trace(
+        let outcome = run_connected_session_with_producer_work_and_trace(
             &observation,
             &mut policy,
             &mut strategy,
@@ -6751,7 +6525,7 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         let mut strategy = StrategicPlanner::new();
         let mut richer_trace = AllocationTrace::default();
-        let outcome = run_connected_session_with_team_decision_and_trace(
+        let outcome = run_connected_session_with_producer_work_and_trace(
             &observation,
             &mut policy,
             &mut strategy,
@@ -6824,7 +6598,7 @@ mod tests {
         let mut strategy = StrategicPlanner::new();
         let mut trace = AllocationTrace::default();
 
-        let outcome = run_connected_session_with_team_decision_and_trace(
+        let outcome = run_connected_session_with_producer_work_and_trace(
             &observation,
             &mut policy,
             &mut strategy,

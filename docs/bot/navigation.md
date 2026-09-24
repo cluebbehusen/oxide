@@ -50,12 +50,12 @@ safety fallbacks share a worker-local path cache retaining up to eight ordinary
 surfaces with 1 MiB per surface. Multiple seats can reuse their distinct
 fog-honest surfaces within an 8 MiB total accounted allowance. Ground and air
 share that allowance, keyed by their exact passability; danger verdicts remain
-projection-local. This command cache does not enter policy rollback snapshots or
-change planning allowances. Failed searches still run with their own
-capped-search evidence. Producer-exit certificates first repair an intersected
-route inside a small rectangle around the candidate footprint, including nearby
-replacement doors or destinations when an endpoint is blocked. Producers share
-one row/column index per connected component; its four live coordinate extrema
+projection-local. This command cache does not enter proposal state or change
+planning allowances. Failed searches still run with their own capped-search
+evidence. Producer-exit certificates first repair an intersected route inside a
+small rectangle around the candidate footprint, including nearby replacement
+doors or destinations when an endpoint is blocked. Producers share one
+row/column index per connected component; its four live coordinate extrema
 select the exact farthest destination without per-producer rankings. Failed
 local repairs use the full connectivity check; a failed local detour never
 proves that a producer is trapped. Long cardinal proofs first try a bounded
@@ -103,7 +103,7 @@ work divide half of each decision's allowance, leaving half for current
 requests. Navigation and speculative production forecasts leave one quarter of
 the shared allowance for final production admission. Field requests can register
 without work and receive their share on the next decision; production admission
-cannot be starved by repeated navigation calls. Allocation rollback preserves
+cannot be starved by repeated navigation calls. Allocation rejection preserves
 this work and the Foundry and defensive-site cursors. Weapon and Array
 refinement share the allowance and retain their four-new-site limit; incumbent
 validation is separate. Diagnostic counters cover these services, not

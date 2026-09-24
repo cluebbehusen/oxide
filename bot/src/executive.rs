@@ -265,6 +265,7 @@ pub struct Executive {
     pub(crate) ground_outcomes:
         std::collections::BTreeMap<ArmyId, super::experience::OutcomeJournal>,
     pub(crate) missions: std::collections::BTreeMap<ArmyId, ArmyMission>,
+    #[serde(skip)]
     pub(crate) mission_decisions: Vec<missions::MissionDecision>,
     armies: Vec<Army>,
     next_army: u32,

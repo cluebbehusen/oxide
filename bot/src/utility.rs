@@ -585,7 +585,7 @@ pub struct UtilityPolicy {
     queries: PolicyQueries,
 }
 
-/// Decision-relevant memory restored after a rejected allocation.
+/// Observed decision memory and accepted policy commitments.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PolicyState {
     pub(crate) work_experience: experience_work::WorkExperience,
@@ -697,7 +697,7 @@ pub(crate) struct PolicyState {
     evacuating_workers: Vec<UnitId>,
 }
 
-/// Recomputable answers; never part of an allocation checkpoint.
+/// Recomputable answers, rebuilt after loading controller memory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PolicyQueries {
     knowledge_paths: std::cell::RefCell<crate::navigation::paths::PathQueries>,
@@ -715,9 +715,6 @@ struct PolicyQueries {
     /// security across repeated assessments and stationary route sources.
     expansion_routing_cache: std::cell::RefCell<super::navigation::public_fields::PublicRoutes>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PolicyCheckpoint(PolicyState);
 
 /// Immutable evidence for one decision, owned by the coordinator.
 #[derive(Clone, Copy)]
@@ -859,14 +856,6 @@ impl<'a> StrategicUtilityContext<'a> {
 impl UtilityPolicy {
     pub(crate) fn valid_checkpoint(&self, map: &PublicMapBriefing, tick: u64) -> bool {
         self.planning.valid_checkpoint(map, tick)
-    }
-
-    pub(crate) fn speculative_checkpoint(&self) -> PolicyCheckpoint {
-        PolicyCheckpoint(self.state.clone())
-    }
-
-    pub(crate) fn restore_checkpoint(&mut self, checkpoint: PolicyCheckpoint) {
-        self.state = checkpoint.0;
     }
 
     /// Fresh policy, no memory.

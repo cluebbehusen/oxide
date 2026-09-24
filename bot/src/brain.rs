@@ -292,7 +292,6 @@ impl Brain {
             }
             mind.battlefield
                 .review_approaches(&oriented, &mind.experience);
-            mind.strategy.experience = Arc::new(mind.experience.clone());
             if let Some(recorder) = recorder.as_deref_mut() {
                 recorder.trace_mut().battlefield = Some(mind.battlefield.assessment().clone());
                 recorder.trace_mut().experience = mind.experience.trace();
@@ -684,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_keeps_restored_planner_ownership_out_of_residual_work() {
+    fn retained_ownership_excludes_live_members_without_importing_absent_cargo() {
         let restored = [UnitId(9), UnitId(4), UnitId(9), UnitId(12)];
         let mut observation = test_island_observation();
         observation.my_units.extend([
@@ -696,7 +695,7 @@ mod tests {
         assert_eq!(
             retained_reservations(Vec::new(), &restored, &observation),
             [UnitId(4), UnitId(9)],
-            "an empty rolled-back decision preserves live ownership without importing absent cargo or losses"
+            "an empty decision preserves live ownership without importing absent cargo or losses"
         );
     }
 
@@ -2003,7 +2002,10 @@ mod tests {
         assert_eq!(
             prior_planner_claims(
                 &[UnitId(1), UnitId(8)],
-                Some(&air),
+                air.scout
+                    .into_iter()
+                    .chain(air.artillery.iter().copied())
+                    .chain(air.strike_aircraft.iter().copied()),
                 &relief.members,
                 &raid.members,
                 None,
@@ -2121,22 +2123,43 @@ mod tests {
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let mut relief = TeamReliefPlanner::new();
 
-        let pending = relief.think_unrestricted(&profile, tuning, &obs, TEST_HOME, &[], &[]);
+        let map = crate::test_support::briefing(obs.map_width, obs.map_height, [], vec![]);
+        let proposal = relief
+            .prepare_relief(crate::team::TeamReliefPreparation {
+                tuning,
+                obs: &obs,
+                home: TEST_HOME,
+                map: &map,
+                orientation: Orientation::for_home(&obs, TEST_HOME),
+                admission: TeamReliefAdmission {
+                    additionally_reserved: &[],
+                    allow_new_operation: true,
+                    core_reservations: &[],
+                    minimum_core_equivalents: 0,
+                },
+            })
+            .unwrap();
         assert!(relief.operation().is_none());
-        assert!(!pending.reservations.is_empty());
-        assert_eq!(
-            prior_planner_claims(&[], None, &relief.core_reservations(), &[], None),
-            [],
-            "an observed watch cannot claim a proposed group before allocation accepts it"
+        assert!(
+            relief.reservations().is_empty(),
+            "an unaccepted proposal owns no units"
         );
+        let accepted = relief
+            .prepare_relief_commit(proposal)
+            .unwrap()
+            .apply(&mut relief);
+        assert!(accepted.intents.is_empty());
         assert_eq!(
-            relief.core_reservations(),
-            [],
-            "an unaccepted proposal leaves the opening core available"
+            relief.operation().unwrap().phase,
+            crate::team::TeamReliefPhase::Preparing
         );
+        let restored: TeamReliefPlanner =
+            serde_json::from_value(serde_json::to_value(&relief).unwrap()).unwrap();
+        assert_eq!(restored, relief);
+        relief = restored;
         obs.tick += tuning.reaction_delay + oxide_sim::TICKS_PER_SECOND as u64;
         let accepted = relief.think_unrestricted(&profile, tuning, &obs, TEST_HOME, &[], &[]);
-        assert_eq!(relief.core_reservations(), accepted.reservations);
+        assert_eq!(relief.reservations(), accepted.reservations);
         assert_eq!(accepted.reservations.len(), 2);
         assert!(!accepted.reservations.contains(&UnitId(1)));
         assert!(!accepted.reservations.contains(&UnitId(2)));
@@ -2194,7 +2217,7 @@ mod tests {
         };
 
         assert_eq!(
-            prior_planner_claims(&[UnitId(1)], None, &[], &[], Some(&lift)),
+            prior_planner_claims(&[UnitId(1)], [], &[], &[], Some(&lift)),
             [
                 UnitId(1),
                 UnitId(2),
@@ -2211,7 +2234,7 @@ mod tests {
         provisioning.manifests.clear();
         provisioning.payload = UnitIdSet::from_ids(vec![UnitId(6), UnitId(7), UnitId(8)]);
         assert_eq!(
-            prior_planner_claims(&[], None, &[], &[], Some(&provisioning)),
+            prior_planner_claims(&[], [], &[], &[], Some(&provisioning)),
             [UnitId(6), UnitId(7), UnitId(8)],
             "the exact payload stays owned while its carriers are still training"
         );
@@ -2456,7 +2479,7 @@ mod tests {
             }
         }
         assert!(combat_core_status(&observed, &[], &[], 8).ready);
-        let exact_lift_claims = prior_planner_claims(&[], None, &[], &[], Some(operation));
+        let exact_lift_claims = prior_planner_claims(&[], [], &[], &[], Some(operation));
         let protected = combat_core_status(&observed, &exact_lift_claims, &[], 8);
         assert!(
             !protected.ready,
@@ -4011,7 +4034,7 @@ mod tests {
             .expect("the real Brain latched its player-facing orientation before the loss");
         let post_loss_exclusions = prior_planner_claims(
             &[],
-            (brain.mind().strategy).air_operation(),
+            (brain.mind().strategy).owned_units(),
             &[],
             (brain.mind().raids).reservations(),
             (brain.mind().lifts).operation(),
@@ -4055,7 +4078,7 @@ mod tests {
             let recovery_observation = Observation::fog_honest(&state, PlayerId(0));
             let recovery_exclusions = prior_planner_claims(
                 &[],
-                (brain.mind().strategy).air_operation(),
+                (brain.mind().strategy).owned_units(),
                 &[],
                 (brain.mind().raids).reservations(),
                 (brain.mind().lifts).operation(),
@@ -5711,7 +5734,7 @@ mod tests {
 
     #[test]
     fn fresh_island_admission_accounts_for_an_active_lifts_airworks_prefix() {
-        use super::super::trace::{ClaimOwnerTrace, LegacyChannelTrace, ObligationKeyTrace};
+        use super::super::trace::{ClaimOwnerTrace, ObligationKeyTrace};
 
         let mut scenario = foundry_saving_lift_competition_scenario(50_000);
         scenario.name = "fresh island admission follows active lift production".into();
@@ -5777,10 +5800,7 @@ mod tests {
                     && matches!(
                         job.owner,
                         ClaimOwnerTrace::Obligation {
-                            key: ObligationKeyTrace::Legacy {
-                                channel: LegacyChannelTrace::Lift,
-                                sequence: 1,
-                            },
+                            key: ObligationKeyTrace::LiftPurchases,
                             ..
                         }
                     )
@@ -6120,7 +6140,7 @@ mod tests {
             operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
         }));
         assert!(strategy.connected_package_diagnostics().is_none());
-        let island_airwork = strategy.remaining_airwork_ticks(&observed);
+        let island_airwork = strategy.remaining_airwork_ticks(&observed, None);
         assert!(island_airwork > 0);
 
         let mut lift = LiftPlanner::new();
@@ -6164,7 +6184,7 @@ mod tests {
             cancelled
                 .mind_mut()
                 .lifts
-                .bind_producer_assignments(
+                .prepare_producer_binding(
                     operation.started_at,
                     operation.deadline,
                     vec![LiftProducerAssignment::new(
@@ -6180,7 +6200,8 @@ mod tests {
                         LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
                     )],
                 )
-                .unwrap();
+                .unwrap()
+                .apply(&mut cancelled.mind_mut().lifts);
             assert!(
                 cancelled
                     .mind_mut()
@@ -6202,7 +6223,7 @@ mod tests {
             assert!(
                 !trace.budget.as_ref().unwrap().frozen
                     && trace.allocation.coordinator_failure.is_none(),
-                "cancelling a fixed booking's predecessor must not make earlier island staging roll back Lift recovery: {trace:#?}"
+                "cancelling a fixed booking's predecessor must preserve Lift recovery through earlier island preparation: {trace:#?}"
             );
             assert!(
                 cancelled
@@ -6218,7 +6239,7 @@ mod tests {
         assert!(
             first_trace.allocation.error.is_none()
                 && first_trace.allocation.coordinator_failure.is_none(),
-            "the two active planners must share producer capacity without rolling back: {first_trace:#?}"
+            "the two active planners must share producer capacity without losing accepted progress: {first_trace:#?}"
         );
         assert_eq!(
             first
@@ -6266,7 +6287,7 @@ mod tests {
                 assert!(
                     trace.allocation.error.is_none()
                         && trace.allocation.coordinator_failure.is_none(),
-                    "shared Airworks pressure must not roll either active planner back: {trace:#?}"
+                    "shared Airworks pressure must preserve both active planners: {trace:#?}"
                 );
             }
             lift_progressed = next.commands.iter().any(|command| {
@@ -6296,9 +6317,7 @@ mod tests {
 
     #[test]
     fn admitted_island_air_trains_before_a_fresh_foundry_without_being_thought_twice() {
-        use super::super::trace::{
-            ClaimOwnerTrace, LegacyChannelTrace, ObligationKeyTrace, ProducerJobAccessTrace,
-        };
+        use super::super::trace::{ClaimOwnerTrace, ObligationKeyTrace, ProducerJobAccessTrace};
 
         let mut scenario = foundry_saving_air_competition_scenario(50_000);
         scenario.name = "admitted island air precedes a fresh Foundry".into();
@@ -6432,15 +6451,7 @@ mod tests {
             .obligations
             .entries
             .iter()
-            .find(|obligation| {
-                matches!(
-                    obligation.key,
-                    ObligationKeyTrace::Legacy {
-                        channel: LegacyChannelTrace::StrategicAir,
-                        sequence: 1,
-                    }
-                )
-            })
+            .find(|obligation| matches!(obligation.key, ObligationKeyTrace::AirPurchases))
             .expect("the due island decision is an explicit prior obligation");
         assert_eq!(strategic_air.accepted_at, admitted_at);
         let job = trace
@@ -6453,10 +6464,7 @@ mod tests {
                     job.owner,
                     ClaimOwnerTrace::Obligation {
                         accepted_at,
-                        key: ObligationKeyTrace::Legacy {
-                            channel: LegacyChannelTrace::StrategicAir,
-                            sequence: 1,
-                        },
+                        key: ObligationKeyTrace::AirPurchases,
                         ..
                     } if accepted_at == admitted_at
                 )
@@ -6990,10 +6998,7 @@ mod tests {
                         job.owner,
                         super::super::trace::ClaimOwnerTrace::Obligation {
                             accepted_at,
-                        key: super::super::trace::ObligationKeyTrace::Legacy {
-                            channel: super::super::trace::LegacyChannelTrace::Lift,
-                            sequence: 2,
-                        },
+                        key: super::super::trace::ObligationKeyTrace::LiftProduction,
                             ..
                         } if accepted_at == lift_admitted_at
                     )
@@ -7307,8 +7312,8 @@ mod tests {
         control.dials.minimum_core_equivalents = 0;
         control.act(&state);
         assert!(
-            !control.mind().team.reservations().is_empty(),
-            "the current allied emergency otherwise freezes an exact relief group"
+            serde_json::to_value(&control.mind().team).unwrap()["watch"].is_object(),
+            "a feasible relief opportunity observes pressure without claiming its candidate"
         );
 
         let mut gated = operation_identity_brain(PlayerId(0), &scenario);
@@ -7407,9 +7412,9 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_active_legacy_planners_roll_back_as_one_allocation_session() {
+    fn contested_operation_members_retain_recovery_without_dispatch() {
         let mut scenario = opening_core_team_relief_scenario();
-        scenario.name = "conflicting active legacy planner rollback".into();
+        scenario.name = "conflicting retained operation ownership".into();
         for row in scenario.map.iter_mut().skip(1).take(22) {
             let mut bytes = row.as_bytes().to_vec();
             bytes[20] = b'~';
@@ -7465,9 +7470,9 @@ mod tests {
             .anchor;
 
         let mut team = TeamReliefPlanner::new();
-        let _ = team.think_unrestricted(&profile, tuning, &obs, home, &[], &[]);
+        let watched = team.think_unrestricted(&profile, tuning, &obs, home, &[], &[]);
         assert!(
-            !team.reservations().is_empty(),
+            !watched.reservations.is_empty(),
             "the first current-pressure observation must freeze a credible relief watch: allies={:?}, enemies={:?}",
             obs.ally_buildings,
             obs.enemy_units
@@ -7509,7 +7514,7 @@ mod tests {
             team_members
                 .iter()
                 .any(|member| lift_payload.binary_search(member).is_ok()),
-            "independent legacy admissions must intentionally claim at least one common unit"
+            "independently seeded operations must intentionally claim at least one common unit"
         );
 
         let ally_foundry = admitted_obs
@@ -7538,7 +7543,7 @@ mod tests {
         );
         assert_ne!(
             independently_advanced_team, team,
-            "the failed turn must exercise rollback of a real planner transition"
+            "the failed turn must exercise a real accepted lifecycle transition"
         );
 
         let team_before = team.clone();
@@ -7560,10 +7565,25 @@ mod tests {
                 .is_some_and(|budget| { budget.frozen && budget.utility_spendable == 0 }),
             "a malformed shared session must not reopen the current bank to residual utility"
         );
-        let mut restored_team = brain.mind().team.clone();
-        assert_eq!(restored_team.outcomes, independently_advanced_team.outcomes);
-        restored_team.outcomes = team_before.outcomes.clone();
-        assert_eq!(restored_team, team_before);
+        let maintained_team = &brain.mind().team;
+        assert_eq!(
+            maintained_team.outcomes,
+            independently_advanced_team.outcomes
+        );
+        let relief = maintained_team.operation().unwrap();
+        assert_eq!(relief.phase, crate::team::TeamReliefPhase::Withdrawing);
+        assert_eq!(
+            relief.exit_reason,
+            Some(crate::team::TeamReliefExitReason::FoundryLost)
+        );
+        assert_eq!(
+            relief.dispatch,
+            team_before.operation().unwrap().dispatch,
+            "contested members cannot record an unissued return order"
+        );
+        assert!(result.commands.iter().all(|command| !matches!(
+            &command.command, Command::Move { units, .. } if units.iter().any(|id| team_members.contains(id))
+        )));
         let mut restored_lift = brain.mind().lifts.clone();
         assert!(restored_lift.outcomes.pending.is_empty());
         restored_lift.outcomes = lift_before.outcomes.clone();
@@ -7599,7 +7619,7 @@ mod tests {
         assert_eq!(partial.reservations, [UnitId(1)]);
         assert!(partial.intents.is_empty());
 
-        let prior_claims = prior_planner_claims(&[], None, &[], raids.reservations(), None);
+        let prior_claims = prior_planner_claims(&[], [], &[], raids.reservations(), None);
         brain.exec.apply_with_reservations(
             PlayerId(0),
             &obs,

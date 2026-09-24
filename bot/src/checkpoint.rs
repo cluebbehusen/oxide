@@ -16,6 +16,45 @@ pub struct BotCheckpoint {
     pub(crate) payload: Vec<u8>,
 }
 
+pub(crate) fn bounded_vec<'de, D, T, const LIMIT: usize>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Bounded<T, const LIMIT: usize>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>, const LIMIT: usize> serde::de::Visitor<'de> for Bounded<T, LIMIT> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "at most {LIMIT} entries")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            if seq.size_hint().is_some_and(|size| size > LIMIT) {
+                return Err(serde::de::Error::custom(format!(
+                    "collection exceeds {LIMIT} entries"
+                )));
+            }
+            let mut entries = Vec::new();
+            while let Some(entry) = seq.next_element()? {
+                if entries.len() == LIMIT {
+                    return Err(serde::de::Error::custom(format!(
+                        "collection exceeds {LIMIT} entries"
+                    )));
+                }
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+    deserializer.deserialize_seq(Bounded::<T, LIMIT>(std::marker::PhantomData))
+}
+
 #[cfg(test)]
 pub(crate) fn round_trip<T>(value: &T) -> T
 where

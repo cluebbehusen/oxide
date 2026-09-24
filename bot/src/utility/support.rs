@@ -45,13 +45,20 @@ impl UtilityPolicy {
         let snapshot = self.support_work_snapshot(context);
         self.observe_support_work(&snapshot, obs.tick);
         let renewed = self.renew_prepared_repairs(context, &snapshot, available, true);
+        self.commit_repair_renewals(renewed.clone(), obs.tick);
         let mut remaining = available.saturating_sub(renewed.iter().map(|p| p.debit).sum());
         for candidate in self.prepared_repair_assignments(context, &snapshot) {
             if matches!(candidate.key.patient, oxide_sim::Target::Building(_)) == buildings
                 && candidate.debit <= remaining
             {
                 let debit = candidate.debit;
-                if self.commit_repair_assignment(candidate, obs, intents) {
+                if self
+                    .prepare_repair_assignment(candidate, obs)
+                    .is_some_and(|commit| {
+                        commit.apply(self, intents);
+                        true
+                    })
+                {
                     remaining -= debit;
                 }
             }

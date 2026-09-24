@@ -1,13 +1,12 @@
 //! Ordered admission from observed ownership through the final utility grant.
 
-use super::lift_air_support as air_support;
 use super::operations::{
     OperationContext, OperationParticipants, OperationSettlement, RetainedDecisions,
     lift_unavailable, remove_producer_intents, settle_operations,
 };
 use super::{
-    AdvancedPlannerWork, AllocationBudgetOutcome, AllocationParticipants, AllocationSession,
-    AllocationSessionContext, AllocationSessionOutcome, PlannerClaims, PlannerSnapshots,
+    AllocationBudgetOutcome, AllocationParticipants, AllocationSession, AllocationSessionContext,
+    AllocationSessionOutcome, PlannerClaims, RetainedOperationWork,
 };
 use crate::{
     PublicMapBriefing,
@@ -23,9 +22,9 @@ use crate::{
     resources::ProducerLaneReservations,
     strategy::{
         AirOperationPhase, LiftSupportRequest, StrategicCoordination, StrategicDecision,
-        StrategicPlanner, StrategicThinkContext, StrategicThinkResult,
+        StrategicPlanner, StrategicThinkContext,
     },
-    team::{TeamReliefAdmission, TeamReliefPlanner},
+    team::TeamReliefPlanner,
     trace::{
         ChannelPhase, ChannelState, ChannelTrace, CoreGateTrace, DecisionTraceRecorder,
         RaidAttentionTrace, ScrapBudgetTrace, bounded_count, channel_effects,
@@ -126,12 +125,7 @@ pub(crate) fn admit_decision(
 
     raids.reconcile_procurement_routes(oriented, Some(oriented_public_map), Some(orientation));
 
-    let allocation_snapshots = PlannerSnapshots::capture(strategy, team, lifts, raids);
-
-    // Accepted legacy operations advance first so the allocation pass sees
-    // the exact units and commands they still own. Idle planners do not get
-    // a fresh admission until allocation has selected this think's migrated
-    // investments.
+    // Maintenance on accepted owners survives unrelated allocation rejection.
     let team_was_active = team.operation().is_some();
     let lift_was_active = lifts.operation().is_some();
     let raid_was_active = raids.operation().is_some();
@@ -154,28 +148,17 @@ pub(crate) fn admit_decision(
     initial_team_external.extend(policy.support_reservations());
     initial_team_external.sort_unstable();
     initial_team_external.dedup();
-    let mut initial_team_core_exclusions = initial_claims.core_exclusions(&[]);
-    initial_team_core_exclusions.extend(policy.state.reconnaissance.reservations());
-    initial_team_core_exclusions.extend(policy.support_reservations());
-    let team_decision = if team_was_active {
-        team.think_with_admission(
-            profile,
-            tuning,
-            oriented,
-            oriented_home,
-            &initial_team_external,
-            TeamReliefAdmission {
-                additionally_reserved: &[],
-                allow_new_operation: false,
-                core_reservations: &initial_team_core_exclusions,
-                minimum_core_equivalents: u64::from(dials.minimum_core_equivalents),
-            },
-        )
-    } else {
-        StrategicDecision::default()
-    };
+    let team_decision = team.maintain(
+        profile,
+        tuning,
+        oriented,
+        oriented_home,
+        &initial_team_external,
+    );
 
     intelligence.update(oriented);
+    strategy.observe_operation(profile, oriented, intelligence);
+    lifts.observe_operation(oriented);
     policy.refresh_allocation_worker_safety(
         oriented,
         intelligence.units(),
@@ -189,9 +172,8 @@ pub(crate) fn admit_decision(
             target: operation.target,
             planned_drops: operation.planned_drops.clone(),
         });
-    let initial_support = air_support(strategy.air_operation(), strategy.terminal_outcome());
     let claims_after_team = PlannerClaims::new(enlisted, strategy, raids, lifts);
-    let team_claims = team.core_reservations();
+    let team_claims = team.reservations();
     let mut prior_non_lift_claims = claims_after_team.without_lift(&team_claims);
     prior_non_lift_claims.extend(policy.state.reconnaissance.reservations());
     prior_non_lift_claims.extend(policy.support_reservations());
@@ -199,7 +181,8 @@ pub(crate) fn admit_decision(
     prior_non_lift_claims.dedup();
     let lift_unavailable_before =
         lift_unavailable(oriented, armies, enlisted, &prior_non_lift_claims);
-    let mut preliminary_core_exclusions = claims_after_team.core_exclusions(&team_claims);
+    let mut preliminary_core_exclusions =
+        claims_after_team.core_exclusions(&team.core_reservations());
     preliminary_core_exclusions.extend(policy.state.reconnaissance.reservations());
     preliminary_core_exclusions.extend(policy.support_reservations());
     let preliminary_core = combat_core_status(
@@ -254,18 +237,16 @@ pub(crate) fn admit_decision(
             team,
             raids,
         },
-        AdvancedPlannerWork {
+        RetainedOperationWork {
             team_decision,
             raid_decision,
             team_started_at,
             lift_started_at,
             raid_started_at,
             lift_was_active,
-            initial_lift_support: initial_support,
             lift_unavailable: lift_unavailable_before,
             preliminary_core,
             preliminary_core_exclusions,
-            snapshots: allocation_snapshots,
         },
         recorder
             .as_deref_mut()
@@ -277,14 +258,12 @@ pub(crate) fn admit_decision(
         opening_core,
         allow_new_voluntary_operations,
         team_decision,
-        lift_decision,
         raid_decision,
         planner_claims,
-        strategic_core_exclusions,
         connected_continues,
         connected_accepted_at,
         mut rejected_connected_candidate,
-        staged_strategy,
+        island_allocated,
         fresh_emergency_defense_intents,
         fresh_foundry_intents,
         fresh_defense_intents,
@@ -318,7 +297,6 @@ pub(crate) fn admit_decision(
             ready: opening_core.ready,
         });
     }
-    let strategic_was_staged = staged_strategy.is_some();
     let fresh_defense_builders = fresh_defense_intents
         .iter()
         .chain(&maintenance_intents)
@@ -329,11 +307,11 @@ pub(crate) fn admit_decision(
         })
         .chain(policy.economic_saving().and_then(|saving| saving.builder))
         .collect::<Vec<_>>();
-    let strategic_result = if let Some(staged) = staged_strategy {
-        staged
-    } else if !allocation_ok {
-        StrategicThinkResult::default()
-    } else {
+    let mut air_external =
+        PlannerClaims::new(enlisted, strategy, raids, lifts).without_air(&team.reservations());
+    air_external.extend(policy.state.reconnaissance.reservations());
+    air_external.extend(policy.support_reservations());
+    let strategic_result = {
         let continue_connected = connected_continues;
         strategy.think_after_connected_adjudication(
             StrategicThinkContext::new(
@@ -346,12 +324,17 @@ pub(crate) fn admit_decision(
                     planning: Some(&policy.planning),
                     enlisted: &planner_claims,
                     lift_support: lift_support_request.as_ref(),
-                    allow_new_operation: continue_connected || allow_new_voluntary_operations,
+                    allow_new_operation: allocation_ok
+                        && (continue_connected || allow_new_voluntary_operations),
                     protected_current_scrap: oriented.scrap.saturating_sub(connected_spendable),
                     protected_forecast_scrap: connected_forecast_hold,
                     public_map: Some(oriented_public_map),
                     orientation,
                 },
+            )
+            .with_external_claims(&air_external)
+            .with_owned_members(
+                !allocation_ok || connected_continues || island_allocated || accepted_connected,
             )
             .with_producer_lanes(&allocated_producer_intents, &producer_lane_reservations)
             .with_paid_exclusions(&policy.state.reconnaissance.paid_exclusions()),
@@ -362,7 +345,7 @@ pub(crate) fn admit_decision(
     }
     let air_decision_for_trace = strategic_result.decision.clone();
     let mut strategic = strategic_result.decision.into();
-    if strategic_was_staged || connected_continues || accepted_connected {
+    if island_allocated || connected_continues || accepted_connected {
         remove_producer_intents(&mut strategic);
     }
     strategic.intents.splice(0..0, fresh_defense_intents);
@@ -374,7 +357,7 @@ pub(crate) fn admit_decision(
         .splice(0..0, fresh_emergency_defense_intents);
     let connected_is_typed = accepted_connected
         || connected_continues
-        || (strategic_was_staged && allocation_ok)
+        || (island_allocated && allocation_ok)
         || (strategy
             .air_operation()
             .is_some_and(|op| op.assault_admitted())
@@ -423,7 +406,6 @@ pub(crate) fn admit_decision(
         RetainedDecisions {
             strategic,
             team_decision,
-            lift_decision,
             raid_decision,
             allocated_producer_intents,
             team_was_active,
@@ -450,8 +432,7 @@ pub(crate) fn admit_decision(
             attention_slots: bounded_count(raid_attention.attention_slots),
             admitted: raid_attention.admitted,
         });
-        trace.gates.team_relief_rolled_back = false;
-        trace.gates.lift_rolled_back = lift_rejected;
+        trace.gates.lift_rejected = lift_rejected;
         trace.channels.team_relief = channel_trace(
             team_before_state.expect("a traced decision captured the prior team state"),
             team_channel_state(team),
@@ -502,6 +483,12 @@ pub(crate) fn admit_decision(
             utility_spendable,
         });
     }
+    let mut strategic_core_exclusions = PlannerClaims::new(enlisted, strategy, raids, lifts)
+        .core_exclusions(&team.core_reservations());
+    strategic_core_exclusions.extend(policy.state.reconnaissance.reservations());
+    strategic_core_exclusions.extend(policy.support_reservations());
+    strategic_core_exclusions.sort_unstable();
+    strategic_core_exclusions.dedup();
     let reservations =
         retained_reservations(strategic.reservations, &strategic_core_exclusions, oriented);
     let mut utility_reservations = reservations.clone();
@@ -546,13 +533,12 @@ fn channel_trace(
 fn team_channel_state(planner: &TeamReliefPlanner) -> ChannelState {
     if let Some(operation) = planner.operation() {
         let phase = match operation.phase {
+            crate::team::TeamReliefPhase::Preparing => return ChannelState::Preparing,
             crate::team::TeamReliefPhase::Deploying => ChannelPhase::TeamDeploying,
             crate::team::TeamReliefPhase::Holding => ChannelPhase::TeamHolding,
             crate::team::TeamReliefPhase::Withdrawing => ChannelPhase::TeamWithdrawing,
         };
         ChannelState::Active(phase)
-    } else if !planner.core_reservations().is_empty() {
-        ChannelState::Preparing
     } else {
         ChannelState::Idle
     }
@@ -595,8 +581,6 @@ fn raid_channel_state(planner: &RaidPlanner) -> ChannelState {
             crate::raid::RaidPhase::Egress => ChannelPhase::RaidEgress,
         };
         ChannelState::Active(phase)
-    } else if !planner.reservations().is_empty() {
-        ChannelState::Preparing
     } else {
         ChannelState::Idle
     }

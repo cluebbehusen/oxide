@@ -9,6 +9,26 @@ use crate::trace::{RepairProgramTrace, SupportLifecycleReason, SupportLifecycleT
 use chassis::Tick;
 use oxide_sim::ids::Target;
 
+pub(crate) struct RepairCommit(RepairAssignment);
+
+impl RepairCommit {
+    pub(crate) fn apply(self, policy: &mut UtilityPolicy, intents: &mut Vec<Intent>) {
+        let assignment = self.0;
+        intents.push(assignment.intent());
+        policy
+            .state
+            .support_work
+            .lifecycle
+            .push(assignment.lifecycle(assignment.accepted_at, SupportLifecycleReason::Accepted));
+        policy.state.support_work.repairs.push(assignment);
+        policy
+            .state
+            .support_work
+            .repairs
+            .sort_by_key(|repair| repair.key);
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -256,12 +276,14 @@ impl UtilityPolicy {
         available: u32,
         allow_repair: bool,
     ) -> Vec<RepairAssignment> {
-        self.renew_prepared_repairs(
+        let renewed = self.renew_prepared_repairs(
             context,
             &self.support_work_snapshot(context),
             available,
             allow_repair,
-        )
+        );
+        self.commit_repair_renewals(renewed.clone(), context.obs.tick);
+        renewed
     }
     #[cfg(test)]
     pub(super) fn admit_test_repair(
@@ -307,7 +329,9 @@ impl UtilityPolicy {
             .cloned()
             .unwrap_or_else(|| panic!("expected {worker:?} -> {patient:?}; candidates {candidates:?}; workers {:?}; unavailable {unavailable:?}", obs.my_units));
         assert!(proposal.debit <= obs.scrap);
-        assert!(self.commit_repair_assignment(proposal, obs, intents));
+        self.prepare_repair_assignment(proposal, obs)
+            .expect("the exact proposal is admissible")
+            .apply(self, intents);
     }
 
     pub(super) fn stop_unfunded_repairs(&self, obs: &Observation, intents: &mut Vec<Intent>) {
@@ -655,22 +679,29 @@ impl UtilityPolicy {
             let mut funded = repair.clone();
             funded.debit = debit;
             funded.funded_until = obs.tick.saturating_add(context.cadence);
-            self.state
-                .support_work
-                .lifecycle
-                .push(funded.lifecycle(obs.tick, SupportLifecycleReason::Renewed));
             retained.push(funded);
         }
-        self.state.support_work.repairs = retained.clone();
+        self.state
+            .support_work
+            .repairs
+            .retain(|repair| retained.iter().any(|next| next.key == repair.key));
         retained
     }
 
-    pub(crate) fn commit_repair_assignment(
-        &mut self,
+    pub(crate) fn commit_repair_renewals(&mut self, renewals: Vec<RepairAssignment>, now: Tick) {
+        self.state.support_work.lifecycle.extend(
+            renewals
+                .iter()
+                .map(|repair| repair.lifecycle(now, SupportLifecycleReason::Renewed)),
+        );
+        self.state.support_work.repairs = renewals;
+    }
+
+    pub(crate) fn prepare_repair_assignment(
+        &self,
         assignment: RepairAssignment,
         obs: &Observation,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
+    ) -> Option<RepairCommit> {
         if assignment.accepted_at != obs.tick
             || assignment.funded_until <= obs.tick
             || self.state.support_work.repairs.iter().any(|work| {
@@ -706,19 +737,9 @@ impl UtilityPolicy {
                     }
             })
         {
-            return false;
+            return None;
         }
-        intents.push(assignment.intent());
-        self.state
-            .support_work
-            .lifecycle
-            .push(assignment.lifecycle(obs.tick, SupportLifecycleReason::Accepted));
-        self.state.support_work.repairs.push(assignment);
-        self.state
-            .support_work
-            .repairs
-            .sort_by_key(|repair| repair.key);
-        true
+        Some(RepairCommit(assignment))
     }
 
     pub(crate) fn repair_is_funded(&self, worker: UnitId, tick: Tick) -> bool {
@@ -1128,7 +1149,10 @@ mod tests {
             .remove(0);
         let key = proposal.key;
         let mut intents = Vec::new();
-        assert!(policy.commit_repair_assignment(proposal.clone(), &obs, &mut intents));
+        policy
+            .prepare_repair_assignment(proposal.clone(), &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut intents);
         assert_eq!(intents, vec![proposal.intent()]);
         assert_eq!(
             policy.state.support_work.lifecycle[0].reason,
@@ -1186,7 +1210,10 @@ mod tests {
             .fresh_repair_assignments(context(&obs, &map, &profile, &resources))
             .remove(0);
         let key = proposal.key;
-        assert!(policy.commit_repair_assignment(proposal, &obs, &mut Vec::new()));
+        policy
+            .prepare_repair_assignment(proposal, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         obs.my_units
             .iter_mut()
             .find(|unit| unit.id == key.worker)

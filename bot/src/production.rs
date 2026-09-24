@@ -9,6 +9,32 @@ use oxide_sim::{
 };
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProductionPlan {
+    pub(crate) purchases: Vec<(BuildingId, UnitKind)>,
+    pub(crate) reserved_scrap: u32,
+}
+
+impl ProductionPlan {
+    pub(crate) fn intents(&self) -> impl Iterator<Item = Intent> + '_ {
+        self.purchases
+            .iter()
+            .map(|&(building, kind)| Intent::TrainAt { building, kind })
+    }
+
+    pub(crate) fn append_to(self, decision: &mut crate::strategy::StrategicDecision) {
+        decision.intents.extend(self.intents());
+        decision.reserved_scrap = decision.reserved_scrap.saturating_add(self.reserved_scrap);
+    }
+
+    pub(crate) fn prefix(&self, count: usize) -> Self {
+        Self {
+            purchases: self.purchases.iter().copied().take(count).collect(),
+            reserved_scrap: self.reserved_scrap,
+        }
+    }
+}
+
 pub(super) struct ImmediateProduction<'a> {
     observation: &'a Observation,
     reservations: &'a ProducerLaneReservations,
@@ -81,15 +107,20 @@ impl<'a> ImmediateProduction<'a> {
             .min_by_key(|producer| producer.id)
     }
 
-    pub(super) fn append(&mut self, producer: AvailableProducer) -> Intent {
+    pub(super) fn append_purchase(
+        &mut self,
+        producer: AvailableProducer,
+    ) -> (BuildingId, UnitKind) {
         self.staged
             .entry(producer.id)
             .or_default()
             .push(producer.kind);
-        Intent::TrainAt {
-            building: producer.id,
-            kind: producer.kind,
-        }
+        (producer.id, producer.kind)
+    }
+
+    pub(super) fn append(&mut self, producer: AvailableProducer) -> Intent {
+        let (building, kind) = self.append_purchase(producer);
+        Intent::TrainAt { building, kind }
     }
 }
 

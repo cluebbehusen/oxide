@@ -146,6 +146,7 @@ pub struct RaidOperation {
     /// Last currently observed target tile.
     pub last_tile: TilePos,
     /// Exact surviving operation members, sorted.
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     pub members: Vec<UnitId>,
     /// Group size at commitment, used for the loss budget.
     pub committed_size: usize,
@@ -166,10 +167,29 @@ pub struct RaidOperation {
 pub struct RaidPlanner {
     pub(crate) outcomes: super::experience::OutcomeJournal,
     active: Option<RaidOperation>,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     muster: Vec<UnitId>,
     cooldown_until: Tick,
     preparation: Option<RaidProcurementRequest>,
     paid_work: procurement::RaidPaidWork,
+}
+
+struct RaidAdmission {
+    members: Vec<UnitId>,
+    operation: Option<RaidOperation>,
+}
+
+impl RaidAdmission {
+    fn apply(self, planner: &mut RaidPlanner) {
+        if let Some(operation) = self.operation {
+            planner.active = Some(operation);
+            planner.muster.clear();
+            planner.preparation = None;
+            planner.paid_work = Default::default();
+        } else {
+            planner.muster = self.members;
+        }
+    }
 }
 
 impl RaidPlanner {
@@ -197,43 +217,77 @@ impl RaidPlanner {
         context: RaidPlanningContext<'_>,
     ) -> StrategicDecision {
         let RaidPlanningContext {
+            obs,
+            allow_new_operation,
+            ..
+        } = context;
+        self.reconcile_procurement(obs);
+        let mut routes = RouteProjection::new(QueryPurpose::RaidOperation, obs, Domain::Ground);
+        self.muster.retain(|id| own_unit(obs, *id).is_some());
+        if allow_new_operation && let Some(proposal) = self.prepare_admission(context, &mut routes)
+        {
+            proposal.apply(self);
+        }
+        self.maintain(context, &mut routes)
+    }
+
+    fn prepare_admission(
+        &self,
+        context: RaidPlanningContext<'_>,
+        routes: &mut RouteProjection<'_>,
+    ) -> Option<RaidAdmission> {
+        let RaidPlanningContext {
+            profile,
+            obs,
+            home,
+            enlisted,
+            additionally_reserved,
+            ..
+        } = context;
+        if self.active.is_some()
+            || obs.tick < self.cooldown_until
+            || !strategic_admission_tick(obs.tick)
+        {
+            return None;
+        }
+        let members = if self.preparation.is_some() {
+            self.muster.clone()
+        } else {
+            self.available_muster(obs, enlisted, additionally_reserved)
+        };
+        if members
+            .iter()
+            .any(|id| enlisted.contains(id) || additionally_reserved.contains(id))
+        {
+            return None;
+        }
+        let operation = (members.len() == RAID_GROUP_SIZE
+            && members
+                .iter()
+                .all(|id| own_unit(obs, *id).is_some_and(|unit| unit.idle))
+            && home_screen_ready(profile, obs, home, &members))
+        .then(|| match &self.preparation {
+            Some(request) => request.begin(obs, &members, routes),
+            None => begin(obs, &members, routes),
+        })
+        .flatten();
+        Some(RaidAdmission { members, operation })
+    }
+
+    fn maintain(
+        &mut self,
+        context: RaidPlanningContext<'_>,
+        routes: &mut RouteProjection<'_>,
+    ) -> StrategicDecision {
+        let RaidPlanningContext {
             profile,
             tuning,
             obs,
             home,
             enlisted,
             additionally_reserved,
-            allow_new_operation,
-            paid_production: _,
+            ..
         } = context;
-        self.reconcile_procurement(obs);
-        let mut routes = RouteProjection::new(QueryPurpose::RaidOperation, obs, Domain::Ground);
-        self.muster.retain(|id| own_unit(obs, *id).is_some());
-        if allow_new_operation
-            && self.active.is_none()
-            && obs.tick >= self.cooldown_until
-            && strategic_admission_tick(obs.tick)
-        {
-            if self.preparation.is_none() {
-                self.refresh_muster(obs, enlisted, additionally_reserved);
-            }
-            if self.muster.len() == RAID_GROUP_SIZE
-                && self
-                    .muster
-                    .iter()
-                    .all(|id| own_unit(obs, *id).is_some_and(|unit| unit.idle))
-                && home_screen_ready(profile, obs, home, &self.muster)
-                && let Some(operation) = match self.preparation.as_ref() {
-                    Some(request) => request.begin(obs, &self.muster, &mut routes),
-                    None => begin(obs, &self.muster, &mut routes),
-                }
-            {
-                self.active = Some(operation);
-                self.muster.clear();
-                self.preparation = None;
-                self.paid_work = Default::default();
-            }
-        }
         let Some(mut raid) = self.active.take() else {
             return StrategicDecision {
                 reservations: self.muster.clone(),
@@ -305,6 +359,10 @@ impl RaidPlanner {
         }
 
         let mut decision = StrategicDecision::default();
+        let owns_members = raid
+            .members
+            .iter()
+            .all(|id| !enlisted.contains(id) && !additionally_reserved.contains(id));
         let already_home = raid.members.iter().all(|id| {
             own_unit(obs, *id).is_some_and(|unit| unit.tile.chebyshev(home) <= RETURN_RADIUS)
         });
@@ -318,7 +376,7 @@ impl RaidPlanner {
                     Some(RaidDispatch::Ingress(goal)) => goal.chebyshev(raid.last_tile) > 4,
                     _ => true,
                 };
-                if needs_dispatch {
+                if owns_members && needs_dispatch {
                     decision.intents.push(Intent::AttackMoveUnits {
                         units: raid.members.clone(),
                         goal: raid.last_tile,
@@ -339,7 +397,7 @@ impl RaidPlanner {
             RaidPhase::Strike => {
                 if let Some((target, _)) = current {
                     let dispatch = RaidDispatch::Strike(target);
-                    if raid.dispatch != Some(dispatch) {
+                    if owns_members && raid.dispatch != Some(dispatch) {
                         decision.intents.push(Intent::AttackUnits {
                             units: raid.members.clone(),
                             target,
@@ -351,7 +409,7 @@ impl RaidPlanner {
             RaidPhase::Egress => {
                 if !raid.members.is_empty() && !already_home && return_route {
                     let dispatch = RaidDispatch::Egress(home);
-                    if raid.dispatch != Some(dispatch) {
+                    if owns_members && raid.dispatch != Some(dispatch) {
                         decision.intents.push(Intent::MoveUnits {
                             units: raid.members.clone(),
                             goal: home,
@@ -409,13 +467,14 @@ impl RaidPlanner {
         decision
     }
 
-    fn refresh_muster(
-        &mut self,
+    fn available_muster(
+        &self,
         obs: &Observation,
         enlisted: &[UnitId],
         additionally_reserved: &[UnitId],
-    ) {
-        self.muster.retain(|id| {
+    ) -> Vec<UnitId> {
+        let mut members = self.muster.clone();
+        members.retain(|id| {
             own_unit(obs, *id).is_some_and(|unit| unit.kind == UnitKind::Scuttler)
                 && !enlisted.contains(id)
                 && !additionally_reserved.contains(id)
@@ -426,19 +485,20 @@ impl RaidPlanner {
             .filter(|unit| {
                 unit.kind == UnitKind::Scuttler
                     && unit.idle
-                    && !self.muster.contains(&unit.id)
+                    && !members.contains(&unit.id)
                     && !enlisted.contains(&unit.id)
                     && !additionally_reserved.contains(&unit.id)
             })
             .map(|unit| unit.id)
             .collect();
         available.sort_unstable();
-        self.muster.extend(
+        members.extend(
             available
                 .into_iter()
-                .take(RAID_GROUP_SIZE.saturating_sub(self.muster.len())),
+                .take(RAID_GROUP_SIZE.saturating_sub(members.len())),
         );
-        self.muster.sort_unstable();
+        members.sort_unstable();
+        members
     }
 }
 
@@ -750,6 +810,39 @@ mod tests {
     }
 
     #[test]
+    fn raid_continuation_preserves_orders_and_bounds_the_owned_pair() {
+        let mut obs = observation(200);
+        let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
+        let identity = profile(80);
+        let mut planner = RaidPlanner::new();
+        for phase in 0..5 {
+            if phase == 1 {
+                for unit in &mut obs.my_units[..2] {
+                    unit.tile = TARGET;
+                }
+            } else if phase == 3 {
+                obs.enemy_units.clear();
+            } else if phase == 4 {
+                for unit in &mut obs.my_units[..2] {
+                    unit.tile = HOME;
+                }
+            }
+            let encoded = serde_json::to_value(&planner).unwrap();
+            let mut restored: RaidPlanner = serde_json::from_value(encoded.clone()).unwrap();
+            assert_eq!(
+                planner.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[]),
+                restored.think_unrestricted(&identity, tuning, &obs, HOME, &[], &[])
+            );
+            assert_eq!(planner, restored);
+            let mut oversized = encoded;
+            oversized["muster"] = serde_json::json!([1, 2, 3]);
+            assert!(serde_json::from_value::<RaidPlanner>(oversized).is_err());
+            obs.tick += 60;
+        }
+        assert!(planner.operation().is_none());
+    }
+
+    #[test]
     fn procurement_quotes_only_the_missing_serviceable_pair_for_current_work() {
         use crate::resources::ResourceSnapshot;
         let mut obs = observation(200);
@@ -813,7 +906,7 @@ mod tests {
             planner.preparation.is_none(),
             "quoting does not commit a preparation"
         );
-        assert!(planner.commit_procurement(pair.clone(), obs.tick));
+        planner.preparation = Some(pair.clone());
         obs.tick += 24;
         let retained = quote(&planner, &obs).unwrap();
         assert_eq!(
@@ -955,8 +1048,16 @@ mod tests {
         );
         let settled = allocation.resolve(Default::default(), None).unwrap();
         assert_eq!(settled.producer_schedule().len(), request.missing);
-        assert!(planner.commit_procurement(request, obs.tick));
-        assert!(planner.bind_procurement(&obs, settled.producer_schedule(), &map, orientation));
+        planner
+            .prepare_procurement_commit(
+                request,
+                &obs,
+                settled.producer_schedule(),
+                &map,
+                orientation,
+            )
+            .unwrap()
+            .apply(&mut planner);
         obs.my_queues[0].extend(settled.producer_schedule().iter().map(|job| job.kind));
         (planner, obs, map)
     }

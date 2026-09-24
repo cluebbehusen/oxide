@@ -150,11 +150,14 @@ mod tests {
             let mut bots = seat_bots(&scenario).unwrap();
             assert_eq!(bots.len(), 1);
             let mut produced = 0;
+            let mut receipts = 0;
             for _ in 0..361 {
                 let bot = &mut bots[0];
+                receipts += bot.executive().mission_decisions.len();
                 let checkpoint = bot.checkpoint().unwrap();
                 let mut restored =
                     crate::SeatBot::from_checkpoint(&checkpoint, &scenario, &state).unwrap();
+                assert!(restored.executive().mission_decisions.is_empty());
                 assert_eq!(bot.dials(), restored.dials());
                 let commands = bot.act(&state);
                 assert_eq!(commands, restored.act(&state));
@@ -166,6 +169,10 @@ mod tests {
                 state.tick(&commands);
             }
             assert!(produced > 1, "continuation must exercise real bot commands");
+            assert!(
+                receipts > 0,
+                "continuation must discard a real receipt batch"
+            );
         }
     }
 

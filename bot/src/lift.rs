@@ -12,6 +12,7 @@ use super::strategy::StrategicDecision;
 use super::utility::combat_core_status;
 #[cfg(test)]
 use crate::observation::ObservationData;
+use crate::production::ProductionPlan;
 use crate::query_work::QueryPurpose;
 use chassis::Tick;
 use chassis::grid::TilePos;
@@ -393,6 +394,126 @@ pub(super) struct LiftAdmission<'a> {
     pub(super) minimum_core_equivalents: u64,
 }
 
+pub(crate) struct LiftBinding(Vec<LiftProducerAssignment>);
+
+impl LiftBinding {
+    pub(crate) fn apply(self, planner: &mut LiftPlanner) {
+        planner
+            .operation
+            .as_mut()
+            .expect("validated lift remains active")
+            .producer_assignments
+            .extend(self.0);
+    }
+}
+
+pub(crate) struct LiftFunding(Vec<LiftProducerAssignment>);
+
+impl LiftFunding {
+    pub(crate) fn apply(self, planner: &mut LiftPlanner) {
+        let operation = planner
+            .operation
+            .as_mut()
+            .expect("the validated Lift operation remains active");
+        for assignment in self.0 {
+            operation
+                .producer_assignments
+                .iter_mut()
+                .find(|candidate| candidate.request_ordinal == assignment.request_ordinal)
+                .expect("the validated Lift assignment remains bound")
+                .funding = assignment.funding;
+        }
+    }
+}
+
+impl LiftOperation {
+    pub(crate) fn owned_units(&self) -> impl Iterator<Item = UnitId> + '_ {
+        self.payload
+            .iter()
+            .copied()
+            .filter(|_| self.manifests.is_empty() && self.phase == LiftPhase::Provision)
+            .chain(self.manifests.iter().flat_map(|manifest| {
+                (!manifest.closed)
+                    .then_some(manifest.carrier)
+                    .into_iter()
+                    .chain(
+                        manifest
+                            .riders
+                            .iter()
+                            .copied()
+                            .filter(|_| manifest.retains_rider_ownership()),
+                    )
+            }))
+    }
+}
+
+pub(crate) struct LiftMembership {
+    accepted_at: Tick,
+    deadline: Tick,
+    payload: UnitIdSet,
+    manifests: Option<Vec<LiftManifest>>,
+}
+
+impl LiftMembership {
+    pub(crate) fn units(&self) -> Vec<UnitId> {
+        let mut units = self.payload.to_vec();
+        if let Some(manifests) = &self.manifests {
+            units.extend(manifests.iter().map(|manifest| manifest.carrier));
+        }
+        units.sort_unstable();
+        units.dedup();
+        units
+    }
+
+    pub(crate) fn matches(&self, planner: &LiftPlanner) -> bool {
+        planner.operation.as_ref().is_some_and(|operation| {
+            operation.started_at == self.accepted_at
+                && operation.deadline == self.deadline
+                && operation.phase == LiftPhase::Provision
+        })
+    }
+
+    pub(crate) fn apply(self, planner: &mut LiftPlanner) {
+        let operation = planner
+            .operation
+            .as_mut()
+            .expect("validated lift remains active");
+        operation.payload = self.payload;
+        if let Some(manifests) = self.manifests {
+            operation.manifests = manifests;
+        }
+    }
+}
+
+pub(super) struct FreshLift {
+    pub(super) purchases: ProductionPlan,
+    pub(super) operation: LiftOperation,
+    pub(super) decision: StrategicDecision,
+    support: SupportDirective,
+}
+
+impl FreshLift {
+    pub(super) fn apply(
+        mut self,
+        planner: &mut LiftPlanner,
+        obs: &Observation,
+    ) -> StrategicDecision {
+        planner.watch_operation(obs, &self.operation);
+        planner.support_latched = matches!(
+            self.support,
+            SupportDirective::Hold | SupportDirective::Release
+        );
+        planner.support_released = matches!(self.support, SupportDirective::Release);
+        planner.assault_waypoints.clear();
+        planner.operation = Some(self.operation);
+        let mut decision = StrategicDecision::default();
+        self.purchases.append_to(&mut decision);
+        decision.intents.append(&mut self.decision.intents);
+        decision.reservations = self.decision.reservations;
+        decision
+    }
+}
+
 impl LiftPlanner {
     pub(crate) fn shares_air_objective(&self, air: &super::strategy::AirOperation) -> bool {
         self.support_latched
@@ -483,13 +604,13 @@ impl LiftPlanner {
 
     /// Retains a successful allocator schedule without changing its lane,
     /// timing, deadline, or current-versus-forecast funding split.
-    pub(crate) fn bind_producer_assignments(
-        &mut self,
+    pub(crate) fn prepare_producer_binding(
+        &self,
         accepted_at: Tick,
         deadline: Tick,
         assignments: Vec<LiftProducerAssignment>,
-    ) -> Result<(), LiftProducerBindingError> {
-        let Some(operation) = self.operation.as_mut().filter(|operation| {
+    ) -> Result<LiftBinding, LiftProducerBindingError> {
+        let Some(operation) = self.operation.as_ref().filter(|operation| {
             operation.phase == LiftPhase::Provision
                 && operation.started_at == accepted_at
                 && operation.deadline == deadline
@@ -543,16 +664,15 @@ impl LiftPlanner {
                 });
             }
         }
-        operation.producer_assignments.extend(assignments);
-        Ok(())
+        Ok(LiftBinding(assignments))
     }
 
     /// Refreshes only the funding split of still-unpaid immutable assignments.
-    pub(crate) fn refresh_active_production_funding(
-        &mut self,
+    pub(crate) fn prepare_production_funding(
+        &self,
         obligation: &ActiveLiftProductionObligation,
-        assignments: &[LiftProducerAssignment],
-    ) -> Result<(), LiftProducerBindingError> {
+        assignments: Vec<LiftProducerAssignment>,
+    ) -> Result<LiftFunding, LiftProducerBindingError> {
         let Some(operation) = self.operation.as_ref() else {
             return Err(LiftProducerBindingError::StaleOperation);
         };
@@ -568,7 +688,7 @@ impl LiftPlanner {
                 actual: assignments.len(),
             });
         }
-        for (expected, assignment) in obligation.producer_jobs.iter().zip(assignments) {
+        for (expected, assignment) in obligation.producer_jobs.iter().zip(&assignments) {
             let ordinal = expected.request_ordinal;
             if operation
                 .producer_assignments
@@ -610,19 +730,7 @@ impl LiftPlanner {
                 });
             }
         }
-        let operation = self
-            .operation
-            .as_mut()
-            .expect("the validated Lift operation remains active");
-        for assignment in assignments {
-            operation
-                .producer_assignments
-                .iter_mut()
-                .find(|candidate| candidate.request_ordinal == assignment.request_ordinal)
-                .expect("the validated Lift assignment remains bound")
-                .funding = assignment.funding;
-        }
-        Ok(())
+        Ok(LiftFunding(assignments))
     }
 
     /// Records only exact allocator-owned commands retained for lowering.
@@ -714,92 +822,9 @@ impl LiftPlanner {
             .saturating_mul(u64::from(UnitKind::Skyhook.stats().train_ticks))
     }
 
-    pub(super) fn think_with_admission_and_producer_lanes(
-        &mut self,
-        obs: &Observation,
-        home: TilePos,
-        unavailable: &[UnitId],
-        support: LiftAirSupport,
-        admission: LiftAdmission<'_>,
-        producer_lane_reservations: &ProducerLaneReservations,
-    ) -> StrategicDecision {
-        let LiftAdmission {
-            allow_new_commitments,
-            spendable_scrap,
-            core_reservations,
-            minimum_core_equivalents,
-        } = admission;
-        let mut unavailable = unavailable.to_vec();
-        unavailable.sort_unstable();
-        unavailable.dedup();
-
-        if allow_new_commitments
-            && self.operation.is_none()
-            && obs.tick >= self.retry_not_before
-            && strategic_admission_tick(obs.tick)
-            && let Some(plan) = initial_payload_plan_preserving_core(
-                obs,
-                home,
-                &unavailable,
-                core_reservations,
-                minimum_core_equivalents,
-            )
-            && let Some(target) = select_target(obs, home, plan.pickup, support)
-        {
-            let ground_payload_target = plan
-                .payload
-                .iter()
-                .filter_map(|id| unit(obs, *id))
-                .filter(|member| can_defend_ground(member))
-                .map(|member| u32::from(member.kind.stats().transport_size))
-                .sum();
-            let built_airworks = obs.my_buildings.iter().any(|building| {
-                building.built
-                    && building.kind == BuildingKind::Airworks
-                    && producer_lane_reservations.allows_immediate_append(
-                        building.id,
-                        &[],
-                        UnitKind::Skyhook,
-                    )
-            });
-            let enough_existing_carriers =
-                available_carriers(obs, &unavailable).len() >= plan.desired_carriers;
-            let planned_drops =
-                planned_drop_slots(obs, plan.pickup, target.anchor, plan.desired_carriers);
-            if planned_drops.len() == plan.desired_carriers
-                && (built_airworks || enough_existing_carriers)
-            {
-                self.support_latched = false;
-                self.support_released = false;
-                self.assault_waypoints.clear();
-                self.operation = Some(LiftOperation {
-                    target_player: target.player,
-                    target_id: target.id,
-                    target: target.anchor,
-                    phase: LiftPhase::Provision,
-                    started_at: obs.tick,
-                    phase_started_at: obs.tick,
-                    deadline: provision_deadline(obs, &unavailable, plan.desired_carriers),
-                    pickup_component: plan.pickup,
-                    desired_carriers: plan.desired_carriers,
-                    payload: UnitIdSet::from_ids(plan.payload),
-                    payload_target: plan.payload_target,
-                    ground_payload_target,
-                    planned_drops,
-                    manifests: Vec::new(),
-                    launched: false,
-                    producer_assignments: Vec::new(),
-                    issued_producers: Vec::new(),
-                });
-            }
-        }
-
-        let Some(mut operation) = self.operation.take() else {
-            return StrategicDecision::default();
-        };
+    fn watch_operation(&mut self, obs: &Observation, operation: &LiftOperation) {
         use super::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
-            OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject,
         };
         let members: Vec<_> = operation
             .payload
@@ -823,32 +848,262 @@ impl LiftPlanner {
             operation.phase as u8,
         );
         self.outcomes.observe_objective(obs, operation.target_id);
+    }
+
+    fn fresh_operation(
+        &self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+        admission: LiftAdmission<'_>,
+        producer_lane_reservations: &ProducerLaneReservations,
+    ) -> Option<LiftOperation> {
+        if admission.allow_new_commitments
+            && self.operation.is_none()
+            && obs.tick >= self.retry_not_before
+            && strategic_admission_tick(obs.tick)
+            && let Some(plan) = initial_payload_plan_preserving_core(
+                obs,
+                home,
+                unavailable,
+                admission.core_reservations,
+                admission.minimum_core_equivalents,
+            )
+            && let Some(target) = select_target(obs, home, plan.pickup, support)
+        {
+            let ground_payload_target = plan
+                .payload
+                .iter()
+                .filter_map(|id| unit(obs, *id))
+                .filter(|member| can_defend_ground(member))
+                .map(|member| u32::from(member.kind.stats().transport_size))
+                .sum();
+            let built_airworks = obs.my_buildings.iter().any(|building| {
+                building.built
+                    && building.kind == BuildingKind::Airworks
+                    && producer_lane_reservations.allows_immediate_append(
+                        building.id,
+                        &[],
+                        UnitKind::Skyhook,
+                    )
+            });
+            let enough_existing_carriers =
+                available_carriers(obs, unavailable).len() >= plan.desired_carriers;
+            let planned_drops =
+                planned_drop_slots(obs, plan.pickup, target.anchor, plan.desired_carriers);
+            if planned_drops.len() == plan.desired_carriers
+                && (built_airworks || enough_existing_carriers)
+            {
+                return Some(LiftOperation {
+                    target_player: target.player,
+                    target_id: target.id,
+                    target: target.anchor,
+                    phase: LiftPhase::Provision,
+                    started_at: obs.tick,
+                    phase_started_at: obs.tick,
+                    deadline: provision_deadline(obs, unavailable, plan.desired_carriers),
+                    pickup_component: plan.pickup,
+                    desired_carriers: plan.desired_carriers,
+                    payload: UnitIdSet::from_ids(plan.payload),
+                    payload_target: plan.payload_target,
+                    ground_payload_target,
+                    planned_drops,
+                    manifests: Vec::new(),
+                    launched: false,
+                    producer_assignments: Vec::new(),
+                    issued_producers: Vec::new(),
+                });
+            }
+        }
+        None
+    }
+
+    pub(crate) fn observe_operation(&mut self, obs: &Observation) {
+        let Some(operation) = self.operation.as_mut() else {
+            return;
+        };
+        if (matches!(operation.phase, LiftPhase::Provision | LiftPhase::Boarding)
+            && obs.tick >= operation.deadline)
+            || (operation.phase == LiftPhase::Boarding
+                && boarding_payload(operation, obs) < MIN_EARLY_PAYLOAD)
+            || (operation.phase < LiftPhase::Landing
+                && !target_remains_disconnected(obs, operation))
+        {
+            enter(operation, LiftPhase::Recover, obs.tick);
+        }
+    }
+
+    pub(crate) fn prepare_membership(
+        &mut self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        admission: LiftAdmission<'_>,
+    ) -> Option<LiftMembership> {
+        let operation = self.operation.as_mut()?;
+        if operation.phase != LiftPhase::Provision {
+            return None;
+        }
+        let Some(payload) = provision_payload(
+            operation,
+            obs,
+            unavailable,
+            admission.allow_new_commitments,
+            admission.core_reservations,
+            admission.minimum_core_equivalents,
+        ) else {
+            enter(operation, LiftPhase::Recover, obs.tick);
+            return None;
+        };
+        let unissued = operation.producer_assignments.iter().any(|assignment| {
+            operation
+                .issued_producers
+                .binary_search(&assignment.request_ordinal)
+                .is_err()
+        });
+        let manifests = if operation.manifests.is_empty() && !unissued {
+            plan_manifests(operation, &payload, obs, home, unavailable)
+        } else {
+            None
+        };
+        Some(LiftMembership {
+            accepted_at: operation.started_at,
+            deadline: operation.deadline,
+            payload,
+            manifests,
+        })
+    }
+
+    pub(crate) fn prepare_purchases(
+        &self,
+        obs: &Observation,
+        unavailable: &[UnitId],
+        lanes: &ProducerLaneReservations,
+        spendable: u32,
+    ) -> ProductionPlan {
+        let mut decision = ProductionPlan::default();
+        if let Some(operation) = self
+            .operation
+            .as_ref()
+            .filter(|op| op.phase == LiftPhase::Provision)
+        {
+            provision(operation, obs, unavailable, lanes, spendable, &mut decision);
+        }
+        decision
+    }
+
+    pub(super) fn prepare_fresh(
+        &self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+        admission: LiftAdmission<'_>,
+        lanes: &ProducerLaneReservations,
+    ) -> Option<FreshLift> {
+        let mut operation =
+            self.fresh_operation(obs, home, unavailable, support, admission, lanes)?;
+        let mut decision = StrategicDecision::default();
+        let mut purchases = ProductionPlan::default();
+        provision(
+            &operation,
+            obs,
+            unavailable,
+            lanes,
+            admission.spendable_scrap,
+            &mut purchases,
+        );
+        if assign_manifests(&mut operation, obs, home, unavailable) {
+            enter(&mut operation, LiftPhase::Boarding, obs.tick);
+            operation.deadline = operation
+                .deadline
+                .max(obs.tick.saturating_add(boarding_grace()));
+            board(&mut operation, obs, &mut decision);
+        }
+        decision.reservations = reservations(&operation, obs);
+        let directive = operation_support_directive(support, &operation);
+        Some(FreshLift {
+            purchases,
+            operation,
+            decision,
+            support: directive,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn think_with_admission_and_producer_lanes(
+        &mut self,
+        obs: &Observation,
+        home: TilePos,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+        admission: LiftAdmission<'_>,
+        producer_lane_reservations: &ProducerLaneReservations,
+    ) -> StrategicDecision {
+        if self.operation.is_none() {
+            return self
+                .prepare_fresh(
+                    obs,
+                    home,
+                    unavailable,
+                    support,
+                    admission,
+                    producer_lane_reservations,
+                )
+                .map_or_else(StrategicDecision::default, |fresh| fresh.apply(self, obs));
+        }
+        if let Some(membership) = self.prepare_membership(obs, home, unavailable, admission) {
+            membership.apply(self);
+        }
+        let purchases = if admission.allow_new_commitments {
+            self.prepare_purchases(
+                obs,
+                unavailable,
+                producer_lane_reservations,
+                admission.spendable_scrap,
+            )
+        } else {
+            ProductionPlan::default()
+        };
+        let mut decision = self.maintain(obs, unavailable, support);
+        let mut output = StrategicDecision::default();
+        purchases.append_to(&mut output);
+        output.intents.append(&mut decision.intents);
+        decision.intents = output.intents;
+        decision.reserved_scrap = output.reserved_scrap;
+        decision
+    }
+
+    pub(crate) fn maintain(
+        &mut self,
+        obs: &Observation,
+        unavailable: &[UnitId],
+        support: LiftAirSupport,
+    ) -> StrategicDecision {
+        self.observe_operation(obs);
+        let mut unavailable = unavailable.to_vec();
+        unavailable.sort_unstable();
+        unavailable.dedup();
+        let Some(mut operation) = self.operation.take() else {
+            return StrategicDecision::default();
+        };
+        use super::experience::{Outcome, OutcomeReason};
+        self.watch_operation(obs, &operation);
+        if operation
+            .owned_units()
+            .any(|id| unavailable.binary_search(&id).is_ok())
+        {
+            operation.payload.0.retain(|id| unit(obs, *id).is_some());
+            self.operation = Some(operation);
+            return StrategicDecision::default();
+        }
         let mut decision = StrategicDecision::default();
         let mut handoff = Vec::new();
 
         if operation.phase == LiftPhase::Provision
-            && !refresh_provision_payload(
-                &mut operation,
-                obs,
-                &unavailable,
-                allow_new_commitments,
-                core_reservations,
-                minimum_core_equivalents,
-            )
+            && !refresh_provision_payload(&mut operation, obs, &unavailable, false, &[], 0)
         {
-            enter(&mut operation, LiftPhase::Recover, obs.tick);
-        }
-        if operation.phase == LiftPhase::Boarding
-            && boarding_payload(&operation, obs) < MIN_EARLY_PAYLOAD
-        {
-            enter(&mut operation, LiftPhase::Recover, obs.tick);
-        }
-        if matches!(operation.phase, LiftPhase::Provision | LiftPhase::Boarding)
-            && obs.tick >= operation.deadline
-        {
-            enter(&mut operation, LiftPhase::Recover, obs.tick);
-        }
-        if operation.phase < LiftPhase::Landing && !target_remains_disconnected(obs, &operation) {
             enter(&mut operation, LiftPhase::Recover, obs.tick);
         }
         if operation.phase <= LiftPhase::AwaitSupport {
@@ -894,16 +1149,6 @@ impl LiftPlanner {
 
         match operation.phase {
             LiftPhase::Provision => {
-                if allow_new_commitments {
-                    provision(
-                        &operation,
-                        obs,
-                        &unavailable,
-                        producer_lane_reservations,
-                        spendable_scrap,
-                        &mut decision,
-                    );
-                }
                 let has_unissued_production =
                     operation.producer_assignments.iter().any(|assignment| {
                         operation
@@ -911,9 +1156,7 @@ impl LiftPlanner {
                             .binary_search(&assignment.request_ordinal)
                             .is_err()
                     });
-                if !has_unissued_production
-                    && assign_manifests(&mut operation, obs, home, &unavailable)
-                {
+                if !has_unissued_production && !operation.manifests.is_empty() {
                     enter(&mut operation, LiftPhase::Boarding, obs.tick);
                     operation.deadline = operation
                         .deadline
@@ -1023,7 +1266,7 @@ impl LiftPlanner {
             true
         };
 
-        decision.reservations = reservations(&operation, obs, &unavailable);
+        decision.reservations = reservations(&operation, obs);
         decision.reservations.extend(handoff);
         decision.reservations.sort_unstable();
         decision.reservations.dedup();
@@ -1460,9 +1703,31 @@ fn refresh_provision_payload(
     core_reservations: &[UnitId],
     minimum_core_equivalents: u64,
 ) -> bool {
+    let Some(payload) = provision_payload(
+        operation,
+        obs,
+        unavailable,
+        allow_growth,
+        core_reservations,
+        minimum_core_equivalents,
+    ) else {
+        return false;
+    };
+    operation.payload = payload;
+    true
+}
+
+fn provision_payload(
+    operation: &LiftOperation,
+    obs: &Observation,
+    unavailable: &[UnitId],
+    allow_growth: bool,
+    core_reservations: &[UnitId],
+    minimum_core_equivalents: u64,
+) -> Option<UnitIdSet> {
     let pickup = operation.pickup_component;
     if !routing::ground_open(QueryPurpose::LiftOperation, obs, pickup) {
-        return false;
+        return None;
     }
     let available = lift_candidates(obs, pickup, unavailable);
     let all_candidates = lift_candidates(obs, pickup, &[]);
@@ -1478,7 +1743,7 @@ fn refresh_provision_payload(
         .map(|unit| u32::from(unit.kind.stats().transport_size))
         .sum();
     if available_payload < MIN_EARLY_PAYLOAD {
-        return false;
+        return None;
     }
     let carrier_capacity = u32::try_from(operation.desired_carriers)
         .unwrap_or(u32::MAX)
@@ -1576,10 +1841,9 @@ fn refresh_provision_payload(
         .map(|member| u32::from(member.kind.stats().transport_size))
         .sum();
     if filled < MIN_EARLY_PAYLOAD {
-        return false;
+        return None;
     }
-    operation.payload = payload;
-    true
+    Some(payload)
 }
 
 fn payload_members<'a>(
@@ -1625,7 +1889,7 @@ fn provision(
     unavailable: &[UnitId],
     producer_lane_reservations: &ProducerLaneReservations,
     spendable_scrap: u32,
-    decision: &mut StrategicDecision,
+    decision: &mut ProductionPlan,
 ) {
     let live = available_carriers(obs, unavailable).len();
     let queued = obs
@@ -1711,10 +1975,7 @@ fn provision(
         bank -= cost;
         added[index] += 1;
         missing -= 1;
-        decision.intents.push(Intent::TrainAt {
-            building,
-            kind: UnitKind::Skyhook,
-        });
+        decision.purchases.push((building, UnitKind::Skyhook));
     }
 }
 
@@ -1782,9 +2043,24 @@ fn assign_manifests(
     if !operation.manifests.is_empty() {
         return true;
     }
+    let Some(manifests) = plan_manifests(operation, &operation.payload, obs, home, unavailable)
+    else {
+        return false;
+    };
+    operation.manifests = manifests;
+    true
+}
+
+fn plan_manifests(
+    operation: &LiftOperation,
+    payload: &[UnitId],
+    obs: &Observation,
+    home: TilePos,
+    unavailable: &[UnitId],
+) -> Option<Vec<LiftManifest>> {
     let carriers = available_carriers(obs, unavailable);
     if carriers.len() < operation.desired_carriers {
-        return false;
+        return None;
     }
     let pickups = pickup_slots(
         obs,
@@ -1803,35 +2079,36 @@ fn assign_manifests(
         })
         .collect();
     if pickups.len() < operation.desired_carriers || drops.len() < operation.desired_carriers {
-        return false;
+        return None;
     }
-    let selected = payload_members(obs, &operation.payload, pickups[0]);
+    let selected = payload_members(obs, payload, pickups[0]);
     let groups = pack(&selected, operation.desired_carriers);
     if groups.len() != operation.desired_carriers {
-        return false;
+        return None;
     }
-    operation.manifests = groups
-        .into_iter()
-        .enumerate()
-        .map(|(index, riders)| LiftManifest {
-            carrier: carriers[index].id,
-            riders: {
-                let mut ids: Vec<_> = riders.into_iter().map(|unit| unit.id).collect();
-                ids.sort_unstable();
-                ids
-            },
-            pickup: pickups[index],
-            drop: drops[index],
-            attack_issued: false,
-            load_dispatched: false,
-            boarding_closed: false,
-            unload_attempts: 0,
-            recovery_attempts: 0,
-            aborted: false,
-            closed: false,
-        })
-        .collect();
-    true
+    Some(
+        groups
+            .into_iter()
+            .enumerate()
+            .map(|(index, riders)| LiftManifest {
+                carrier: carriers[index].id,
+                riders: {
+                    let mut ids: Vec<_> = riders.into_iter().map(|unit| unit.id).collect();
+                    ids.sort_unstable();
+                    ids
+                },
+                pickup: pickups[index],
+                drop: drops[index],
+                attack_issued: false,
+                load_dispatched: false,
+                boarding_closed: false,
+                unload_attempts: 0,
+                recovery_attempts: 0,
+                aborted: false,
+                closed: false,
+            })
+            .collect(),
+    )
 }
 
 fn board(operation: &mut LiftOperation, obs: &Observation, decision: &mut StrategicDecision) {
@@ -2297,11 +2574,7 @@ fn return_carrier(
     });
 }
 
-fn reservations(
-    operation: &LiftOperation,
-    obs: &Observation,
-    unavailable: &[UnitId],
-) -> Vec<UnitId> {
+fn reservations(operation: &LiftOperation, obs: &Observation) -> Vec<UnitId> {
     let mut ids = Vec::new();
     let landed_assault = if operation.phase == LiftPhase::Landing {
         landed_survivors(operation, obs)
@@ -2316,17 +2589,6 @@ fn reservations(
                     .iter()
                     .copied()
                     .filter(|id| unit(obs, *id).is_some()),
-            );
-            ids.extend(
-                obs.my_units
-                    .iter()
-                    .filter(|unit| {
-                        unit.kind == UnitKind::Skyhook
-                            && unit.cargo == 0
-                            && unavailable.binary_search(&unit.id).is_err()
-                    })
-                    .map(|unit| unit.id)
-                    .take(operation.desired_carriers),
             );
         }
     } else {
@@ -2528,6 +2790,284 @@ mod tests {
 
     const HOME: TilePos = TilePos::new(5, 15);
     const TARGET: TilePos = TilePos::new(50, 15);
+
+    fn rejected_coordinator_pass(
+        obs: &Observation,
+        lifts: &mut LiftPlanner,
+        strategy: &mut crate::strategy::StrategicPlanner,
+    ) -> crate::allocation::AdmittedWork {
+        use crate::allocation::{AllocationParticipants, DecisionContext, admit_decision};
+        use crate::utility::{Dials, UtilityPolicy};
+        let mut obs = obs.clone();
+        for (id, anchor) in [(800, HOME.offset(10, 10)), (801, HOME.offset(11, 10))] {
+            let mut worker = own(id, UnitKind::Harvester, HOME);
+            worker.founding = Some((BuildingKind::Foundry, anchor));
+            obs.my_units.push(worker);
+        }
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        let profile =
+            crate::profile::ResolvedProfile::resolve(oxide_sim::scenario::BotConfig::scripted(
+                BotDifficulty::Prime,
+                oxide_sim::scenario::BotStance::Balanced,
+                7,
+            ));
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        let dials = Dials::scripted(&profile, tuning);
+        let map = crate::PublicMapBriefing {
+            regions: Default::default(),
+            map_width: obs.map_width,
+            map_height: obs.map_height,
+            starting_foundries: Vec::new(),
+            teams: vec![None, None],
+            non_ground_terrain: Vec::new(),
+            extractor_frames: Vec::new(),
+            initial_scrap: Vec::new(),
+        };
+        let mut recorder = crate::trace::DecisionTraceRecorder::default();
+        recorder.begin(&obs);
+        let work = admit_decision(
+            DecisionContext {
+                evidence: Default::default(),
+                dials: &dials,
+                profile: &profile,
+                tuning,
+                observation: &obs,
+                home: HOME,
+                public_map: &map,
+                orientation: crate::orient::Orientation::for_home(&obs, HOME),
+                armies: &[],
+                enlisted: &[],
+            },
+            AllocationParticipants {
+                policy: &mut UtilityPolicy::new(),
+                strategy,
+                lifts,
+                team: &mut crate::team::TeamReliefPlanner::new(),
+                raids: &mut crate::raid::RaidPlanner::new(),
+            },
+            &mut crate::intelligence::StrategicIntelligence::new(),
+            Some(&mut recorder),
+            None,
+        );
+        let trace = recorder.finish().unwrap();
+        assert!(
+            trace.budget.unwrap().frozen,
+            "overlapping accepted foundations must reject allocation: {:?}",
+            trace.allocation
+        );
+        assert!(
+            work.intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
+        );
+        work
+    }
+
+    #[test]
+    fn rejected_coordinator_keeps_loaded_survivor_recovery_and_restored_progress() {
+        let (mut obs, mut planner, manifests) = resolved_carrier_wave(12, 2, 1);
+        let loaded = &manifests[0];
+        let lost = &manifests[1];
+        obs.my_units.retain(|unit| unit.id != lost.carrier);
+        let mut air = crate::strategy::StrategicPlanner::new();
+        let work = rejected_coordinator_pass(&obs, &mut planner, &mut air);
+        assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
+        assert!(!planner.operation().unwrap().launched);
+        assert!(
+            planner
+                .operation()
+                .unwrap()
+                .manifests
+                .iter()
+                .any(|m| m.carrier == lost.carrier && m.closed)
+        );
+        assert_eq!(
+            work.intents,
+            [Intent::Unload {
+                transport: loaded.carrier,
+                at: loaded.pickup
+            }]
+        );
+        let mut restored: LiftPlanner =
+            serde_json::from_value(serde_json::to_value(&planner).unwrap()).unwrap();
+        obs.tick += 12;
+        obs.my_units
+            .iter_mut()
+            .find(|unit| unit.id == loaded.carrier)
+            .unwrap()
+            .idle = false;
+        let live = rejected_coordinator_pass(&obs, &mut planner, &mut air);
+        let replayed = rejected_coordinator_pass(&obs, &mut restored, &mut air);
+        assert_eq!(live.intents, replayed.intents);
+        assert_eq!(planner, restored);
+        assert!(
+            live.intents.is_empty(),
+            "in-progress recovery cannot issue a second unload"
+        );
+    }
+
+    #[test]
+    fn rejected_coordinator_recovers_a_resolved_partial_wave_without_launching() {
+        let (obs, mut planner, manifests) = resolved_carrier_wave(12, 2, 1);
+        let loaded = &manifests[0];
+        let work = rejected_coordinator_pass(
+            &obs,
+            &mut planner,
+            &mut crate::strategy::StrategicPlanner::new(),
+        );
+        assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
+        assert!(!planner.operation().unwrap().launched);
+        assert!(
+            work.intents.is_empty(),
+            "entering recovery must not invent a launch or a dispatch receipt"
+        );
+        let mut next = obs;
+        next.tick += 12;
+        let work = rejected_coordinator_pass(
+            &next,
+            &mut planner,
+            &mut crate::strategy::StrategicPlanner::new(),
+        );
+        assert!(work.intents.contains(&Intent::Unload {
+            transport: loaded.carrier,
+            at: loaded.pickup
+        }));
+    }
+
+    #[test]
+    fn rejected_coordinator_does_not_acquire_new_carriers_or_dispatch_boarding() {
+        let (mut obs, mut planner, _) = lift_with_unpaid_carrier();
+        let desired = planner.operation().unwrap().desired_carriers;
+        obs.my_units
+            .extend((0..desired).map(|i| own(900 + i as u32, UnitKind::Skyhook, HOME)));
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        let original = planner.operation().unwrap().clone();
+        let work = rejected_coordinator_pass(
+            &obs,
+            &mut planner,
+            &mut crate::strategy::StrategicPlanner::new(),
+        );
+        let operation = planner.operation().unwrap();
+        assert_eq!(operation.phase, LiftPhase::Provision);
+        assert!(operation.manifests.is_empty());
+        assert_eq!(operation.deadline, original.deadline);
+        assert!(
+            work.intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::Load { .. } | Intent::Unload { .. }))
+        );
+        assert!(!work.reservations.iter().any(|id| id.0 >= 900));
+    }
+
+    #[test]
+    fn rejected_coordinator_uses_the_current_air_abort_for_loaded_lift_support() {
+        use crate::strategy::{StrategicCoordination, StrategicPlanner, StrategicThinkContext};
+        let (mut obs, mut planner, manifest) = loaded_single_lift();
+        let profile =
+            crate::profile::ResolvedProfile::resolve(oxide_sim::scenario::BotConfig::scripted(
+                BotDifficulty::Prime,
+                oxide_sim::scenario::BotStance::Balanced,
+                7,
+            ));
+        let tuning = DifficultyTuning::for_level(profile.difficulty);
+        obs.tick = 6_000;
+        obs.scrap = 10_000;
+        add_airworks(&mut obs, 10, Vec::new());
+        let scout = oxide_sim::stats::Role::Scout.unit_for(obs.faction);
+        obs.my_units.push(own(1000, scout, HOME));
+        obs.my_buildings.extend([
+            building(11, 0, BuildingKind::Crucible, HOME.offset(2, 5)),
+            building(12, 0, BuildingKind::Array, HOME.offset(4, 5)),
+            building(13, 0, BuildingKind::Fabricator, HOME.offset(6, 5)),
+        ]);
+        obs.my_queues.extend([Vec::new(), Vec::new(), Vec::new()]);
+        obs.my_units
+            .extend((1100..1112).map(|id| own(id, UnitKind::Sentinel, HOME.offset(3, 8))));
+        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        let mut air = StrategicPlanner::new();
+        let mut intel = crate::intelligence::StrategicIntelligence::new();
+        intel.update(&obs);
+        air.think_after_connected_adjudication(StrategicThinkContext::new(
+            &profile,
+            tuning,
+            &obs,
+            &intel,
+            HOME,
+            StrategicCoordination {
+                planning: None,
+                enlisted: &[],
+                lift_support: None,
+                allow_new_operation: true,
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+                public_map: None,
+                orientation: crate::orient::Orientation::for_home(&obs, HOME),
+            },
+        ));
+        assert_eq!(air.air_operation().unwrap().scout, Some(UnitId(1000)));
+        assert!(air.air_operation().unwrap().scout_dispatch.is_some());
+        planner.operation.as_mut().unwrap().phase = LiftPhase::AwaitSupport;
+        planner.operation.as_mut().unwrap().deadline = obs.tick + 1200;
+        planner.operation.as_mut().unwrap().phase_started_at = obs.tick;
+        planner.support_latched = true;
+        obs.tick += 12;
+        obs.my_units.retain(|unit| unit.id != UnitId(1000));
+        let work = rejected_coordinator_pass(&obs, &mut planner, &mut air);
+        assert_eq!(
+            crate::allocation::lift_air_support(air.air_operation(), air.terminal_outcome()),
+            LiftAirSupport::Aborted {
+                player: PlayerId(1),
+                target: TARGET
+            }
+        );
+        assert_eq!(planner.operation().unwrap().phase, LiftPhase::Recover);
+        assert!(!planner.operation().unwrap().launched);
+        assert!(
+            !work
+                .intents
+                .iter()
+                .any(|intent| matches!(intent, Intent::Unload { at, .. } if *at == manifest.drop))
+        );
+    }
+
+    #[test]
+    fn recovery_without_manifests_releases_payload_already_reassigned_elsewhere() {
+        let obs = island_obs();
+        let mut planner = recovering_empty_lift();
+        let op = planner.operation.as_mut().unwrap();
+        op.manifests.clear();
+        op.payload = UnitIdSet::from_ids(vec![UnitId(1)]);
+        op.launched = false;
+        assert_eq!(op.owned_units().count(), 0);
+        let decision = planner.maintain(&obs, &[UnitId(1)], LiftAirSupport::Independent);
+        assert!(planner.operation().is_none());
+        assert!(decision.intents.is_empty());
+        assert!(decision.reservations.is_empty());
+    }
+
+    #[test]
+    fn rejected_coordinator_bounds_refused_returns_without_extending_deadlines() {
+        let mut obs = island_obs();
+        obs.my_units
+            .push(own(900, UnitKind::Skyhook, TARGET.offset(-2, 0)));
+        let mut planner = recovering_empty_lift();
+        let mut air = crate::strategy::StrategicPlanner::new();
+        let mut moves = 0;
+        for _ in 0..=DROP_ATTEMPTS {
+            let work = rejected_coordinator_pass(&obs, &mut planner, &mut air);
+            if planner.operation().is_none() {
+                assert!(!work.reservations.contains(&UnitId(900)));
+            }
+            moves += work
+                .intents
+                .iter()
+                .filter(|i| matches!(i, Intent::MoveUnits { .. }))
+                .count();
+            obs.tick += 12;
+        }
+        assert_eq!(moves, usize::from(DROP_ATTEMPTS));
+        assert!(planner.operation().is_none());
+    }
 
     #[test]
     fn slot_queries_preserve_perimeter_order_and_stop_at_the_requested_count() {
@@ -4020,7 +4560,7 @@ mod tests {
     }
 
     #[test]
-    fn carrier_reservations_and_capacity_share_one_eligibility_boundary() {
+    fn unassigned_carriers_reduce_capacity_demand_without_acquiring_ownership() {
         let mut obs = island_obs();
         add_fighters(&mut obs, 20);
         let mut occupied = own(800, UnitKind::Skyhook, HOME);
@@ -4043,8 +4583,8 @@ mod tests {
         assert_eq!(planner.operation().unwrap().desired_carriers, 4);
         assert!(!decision.reservations.contains(&UnitId(800)));
         assert!(!decision.reservations.contains(&UnitId(801)));
-        assert!(decision.reservations.contains(&UnitId(802)));
-        assert!(decision.reservations.contains(&UnitId(803)));
+        assert!(!decision.reservations.contains(&UnitId(802)));
+        assert!(!decision.reservations.contains(&UnitId(803)));
         assert_eq!(
             planner.remaining_airwork_ticks(&obs, &unavailable),
             2 * u64::from(UnitKind::Skyhook.stats().train_ticks)
@@ -4080,7 +4620,8 @@ mod tests {
             planner.think_unrestricted(&obs, HOME, &[UnitId(900)], LiftAirSupport::Independent);
 
         assert!(!decision.reservations.contains(&UnitId(900)));
-        assert!(decision.reservations.contains(&UnitId(901)));
+        assert!(!decision.reservations.contains(&UnitId(901)));
+        assert!(planner.operation().unwrap().manifests.is_empty());
         assert_eq!(planner.operation().unwrap().phase, LiftPhase::Provision);
     }
 
@@ -6053,8 +6594,9 @@ mod tests {
         );
 
         planner
-            .bind_producer_assignments(accepted_at, deadline, vec![accepted])
-            .expect("the exact future carrier binds");
+            .prepare_producer_binding(accepted_at, deadline, vec![accepted])
+            .expect("the exact future carrier binds")
+            .apply(&mut planner);
         let obligation = planner
             .active_production_obligation()
             .expect("the unpaid carrier remains mandatory");
@@ -6068,8 +6610,9 @@ mod tests {
             LiftProducerFunding::new(cost, 0),
         );
         planner
-            .refresh_active_production_funding(&obligation, &[refreshed])
-            .expect("current income may replace forecast funding");
+            .prepare_production_funding(&obligation, vec![refreshed])
+            .expect("current income may replace forecast funding")
+            .apply(&mut planner);
         assert_eq!(
             planner
                 .active_production_obligation()
@@ -6087,7 +6630,7 @@ mod tests {
         let deadline = operation.deadline;
         let accepted_at = operation.started_at;
         planner
-            .bind_producer_assignments(
+            .prepare_producer_binding(
                 accepted_at,
                 deadline,
                 vec![LiftProducerAssignment::new(
@@ -6098,7 +6641,8 @@ mod tests {
                     LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
                 )],
             )
-            .expect("the exact future carrier binds");
+            .expect("the exact future carrier binds")
+            .apply(&mut planner);
 
         planner.mark_producers_issued(&[1]);
         assert!(
@@ -6142,8 +6686,9 @@ mod tests {
             ),
         ];
         planner
-            .bind_producer_assignments(accepted_at, deadline, assignments.clone())
-            .expect("two exact carrier assignments bind to the active Lift");
+            .prepare_producer_binding(accepted_at, deadline, assignments.clone())
+            .expect("two exact carrier assignments bind to the active Lift")
+            .apply(&mut planner);
 
         assert!(
             planner
@@ -6207,8 +6752,9 @@ mod tests {
             LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
         );
         planner
-            .bind_producer_assignments(accepted_at, deadline, vec![assignment])
-            .expect("the exact future carrier binds");
+            .prepare_producer_binding(accepted_at, deadline, vec![assignment])
+            .expect("the exact future carrier binds")
+            .apply(&mut planner);
         let desired_carriers = planner.operation().unwrap().desired_carriers;
         obs.my_units.extend((0..desired_carriers).map(|index| {
             own(
@@ -6245,8 +6791,9 @@ mod tests {
             LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
         );
         planner
-            .bind_producer_assignments(accepted_at, deadline, vec![assignment])
-            .expect("the exact future carrier binds");
+            .prepare_producer_binding(accepted_at, deadline, vec![assignment])
+            .expect("the exact future carrier binds")
+            .apply(&mut planner);
 
         let obligation = planner.active_production_obligation().unwrap();
         let mut without_producer = obs.clone();
@@ -6272,7 +6819,7 @@ mod tests {
         let accepted_at = operation.started_at;
         let timing = lift_test_timing(obs.tick + 12, deadline);
         planner
-            .bind_producer_assignments(
+            .prepare_producer_binding(
                 accepted_at,
                 deadline,
                 vec![LiftProducerAssignment::new(
@@ -6283,7 +6830,8 @@ mod tests {
                     LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
                 )],
             )
-            .expect("the exact future carrier binds");
+            .expect("the exact future carrier binds")
+            .apply(&mut planner);
         let obligation = planner.active_production_obligation().unwrap();
         let mut late = obs;
         late.tick = timing.enqueued_at() + 1;
