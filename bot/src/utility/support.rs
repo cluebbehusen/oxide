@@ -51,15 +51,15 @@ impl UtilityPolicy {
             if matches!(candidate.key.patient, oxide_sim::Target::Building(_)) == buildings
                 && candidate.debit <= remaining
             {
-                let debit = candidate.debit;
-                if self
-                    .prepare_repair_assignment(candidate, obs)
-                    .is_some_and(|commit| {
-                        commit.apply(self, intents);
-                        true
-                    })
-                {
-                    remaining -= debit;
+                let worker_busy = self
+                    .state
+                    .support_work
+                    .repairs
+                    .iter()
+                    .any(|work| work.key.worker == candidate.key.worker);
+                if !worker_busy {
+                    remaining -= candidate.debit;
+                    self.commit_repair_assignment(candidate, intents);
                 }
             }
         }

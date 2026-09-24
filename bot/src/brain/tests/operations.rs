@@ -1086,27 +1086,6 @@ fn provisioning_lift_payload_does_not_ground_unreserved_defenders() {
     let army = brain.exec.armies()[0].clone();
     assert_eq!(army.state, ArmyState::Staging);
     assert_eq!(army.target, None);
-    let enlisted: Vec<_> = brain.exec.enlisted().collect();
-    let mut policy_probe = brain.policy.clone();
-    let unreserved = policy_probe.think_residual(
-        brain.dials(),
-        &obs,
-        std::slice::from_ref(&army),
-        &enlisted,
-        &[],
-        &brain.mind().public_map,
-    );
-    assert!(
-        unreserved.iter().any(|intent| matches!(
-            intent,
-            Intent::PushArmy {
-                army: candidate,
-                target: TilePos { x: 5, y: 6 },
-            } if *candidate == army.id
-        )),
-        "the fixture must offer the exact ground push that lift reservations suppress: {unreserved:?}"
-    );
-
     for think in 0..2 {
         while !state.current_tick().is_multiple_of(brain.dials().cadence) {
             state.tick(&[]);

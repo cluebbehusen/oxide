@@ -10,13 +10,9 @@ pub(crate) struct SiteFootprint {
 }
 
 impl SiteFootprint {
-    /// Creates a footprint, rejecting zero or negative dimensions.
-    pub(crate) const fn new(anchor: TilePos, size: (i32, i32)) -> Option<Self> {
-        if size.0 > 0 && size.1 > 0 {
-            Some(Self { anchor, size })
-        } else {
-            None
-        }
+    /// Creates a footprint from a building's positive tile size.
+    pub(crate) const fn new(anchor: TilePos, size: (i32, i32)) -> Self {
+        Self { anchor, size }
     }
 
     /// Top-left tile retained by this exact construction claim.

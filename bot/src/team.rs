@@ -148,11 +148,7 @@ impl ReliefProposal {
     pub(crate) fn operation(&self) -> &TeamReliefOperation {
         &self.0
     }
-}
 
-pub(crate) struct ReliefCommit(TeamReliefOperation);
-
-impl ReliefCommit {
     pub(crate) fn apply(self, planner: &mut TeamReliefPlanner) -> StrategicDecision {
         let mut relief = self.0;
         let mut decision = StrategicDecision {
@@ -506,18 +502,6 @@ impl TeamReliefPlanner {
         );
         self.prepare_candidate(&context, &mut routes, tuning, admission.allow_new_operation)
     }
-
-    pub(super) fn prepare_relief_commit(&self, proposal: ReliefProposal) -> Option<ReliefCommit> {
-        let relief = proposal.0;
-        if self.active.is_some()
-            || self.watch.as_ref().is_none_or(|watch| {
-                watch.foundry != relief.foundry || watch.first_seen_at != relief.started_at
-            })
-        {
-            return None;
-        }
-        Some(ReliefCommit(relief))
-    }
 }
 
 fn begin(
@@ -816,8 +800,7 @@ mod tests {
             let mut decision = self.maintain(profile, tuning, obs, home, &unavailable);
             let admitted = self
                 .prepare_candidate(&context, &mut routes, tuning, allow_new_operation)
-                .and_then(|proposal| self.prepare_relief_commit(proposal))
-                .map(|commit| commit.apply(self));
+                .map(|proposal| proposal.apply(self));
             if let Some(admitted) = admitted {
                 decision.reservations = admitted.reservations;
                 decision.intents.extend(admitted.intents);
@@ -1080,28 +1063,9 @@ mod tests {
             planner.operation().is_none(),
             "even a credible prepared proposal cannot launch itself"
         );
-        let mut changed = proposal.clone();
-        changed.0.started_at += 1;
-        assert!(
-            planner
-                .prepare_relief_commit(changed)
-                .map(|commit| commit.apply(&mut planner))
-                .is_none()
-        );
-        assert!(planner.operation().is_none());
-        let committed = planner
-            .prepare_relief_commit(proposal.clone())
-            .unwrap()
-            .apply(&mut planner);
+        let committed = proposal.clone().apply(&mut planner);
         assert_eq!(committed.reservations, proposal.operation().members);
         assert_eq!(committed.intents.len(), 1);
-        assert!(
-            planner
-                .prepare_relief_commit(proposal.clone())
-                .map(|commit| commit.apply(&mut planner))
-                .is_none(),
-            "one acceptance dispatches once"
-        );
         let continued = planner.think_with_admission(
             &profile(),
             tuning,

@@ -5,22 +5,23 @@
 
 use super::allocation::{
     AllocationConflict, AllocationError, AllocationResult, CapitalFundingAssignment, ClaimBundle,
-    ClaimBundleError, ClaimOwner, Confidence, ConnectedOffenseKey, ConnectedPortfolioContext,
-    CoordinatorInputError, DefenseInvestmentKey, ExecutionSafety, ImportedObligation,
-    InvestmentProposal, ObligationClass, ObligationKey, OutrankingBasis, ProducerJobClaim,
-    ProposalCase, ProposalDecision, ProposalDisposition, ProposalKey, ProposalRejection,
-    ScheduledProducerJob, StandingForceKey, StandingForceServiceKey, StrategicValue, TimeToImpact,
+    ClaimBundleError, ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext,
+    CoordinatorInputError, DefenseInvestmentKey, ImportedObligation, InvestmentProposal,
+    ObligationKey, ProducerJobClaim, ProposalCase, ProposalDecision, ProposalDisposition,
+    ProposalKey, ProposalRejection, ScheduledProducerJob, StandingForceKey,
+    StandingForceServiceKey,
+};
+pub use super::allocation::{
+    Confidence, ExecutionSafety, ObligationClass, OutrankingBasis, StrategicValue, TimeToImpact,
     Urgency,
 };
 use super::observation::Observation;
-use super::resources::{
-    PlanningProjectionError, ProducerLaneReservationError, ResourceSnapshot, SiteFootprint,
-};
-use super::strategy::force_package::{ForceFamily, ForcePackageRejection};
+use super::resources::{PlanningProjectionError, ResourceSnapshot, SiteFootprint};
+pub use super::strategy::force_package::ForceFamily;
+use super::strategy::force_package::ForcePackageRejection;
 use super::strategy::{
     AirOperation, AirOperationOutcome, AirRecoveryReason, ConnectedPackageDiagnostics,
-    ConnectedPlanRejection, ConnectedProposalCommitError, RejectedConnectedCandidate,
-    StrategicPlanner,
+    ConnectedPlanRejection, RejectedConnectedCandidate, StrategicPlanner,
 };
 use super::{BuildingContact, ContactEvidence, StrategicIntelligence};
 #[cfg(test)]
@@ -469,18 +470,6 @@ pub struct RejectedConnectedCandidateTrace {
     pub reason: ConnectedRejectionReasonTrace,
 }
 
-/// Capability family used by package-demand diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ForceFamilyTrace {
-    /// Vision required to establish current target evidence.
-    Recon,
-    /// Ground firepower required to remove targetable anti-air defenses.
-    Suppression,
-    /// Air firepower required to destroy the target cluster.
-    Strike,
-}
-
 /// Why a current connected opportunity was not admitted or revised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
@@ -502,24 +491,13 @@ pub enum ConnectedRejectionReasonTrace {
         /// Exact suppression-provider count requested by the package.
         requested: u32,
     },
-    /// The configured decision cadence cannot schedule future production.
-    InvalidDecisionCadence,
-    /// The preparation deadline is before this observation.
-    InvalidDeadline {
-        /// Tick that supplied the rejected observation.
-        observed_at: Tick,
-        /// Rejected absolute preparation deadline.
-        deadline: Tick,
-    },
-    /// The candidate no longer has current evidence.
-    TargetNotCurrent,
     /// The current contact is not a live, completed, valuable target.
     TargetNotActionable,
     /// Earlier accepted commitments own enough real capital to explain the
     /// package's funding shortfall.
     ProtectedFunds {
         /// Provider family whose common minimum could not be funded.
-        family: ForceFamilyTrace,
+        family: ForceFamily,
         /// Cumulative scrap needed through the rejected provider.
         required_scrap: u32,
         /// Spendable current and forecast scrap available by the deadline.
@@ -535,7 +513,7 @@ pub enum ConnectedRejectionReasonTrace {
     /// spendable economy cannot fund the common minimum.
     InsufficientSpendableScrap {
         /// Provider family whose common minimum could not be funded.
-        family: ForceFamilyTrace,
+        family: ForceFamily,
         /// Cumulative scrap needed through the rejected provider.
         required_scrap: u32,
         /// Spendable current and forecast scrap available by the deadline.
@@ -546,12 +524,12 @@ pub enum ConnectedRejectionReasonTrace {
     /// No completed producer can train a legal provider for this family.
     MissingProviderCapability {
         /// Family with no completed production path.
-        family: ForceFamilyTrace,
+        family: ForceFamily,
     },
     /// Legal production exists but cannot expose the provider before expiry.
     PreparationWindowTooShort {
         /// Family whose provider misses the fixed window.
-        family: ForceFamilyTrace,
+        family: ForceFamily,
         /// Tick that supplied the rejected observation.
         observed_at: Tick,
         /// Immutable package deadline.
@@ -582,7 +560,7 @@ pub enum ConnectedForceStatus {
     /// A connected package is active outside recovery.
     Active,
     /// The operation is withdrawing for the recorded reason.
-    Recovering(ConnectedRecoveryReasonTrace),
+    Recovering(AirRecoveryReason),
     /// The operation released its corridor this think.
     Released,
     /// The operation aborted its corridor this think.
@@ -705,30 +683,6 @@ pub struct AssignedForceTrace {
     pub suppression: Vec<UnitId>,
     /// Assigned strike-aircraft ids in canonical order.
     pub strike: Vec<UnitId>,
-}
-
-/// Why a connected operation is recovering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectedRecoveryReasonTrace {
-    /// Current sight confirmed the objective was gone.
-    Complete,
-    /// A required assigned provider died.
-    RequiredUnitLost,
-    /// Current sight found anti-air the operation cannot suppress.
-    NewAirDefense,
-    /// The fixed preparation deadline or a bounded tactical phase expired.
-    Timeout,
-    /// Current sight disproved the objective before the strike.
-    ObjectiveLost,
-    /// Remembered target evidence aged out.
-    StaleIntelligence,
-    /// No honestly plausible ground route reaches artillery staging.
-    UnreachableStaging,
-    /// Known peaks seal the air route.
-    UnreachableAirRoute,
-    /// Available resources and completed production cannot finish the package.
-    PreparationInfeasible,
 }
 
 /// Coordinator-owned admission gates.
@@ -1059,7 +1013,7 @@ impl<T> BoundedTraceEntries<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AllocationObligationTrace {
     /// Priority class assigned to this accepted work.
-    pub class: ObligationClassTrace,
+    pub class: ObligationClass,
     /// Tick on which the work originally gained ownership.
     pub accepted_at: Tick,
     /// Stable typed identity of the work.
@@ -1071,7 +1025,7 @@ pub struct AllocationObligationTrace {
 impl From<&ImportedObligation> for AllocationObligationTrace {
     fn from(obligation: &ImportedObligation) -> Self {
         Self {
-            class: obligation.class.into(),
+            class: obligation.class,
             accepted_at: obligation.accepted_at,
             key: obligation.key.into(),
             claims: (&obligation.claims).into(),
@@ -1089,7 +1043,7 @@ pub struct AllocationProposalTrace {
     /// Bounded learned preference, separate from raw evidence and consequence.
     pub experience: i16,
     /// Strategic return band actually compared after the bounded adjustment.
-    pub effective_value: StrategicValueTrace,
+    pub effective_value: StrategicValue,
     /// Positive personality weight, absent only if allocation rejected its inputs.
     pub personality_weight: Option<u128>,
     /// Exact bounded shared-resource claims required by the proposal.
@@ -1166,7 +1120,7 @@ pub struct ReconAssignmentTrace {
     /// Exact frozen consumer and observer selection.
     pub key: ProposalKeyTrace,
     /// Evidence motivating the question, not certainty about its answer.
-    pub confidence: ConfidenceTrace,
+    pub confidence: Confidence,
     /// First observation establishing this question.
     pub evidence_at: Tick,
     /// Tick on which allocation accepted this work.
@@ -1693,135 +1647,25 @@ impl From<DefenseInvestmentKey> for ProposalKeyTrace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProposalCaseTrace {
     /// How quickly the situation calls for action.
-    pub urgency: UrgencyTrace,
+    pub urgency: Urgency,
     /// Strength of the fog-honest supporting evidence.
-    pub confidence: ConfidenceTrace,
+    pub confidence: Confidence,
     /// Consequence of successful execution.
-    pub value: StrategicValueTrace,
+    pub value: StrategicValue,
     /// Delay before the investment can affect the match.
-    pub time_to_impact: TimeToImpactTrace,
+    pub time_to_impact: TimeToImpact,
     /// Confidence that the investment can be executed safely.
-    pub safety: ExecutionSafetyTrace,
+    pub safety: ExecutionSafety,
 }
 
 impl From<ProposalCase> for ProposalCaseTrace {
     fn from(case: ProposalCase) -> Self {
         Self {
-            urgency: case.urgency.into(),
-            confidence: case.confidence.into(),
-            value: case.value.into(),
-            time_to_impact: case.time_to_impact.into(),
-            safety: case.safety.into(),
-        }
-    }
-}
-
-/// Proposal urgency band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UrgencyTrace {
-    /// Useful long-term development.
-    Developmental,
-    /// A current opportunity that should not drift.
-    Timely,
-    /// Immediate pressure or a perishable opportunity.
-    Pressing,
-}
-
-impl From<Urgency> for UrgencyTrace {
-    fn from(value: Urgency) -> Self {
-        match value {
-            Urgency::Developmental => Self::Developmental,
-            Urgency::Timely => Self::Timely,
-            Urgency::Pressing => Self::Pressing,
-        }
-    }
-}
-
-/// Proposal evidence-confidence band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConfidenceTrace {
-    /// Public priors or remembered evidence only.
-    Prior,
-    /// Multiple observations support the case.
-    Supported,
-    /// Direct current evidence supports the case.
-    Current,
-}
-
-impl From<Confidence> for ConfidenceTrace {
-    fn from(value: Confidence) -> Self {
-        match value {
-            Confidence::Prior => Self::Prior,
-            Confidence::Supported => Self::Supported,
-            Confidence::Current => Self::Current,
-        }
-    }
-}
-
-/// Proposal strategic-value band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StrategicValueTrace {
-    /// Improves the position without changing its shape.
-    Incremental,
-    /// Creates or protects a meaningful advantage.
-    Material,
-    /// Can decide the current strategic contest.
-    Decisive,
-}
-
-impl From<StrategicValue> for StrategicValueTrace {
-    fn from(value: StrategicValue) -> Self {
-        match value {
-            StrategicValue::Incremental => Self::Incremental,
-            StrategicValue::Material => Self::Material,
-            StrategicValue::Decisive => Self::Decisive,
-        }
-    }
-}
-
-/// Proposal time-to-impact band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TimeToImpactTrace {
-    /// Pays off beyond the immediate tactical window.
-    Patient,
-    /// Can affect the next planned contest.
-    Near,
-    /// Can affect the current contest.
-    Immediate,
-}
-
-impl From<TimeToImpact> for TimeToImpactTrace {
-    fn from(value: TimeToImpact) -> Self {
-        match value {
-            TimeToImpact::Patient => Self::Patient,
-            TimeToImpact::Near => Self::Near,
-            TimeToImpact::Immediate => Self::Immediate,
-        }
-    }
-}
-
-/// Proposal execution-safety band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionSafetyTrace {
-    /// Important execution risks remain unresolved.
-    Speculative,
-    /// Known risks have a credible mitigation.
-    Managed,
-    /// Current evidence supports protected execution.
-    Secure,
-}
-
-impl From<ExecutionSafety> for ExecutionSafetyTrace {
-    fn from(value: ExecutionSafety) -> Self {
-        match value {
-            ExecutionSafety::Speculative => Self::Speculative,
-            ExecutionSafety::Managed => Self::Managed,
-            ExecutionSafety::Secure => Self::Secure,
+            urgency: case.urgency,
+            confidence: case.confidence,
+            value: case.value,
+            time_to_impact: case.time_to_impact,
+            safety: case.safety,
         }
     }
 }
@@ -2053,28 +1897,6 @@ pub enum ProducerJobAccessTrace {
     },
 }
 
-/// Priority class of imported accepted work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ObligationClassTrace {
-    /// Immediate survival or protected ordinary-core work.
-    Survival,
-    /// Already-paid construction or production.
-    PaidWork,
-    /// A previously accepted domain plan.
-    PersistentPlan,
-}
-
-impl From<ObligationClass> for ObligationClassTrace {
-    fn from(value: ObligationClass) -> Self {
-        match value {
-            ObligationClass::Survival => Self::Survival,
-            ObligationClass::PaidWork => Self::PaidWork,
-            ObligationClass::PersistentPlan => Self::PersistentPlan,
-        }
-    }
-}
-
 /// Stable typed identity of one imported obligation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2227,7 +2049,7 @@ pub enum ClaimOwnerTrace {
     /// Mandatory work accepted before this allocation pass.
     Obligation {
         /// Priority class of the obligation.
-        class: ObligationClassTrace,
+        class: ObligationClass,
         /// Original acceptance tick.
         accepted_at: Tick,
         /// Stable typed identity.
@@ -2248,7 +2070,7 @@ impl From<ClaimOwner> for ClaimOwnerTrace {
                 accepted_at,
                 key,
             } => Self::Obligation {
-                class: class.into(),
+                class,
                 accepted_at,
                 key: key.into(),
             },
@@ -2284,7 +2106,7 @@ pub enum ProposalDispositionTrace {
         /// Exact proposal identities in the winning portfolio.
         selected: BoundedTraceEntries<ProposalKeyTrace>,
         /// First rank component that favored the winning portfolio.
-        basis: OutrankingBasisTrace,
+        basis: OutrankingBasis,
     },
 }
 
@@ -2308,52 +2130,9 @@ impl From<ProposalDisposition> for ProposalDispositionTrace {
             ProposalDisposition::Rejected(ProposalRejection::Outranked { selected, basis }) => {
                 Self::Outranked {
                     selected: proposal_keys_trace(selected),
-                    basis: basis.into(),
+                    basis,
                 }
             }
-        }
-    }
-}
-
-/// First deterministic rank component that favored the selected portfolio.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutrankingBasisTrace {
-    /// The selected portfolio had the stronger urgency histogram.
-    Urgency,
-    /// The selected portfolio had the stronger evidence-confidence histogram.
-    Confidence,
-    /// The selected portfolio had the stronger strategic-value histogram.
-    StrategicValue,
-    /// The selected portfolio could affect the match sooner.
-    TimeToImpact,
-    /// The selected portfolio had the stronger execution-safety histogram.
-    Safety,
-    /// Bounded experience broke an effective-return semantic tie.
-    Experience,
-    /// Positive personality emphasis broke a semantic tie.
-    Personality,
-    /// Cross-domain rank tied and one domain preferred this exact alternative.
-    DomainPreference,
-    /// Lower claimed capital broke every higher-order tie.
-    LowerCapital,
-    /// Canonical structural identity broke the final tie.
-    StructuralKey,
-}
-
-impl From<OutrankingBasis> for OutrankingBasisTrace {
-    fn from(value: OutrankingBasis) -> Self {
-        match value {
-            OutrankingBasis::Urgency => Self::Urgency,
-            OutrankingBasis::Confidence => Self::Confidence,
-            OutrankingBasis::StrategicValue => Self::StrategicValue,
-            OutrankingBasis::TimeToImpact => Self::TimeToImpact,
-            OutrankingBasis::Safety => Self::Safety,
-            OutrankingBasis::Experience => Self::Experience,
-            OutrankingBasis::Personality => Self::Personality,
-            OutrankingBasis::DomainPreference => Self::DomainPreference,
-            OutrankingBasis::LowerCapital => Self::LowerCapital,
-            OutrankingBasis::StructuralKey => Self::StructuralKey,
         }
     }
 }
@@ -2615,25 +2394,6 @@ pub enum AllocationErrorTrace {
         /// First failed claim.
         conflict: AllocationConflictTrace,
     },
-    /// The selected schedule named a producer absent from its resource basis.
-    ProducerReservationUnknownProducer {
-        /// Exact missing producer.
-        producer: BuildingId,
-    },
-    /// The selected current-tick append could no longer be replayed.
-    ProducerReservationAppendUnavailable {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Unit whose append failed.
-        kind: UnitKind,
-    },
-    /// Replaying a selected current-tick append changed its FIFO timing.
-    ProducerReservationTimingMismatch {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Unit whose timing changed.
-        kind: UnitKind,
-    },
 }
 
 impl From<AllocationError> for AllocationErrorTrace {
@@ -2653,17 +2413,6 @@ impl From<AllocationError> for AllocationErrorTrace {
                 obligation: obligation.into(),
                 conflict: conflict.into(),
             },
-            AllocationError::ProducerReservation(error) => match error {
-                ProducerLaneReservationError::UnknownProducer { producer } => {
-                    Self::ProducerReservationUnknownProducer { producer }
-                }
-                ProducerLaneReservationError::CurrentAppendUnavailable { producer, kind } => {
-                    Self::ProducerReservationAppendUnavailable { producer, kind }
-                }
-                ProducerLaneReservationError::CurrentTimingMismatch { producer, kind } => {
-                    Self::ProducerReservationTimingMismatch { producer, kind }
-                }
-            },
         }
     }
 }
@@ -2676,22 +2425,12 @@ pub enum AllocationCoordinatorStageTrace {
     ObligationCollection,
     /// The current resource basis could not produce a bounded allocation horizon.
     CapacityProjection,
-    /// The selected Foundry candidate could not be adapted into shared claims.
-    FoundryProposalAdaptation,
-    /// A defensive candidate could not be adapted into exact shared claims.
-    DefenseProposalAdaptation,
     /// An economic candidate could not be adapted into exact shared claims.
     EconomyProposalAdaptation,
-    /// The selected connected-operation candidate could not be adapted into shared claims.
-    ConnectedProposalAdaptation,
     /// The selected standing-force candidate could not be adapted into shared claims.
     StandingForceProposalAdaptation,
     /// A retained saved Foundry could not emit its exact build command.
     SavedFoundryDispatch,
-    /// A selected connected payload could not be installed into its domain planner.
-    ConnectedProposalCommit,
-    /// A selected Foundry payload could not be installed into its domain planner.
-    FoundryProposalCommit,
 }
 
 /// One typed failure outside the allocator's portfolio search.
@@ -2724,15 +2463,8 @@ pub enum AllocationCoordinatorFailureReasonTrace {
         /// Unit the command attempted to enqueue.
         kind: UnitKind,
     },
-    /// A selected connected proposal could not be committed unchanged.
-    ConnectedProposalCommit {
-        /// Commit error.
-        error: ConnectedProposalCommitErrorTrace,
-    },
     /// A retained payload no longer matched the exact plan it was meant to dispatch.
     ExactDispatchRejected,
-    /// Another saved Foundry appeared after proposal derivation.
-    ExistingFoundryCommitment,
 }
 
 impl From<&CoordinatorInputError> for AllocationCoordinatorFailureReasonTrace {
@@ -2757,14 +2489,6 @@ impl From<&CoordinatorInputError> for AllocationCoordinatorFailureReasonTrace {
 impl From<ClaimBundleError> for AllocationCoordinatorFailureReasonTrace {
     fn from(value: ClaimBundleError) -> Self {
         Self::Claims {
-            error: value.into(),
-        }
-    }
-}
-
-impl From<ConnectedProposalCommitError> for AllocationCoordinatorFailureReasonTrace {
-    fn from(value: ConnectedProposalCommitError) -> Self {
-        Self::ConnectedProposalCommit {
             error: value.into(),
         }
     }
@@ -2853,26 +2577,12 @@ pub enum PlanningProjectionErrorTrace {
         /// Observed queue length.
         queued: u32,
     },
-    /// Owner-visible front progress exceeded the front unit's train time.
-    MalformedFrontProgress {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Observed progress.
-        progress: u32,
-        /// Complete train time.
-        train_ticks: u32,
-    },
     /// Queue, cadence, or horizon arithmetic overflowed.
     TickOverflow,
     /// Completed-source income overflowed the simulation scrap type.
     ForecastOverflow {
         /// Last included production tick.
         through: Tick,
-    },
-    /// A recurring source had a zero payment period.
-    ZeroIncomePeriod {
-        /// Exact completed income source.
-        source: BuildingId,
     },
 }
 
@@ -2900,41 +2610,10 @@ impl From<PlanningProjectionError> for PlanningProjectionErrorTrace {
                     queued: bounded_count(queued),
                 }
             }
-            PlanningProjectionError::MalformedFrontProgress {
-                producer,
-                progress,
-                train_ticks,
-            } => Self::MalformedFrontProgress {
-                producer,
-                progress,
-                train_ticks,
-            },
             PlanningProjectionError::TickOverflow => Self::TickOverflow,
             PlanningProjectionError::ForecastOverflow { through } => {
                 Self::ForecastOverflow { through }
             }
-            PlanningProjectionError::ZeroIncomePeriod { source } => {
-                Self::ZeroIncomePeriod { source }
-            }
-        }
-    }
-}
-
-/// Why exact connected producer assignments could not be retained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectedProposalCommitErrorTrace {
-    /// Planner state changed after derivation.
-    StalePlanner,
-    /// Another connected assault already owned the planner.
-    ExistingAssault,
-}
-
-impl From<ConnectedProposalCommitError> for ConnectedProposalCommitErrorTrace {
-    fn from(value: ConnectedProposalCommitError) -> Self {
-        match value {
-            ConnectedProposalCommitError::StalePlanner => Self::StalePlanner,
-            ConnectedProposalCommitError::ExistingAssault => Self::ExistingAssault,
         }
     }
 }
@@ -3174,7 +2853,7 @@ pub(super) fn connected_force_trace(
                     ConnectedForceStatus::OtherAirOperation
                 }
             },
-            |reason| ConnectedForceStatus::Recovering(reason.into()),
+            ConnectedForceStatus::Recovering,
         ),
         (None, None) => ConnectedForceStatus::Idle,
     };
@@ -3297,17 +2976,6 @@ fn package_rejection_trace(
 ) -> ConnectedRejectionReasonTrace {
     match rejection {
         ForcePackageRejection::Deferred => ConnectedRejectionReasonTrace::Deferred,
-        ForcePackageRejection::InvalidDecisionCadence => {
-            ConnectedRejectionReasonTrace::InvalidDecisionCadence
-        }
-        ForcePackageRejection::InvalidDeadline {
-            observed_at,
-            deadline,
-        } => ConnectedRejectionReasonTrace::InvalidDeadline {
-            observed_at,
-            deadline,
-        },
-        ForcePackageRejection::TargetNotCurrent => ConnectedRejectionReasonTrace::TargetNotCurrent,
         ForcePackageRejection::TargetNotActionable => {
             ConnectedRejectionReasonTrace::TargetNotActionable
         }
@@ -3321,7 +2989,7 @@ fn package_rejection_trace(
                 >= deadline_shortfall
             {
                 ConnectedRejectionReasonTrace::ProtectedFunds {
-                    family: family.into(),
+                    family,
                     required_scrap,
                     available_scrap,
                     deadline_shortfall,
@@ -3330,7 +2998,7 @@ fn package_rejection_trace(
                 }
             } else {
                 ConnectedRejectionReasonTrace::InsufficientSpendableScrap {
-                    family: family.into(),
+                    family,
                     required_scrap,
                     available_scrap,
                     deadline_shortfall,
@@ -3338,16 +3006,14 @@ fn package_rejection_trace(
             }
         }
         ForcePackageRejection::MissingCompletedProviderCapability { family } => {
-            ConnectedRejectionReasonTrace::MissingProviderCapability {
-                family: family.into(),
-            }
+            ConnectedRejectionReasonTrace::MissingProviderCapability { family }
         }
         ForcePackageRejection::PreparationWindowTooShort {
             family,
             observed_at,
             deadline,
         } => ConnectedRejectionReasonTrace::PreparationWindowTooShort {
-            family: family.into(),
+            family,
             observed_at,
             deadline,
         },
@@ -3358,16 +3024,6 @@ fn package_rejection_trace(
             firepower,
             hit_points,
         },
-    }
-}
-
-impl From<ForceFamily> for ForceFamilyTrace {
-    fn from(family: ForceFamily) -> Self {
-        match family {
-            ForceFamily::Recon => Self::Recon,
-            ForceFamily::Suppression => Self::Suppression,
-            ForceFamily::Strike => Self::Strike,
-        }
     }
 }
 
@@ -3407,22 +3063,6 @@ impl AssignedForceTrace {
             scout: operation.scout,
             suppression: canonical_ids(&operation.artillery),
             strike: canonical_ids(&operation.strike_aircraft),
-        }
-    }
-}
-
-impl From<AirRecoveryReason> for ConnectedRecoveryReasonTrace {
-    fn from(reason: AirRecoveryReason) -> Self {
-        match reason {
-            AirRecoveryReason::Complete => Self::Complete,
-            AirRecoveryReason::RequiredUnitLost => Self::RequiredUnitLost,
-            AirRecoveryReason::NewAirDefense => Self::NewAirDefense,
-            AirRecoveryReason::Timeout => Self::Timeout,
-            AirRecoveryReason::ObjectiveLost => Self::ObjectiveLost,
-            AirRecoveryReason::StaleIntelligence => Self::StaleIntelligence,
-            AirRecoveryReason::UnreachableStaging => Self::UnreachableStaging,
-            AirRecoveryReason::UnreachableAirRoute => Self::UnreachableAirRoute,
-            AirRecoveryReason::PreparationInfeasible => Self::PreparationInfeasible,
         }
     }
 }
@@ -3659,7 +3299,7 @@ mod tests {
         assert_eq!(
             protected.reason,
             ConnectedRejectionReasonTrace::ProtectedFunds {
-                family: ForceFamilyTrace::Strike,
+                family: ForceFamily::Strike,
                 required_scrap: 100,
                 available_scrap: 70,
                 deadline_shortfall: 30,
@@ -3674,7 +3314,7 @@ mod tests {
         assert_eq!(
             genuinely_short,
             ConnectedRejectionReasonTrace::InsufficientSpendableScrap {
-                family: ForceFamilyTrace::Strike,
+                family: ForceFamily::Strike,
                 required_scrap: 100,
                 available_scrap: 70,
                 deadline_shortfall: 30,
@@ -3759,8 +3399,8 @@ mod tests {
 
     #[test]
     fn allocation_claim_trace_preserves_exact_capital_actors_sites_and_job_access() {
-        let first_site = SiteFootprint::new(TilePos::new(8, 3), (2, 3)).unwrap();
-        let second_site = SiteFootprint::new(TilePos::new(2, 9), (1, 1)).unwrap();
+        let first_site = SiteFootprint::new(TilePos::new(8, 3), (2, 3));
+        let second_site = SiteFootprint::new(TilePos::new(2, 9), (1, 1));
         let claims = ClaimBundle::new(
             77,
             vec![
@@ -3997,9 +3637,9 @@ mod tests {
     #[test]
     fn coordinator_failure_trace_preserves_stage_and_exact_reason() {
         assert_eq!(
-            serde_json::to_value(AllocationCoordinatorStageTrace::DefenseProposalAdaptation)
+            serde_json::to_value(AllocationCoordinatorStageTrace::EconomyProposalAdaptation)
                 .expect("the coordinator stage serializes"),
-            Value::from("defense_proposal_adaptation")
+            Value::from("economy_proposal_adaptation")
         );
         let mut trace = AllocationTrace::default();
         let input = CoordinatorInputError::ImmediateProducerUnavailable {
@@ -4024,8 +3664,8 @@ mod tests {
 
     #[test]
     fn coordinator_claim_and_projection_errors_retain_their_evidence() {
-        let first = SiteFootprint::new(TilePos::new(2, 3), (2, 2)).unwrap();
-        let second = SiteFootprint::new(TilePos::new(3, 4), (1, 1)).unwrap();
+        let first = SiteFootprint::new(TilePos::new(2, 3), (2, 2));
+        let second = SiteFootprint::new(TilePos::new(3, 4), (1, 1));
         let claim_cases = [
             (
                 ClaimBundleError::DuplicateUnit(UnitId(1)),
@@ -4101,32 +3741,12 @@ mod tests {
                 },
             ),
             (
-                PlanningProjectionError::MalformedFrontProgress {
-                    producer: BuildingId(5),
-                    progress: 31,
-                    train_ticks: 30,
-                },
-                PlanningProjectionErrorTrace::MalformedFrontProgress {
-                    producer: BuildingId(5),
-                    progress: 31,
-                    train_ticks: 30,
-                },
-            ),
-            (
                 PlanningProjectionError::TickOverflow,
                 PlanningProjectionErrorTrace::TickOverflow,
             ),
             (
                 PlanningProjectionError::ForecastOverflow { through: 300 },
                 PlanningProjectionErrorTrace::ForecastOverflow { through: 300 },
-            ),
-            (
-                PlanningProjectionError::ZeroIncomePeriod {
-                    source: BuildingId(6),
-                },
-                PlanningProjectionErrorTrace::ZeroIncomePeriod {
-                    source: BuildingId(6),
-                },
             ),
         ];
         for (error, expected) in projection_cases {
@@ -4136,29 +3756,6 @@ mod tests {
                     error
                 )),
                 AllocationCoordinatorFailureReasonTrace::Projection { error: expected }
-            );
-        }
-    }
-
-    #[test]
-    fn connected_commit_errors_remain_distinguishable() {
-        let commit_cases = [
-            (
-                ConnectedProposalCommitError::StalePlanner,
-                ConnectedProposalCommitErrorTrace::StalePlanner,
-            ),
-            (
-                ConnectedProposalCommitError::ExistingAssault,
-                ConnectedProposalCommitErrorTrace::ExistingAssault,
-            ),
-        ];
-        for (error, expected) in commit_cases {
-            assert_eq!(ConnectedProposalCommitErrorTrace::from(error), expected);
-            assert_eq!(
-                AllocationCoordinatorFailureReasonTrace::from(error),
-                AllocationCoordinatorFailureReasonTrace::ConnectedProposalCommit {
-                    error: expected,
-                }
             );
         }
     }
@@ -4193,7 +3790,7 @@ mod tests {
         let capital_assignments = (0..ALLOCATION_TRACE_ENTRY_LIMIT + 2)
             .map(|sequence| CapitalFundingAssignmentTrace {
                 owner: ClaimOwnerTrace::Obligation {
-                    class: ObligationClassTrace::PersistentPlan,
+                    class: ObligationClass::PersistentPlan,
                     accepted_at: u64::try_from(sequence).unwrap(),
                     key: ObligationKeyTrace::OpeningCore {
                         sequence: u16::try_from(sequence).unwrap(),
@@ -4255,7 +3852,6 @@ mod tests {
                     0,
                 );
                 crate::allocation::defense_investment_proposal(proposal)
-                    .expect("the exact defense claim is valid")
             })
             .collect::<Vec<_>>();
         let accepted = proposals
@@ -4304,18 +3900,18 @@ mod tests {
         };
         let offense = ProposalKey::ConnectedOffenseMinimum(offense_key);
         let case = ProposalCaseTrace {
-            urgency: UrgencyTrace::Timely,
-            confidence: ConfidenceTrace::Current,
-            value: StrategicValueTrace::Material,
-            time_to_impact: TimeToImpactTrace::Near,
-            safety: ExecutionSafetyTrace::Managed,
+            urgency: Urgency::Timely,
+            confidence: Confidence::Current,
+            value: StrategicValue::Material,
+            time_to_impact: TimeToImpact::Near,
+            safety: ExecutionSafety::Managed,
         };
         let mut trace = AllocationTrace {
             proposals: BoundedTraceEntries::from_vec(vec![
                 AllocationProposalTrace {
                     key: expansion.into(),
                     experience: 0,
-                    effective_value: StrategicValueTrace::Material,
+                    effective_value: StrategicValue::Material,
                     case,
                     personality_weight: None,
                     claims: AllocationClaimsTrace::default(),
@@ -4324,7 +3920,7 @@ mod tests {
                 AllocationProposalTrace {
                     key: offense.into(),
                     experience: 0,
-                    effective_value: StrategicValueTrace::Material,
+                    effective_value: StrategicValue::Material,
                     case,
                     personality_weight: None,
                     claims: AllocationClaimsTrace::default(),
@@ -4430,7 +4026,7 @@ mod tests {
             )),
             ProposalDispositionTrace::Outranked {
                 selected: BoundedTraceEntries::from_vec(vec![expansion.into()]),
-                basis: OutrankingBasisTrace::Personality,
+                basis: OutrankingBasis::Personality,
             }
         );
         assert_eq!(
@@ -4442,7 +4038,7 @@ mod tests {
             )),
             ProposalDispositionTrace::Outranked {
                 selected: BoundedTraceEntries::from_vec(vec![expansion.into()]),
-                basis: OutrankingBasisTrace::DomainPreference,
+                basis: OutrankingBasis::DomainPreference,
             }
         );
     }
@@ -4588,7 +4184,7 @@ mod tests {
         };
         trace.allocation = AllocationTrace {
             obligations: BoundedTraceEntries::from_vec(vec![AllocationObligationTrace {
-                class: ObligationClassTrace::Survival,
+                class: ObligationClass::Survival,
                 accepted_at: 8,
                 key: ObligationKeyTrace::OpeningCore { sequence: 1 },
                 claims: AllocationClaimsTrace {
@@ -4602,13 +4198,13 @@ mod tests {
                 AllocationProposalTrace {
                     key: expansion_key,
                     experience: 0,
-                    effective_value: StrategicValueTrace::Material,
+                    effective_value: StrategicValue::Material,
                     case: ProposalCaseTrace {
-                        urgency: UrgencyTrace::Timely,
-                        confidence: ConfidenceTrace::Current,
-                        value: StrategicValueTrace::Material,
-                        time_to_impact: TimeToImpactTrace::Near,
-                        safety: ExecutionSafetyTrace::Secure,
+                        urgency: Urgency::Timely,
+                        confidence: Confidence::Current,
+                        value: StrategicValue::Material,
+                        time_to_impact: TimeToImpact::Near,
+                        safety: ExecutionSafety::Secure,
                     },
                     personality_weight: Some(147),
                     claims: AllocationClaimsTrace {
@@ -4640,13 +4236,13 @@ mod tests {
                 AllocationProposalTrace {
                     key: defense_key,
                     experience: 0,
-                    effective_value: StrategicValueTrace::Material,
+                    effective_value: StrategicValue::Material,
                     case: ProposalCaseTrace {
-                        urgency: UrgencyTrace::Timely,
-                        confidence: ConfidenceTrace::Supported,
-                        value: StrategicValueTrace::Material,
-                        time_to_impact: TimeToImpactTrace::Near,
-                        safety: ExecutionSafetyTrace::Secure,
+                        urgency: Urgency::Timely,
+                        confidence: Confidence::Supported,
+                        value: StrategicValue::Material,
+                        time_to_impact: TimeToImpact::Near,
+                        safety: ExecutionSafety::Secure,
                     },
                     personality_weight: Some(91),
                     claims: AllocationClaimsTrace {
@@ -4712,7 +4308,7 @@ mod tests {
             },
         };
         trace.connected_force = ConnectedForceTrace {
-            status: ConnectedForceStatus::Recovering(ConnectedRecoveryReasonTrace::NewAirDefense),
+            status: ConnectedForceStatus::Recovering(AirRecoveryReason::NewAirDefense),
             target: Some(ConnectedTargetTrace {
                 player: PlayerId(1),
                 kind: BuildingKind::Foundry,
@@ -4777,7 +4373,7 @@ mod tests {
                     evidence: TargetEvidenceTrace::Current,
                 },
                 reason: ConnectedRejectionReasonTrace::ProtectedFunds {
-                    family: ForceFamilyTrace::Strike,
+                    family: ForceFamily::Strike,
                     required_scrap: 80,
                     available_scrap: 50,
                     deadline_shortfall: 30,

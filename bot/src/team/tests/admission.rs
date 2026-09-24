@@ -60,10 +60,7 @@ fn a_pending_team_watch_does_not_own_units_before_deployment_acceptance() {
         relief.reservations().is_empty(),
         "an unaccepted proposal owns no units"
     );
-    let accepted = relief
-        .prepare_relief_commit(proposal)
-        .unwrap()
-        .apply(&mut relief);
+    let accepted = proposal.apply(&mut relief);
     assert!(accepted.intents.is_empty());
     assert_eq!(
         relief.operation().unwrap().phase,

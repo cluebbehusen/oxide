@@ -314,8 +314,7 @@ impl CrossDomainAllocation {
                 .and_then(|variants| variants.get(marginal_depth - 1))
                 .cloned()
                 .expect("the selected context retains its exact marginal variant");
-            let claims = super::connected_marginal_claims(&marginal)
-                .expect("the selected context was already proven well formed");
+            let claims = super::connected_marginal_claims(&marginal);
             if let Some(trace) = trace.as_deref_mut() {
                 trace.record_connected_marginal_accepted(
                     key,
@@ -325,16 +324,7 @@ impl CrossDomainAllocation {
             }
         }
         let producer_lane_reservations =
-            match future_producer_lane_reservations(&capacity, result.final_producer_schedule()) {
-                Ok(reservations) => reservations,
-                Err(error) => {
-                    let error = AllocationError::ProducerReservation(error);
-                    if let Some(trace) = trace.as_deref_mut() {
-                        trace.record_error(&error);
-                    }
-                    return Err(error);
-                }
-            };
+            future_producer_lane_reservations(&capacity, result.final_producer_schedule());
         if let Some(trace) = trace {
             trace.record_result(&result);
         }
@@ -436,8 +426,7 @@ fn select_contextual_portfolio(
                         Err(ConnectedMarginalError::Conflict(_)) => continue,
                         Err(
                             ConnectedMarginalError::NoAcceptedConnectedProposal
-                            | ConnectedMarginalError::StaleVariant
-                            | ConnectedMarginalError::MalformedClaims(_),
+                            | ConnectedMarginalError::StaleVariant,
                         ) => {
                             debug_assert!(false, "a registered context must name a retained scale");
                             continue;
@@ -523,8 +512,7 @@ fn extend_connected_greedily(
             }
             Err(
                 ConnectedMarginalError::NoAcceptedConnectedProposal
-                | ConnectedMarginalError::StaleVariant
-                | ConnectedMarginalError::MalformedClaims(_),
+                | ConnectedMarginalError::StaleVariant,
             ) => {
                 debug_assert!(false, "a retained domain marginal must remain well formed");
                 break;
@@ -534,8 +522,7 @@ fn extend_connected_greedily(
     if let (false, Some(trace), Some(key), Some((marginal, conflict))) =
         (accepted_marginal, trace, connected_key, largest_rejection)
     {
-        let claims = super::connected_marginal_claims(marginal)
-            .expect("the allocator already accepted this domain's claim shape");
+        let claims = super::connected_marginal_claims(marginal);
         trace.record_connected_marginal_rejected(key, &claims, &conflict);
     }
 }
@@ -818,8 +805,8 @@ pub(crate) fn current_reserve_obligation(
     accepted_at: Tick,
     key: ObligationKey,
     amount: u32,
-) -> Result<ImportedObligation, ClaimBundleError> {
-    Ok(imported_obligation(
+) -> ImportedObligation {
+    imported_obligation(
         ObligationClass::Survival,
         accepted_at,
         key,
@@ -830,8 +817,9 @@ pub(crate) fn current_reserve_obligation(
             Vec::new(),
             Vec::new(),
             Vec::new(),
-        )?,
-    ))
+        )
+        .expect("a capital-only reserve is a valid bundle"),
+    )
 }
 
 /// Converts one exact same-think opening defense into a mandatory survival
@@ -840,10 +828,9 @@ pub(crate) fn current_reserve_obligation(
 pub(crate) fn fresh_emergency_defense_obligation(
     accepted_at: Tick,
     defense: FreshEmergencyDefense,
-) -> Result<ImportedObligation, ClaimBundleError> {
-    let site = SiteFootprint::new(defense.anchor(), defense.kind().base_stats().size)
-        .expect("building footprints are positive");
-    Ok(imported_obligation(
+) -> ImportedObligation {
+    let site = SiteFootprint::new(defense.anchor(), defense.kind().base_stats().size);
+    imported_obligation(
         ObligationClass::Survival,
         accepted_at,
         ObligationKey::EmergencyDefense {
@@ -857,8 +844,9 @@ pub(crate) fn fresh_emergency_defense_obligation(
             Vec::new(),
             vec![site],
             Vec::new(),
-        )?,
-    ))
+        )
+        .expect("one emergency builder and site form a valid bundle"),
+    )
 }
 
 /// Clamps one prioritized current-bank reserve after every claim payable on
@@ -871,14 +859,10 @@ pub(crate) fn clamped_current_reserve_obligation(
     decision_tick: Tick,
     key: ObligationKey,
     desired: u32,
-) -> Result<Option<ImportedObligation>, ClaimBundleError> {
+) -> Option<ImportedObligation> {
     let available = bank.saturating_sub(current_reserve_at(obligations, decision_tick));
     let amount = desired.min(available);
-    if amount == 0 {
-        Ok(None)
-    } else {
-        current_reserve_obligation(accepted_at, key, amount).map(Some)
-    }
+    (amount > 0).then(|| current_reserve_obligation(accepted_at, key, amount))
 }
 
 /// Claims the exact observed members of a retained owner.
@@ -1033,7 +1017,6 @@ pub(crate) fn observed_builder_obligations(
                     .find(|site| site.id == building)
                     .map(|site| {
                         SiteFootprint::new(site.anchor, site.kind.tier_stats(site.tier).size)
-                            .expect("building footprints are positive")
                     });
                 (
                     ObligationClass::PaidWork,
@@ -1071,10 +1054,7 @@ pub(crate) fn observed_builder_obligations(
                     },
                     current_cost,
                     forecast_cost,
-                    vec![
-                        SiteFootprint::new(anchor, kind.base_stats().size)
-                            .expect("building footprints are positive"),
-                    ],
+                    vec![SiteFootprint::new(anchor, kind.base_stats().size)],
                 )
             }
             BuilderObligation::Salvage(_)
@@ -1157,7 +1137,7 @@ fn builder_obligation_key(
 /// Exact claims for one validated persistent Foundry plan.
 pub(crate) fn saved_foundry_obligation(
     obligation: crate::utility::ValidatedFoundryObligation,
-) -> Result<ImportedObligation, ClaimBundleError> {
+) -> ImportedObligation {
     let current_capital = obligation.current_construction_capital();
     let forecast_capital = obligation.forecast_construction_capital();
     let ready_to_build = obligation.ready_to_build();
@@ -1168,30 +1148,33 @@ pub(crate) fn saved_foundry_obligation(
         Vec::new(),
         vec![obligation.site()],
         Vec::new(),
-    )?;
+    )
+    .expect("one saved Foundry builder and site with deferred capital form a valid bundle");
     if !ready_to_build {
-        claims = claims.with_deferrable_capital(DeferrableCapitalClaim {
-            through: obligation.forecast_deadline(),
-            amount: current_capital.saturating_add(forecast_capital),
-        })?;
+        claims = claims
+            .with_deferrable_capital(DeferrableCapitalClaim {
+                through: obligation.forecast_deadline(),
+                amount: current_capital.saturating_add(forecast_capital),
+            })
+            .expect("one saved Foundry builder and site with deferred capital form a valid bundle");
     }
-    Ok(imported_obligation(
+    imported_obligation(
         ObligationClass::PersistentPlan,
         obligation.accepted_at(),
         ObligationKey::SavedFoundry {
             anchor: obligation.anchor(),
         },
         claims,
-    ))
+    )
 }
 
 /// Converts one admitted connected package into mandatory exact claims for the
 /// next allocation pass.
 pub(crate) fn active_connected_obligation(
     obligation: &ActiveConnectedObligation,
-) -> Result<ImportedObligation, ClaimBundleError> {
+) -> ImportedObligation {
     let identity = obligation.identity();
-    Ok(imported_obligation(
+    imported_obligation(
         ObligationClass::PersistentPlan,
         obligation.accepted_at(),
         ObligationKey::ConnectedOffense {
@@ -1216,8 +1199,9 @@ pub(crate) fn active_connected_obligation(
                     )
                 })
                 .collect(),
-        )?,
-    ))
+        )
+        .expect("connected claims name canonical units"),
+    )
 }
 
 #[cfg(test)]
@@ -1305,8 +1289,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let mut allocation = CrossDomainAllocation {
             capacity: contextual_capacity(
@@ -1330,14 +1312,15 @@ mod tests {
                 )
                 .unwrap(),
             }],
-            proposals: vec![connected_investment_proposal(connected.clone()).unwrap()],
+            proposals: vec![connected_investment_proposal(connected.clone())],
             contextual_proposals: Vec::new(),
         };
         if revising {
             allocation.proposals.clear();
             let revision = connected.into_active_revision_fixture();
-            allocation
-                .import(super::super::active_connected_revision_obligation(&revision).unwrap());
+            allocation.import(super::super::active_connected_revision_obligation(
+                &revision,
+            ));
             allocation.offer(
                 super::super::active_connected_revision_investment_proposal(revision)
                     .with_minimum_residual_scrap(901),
@@ -1504,16 +1487,12 @@ mod tests {
         })
         .expect("the Foundry forecast is valid");
         let survival =
-            current_reserve_obligation(120, ObligationKey::OpeningCore { sequence: 0 }, 10)
-                .expect("the survival reserve is valid");
+            current_reserve_obligation(120, ObligationKey::OpeningCore { sequence: 0 }, 10);
         let allocation = CrossDomainAllocation {
             capacity: AllocationCapacity::fixture(resources),
             current_scrap: cost - 17,
             obligations: vec![survival],
-            proposals: vec![
-                foundry_investment_proposal(proposal)
-                    .expect("the Foundry proposal has valid exact claims"),
-            ],
+            proposals: vec![foundry_investment_proposal(proposal)],
             contextual_proposals: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
@@ -1810,11 +1789,8 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
-        let proposal = connected_investment_proposal(connected)
-            .expect("the connected proposal has exact production claims");
+        let proposal = connected_investment_proposal(connected);
 
         let mut control = CrossDomainAllocation::new(&resources, horizon, 12)
             .expect("the resource forecast is valid");
@@ -1861,8 +1837,6 @@ mod tests {
                 ConnectedOffenseClaims::fixture(vec![first], Vec::new()),
                 ConnectedOffenseClaims::fixture(vec![first, blocked], Vec::new()),
             ],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let mut expected = proposal.clone();
         assert!(expected.select_marginal(&proposal.marginal_variants()[0]));
@@ -1872,10 +1846,7 @@ mod tests {
             capacity: capacity_with_units(vec![first, blocked]),
             current_scrap: 0,
             obligations: vec![obligation],
-            proposals: vec![
-                connected_investment_proposal(proposal)
-                    .expect("the connected proposal has valid claims"),
-            ],
+            proposals: vec![connected_investment_proposal(proposal)],
             contextual_proposals: Vec::new(),
         };
         let mut trace = AllocationTrace::default();
@@ -1919,8 +1890,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let common_case = ProposalCase::from(connected_case());
         let mut allocation = CrossDomainAllocation {
@@ -1938,7 +1907,6 @@ mod tests {
             obligations: Vec::new(),
             proposals: vec![
                 connected_investment_proposal(connected)
-                    .expect("the connected minimum has valid exact claims")
                     .with_voluntary_scrap_guard(UnitKind::Sentinel.stats().cost),
             ],
             contextual_proposals: Vec::new(),
@@ -2045,8 +2013,6 @@ mod tests {
                     vec![airworks],
                 )],
             )],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let expected_marginal = connected.marginal_variants()[0].clone();
         let common_case = ProposalCase::from(connected_case());
@@ -2062,10 +2028,7 @@ mod tests {
             ),
             current_scrap: 900,
             obligations: Vec::new(),
-            proposals: vec![
-                connected_investment_proposal(connected.clone())
-                    .expect("the connected ladder has valid exact claims"),
-            ],
+            proposals: vec![connected_investment_proposal(connected.clone())],
             contextual_proposals: Vec::new(),
         };
         let standing = || standing_proposal(UnitKind::Lancer, crucible, common_case);
@@ -2181,8 +2144,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let capacity = contextual_capacity(
             foundry_cost,
@@ -2192,10 +2153,8 @@ mod tests {
         );
         let proposals = || {
             vec![
-                foundry_investment_proposal(foundry.clone())
-                    .expect("the Foundry fixture has valid exact claims"),
-                connected_investment_proposal(connected.clone())
-                    .expect("the connected fixture has valid exact claims"),
+                foundry_investment_proposal(foundry.clone()),
+                connected_investment_proposal(connected.clone()),
             ]
         };
         let control = CrossDomainAllocation {
@@ -2344,7 +2303,6 @@ mod tests {
             ObligationKey::OpeningCore { sequence: 3 },
             50,
         )
-        .expect("the reserve remains structurally valid")
         .expect("ten current scrap remain after the due job");
 
         assert_eq!(reserve.accepted_at, 100);
@@ -2392,8 +2350,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: 0,
@@ -2430,10 +2386,7 @@ mod tests {
             capacity: AllocationCapacity::fixture(resources),
             current_scrap: 0,
             obligations: vec![saved_foundry],
-            proposals: vec![
-                connected_investment_proposal(connected)
-                    .expect("the connected proposal has valid exact claims"),
-            ],
+            proposals: vec![connected_investment_proposal(connected)],
             contextual_proposals: Vec::new(),
         };
 
@@ -2467,8 +2420,6 @@ mod tests {
                 ],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: kind.stats().cost.saturating_mul(2),
@@ -2499,10 +2450,7 @@ mod tests {
             capacity: AllocationCapacity::fixture(resources),
             current_scrap: kind.stats().cost.saturating_mul(2),
             obligations: Vec::new(),
-            proposals: vec![
-                connected_investment_proposal(proposal.clone())
-                    .expect("the connected package has valid claims"),
-            ],
+            proposals: vec![connected_investment_proposal(proposal.clone())],
             contextual_proposals: Vec::new(),
         };
         let settlement = allocation
@@ -2560,7 +2508,6 @@ mod tests {
             ObligationKey::OpeningCore { sequence: 0 },
             bank,
         )
-        .expect("the current survival reserve is valid")
         .expect("the future job must not hide the current bank");
         assert_eq!(survival.claims.current_scrap(), bank);
         obligations.push(survival);

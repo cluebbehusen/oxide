@@ -22,26 +22,20 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let operation = lift.operation().unwrap().clone();
         assert_eq!(operation.started_at, 24);
         let enqueued_at = 72;
-        lift.prepare_producer_binding(
-            operation.started_at,
-            operation.deadline,
-            vec![LiftProducerAssignment::new(
-                0,
-                BuildingId(2),
-                UnitKind::Skyhook,
-                LiftProducerTiming::new(
-                    enqueued_at,
-                    enqueued_at,
-                    enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                    operation.deadline,
-                ),
-                LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-            )],
-        )
-        .unwrap()
-        .apply(&mut lift);
+        lift.bind_producers(vec![LiftProducerAssignment::new(
+            0,
+            BuildingId(2),
+            UnitKind::Skyhook,
+            LiftProducerTiming::new(
+                enqueued_at,
+                enqueued_at,
+                enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                operation.deadline,
+            ),
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        )]);
         let active = lift.active_production_obligation().unwrap();
-        let production = active_lift_production_obligation(&active).unwrap();
+        let production = active_lift_production_obligation(&active);
         let builder = UnitId(200);
         observation.my_units.push(owned_unit(
             builder.0,
@@ -57,25 +51,23 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         observation.scrap = cost;
         let resources = ResourceSnapshot::from_observation(&observation);
         let mut policy = UtilityPolicy::new();
-        policy
-            .prepare_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    TilePos::new(10, 22),
-                    builder,
-                    cost,
-                    0,
-                    0,
-                    operation.deadline,
-                    foundry_case(),
-                ),
-                foundry_accepted_at,
-            )
-            .unwrap()
-            .apply(&mut policy, &mut Vec::new());
+        policy.commit_adjudicated_foundry(
+            FreshFoundryProposal::fixture(
+                TilePos::new(10, 22),
+                builder,
+                cost,
+                0,
+                0,
+                operation.deadline,
+                foundry_case(),
+            ),
+            foundry_accepted_at,
+            &mut Vec::new(),
+        );
         let foundry = policy
             .validated_foundry_obligation(&observation, &resources, true, cost)
             .unwrap();
-        let protected = saved_foundry_obligation(foundry).unwrap();
+        let protected = saved_foundry_obligation(foundry);
         let mut proof = CrossDomainAllocation::new(&resources, operation.deadline, 12).unwrap();
         proof.import(protected.clone());
         proof.import(production.clone());
@@ -97,8 +89,6 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
             coordinator_failure: None,
             active_connected: None,
             active_lift: Some(active.clone()),
-            invalid_active_connected: false,
-            invalid_active_lift: false,
             retained_air_claims: None,
             island_preparation: None,
         };
@@ -159,26 +149,19 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
 fn lost_lift_payload_discards_unpaid_work_before_committing_other_owners() {
     let (mut observation, mut lift, _) = active_lift_fixture();
     let operation = lift.operation().unwrap();
-    let accepted_at = operation.started_at;
     let deadline = operation.deadline;
-    lift.prepare_producer_binding(
-        accepted_at,
-        deadline,
-        vec![LiftProducerAssignment::new(
-            0,
-            BuildingId(2),
-            UnitKind::Skyhook,
-            LiftProducerTiming::new(
-                24,
-                24,
-                24 + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                deadline,
-            ),
-            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-        )],
-    )
-    .unwrap()
-    .apply(&mut lift);
+    lift.bind_producers(vec![LiftProducerAssignment::new(
+        0,
+        BuildingId(2),
+        UnitKind::Skyhook,
+        LiftProducerTiming::new(
+            24,
+            24,
+            24 + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+            deadline,
+        ),
+        LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+    )]);
     observation.tick = 12;
     observation
         .my_units
@@ -207,27 +190,21 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     observation.scrap = 300;
     let operation = lift.operation().unwrap().clone();
     let enqueued_at = 24;
-    lift.prepare_producer_binding(
-        operation.started_at,
-        operation.deadline,
-        vec![LiftProducerAssignment::new(
-            0,
-            BuildingId(2),
-            UnitKind::Skyhook,
-            LiftProducerTiming::new(
-                enqueued_at,
-                enqueued_at,
-                enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                operation.deadline,
-            ),
-            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
-        )],
-    )
-    .unwrap()
-    .apply(&mut lift);
+    lift.bind_producers(vec![LiftProducerAssignment::new(
+        0,
+        BuildingId(2),
+        UnitKind::Skyhook,
+        LiftProducerTiming::new(
+            enqueued_at,
+            enqueued_at,
+            enqueued_at + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+            operation.deadline,
+        ),
+        LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+    )]);
     let members = lift.operation().unwrap().payload.clone();
     let active = lift.active_production_obligation().unwrap();
-    let production = active_lift_production_obligation(&active).unwrap();
+    let production = active_lift_production_obligation(&active);
     let protected = imported_obligation(
         ObligationClass::PersistentPlan,
         0,
@@ -250,8 +227,6 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
         coordinator_failure: None,
         active_connected: None,
         active_lift: Some(active),
-        invalid_active_connected: false,
-        invalid_active_lift: false,
         retained_air_claims: None,
         island_preparation: None,
     };
@@ -427,10 +402,7 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
     let proposal = current_connected_proposal(&observation);
     let fixed_deadline = proposal.deadline();
     let mut planner = StrategicPlanner::new();
-    planner
-        .prepare_connected_commit(proposal)
-        .unwrap()
-        .apply(&mut planner);
+    planner.commit_connected(proposal);
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
@@ -438,21 +410,19 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
         .cost;
     let foundry_anchor = TilePos::new(15, 14);
     let mut policy = UtilityPolicy::new();
-    policy
-        .prepare_adjudicated_foundry(
-            FreshFoundryProposal::fixture(
-                foundry_anchor,
-                builder,
-                foundry_cost,
-                0,
-                0,
-                fixed_deadline,
-                foundry_case(),
-            ),
-            observation.tick,
-        )
-        .expect("the fixture installs one exact saved Foundry")
-        .apply(&mut policy, &mut Vec::new());
+    policy.commit_adjudicated_foundry(
+        FreshFoundryProposal::fixture(
+            foundry_anchor,
+            builder,
+            foundry_cost,
+            0,
+            0,
+            fixed_deadline,
+            foundry_case(),
+        ),
+        observation.tick,
+        &mut Vec::new(),
+    );
 
     observation.tick = observation.tick.saturating_add(12);
     let mut strategy = planner;
@@ -507,8 +477,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         newer_key,
         ClaimBundle::new(0, vec![], vec![], vec![], vec![], vec![job.clone(), job]).unwrap(),
     );
-    let active_import = active_connected_obligation(&active)
-        .expect("the older connected obligation adapts exactly");
+    let active_import = active_connected_obligation(&active);
     let active_owner = active_import.owner();
     let mut proof = CrossDomainAllocation::new(&resources, active.deadline(), 12)
         .expect("the fixture horizon is valid");
@@ -532,8 +501,6 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         coordinator_failure: None,
         active_connected: Some(active.clone()),
         active_lift: None,
-        invalid_active_connected: false,
-        invalid_active_lift: false,
         retained_air_claims: None,
         island_preparation: None,
     };
@@ -636,21 +603,19 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     let mut policy = UtilityPolicy::new();
     policy.planning = crate::planning::PlanningWork::with_allowance(allowance);
     let mut initial_intents = Vec::new();
-    policy
-        .prepare_adjudicated_foundry(
-            FreshFoundryProposal::fixture(
-                foundry_anchor,
-                builder,
-                0,
-                foundry_cost,
-                0,
-                forecast_deadline,
-                foundry_case(),
-            ),
-            observation.tick,
-        )
-        .expect("the forecast-backed fixture installs one exact saved Foundry")
-        .apply(&mut policy, &mut initial_intents);
+    policy.commit_adjudicated_foundry(
+        FreshFoundryProposal::fixture(
+            foundry_anchor,
+            builder,
+            0,
+            foundry_cost,
+            0,
+            forecast_deadline,
+            foundry_case(),
+        ),
+        observation.tick,
+        &mut initial_intents,
+    );
     assert!(
         initial_intents.is_empty(),
         "forecast capital cannot dispatch the Foundry at admission"
@@ -698,10 +663,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
 
     let mut prepared = prepared(&observation, None);
     prepared.resources = resources;
-    prepared.obligations = vec![
-        saved_foundry_obligation(saved)
-            .expect("the ready saved Foundry has exact mandatory claims"),
-    ];
+    prepared.obligations = vec![saved_foundry_obligation(saved)];
     prepared.saved_foundry = Some(saved);
     prepared.standing_force = StandingForcePreparation::Unconditional(vec![standing]);
     prepared.allocation_horizon = forecast_deadline.max(standing_ready_before);
@@ -755,21 +717,19 @@ fn funding_blocked_saved_foundry_without_capital_still_commits() {
         .cost;
     let forecast_deadline = observation.tick.saturating_add(120);
     let mut policy = UtilityPolicy::new();
-    policy
-        .prepare_adjudicated_foundry(
-            FreshFoundryProposal::fixture(
-                foundry_anchor,
-                builder,
-                0,
-                foundry_cost,
-                0,
-                forecast_deadline,
-                foundry_case(),
-            ),
-            observation.tick,
-        )
-        .expect("the forecast-backed fixture installs one exact saved Foundry")
-        .apply(&mut policy, &mut Vec::new());
+    policy.commit_adjudicated_foundry(
+        FreshFoundryProposal::fixture(
+            foundry_anchor,
+            builder,
+            0,
+            foundry_cost,
+            0,
+            forecast_deadline,
+            foundry_case(),
+        ),
+        observation.tick,
+        &mut Vec::new(),
+    );
 
     observation.tick = forecast_deadline.saturating_add(12);
     let resources = ResourceSnapshot::from_observation(&observation);
@@ -796,8 +756,7 @@ fn funding_blocked_saved_foundry_without_capital_still_commits() {
 
     let mut prepared = prepared(&observation, None);
     prepared.resources = resources;
-    prepared.obligations =
-        vec![saved_foundry_obligation(saved).expect("the blocked saved Foundry has exact claims")];
+    prepared.obligations = vec![saved_foundry_obligation(saved)];
     prepared.saved_foundry = Some(saved);
     prepared.allocation_horizon = observation
         .tick

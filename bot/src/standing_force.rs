@@ -17,7 +17,7 @@ use super::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StandingForceKey, StandingForceServiceKey,
     StrategicValue, TimeToImpact, Urgency,
 };
-use super::executive::{full_ground_strength, ground_strength, weapon_burst_dps100};
+use super::executive::{full_ground_strength, ground_strength, weapon_dps100};
 use super::intelligence::{ContactEvidence, StrategicIntelligence};
 #[cfg(test)]
 use super::navigation::commands::RouteProjection;
@@ -187,7 +187,6 @@ pub(crate) struct StandingForceProposal {
     personality_emphasis: u8,
     case: ProposalCase,
     eligible_producers: Vec<BuildingId>,
-    minimum_residual_scrap: u32,
     funding: StandingForceFunding,
     pub(crate) raid: Option<super::raid::RaidProcurementRequest>,
 }
@@ -353,11 +352,6 @@ impl StandingForceProposal {
         &self.eligible_producers
     }
 
-    /// Current bank that must survive this immediate purchase.
-    pub(crate) const fn minimum_residual_scrap(&self) -> u32 {
-        self.minimum_residual_scrap
-    }
-
     /// Bounded future purchase that competes in shared allocation without
     /// making its future provider an enqueue-now command.
     pub(crate) const fn accumulation(&self) -> Option<(Tick, u32, u32)> {
@@ -369,12 +363,6 @@ impl StandingForceProposal {
                 forecast_scrap,
             } => Some((through, current_scrap, forecast_scrap)),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn with_minimum_residual_scrap(mut self, amount: u32) -> Self {
-        self.minimum_residual_scrap = amount;
-        self
     }
 
     #[cfg(test)]
@@ -410,7 +398,6 @@ impl StandingForceProposal {
             personality_emphasis,
             case,
             eligible_producers,
-            minimum_residual_scrap: 0,
             funding: StandingForceFunding::Immediate,
             raid: None,
         }
@@ -612,13 +599,8 @@ impl ComponentInventory {
         roster: &InventoryRoster,
         routing: &mut StandingServices<'_>,
     ) -> Inventory {
-        self.ensure(domain, roster, routing);
+        let members = self.ensure(domain, roster, routing);
         let component_ids = routing.navigation.components_for_targets(domain, targets);
-        let members = match domain {
-            Domain::Ground => self.ground.as_ref(),
-            Domain::Air => self.air.as_ref(),
-        }
-        .expect("the requested movement domain was indexed");
         let mut total = Inventory::default();
         for member in members {
             if member
@@ -637,34 +619,29 @@ impl ComponentInventory {
         domain: Domain,
         roster: &InventoryRoster,
         routing: &mut StandingServices<'_>,
-    ) {
-        let already_indexed = match domain {
-            Domain::Ground => self.ground.is_some(),
-            Domain::Air => self.air.is_some(),
+    ) -> &[ComponentInventoryMember] {
+        let slot = match domain {
+            Domain::Ground => &mut self.ground,
+            Domain::Air => &mut self.air,
         };
-        if already_indexed {
-            return;
-        }
-
-        let mut members = Vec::new();
-        for member in &roster.members {
-            if member.origin.domain() != domain {
-                continue;
+        slot.get_or_insert_with(|| {
+            let mut members = Vec::new();
+            for member in &roster.members {
+                if member.origin.domain() != domain {
+                    continue;
+                }
+                let components = routing.inventory_origin_components(*member);
+                if components.is_empty() {
+                    continue;
+                }
+                members.push(ComponentInventoryMember {
+                    kind: member.kind,
+                    hp: member.hp,
+                    components,
+                });
             }
-            let components = routing.inventory_origin_components(*member);
-            if components.is_empty() {
-                continue;
-            }
-            members.push(ComponentInventoryMember {
-                kind: member.kind,
-                hp: member.hp,
-                components,
-            });
-        }
-        match domain {
-            Domain::Ground => self.ground = Some(members),
-            Domain::Air => self.air = Some(members),
-        }
+            members
+        })
     }
 }
 
@@ -1173,21 +1150,15 @@ pub(crate) fn derive_standing_force_with_demand(
         let Some(service) = projection.targets.iter().copied().min() else {
             continue;
         };
-        let unmet = resources
-            .current_scrap()
-            .amount()
-            .saturating_add(
-                resources
-                    .forecast()
-                    .income_through(
-                        obs.tick
-                            .saturating_add(super::strategy::connected_preparation_horizon()),
-                    )
-                    .amount(),
-            )
-            .checked_div(UnitKind::Sentinel.stats().cost.max(1))
-            .unwrap_or(0)
-            .max(1);
+        let unmet = resources.current_scrap().amount().saturating_add(
+            resources
+                .forecast()
+                .income_through(
+                    obs.tick
+                        .saturating_add(super::strategy::connected_preparation_horizon()),
+                )
+                .amount(),
+        ) / UnitKind::Sentinel.stats().cost.max(1).max(1);
         for role in [Role::AirGround, Role::Bomber] {
             routing.capability_demands.push(CapabilityDemand {
                 kind: role.unit_for(obs.faction),
@@ -1237,7 +1208,7 @@ pub(crate) fn derive_standing_force_with_demand(
     });
     let proposals = alternatives
         .into_iter()
-        .map(|candidate| StandingForceProposal::from_candidate(candidate, 0))
+        .map(StandingForceProposal::from_candidate)
         .collect();
     (proposals, routing.capability_demands)
 }
@@ -1252,12 +1223,8 @@ fn force_projection_candidates(
 ) -> impl Iterator<Item = DemandCandidate> {
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel).max(1);
     let lancer_strength = full_ground_strength(UnitKind::Lancer).max(1);
-    let affordable_depth = resources
-        .current_scrap()
-        .amount()
-        .checked_div(UnitKind::Sentinel.stats().cost.max(1))
-        .unwrap_or(0)
-        .max(1);
+    let affordable_depth =
+        resources.current_scrap().amount() / UnitKind::Sentinel.stats().cost.max(1).max(1);
     let case = ProposalCase {
         urgency: Urgency::Developmental,
         confidence: Confidence::Prior,
@@ -1352,13 +1319,12 @@ impl StandingForceProposal {
                 safety: ExecutionSafety::Managed,
             },
             eligible_producers: request.eligible_producers.clone(),
-            minimum_residual_scrap: 0,
             funding: StandingForceFunding::Immediate,
             raid: Some(request),
         }
     }
 
-    fn from_candidate(candidate: DemandCandidate, minimum_residual_scrap: u32) -> Self {
+    fn from_candidate(candidate: DemandCandidate) -> Self {
         Self {
             observed_at: candidate.observed_at,
             ready_before: candidate.ready_before,
@@ -1369,7 +1335,6 @@ impl StandingForceProposal {
             personality_emphasis: candidate.personality,
             case: candidate.case,
             eligible_producers: candidate.eligible_producers,
-            minimum_residual_scrap,
             funding: candidate.funding,
             raid: None,
         }
@@ -1403,14 +1368,8 @@ fn threat_summary(now: Tick, intelligence: &StrategicIntelligence) -> ThreatSumm
     for contact in intelligence.buildings() {
         if contact.built && contact.kind.tier_stats(contact.tier).can_fight() {
             let stats = contact.kind.tier_stats(contact.tier);
-            let strength = u64::from(contact.hp).saturating_mul(
-                stats
-                    .weapons
-                    .iter()
-                    .filter(|weapon| weapon.targets.covers(Domain::Ground))
-                    .map(weapon_burst_dps100)
-                    .sum(),
-            );
+            let strength =
+                u64::from(contact.hp).saturating_mul(weapon_dps100(stats.weapons, Domain::Ground));
             summary
                 .defenses
                 .add(contact.evidence, contact.confidence_at(now), strength);
@@ -1420,14 +1379,7 @@ fn threat_summary(now: Tick, intelligence: &StrategicIntelligence) -> ThreatSumm
 }
 
 fn combat_strength(kind: UnitKind, hp: u32, target: Domain) -> u64 {
-    u64::from(hp).saturating_mul(
-        kind.stats()
-            .weapons
-            .iter()
-            .filter(|weapon| weapon.targets.covers(target))
-            .map(weapon_burst_dps100)
-            .sum(),
-    )
+    u64::from(hp).saturating_mul(weapon_dps100(kind.stats().weapons, target))
 }
 
 fn strength_equivalents(missing: u64, sentinel_strength: u64) -> u32 {
@@ -1460,10 +1412,8 @@ fn line_candidates(
         |kind| {
             let full = full_ground_strength(kind);
             let useful = useful_provider_capacity(full, missing_strength, basis.reason);
-            let strength_value = u128::from(useful)
-                .saturating_mul(1_000)
-                .checked_div(u128::from(kind.stats().cost.max(1)))
-                .unwrap_or(0);
+            let strength_value =
+                u128::from(useful).saturating_mul(1_000) / u128::from(kind.stats().cost.max(1));
             if needs_screen_body {
                 strength_value
                     .saturating_add(1_000_000_u128 / u128::from(kind.stats().train_ticks.max(1)))
@@ -1610,7 +1560,7 @@ fn candidates_for_kinds(
             provider_value: usefulness(kind),
         });
         let Some((eligible_producers, ready_before)) =
-            eligible_producers(obs, resources, kind, routing, targets)
+            eligible_producers(resources, kind, routing, targets)
         else {
             continue;
         };
@@ -1640,7 +1590,6 @@ fn candidates_for_kinds(
 }
 
 fn eligible_producers(
-    _obs: &Observation,
     resources: &ResourceSnapshot,
     kind: UnitKind,
     routing: &mut StandingServices<'_>,
@@ -2036,14 +1985,7 @@ fn hostile_defense_demands(now: Tick, intelligence: &StrategicIntelligence) -> V
                 StandingGroundTarget::footprint(contact.anchor, stats.size),
                 contact.evidence,
                 contact.confidence_at(now),
-                u64::from(contact.hp).saturating_mul(
-                    stats
-                        .weapons
-                        .iter()
-                        .filter(|weapon| weapon.targets.covers(Domain::Ground))
-                        .map(weapon_burst_dps100)
-                        .sum(),
-                ),
+                u64::from(contact.hp).saturating_mul(weapon_dps100(stats.weapons, Domain::Ground)),
             )
         })
         .collect()
@@ -3209,16 +3151,11 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let resources = ResourceSnapshot::from_observation(&obs);
         let mut allocation = CrossDomainAllocation::new(&resources, deadline, 12)
             .expect("the two producer lanes have a valid bounded forecast");
-        allocation.offer(
-            connected_investment_proposal(connected)
-                .expect("the connected package has exact claims"),
-        );
+        allocation.offer(connected_investment_proposal(connected));
         for proposal in standing_force_investment_proposals(lancers)
             .expect("the route-local standing alternatives have exact claims")
         {

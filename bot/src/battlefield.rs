@@ -1,8 +1,8 @@
 //! Spatially grouped observations and consequential uncertainty, never hidden tracks.
 
 use super::difficulty::DifficultyTuning;
-use super::executive::{Army, ground_strength, weapon_burst_dps100};
-use super::observation::{BuildingObs, Observation, UnitObs};
+use super::executive::{Army, ground_strength, strength_vs};
+use super::observation::{BuildingObs, Observation};
 use crate::query_work::QueryPurpose;
 use chassis::Tick;
 use chassis::grid::TilePos;
@@ -143,7 +143,6 @@ pub struct BattlefieldAssessment {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Battlefield {
-    map: (i32, i32),
     tracks: BTreeMap<UnitId, Motion>,
     assessment: BattlefieldAssessment,
     observed_at: Option<Tick>,
@@ -157,10 +156,6 @@ impl Battlefield {
         tuning: DifficultyTuning,
         public_map: Option<&super::briefing::PublicMapBriefing>,
     ) {
-        if self.map != (obs.map_width, obs.map_height) {
-            *self = Self::default();
-            self.map = (obs.map_width, obs.map_height);
-        }
         if self.observed_at.is_some_and(|tick| tick >= obs.tick) {
             return;
         }
@@ -211,7 +206,7 @@ impl Battlefield {
                 .saturating_add(ground_strength(unit.kind, unit.hp));
             bin.air_strength = bin
                 .air_strength
-                .saturating_add(strength_against(unit, Domain::Air));
+                .saturating_add(strength_vs(unit, Domain::Air));
         }
         let assets: Vec<_> = obs
             .my_buildings
@@ -395,7 +390,7 @@ impl Battlefield {
             providers.sort_unstable_by_key(|unit| unit.id);
             for unit in providers {
                 let ground = ground_strength(unit.kind, unit.hp);
-                let air = strength_against(unit, Domain::Air);
+                let air = strength_vs(unit, Domain::Air);
                 if (demand.ground == 0 || ground == 0) && (demand.air == 0 || air == 0) {
                     continue;
                 }
@@ -563,18 +558,6 @@ fn distance_to_building(tile: TilePos, building: &BuildingObs) -> i32 {
             .clamp(building.anchor.y, building.anchor.y + height - 1),
     );
     tile.chebyshev(closest)
-}
-
-fn strength_against(unit: &UnitObs, domain: Domain) -> u64 {
-    u64::from(unit.hp)
-        * unit
-            .kind
-            .stats()
-            .weapons
-            .iter()
-            .filter(|weapon| weapon.targets.covers(domain))
-            .map(weapon_burst_dps100)
-            .sum::<u64>()
 }
 
 #[cfg(test)]

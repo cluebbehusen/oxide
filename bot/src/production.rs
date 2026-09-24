@@ -235,8 +235,7 @@ mod tests {
         let reservations = ProducerLaneReservations::from_jobs(
             &resources,
             [job(0, 0), job(0, ticks), job(3 * ticks, 3 * ticks)],
-        )
-        .unwrap();
+        );
         let train = Intent::TrainAt {
             building: BuildingId(3),
             kind: UnitKind::Sentinel,

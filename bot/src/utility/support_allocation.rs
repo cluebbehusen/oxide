@@ -9,26 +9,6 @@ use crate::trace::{RepairProgramTrace, SupportLifecycleReason, SupportLifecycleT
 use chassis::Tick;
 use oxide_sim::ids::Target;
 
-pub(crate) struct RepairCommit(RepairAssignment);
-
-impl RepairCommit {
-    pub(crate) fn apply(self, policy: &mut UtilityPolicy, intents: &mut Vec<Intent>) {
-        let assignment = self.0;
-        intents.push(assignment.intent());
-        policy
-            .state
-            .support_work
-            .lifecycle
-            .push(assignment.lifecycle(assignment.accepted_at, SupportLifecycleReason::Accepted));
-        policy.state.support_work.repairs.push(assignment);
-        policy
-            .state
-            .support_work
-            .repairs
-            .sort_by_key(|repair| repair.key);
-    }
-}
-
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -329,9 +309,7 @@ impl UtilityPolicy {
             .cloned()
             .unwrap_or_else(|| panic!("expected {worker:?} -> {patient:?}; candidates {candidates:?}; workers {:?}; unavailable {unavailable:?}", obs.my_units));
         assert!(proposal.debit <= obs.scrap);
-        self.prepare_repair_assignment(proposal, obs)
-            .expect("the exact proposal is admissible")
-            .apply(self, intents);
+        self.commit_repair_assignment(proposal, intents);
     }
 
     pub(super) fn stop_unfunded_repairs(&self, obs: &Observation, intents: &mut Vec<Intent>) {
@@ -697,49 +675,21 @@ impl UtilityPolicy {
         self.state.support_work.repairs = renewals;
     }
 
-    pub(crate) fn prepare_repair_assignment(
-        &self,
+    pub(crate) fn commit_repair_assignment(
+        &mut self,
         assignment: RepairAssignment,
-        obs: &Observation,
-    ) -> Option<RepairCommit> {
-        if assignment.accepted_at != obs.tick
-            || assignment.funded_until <= obs.tick
-            || self.state.support_work.repairs.iter().any(|work| {
-                work.key.worker == assignment.key.worker
-                    || work.key.patient == assignment.key.patient
-            })
-            || !obs.my_units.iter().any(|worker| {
-                worker.id == assignment.key.worker
-                    && worker.hp > 0
-                    && worker.idle
-                    && worker.player == obs.me
-                    && !obs.my_queued_units.contains(&worker.id)
-                    && match assignment.key.patient {
-                        Target::Unit(id) => {
-                            worker.kind.stats().welder
-                                && id != worker.id
-                                && obs.my_units.iter().any(|patient| {
-                                    patient.id == id
-                                        && patient.hp > 0
-                                        && patient.hp < patient.kind.stats().max_hp
-                                        && patient.body_domain() == Domain::Ground
-                                })
-                        }
-                        Target::Building(id) => {
-                            worker.kind.stats().harvest.is_some()
-                                && obs.my_buildings.iter().any(|patient| {
-                                    patient.id == id
-                                        && patient.built
-                                        && patient.hp > 0
-                                        && patient.hp < patient.kind.tier_stats(patient.tier).max_hp
-                                })
-                        }
-                    }
-            })
-        {
-            return None;
-        }
-        Some(RepairCommit(assignment))
+        intents: &mut Vec<Intent>,
+    ) {
+        intents.push(assignment.intent());
+        self.state
+            .support_work
+            .lifecycle
+            .push(assignment.lifecycle(assignment.accepted_at, SupportLifecycleReason::Accepted));
+        self.state.support_work.repairs.push(assignment);
+        self.state
+            .support_work
+            .repairs
+            .sort_by_key(|repair| repair.key);
     }
 
     pub(crate) fn repair_is_funded(&self, worker: UnitId, tick: Tick) -> bool {
@@ -1149,10 +1099,7 @@ mod tests {
             .remove(0);
         let key = proposal.key;
         let mut intents = Vec::new();
-        policy
-            .prepare_repair_assignment(proposal.clone(), &obs)
-            .expect("the exact proposal is admissible")
-            .apply(&mut policy, &mut intents);
+        policy.commit_repair_assignment(proposal.clone(), &mut intents);
         assert_eq!(intents, vec![proposal.intent()]);
         assert_eq!(
             policy.state.support_work.lifecycle[0].reason,
@@ -1210,10 +1157,7 @@ mod tests {
             .fresh_repair_assignments(context(&obs, &map, &profile, &resources))
             .remove(0);
         let key = proposal.key;
-        policy
-            .prepare_repair_assignment(proposal, &obs)
-            .expect("the exact proposal is admissible")
-            .apply(&mut policy, &mut Vec::new());
+        policy.commit_repair_assignment(proposal, &mut Vec::new());
         obs.my_units
             .iter_mut()
             .find(|unit| unit.id == key.worker)

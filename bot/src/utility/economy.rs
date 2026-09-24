@@ -35,7 +35,6 @@ impl UtilityPolicy {
         let has_eligible_worker = obs.my_units.iter().any(|unit| {
             unit.kind.stats().harvest.is_some()
                 && unit.idle
-                && Some(unit.id) != self.state.scout
                 && !self.state.evacuating_workers.contains(&unit.id)
         });
         let danger = (has_eligible_worker)
@@ -50,7 +49,6 @@ impl UtilityPolicy {
         for u in obs.my_units.iter().filter(|u| {
             u.kind.stats().harvest.is_some()
                 && u.idle
-                && Some(u.id) != self.state.scout
                 && !self.state.evacuating_workers.contains(&u.id)
         }) {
             if routes
@@ -382,43 +380,6 @@ impl UtilityPolicy {
         }
         let mut production =
             ImmediateProduction::new(obs, context.producer_lane_reservations, intents);
-        let voluntary_guard = context.voluntary_scrap_guard.amount(0);
-
-        // Current public-map or contested work may require air, while a failed
-        // ground look preserves the same demand durably. Keep exactly one
-        // faction scout alive or queued once an Airworks can build it.
-        if self.state.reconnaissance.observed_at.is_none()
-            && self.air_scout_needed()
-            && !self.state.solo_air_scout_suspended
-        {
-            let scout_kind = oxide_sim::stats::Role::Scout.unit_for(obs.faction);
-            let planned_scouts = intents
-                .iter()
-                .filter(|intent| {
-                    matches!(
-                        intent,
-                        Intent::TrainAt { kind, .. } if *kind == scout_kind
-                    )
-                })
-                .count();
-            let scout_count = alive(scout_kind) + queued(scout_kind) + planned_scouts;
-            let airworks = production.lowest_id(scout_kind, 2);
-            if scout_count == 0
-                && let Some(airworks) = airworks
-            {
-                let price = scout_kind.stats().cost;
-                if *budget >= price.saturating_add(voluntary_guard) {
-                    *budget -= price;
-                    intents.push(production.append(airworks));
-                } else {
-                    // Reconnaissance is the prerequisite for every
-                    // target-driven island purchase, so cheaper drips
-                    // must not spend its partial fund.
-                    *budget = (*budget).min(voluntary_guard);
-                }
-            }
-        }
-
         if harvesters < immediate_harvester_target(dials) as usize
             && *budget >= UnitKind::Harvester.stats().cost
             && let Some(foundry) = production.lowest_id(UnitKind::Harvester, SHALLOW_QUEUE_DEPTH)
@@ -564,7 +525,6 @@ mod tests {
         for unit in obs.my_units.iter().filter(|unit| {
             unit.kind.stats().harvest.is_some()
                 && unit.idle
-                && Some(unit.id) != policy.state.scout
                 && !policy.state.evacuating_workers.contains(&unit.id)
         }) {
             if !UtilityPolicy::harvester_reaches_drop_off(obs, unit, &mut routes) {
@@ -943,10 +903,7 @@ mod tests {
             ),
             "the focused fixture should expose one exact ready Foundry investment",
         );
-        policy
-            .prepare_adjudicated_foundry(proposal, obs.tick)
-            .expect("the focused fixture has no prior expansion obligation")
-            .apply(policy, &mut intents);
+        policy.commit_adjudicated_foundry(proposal, obs.tick, &mut intents);
         intents
     }
 
@@ -1128,344 +1085,6 @@ mod tests {
             true,
         );
         assert_eq!(decide(&obs), (UnitKind::Harvester.stats().cost, Vec::new()));
-    }
-
-    #[test]
-    fn strategic_airworks_prelude_prevents_a_duplicate_or_delaying_scout_order() {
-        let mut obs = completed_tree();
-        add_building(
-            &mut obs,
-            4,
-            BuildingKind::Airworks,
-            TilePos::new(8, 5),
-            true,
-        );
-        obs.scrap = 10_000;
-        let scout = oxide_sim::stats::Role::Scout.unit_for(obs.faction);
-        let airworks = BuildingId(2);
-        let second_airworks = BuildingId(4);
-        let mut intents = vec![
-            Intent::TrainAt {
-                building: airworks,
-                kind: scout,
-            },
-            Intent::TrainAt {
-                building: airworks,
-                kind: UnitKind::Buzzard,
-            },
-        ];
-        let mut policy = UtilityPolicy::new();
-        policy.state.persistent_air_scout_needed = true;
-        let dials = Dials::default();
-
-        let mut budget = obs.scrap;
-
-        policy.production_with_air_demand(
-            &dials,
-            &obs,
-            ProductionContext::new(
-                TilePos::new(1, 1),
-                ConstructionClaims {
-                    cancellations: FoundationCancellations::default(),
-                    enlisted: &[],
-                    reserved: &[],
-                },
-            ),
-            &mut budget,
-            &mut intents,
-        );
-
-        assert_eq!(
-            intents
-                .iter()
-                .filter(|intent| matches!(
-                    intent,
-                    Intent::TrainAt { building, kind }
-                        if *building == airworks && *kind == scout
-                ))
-                .count(),
-            1,
-            "the strategic replacement scout satisfies utility reconnaissance"
-        );
-        assert_eq!(
-            intents.iter().filter(|intent| matches!(intent, Intent::TrainAt { building, .. } if *building == airworks)).count(),
-            2,
-            "utility must honor the full strategic Airworks prelude: {intents:?}"
-        );
-        assert_eq!(
-            intents.iter().filter(|intent| matches!(intent, Intent::TrainAt { building, .. } if *building == second_airworks)).count(),
-            0,
-            "an active operation owns every Airworks queue until its cohort is complete: {intents:?}"
-        );
-    }
-
-    #[test]
-    fn partial_air_scout_fund_blocks_a_cheaper_worker_until_recon_can_launch() {
-        let mut obs = completed_tree();
-        obs.my_units
-            .retain(|unit| !matches!(unit.id, UnitId(6 | 7)));
-        let scout = oxide_sim::stats::Role::Scout.unit_for(obs.faction);
-        let scout_cost = scout.stats().cost;
-        assert!(UnitKind::Harvester.stats().cost < scout_cost);
-
-        let dials = Dials::default();
-
-        let decide = |public_start_demand: bool, persistent_demand: bool, scrap: u32| {
-            let mut policy = UtilityPolicy::new();
-            policy.state.public_prior_air_scout_needed = public_start_demand;
-            policy.state.persistent_air_scout_needed = persistent_demand;
-            let mut current = obs.clone();
-            current.scrap = scrap;
-            let mut budget = scrap;
-            let mut intents = Vec::new();
-            policy.production_with_air_demand(
-                &dials,
-                &current,
-                ProductionContext::new(
-                    TilePos::new(1, 1),
-                    ConstructionClaims {
-                        cancellations: FoundationCancellations::default(),
-                        enlisted: &[],
-                        reserved: &[],
-                    },
-                ),
-                &mut budget,
-                &mut intents,
-            );
-            (budget, intents)
-        };
-
-        assert_eq!(
-            decide(false, false, scout_cost - 1),
-            (
-                scout_cost - 1 - UnitKind::Harvester.stats().cost,
-                vec![Intent::TrainAt {
-                    building: BuildingId(0),
-                    kind: UnitKind::Harvester,
-                }]
-            ),
-            "without an owed flyer, the same finite bank can replace the missing worker"
-        );
-        assert_eq!(
-            decide(false, true, scout_cost - 1),
-            (0, Vec::new()),
-            "an incomplete reconnaissance fund must not leak into a cheaper worker order"
-        );
-        assert_eq!(
-            decide(false, true, scout_cost),
-            (
-                0,
-                vec![Intent::TrainAt {
-                    building: BuildingId(2),
-                    kind: scout,
-                }]
-            ),
-            "the completed fund must become exactly one faction scout at the Airworks"
-        );
-        assert_eq!(
-            decide(true, false, scout_cost),
-            decide(false, true, scout_cost),
-            "a current public-map requirement and proven ground failure share the production mechanism without sharing persistence"
-        );
-    }
-
-    #[test]
-    fn voluntary_guard_survives_scout_priority() {
-        let guard = UnitKind::Sentinel.stats().cost;
-        let scout = oxide_sim::stats::Role::Scout.unit_for(Faction::Ferrous);
-        let scout_cost = scout.stats().cost;
-        let dials = Dials::default();
-
-        let scout_decision = |scrap| {
-            let mut obs = completed_tree();
-            obs.scrap = scrap;
-            let mut policy = UtilityPolicy::new();
-            policy.state.persistent_air_scout_needed = true;
-            let mut budget = scrap;
-            let mut intents = Vec::new();
-            policy.production_with_air_demand(
-                &dials,
-                &obs,
-                ProductionContext::new(
-                    TilePos::new(1, 1),
-                    ConstructionClaims {
-                        cancellations: FoundationCancellations::default(),
-                        enlisted: &[],
-                        reserved: &[],
-                    },
-                )
-                .with_voluntary_scrap_guard(Reserve::Exact(guard)),
-                &mut budget,
-                &mut intents,
-            );
-            (budget, intents)
-        };
-        let (guarded_budget, guarded_scout) = scout_decision(scout_cost + guard - 1);
-        assert_eq!(guarded_budget, guard);
-        assert!(guarded_scout.iter().all(|intent| !matches!(
-            intent,
-            Intent::TrainAt { kind, .. } if *kind == scout
-        )));
-        let (funded_budget, funded_scout) = scout_decision(scout_cost + guard);
-        assert_eq!(funded_budget, guard);
-        assert!(funded_scout.iter().any(|intent| matches!(
-            intent,
-            Intent::TrainAt { kind, .. } if *kind == scout
-        )));
-    }
-
-    #[test]
-    fn a_lost_solo_air_scout_releases_production_until_fresh_enemy_sight() {
-        let home = TilePos::new(1, 1);
-        let enemy_base = TilePos::new(12, 4);
-        let scout_kind = oxide_sim::stats::Role::Scout.unit_for(Faction::Ferrous);
-        let scout_cost = scout_kind.stats().cost;
-        let mut obs = completed_tree();
-        obs.tick = 2_000;
-        obs.scrap = scout_cost;
-        obs.enemy_buildings.push(BuildingObs {
-            seen: false,
-            ..crate::test_support::building(
-                u32::MAX,
-                PlayerId(1),
-                BuildingKind::Foundry,
-                enemy_base,
-            )
-        });
-        let dials = Dials::default();
-
-        let produce = |policy: &mut UtilityPolicy, observation: &Observation| {
-            let mut budget = scout_cost;
-            let mut intents = Vec::new();
-            policy.production_with_air_demand(
-                &dials,
-                observation,
-                ProductionContext::new(
-                    home,
-                    ConstructionClaims {
-                        cancellations: FoundationCancellations::default(),
-                        enlisted: &[],
-                        reserved: &[],
-                    },
-                ),
-                &mut budget,
-                &mut intents,
-            );
-            (budget, intents)
-        };
-
-        let mut policy = UtilityPolicy::new();
-        let ground_scout = UnitId(3);
-        let ground_start = obs
-            .my_units
-            .iter()
-            .find(|unit| unit.id == ground_scout)
-            .expect("the fixture owns a ground scout")
-            .tile;
-        policy.state.scout = Some(ground_scout);
-        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(
-            ground_scout,
-            ground_start,
-            enemy_base,
-        ));
-        policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.state.persistent_air_scout_needed);
-        assert!(!policy.state.solo_air_scout_suspended);
-        assert_eq!(
-            produce(&mut policy, &obs),
-            (
-                0,
-                vec![Intent::TrainAt {
-                    building: BuildingId(2),
-                    kind: scout_kind,
-                }]
-            ),
-            "the first proven island reconnaissance receives one dedicated flyer"
-        );
-
-        add_unit(&mut obs, 99, scout_kind, TilePos::new(2, 5));
-        obs.tick += 1;
-        let mut dispatch = Vec::new();
-        policy.scouting(&obs, home, None, &[], &mut dispatch);
-        assert!(matches!(
-            dispatch.as_slice(),
-            [Intent::Scout {
-                unit: UnitId(99),
-                ..
-            }]
-        ));
-        assert!(policy.state.scout_dispatch.is_some());
-
-        obs.enemy_units.push(UnitObs {
-            idle: false,
-            ..crate::test_support::unit(100, PlayerId(1), UnitKind::Sentinel, TilePos::new(8, 4))
-        });
-        obs.my_units.retain(|unit| unit.id != UnitId(99));
-        obs.tick += 1;
-        let mut after_loss = Vec::new();
-        policy.scouting(&obs, home, None, &[], &mut after_loss);
-        assert!(after_loss.is_empty());
-        assert!(policy.state.solo_air_scout_suspended);
-        assert_eq!(
-            produce(&mut policy, &obs),
-            (scout_cost, Vec::new()),
-            "the dead scout must release its factory and bank instead of buying a replacement"
-        );
-
-        let mut fresh_sight_policy = policy.clone();
-        let mut fresh_sight = obs.clone();
-        fresh_sight.enemy_units.clear();
-        fresh_sight.tick += 1;
-        fresh_sight_policy.scouting(&fresh_sight, home, None, &[], &mut Vec::new());
-        assert!(fresh_sight_policy.state.solo_air_scout_suspended);
-        fresh_sight.tick += 1;
-        fresh_sight.enemy_buildings[0].seen = true;
-        fresh_sight_policy.scouting(&fresh_sight, home, None, &[], &mut Vec::new());
-        assert!(
-            !fresh_sight_policy.state.solo_air_scout_suspended,
-            "a dark-to-current enemy-base sighting may rearm recon before the timed retry"
-        );
-
-        obs.tick += 10_000;
-        policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.state.solo_air_scout_suspended);
-        assert_eq!(
-            produce(&mut policy, &obs),
-            (scout_cost, Vec::new()),
-            "enemy sight that persisted through the loss is not fresh evidence"
-        );
-
-        obs.enemy_units.clear();
-        policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.state.solo_air_scout_suspended);
-        let enemy_scout = oxide_sim::stats::Role::Scout.unit_for(Faction::Cupric);
-        obs.enemy_units.push(UnitObs {
-            idle: false,
-            ..crate::test_support::unit(101, PlayerId(1), enemy_scout, TilePos::new(8, 4))
-        });
-        obs.tick += SOLO_SCOUT_QUIET_TICKS - 1;
-        policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(policy.state.solo_air_scout_suspended);
-        assert_eq!(
-            produce(&mut policy, &obs),
-            (scout_cost, Vec::new()),
-            "a reciprocal scout cannot bypass the complete quiet window"
-        );
-
-        obs.tick += 1;
-        policy.scouting(&obs, home, None, &[], &mut Vec::new());
-        assert!(!policy.state.solo_air_scout_suspended);
-        assert_eq!(
-            produce(&mut policy, &obs),
-            (
-                0,
-                vec![Intent::TrainAt {
-                    building: BuildingId(2),
-                    kind: scout_kind,
-                }]
-            ),
-            "a complete quiet window permits exactly one later solo reconnaissance cycle"
-        );
     }
 
     fn competing_expansion_fixture() -> (TilePos, TilePos, Observation, Dials, PublicMapBriefing) {
@@ -2261,10 +1880,7 @@ mod tests {
             "the project should expose a ready exact Foundry investment",
         );
         let mut intents = Vec::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, fixture.obs.tick)
-            .expect("the fixture has no prior expansion obligation")
-            .apply(&mut policy, &mut intents);
+        policy.commit_adjudicated_foundry(proposal, fixture.obs.tick, &mut intents);
         intents = policy.think_with_intelligence(
             &fixture.dials,
             &fixture.obs,
@@ -2582,67 +2198,6 @@ mod tests {
         );
     }
     #[test]
-    fn scouting_cannot_steal_a_saved_foundry_builder() {
-        let mut fixture = saved_foundry_fixture();
-        add_unit(
-            &mut fixture.obs,
-            100,
-            UnitKind::Harvester,
-            TilePos::new(4, 4),
-        );
-        let (mut policy, saving, _) = begin_foundry_saving(&fixture);
-        let mut scout_due = fixture.obs.clone();
-        scout_due.tick = crate::difficulty::next_strategic_admission_tick(fixture.obs.tick);
-
-        let original_anchor = saving.plan.anchor;
-        let original_builder = saving.plan.builder;
-        let dials = &mut fixture.dials;
-
-        let unavailable_scouts: Vec<_> = scout_due
-            .my_units
-            .iter()
-            .filter(|unit| unit.id != saving.plan.builder)
-            .map(|unit| unit.id)
-            .collect();
-        let scout_intents = policy.think_with_intelligence(
-            dials,
-            &scout_due,
-            &[],
-            &unavailable_scouts,
-            StrategicUtilityContext::new(
-                &[],
-                &[],
-                &[],
-                &fixture.public_map,
-                Vec::new(),
-                Default::default(),
-            )
-            .with_foundry_handoff(policy.foundry_handoff()),
-        );
-        assert_ne!(policy.state.scout, Some(saving.plan.builder));
-        assert!(
-            scout_intents.iter().all(|intent| !matches!(
-                intent,
-                Intent::Scout { unit, .. } if *unit == saving.plan.builder
-            )),
-            "the scouting channel cannot dispatch the saved founder: {scout_intents:?}"
-        );
-        assert_eq!(
-            policy.state.scout_dispatch, None,
-            "the enlisted prior scout releases its old dispatch"
-        );
-        assert_eq!(
-            policy
-                .state
-                .foundry_saving
-                .as_ref()
-                .map(|current| (current.plan.anchor, current.plan.builder)),
-            Some((original_anchor, original_builder)),
-            "scouting admission must leave the frozen site and builder unchanged"
-        );
-    }
-
-    #[test]
     fn funded_foundry_commitment_emits_exact_build_then_releases_on_dispatch() {
         let fixture = saved_foundry_fixture();
         let (mut policy, saving, _) = begin_foundry_saving(&fixture);
@@ -2808,10 +2363,7 @@ mod tests {
             "bounded future income should make the exact safe investment ready",
         );
         let mut intents = Vec::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, observation.tick)
-            .expect("there is no prior expansion obligation")
-            .apply(&mut policy, &mut intents);
+        policy.commit_adjudicated_foundry(proposal, observation.tick, &mut intents);
         let accepted = policy
             .state
             .foundry_saving
@@ -2925,10 +2477,7 @@ mod tests {
             AdjudicatedFoundryCommit::Save
         );
         let mut policy = UtilityPolicy::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, accepted_observation.tick)
-            .expect("there is no prior expansion obligation")
-            .apply(&mut policy, &mut Vec::new());
+        policy.commit_adjudicated_foundry(proposal, accepted_observation.tick, &mut Vec::new());
         assert_eq!(
             policy
                 .state
@@ -3082,10 +2631,7 @@ mod tests {
         let expected_anchor = proposal.anchor();
         let expected_builder = proposal.builder();
         let mut prelude = Vec::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, fixture.obs.tick)
-            .expect("there is no prior expansion obligation")
-            .apply(&mut policy, &mut prelude);
+        policy.commit_adjudicated_foundry(proposal, fixture.obs.tick, &mut prelude);
         policy.admit_test_repair(
             &fixture.obs,
             &fixture.public_map,
@@ -3794,11 +3340,6 @@ mod tests {
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
         assert!(policy.harvest_location_contested(wreck));
-        assert_eq!(
-            policy.contested_recon_target(&obs, TilePos::new(1, 1)),
-            None,
-            "recovery reconnaissance must not enter while the incident warning is live"
-        );
         let mut intents = Vec::new();
         policy.economy(&obs, TilePos::new(1, 1), None, None, &mut intents);
         assert_eq!(
@@ -3821,12 +3362,6 @@ mod tests {
                 node: safe_fallback,
             }],
             "warning expiry in darkness must not route a replacement through the worker's death site"
-        );
-        assert!(
-            policy
-                .contested_recon_target(&obs, TilePos::new(1, 1))
-                .is_some(),
-            "the quiet expired region should now request bounded clearance"
         );
     }
 
@@ -4308,8 +3843,6 @@ mod tests {
             });
         }
         let mut policy = UtilityPolicy::new();
-        policy.state.scout = Some(UnitId(3));
-        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(3), incident, pending));
         policy.refresh_contested_harvest_regions(&obs, None, None);
         obs.tick += 1;
         obs.my_units[0].hp -= 1;
@@ -4332,7 +3865,6 @@ mod tests {
             ],
             "each worker must leave by its nearest safe edge instead of crossing deeper danger to group up"
         );
-        assert_eq!(policy.state.scout, None);
 
         intents.clear();
         policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);

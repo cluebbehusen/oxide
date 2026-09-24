@@ -66,11 +66,10 @@ pub use team::{TeamReliefExitReason, TeamReliefOperation, TeamReliefPhase};
 pub use trace::{
     AssignedForceTrace, CapabilityTrace, ChannelEffects, ChannelPhase, ChannelState, ChannelTrace,
     ChannelTraces, ConnectedForceStatus, ConnectedForceTrace, ConnectedPackageTrace,
-    ConnectedRecoveryReasonTrace, ConnectedRejectionReasonTrace, ConnectedTargetTrace,
-    CoreGateTrace, DECISION_TRACE_VERSION, DecisionControlFlow, DecisionTrace, EvidenceTrace,
-    ForceDemandsTrace, ForceFamilyTrace, GateTrace, LoweringTrace, ProviderDemandTrace,
-    RaidAttentionTrace, RejectedConnectedCandidateTrace, ScrapBudgetTrace, TargetEvidenceTrace,
-    TracedBotAct, UtilityTrace,
+    ConnectedRejectionReasonTrace, ConnectedTargetTrace, CoreGateTrace, DECISION_TRACE_VERSION,
+    DecisionControlFlow, DecisionTrace, EvidenceTrace, ForceDemandsTrace, ForceFamily, GateTrace,
+    LoweringTrace, ProviderDemandTrace, RaidAttentionTrace, RejectedConnectedCandidateTrace,
+    ScrapBudgetTrace, TargetEvidenceTrace, TracedBotAct, UtilityTrace,
 };
 pub use utility::Dials;
 

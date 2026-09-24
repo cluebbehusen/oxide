@@ -119,8 +119,7 @@ fn admit_island_beside_future_carrier(
             ready_at: timing.ready_at,
             ready_before: deadline,
         }],
-    )
-    .expect("the exact future lift schedule overlays the raw observation");
+    );
     let profile = foundry_competition_profile();
     let mut planner = StrategicPlanner::new();
     let result = planner.think_after_connected_adjudication(

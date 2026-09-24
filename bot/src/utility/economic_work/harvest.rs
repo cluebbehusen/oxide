@@ -266,7 +266,6 @@ impl HarvestGeometry<'_, '_> {
             if unit.kind.stats().harvest.is_none()
                 || unavailable.contains(&unit.id)
                 || !builder_is_free(obs, unit)
-                || policy.state.scout == Some(unit.id)
                 || policy.state.evacuating_workers.contains(&unit.id)
             {
                 continue;

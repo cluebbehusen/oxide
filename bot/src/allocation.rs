@@ -9,9 +9,8 @@ use core::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::resources::{
-    PlanningProjectionError, ProducerLaneReservationError, ProducerLaneReservations,
-    ProducerPlanningProjection, ReservedProducerJob, ResourcePlanningProjection, ResourceSnapshot,
-    SiteFootprint,
+    PlanningProjectionError, ProducerLaneReservations, ProducerPlanningProjection,
+    ReservedProducerJob, ResourcePlanningProjection, ResourceSnapshot, SiteFootprint,
 };
 use chassis::Tick;
 use chassis::grid::TilePos;
@@ -239,7 +238,8 @@ impl ProposalKey {
 
 /// How soon the observed situation calls for a decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Urgency {
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
     /// Useful long-term development with no immediate pressure.
     Developmental,
     /// A current opportunity or concern that should not drift indefinitely.
@@ -250,7 +250,8 @@ pub(crate) enum Urgency {
 
 /// Strength of the fog-honest evidence behind a proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Confidence {
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
     /// Public-map knowledge or a remembered prior supports the proposal.
     Prior,
     /// Multiple current or remembered observations support the proposal.
@@ -261,7 +262,8 @@ pub(crate) enum Confidence {
 
 /// Strategic consequence if the proposal succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum StrategicValue {
+#[serde(rename_all = "snake_case")]
+pub enum StrategicValue {
     /// Improves the position without changing its basic shape.
     Incremental,
     /// Creates or protects a meaningful strategic advantage.
@@ -272,7 +274,8 @@ pub(crate) enum StrategicValue {
 
 /// Delay before the proposal can materially affect the match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum TimeToImpact {
+#[serde(rename_all = "snake_case")]
+pub enum TimeToImpact {
     /// Pays off beyond the allocator's immediate tactical window.
     Patient,
     /// Can affect the next planned contest.
@@ -283,7 +286,8 @@ pub(crate) enum TimeToImpact {
 
 /// Confidence that the proposal can be executed without losing its investment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ExecutionSafety {
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSafety {
     /// Material route, exposure, or counterplay risks remain unresolved.
     Speculative,
     /// Known risks have a credible mitigation.
@@ -1179,7 +1183,8 @@ pub(crate) enum AllocationConflict {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub(crate) enum ObligationClass {
+#[serde(rename_all = "snake_case")]
+pub enum ObligationClass {
     /// Immediate survival or protected ordinary-core work.
     Survival,
     /// Construction or accepted future production that has already been paid.
@@ -1421,9 +1426,6 @@ pub(crate) enum AllocationError {
         /// Exact failed claim.
         conflict: AllocationConflict,
     },
-    /// The selected producer schedule could not be replayed against the exact
-    /// resource projection used to select it.
-    ProducerReservation(ProducerLaneReservationError),
 }
 
 /// Why one well-formed fresh proposal was not selected.
@@ -1450,8 +1452,9 @@ pub(crate) enum ProposalRejection {
 }
 
 /// First deterministic rank component that favored one feasible portfolio.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutrankingBasis {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutrankingBasis {
     /// The selected portfolio had the stronger first differing urgency case.
     Urgency,
     /// The selected portfolio had the stronger first differing evidence-confidence case.
@@ -1547,7 +1550,7 @@ pub(crate) struct CapitalFundingAssignment {
 pub(crate) fn future_producer_lane_reservations(
     capacity: &AllocationCapacity,
     schedule: &[ScheduledProducerJob],
-) -> Result<ProducerLaneReservations, ProducerLaneReservationError> {
+) -> ProducerLaneReservations {
     ProducerLaneReservations::from_jobs(
         &capacity.resources,
         schedule.iter().map(|job| ReservedProducerJob {
@@ -4186,7 +4189,7 @@ mod tests {
     }
 
     fn site(x: i32, y: i32) -> SiteFootprint {
-        SiteFootprint::new(TilePos::new(x, y), (2, 2)).expect("the fixture site is positive")
+        SiteFootprint::new(TilePos::new(x, y), (2, 2))
     }
 
     fn bundle(
@@ -4472,8 +4475,7 @@ mod tests {
         current_scrap: u32,
         case: ProposalCase,
     ) -> InvestmentProposal<&'static str> {
-        let footprint = SiteFootprint::new(anchor, kind.base_stats().size)
-            .expect("the defensive fixture has a positive footprint");
+        let footprint = SiteFootprint::new(anchor, kind.base_stats().size);
         InvestmentProposal::fresh(
             ProposalKey::Defense(DefenseInvestmentKey { kind, anchor }),
             case,
@@ -4748,7 +4750,10 @@ mod tests {
         assert_eq!(proposal.claims().builders(), &[UnitId(2)]);
         assert_eq!(
             proposal.claims().sites(),
-            &[SiteFootprint::new(anchor, BuildingKind::FlakTurret.base_stats().size).unwrap()]
+            &[SiteFootprint::new(
+                anchor,
+                BuildingKind::FlakTurret.base_stats().size
+            )]
         );
     }
 

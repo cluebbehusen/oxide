@@ -1403,27 +1403,25 @@ mod tests {
         let saved = fabricator(quotes(&policy, &obs, &map, &profile, &demands))
             .expect("the unclaimed map offers a technology site");
         let economy = expansion_economy(&Dials::default(), &obs, obs.scrap, Reserve::Exact(0));
-        policy
-            .prepare_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    saved,
-                    UnitId(2),
-                    economy.foundry_cost,
-                    0,
-                    0,
-                    obs.tick + 1_000,
-                    FoundryOpportunityCase::fixture(
-                        FoundryUrgency::Developmental,
-                        FoundryConfidence::Supported,
-                        FoundryStrategicValue::Incremental,
-                        FoundryTimeToImpact::Near,
-                        FoundryExecutionSafety::Secure,
-                    ),
+        policy.commit_adjudicated_foundry(
+            FreshFoundryProposal::fixture(
+                saved,
+                UnitId(2),
+                economy.foundry_cost,
+                0,
+                0,
+                obs.tick + 1_000,
+                FoundryOpportunityCase::fixture(
+                    FoundryUrgency::Developmental,
+                    FoundryConfidence::Supported,
+                    FoundryStrategicValue::Incremental,
+                    FoundryTimeToImpact::Near,
+                    FoundryExecutionSafety::Secure,
                 ),
-                obs.tick,
-            )
-            .unwrap()
-            .apply(&mut policy, &mut Vec::new());
+            ),
+            obs.tick,
+            &mut Vec::new(),
+        );
         let alternative = fabricator(quotes(&policy, &obs, &map, &profile, &demands))
             .expect("a saved site must not repeatedly veto every technology proposal");
         let (width, height) = BuildingKind::Fabricator.base_stats().size;

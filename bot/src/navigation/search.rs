@@ -163,33 +163,6 @@ pub(crate) fn reachable(
     super::flood::reaches_any(width, height, [start], open, |tile| tile == goal)
 }
 
-/// First candidate in caller preference order, retaining capped-search behavior.
-pub(crate) fn first_reachable_goal(
-    query_purpose: QueryPurpose,
-    width: i32,
-    height: i32,
-    start: TilePos,
-    goals: &[TilePos],
-    open: impl Fn(TilePos) -> bool,
-) -> Option<TilePos> {
-    let mut search = Search::default();
-    for (index, goal) in goals.iter().copied().enumerate() {
-        if search
-            .path(query_purpose, width, height, start, goal, &open)
-            .is_some()
-        {
-            return Some(goal);
-        }
-        if search.last_search_exhausted() {
-            return goals[index + 1..]
-                .iter()
-                .copied()
-                .find(|tile| search.last_search_reached(*tile));
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,34 +241,6 @@ mod tests {
         ));
     }
     #[test]
-    fn preferred_goal_queries_match_independent_canonical_searches() {
-        for mask in 0..512 {
-            let open = |tile: TilePos| {
-                super::super::flood::tile_index(3, 3, tile)
-                    .is_some_and(|index| mask & (1 << index) == 0)
-            };
-            for index in 0..9 {
-                let start = TilePos::new(index % 3, index / 3);
-                let goals = [TilePos::new(2, 2), TilePos::new(0, 0), TilePos::new(1, 1)];
-                let expected = goals.iter().copied().find(|goal| {
-                    chassis::path::astar(
-                        3,
-                        3,
-                        start,
-                        *goal,
-                        open,
-                        oxide_sim::stats::PATH_EXPANSION_CAP,
-                    )
-                    .is_some()
-                });
-                assert_eq!(
-                    first_reachable_goal(QueryPurpose::NavigationTest, 3, 3, start, &goals, open),
-                    expected
-                );
-            }
-        }
-    }
-    #[test]
     fn canonical_query_is_reentrant_and_clears_retained_failure_evidence() {
         let start = TilePos::new(0, 0);
         let goal = TilePos::new(4, 0);
@@ -331,32 +276,5 @@ mod tests {
         let new = Search::default();
         assert!(!new.last_search_exhausted());
         assert!(!new.last_search_reached(start));
-    }
-    #[test]
-    fn capped_preferred_goal_does_not_discard_a_later_reachable_goal() {
-        let start = TilePos::new(0, 0);
-        let sealed = TilePos::new(240, 240);
-        let reachable = TilePos::new(4, 0);
-        let open = |tile: TilePos| {
-            !(tile != sealed && (239..=241).contains(&tile.x) && (239..=241).contains(&tile.y))
-        };
-        let mut search = Search::default();
-        assert!(
-            search
-                .path(QueryPurpose::NavigationTest, 256, 256, start, sealed, open)
-                .is_none()
-        );
-        assert!(!search.last_search_exhausted());
-        assert_eq!(
-            first_reachable_goal(
-                QueryPurpose::NavigationTest,
-                256,
-                256,
-                start,
-                &[sealed, reachable],
-                open
-            ),
-            Some(reachable)
-        );
     }
 }

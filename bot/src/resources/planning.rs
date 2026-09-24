@@ -49,26 +49,12 @@ pub(crate) enum PlanningProjectionError {
         /// Observed queue length.
         queued: usize,
     },
-    /// Owner-visible front progress exceeds the front unit's train time.
-    MalformedFrontProgress {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Observed progress.
-        progress: u32,
-        /// Front unit's complete train time.
-        train_ticks: u32,
-    },
     /// Queue, cadence, or horizon arithmetic cannot be represented in ticks.
     TickOverflow,
     /// Completed-source forecast income exceeds the simulation scrap type.
     ForecastOverflow {
         /// Last production tick included in the failed sum.
         through: Tick,
-    },
-    /// A recurring source cannot make progress with a zero payment period.
-    ZeroIncomePeriod {
-        /// Exact completed income source.
-        source: BuildingId,
     },
 }
 
@@ -481,13 +467,6 @@ fn paid_queue_ready_ticks(lane: &ProducerLane) -> Result<Vec<Tick>, PlanningProj
         return Ok(Vec::new());
     };
     let progress = lane.front_progress.unwrap_or(0);
-    if progress > front.stats().train_ticks {
-        return Err(PlanningProjectionError::MalformedFrontProgress {
-            producer: lane.producer,
-            progress,
-            train_ticks: front.stats().train_ticks,
-        });
-    }
     let remaining = Tick::from(front.stats().train_ticks.saturating_sub(progress).max(1));
     let mut ready = lane
         .observed_at
@@ -560,18 +539,10 @@ fn checked_income_through(
         .income
         .iter()
         .try_fold(0_u32, |sum, stream| {
-            if stream.period == 0 {
-                return Err(PlanningProjectionError::ZeroIncomePeriod {
-                    source: stream.source,
-                });
-            }
             if through < stream.first_payment_tick {
                 return Ok(sum);
             }
-            let payments = through
-                .saturating_sub(stream.first_payment_tick)
-                .checked_div(stream.period)
-                .expect("the zero period was rejected")
+            let payments = (through.saturating_sub(stream.first_payment_tick) / stream.period)
                 .saturating_add(1);
             let income = u32::try_from(payments)
                 .ok()
@@ -878,28 +849,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_paid_work_is_rejected_before_projection() {
-        let kind = UnitKind::Sentinel;
-        let malformed = lane(
-            7,
-            0,
-            vec![kind],
-            Some(kind.stats().train_ticks + 1),
-            vec![kind],
-            ProducerEgress::Open,
-        );
-        let resources = snapshot(0, Vec::new(), vec![malformed]);
-        assert_eq!(
-            resources.planning_projection(100, 1),
-            Err(PlanningProjectionError::MalformedFrontProgress {
-                producer: BuildingId(7),
-                progress: kind.stats().train_ticks + 1,
-                train_ticks: kind.stats().train_ticks,
-            })
-        );
-    }
-
-    #[test]
     fn blocked_or_unknown_ground_egress_cannot_back_a_deadline_claim() {
         let kind = UnitKind::Sentinel;
         for egress in [ProducerEgress::Blocked, ProducerEgress::Unknown] {
@@ -936,12 +885,6 @@ mod tests {
             Err(PlanningProjectionError::QueueBeyondCapacity {
                 producer: BuildingId(7),
                 queued: QUEUE_CAP + 1,
-            })
-        );
-        assert_eq!(
-            snapshot(0, vec![income(0, 0, 1)], Vec::new()).planning_projection(2, 1),
-            Err(PlanningProjectionError::ZeroIncomePeriod {
-                source: BuildingId(90),
             })
         );
         let overflowing_queue = lane(

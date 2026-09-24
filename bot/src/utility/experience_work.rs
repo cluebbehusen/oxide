@@ -624,20 +624,17 @@ struct BuildAttempt {
 
 impl BuildAttempt {
     fn site_currently_occupied(&self, obs: &Observation) -> bool {
-        let Some(site) = SiteFootprint::new(self.anchor, self.kind.base_stats().size) else {
-            return false;
-        };
+        let site = SiteFootprint::new(self.anchor, self.kind.base_stats().size);
         obs.my_buildings
             .iter()
             .chain(&obs.ally_buildings)
             .chain(&obs.enemy_buildings)
             .filter(|building| building.seen && building.hp > 0)
             .any(|building| {
-                SiteFootprint::new(
+                site.overlaps(SiteFootprint::new(
                     building.anchor,
                     building.kind.tier_stats(building.tier).size,
-                )
-                .is_some_and(|occupant| site.overlaps(occupant))
+                ))
             })
     }
 }

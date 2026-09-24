@@ -14,7 +14,7 @@ struct ReachScratch {
     frontier: VecDeque<TilePos>,
 }
 
-fn area(width: i32, height: i32) -> usize {
+pub(super) fn area(width: i32, height: i32) -> usize {
     usize::try_from(width)
         .ok()
         .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
@@ -314,14 +314,7 @@ pub(crate) fn within_steps(
     passable: impl Fn(TilePos) -> bool,
     maximum_steps: usize,
 ) -> Vec<bool> {
-    let area = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
+    let area = area(width, height);
     #[cfg(test)]
     super::work::record(|work| {
         work.searches += 1;

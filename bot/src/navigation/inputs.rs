@@ -141,14 +141,7 @@ impl NavigationInputs {
 }
 
 fn prepare(purpose: QueryPurpose, obs: &Observation, domain: Domain) -> Vec<bool> {
-    let cells = usize::try_from(obs.map_width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(obs.map_height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .unwrap_or(0);
+    let cells = super::flood::area(obs.map_width, obs.map_height);
     crate::query_work::record(purpose, QueryOperation::PrepareSurface, cells);
     let mut open = vec![true; cells];
     let mut block = |tile| {

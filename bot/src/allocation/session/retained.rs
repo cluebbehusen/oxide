@@ -105,22 +105,9 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let mut claims = snapshot_claims(self.context, self.participants);
         let mut obligations = self.collect_retained_obligations(&claims, resources);
         self.prepare_standing_saving(&claims, &mut obligations);
-        if obligations.invalid_active_connected {
-            self.participants
-                .strategy
-                .recover_unfundable_active_connected(self.context.observation.tick);
-            obligations.active_connected = None;
-        }
-        if obligations.invalid_active_lift {
-            self.participants
-                .lifts
-                .recover_invalid_production(self.context.observation.tick);
-            obligations.active_lift = None;
-        }
         let emergency_defense = self.prepare_emergency_defense(&claims, &mut obligations);
         if let Some(plan) = self.participants.policy.economic_foundation() {
             let guard = self.participants.policy.shallow_sentinel_capital_reserve(
-                self.context.dials,
                 self.context.observation,
                 self.context.home,
                 self.context.public_map,
@@ -338,7 +325,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         )
         .unwrap_or(0)
         .saturating_sub(self.participants.policy.shallow_sentinel_capital_reserve(
-            self.context.dials,
             self.context.observation,
             self.context.home,
             self.context.public_map,
@@ -516,7 +502,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             }
         }
 
-        let mut active_connected = self.participants.strategy.active_connected_obligation(
+        let active_connected = self.participants.strategy.active_connected_obligation(
             FreshConnectedProposalRequest::new(
                 self.context.profile,
                 self.context.tuning,
@@ -544,50 +530,9 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     .paid_exclusions(),
             ),
         );
-        let mut active_lift = self.participants.lifts.active_production_obligation();
-        let mut invalid_active_connected = false;
-        let mut invalid_active_lift = false;
-        let mut connected_import = match active_connected
-            .as_ref()
-            .map(active_connected_obligation)
-            .transpose()
-        {
-            Ok(obligation) => obligation,
-            Err(error) => {
-                invalid_active_connected = true;
-                retain_first_coordinator_failure(
-                    &mut coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(error.into()),
-                );
-                None
-            }
-        };
-        let mut lift_import = match active_lift
-            .as_ref()
-            .map(active_lift_production_obligation)
-            .transpose()
-        {
-            Ok(obligation) => obligation,
-            Err(error) => {
-                invalid_active_lift = true;
-                retain_first_coordinator_failure(
-                    &mut coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    Err(error.into()),
-                );
-                None
-            }
-        };
-
-        if invalid_active_connected {
-            active_connected = None;
-            connected_import = None;
-        }
-        if invalid_active_lift {
-            active_lift = None;
-            lift_import = None;
-        }
+        let active_lift = self.participants.lifts.active_production_obligation();
+        let mut connected_import = active_connected.as_ref().map(active_connected_obligation);
+        let mut lift_import = active_lift.as_ref().map(active_lift_production_obligation);
 
         let retained_air_claims = if active_connected.is_some() {
             obligations.push(
@@ -622,8 +567,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             coordinator_failure,
             active_connected,
             active_lift,
-            invalid_active_connected,
-            invalid_active_lift,
             retained_air_claims,
             island_preparation: None,
         }
@@ -734,17 +677,13 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 current_scrap,
             },
         )?;
-        let imported = push_obligation(
-            &mut obligations.obligations,
-            fresh_emergency_defense_obligation(self.context.observation.tick, defense),
-        );
-        let accepted = imported.is_ok();
-        retain_first_coordinator_failure(
-            &mut obligations.coordinator_failure,
-            AllocationCoordinatorStageTrace::ObligationCollection,
-            imported,
-        );
-        accepted.then_some(defense)
+        obligations
+            .obligations
+            .push(fresh_emergency_defense_obligation(
+                self.context.observation.tick,
+                defense,
+            ));
+        Some(defense)
     }
 
     fn prepare_air_commitments(
@@ -754,17 +693,13 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
     ) -> AirLiftPreparation {
         let mut opening_bootstrap = 0;
         if !claims.opening_core.ready {
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                push_clamped_current_reserve(
-                    &mut obligations.obligations,
-                    self.context.observation.scrap,
-                    self.context.observation.tick,
-                    self.context.observation.tick,
-                    ObligationKey::OpeningCore { sequence: 0 },
-                    claims.opening_core.missing_scrap,
-                ),
+            push_clamped_current_reserve(
+                &mut obligations.obligations,
+                self.context.observation.scrap,
+                self.context.observation.tick,
+                self.context.observation.tick,
+                ObligationKey::OpeningCore { sequence: 0 },
+                claims.opening_core.missing_scrap,
             );
         } else {
             opening_bootstrap = self
@@ -778,24 +713,19 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 );
             for (sequence, amount) in [(1, opening_bootstrap)] {
                 if amount > 0 {
-                    retain_first_coordinator_failure(
-                        &mut obligations.coordinator_failure,
-                        AllocationCoordinatorStageTrace::ObligationCollection,
-                        push_clamped_current_reserve(
-                            &mut obligations.obligations,
-                            self.context.observation.scrap,
-                            self.context.observation.tick,
-                            self.context.observation.tick,
-                            ObligationKey::OpeningCore { sequence },
-                            amount,
-                        ),
+                    push_clamped_current_reserve(
+                        &mut obligations.obligations,
+                        self.context.observation.scrap,
+                        self.context.observation.tick,
+                        self.context.observation.tick,
+                        ObligationKey::OpeningCore { sequence },
+                        amount,
                     );
                 }
             }
         }
         let voluntary_scrap_guard = if claims.opening_core.ready {
             self.participants.policy.shallow_sentinel_capital_reserve(
-                self.context.dials,
                 self.context.observation,
                 self.context.home,
                 self.context.public_map,
@@ -1148,27 +1078,18 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 .protected_reserve()
                 .saturating_sub(air_lift.saved_plan_reserve_already_imported);
             if unrepresented_protected_reserve > 0 {
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    push_clamped_current_reserve(
-                        &mut obligations.obligations,
-                        self.context.observation.scrap,
-                        saved.accepted_at(),
-                        self.context.observation.tick,
-                        ObligationKey::OpeningCore { sequence: 3 },
-                        unrepresented_protected_reserve,
-                    ),
+                push_clamped_current_reserve(
+                    &mut obligations.obligations,
+                    self.context.observation.scrap,
+                    saved.accepted_at(),
+                    self.context.observation.tick,
+                    ObligationKey::OpeningCore { sequence: 3 },
+                    unrepresented_protected_reserve,
                 );
             }
-            retain_first_coordinator_failure(
-                &mut obligations.coordinator_failure,
-                AllocationCoordinatorStageTrace::ObligationCollection,
-                push_obligation(
-                    &mut obligations.obligations,
-                    saved_foundry_obligation(saved),
-                ),
-            );
+            obligations
+                .obligations
+                .push(saved_foundry_obligation(saved));
         }
         let mut saved = SavedFoundryPreparation {
             obligation,
@@ -1364,39 +1285,29 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         match revision {
             Ok(None) => ActiveRevisionPreparation::default(),
             Ok(Some(proposal)) => {
-                let adapted = active_connected_revision_obligation(&proposal);
-                let adapted = match adapted {
-                    Ok(candidate) => {
-                        let horizon = obligation_horizon(&other_obligations, deadline);
-                        let Ok(capacity) = super::super::AllocationCapacity::from_snapshot(
-                            &obligations.resources,
-                            horizon,
-                            self.context.dials.cadence,
-                        ) else {
-                            return ActiveRevisionPreparation::default();
-                        };
-                        match super::super::forecast::refine_obligation(
-                            &capacity,
-                            &other_obligations,
-                            candidate,
-                            &self.participants.policy.planning,
-                        ) {
-                            crate::planning::Progress::Ready(refined) => Ok(refined),
-                            crate::planning::Progress::Deferred
-                            | crate::planning::Progress::Exhausted
-                            | crate::planning::Progress::ProvenInfeasible => {
-                                return ActiveRevisionPreparation::default();
-                            }
-                        }
+                let horizon = obligation_horizon(&other_obligations, deadline);
+                let Ok(capacity) = super::super::AllocationCapacity::from_snapshot(
+                    &obligations.resources,
+                    horizon,
+                    self.context.dials.cadence,
+                ) else {
+                    return ActiveRevisionPreparation::default();
+                };
+                let adapted = match super::super::forecast::refine_obligation(
+                    &capacity,
+                    &other_obligations,
+                    active_connected_revision_obligation(&proposal),
+                    &self.participants.policy.planning,
+                ) {
+                    crate::planning::Progress::Ready(refined) => refined,
+                    crate::planning::Progress::Deferred
+                    | crate::planning::Progress::Exhausted
+                    | crate::planning::Progress::ProvenInfeasible => {
+                        return ActiveRevisionPreparation::default();
                     }
-                    Err(error) => Err(error),
                 };
                 remove_active_connected_obligation(&mut obligations.obligations);
-                retain_first_coordinator_failure(
-                    &mut obligations.coordinator_failure,
-                    AllocationCoordinatorStageTrace::ObligationCollection,
-                    push_obligation(&mut obligations.obligations, adapted),
-                );
+                obligations.obligations.push(adapted);
                 obligations.active_connected = None;
                 obligations.retained_air_claims = None;
                 ActiveRevisionPreparation {

@@ -120,12 +120,6 @@ pub(super) struct ConnectedTargetEvidence<'a> {
 pub(crate) enum ForcePackageRejection {
     /// The shared work allowance has not yet produced a current production witness.
     Deferred,
-    /// A zero cadence cannot produce a deterministic future command boundary.
-    InvalidDecisionCadence,
-    /// The fixed preparation deadline is before the current observation.
-    InvalidDeadline { observed_at: Tick, deadline: Tick },
-    /// The proposed target is remembered rather than visible now.
-    TargetNotCurrent,
     /// Current evidence does not identify a live, completed, valuable target.
     TargetNotActionable,
     /// Net bank and completed-source income cannot pay for the next provider
@@ -211,12 +205,17 @@ const TACTICAL_EFFECT_WINDOW: Tick = 1_200;
 
 type PackageCandidateScore = (u64, u128, Reverse<u32>, u64);
 
+/// Capability family used by package-demand diagnostics.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub(crate) enum ForceFamily {
+#[serde(rename_all = "snake_case")]
+pub enum ForceFamily {
+    /// Vision required to establish current target evidence.
     Recon,
+    /// Ground firepower required to remove targetable anti-air defenses.
     Suppression,
+    /// Air firepower required to destroy the target cluster.
     Strike,
 }
 
@@ -940,18 +939,6 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
         decision_cadence,
         protected_forecast_scrap,
     } = constraints;
-    if decision_cadence == 0 {
-        return Err(ForcePackageRejection::InvalidDecisionCadence);
-    }
-    if preparation_deadline < observation.tick {
-        return Err(ForcePackageRejection::InvalidDeadline {
-            observed_at: observation.tick,
-            deadline: preparation_deadline,
-        });
-    }
-    if target.evidence != ContactEvidence::Current {
-        return Err(ForcePackageRejection::TargetNotCurrent);
-    }
     if target.id.is_none()
         || !target.built
         || target.hp == 0
@@ -2203,7 +2190,7 @@ fn current_air_defense(
     }
 }
 
-fn current_operational_aa_source(
+pub(super) fn current_operational_aa_source(
     intelligence: &StrategicIntelligence,
     source: AirDefenseSource,
 ) -> bool {
@@ -3454,60 +3441,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_deadlines_and_targets_have_distinct_rejections() {
+    fn non_actionable_targets_are_rejected() {
         let mut observation = observation(10_000);
         add_complete_tech(&mut observation);
         let (intelligence, target) = intelligence_with_target(&mut observation, 0);
-        let resources = ResourceSnapshot::from_observation(&observation);
-
-        assert_eq!(
-            derive_connected_force_package(
-                &profile(50, 50),
-                &observation,
-                &intelligence,
-                &target,
-                ProductionEvidence::with_planning(
-                    &resources,
-                    &all_producers(&resources),
-                    Some(&PlanningWork::default())
-                ),
-                &[],
-                PreparationConstraints {
-                    deadline: 500,
-                    decision_cadence: 0,
-                    protected_forecast_scrap: 0,
-                },
-            ),
-            Err(ForcePackageRejection::InvalidDecisionCadence)
-        );
-        assert_eq!(
-            derive(
-                &profile(50, 50),
-                &observation,
-                &intelligence,
-                &target,
-                &[],
-                observation.tick - 1,
-            ),
-            Err(ForcePackageRejection::InvalidDeadline {
-                observed_at: observation.tick,
-                deadline: observation.tick - 1,
-            })
-        );
-
-        let mut remembered = target.clone();
-        remembered.evidence = ContactEvidence::Remembered;
-        assert_eq!(
-            derive(
-                &profile(50, 50),
-                &observation,
-                &intelligence,
-                &remembered,
-                &[],
-                500,
-            ),
-            Err(ForcePackageRejection::TargetNotCurrent)
-        );
 
         let mut non_actionable = target.clone();
         non_actionable.hp = 0;

@@ -6,8 +6,8 @@ use oxide_bot::trace::{
     ProposalKeyTrace,
 };
 use oxide_bot::{
-    ConnectedForceStatus, ConnectedRecoveryReasonTrace, ConnectedRejectionReasonTrace, Dials,
-    Observation, Orientation, PublicMapBriefing, SeatBot as Brain, TargetEvidenceTrace, seat_bots,
+    AirRecoveryReason, ConnectedForceStatus, ConnectedRejectionReasonTrace, Dials, Observation,
+    Orientation, PublicMapBriefing, SeatBot as Brain, TargetEvidenceTrace, seat_bots,
 };
 use oxide_sim::scenario::{
     BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
@@ -3060,9 +3060,7 @@ fn connected_package_assembly_keeps_one_deadline_and_aborts_when_no_longer_feasi
                 }
             }
             if trace.connected_force.status
-                == ConnectedForceStatus::Recovering(
-                    ConnectedRecoveryReasonTrace::PreparationInfeasible,
-                )
+                == ConnectedForceStatus::Recovering(AirRecoveryReason::PreparationInfeasible)
                 && infeasible_at.is_none()
             {
                 infeasible_at = Some(state.current_tick());

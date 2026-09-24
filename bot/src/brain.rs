@@ -176,40 +176,47 @@ impl Brain {
         if obs.me != self.player || !self.decision_due(obs.tick) {
             return Vec::new();
         }
+        assert_eq!(
+            (
+                self.mind.public_map.map_width(),
+                self.mind.public_map.map_height()
+            ),
+            (obs.map_width, obs.map_height),
+            "the controller's briefing must describe the observed map"
+        );
         let _query_capture = super::query_work::Capture::new(observer);
         let maintenance_scope = PhaseScope::new(observer, BotPhase::Maintenance);
-        if !obs.my_buildings.iter().any(|building| {
-            !building.provisional && building.kind == oxide_sim::stats::BuildingKind::Foundry
-        }) {
-            return Vec::new();
-        }
-        self.policy.planning.begin(obs.tick);
-        if let Some(recorder) = recorder.as_deref_mut() {
-            recorder.begin(obs);
-        }
         // The wounded rear line lives on the home-side corner of the Foundry:
         // behind everything, and every march home routes past friendly
         // production. A footprint anchor is not itself a symmetric point goal
         // on an even-sized building, so select the same corner in each seat's
         // oriented frame before the raw executive acts.
-        let (rear_anchor, rear_size) = obs
+        let Some((rear_anchor, rear_size)) = obs
             .my_buildings
             .iter()
             .filter(|b| !b.provisional && b.kind == oxide_sim::stats::BuildingKind::Foundry)
             .min_by_key(|b| b.id)
             .map(|b| (b.anchor, b.kind.base_stats().size))
-            .unwrap_or((TilePos::new(0, 0), (1, 1)));
+        else {
+            return Vec::new();
+        };
+        self.policy.planning.begin(obs.tick);
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.begin(obs);
+        }
         let orientation = *self
             .orientation
             .get_or_insert_with(|| Orientation::for_home(obs, rear_anchor));
+        let oriented_home = orientation.anchor(rear_anchor, rear_size);
         let rear = player_facing_rear_tile(orientation, rear_anchor, rear_size);
         self.exec.mission_decisions.clear();
+        let tuning = DifficultyTuning::for_level(self.mind.profile.difficulty);
         let mut commands = self.exec.maintain_player_facing_with_tactics(
             self.player,
             obs,
             rear,
-            self.dials.coordinated_focus,
-            self.dials.coordinated_defense_focus,
+            tuning.coordinated_focus,
+            tuning.coordinated_defense_focus,
         );
         let maintenance_commands = commands.len();
         let oriented = orientation.observe(obs);
@@ -275,22 +282,12 @@ impl Brain {
                 } = mind.as_mut();
                 let oriented_public_map: &PublicMapBriefing =
                     oriented_public_map.get_or_insert_with(|| orientation.briefing(public_map));
-                let home = oriented
-                    .my_buildings
-                    .iter()
-                    .filter(|building| {
-                        !building.provisional
-                            && building.kind == oxide_sim::stats::BuildingKind::Foundry
-                    })
-                    .min_by_key(|building| building.id)
-                    .map(|building| building.anchor)
-                    .unwrap_or(TilePos::new(0, 0));
                 strategy.recover_unpaid_connected_for_economy_emergency(
                     super::strategy::EconomyEmergencyRecovery {
                         profile,
                         tuning: DifficultyTuning::for_level(profile.difficulty),
                         obs: &oriented,
-                        home,
+                        home: oriented_home,
                         public_map: Some(oriented_public_map),
                         orientation,
                         recon_paid_exclusions: &recon_paid_exclusions,
@@ -349,15 +346,6 @@ impl Brain {
         let profile = &*profile;
         let oriented_public_map: &PublicMapBriefing =
             oriented_public_map.get_or_insert_with(|| orientation.briefing(public_map));
-        let oriented_home = oriented
-            .my_buildings
-            .iter()
-            .filter(|building| {
-                !building.provisional && building.kind == oxide_sim::stats::BuildingKind::Foundry
-            })
-            .min_by_key(|building| building.id)
-            .map(|building| building.anchor)
-            .unwrap_or(TilePos::new(0, 0));
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let super::allocation::AdmittedWork {
             intents: strategic,

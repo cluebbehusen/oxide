@@ -211,6 +211,7 @@ impl crate::utility::UtilityPolicy {
         let mut intelligence = crate::StrategicIntelligence::new();
         intelligence.update(obs);
         self.observe_work_experience(obs);
+        self.refresh_allocation_worker_safety(obs, intelligence.units(), intelligence.buildings());
         self.think_with_intelligence(
             dials,
             obs,
@@ -223,9 +224,31 @@ impl crate::utility::UtilityPolicy {
                 public_map,
                 Vec::new(),
                 Default::default(),
-            ),
+            )
+            .with_ground_missions(crate::utility::GroundMissionInputs {
+                unavailable: reserved,
+                enlisted,
+                tuning: tuning_for(dials),
+                relief: None,
+            }),
         )
     }
+}
+
+/// The player-facing tuning whose copied fields match `dials`; fixtures that
+/// edit those fields fall back to Standard.
+fn tuning_for(dials: &crate::Dials) -> crate::difficulty::DifficultyTuning {
+    use crate::difficulty::DifficultyTuning;
+    use oxide_sim::scenario::BotDifficulty;
+    BotDifficulty::ALL
+        .into_iter()
+        .map(DifficultyTuning::for_level)
+        .find(|tuning| {
+            tuning.cadence == dials.cadence
+                && tuning.minimum_core_equivalents == dials.minimum_core_equivalents
+                && tuning.underestimate_own(10_000) == u64::from(dials.own_strength_scale)
+        })
+        .unwrap_or_else(|| DifficultyTuning::for_level(BotDifficulty::Standard))
 }
 
 pub(crate) fn briefing(

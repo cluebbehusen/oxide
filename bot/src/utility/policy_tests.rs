@@ -2,7 +2,7 @@
 
 use super::UtilityPolicy;
 use crate::observation::ObservationData;
-use crate::trace::{ClaimOwnerTrace, ConfidenceTrace, ProposalDispositionTrace, ProposalKeyTrace};
+use crate::trace::{ClaimOwnerTrace, Confidence, ProposalDispositionTrace, ProposalKeyTrace};
 use crate::{
     BuildingObs, Dials, DifficultyTuning, Executive, Intent, Observation, Orientation,
     PublicMapBriefing, SeatBot as Brain, UnitObs,
@@ -456,7 +456,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
                 && proposal.disposition == ProposalDispositionTrace::Accepted
         })
         .expect("current armed air should admit mobile anti-air through shared allocation");
-    assert_eq!(standing_aa.case.confidence, ConfidenceTrace::Current);
+    assert_eq!(standing_aa.case.confidence, Confidence::Current);
     let aa_job = current_trace
         .allocation
         .producer_schedule
@@ -512,7 +512,7 @@ fn scouts_do_not_create_sticky_anti_air_demand_but_armed_flyers_do() {
             .iter()
             .any(|proposal| {
                 matches!(proposal.key, ProposalKeyTrace::StandingForce { kind, .. } if kind == aa_kind)
-                    && proposal.case.confidence == ConfidenceTrace::Supported
+                    && proposal.case.confidence == Confidence::Supported
             })
     );
 }

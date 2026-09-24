@@ -2,34 +2,6 @@
 
 use super::*;
 
-pub(crate) struct FoundryCommit {
-    saving: FoundrySavingCommitment,
-    build: bool,
-}
-
-impl FoundryCommit {
-    pub(crate) fn apply(self, policy: &mut UtilityPolicy, intents: &mut Vec<Intent>) {
-        if self.build {
-            let plan = &self.saving.plan;
-            UtilityPolicy::insert_build_before_harvest(
-                intents,
-                BuildingKind::Foundry,
-                plan.anchor,
-                Intent::BuildWith {
-                    builder: plan.builder,
-                    kind: BuildingKind::Foundry,
-                    anchor: plan.anchor,
-                },
-            );
-        }
-        policy.state.foundry_saving = Some(self.saving);
-    }
-}
-
-/// A fresh proposal cannot replace another persistent Foundry obligation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExistingFoundryCommitment;
-
 /// Accepted expansion whose exact build has not yet survived command lowering.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::utility) struct FoundrySavingCommitment {
@@ -127,21 +99,14 @@ impl ValidatedFoundryObligation {
         mut self,
         current_construction_capital: u32,
         forecast_construction_capital: u32,
-    ) -> Option<Self> {
-        let expected = self
-            .current_construction_capital
-            .saturating_add(self.forecast_construction_capital);
-        if current_construction_capital.saturating_add(forecast_construction_capital) != expected {
-            return None;
-        }
+    ) -> Self {
         self.current_construction_capital = current_construction_capital;
         self.forecast_construction_capital = forecast_construction_capital;
-        Some(self)
+        self
     }
 
     pub(crate) fn site(self) -> SiteFootprint {
         SiteFootprint::new(self.anchor, BuildingKind::Foundry.base_stats().size)
-            .expect("Foundries have a positive footprint")
     }
 }
 
@@ -309,11 +274,6 @@ impl UtilityPolicy {
         if !funding.viable && !self.retain_blocked_foundry_saving(obs.tick) {
             return None;
         }
-        let saving = self
-            .state
-            .foundry_saving
-            .as_ref()
-            .expect("bounded recovery retained the validated Foundry");
         Some(ValidatedFoundryObligation {
             accepted_at: saving.accepted_at,
             anchor: saving.plan.anchor,
@@ -374,7 +334,6 @@ impl UtilityPolicy {
                     && !context.claims.enlisted.contains(&builder.id)
                     && !context.claims.reserved.contains(&builder.id)
                     && !unavailable.contains(&builder.id)
-                    && self.state.scout != Some(builder.id)
             })
             .collect();
         let resources = ResourceSnapshot::from_observation(obs);
@@ -427,19 +386,9 @@ impl UtilityPolicy {
     /// construction capital is available. The retained anchor and builder are
     /// never re-ranked at this boundary.
     pub(crate) fn dispatch_validated_foundry(
-        &self,
         obligation: ValidatedFoundryObligation,
         intents: &mut Vec<Intent>,
-    ) -> bool {
-        if !obligation.ready_to_build()
-            || self.state.foundry_saving.as_ref().is_none_or(|saving| {
-                saving.accepted_at != obligation.accepted_at
-                    || saving.plan.anchor != obligation.anchor
-                    || saving.plan.builder != obligation.builder
-            })
-        {
-            return false;
-        }
+    ) {
         Self::insert_build_before_harvest(
             intents,
             BuildingKind::Foundry,
@@ -450,7 +399,6 @@ impl UtilityPolicy {
                 anchor: obligation.anchor,
             },
         );
-        true
     }
 
     pub(crate) fn retain_blocked_foundry_saving(&mut self, now: u64) -> bool {
@@ -488,9 +436,11 @@ impl UtilityPolicy {
         obligation: ValidatedFoundryObligation,
         context: FreshFoundryProposalContext<'_>,
     ) -> SavedFoundryReadiness {
-        let Some(saving) = self.state.foundry_saving.as_ref() else {
-            return SavedFoundryReadiness::Blocked;
-        };
+        let saving = self
+            .state
+            .foundry_saving
+            .as_ref()
+            .expect("a validated obligation retains its saved Foundry");
         let (_, pending_foundries) = Self::projected_foundries(obs);
         if pending_foundries != 0 {
             return SavedFoundryReadiness::Blocked;
@@ -501,7 +451,6 @@ impl UtilityPolicy {
             .filter(|builder| builder.id == obligation.builder())
             .filter(|builder| context.available_builders.contains(&builder.id))
             .filter(|builder| builder_is_free(obs, builder))
-            .filter(|builder| self.state.scout != Some(builder.id))
             .collect::<Vec<_>>();
         let danger = self.harvest_danger_projection(
             obs,
@@ -563,15 +512,12 @@ impl UtilityPolicy {
     /// Freezes and optionally dispatches the exact proposal selected by the
     /// cross-domain allocator. No observation is accepted here, so commitment
     /// cannot silently rerank the proposal to a different site or builder.
-    pub(crate) fn prepare_adjudicated_foundry(
-        &self,
+    pub(crate) fn commit_adjudicated_foundry(
+        &mut self,
         proposal: FreshFoundryProposal,
         accepted_at: Tick,
-    ) -> Result<FoundryCommit, ExistingFoundryCommitment> {
-        if self.state.foundry_saving.is_some() {
-            return Err(ExistingFoundryCommitment);
-        }
-
+        intents: &mut Vec<Intent>,
+    ) {
         let disposition = proposal.adjudicated_commit();
         let required_scrap = proposal.saving_threshold();
         let forecast_basis = FoundryForecastBasis {
@@ -588,10 +534,20 @@ impl UtilityPolicy {
             forecast_basis,
             blocked_since: None,
         };
-        Ok(FoundryCommit {
-            saving,
-            build: disposition == AdjudicatedFoundryCommit::Build,
-        })
+        if disposition == AdjudicatedFoundryCommit::Build {
+            let plan = &saving.plan;
+            UtilityPolicy::insert_build_before_harvest(
+                intents,
+                BuildingKind::Foundry,
+                plan.anchor,
+                Intent::BuildWith {
+                    builder: plan.builder,
+                    kind: BuildingKind::Foundry,
+                    anchor: plan.anchor,
+                },
+            );
+        }
+        self.state.foundry_saving = Some(saving);
     }
 
     /// Releases a frozen expansion lease only once its exact construction

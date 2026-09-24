@@ -92,10 +92,7 @@ impl StaticRegions {
     pub(crate) fn build(map: &PublicMapBriefing) -> Self {
         let width = map.map_width();
         let height = map.map_height();
-        let cells = usize::try_from(width)
-            .ok()
-            .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
-            .unwrap_or(0);
+        let cells = super::flood::area(width, height);
         let mut result = Self {
             width,
             height,

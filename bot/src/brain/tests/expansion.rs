@@ -278,8 +278,6 @@ fn older_construction_promise_owns_forecast_until_current_bank_covers_it() {
     });
 
     let mut brain = foundry_competition_brain(&scenario);
-
-    brain.dials.minimum_core_equivalents = 0;
     let mut funded_brain = brain.clone();
     let mut funded_state = state.clone();
 
@@ -314,7 +312,7 @@ fn older_construction_promise_owns_forecast_until_current_bank_covers_it() {
     );
 
     crate::test_support::edit_player(&mut funded_state, PlayerId(0), |item| {
-        item.scrap = promised_scrap
+        item.scrap = promised_scrap + UnitKind::Sentinel.stats().cost
     });
     let funded = funded_brain.act_traced(&funded_state);
     let funded_trace = funded.trace.expect("the funded think is traced");
@@ -337,7 +335,11 @@ fn older_construction_promise_owns_forecast_until_current_bank_covers_it() {
         .connected_force
         .package
         .expect("the recurring-income surplus admits a concrete package");
-    assert_eq!(package.current_scrap, 0);
+    assert_eq!(
+        package.current_scrap,
+        UnitKind::Sentinel.stats().cost,
+        "only the bank surplus beyond the promise is current capital"
+    );
     assert!(package.forecast_scrap > promised_scrap);
 }
 

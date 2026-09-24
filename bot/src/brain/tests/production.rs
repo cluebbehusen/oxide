@@ -339,9 +339,7 @@ fn lost_connected_objective_releases_unpaid_demand_before_purchase() {
     assert!(recovery_trace.allocation.coordinator_failure.is_none());
     assert_eq!(
         recovery_trace.connected_force.status,
-        crate::trace::ConnectedForceStatus::Recovering(
-            crate::trace::ConnectedRecoveryReasonTrace::ObjectiveLost,
-        )
+        crate::trace::ConnectedForceStatus::Recovering(crate::AirRecoveryReason::ObjectiveLost,)
     );
     let accepted_due = recovery_trace
         .allocation
@@ -355,7 +353,7 @@ fn lost_connected_objective_releases_unpaid_demand_before_purchase() {
                 && matches!(
                     job.owner,
                     crate::trace::ClaimOwnerTrace::Obligation {
-                        class: crate::trace::ObligationClassTrace::PersistentPlan,
+                        class: crate::trace::ObligationClass::PersistentPlan,
                         key: crate::trace::ObligationKeyTrace::ConnectedOffense { .. },
                         ..
                     }
@@ -806,24 +804,18 @@ fn active_lift_and_island_share_the_last_shallow_airworks_slot_without_starvatio
         cancelled
             .mind_mut()
             .lifts
-            .prepare_producer_binding(
-                operation.started_at,
-                operation.deadline,
-                vec![LiftProducerAssignment::new(
-                    0,
-                    airworks,
-                    UnitKind::Skyhook,
-                    LiftProducerTiming::new(
-                        observed.tick + tuning.cadence,
-                        starts_at,
-                        starts_at + u64::from(UnitKind::Skyhook.stats().train_ticks) - 1,
-                        operation.deadline,
-                    ),
-                    LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
-                )],
-            )
-            .unwrap()
-            .apply(&mut cancelled.mind_mut().lifts);
+            .bind_producers(vec![LiftProducerAssignment::new(
+                0,
+                airworks,
+                UnitKind::Skyhook,
+                LiftProducerTiming::new(
+                    observed.tick + tuning.cadence,
+                    starts_at,
+                    starts_at + u64::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                    operation.deadline,
+                ),
+                LiftProducerFunding::new(UnitKind::Skyhook.stats().cost, 0),
+            )]);
         assert!(
             cancelled
                 .mind_mut()
