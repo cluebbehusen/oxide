@@ -108,7 +108,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let emergency_defense = self.prepare_emergency_defense(&claims, &mut obligations);
         if let Some(plan) = self.participants.policy.economic_foundation() {
             let guard = self.participants.policy.shallow_sentinel_capital_reserve(
-                self.context.dials,
                 self.context.observation,
                 self.context.home,
                 self.context.public_map,
@@ -326,7 +325,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         )
         .unwrap_or(0)
         .saturating_sub(self.participants.policy.shallow_sentinel_capital_reserve(
-            self.context.dials,
             self.context.observation,
             self.context.home,
             self.context.public_map,
@@ -728,7 +726,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         }
         let voluntary_scrap_guard = if claims.opening_core.ready {
             self.participants.policy.shallow_sentinel_capital_reserve(
-                self.context.dials,
                 self.context.observation,
                 self.context.home,
                 self.context.public_map,

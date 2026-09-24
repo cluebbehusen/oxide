@@ -373,15 +373,6 @@ pub struct Dials {
     /// ten-thousandths. Easier rungs are deliberately conservative;
     /// personality never changes this value.
     pub own_strength_scale: u16,
-
-    /// Ticks for which the largest recently observed hostile ground force
-    /// remains available to strategic planning. The voluntary attack gate
-    /// consumes only the shared short-lived portion of this memory.
-    pub opponent_force_memory: u64,
-    /// Coordinate an engaged ground army onto one legal target.
-    pub coordinated_focus: bool,
-    /// Coordinate overlapping static defenses onto one visible threat.
-    pub coordinated_defense_focus: bool,
 }
 
 fn immediate_harvester_target(dials: &Dials) -> u32 {
@@ -452,9 +443,6 @@ impl Dials {
                 .underestimate_own(10_000)
                 .try_into()
                 .expect("bounded strength scale fits u16"),
-            opponent_force_memory: tuning.opponent_force_memory,
-            coordinated_focus: tuning.coordinated_focus,
-            coordinated_defense_focus: tuning.coordinated_defense_focus,
         }
     }
 }
@@ -789,14 +777,12 @@ impl UtilityPolicy {
 
     pub(crate) fn shallow_sentinel_capital_reserve(
         &self,
-        dials: &Dials,
         obs: &Observation,
         home: TilePos,
         public_map: &PublicMapBriefing,
         intents: &[Intent],
     ) -> u32 {
-        if dials.minimum_core_equivalents == 0
-            || !self.has_honest_ground_objective(obs, home, Some(public_map))
+        if !self.has_honest_ground_objective(obs, home, Some(public_map))
             || Self::shallow_sentinel_reinforcement(obs, intents)
         {
             return 0;
@@ -811,9 +797,6 @@ impl UtilityPolicy {
         home: TilePos,
         public_map: &PublicMapBriefing,
     ) -> u32 {
-        if dials.minimum_core_equivalents == 0 {
-            return 0;
-        }
         self.opening_bootstrap_reserve(
             dials,
             obs,
@@ -1549,8 +1532,8 @@ impl UtilityPolicy {
             self.state.desperate_road = Self::ground_route_known(obs, home_tile, mirror_site);
         }
 
-        let has_ground_objective = dials.minimum_core_equivalents > 0
-            && self.has_honest_ground_objective(obs, home_tile, mode.public_map);
+        let has_ground_objective =
+            self.has_honest_ground_objective(obs, home_tile, mode.public_map);
 
         let opening_core_at_start = combat_core_status(
             obs,
@@ -1558,8 +1541,7 @@ impl UtilityPolicy {
             &intents,
             u64::from(dials.minimum_core_equivalents),
         );
-        let opening_core_active =
-            dials.minimum_core_equivalents > 0 && !opening_core_at_start.ready;
+        let opening_core_active = !opening_core_at_start.ready;
         let retained_deferred_claims = if opening_core_active {
             self.opening_core_deferred_claims(
                 obs,
@@ -1571,10 +1553,7 @@ impl UtilityPolicy {
                 },
                 &mut intents,
             )
-        } else if dials.minimum_core_equivalents > 0
-            && has_ground_objective
-            && !Self::shallow_sentinel_reinforcement(obs, &intents)
-        {
+        } else if has_ground_objective && !Self::shallow_sentinel_reinforcement(obs, &intents) {
             self.post_floor_deferred_claims(
                 obs,
                 utility_admission_scrap,
@@ -1622,40 +1601,32 @@ impl UtilityPolicy {
             .with_intelligence(mode.unit_contacts, mode.building_contacts)
             .with_public_map(mode.public_map)
             .excluding_builders(&unavailable_builders);
-        let manages_opening = dials.minimum_core_equivalents > 0;
-        let mut opening_core_deficient = false;
+        self.residual_construction(
+            obs,
+            construction_context.during_opening_core(),
+            &mut budget,
+            &mut intents,
+        );
+        let status = self.opening_core_production(
+            dials,
+            obs,
+            ProductionContext::new(home_tile, construction_claims)
+                .with_combat_core_exclusions(combat_core_exclusions)
+                .with_intelligence(mode.unit_contacts, mode.building_contacts)
+                .with_public_map(mode.public_map)
+                .with_producer_lane_reservations(producer_lane_reservations),
+            &mut budget,
+            &mut intents,
+        );
+        // Recovering the last missing equivalent does not reopen every
+        // voluntary spending channel in the same decision. Let the paid
+        // line order become part of the next observation first, so a
+        // later casualty cannot pair its recovery purchase with fresh
+        // tech, support, or upgrade spending.
+        let opening_core_deficient = opening_core_active || !status.ready;
 
-        if manages_opening {
-            self.residual_construction(
-                obs,
-                construction_context.during_opening_core(),
-                &mut budget,
-                &mut intents,
-            );
-            let status = self.opening_core_production(
-                dials,
-                obs,
-                ProductionContext::new(home_tile, construction_claims)
-                    .with_combat_core_exclusions(combat_core_exclusions)
-                    .with_intelligence(mode.unit_contacts, mode.building_contacts)
-                    .with_public_map(mode.public_map)
-                    .with_producer_lane_reservations(producer_lane_reservations),
-                &mut budget,
-                &mut intents,
-            );
-            // Recovering the last missing equivalent does not reopen every
-            // voluntary spending channel in the same decision. Let the paid
-            // line order become part of the next observation first, so a
-            // later casualty cannot pair its recovery purchase with fresh
-            // tech, support, or upgrade spending.
-            opening_core_deficient = opening_core_active || !status.ready;
-        }
-
-        let opening_bootstrap_reserve = if manages_opening {
-            self.opening_bootstrap_reserve(dials, obs, construction_context, &intents)
-        } else {
-            0
-        };
+        let opening_bootstrap_reserve =
+            self.opening_bootstrap_reserve(dials, obs, construction_context, &intents);
         let opening_bootstrap_active = opening_bootstrap_reserve > 0;
         let shallow_capital_guard = voluntary_scrap_guard.unwrap_or_else(|| {
             if has_ground_objective && !Self::shallow_sentinel_reinforcement(obs, &intents) {
@@ -1664,7 +1635,7 @@ impl UtilityPolicy {
                 0
             }
         });
-        if manages_opening && !opening_core_deficient && !opening_bootstrap_active {
+        if !opening_core_deficient && !opening_bootstrap_active {
             let production_guard = shallow_capital_guard.max(opening_bootstrap_reserve);
             let expansion_capital_promised = self.residual_production(
                 dials,
@@ -4963,27 +4934,13 @@ mod tests {
                 unreachable!()
             };
             assert!(lower.own_strength_scale <= higher.own_strength_scale);
-
-            assert!(lower.opponent_force_memory <= higher.opponent_force_memory);
-            assert!(!lower.coordinated_focus || higher.coordinated_focus);
-            assert!(!lower.coordinated_defense_focus || higher.coordinated_defense_focus);
         }
         let mut scrapheap = dials[0].clone();
         let prime = &dials[3];
         assert!(scrapheap.cadence > prime.cadence);
         assert!(scrapheap.own_strength_scale < prime.own_strength_scale);
-
-        assert!(scrapheap.opponent_force_memory < prime.opponent_force_memory);
-        assert!(!scrapheap.coordinated_focus);
-        assert!(prime.coordinated_focus);
-        assert!(!scrapheap.coordinated_defense_focus);
-        assert!(prime.coordinated_defense_focus);
         scrapheap.cadence = prime.cadence;
         scrapheap.own_strength_scale = prime.own_strength_scale;
-
-        scrapheap.opponent_force_memory = prime.opponent_force_memory;
-        scrapheap.coordinated_focus = prime.coordinated_focus;
-        scrapheap.coordinated_defense_focus = prime.coordinated_defense_focus;
         scrapheap.minimum_core_equivalents = prime.minimum_core_equivalents;
         assert_eq!(&scrapheap, prime);
     }

@@ -236,12 +236,13 @@ impl Brain {
         let oriented_home = orientation.anchor(rear_anchor, rear_size);
         let rear = player_facing_rear_tile(orientation, rear_anchor, rear_size);
         self.exec.mission_decisions.clear();
+        let tuning = DifficultyTuning::for_level(self.mind.profile.difficulty);
         let mut commands = self.exec.maintain_player_facing_with_tactics(
             self.player,
             obs,
             rear,
-            self.dials.coordinated_focus,
-            self.dials.coordinated_defense_focus,
+            tuning.coordinated_focus,
+            tuning.coordinated_defense_focus,
         );
         let maintenance_commands = commands.len();
         let oriented = orientation.observe(obs);
@@ -4779,8 +4780,6 @@ mod tests {
         });
 
         let mut brain = foundry_competition_brain(&scenario);
-
-        brain.dials.minimum_core_equivalents = 0;
         let mut funded_brain = brain.clone();
         let mut funded_state = state.clone();
 
@@ -4815,7 +4814,7 @@ mod tests {
         );
 
         crate::test_support::edit_player(&mut funded_state, PlayerId(0), |item| {
-            item.scrap = promised_scrap
+            item.scrap = promised_scrap + UnitKind::Sentinel.stats().cost
         });
         let funded = funded_brain.act_traced(&funded_state);
         let funded_trace = funded.trace.expect("the funded think is traced");
@@ -4838,7 +4837,11 @@ mod tests {
             .connected_force
             .package
             .expect("the recurring-income surplus admits a concrete package");
-        assert_eq!(package.current_scrap, 0);
+        assert_eq!(
+            package.current_scrap,
+            UnitKind::Sentinel.stats().cost,
+            "only the bank surplus beyond the promise is current capital"
+        );
         assert!(package.forecast_scrap > promised_scrap);
     }
 

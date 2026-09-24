@@ -189,9 +189,7 @@ fn tuning_for(dials: &crate::Dials) -> crate::difficulty::DifficultyTuning {
         .find(|tuning| {
             tuning.cadence == dials.cadence
                 && tuning.minimum_core_equivalents == dials.minimum_core_equivalents
-                && tuning.opponent_force_memory == dials.opponent_force_memory
-                && tuning.coordinated_focus == dials.coordinated_focus
-                && tuning.coordinated_defense_focus == dials.coordinated_defense_focus
+                && tuning.underestimate_own(10_000) == u64::from(dials.own_strength_scale)
         })
         .unwrap_or_else(|| DifficultyTuning::for_level(BotDifficulty::Standard))
 }

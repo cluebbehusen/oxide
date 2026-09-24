@@ -957,7 +957,6 @@ impl<'a> AllocationSession<'a> {
                 )
                 .saturating_add(
                     self.participants.policy.shallow_sentinel_capital_reserve(
-                        self.context.dials,
                         self.context.observation,
                         self.context.home,
                         self.context.public_map,
