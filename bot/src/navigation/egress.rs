@@ -371,14 +371,7 @@ impl GroundEgressCache {
         routes: Vec<Vec<TilePos>>,
         map_size: (i32, i32),
     ) -> GroundEgressCertificate {
-        let cells = usize::try_from(map_size.0)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(map_size.1)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
+        let cells = super::flood::area(map_size.0, map_size.1);
         let mut route_tiles = vec![0; cells.div_ceil(64)];
         for route in &routes {
             for tile in route {
@@ -445,14 +438,7 @@ impl GroundEgressCache {
         obs: &Observation,
         cancellations: FoundationCancellations<'_>,
     ) -> Vec<bool> {
-        let cells = usize::try_from(obs.map_width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(obs.map_height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
+        let cells = super::flood::area(obs.map_width, obs.map_height);
         let mut open = vec![true; cells];
         let mut block = |tile: TilePos| {
             if tile.x >= 0 && tile.y >= 0 && tile.x < obs.map_width && tile.y < obs.map_height {

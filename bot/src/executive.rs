@@ -347,7 +347,7 @@ pub(super) fn weapon_burst_dps100(w: &oxide_sim::stats::WeaponStats) -> u64 {
 
 /// Damage per 100 ticks a weapon set brings against the given movement
 /// domain.
-fn weapon_dps100(
+pub(super) fn weapon_dps100(
     weapons: &[oxide_sim::stats::WeaponStats],
     domain: oxide_sim::stats::Domain,
 ) -> u64 {
@@ -358,7 +358,7 @@ fn weapon_dps100(
         .sum()
 }
 
-fn strength_vs(u: &UnitObs, domain: oxide_sim::stats::Domain) -> u64 {
+pub(crate) fn strength_vs(u: &UnitObs, domain: oxide_sim::stats::Domain) -> u64 {
     u64::from(u.hp) * weapon_dps100(u.kind.stats().weapons, domain)
 }
 

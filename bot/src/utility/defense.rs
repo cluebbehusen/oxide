@@ -140,11 +140,7 @@ impl DefenseProfile {
     }
 
     fn footprint(self, anchor: TilePos) -> PlacementFootprint {
-        PlacementFootprint {
-            anchor,
-            size: self.kind.base_stats().size,
-            blocks_ground: !self.kind.is_stealthy(),
-        }
+        PlacementFootprint::new(self.kind, anchor)
     }
 }
 
@@ -332,14 +328,7 @@ impl<'a> DefenseThinkContext<'a> {
     }
 
     pub(super) fn resource_access_survives(&mut self, kind: BuildingKind, anchor: TilePos) -> bool {
-        let placement = DefenseProfile::for_kind(kind).map_or(
-            PlacementFootprint {
-                anchor,
-                size: kind.base_stats().size,
-                blocks_ground: !kind.is_stealthy(),
-            },
-            |profile| profile.footprint(anchor),
-        );
+        let placement = PlacementFootprint::new(kind, anchor);
         cached_resource_access_survives(
             &self.grounding.construction,
             &mut self.evaluation.construction,
@@ -356,14 +345,7 @@ impl<'a> DefenseThinkContext<'a> {
         let Some(orientation) = self.future_egress_orientation else {
             return true;
         };
-        let placement = DefenseProfile::for_kind(kind).map_or(
-            PlacementFootprint {
-                anchor,
-                size: kind.base_stats().size,
-                blocks_ground: !kind.is_stealthy(),
-            },
-            |profile| profile.footprint(anchor),
-        );
+        let placement = PlacementFootprint::new(kind, anchor);
         cached_future_ground_producer_egress_survives(
             &self.grounding.construction,
             orientation,
@@ -378,14 +360,7 @@ impl<'a> DefenseThinkContext<'a> {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> Option<u32> {
-        let placement = DefenseProfile::for_kind(kind).map_or(
-            PlacementFootprint {
-                anchor,
-                size: kind.base_stats().size,
-                blocks_ground: !kind.is_stealthy(),
-            },
-            |profile| profile.footprint(anchor),
-        );
+        let placement = PlacementFootprint::new(kind, anchor);
         cached_builder_travel_cost(
             &self.grounding.construction,
             &mut self.evaluation.construction,
@@ -511,11 +486,7 @@ impl<'a> DefenseThinkContext<'a> {
             }
             return cost;
         }
-        let footprint = PlacementFootprint {
-            anchor,
-            size: defense.base_stats().size,
-            blocks_ground: !defense.is_stealthy(),
-        };
+        let footprint = PlacementFootprint::new(defense, anchor);
         let movement_domain = if unit.kind.stats().domain == Domain::Air {
             DefenseDomain::Air
         } else {

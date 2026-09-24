@@ -2185,7 +2185,7 @@ fn current_air_defense(
     }
 }
 
-fn current_operational_aa_source(
+pub(super) fn current_operational_aa_source(
     intelligence: &StrategicIntelligence,
     source: AirDefenseSource,
 ) -> bool {

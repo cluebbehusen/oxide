@@ -141,14 +141,7 @@ impl BlockedGroundLayout {
     ) -> Self {
         let width = public_map.map_width();
         let height = public_map.map_height();
-        let cells = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
+        let cells = super::flood::area(width, height);
         let blocked = (0..cells)
             .map(|index| {
                 let index = i32::try_from(index).unwrap_or(i32::MAX);
@@ -457,14 +450,7 @@ impl PublicGroundDistances {
         });
         let width = public_map.map_width();
         let height = public_map.map_height();
-        let cells = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .unwrap_or(0);
+        let cells = super::flood::area(width, height);
         let terrain = public_map.regions();
         let open = (0..cells)
             .map(|index| {

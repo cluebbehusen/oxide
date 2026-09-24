@@ -156,10 +156,7 @@ impl Orientation {
             .chain(o.ally_buildings.iter_mut())
             .chain(o.enemy_buildings.iter_mut())
         {
-            b.anchor = self.anchor(b.anchor, {
-                let (w, h) = b.kind.base_stats().size;
-                (w, h)
-            });
+            b.anchor = self.anchor(b.anchor, b.kind.base_stats().size);
         }
         for (pos, _) in o.known_scrap.iter_mut().chain(o.known_wrecks.iter_mut()) {
             *pos = self.tile(*pos);
@@ -260,10 +257,7 @@ impl Orientation {
             .map(|i| match i {
                 Intent::Build { kind, anchor } => Intent::Build {
                     kind,
-                    anchor: self.anchor(anchor, {
-                        let (w, h) = kind.base_stats().size;
-                        (w, h)
-                    }),
+                    anchor: self.anchor(anchor, kind.base_stats().size),
                 },
                 Intent::BuildWith {
                     builder,
@@ -272,10 +266,7 @@ impl Orientation {
                 } => Intent::BuildWith {
                     builder,
                     kind,
-                    anchor: self.anchor(anchor, {
-                        let (w, h) = kind.base_stats().size;
-                        (w, h)
-                    }),
+                    anchor: self.anchor(anchor, kind.base_stats().size),
                 },
                 Intent::FormArmy { staging, size } => Intent::FormArmy {
                     staging: self.tile(staging),

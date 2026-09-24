@@ -17,7 +17,7 @@ use super::allocation::{
     Confidence, ExecutionSafety, ProposalCase, StandingForceKey, StandingForceServiceKey,
     StrategicValue, TimeToImpact, Urgency,
 };
-use super::executive::{full_ground_strength, ground_strength, weapon_burst_dps100};
+use super::executive::{full_ground_strength, ground_strength, weapon_dps100};
 use super::intelligence::{ContactEvidence, StrategicIntelligence};
 #[cfg(test)]
 use super::navigation::commands::RouteProjection;
@@ -1403,14 +1403,8 @@ fn threat_summary(now: Tick, intelligence: &StrategicIntelligence) -> ThreatSumm
     for contact in intelligence.buildings() {
         if contact.built && contact.kind.tier_stats(contact.tier).can_fight() {
             let stats = contact.kind.tier_stats(contact.tier);
-            let strength = u64::from(contact.hp).saturating_mul(
-                stats
-                    .weapons
-                    .iter()
-                    .filter(|weapon| weapon.targets.covers(Domain::Ground))
-                    .map(weapon_burst_dps100)
-                    .sum(),
-            );
+            let strength =
+                u64::from(contact.hp).saturating_mul(weapon_dps100(stats.weapons, Domain::Ground));
             summary
                 .defenses
                 .add(contact.evidence, contact.confidence_at(now), strength);
@@ -1420,14 +1414,7 @@ fn threat_summary(now: Tick, intelligence: &StrategicIntelligence) -> ThreatSumm
 }
 
 fn combat_strength(kind: UnitKind, hp: u32, target: Domain) -> u64 {
-    u64::from(hp).saturating_mul(
-        kind.stats()
-            .weapons
-            .iter()
-            .filter(|weapon| weapon.targets.covers(target))
-            .map(weapon_burst_dps100)
-            .sum(),
-    )
+    u64::from(hp).saturating_mul(weapon_dps100(kind.stats().weapons, target))
 }
 
 fn strength_equivalents(missing: u64, sentinel_strength: u64) -> u32 {
@@ -2036,14 +2023,7 @@ fn hostile_defense_demands(now: Tick, intelligence: &StrategicIntelligence) -> V
                 StandingGroundTarget::footprint(contact.anchor, stats.size),
                 contact.evidence,
                 contact.confidence_at(now),
-                u64::from(contact.hp).saturating_mul(
-                    stats
-                        .weapons
-                        .iter()
-                        .filter(|weapon| weapon.targets.covers(Domain::Ground))
-                        .map(weapon_burst_dps100)
-                        .sum(),
-                ),
+                u64::from(contact.hp).saturating_mul(weapon_dps100(stats.weapons, Domain::Ground)),
             )
         })
         .collect()

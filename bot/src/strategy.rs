@@ -5125,7 +5125,7 @@ fn cluster_air_defense(
         match source.evidence {
             ContactEvidence::Current => {
                 let Some(target) = current_air_defense_target(intel, source.source) else {
-                    if current_air_defense_is_operational(intel, source.source) {
+                    if force_package::current_operational_aa_source(intel, source.source) {
                         current_coverage = true;
                     }
                     continue;
@@ -5307,36 +5307,6 @@ fn current_air_defense_target(
             Some(Target::Building(id))
         }
         AirDefenseSource::Building { .. } => None,
-    }
-}
-
-fn current_air_defense_is_operational(
-    intel: &StrategicIntelligence,
-    source: AirDefenseSource,
-) -> bool {
-    match source {
-        AirDefenseSource::Unit { id, kind, tile } => intel.units().iter().any(|contact| {
-            contact.id == id
-                && contact.kind == kind
-                && contact.tile == tile
-                && contact.evidence == ContactEvidence::Current
-                && contact.hp > 0
-        }),
-        AirDefenseSource::Building {
-            id: Some(id),
-            player,
-            kind,
-            anchor,
-        } => intel.buildings().iter().any(|contact| {
-            contact.id == Some(id)
-                && contact.player == player
-                && contact.kind == kind
-                && contact.anchor == anchor
-                && contact.evidence == ContactEvidence::Current
-                && contact.built
-                && contact.hp > 0
-        }),
-        AirDefenseSource::Building { id: None, .. } => false,
     }
 }
 
@@ -5782,7 +5752,7 @@ fn current_cluster_suppression_needs(
     let mut needs = CurrentSuppressionNeeds::default();
     for source in target_cluster_air_defense(intel, cluster).sources {
         if source.evidence != ContactEvidence::Current
-            || !current_air_defense_is_operational(intel, source.source)
+            || !force_package::current_operational_aa_source(intel, source.source)
         {
             continue;
         }
