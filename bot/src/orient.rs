@@ -244,6 +244,9 @@ impl Orientation {
     pub fn army(&self, mut a: super::executive::Army) -> super::executive::Army {
         a.staging = self.tile(a.staging);
         a.target = a.target.map(|t| self.tile(t));
+        if let Some(mission) = &mut a.mission {
+            self.mission(mission);
+        }
         a
     }
 
@@ -784,6 +787,13 @@ mod tests {
         assert_eq!(orientation.emit(positionless.clone()), positionless);
 
         let army = Army {
+            mission: Some(crate::executive::ArmyMission {
+                purpose: crate::executive::ArmyPurpose::Recover,
+                goal: position,
+                accepted_at: 3,
+                deadline: 33,
+                score: 0,
+            }),
             id: ArmyId(1),
             members: vec![UnitId(1)],
             state: ArmyState::Pushing,
@@ -800,6 +810,8 @@ mod tests {
             oriented_army.target,
             Some(orientation.tile(TilePos::new(3, 4)))
         );
+        assert_eq!(oriented_army.mission.as_ref().unwrap().goal, tile);
+        assert_eq!(orientation.army(oriented_army.clone()), army);
         assert_eq!(oriented_army.members, army.members);
         assert_eq!(oriented_army.focus, army.focus);
         assert_eq!(oriented_army.progress, army.progress);

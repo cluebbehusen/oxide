@@ -1214,7 +1214,7 @@ impl UtilityPolicy {
                 // interrupting members mid-swing — auto-acquire handles
                 // the last few tiles better than micromanagement does.
                 if should_march(army, threat)
-                    && (self.army_reaches(obs, &mut known_routes, army, threat, None))
+                    && (self.army_reaches(obs, &mut known_routes, &army.members, threat, None))
                 {
                     intents.push(Intent::PushArmy {
                         army: army.id,
@@ -1324,7 +1324,7 @@ impl UtilityPolicy {
                 })
             })
             && should_march(army, target)
-            && (self.army_reaches(obs, &mut known_routes, army, target, None))
+            && (self.army_reaches(obs, &mut known_routes, &army.members, target, None))
         {
             intents.push(Intent::PushArmy {
                 army: army.id,
@@ -1346,14 +1346,14 @@ impl UtilityPolicy {
         &self,
         obs: &'a Observation,
         routes: &mut Option<crate::navigation::commands::RouteProjection<'a>>,
-        army: &Army,
+        members: &[UnitId],
         target: TilePos,
         public_map: Option<&'a PublicMapBriefing>,
     ) -> bool {
         let mut members: Vec<_> = obs
             .my_units
             .iter()
-            .filter(|unit| army.members.contains(&unit.id))
+            .filter(|unit| members.contains(&unit.id))
             .collect();
         members.sort_unstable_by_key(|unit| unit.id);
         let Some(goals) = self.ground_attack_goals(obs, target, members.len()) else {
@@ -1639,17 +1639,11 @@ mod tests {
             fighter(3, TilePos::new(6, 6)),
             fighter(4, TilePos::new(6, 7)),
         ];
-        let army = Army {
-            id: ArmyId(7),
-            members: units.iter().map(|unit| unit.id).collect(),
-            state: ArmyState::Staging,
-            staging: TilePos::new(6, 6),
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let army = Army::staging(
+            ArmyId(7),
+            units.iter().map(|unit| unit.id).collect(),
+            TilePos::new(6, 6),
+        );
         let obs = Observation::from_data(ObservationData {
             tick: 20_000,
             map_width: 40,
@@ -1796,7 +1790,6 @@ mod tests {
 
     #[derive(Clone)]
     struct MissionRoster {
-        missions: Vec<(ArmyId, crate::executive::ArmyMission)>,
         unavailable: Vec<UnitId>,
         enlisted: Vec<UnitId>,
         tuning: DifficultyTuning,
@@ -1818,7 +1811,6 @@ mod tests {
                     experience: &self.experience,
                 },
                 ground_missions: Some(GroundMissionInputs {
-                    missions: &self.inputs.missions,
                     unavailable: &self.inputs.unavailable,
                     enlisted: &self.inputs.enlisted,
                     tuning: self.inputs.tuning,
@@ -1863,17 +1855,7 @@ mod tests {
                     member
                 })
                 .collect();
-            armies.push(Army {
-                id: ArmyId(id),
-                members,
-                state: ArmyState::Staging,
-                staging: tile,
-                target: None,
-                focus: None,
-                progress: None,
-                issued: None,
-                bounces: 0,
-            });
+            armies.push(Army::staging(ArmyId(id), members, tile));
         }
         for (id, tile) in [(100, TilePos::new(10, 3)), (101, TilePos::new(35, 3))] {
             let mut enemy = fighter(id, tile);
@@ -1886,7 +1868,6 @@ mod tests {
         let mission = MissionFixture {
             battlefield: battlefield.assessment().clone(),
             inputs: MissionRoster {
-                missions: Vec::new(),
                 unavailable: Vec::new(),
                 enlisted: armies
                     .iter()
@@ -2053,17 +2034,14 @@ mod tests {
     #[test]
     fn an_accepted_defender_is_credited_before_a_nearer_unassigned_body() {
         use crate::executive::{ArmyMission, ArmyPurpose};
-        let (obs, armies, mut policy, dials, mut mission) = mission_fixture();
-        mission.inputs.missions = vec![(
-            ArmyId(2),
-            ArmyMission {
-                purpose: ArmyPurpose::Defend(BuildingId(1)),
-                goal: TilePos::new(10, 3),
-                accepted_at: obs.tick - 24,
-                deadline: obs.tick + 1700,
-                score: 1024,
-            },
-        )];
+        let (obs, mut armies, mut policy, dials, mission) = mission_fixture();
+        armies[2].mission = Some(ArmyMission {
+            purpose: ArmyPurpose::Defend(BuildingId(1)),
+            goal: TilePos::new(10, 3),
+            accepted_at: obs.tick - 24,
+            deadline: obs.tick + 1700,
+            score: 1024,
+        });
         let mut intents = Vec::new();
         policy.army(
             &dials,
@@ -2156,16 +2134,13 @@ mod tests {
         let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         let inputs = &mut mission.inputs;
-        inputs.missions.push((
-            ArmyId(0),
-            ArmyMission {
-                purpose: ArmyPurpose::Defend(BuildingId(1)),
-                goal: TilePos::new(3, 3),
-                accepted_at: 1190,
-                deadline: 1800,
-                score: 1000,
-            },
-        ));
+        armies[0].mission = Some(ArmyMission {
+            purpose: ArmyPurpose::Defend(BuildingId(1)),
+            goal: TilePos::new(3, 3),
+            accepted_at: 1190,
+            deadline: 1800,
+            score: 1000,
+        });
         inputs.tuning.attention_slots = 0;
         mission.battlefield = Default::default();
         armies[0].state = ArmyState::Engaging;
@@ -2200,21 +2175,18 @@ mod tests {
     #[test]
     fn returned_mission_reopens_reserve_without_fresh_attention() {
         use crate::executive::{ArmyMission, ArmyPurpose};
-        let (mut obs, armies, mut policy, dials, mut mission) = mission_fixture();
+        let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         mission.battlefield = Default::default();
         let inputs = &mut mission.inputs;
         inputs.tuning.attention_slots = 0;
-        inputs.missions.push((
-            armies[0].id,
-            ArmyMission {
-                purpose: ArmyPurpose::Recover,
-                goal: armies[0].staging,
-                accepted_at: 1000,
-                deadline: 1800,
-                score: 0,
-            },
-        ));
+        armies[0].mission = Some(ArmyMission {
+            purpose: ArmyPurpose::Recover,
+            goal: armies[0].staging,
+            accepted_at: 1000,
+            deadline: 1800,
+            score: 0,
+        });
         let mut intents = Vec::new();
         policy.army(
             &dials,
@@ -2246,28 +2218,25 @@ mod tests {
     #[test]
     fn pressure_survives_reobserving_its_remembered_building() {
         use crate::executive::{ArmyMission, ArmyPurpose};
-        let (mut obs, armies, mut policy, dials, mut mission) = mission_fixture();
+        let (mut obs, mut armies, mut policy, dials, mut mission) = mission_fixture();
         obs.enemy_units.clear();
         let objective = defense(200, BuildingKind::Foundry, TilePos::new(40, 6));
         obs.enemy_buildings = vec![objective.clone()];
         mission.battlefield = Default::default();
-        mission.inputs.missions = vec![(
-            armies[0].id,
-            ArmyMission {
-                purpose: ArmyPurpose::Pressure(crate::executive::ArmyObjective::from_building(
-                    &BuildingObs {
-                        provisional: false,
-                        id: BuildingId(u32::MAX),
-                        seen: false,
-                        ..objective.clone()
-                    },
-                )),
-                goal: objective.anchor,
-                accepted_at: obs.tick - 240,
-                deadline: obs.tick + 1560,
-                score: 1000,
-            },
-        )];
+        armies[0].mission = Some(ArmyMission {
+            purpose: ArmyPurpose::Pressure(crate::executive::ArmyObjective::from_building(
+                &BuildingObs {
+                    provisional: false,
+                    id: BuildingId(u32::MAX),
+                    seen: false,
+                    ..objective.clone()
+                },
+            )),
+            goal: objective.anchor,
+            accepted_at: obs.tick - 240,
+            deadline: obs.tick + 1560,
+            score: 1000,
+        });
         let mut intents = Vec::new();
         policy.army(
             &dials,
@@ -2285,7 +2254,7 @@ mod tests {
             "reobserving the objective must retain its mission: {intents:?}"
         );
 
-        let committed = mission.inputs.missions.clone();
+        let committed = armies[0].mission.clone();
         obs.enemy_buildings[0].id = BuildingId(u32::MAX);
         obs.enemy_buildings[0].seen = false;
         policy.army(
@@ -2300,7 +2269,7 @@ mod tests {
             &mut intents,
         );
         assert!(intents.is_empty(), "the same remembered site remains valid");
-        assert_eq!(mission.inputs.missions, committed);
+        assert_eq!(armies[0].mission, committed);
 
         obs.enemy_buildings[0].anchor.x += 4;
         policy.army(
@@ -2341,12 +2310,12 @@ mod tests {
         armies[0].members = obs.my_units.iter().map(|unit| unit.id).collect();
         armies.truncate(1);
         mission.battlefield = Default::default();
-        let choose = |policy: &mut UtilityPolicy, mission: &MissionFixture| {
+        let choose = |policy: &mut UtilityPolicy, armies: &[Army]| {
             let mut intents = Vec::new();
             policy.army(
                 &dials,
                 &obs,
-                &armies,
+                armies,
                 TilePos::new(3, 3),
                 mission.mode(),
                 &mut intents,
@@ -2360,7 +2329,7 @@ mod tests {
                 _ => None,
             })
         };
-        let score = choose(&mut policy, &mission)
+        let score = choose(&mut policy, &armies)
             .expect("a useful fresh objective")
             .score;
         for (age, prior_score, redirect) in [
@@ -2369,21 +2338,18 @@ mod tests {
             (300, score * 4 / 5, true),
         ] {
             let mut trial = policy.clone();
-            let mut trial_mission = mission.clone();
-            trial_mission.inputs.missions = vec![(
-                armies[0].id,
-                ArmyMission {
-                    purpose: ArmyPurpose::Pressure(crate::executive::ArmyObjective::from_building(
-                        &obs.enemy_buildings[1],
-                    )),
-                    goal: TilePos::new(48, 6),
-                    accepted_at: obs.tick - age,
-                    deadline: obs.tick + 1000,
-                    score: prior_score,
-                },
-            )];
+            let mut trial_armies = armies.clone();
+            trial_armies[0].mission = Some(ArmyMission {
+                purpose: ArmyPurpose::Pressure(crate::executive::ArmyObjective::from_building(
+                    &obs.enemy_buildings[1],
+                )),
+                goal: TilePos::new(48, 6),
+                accepted_at: obs.tick - age,
+                deadline: obs.tick + 1000,
+                score: prior_score,
+            });
             assert_eq!(
-                choose(&mut trial, &trial_mission).is_some(),
+                choose(&mut trial, &trial_armies).is_some(),
                 redirect,
                 "age={age} score={prior_score}"
             );
@@ -4250,17 +4216,11 @@ mod tests {
                 ..hostile(3, UnitKind::Sentinel, TilePos::new(6, 6))
             },
         ];
-        let army = Army {
-            id: ArmyId(7),
-            members: members.iter().map(|unit| unit.id).collect(),
-            state: ArmyState::Staging,
-            staging: TilePos::new(6, 6),
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let army = Army::staging(
+            ArmyId(7),
+            members.iter().map(|unit| unit.id).collect(),
+            TilePos::new(6, 6),
+        );
         let mut obs = Observation::from_data(ObservationData {
             tick: 4_200,
             map_width: 40,
@@ -4409,17 +4369,11 @@ mod tests {
         let units: Vec<_> = (1..=6)
             .map(|id| fighter(id, TilePos::new(17 + i32::try_from(id % 2).unwrap(), 15)))
             .collect();
-        let army = Army {
-            id: ArmyId(7),
-            members: units.iter().map(|unit| unit.id).collect(),
-            state: ArmyState::Staging,
-            staging: TilePos::new(18, 15),
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let army = Army::staging(
+            ArmyId(7),
+            units.iter().map(|unit| unit.id).collect(),
+            TilePos::new(18, 15),
+        );
         let mut obs = Observation::from_data(ObservationData {
             tick: 4_200,
             map_width: 40,
@@ -4660,17 +4614,11 @@ mod tests {
             let units: Vec<_> = (1..=6)
                 .map(|id| sentinel(id, staging.offset(i32::try_from(id % 2).unwrap(), 0)))
                 .collect();
-            let army = Army {
-                id: ArmyId(7),
-                members: units.iter().map(|unit| unit.id).collect(),
-                state: ArmyState::Staging,
+            let army = Army::staging(
+                ArmyId(7),
+                units.iter().map(|unit| unit.id).collect(),
                 staging,
-                target: None,
-                focus: None,
-                progress: None,
-                issued: None,
-                bounces: 0,
-            };
+            );
             (units, army)
         };
         let observation = |units: Vec<UnitObs>, enemy_units: Vec<UnitObs>| {
@@ -4948,17 +4896,11 @@ mod tests {
                 )
             }))
             .collect();
-        let mut army = Army {
-            id: ArmyId(7),
-            members: obs.my_units.iter().map(|unit| unit.id).collect(),
-            state: ArmyState::Staging,
-            staging: TilePos::new(6, 6),
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let mut army = Army::staging(
+            ArmyId(7),
+            obs.my_units.iter().map(|unit| unit.id).collect(),
+            TilePos::new(6, 6),
+        );
 
         let dials = [BotDifficulty::Veteran, BotDifficulty::Prime].map(|difficulty| {
             let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
@@ -5113,17 +5055,11 @@ mod tests {
             })
             .collect();
         observed.enemy_buildings = vec![defense(20, BuildingKind::Foundry, objective)];
-        let army = Army {
-            id: ArmyId(7),
-            members: observed.my_units.iter().map(|unit| unit.id).collect(),
-            state: ArmyState::Staging,
-            staging: TilePos::new(6, 6),
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let army = Army::staging(
+            ArmyId(7),
+            observed.my_units.iter().map(|unit| unit.id).collect(),
+            TilePos::new(6, 6),
+        );
         let dials = BotDifficulty::ALL.map(|difficulty| {
             let profile = crate::profile::ResolvedProfile::resolve(BotConfig::scripted(
                 difficulty,
@@ -5323,17 +5259,11 @@ mod tests {
                             )
                         })
                         .collect();
-                    let mut army = Army {
-                        id: ArmyId(7),
-                        members: obs.my_units.iter().map(|unit| unit.id).collect(),
-                        state: ArmyState::Staging,
-                        staging: TilePos::new(6, 6),
-                        target: None,
-                        focus: None,
-                        progress: None,
-                        issued: None,
-                        bounces: 0,
-                    };
+                    let mut army = Army::staging(
+                        ArmyId(7),
+                        obs.my_units.iter().map(|unit| unit.id).collect(),
+                        TilePos::new(6, 6),
+                    );
                     let mut policy = UtilityPolicy::new();
                     policy.state.desperate = true;
                     policy.state.scouted_at = obs.tick;
@@ -5404,17 +5334,11 @@ mod tests {
                 )
             })
             .collect();
-        let army = Army {
-            id: ArmyId(7),
-            members: open.my_units.iter().map(|unit| unit.id).collect(),
-            state: ArmyState::Staging,
-            staging: TilePos::new(6, 6),
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let army = Army::staging(
+            ArmyId(7),
+            open.my_units.iter().map(|unit| unit.id).collect(),
+            TilePos::new(6, 6),
+        );
         let mirror = TilePos::new(open.map_width - 1 - home.x, open.map_height - 1 - home.y);
         let decide = |obs: &Observation| {
             let mut policy = UtilityPolicy::new();

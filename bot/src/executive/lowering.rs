@@ -236,13 +236,14 @@ impl Executive {
                     }
                     let mut unavailable = implicit_reserved.clone();
                     unavailable.extend_from_slice(&claimed);
-                    if let Some(id) =
+                    if let Some(body) =
                         self.form_exact_army(obs, *army, members, *staging, *minimum, &unavailable)
                     {
+                        let id = body.id;
+                        body.mission = Some(mission.clone());
                         self.mission_decisions[receipt].army = Some(id.0);
                         self.mission_decisions[receipt].disposition = MissionDisposition::Accepted;
                         claimed.extend(members.iter().copied());
-                        self.missions.insert(id, mission.clone());
                         self.watch_ground_mission(obs, id, mission);
                         if reserve {
                             out.push(PlayerCommand {
@@ -302,7 +303,7 @@ impl Executive {
                         Some(MissionDisposition::OwnedElsewhere)
                     } else if mission.deadline <= obs.tick || mission.accepted_at > obs.tick {
                         Some(MissionDisposition::InvalidDeadline)
-                    } else if self.missions.get(army) == Some(mission) {
+                    } else if body.mission.as_ref() == Some(mission) {
                         Some(MissionDisposition::Unchanged)
                     } else {
                         None
@@ -327,7 +328,7 @@ impl Executive {
                         continue;
                     }
                     self.mission_decisions[receipt].disposition = MissionDisposition::Accepted;
-                    self.missions.insert(*army, mission.clone());
+                    body.mission = Some(mission.clone());
                     body.members.clone_from(members);
                     body.target = if recover { None } else { Some(mission.goal) };
                     body.focus = None;
@@ -392,17 +393,7 @@ impl Executive {
                         } else {
                             let id = ArmyId(self.next_army);
                             self.next_army += 1;
-                            self.armies.push(Army {
-                                id,
-                                members: draft,
-                                state: ArmyState::Staging,
-                                staging: *staging,
-                                target: None,
-                                focus: None,
-                                progress: None,
-                                issued: None,
-                                bounces: 0,
-                            });
+                            self.armies.push(Army::staging(id, draft, *staging));
                         }
                     }
                 }
@@ -1133,6 +1124,7 @@ mod tests {
         });
         let executive = Executive {
             armies: vec![Army {
+                mission: None,
                 id: ArmyId(7),
                 members: (1..=6).map(UnitId).collect(),
                 state: ArmyState::Staging,
@@ -1294,45 +1286,61 @@ mod tests {
     #[test]
     fn remembered_ground_objective_reacquisition_is_not_completion() {
         use crate::experience::Outcome;
-        let (mut obs, mut executive) = target_holding_position();
-        let mut building = BuildingObs {
-            hp: 1000,
-            seen: false,
-            ..crate::test_support::building(
-                u32::MAX,
-                PlayerId(1),
-                BuildingKind::Foundry,
-                TilePos::new(25, 9),
-            )
-        };
-        let mission = ArmyMission {
-            purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(&building)),
-            goal: building.anchor,
-            accepted_at: obs.tick,
-            deadline: obs.tick + 1800,
-            score: 100,
-        };
-        obs.enemy_buildings.push(building.clone());
-        executive.missions.insert(ArmyId(7), mission.clone());
-        executive.watch_ground_mission(&obs, ArmyId(7), &mission);
-        building.id = BuildingId(900);
-        building.seen = true;
-        obs.enemy_buildings[0] = building.clone();
-        obs.tick += 12;
-        executive.observe_ground_outcomes(&obs);
-        assert!(executive.ground_outcomes[&ArmyId(7)].pending.is_empty());
-        obs.enemy_buildings[0].hp -= 100;
-        executive.observe_ground_outcomes(&obs);
-        obs.enemy_buildings.clear();
-        obs.visible[9 * 40 + 25] = false;
-        executive.observe_ground_outcomes(&obs);
-        assert!(executive.ground_outcomes[&ArmyId(7)].pending.is_empty());
-        obs.visible[9 * 40 + 25] = true;
-        executive.observe_ground_outcomes(&obs);
-        let report = &executive.ground_outcomes[&ArmyId(7)].pending[0];
-        assert_eq!(report.outcome, Outcome::Complete);
-        assert_eq!(report.observed_progress, 100);
-        assert_eq!(executive.missions[&ArmyId(7)], mission);
+        for transfer in [false, true] {
+            let (mut obs, mut executive) = target_holding_position();
+            let mut building = BuildingObs {
+                hp: 1000,
+                seen: false,
+                ..crate::test_support::building(
+                    u32::MAX,
+                    PlayerId(1),
+                    BuildingKind::Foundry,
+                    TilePos::new(25, 9),
+                )
+            };
+            let mission = ArmyMission {
+                purpose: ArmyPurpose::Pressure(ArmyObjective::from_building(&building)),
+                goal: building.anchor,
+                accepted_at: obs.tick,
+                deadline: obs.tick + 1800,
+                score: 100,
+            };
+            obs.enemy_buildings.push(building.clone());
+            executive.armies[0].mission = Some(mission.clone());
+            executive.watch_ground_mission(&obs, ArmyId(7), &mission);
+            building.id = BuildingId(900);
+            building.seen = true;
+            obs.enemy_buildings[0] = building.clone();
+            obs.tick += 12;
+            executive.observe_ground_outcomes(&obs);
+            assert!(executive.ground_outcomes[&ArmyId(7)].pending.is_empty());
+            obs.enemy_buildings[0].hp -= 100;
+            executive.observe_ground_outcomes(&obs);
+            obs.enemy_buildings.clear();
+            obs.visible[9 * 40 + 25] = false;
+            executive.observe_ground_outcomes(&obs);
+            assert!(executive.ground_outcomes[&ArmyId(7)].pending.is_empty());
+            if transfer {
+                let members = executive.armies[0].members.clone();
+                executive.apply(
+                    obs.me,
+                    &obs,
+                    &[Intent::MoveUnits {
+                        units: members,
+                        goal: TilePos::new(2, 2),
+                    }],
+                );
+                assert!(executive.armies.is_empty());
+            }
+            obs.visible[9 * 40 + 25] = true;
+            executive.observe_ground_outcomes(&obs);
+            let report = &executive.ground_outcomes[&ArmyId(7)].pending[0];
+            assert_eq!(report.outcome, Outcome::Complete);
+            assert_eq!(report.observed_progress, 100);
+            assert_eq!(executive.take_ground_reports().len(), 1);
+            executive.observe_ground_outcomes(&obs);
+            assert!(executive.take_ground_reports().is_empty());
+        }
     }
 
     #[test]
@@ -1367,7 +1375,12 @@ mod tests {
                     deadline: obs.tick + 1800,
                     score: 100,
                 };
-                executive.missions.insert(id, mission.clone());
+                executive
+                    .armies
+                    .iter_mut()
+                    .find(|army| army.id == id)
+                    .unwrap()
+                    .mission = Some(mission.clone());
                 executive.watch_ground_mission(&obs, id, &mission);
             }
             assert_eq!(
@@ -1395,7 +1408,7 @@ mod tests {
             deadline: obs.tick + 1800,
             score: 100,
         };
-        executive.missions.insert(ArmyId(7), mission.clone());
+        executive.armies[0].mission = Some(mission.clone());
         executive.watch_ground_mission(&obs, ArmyId(7), &mission);
         obs.tick = mission.deadline;
         executive.observe_ground_outcomes(&obs);
@@ -1428,17 +1441,21 @@ mod tests {
             score: 100,
         };
         for id in [ArmyId(7), ArmyId(8)] {
-            executive.missions.insert(id, mission.clone());
+            executive
+                .armies
+                .iter_mut()
+                .find(|army| army.id == id)
+                .unwrap()
+                .mission = Some(mission.clone());
             executive.watch_ground_mission(&obs, id, &mission);
         }
         obs.tick += 12;
         obs.my_units.clear();
-        executive.observe_ground_outcomes(&obs);
-        let reports: Vec<_> = executive
-            .ground_outcomes
-            .values()
-            .flat_map(|journal| journal.pending.iter().cloned())
-            .collect();
+        executive.maintain_player_facing(obs.me, &obs, TilePos::new(2, 2));
+        assert!(executive.armies.is_empty());
+        let reports = executive.take_ground_reports();
+        assert!(executive.ground_outcomes.is_empty());
+        assert!(executive.take_ground_reports().is_empty());
         assert_eq!(reports.len(), 2);
         assert_ne!(reports[0].id, reports[1].id);
         assert_eq!(reports[0].credit, reports[1].credit);
@@ -1483,7 +1500,7 @@ mod tests {
                 deadline: obs.tick + 1800,
                 score: 100,
             };
-            executive.missions.insert(ArmyId(7), mission.clone());
+            executive.armies[0].mission = Some(mission.clone());
             executive.watch_ground_mission(&obs, ArmyId(7), &mission);
             if engaged {
                 executive.armies[0].state = ArmyState::Engaging;
@@ -1532,7 +1549,7 @@ mod tests {
                 deadline: obs.tick + 1800,
                 score: 100,
             };
-            executive.missions.insert(ArmyId(7), mission.clone());
+            executive.armies[0].mission = Some(mission.clone());
             executive.watch_ground_mission(&obs, ArmyId(7), &mission);
             if engaged {
                 executive.armies[0].state = ArmyState::Engaging;
@@ -1556,6 +1573,62 @@ mod tests {
     }
 
     #[test]
+    fn reorganization_preserves_the_previous_missions_pending_outcome() {
+        let (mut obs, mut executive) = target_holding_position();
+        let goal = executive.armies[0].staging;
+        for unit in &mut obs.my_units {
+            unit.tile = goal;
+            unit.idle = true;
+        }
+        let members = executive.armies[0].members.clone();
+        let mut mission = ArmyMission {
+            purpose: ArmyPurpose::Pressure(ArmyObjective {
+                id: None,
+                player: PlayerId(1),
+                kind: BuildingKind::Foundry,
+                anchor: TilePos::new(25, 9),
+            }),
+            goal,
+            accepted_at: obs.tick,
+            deadline: obs.tick + 1800,
+            score: 100,
+        };
+        for purpose in [mission.purpose, ArmyPurpose::Reserve] {
+            mission.purpose = purpose;
+            executive.apply(
+                PlayerId(0),
+                &obs,
+                &[Intent::AssignArmyMission {
+                    army: ArmyId(7),
+                    members: members.clone(),
+                    mission: mission.clone(),
+                }],
+            );
+        }
+        let mut executive: Executive =
+            serde_json::from_value(serde_json::to_value(&executive).unwrap()).unwrap();
+        let expected = executive.ground_outcomes[&ArmyId(7)].pending.clone();
+        assert_eq!(expected.len(), 1);
+        executive.apply(
+            PlayerId(0),
+            &obs,
+            &[Intent::FormArmyWith {
+                army: None,
+                members,
+                staging: goal,
+                mission,
+                minimum: 2,
+            }],
+        );
+        assert_eq!(executive.armies.len(), 1);
+        assert_ne!(executive.armies[0].id, ArmyId(7));
+        executive.observe_ground_outcomes(&obs);
+        assert_eq!(executive.take_ground_reports(), expected);
+        assert!(!executive.ground_outcomes.contains_key(&ArmyId(7)));
+        assert!(executive.take_ground_reports().is_empty());
+    }
+
+    #[test]
     fn returned_mission_can_accept_exact_reinforcements_without_reissuing_return() {
         let (mut obs, mut executive) = target_holding_position();
         let goal = obs.my_units[0].tile;
@@ -1572,7 +1645,12 @@ mod tests {
             deadline: obs.tick + 1800,
             score: 0,
         };
-        executive.missions.insert(id, mission.clone());
+        executive
+            .armies
+            .iter_mut()
+            .find(|army| army.id == id)
+            .unwrap()
+            .mission = Some(mission.clone());
         mission.purpose = ArmyPurpose::Reserve;
         let commands = executive.apply_with_reservations(
             PlayerId(0),
@@ -1694,6 +1772,7 @@ mod tests {
         });
         let mut executive = Executive {
             armies: vec![Army {
+                mission: None,
                 id: ArmyId(7),
                 members: (1..=5).map(UnitId).collect(),
                 state: ArmyState::Staging,

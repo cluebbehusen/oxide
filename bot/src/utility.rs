@@ -3440,17 +3440,7 @@ mod tests {
         obs.my_buildings = vec![standing_building(0, BuildingKind::Foundry, home)];
         obs.my_queues = vec![Vec::new()];
         obs.enemy_units = vec![fighter(20, PlayerId(1), threat)];
-        let army = Army {
-            id: crate::ArmyId(0),
-            members: (0..6).map(UnitId).collect(),
-            state: ArmyState::Staging,
-            staging: home,
-            target: None,
-            focus: None,
-            progress: None,
-            issued: None,
-            bounces: 0,
-        };
+        let army = Army::staging(crate::ArmyId(0), (0..6).map(UnitId).collect(), home);
 
         for difficulty in [
             BotDifficulty::Standard,
