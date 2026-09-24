@@ -2758,6 +2758,7 @@ fn footprint_ring(anchor: TilePos, size: (i32, i32)) -> Vec<TilePos> {
 
 #[cfg(test)]
 mod tests {
+    mod air_signals;
     impl LiftPlanner {
         pub(crate) fn think_unrestricted(
             &mut self,

@@ -601,3 +601,6 @@ pub(crate) fn retained_reservations(
     decision_reservations.dedup();
     decision_reservations
 }
+
+#[cfg(test)]
+mod tests;
