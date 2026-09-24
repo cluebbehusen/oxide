@@ -503,6 +503,58 @@ impl<'a> ReconRoutes<'a> {
     }
 }
 
+pub(crate) struct ReconCommit(ReconAssignment);
+
+impl ReconCommit {
+    pub(crate) fn apply(self, policy: &mut UtilityPolicy, intents: &mut Vec<Intent>) {
+        let work = self.0;
+        if let (Some(id), Some(goal)) = (work.unit, work.dispatch) {
+            intents.push(Intent::MoveUnits {
+                units: vec![id],
+                goal,
+            });
+        }
+        if let ReconObserver::Purchase { producer, kind, .. } = work.proposal.observer
+            && !work.unpaid
+        {
+            *policy
+                .state
+                .reconnaissance
+                .queue_counts
+                .entry((producer, kind))
+                .or_default() += 1;
+        }
+        policy
+            .state
+            .reconnaissance
+            .assignments
+            .insert(work.proposal.question.key, work);
+    }
+}
+
+pub(crate) struct ReconFundingCommit {
+    key: ReconQuestionKey,
+    job: crate::allocation::ScheduledProducerJob,
+    known_units: Option<Vec<UnitId>>,
+}
+
+impl ReconFundingCommit {
+    pub(crate) fn apply(self, policy: &mut UtilityPolicy) {
+        let work = policy
+            .state
+            .reconnaissance
+            .assignments
+            .get_mut(&self.key)
+            .expect("validated reconnaissance assignment remains owned");
+        work.funding = Some(self.job);
+        if let Some(known_units) = self.known_units {
+            work.unpaid = false;
+            work.known_units = known_units;
+        }
+        // The complete producer schedule binds paid occurrences after all updates.
+    }
+}
+
 impl UtilityPolicy {
     fn recon_questions(&self, context: EconomicInvestmentContext<'_>) -> Vec<ReconQuestion> {
         let obs = context.obs;
@@ -1526,13 +1578,12 @@ impl UtilityPolicy {
         proposals
     }
 
-    pub(crate) fn commit_reconnaissance(
-        &mut self,
+    pub(crate) fn prepare_reconnaissance_commit(
+        &self,
         proposal: ReconProposal,
         funding: Option<crate::allocation::ScheduledProducerJob>,
         obs: &Observation,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
+    ) -> Option<ReconCommit> {
         if proposal.observed_at != obs.tick
             || proposal.deadline <= obs.tick
             || self
@@ -1547,7 +1598,7 @@ impl UtilityPolicy {
                 .get(&proposal.question.key)
                 != Some(&proposal.question)
         {
-            return false;
+            return None;
         }
         if let ReconObserver::Purchase { producer, kind, .. } = proposal.observer
             && funding.is_none_or(|job| {
@@ -1556,7 +1607,7 @@ impl UtilityPolicy {
                     || job.ready_at >= proposal.funding_deadline()
             })
         {
-            return false;
+            return None;
         }
         let unpaid = funding.is_some_and(|job| job.enqueued_at > obs.tick);
         let (unit, phase, dispatch) = match proposal.observer {
@@ -1573,12 +1624,8 @@ impl UtilityPolicy {
                             && !obs.my_queued_units.contains(&id)
                     })
                 {
-                    return false;
+                    return None;
                 }
-                intents.push(Intent::MoveUnits {
-                    units: vec![id],
-                    goal: proposal.goal,
-                });
                 (Some(id), ReconPhase::Outbound, Some(proposal.goal))
             }
             ReconObserver::Purchase { .. } | ReconObserver::Queued { .. } => {
@@ -1615,77 +1662,42 @@ impl UtilityPolicy {
                 })
             }
         };
-        if let ReconObserver::Purchase { producer, kind, .. } = proposal.observer
-            && !unpaid
-        {
-            *self
-                .state
-                .reconnaissance
-                .queue_counts
-                .entry((producer, kind))
-                .or_insert(0) += 1;
-        }
-        self.state.reconnaissance.assignments.insert(
-            proposal.question.key,
-            ReconAssignment {
-                proposal,
-                inspected: Default::default(),
-                unit,
-                phase,
-                dispatch,
-                known_units,
-                paid_claim,
-                unpaid,
-                funding,
-            },
-        );
-        true
+        Some(ReconCommit(ReconAssignment {
+            proposal,
+            inspected: Default::default(),
+            unit,
+            phase,
+            dispatch,
+            known_units,
+            paid_claim,
+            unpaid,
+            funding,
+        }))
     }
 
-    pub(crate) fn bind_reconnaissance_funding(
-        &mut self,
+    pub(crate) fn prepare_reconnaissance_funding(
+        &self,
         key: ReconQuestionKey,
         job: crate::allocation::ScheduledProducerJob,
         obs: &Observation,
-    ) -> bool {
-        let Some(work) = self.state.reconnaissance.assignments.get_mut(&key) else {
-            return false;
-        };
+    ) -> Option<ReconFundingCommit> {
+        let work = self.state.reconnaissance.assignments.get(&key)?;
         let ReconObserver::Purchase { producer, kind, .. } = work.proposal.observer else {
-            return false;
+            return None;
         };
         if !work.unpaid
             || job.producer != producer
             || job.kind != kind
             || job.ready_at >= work.proposal.funding_deadline()
         {
-            return false;
+            return None;
         }
-        work.funding = Some(job);
-        if job.enqueued_at == obs.tick {
-            work.unpaid = false;
-            work.known_units = obs.my_units.iter().map(|unit| unit.id).collect();
-            let occurrence = obs
-                .my_buildings
-                .iter()
-                .position(|building| building.id == producer)
-                .and_then(|index| obs.my_queues.get(index))
-                .map_or(0, |queue| {
-                    queue.iter().filter(|queued| **queued == kind).count()
-                });
-            work.paid_claim = Some(crate::allocation::PaidQueueClaim {
-                producer,
-                kind,
-                occurrence,
-            });
-            *self
-                .state
-                .reconnaissance
-                .queue_counts
-                .entry((producer, kind))
-                .or_insert(0) += 1;
-        }
-        true
+        Some(ReconFundingCommit {
+            key,
+            job,
+            known_units: (job.enqueued_at == obs.tick)
+                .then(|| obs.my_units.iter().map(|unit| unit.id).collect()),
+        })
     }
 
     pub(crate) fn bind_reconnaissance_queue_order(
@@ -2037,7 +2049,10 @@ mod tests {
         let (mut obs, mut map, profile) = fixture();
         let mut policy = UtilityPolicy::new();
         let first = proposals(&mut policy, &obs, &map, &profile).remove(0);
-        assert!(policy.commit_reconnaissance(first, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(first, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         let reservations = policy.state.reconnaissance.reservations();
         map.starting_foundries.push(StartingFoundry {
             player: PlayerId(3),
@@ -2101,7 +2116,10 @@ mod tests {
         let ReconObserver::Live(first_unit) = first.observer else {
             panic!("live scout")
         };
-        assert!(policy.commit_reconnaissance(first, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(first, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         obs.tick += 24;
         let second = proposals(&mut policy, &obs, &map, &profile).remove(0);
         let second_key = second.question.key;
@@ -2110,7 +2128,10 @@ mod tests {
         };
         assert_ne!(first_key, second_key);
         assert_ne!(first_unit, second_unit);
-        assert!(policy.commit_reconnaissance(second, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(second, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         assert_eq!(
             policy.state.reconnaissance.reservations(),
             vec![UnitId(100), UnitId(101)]
@@ -2151,7 +2172,10 @@ mod tests {
         let ReconObserver::Live(id) = first.observer else {
             unreachable!()
         };
-        assert!(policy.commit_reconnaissance(first, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(first, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         obs.my_units.retain(|unit| unit.id != id);
         obs.tick += 24;
         proposals(&mut policy, &obs, &map, &profile);
@@ -2169,7 +2193,10 @@ mod tests {
             .expect("safe still-useful question recovers without fresh sight");
         assert!(obs.enemy_units.is_empty() && obs.enemy_buildings.is_empty());
         assert_eq!(retry.deadline, retry_at + HORIZON);
-        assert!(policy.commit_reconnaissance(retry, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(retry, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
     }
 
     #[test]
@@ -2179,7 +2206,10 @@ mod tests {
         let first = proposals(&mut policy, &obs, &map, &profile).remove(0);
         let key = first.question.key;
         let deadline = first.deadline;
-        assert!(policy.commit_reconnaissance(first, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(first, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         obs.tick = deadline;
         let resources = ResourceSnapshot::from_observation(&obs);
         let context = context(&obs, &map, &profile, &resources);
@@ -2235,7 +2265,10 @@ mod tests {
         let ReconObserver::Live(id) = proposal.observer else {
             unreachable!()
         };
-        assert!(policy.commit_reconnaissance(proposal, None, &obs, &mut vec![]));
+        policy
+            .prepare_reconnaissance_commit(proposal, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut vec![]);
         obs.my_units
             .iter_mut()
             .find(|unit| unit.id == id)
@@ -2368,7 +2401,10 @@ mod tests {
         let mut scout = scout;
         scout.tile = first.origin;
         assert_eq!(first.claims().claimed_capital(), 0);
-        assert!(policy.commit_reconnaissance(first, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(first, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         obs.tick += 24;
         let second = proposals(&mut policy, &obs, &map, &profile)
             .into_iter()
@@ -2380,7 +2416,10 @@ mod tests {
             ReconObserver::Queued { occurrence: 1, .. }
         ));
         assert_ne!(first_key, second_key);
-        assert!(policy.commit_reconnaissance(second, None, &obs, &mut Vec::new()));
+        policy
+            .prepare_reconnaissance_commit(second, None, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut Vec::new());
         let mut lost_policy = policy.clone();
         let mut lost_obs = obs.clone();
         lost_obs.tick = ready_at + 1;
@@ -2525,7 +2564,10 @@ mod tests {
         assert!(funding.enqueued_at > obs.tick);
         assert!(funding.forecast_scrap > 0);
         let mut intents = Vec::new();
-        assert!(policy.commit_reconnaissance(proposal.clone(), Some(funding), &obs, &mut intents));
+        policy
+            .prepare_reconnaissance_commit(proposal.clone(), Some(funding), &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut intents);
         assert!(intents.is_empty(), "a funded forecast is not a command");
         assert!(policy.state.reconnaissance.assignments[&key].unpaid);
         assert!(
@@ -2569,7 +2611,11 @@ mod tests {
         let due = allocation.producer_schedule[0];
         assert_eq!(due.enqueued_at, obs.tick);
         assert_eq!(due.forecast_scrap, 0);
-        assert!(policy.bind_reconnaissance_funding(key, due, &obs));
+        policy
+            .prepare_reconnaissance_funding(key, due, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy);
+        policy.bind_reconnaissance_queue_order(&[due], &obs);
         assert!(!policy.state.reconnaissance.assignments[&key].unpaid);
         assert!(
             policy.state.reconnaissance.assignments[&key]

@@ -32,8 +32,6 @@ pub enum BotPhase {
     Reconnaissance,
     /// Observe repair and protection demand across owned assets.
     Support,
-    /// Preserve controller state for atomic allocation rollback.
-    Snapshot,
 }
 
 /// Deterministic work consumed by the incremental planning services this decision.

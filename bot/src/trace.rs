@@ -7,10 +7,10 @@ use super::allocation::{
     AllocationConflict, AllocationError, AllocationResult, CapitalFundingAssignment, ClaimBundle,
     ClaimBundleError, ClaimOwner, Confidence, ConnectedOffenseKey, ConnectedPortfolioContext,
     CoordinatorInputError, DefenseInvestmentKey, ExecutionSafety, ImportedObligation,
-    InvestmentProposal, LegacyChannel, ObligationClass, ObligationKey, OutrankingBasis,
-    ProducerJobClaim, ProposalCase, ProposalDecision, ProposalDisposition, ProposalKey,
-    ProposalRejection, ScheduledProducerJob, StandingForceKey, StandingForceServiceKey,
-    StrategicValue, TimeToImpact, Urgency,
+    InvestmentProposal, ObligationClass, ObligationKey, OutrankingBasis, ProducerJobClaim,
+    ProposalCase, ProposalDecision, ProposalDisposition, ProposalKey, ProposalRejection,
+    ScheduledProducerJob, StandingForceKey, StandingForceServiceKey, StrategicValue, TimeToImpact,
+    Urgency,
 };
 use super::observation::Observation;
 use super::resources::{
@@ -731,17 +731,15 @@ pub enum ConnectedRecoveryReasonTrace {
     PreparationInfeasible,
 }
 
-/// Coordinator-owned admission and rollback gates.
+/// Coordinator-owned admission gates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct GateTrace {
     /// Whether the existing core allowed a new team-relief commitment.
     pub team_relief_core_ready: Option<bool>,
     /// Opening core measured after current planner claims.
     pub opening_core: Option<CoreGateTrace>,
-    /// Whether a speculative team-relief admission was rolled back.
-    pub team_relief_rolled_back: bool,
-    /// Whether a speculative lift admission was rolled back.
-    pub lift_rolled_back: bool,
+    /// Whether fresh lift admission was rejected.
+    pub lift_rejected: bool,
     /// Optional-raid attention calculation.
     pub raid_attention: Option<RaidAttentionTrace>,
 }
@@ -2065,8 +2063,6 @@ pub enum ObligationClassTrace {
     PaidWork,
     /// A previously accepted domain plan.
     PersistentPlan,
-    /// An explicit adapter for an unmigrated channel.
-    Legacy,
 }
 
 impl From<ObligationClass> for ObligationClassTrace {
@@ -2075,7 +2071,6 @@ impl From<ObligationClass> for ObligationClassTrace {
             ObligationClass::Survival => Self::Survival,
             ObligationClass::PaidWork => Self::PaidWork,
             ObligationClass::PersistentPlan => Self::PersistentPlan,
-            ObligationClass::Legacy => Self::Legacy,
         }
     }
 }
@@ -2158,13 +2153,24 @@ pub enum ObligationKeyTrace {
         /// Exact objective anchor at admission.
         anchor: TilePos,
     },
-    /// One explicit not-yet-migrated owner.
-    Legacy {
-        /// Strategic channel behind the adapter.
-        channel: LegacyChannelTrace,
-        /// Stable channel-local identity.
-        sequence: u32,
-    },
+    /// Exact members of an accepted allied relief deployment.
+    TeamRelief,
+    /// Exact members of raid preparation or an active raid.
+    RaidMembers,
+    /// Paid production still owned by raid preparation.
+    RaidPaid,
+    /// Ordinary army members.
+    StandingArmy,
+    /// Accepted lift members.
+    LiftMembers,
+    /// Immediate carrier purchases.
+    LiftPurchases,
+    /// Retained carrier production.
+    LiftProduction,
+    /// Accepted air members.
+    AirMembers,
+    /// Immediate air purchases and reserve.
+    AirPurchases,
 }
 
 impl From<ObligationKey> for ObligationKeyTrace {
@@ -2201,40 +2207,15 @@ impl From<ObligationKey> for ObligationKeyTrace {
             ObligationKey::ConnectedOffense { objective, anchor } => {
                 Self::ConnectedOffense { objective, anchor }
             }
-            ObligationKey::Legacy { channel, sequence } => Self::Legacy {
-                channel: channel.into(),
-                sequence,
-            },
-        }
-    }
-}
-
-/// Explicit unmigrated channel behind a legacy obligation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LegacyChannelTrace {
-    /// Units already enlisted by the Executive's standing army.
-    StandingArmy,
-    /// Allied-base relief.
-    TeamRelief,
-    /// Severed-ground transport.
-    Lift,
-    /// Harassment or resource raid.
-    Raid,
-    /// Already-admitted air operation without a connected force package.
-    StrategicAir,
-    /// Operation-driven Airworks construction.
-    AirworksCapacity,
-}
-
-impl From<LegacyChannel> for LegacyChannelTrace {
-    fn from(value: LegacyChannel) -> Self {
-        match value {
-            LegacyChannel::StandingArmy => Self::StandingArmy,
-            LegacyChannel::TeamRelief => Self::TeamRelief,
-            LegacyChannel::Lift => Self::Lift,
-            LegacyChannel::Raid => Self::Raid,
-            LegacyChannel::StrategicAir => Self::StrategicAir,
+            ObligationKey::TeamRelief => Self::TeamRelief,
+            ObligationKey::RaidMembers => Self::RaidMembers,
+            ObligationKey::RaidPaid => Self::RaidPaid,
+            ObligationKey::StandingArmy => Self::StandingArmy,
+            ObligationKey::LiftMembers => Self::LiftMembers,
+            ObligationKey::LiftPurchases => Self::LiftPurchases,
+            ObligationKey::LiftProduction => Self::LiftProduction,
+            ObligationKey::AirMembers => Self::AirMembers,
+            ObligationKey::AirPurchases => Self::AirPurchases,
         }
     }
 }
@@ -3066,9 +3047,9 @@ pub struct ChannelTraces {
 pub struct ChannelTrace {
     /// State before this think.
     pub before: ChannelState,
-    /// State after this think and any coordinator rollback.
+    /// State after maintenance and accepted ownership changes.
     pub after: ChannelState,
-    /// Effects returned by the planner after rollback.
+    /// Effects retained for command lowering.
     pub effects: ChannelEffects,
 }
 
@@ -4566,10 +4547,6 @@ mod tests {
                 },
             })
         );
-        assert_eq!(
-            LegacyChannelTrace::from(LegacyChannel::StandingArmy),
-            LegacyChannelTrace::StandingArmy
-        );
     }
 
     #[test]
@@ -5038,11 +5015,10 @@ mod tests {
             (
                 "gates",
                 BTreeSet::from([
-                    "lift_rolled_back",
+                    "lift_rejected",
                     "opening_core",
                     "raid_attention",
                     "team_relief_core_ready",
-                    "team_relief_rolled_back",
                 ]),
             ),
             (

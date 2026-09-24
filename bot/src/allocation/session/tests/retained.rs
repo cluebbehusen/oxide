@@ -22,7 +22,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let operation = lift.operation().unwrap().clone();
         assert_eq!(operation.started_at, 24);
         let enqueued_at = 72;
-        lift.bind_producer_assignments(
+        lift.prepare_producer_binding(
             operation.started_at,
             operation.deadline,
             vec![LiftProducerAssignment::new(
@@ -38,7 +38,8 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
                 LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
             )],
         )
-        .unwrap();
+        .unwrap()
+        .apply(&mut lift);
         let active = lift.active_production_obligation().unwrap();
         let production = active_lift_production_obligation(&active).unwrap();
         let builder = UnitId(200);
@@ -57,7 +58,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let resources = ResourceSnapshot::from_observation(&observation);
         let mut policy = UtilityPolicy::new();
         policy
-            .commit_adjudicated_foundry(
+            .prepare_adjudicated_foundry(
                 FreshFoundryProposal::fixture(
                     TilePos::new(10, 22),
                     builder,
@@ -68,9 +69,9 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
                     foundry_case(),
                 ),
                 foundry_accepted_at,
-                &mut Vec::new(),
             )
-            .unwrap();
+            .unwrap()
+            .apply(&mut policy, &mut Vec::new());
         let foundry = policy
             .validated_foundry_obligation(&observation, &resources, true, cost)
             .unwrap();
@@ -98,8 +99,8 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
             active_lift: Some(active.clone()),
             invalid_active_connected: false,
             invalid_active_lift: false,
-            legacy_air_claims: None,
-            staged_strategy: None,
+            retained_air_claims: None,
+            island_preparation: None,
         };
         let mut saved = SavedFoundryPreparation {
             obligation: Some(foundry),
@@ -114,7 +115,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let mut lifts = lift;
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
-        let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
         let mut session = AllocationSession::new(
             setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence),
             AllocationParticipants {
@@ -124,7 +125,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
                 team: &mut team,
                 raids: &mut raids,
             },
-            advanced(snapshots),
+            advanced(),
             None,
         );
         session
@@ -155,13 +156,58 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
 }
 
 #[test]
+fn lost_lift_payload_discards_unpaid_work_before_committing_other_owners() {
+    let (mut observation, mut lift, _) = active_lift_fixture();
+    let operation = lift.operation().unwrap();
+    let accepted_at = operation.started_at;
+    let deadline = operation.deadline;
+    lift.prepare_producer_binding(
+        accepted_at,
+        deadline,
+        vec![LiftProducerAssignment::new(
+            0,
+            BuildingId(2),
+            UnitKind::Skyhook,
+            LiftProducerTiming::new(
+                24,
+                24,
+                24 + Tick::from(UnitKind::Skyhook.stats().train_ticks) - 1,
+                deadline,
+            ),
+            LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
+        )],
+    )
+    .unwrap()
+    .apply(&mut lift);
+    observation.tick = 12;
+    observation
+        .my_units
+        .retain(|unit| unit.kind.stats().harvest.is_some());
+    let (trace, outcome) = allocation_run_for(&observation, StrategicPlanner::new(), lift);
+    assert!(outcome.allocation_ok);
+    assert!(trace.coordinator_failure.is_none());
+    assert!(
+        outcome
+            .allocated_producer_intents
+            .iter()
+            .all(|intent| !matches!(
+                intent,
+                Intent::TrainAt {
+                    kind: UnitKind::Skyhook,
+                    ..
+                }
+            ))
+    );
+}
+
+#[test]
 fn unfundable_retained_lift_recovers_without_releasing_members() {
     let (mut observation, mut lift, _) = active_lift_fixture();
     observation.tick = 12;
     observation.scrap = 300;
     let operation = lift.operation().unwrap().clone();
     let enqueued_at = 24;
-    lift.bind_producer_assignments(
+    lift.prepare_producer_binding(
         operation.started_at,
         operation.deadline,
         vec![LiftProducerAssignment::new(
@@ -177,7 +223,8 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
             LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
         )],
     )
-    .unwrap();
+    .unwrap()
+    .apply(&mut lift);
     let members = lift.operation().unwrap().payload.clone();
     let active = lift.active_production_obligation().unwrap();
     let production = active_lift_production_obligation(&active).unwrap();
@@ -205,8 +252,8 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
         active_lift: Some(active),
         invalid_active_connected: false,
         invalid_active_lift: false,
-        legacy_air_claims: None,
-        staged_strategy: None,
+        retained_air_claims: None,
+        island_preparation: None,
     };
     let setup = SessionProfile::new(prime_profile());
     let briefing = connected_briefing(&observation);
@@ -217,7 +264,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     let mut lifts = lift;
     let mut team = TeamReliefPlanner::new();
     let mut raids = RaidPlanner::new();
-    let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
     let mut session = AllocationSession::new(
         setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence),
         AllocationParticipants {
@@ -227,7 +274,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
             team: &mut team,
             raids: &mut raids,
         },
-        advanced(snapshots),
+        advanced(),
         None,
     );
     session
@@ -299,10 +346,7 @@ fn active_island_producer_context_honors_an_older_saved_foundry_deadline() {
     let active_island = imported_obligation(
         ObligationClass::PersistentPlan,
         observation.tick.saturating_sub(1),
-        ObligationKey::Legacy {
-            channel: LegacyChannel::StrategicAir,
-            sequence: 1,
-        },
+        ObligationKey::AirPurchases,
         ClaimBundle::new(
             0,
             Vec::new(),
@@ -340,6 +384,29 @@ fn active_island_producer_context_honors_an_older_saved_foundry_deadline() {
 }
 
 #[test]
+fn active_revision_can_reuse_its_own_proposed_arrival() {
+    let mut obs = connected_observation(1_200, 10_000);
+    let (mut strategy, jobs) = current_connected_planner(&obs);
+    let arrived = UnitId(900);
+    let kind = jobs
+        .first()
+        .expect("the admitted force needs a provider")
+        .kind();
+    obs.tick += 12;
+    obs.my_units
+        .push(owned_unit(arrived.0, kind, TilePos::new(6, 10)));
+    obs.my_units.sort_unstable_by_key(|unit| unit.id);
+    let before = strategy.clone();
+    let proposed = connected_obligation(&mut strategy, &obs);
+    assert!(proposed.units().contains(&arrived));
+    assert_eq!(strategy, before, "quoting the arrival must not acquire it");
+    let outcome = run_connected_session(&obs, &mut UtilityPolicy::new(), &mut strategy);
+    assert!(outcome.allocation_ok && outcome.accepted_connected);
+    assert!(strategy.owned_units().any(|id| id == arrived));
+    assert!(outcome.planner_claims.contains(&arrived));
+}
+
+#[test]
 fn active_connected_revision_and_saved_foundry_commit_together() {
     let mut observation = connected_observation(1_200, 10_000);
     let builder = UnitId(200);
@@ -360,7 +427,10 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
     let proposal = current_connected_proposal(&observation);
     let fixed_deadline = proposal.deadline();
     let mut planner = StrategicPlanner::new();
-    planner.commit_connected_proposal(proposal).unwrap();
+    planner
+        .prepare_connected_commit(proposal)
+        .unwrap()
+        .apply(&mut planner);
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
@@ -369,7 +439,7 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
     let foundry_anchor = TilePos::new(15, 14);
     let mut policy = UtilityPolicy::new();
     policy
-        .commit_adjudicated_foundry(
+        .prepare_adjudicated_foundry(
             FreshFoundryProposal::fixture(
                 foundry_anchor,
                 builder,
@@ -380,9 +450,9 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
                 foundry_case(),
             ),
             observation.tick,
-            &mut Vec::new(),
         )
-        .expect("the fixture installs one exact saved Foundry");
+        .expect("the fixture installs one exact saved Foundry")
+        .apply(&mut policy, &mut Vec::new());
 
     observation.tick = observation.tick.saturating_add(12);
     let mut strategy = planner;
@@ -420,10 +490,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let first = &requests[0];
     let resources = ResourceSnapshot::from_observation(&observation);
     let newer_accepted_at = active.accepted_at() + 1;
-    let newer_key = ObligationKey::Legacy {
-        channel: LegacyChannel::TeamRelief,
-        sequence: 99,
-    };
+    let newer_key = ObligationKey::AirPurchases;
     let producer = first.eligible_producers()[0];
     let ready = observation.tick + Tick::from(first.kind().stats().train_ticks) - 1;
     let job = ProducerJobClaim::fixed(
@@ -435,7 +502,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         active.deadline(),
     );
     let newer = imported_obligation(
-        ObligationClass::Legacy,
+        ObligationClass::PersistentPlan,
         newer_accepted_at,
         newer_key,
         ClaimBundle::new(0, vec![], vec![], vec![], vec![], vec![job.clone(), job]).unwrap(),
@@ -451,7 +518,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         proof.resolve(AllocationPersonality::default(), None),
         Err(AllocationError::ObligationConflict {
             obligation: ClaimOwner::Obligation {
-                class: ObligationClass::Legacy,
+                class: ObligationClass::PersistentPlan,
                 accepted_at,
                 key,
             },
@@ -467,8 +534,8 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         active_lift: None,
         invalid_active_connected: false,
         invalid_active_lift: false,
-        legacy_air_claims: None,
-        staged_strategy: None,
+        retained_air_claims: None,
+        island_preparation: None,
     };
     let setup = SessionProfile::new(prime_profile());
     let briefing = connected_briefing(&observation);
@@ -479,7 +546,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let mut lifts = LiftPlanner::new();
     let mut team = TeamReliefPlanner::new();
     let mut raids = RaidPlanner::new();
-    let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
     let mut session = AllocationSession::new(
         setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
         AllocationParticipants {
@@ -489,7 +556,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
             team: &mut team,
             raids: &mut raids,
         },
-        advanced(snapshots),
+        advanced(),
         None,
     );
     session
@@ -502,7 +569,8 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
                 preparation_need: None,
             },
             &AirLiftPreparation {
-                lift_decision: StrategicDecision::default(),
+                lift_membership: None,
+                lift_purchases: crate::production::ProductionPlan::default(),
                 opening_bootstrap: 0,
 
                 active_lift_precedes_foundry: false,
@@ -569,7 +637,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     policy.planning = crate::planning::PlanningWork::with_allowance(allowance);
     let mut initial_intents = Vec::new();
     policy
-        .commit_adjudicated_foundry(
+        .prepare_adjudicated_foundry(
             FreshFoundryProposal::fixture(
                 foundry_anchor,
                 builder,
@@ -580,9 +648,9 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
                 foundry_case(),
             ),
             observation.tick,
-            &mut initial_intents,
         )
-        .expect("the forecast-backed fixture installs one exact saved Foundry");
+        .expect("the forecast-backed fixture installs one exact saved Foundry")
+        .apply(&mut policy, &mut initial_intents);
     assert!(
         initial_intents.is_empty(),
         "forecast capital cannot dispatch the Foundry at admission"
@@ -623,12 +691,11 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     let briefing = connected_briefing(&observation);
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observation);
-    let original_policy = policy.clone();
     let mut strategy = StrategicPlanner::new();
     let mut lifts = LiftPlanner::new();
     let mut team = TeamReliefPlanner::new();
     let mut raids = RaidPlanner::new();
-    let snapshots = PlannerSnapshots::capture(&strategy, &team, &lifts, &raids);
+
     let mut prepared = prepared(&observation, None);
     prepared.resources = resources;
     prepared.obligations = vec![
@@ -648,16 +715,11 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
             team: &mut team,
             raids: &mut raids,
         },
-        advanced(snapshots),
+        advanced(),
         None,
     );
-    let resolved = session.resolve(
-        prepared,
-        CommitSnapshots {
-            policy: original_policy.speculative_checkpoint(),
-        },
-    );
-    let outcome = session.commit_or_restore(resolved);
+    let resolved = session.resolve(prepared);
+    let outcome = session.finish_allocation(resolved);
 
     assert!(outcome.allocation_ok);
     assert_eq!(
@@ -680,7 +742,7 @@ fn rolled_back_connected_procurement_retries_without_extending_deadline() {
     let mut observation = connected_observation(120, 10_000);
     let (planner, _) = current_connected_planner(&observation);
     let first_enqueue = observation.tick;
-    let invalid_team_decision = StrategicDecision {
+    let invalid_production = StrategicDecision {
         intents: vec![Intent::TrainAt {
             building: BuildingId(999),
             kind: UnitKind::Sentinel,
@@ -690,11 +752,11 @@ fn rolled_back_connected_procurement_retries_without_extending_deadline() {
     };
     let mut policy = UtilityPolicy::new();
     let mut strategy = planner;
-    let failed = run_connected_session_with_team_decision(
+    let failed = run_connected_session_with_producer_work(
         &observation,
         &mut policy,
         &mut strategy,
-        invalid_team_decision,
+        invalid_production,
     );
     assert!(
         !failed.allocation_ok,

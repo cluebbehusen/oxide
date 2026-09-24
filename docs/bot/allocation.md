@@ -72,8 +72,9 @@ admission guards used by fresh preparation. It selects the retained
 Foundry/island/lift order once and refreshes planner claims at the existing
 advancement boundaries. Standing-army ownership is imported after operation
 advancement and before a trailing Foundry. Equal admission ticks preserve
-island-before-lift and operation-before-Foundry ties. Repair renewal finishes
-before fresh support quotations.
+island-before-lift and operation-before-Foundry ties. Repair renewal quotes are
+prepared before fresh support quotations; renewed funding is installed only with
+the accepted allocation.
 
 Lift, connected, and connected-revision funding share one conflict/retry path.
 Only a production conflict attributed to that exact retained owner can trigger
@@ -83,28 +84,29 @@ failure do not prove this owner unfundable. Recovery remains domain-specific and
 preserves its existing live-member, paid-work, and deadline rules. If a quoted
 connected revision recovers, fresh preparation explicitly discards that quote,
 rederives standing work from current ownership, and clears the dependent
-economic alternatives. The two original rollback checkpoint boundaries remain
-unchanged. The historical Airworks-capacity trace field remains zero; retained
-preparation no longer carries an inert reserve for it.
+economic alternatives. Relief, raid, air, and lift observation and accepted
+orders survive unrelated rejection; contested actors cannot be dispatched. The
+historical Airworks-capacity trace field remains zero; retained preparation no
+longer carries an inert reserve for it.
 
 When the opening core is deficient, one current-threat emergency defense may
 also enter as a survival obligation with its scorer-selected site and builder.
 The remaining opening reserve receives only the bank left after that defense.
-The session also adapts same-think decisions from active team-relief, lift,
-raid, and admitted island-air planners into explicit legacy claims. The current
-proposal set contains at most one safe, command-legal Foundry expansion, one
-connected offense package, a best-first group of mutually exclusive exact
-defensive alternatives, mutually exclusive economic actions, and a best-first
-group of mutually exclusive standing-force alternatives. The allocator seeds a
-feasible portfolio in global proposal-rank order, then examines up to 64
-best-first zero-or-one domain combinations. Every accepted combination must fit
-current and deadline-scoped forecast scrap, builders, sites, units, producer
-FIFO timing, and incompatible construction footprints. Exhausted refinement
-retains the feasible seed; an unexamined better alternative is traced as
-`NotRefined`, not as an infeasibility proof. Named urgency, confidence, value,
-time-to-impact, and safety bands decide first; personality resolves only a
-genuine semantic tie and never removes a domain or defensive role from
-consideration.
+Relief and raid supply exact retained actor and paid-queue claims directly. The
+session imports exact lift and air membership proposals and typed purchase
+plans, separately from tactical commands. The current proposal set contains at
+most one safe, command-legal Foundry expansion, one connected offense package, a
+best-first group of mutually exclusive exact defensive alternatives, mutually
+exclusive economic actions, and a best-first group of mutually exclusive
+standing-force alternatives. The allocator seeds a feasible portfolio in global
+proposal-rank order, then examines up to 64 best-first zero-or-one domain
+combinations. Every accepted combination must fit current and deadline-scoped
+forecast scrap, builders, sites, units, producer FIFO timing, and incompatible
+construction footprints. Exhausted refinement retains the feasible seed; an
+unexamined better alternative is traced as `NotRefined`, not as an infeasibility
+proof. Named urgency, confidence, value, time-to-impact, and safety bands decide
+first; personality resolves only a genuine semantic tie and never removes a
+domain or defensive role from consideration.
 
 Portfolio evaluation stages all ownership and capital claims before solving the
 combined producer schedule once. Acceptance reuses that validated schedule. Only
@@ -174,49 +176,56 @@ its quoted opportunity evidence. Commitment does not rerun domain ranking or
 placement. A connected package may add the largest feasible marginal extension
 only from the capacity left after its minimum and any compatible expansion,
 defense, or standing-force purchase. Any malformed input or failed exact commit
-freezes residual spending for that decision and restores speculative planner
-state; the decision trace records the allocator result or coordinator failure.
-Lower-priority lift and raid work then passes through the same admission
-pipeline with explicit remaining grants. Future producer reservations prevent it
-or `UtilityPolicy` from occupying an accepted lane during that decision.
-Connected future rows are scheduling evidence; retained Lift, reconnaissance and
-standing-force bookings still have fixed timings. Advancing a Lift projects its
-fixed work jointly with flexible connected demand rather than validating a lane
-in isolation from the work that precedes it.
+freezes residual spending for that decision; the decision trace records the
+allocator result or coordinator failure. Accepted owners still observe loss,
+arrival, deadlines, and recovery. Lower-priority lift and raid work then passes
+through the same admission pipeline with explicit remaining grants. Future
+producer reservations prevent it or `UtilityPolicy` from occupying an accepted
+lane during that decision. Connected future rows are scheduling evidence;
+retained Lift, reconnaissance and standing-force bookings still have fixed
+timings. Advancing a Lift projects its fixed work jointly with flexible
+connected demand rather than validating a lane in isolation from the work that
+precedes it.
 
 Resolution returns either an exact settlement or a failure; deferred refinement
 may first try a portfolio containing only retained commitments. If retained
 connected demand still needs an unpriced flexible schedule, the transaction
 freezes instead of discarding that demand and exposing its budget to fresh
-spending. Planning progress survives this rollback. Commit adapters return
-errors directly and stop at the first rejection. Partially produced commands and
-budget effects stay private to commitment and are returned only on success. One
-outer boundary freezes spending and restores ownership on failure. Planner
-checkpoints precede active-work advancement; the policy checkpoint follows
-reconnaissance and support observation. Restoration retains observed outcome
-journals, unfinished planning, and maintenance commands from that observation
-phase. It does not provide rollback after a panic.
+spending. Commit prepares each exact owner update before applying any of them.
+Foundry, connected air, lift funding, reconnaissance, support, raid procurement
+and relief reject stale or incompatible inputs at this boundary. Raid binding
+constructs its complete paid ledger before installing the request. Paid
+reconnaissance occurrences follow the complete canonical producer schedule.
+Application consumes the prepared values without new searches or expected
+rejection. Commands and budget effects remain private until success.
+
+Rejection discards exact proposals without restoring any planner. Observed
+invalid commitments stay released, and rejected repair renewal does not extend
+its funding horizon. Air and lift membership are selected without acquiring
+actors, then applied only with the complete validated allocation. Post-admission
+tactics use committed members; air maintenance precedes lift support handling.
+Closed funding prevents purchases and new ownership, but is not evidence of
+operation-specific infeasibility. Operational reconnaissance reads the
+maintained air owner. There is no rollback or panic recovery transaction.
 
 `UtilityPolicy` separates three controller-owned lifetimes. `PolicyState` holds
-decision-relevant memory and commitments, including work history observed before
-allocation and dispatch records written during commitment. A `PolicyCheckpoint`
-captures only that state and restores it at the existing rejection boundary.
-`PlanningWork` owns deterministic allowances, unfinished jobs, and refinement
-cursors; rejection neither refunds work nor discards progress. `PolicyQueries`
-owns recomputable navigation, resource-access, egress, danger, harvest-service,
-and expansion answers. These caches survive rejection; producer-egress answers
-retain at most 256 planned layouts per base geometry, and the other services
-keep their existing bounds. Full-controller cloning still copies all three
-owners.
+decision-relevant memory and commitments, including observed work history and
+accepted dispatch records. `PlanningWork` owns deterministic allowances,
+unfinished jobs, and refinement cursors; rejection neither refunds work nor
+discards progress. `PolicyQueries` owns recomputable navigation,
+resource-access, egress, danger, harvest-service, and expansion answers. These
+caches survive rejection; producer-egress answers retain at most 256 planned
+layouts per base geometry, and the other services keep their existing bounds.
+Full-controller cloning still copies all three owners.
 
 Retained query answers are keyed by their effective inputs, independently of
-policy checkpoint identity. Resource access includes worker targets and eligible
-resource tiles, with current amounts repriced on retrieval. Path queries include
-the movement surface and hypothetical footprint. Egress includes retained
+policy identity. Resource access includes worker targets and eligible resource
+tiles, with current amounts repriced on retrieval. Path queries include the
+movement surface and hypothetical footprint. Egress includes retained
 foundations after same-decision cancellations. Danger, harvest service, and
 expansion fields distinguish their threat, terrain, drop-off, and source inputs.
 Warm answers after rejected speculation must equal cold answers for both
-restored and newly observed inputs; cache warmth cannot grant additional
+revisited and newly observed inputs; cache warmth cannot grant additional
 planning work.
 
 Brain lends immutable `DecisionEvidence` to allocation and residual utility from

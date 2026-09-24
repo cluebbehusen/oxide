@@ -2,13 +2,13 @@
 //! Grants are consumed in stable order after portfolio settlement.
 
 use crate::allocation::{
-    ClaimBundle, LegacyChannel, OperationProductionRequest, PlannerClaims, lift_air_support,
+    ClaimBundle, ObligationKey, OperationProductionRequest, PlannerClaims, lift_air_support,
     operation_production_obligation, prior_planner_claims,
 };
 use crate::difficulty::DifficultyTuning;
 use crate::executive::{Army, ArmyState, Intent};
 use crate::intelligence::StrategicIntelligence;
-use crate::lift::{LiftAdmission, LiftAirSupport, LiftPlanner};
+use crate::lift::{FreshLift, LiftAdmission, LiftAirSupport, LiftPlanner};
 use crate::observation::Observation;
 #[cfg(test)]
 use crate::observation::ObservationData;
@@ -71,7 +71,6 @@ impl From<StrategicDecision> for AdmittedDecision {
 pub(super) struct RetainedDecisions {
     pub(super) strategic: AdmittedDecision,
     pub(super) team_decision: StrategicDecision,
-    pub(super) lift_decision: StrategicDecision,
     pub(super) raid_decision: StrategicDecision,
     pub(super) allocated_producer_intents: Vec<Intent>,
     pub(super) team_was_active: bool,
@@ -113,7 +112,6 @@ pub(super) fn settle_operations(
     let RetainedDecisions {
         mut strategic,
         team_decision,
-        mut lift_decision,
         mut raid_decision,
         allocated_producer_intents,
         team_was_active,
@@ -134,7 +132,7 @@ pub(super) fn settle_operations(
             strategic.committed_scrap
         },
     };
-    for decision in [&team_decision, &lift_decision, &raid_decision] {
+    for decision in [&team_decision, &raid_decision] {
         let mut allocated = decision.clone().into();
         remove_producer_intents(&mut allocated);
         merge_strategic(&mut strategic, allocated);
@@ -154,8 +152,8 @@ pub(super) fn settle_operations(
     });
 
     let claims_before_lift = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
-    let team_core_claims = team.core_reservations();
-    let core_exclusions_after_team = claims_before_lift.core_exclusions(&team_core_claims);
+    let team_core_claims = team.reservations();
+    let core_exclusions_after_team = claims_before_lift.core_exclusions(&team.core_reservations());
     let mut prior_non_lift = claims_before_lift.without_lift(&team_core_claims);
     prior_non_lift.extend_from_slice(context.utility_reservations);
     let lift_unavailable_after = lift_unavailable(
@@ -164,7 +162,16 @@ pub(super) fn settle_operations(
         context.enlisted,
         &prior_non_lift,
     );
+    let mut lift_decision = StrategicDecision::default();
     let mut lift_rejected = false;
+    if lift_was_active {
+        lift_decision = lifts.maintain(
+            context.observation,
+            &lift_unavailable_after,
+            lift_air_support(strategy.air_operation(), strategy.terminal_outcome()),
+        );
+        merge_strategic(&mut strategic, lift_decision.clone().into());
+    }
     if !lift_was_active {
         let support = lift_air_support(strategy.air_operation(), strategy.terminal_outcome());
         let support = match (strategy.air_operation(), support) {
@@ -196,7 +203,7 @@ pub(super) fn settle_operations(
             support,
             lifts,
         ) {
-            Some(accepted) => lift_decision = accepted.commit(lifts),
+            Some(accepted) => lift_decision = accepted.commit(lifts, context.observation),
             None => {
                 lift_rejected = true;
                 lift_decision = StrategicDecision::default();
@@ -239,7 +246,7 @@ pub(super) fn settle_operations(
     }
 
     let claims_after_raid = PlannerClaims::new(context.enlisted, strategy, raids, lifts);
-    let core_exclusions_after_raid = claims_after_raid.core_exclusions(&team_core_claims);
+    let core_exclusions_after_raid = claims_after_raid.core_exclusions(&team.core_reservations());
     let mut prior_non_lift_after_raid = claims_after_raid.without_lift(&team_core_claims);
     prior_non_lift_after_raid.extend_from_slice(context.utility_reservations);
     let lift_unavailable_after_raid = lift_unavailable(
@@ -357,15 +364,13 @@ struct LiftGrant<'a> {
     producer_lanes: &'a ProducerLaneReservations,
 }
 
-struct AdmittedLift {
-    planner: LiftPlanner,
-    decision: StrategicDecision,
-}
+struct AdmittedLift(Option<FreshLift>);
 
 impl AdmittedLift {
-    fn commit(self, planner: &mut LiftPlanner) -> StrategicDecision {
-        *planner = self.planner;
-        self.decision
+    fn commit(self, planner: &mut LiftPlanner, observation: &Observation) -> StrategicDecision {
+        self.0.map_or_else(StrategicDecision::default, |proposal| {
+            proposal.apply(planner, observation)
+        })
     }
 }
 
@@ -378,8 +383,7 @@ impl LiftGrant<'_> {
         support: LiftAirSupport,
         planner: &LiftPlanner,
     ) -> Option<AdmittedLift> {
-        let mut candidate = planner.clone();
-        let decision = candidate.think_with_admission_and_producer_lanes(
+        let Some(candidate) = planner.prepare_fresh(
             observation,
             home,
             self.unavailable,
@@ -391,23 +395,18 @@ impl LiftGrant<'_> {
                 minimum_core_equivalents: self.minimum_core_equivalents,
             },
             self.producer_lanes,
-        );
-        let units = prior_planner_claims(&[], None, &[], &[], candidate.operation());
-        if candidate.operation().is_some() {
-            let mut exclusions = self.core_exclusions.to_vec();
-            exclusions.extend_from_slice(&units);
-            if !combat_core_status(observation, &exclusions, &[], self.minimum_core_equivalents)
-                .ready
-            {
-                return None;
-            }
+        ) else {
+            return Some(AdmittedLift(None));
+        };
+        let purchases = &candidate.purchases;
+        let units = prior_planner_claims(&[], [], &[], &[], Some(&candidate.operation));
+        let mut exclusions = self.core_exclusions.to_vec();
+        exclusions.extend_from_slice(&units);
+        if !combat_core_status(observation, &exclusions, &[], self.minimum_core_equivalents).ready {
+            return None;
         }
-        let claims = if decision
-            .intents
-            .iter()
-            .any(|intent| matches!(intent, Intent::TrainAt { .. }))
-        {
-            let operation = candidate.operation()?;
+        let claims = if !purchases.purchases.is_empty() {
+            let operation = &candidate.operation;
             operation_production_obligation(
                 &ResourceSnapshot::from_observation(observation),
                 OperationProductionRequest {
@@ -415,9 +414,8 @@ impl LiftGrant<'_> {
                     cadence,
                     accepted_at: operation.started_at,
                     decision_tick: observation.tick,
-                    channel: LegacyChannel::Lift,
-                    sequence: 1,
-                    decision: &decision,
+                    key: ObligationKey::LiftPurchases,
+                    purchases,
                     prior_producer_intents: self.prior_producer_intents,
                     production_deadline: operation.deadline,
                 },
@@ -426,7 +424,7 @@ impl LiftGrant<'_> {
             .claims
         } else {
             ClaimBundle::new(
-                decision.reserved_scrap,
+                purchases.reserved_scrap,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -442,10 +440,7 @@ impl LiftGrant<'_> {
         {
             return None;
         }
-        Some(AdmittedLift {
-            planner: candidate,
-            decision,
-        })
+        Some(AdmittedLift(Some(candidate)))
     }
 }
 
@@ -579,10 +574,6 @@ mod tests {
                     reserved_scrap: 10,
                     ..StrategicDecision::default()
                 },
-                lift_decision: StrategicDecision {
-                    reserved_scrap: 11,
-                    ..StrategicDecision::default()
-                },
                 raid_decision: StrategicDecision {
                     reserved_scrap: 9,
                     ..StrategicDecision::default()
@@ -594,7 +585,7 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.strategic.committed_scrap, 37);
+        assert_eq!(outcome.strategic.committed_scrap, 26);
         assert_eq!(outcome.utility_prior_commitment, 37);
         assert_eq!(outcome.utility_spendable, 63);
     }
@@ -632,12 +623,11 @@ mod tests {
             .prepare(&obs, HOME, 20, LiftAirSupport::Independent, &planner)
             .expect("the island has a funded lift");
         assert!(planner.operation().is_none());
-        assert!(!accepted.planner.operation().unwrap().payload.is_empty());
-        assert!(accepted.decision.committed_scrap() <= obs.scrap);
-        assert!(accepted.decision.production().next().is_some());
-        let expected = accepted.planner.clone();
-        let decision = accepted.commit(&mut planner);
-        assert_eq!(planner, expected);
+        assert!(!accepted.0.as_ref().unwrap().operation.payload.is_empty());
+        assert!(!accepted.0.as_ref().unwrap().purchases.purchases.is_empty());
+        let expected = accepted.0.as_ref().unwrap().operation.clone();
+        let decision = accepted.commit(&mut planner, &obs);
+        assert_eq!(planner.operation(), Some(&expected));
         assert!(decision.committed_scrap() > 0);
     }
 
@@ -657,8 +647,7 @@ mod tests {
         let accepted = grant
             .prepare(&obs, HOME, 20, LiftAirSupport::Independent, &planner)
             .expect("declining a fresh lift still admits idle planner maintenance");
-        assert_eq!(accepted.decision.committed_scrap(), 0);
-        assert!(accepted.planner.operation().is_none());
+        assert!(accepted.0.is_none());
         assert_eq!(planner, LiftPlanner::new());
     }
 

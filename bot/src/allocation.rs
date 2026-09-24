@@ -1186,37 +1186,6 @@ pub(crate) enum ObligationClass {
     PaidWork,
     /// A previously accepted domain plan that still owns its resources.
     PersistentPlan,
-    /// Explicit adapter for a not-yet-migrated controller channel.
-    Legacy,
-}
-
-/// Unmigrated controller channel protected by an explicit adapter.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub(crate) enum LegacyChannel {
-    /// Units already enlisted by the Executive's standing army.
-    StandingArmy,
-    /// Team-role relief package.
-    TeamRelief,
-    /// Airlift operation.
-    Lift,
-    /// Harassment or resource raid.
-    Raid,
-    /// Already-admitted air operation without a connected force package.
-    StrategicAir,
-}
-
-impl LegacyChannel {
-    const fn sort_key(self) -> i32 {
-        match self {
-            Self::StandingArmy => 0,
-            Self::TeamRelief => 1,
-            Self::Lift => 2,
-            Self::Raid => 3,
-            Self::StrategicAir => 4,
-        }
-    }
 }
 
 /// Stable typed identity of one imported obligation.
@@ -1264,13 +1233,24 @@ pub(crate) enum ObligationKey {
         /// Exact objective anchor when admitted.
         anchor: TilePos,
     },
-    /// One explicit not-yet-migrated owner.
-    Legacy {
-        /// Strategic channel behind the adapter.
-        channel: LegacyChannel,
-        /// Stable domain-local identity.
-        sequence: u32,
-    },
+    /// Exact members of an accepted allied relief deployment.
+    TeamRelief,
+    /// Exact members of raid preparation or an active raid.
+    RaidMembers,
+    /// Paid production still owned by raid preparation.
+    RaidPaid,
+    /// Units committed to the ordinary army.
+    StandingArmy,
+    /// Payload and carriers of an accepted lift.
+    LiftMembers,
+    /// Immediate carrier purchases.
+    LiftPurchases,
+    /// Retained future carrier production.
+    LiftProduction,
+    /// Members retained by an air operation.
+    AirMembers,
+    /// Immediate air-operation purchases and reserve.
+    AirPurchases,
 }
 
 impl ObligationKey {
@@ -1300,7 +1280,15 @@ impl ObligationKey {
             Self::DeferredFoundation { builder, anchor } => (4, anchor.y, anchor.x, builder.0),
             Self::SavedFoundry { anchor } => (5, anchor.y, anchor.x, 0),
             Self::ConnectedOffense { objective, anchor } => (6, anchor.y, anchor.x, objective.0),
-            Self::Legacy { channel, sequence } => (7, channel.sort_key(), 0, sequence),
+            Self::TeamRelief => (7, 1, 0, 0),
+            Self::RaidMembers => (7, 3, 0, 0),
+            Self::RaidPaid => (7, 3, 0, 2),
+            Self::StandingArmy => (7, 0, 0, 0),
+            Self::LiftMembers => (7, 2, 0, 0),
+            Self::LiftPurchases => (7, 2, 0, 1),
+            Self::LiftProduction => (7, 2, 0, 2),
+            Self::AirMembers => (7, 4, 0, 0),
+            Self::AirPurchases => (7, 4, 0, 1),
             Self::SavedEconomy(_) => (8, 0, 0, 0),
             Self::Support(_) => (9, 0, 0, 0),
             Self::Reconnaissance(_) => (10, 0, 0, 0),
@@ -2510,7 +2498,7 @@ impl FundingPriority {
         };
         let tier = match class {
             ObligationClass::Survival | ObligationClass::PaidWork => 0,
-            ObligationClass::PersistentPlan | ObligationClass::Legacy => 1,
+            ObligationClass::PersistentPlan => 1,
         };
         Self {
             tier,
@@ -2528,7 +2516,15 @@ impl FundingPriority {
                 | ObligationKey::Support(_)
                 | ObligationKey::SupportDeployment(_)
                 | ObligationKey::Reconnaissance(_)
-                | ObligationKey::Legacy { .. } => 0,
+                | ObligationKey::TeamRelief
+                | ObligationKey::RaidMembers
+                | ObligationKey::RaidPaid
+                | ObligationKey::StandingArmy
+                | ObligationKey::LiftMembers
+                | ObligationKey::LiftPurchases
+                | ObligationKey::LiftProduction
+                | ObligationKey::AirMembers
+                | ObligationKey::AirPurchases => 0,
             },
             owner,
         }
@@ -7694,12 +7690,9 @@ mod tests {
         let cost = kind.stats().cost;
         let ready_at = OBSERVED_AT + Tick::from(kind.stats().train_ticks) - 1;
         let due = ImportedObligation {
-            class: ObligationClass::Legacy,
+            class: ObligationClass::PersistentPlan,
             accepted_at: 0,
-            key: ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 1,
-            },
+            key: ObligationKey::LiftPurchases,
             claims: bundle(
                 0,
                 vec![],
@@ -7720,10 +7713,7 @@ mod tests {
         let future = ImportedObligation {
             class: ObligationClass::PersistentPlan,
             accepted_at: 0,
-            key: ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 2,
-            },
+            key: ObligationKey::LiftProduction,
             claims: bundle(
                 0,
                 vec![],
@@ -7794,12 +7784,9 @@ mod tests {
         let cost = kind.stats().cost;
         let ready_at = OBSERVED_AT + Tick::from(kind.stats().train_ticks) - 1;
         let due = ImportedObligation {
-            class: ObligationClass::Legacy,
+            class: ObligationClass::PersistentPlan,
             accepted_at: 0,
-            key: ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 1,
-            },
+            key: ObligationKey::LiftPurchases,
             claims: bundle(
                 0,
                 vec![],
@@ -8220,9 +8207,10 @@ mod tests {
         let obligation = |accepted_at, sequence, kind, starts_at, ready_at| ImportedObligation {
             class: ObligationClass::PersistentPlan,
             accepted_at,
-            key: ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence,
+            key: if sequence == 1 {
+                ObligationKey::LiftPurchases
+            } else {
+                ObligationKey::LiftProduction
             },
             claims: bundle(
                 0,
@@ -8508,10 +8496,7 @@ mod tests {
         let lift = ClaimOwner::Obligation {
             class: ObligationClass::PersistentPlan,
             accepted_at: 27_288,
-            key: ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 2,
-            },
+            key: ObligationKey::LiftProduction,
         };
         let standing = ClaimOwner::Proposal(ProposalKey::StandingForce(StandingForceKey::fixture(
             UnitKind::Avalanche,
@@ -10246,10 +10231,7 @@ mod tests {
         let obligation = imported_obligation(
             ObligationClass::PersistentPlan,
             0,
-            ObligationKey::Legacy {
-                channel: LegacyChannel::Lift,
-                sequence: 2,
-            },
+            ObligationKey::LiftProduction,
             bundle(
                 0,
                 vec![],

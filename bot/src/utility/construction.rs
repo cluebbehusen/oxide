@@ -86,7 +86,7 @@ pub(super) struct FoundryExpansionPlan {
 ///
 /// The payload retains the already-ranked site, builder, and economic quote.
 /// Callers may translate its accessors into shared claims, then return the same
-/// value to [`UtilityPolicy::commit_adjudicated_foundry`] without asking the
+/// value to [`UtilityPolicy::prepare_adjudicated_foundry`] without asking the
 /// expansion domain to rank again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FreshFoundryProposal {
@@ -1732,8 +1732,9 @@ mod tests {
         match investment.as_ref() {
             Some(FreshFoundryInvestment::Ready(proposal)) => {
                 policy
-                    .commit_adjudicated_foundry(proposal.clone(), obs.tick, &mut intents)
-                    .expect("the focused expansion fixture has no prior obligation");
+                    .prepare_adjudicated_foundry(proposal.clone(), obs.tick)
+                    .expect("the focused expansion fixture has no prior obligation")
+                    .apply(policy, &mut intents);
             }
             Some(FreshFoundryInvestment::NeedsProtection { .. }) | None => {}
         }
@@ -2516,8 +2517,9 @@ mod tests {
 
         let mut intents = Vec::new();
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut intents)
-            .expect("there is no prior expansion obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior expansion obligation")
+            .apply(&mut policy, &mut intents);
         assert!(
             intents.is_empty(),
             "forecast capital cannot dispatch a build"
@@ -2582,8 +2584,9 @@ mod tests {
             AdjudicatedFoundryCommit::Save
         );
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .expect("there is no prior Foundry obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior Foundry obligation")
+            .apply(&mut policy, &mut Vec::new());
 
         let mut later = obs.clone();
         later.tick = 36;
@@ -2670,8 +2673,9 @@ mod tests {
         let exact_anchor = proposal.anchor();
         let exact_builder = proposal.builder();
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .expect("there is no prior Foundry obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior Foundry obligation")
+            .apply(&mut policy, &mut Vec::new());
 
         let mut interrupted = obs.clone();
         interrupted.tick = interrupted.tick.saturating_add(dials.cadence);
@@ -2771,8 +2775,9 @@ mod tests {
             AdjudicatedFoundryCommit::Save
         );
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .expect("there is no prior expansion obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior expansion obligation")
+            .apply(&mut policy, &mut Vec::new());
         let obligation = policy
             .validated_foundry_obligation(&obs, &resources, true, obs.scrap)
             .expect("one honest forecast scrap preserves the accepted obligation");
@@ -2995,8 +3000,9 @@ mod tests {
         }];
 
         policy
-            .commit_adjudicated_foundry(proposal, 91, &mut intents)
-            .expect("there is no prior expansion obligation");
+            .prepare_adjudicated_foundry(proposal, 91)
+            .expect("there is no prior expansion obligation")
+            .apply(&mut policy, &mut intents);
 
         assert!(matches!(
             intents.as_slice(),
@@ -3060,8 +3066,9 @@ mod tests {
         let retained_anchor = proposal.anchor();
         let retained_builder = proposal.builder();
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .expect("there is no prior Foundry obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior Foundry obligation")
+            .apply(&mut policy, &mut Vec::new());
 
         let mut changed = obs.clone();
         changed.tick = changed.tick.saturating_add(dials.cadence);
@@ -3131,8 +3138,9 @@ mod tests {
             "funded plan",
         );
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .unwrap();
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .unwrap()
+            .apply(&mut policy, &mut Vec::new());
         let start = obs.tick;
         for delta in (0..=FOUNDRY_RECOVERY_TICKS).step_by(12) {
             obs.tick = start + delta;
@@ -3184,8 +3192,9 @@ mod tests {
             "the current bank should support a safe exact Foundry plan",
         );
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .expect("there is no prior Foundry obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior Foundry obligation")
+            .apply(&mut policy, &mut Vec::new());
         policy
             .state
             .foundry_saving
@@ -3274,14 +3283,17 @@ mod tests {
         let expected = proposal.clone();
         let mut intents = Vec::new();
         policy
-            .commit_adjudicated_foundry(proposal, 37, &mut intents)
-            .expect("there is no prior expansion obligation");
+            .prepare_adjudicated_foundry(proposal, 37)
+            .expect("there is no prior expansion obligation")
+            .apply(&mut policy, &mut intents);
         assert!(intents.is_empty());
 
         let before = policy.state.foundry_saving.clone();
         let mut rejected_intents = Vec::new();
         assert_eq!(
-            policy.commit_adjudicated_foundry(expected, 38, &mut rejected_intents,),
+            policy
+                .prepare_adjudicated_foundry(expected, 38)
+                .map(|commit| commit.apply(&mut policy, &mut rejected_intents)),
             Err(ExistingFoundryCommitment)
         );
         assert_eq!(policy.state.foundry_saving, before);
@@ -3332,8 +3344,9 @@ mod tests {
         );
         let mut policy = UtilityPolicy::new();
         policy
-            .commit_adjudicated_foundry(proposal, obs.tick, &mut Vec::new())
-            .expect("there is no prior expansion obligation");
+            .prepare_adjudicated_foundry(proposal, obs.tick)
+            .expect("there is no prior expansion obligation")
+            .apply(&mut policy, &mut Vec::new());
 
         let mut reserve_lost = obs;
         reserve_lost.tick = reserve_lost.tick.saturating_add(dials.cadence);
@@ -4011,8 +4024,9 @@ mod tests {
             "the exact safe expansion should remain ready after a harvest chore",
         );
         policy
-            .commit_adjudicated_foundry(proposal, ready.tick, &mut ordered)
-            .expect("the focused fixture has no prior expansion obligation");
+            .prepare_adjudicated_foundry(proposal, ready.tick)
+            .expect("the focused fixture has no prior expansion obligation")
+            .apply(&mut policy, &mut ordered);
         assert!(matches!(
             ordered.as_slice(),
             [

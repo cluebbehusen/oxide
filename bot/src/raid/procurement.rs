@@ -20,22 +20,71 @@ pub(crate) struct RaidProcurementRequest {
     pub(crate) objective: RaidObjective,
     pub(crate) player: PlayerId,
     pub(crate) tile: TilePos,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     pub(crate) members: Vec<UnitId>,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     pub(crate) newly_claimed: Vec<UnitId>,
     pub(crate) missing: usize,
     pub(crate) eligible_producers: Vec<BuildingId>,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     pub(crate) paid: Vec<PaidQueueClaim>,
     available_paid: Vec<PaidQueueClaim>,
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     retained_paid: Vec<PaidQueueClaim>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct RaidPaidWork {
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, RAID_GROUP_SIZE>")]
     claims: Vec<PaidQueueClaim>,
     counts: BTreeMap<BuildingId, usize>,
     origins: BTreeMap<BuildingId, TilePos>,
     known_units: BTreeSet<UnitId>,
     observed_at: Option<Tick>,
+}
+
+pub(crate) struct RaidProcurementCommit {
+    request: RaidProcurementRequest,
+    paid: RaidPaidWork,
+}
+
+impl RaidProcurementCommit {
+    pub(crate) fn apply(self, planner: &mut RaidPlanner) {
+        planner.muster = self.request.members.clone();
+        planner.preparation = Some(self.request);
+        planner.paid_work = self.paid;
+    }
+}
+
+impl RaidPaidWork {
+    fn observe_inventory(
+        &mut self,
+        obs: &Observation,
+        briefing: Option<&PublicMapBriefing>,
+        orientation: Option<Orientation>,
+    ) {
+        self.known_units = obs.my_units.iter().map(|unit| unit.id).collect();
+        self.counts.clear();
+        self.origins.clear();
+        for (index, building) in obs.my_buildings.iter().enumerate() {
+            let count = obs.my_queues.get(index).map_or(0, |queue| {
+                queue
+                    .iter()
+                    .filter(|kind| **kind == UnitKind::Scuttler)
+                    .count()
+            });
+            self.counts.insert(building.id, count);
+            if let Some(origin) = production_spawn_doorstep(
+                QueryPurpose::RaidOperation,
+                obs,
+                building,
+                briefing,
+                orientation,
+            ) {
+                self.origins.insert(building.id, origin);
+            }
+        }
+    }
 }
 
 impl RaidProcurementRequest {
@@ -281,72 +330,7 @@ impl RaidPlanner {
         briefing: Option<&PublicMapBriefing>,
         orientation: Option<Orientation>,
     ) {
-        self.paid_work.known_units = obs.my_units.iter().map(|unit| unit.id).collect();
-        self.paid_work.counts.clear();
-        self.paid_work.origins.clear();
-        for (index, building) in obs.my_buildings.iter().enumerate() {
-            let count = obs.my_queues.get(index).map_or(0, |queue| {
-                queue
-                    .iter()
-                    .filter(|kind| **kind == UnitKind::Scuttler)
-                    .count()
-            });
-            self.paid_work.counts.insert(building.id, count);
-            if let Some(origin) = production_spawn_doorstep(
-                QueryPurpose::RaidOperation,
-                obs,
-                building,
-                briefing,
-                orientation,
-            ) {
-                self.paid_work.origins.insert(building.id, origin);
-            }
-        }
-    }
-
-    pub(crate) fn bind_procurement(
-        &mut self,
-        obs: &Observation,
-        jobs: &[ScheduledProducerJob],
-        briefing: &PublicMapBriefing,
-        orientation: Orientation,
-    ) -> bool {
-        let Some(request) = self.preparation.as_ref() else {
-            return false;
-        };
-        let owner = ClaimOwner::Proposal(ProposalKey::StandingForce(
-            crate::allocation::StandingForceKey {
-                kind: UnitKind::Scuttler,
-                service: crate::standing_force::StandingGroundTarget::point(request.tile),
-            },
-        ));
-        let mut claims = request.paid.clone();
-        self.observe_paid_inventory(obs, Some(briefing), Some(orientation));
-        for job in jobs
-            .iter()
-            .filter(|job| job.enqueued_at == obs.tick && job.kind == UnitKind::Scuttler)
-        {
-            let occurrence = self.paid_work.counts.entry(job.producer).or_default();
-            if job.owner == owner {
-                claims.push(PaidQueueClaim {
-                    producer: job.producer,
-                    kind: job.kind,
-                    occurrence: *occurrence,
-                });
-            }
-            *occurrence += 1;
-        }
-        if claims
-            .iter()
-            .any(|claim| !self.paid_work.origins.contains_key(&claim.producer))
-        {
-            return false;
-        }
-        claims.sort_unstable();
-        claims.dedup();
-        self.paid_work.claims = claims;
-        self.paid_work.observed_at = Some(obs.tick);
-        true
+        self.paid_work.observe_inventory(obs, briefing, orientation);
     }
 
     #[cfg(test)]
@@ -508,24 +492,58 @@ impl RaidPlanner {
         None
     }
 
-    pub(crate) fn commit_procurement(
-        &mut self,
+    pub(crate) fn prepare_procurement_commit(
+        &self,
         request: RaidProcurementRequest,
-        now: Tick,
-    ) -> bool {
+        obs: &Observation,
+        jobs: &[ScheduledProducerJob],
+        briefing: &PublicMapBriefing,
+        orientation: Orientation,
+    ) -> Option<RaidProcurementCommit> {
         if self.active.is_some()
-            || request.observed_at != now
-            || request.deadline <= now
+            || request.observed_at != obs.tick
+            || request.deadline <= obs.tick
             || request.missing > RAID_GROUP_SIZE
             || self.preparation.as_ref().is_some_and(|prior| {
                 prior.objective != request.objective || prior.deadline != request.deadline
             })
         {
-            return false;
+            return None;
         }
-        self.muster = request.members.clone();
-        self.preparation = Some(request);
-        true
+        let owner = ClaimOwner::Proposal(ProposalKey::StandingForce(
+            crate::allocation::StandingForceKey {
+                kind: UnitKind::Scuttler,
+                service: crate::standing_force::StandingGroundTarget::point(request.tile),
+            },
+        ));
+        let mut claims = request.paid.clone();
+        let mut paid = RaidPaidWork::default();
+        paid.observe_inventory(obs, Some(briefing), Some(orientation));
+        for job in jobs
+            .iter()
+            .filter(|job| job.enqueued_at == obs.tick && job.kind == UnitKind::Scuttler)
+        {
+            let occurrence = paid.counts.entry(job.producer).or_default();
+            if job.owner == owner {
+                claims.push(PaidQueueClaim {
+                    producer: job.producer,
+                    kind: job.kind,
+                    occurrence: *occurrence,
+                });
+            }
+            *occurrence += 1;
+        }
+        if claims
+            .iter()
+            .any(|claim| !paid.origins.contains_key(&claim.producer))
+        {
+            return None;
+        }
+        claims.sort_unstable();
+        claims.dedup();
+        paid.claims = claims;
+        paid.observed_at = Some(obs.tick);
+        Some(RaidProcurementCommit { request, paid })
     }
 }
 
