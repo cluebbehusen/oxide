@@ -6262,6 +6262,6 @@ mod tests {
                 )
             })
             .expect("the selected Connected context accepts the replacement demand");
-        assert_eq!(lancer.case.urgency, crate::trace::UrgencyTrace::Timely);
+        assert_eq!(lancer.case.urgency, crate::trace::Urgency::Timely);
     }
 }

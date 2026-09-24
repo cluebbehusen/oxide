@@ -5435,7 +5435,7 @@ mod tests {
         assert_eq!(
             recovery_trace.connected_force.status,
             super::super::trace::ConnectedForceStatus::Recovering(
-                super::super::trace::ConnectedRecoveryReasonTrace::ObjectiveLost,
+                super::super::strategy::AirRecoveryReason::ObjectiveLost,
             )
         );
         let accepted_due = recovery_trace
@@ -5450,7 +5450,7 @@ mod tests {
                     && matches!(
                         job.owner,
                         super::super::trace::ClaimOwnerTrace::Obligation {
-                            class: super::super::trace::ObligationClassTrace::PersistentPlan,
+                            class: super::super::trace::ObligationClass::PersistentPlan,
                             key: super::super::trace::ObligationKeyTrace::ConnectedOffense { .. },
                             ..
                         }

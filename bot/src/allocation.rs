@@ -238,7 +238,8 @@ impl ProposalKey {
 
 /// How soon the observed situation calls for a decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Urgency {
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
     /// Useful long-term development with no immediate pressure.
     Developmental,
     /// A current opportunity or concern that should not drift indefinitely.
@@ -249,7 +250,8 @@ pub(crate) enum Urgency {
 
 /// Strength of the fog-honest evidence behind a proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Confidence {
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
     /// Public-map knowledge or a remembered prior supports the proposal.
     Prior,
     /// Multiple current or remembered observations support the proposal.
@@ -260,7 +262,8 @@ pub(crate) enum Confidence {
 
 /// Strategic consequence if the proposal succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum StrategicValue {
+#[serde(rename_all = "snake_case")]
+pub enum StrategicValue {
     /// Improves the position without changing its basic shape.
     Incremental,
     /// Creates or protects a meaningful strategic advantage.
@@ -271,7 +274,8 @@ pub(crate) enum StrategicValue {
 
 /// Delay before the proposal can materially affect the match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum TimeToImpact {
+#[serde(rename_all = "snake_case")]
+pub enum TimeToImpact {
     /// Pays off beyond the allocator's immediate tactical window.
     Patient,
     /// Can affect the next planned contest.
@@ -282,7 +286,8 @@ pub(crate) enum TimeToImpact {
 
 /// Confidence that the proposal can be executed without losing its investment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ExecutionSafety {
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSafety {
     /// Material route, exposure, or counterplay risks remain unresolved.
     Speculative,
     /// Known risks have a credible mitigation.
@@ -1178,7 +1183,8 @@ pub(crate) enum AllocationConflict {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub(crate) enum ObligationClass {
+#[serde(rename_all = "snake_case")]
+pub enum ObligationClass {
     /// Immediate survival or protected ordinary-core work.
     Survival,
     /// Construction or accepted future production that has already been paid.
@@ -1446,8 +1452,9 @@ pub(crate) enum ProposalRejection {
 }
 
 /// First deterministic rank component that favored one feasible portfolio.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutrankingBasis {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutrankingBasis {
     /// The selected portfolio had the stronger first differing urgency case.
     Urgency,
     /// The selected portfolio had the stronger first differing evidence-confidence case.

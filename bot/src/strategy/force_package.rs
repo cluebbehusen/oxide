@@ -205,12 +205,17 @@ const TACTICAL_EFFECT_WINDOW: Tick = 1_200;
 
 type PackageCandidateScore = (u64, u128, Reverse<u32>, u64);
 
+/// Capability family used by package-demand diagnostics.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
-pub(crate) enum ForceFamily {
+#[serde(rename_all = "snake_case")]
+pub enum ForceFamily {
+    /// Vision required to establish current target evidence.
     Recon,
+    /// Ground firepower required to remove targetable anti-air defenses.
     Suppression,
+    /// Air firepower required to destroy the target cluster.
     Strike,
 }
 
