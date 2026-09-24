@@ -9,7 +9,7 @@ use chassis::grid::TilePos;
 use std::{collections::BTreeMap, sync::Arc};
 
 const PENDING_FIELDS: usize = 16;
-const READY_BYTES: usize = 32 * 1024 * 1024;
+const READY_BYTES: usize = super::APPROACH_READY_BYTES / 3;
 const IDLE_LIFETIME: u64 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -98,7 +98,7 @@ impl Brain {
         let BrainV1 {
             player,
             mind,
-            policy,
+            mut policy,
             exec,
             orientation,
         } = wire;
@@ -126,6 +126,9 @@ impl Brain {
         ) {
             return Err("invalid controller planning continuation".into());
         }
+        policy
+            .planning
+            .restore_map(oriented_public_map.as_ref().unwrap_or(&map));
         if !exec.valid_checkpoint(state.current_tick()) {
             return Err("invalid controller armies".into());
         }

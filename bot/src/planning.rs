@@ -24,6 +24,7 @@ type PortfolioAlternatives = std::collections::BTreeMap<
 >;
 
 const DECISION_WORK: usize = 128_000;
+const APPROACH_READY_BYTES: usize = 96 * 1024 * 1024;
 const PRODUCTION_RESERVE: usize = DECISION_WORK / 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -71,6 +72,10 @@ impl Default for PlanningWork {
 }
 
 impl PlanningWork {
+    pub(crate) fn restore_map(&mut self, map: &crate::PublicMapBriefing) {
+        self.fields.get_mut().restore_map(map);
+    }
+
     pub(crate) fn valid_checkpoint(&self, map: &crate::PublicMapBriefing, tick: u64) -> bool {
         let budget = self.budget.borrow();
         let rotation = |work: &RankedRotation| {

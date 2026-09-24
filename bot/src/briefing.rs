@@ -38,7 +38,7 @@ impl RegionCache {
 struct RegionGeneration {
     width: i32,
     height: i32,
-    terrain: Vec<(TilePos, Terrain)>,
+    terrain: std::sync::Arc<[(TilePos, Terrain)]>,
     regions: std::sync::Arc<super::navigation::regions::StaticRegions>,
 }
 
@@ -72,7 +72,7 @@ pub struct PublicMapBriefing {
     pub(super) teams: Vec<Option<u8>>,
     /// Non-ground terrain in canonical `(y, x)` order. Missing in-bounds
     /// positions are ordinary ground.
-    pub(super) non_ground_terrain: Vec<(TilePos, Terrain)>,
+    pub(super) non_ground_terrain: std::sync::Arc<[(TilePos, Terrain)]>,
     pub(super) extractor_frames: Vec<TilePos>,
     pub(super) initial_scrap: Vec<(TilePos, u32)>,
 }
@@ -104,7 +104,7 @@ impl PublicMapBriefing {
                 .map(|(player, anchor)| StartingFoundry { player, anchor })
                 .collect(),
             teams: scenario.players.iter().map(|player| player.team).collect(),
-            non_ground_terrain,
+            non_ground_terrain: non_ground_terrain.into(),
             extractor_frames: map.extractor_frames().to_vec(),
             initial_scrap,
         }
@@ -120,6 +120,16 @@ impl PublicMapBriefing {
             let orientation =
                 super::orient::Orientation::for_map(self.map_width, self.map_height, home);
             orientation.briefing(self).regions();
+        }
+    }
+
+    pub(super) fn share_prepared_terrain(&mut self) {
+        if let Some(cached) = self.regions.generations[self.regions.orientation].get()
+            && cached.width == self.map_width
+            && cached.height == self.map_height
+            && cached.terrain == self.non_ground_terrain
+        {
+            self.non_ground_terrain = std::sync::Arc::clone(&cached.terrain);
         }
     }
 
@@ -444,6 +454,18 @@ mod tests {
             let first = orientation.briefing(&map);
             let second = orientation.briefing(&map);
             assert!(std::sync::Arc::ptr_eq(&first.regions(), &second.regions()));
+            assert!(std::sync::Arc::ptr_eq(
+                &first.non_ground_terrain,
+                &second.non_ground_terrain
+            ));
+            let mut changed = first.clone();
+            changed.non_ground_terrain = [(TilePos::new(0, 0), Terrain::Peak)].into();
+            changed.share_prepared_terrain();
+            assert!(!std::sync::Arc::ptr_eq(
+                &first.non_ground_terrain,
+                &changed.non_ground_terrain
+            ));
+            assert_eq!(changed.terrain_at(TilePos::new(0, 0)), Some(Terrain::Peak));
             let restored = orientation.briefing(&first);
             assert_eq!(restored, map);
             assert!(std::sync::Arc::ptr_eq(&restored.regions(), &map.regions()));

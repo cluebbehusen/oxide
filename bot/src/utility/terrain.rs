@@ -100,34 +100,6 @@ impl<'a> PlacementGeometry<'a> {
     }
 }
 
-/// Membership form of the known-road flood: one BFS from home answers
-/// [`UtilityPolicy::ground_route_known`] for every candidate anchor.
-/// `None` inside mirrors the degenerate-map and out-of-bounds cases
-/// where the per-target flood reports nothing reachable.
-pub(super) struct KnownRoadReach {
-    component: Option<Vec<bool>>,
-    width: i32,
-    height: i32,
-}
-
-impl KnownRoadReach {
-    /// Whether the 2x2 footprint at `anchor` touches home's known-road
-    /// component — the exact question the per-anchor flood answered,
-    /// including the home-inside-the-footprint case, because the flood
-    /// seeds home as seen before consulting the enter predicate.
-    pub(super) fn frame_reached(&self, anchor: TilePos) -> bool {
-        self.component.as_ref().is_some_and(|seen| {
-            (anchor.y..anchor.y + 2).any(|y| {
-                (anchor.x..anchor.x + 2).any(|x| {
-                    (0..self.width).contains(&x)
-                        && (0..self.height).contains(&y)
-                        && seen[(y * self.width + x) as usize]
-                })
-            })
-        })
-    }
-}
-
 impl UtilityPolicy {
     /// Whether known ground connects `home` to any tile of the 2x2
     /// footprint anchored at `anchor`. BFS over tiles not known
@@ -171,42 +143,11 @@ impl UtilityPolicy {
         )
     }
 
-    /// Home's known-road component in membership form, answering
-    /// [`Self::ground_route_known`] for any number of anchors with one
-    /// flood. Use this wherever candidates are filtered by known ground
-    /// reachability from a fixed origin: the per-anchor flood re-walks
-    /// the same component once per candidate, which on frame-dense maps
-    /// dominates the whole think.
-    pub(super) fn known_road_reach(obs: &Observation, home: TilePos) -> KnownRoadReach {
-        let cells = (obs.map_width.max(0) as usize) * (obs.map_height.max(0) as usize);
-        let mut open = obs.explored.clone();
-        open.resize(cells, false);
-        for &tile in &obs.known_rock {
-            if let Some(index) =
-                crate::navigation::flood::tile_index(obs.map_width, obs.map_height, tile)
-            {
-                open[index] = false;
-            }
-        }
-        KnownRoadReach {
-            component: Self::ground_component(obs, home, |t| {
-                open[(t.y * obs.map_width + t.x) as usize]
-            }),
-            width: obs.map_width,
-            height: obs.map_height,
-        }
-    }
-
-    /// Home's full walkable component under `enter`, as a seen-tile
-    /// grid — the membership form of [`Self::ground_flood`], flooded to
-    /// exhaustion. `None` when the map is degenerate or `home` is out
-    /// of bounds, where the per-target flood reports nothing reachable.
-    fn ground_component(
+    pub(super) fn known_road_reach(
         obs: &Observation,
         home: TilePos,
-        enter: impl Fn(TilePos) -> bool,
-    ) -> Option<Vec<bool>> {
-        crate::navigation::flood::component(obs.map_width, obs.map_height, home, enter)
+    ) -> crate::navigation::inputs::KnownRoadReach {
+        obs.navigation().known_roads(obs, home)
     }
 
     /// The per-unit goals a ground AttackMove would fan out over under the
@@ -549,6 +490,46 @@ impl UtilityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_known_roads_match_floods_for_blocked_starts_and_map_edges() {
+        let mut obs = Observation::from_data(ObservationData {
+            map_width: 3,
+            map_height: 3,
+            explored: vec![true; 9],
+            ..crate::test_support::observation_data()
+        });
+        for mask in 0..512 {
+            obs.known_rock = (0..9)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| TilePos::new(i % 3, i / 3))
+                .collect();
+            for y in -1..4 {
+                for x in -1..4 {
+                    let home = TilePos::new(x, y);
+                    let reach = UtilityPolicy::known_road_reach(&obs, home);
+                    for ay in -1..3 {
+                        for ax in -1..3 {
+                            let target = TilePos::new(ax, ay);
+                            assert_eq!(
+                                reach.frame_reached(target),
+                                UtilityPolicy::ground_route_known(&obs, home, target),
+                                "mask={mask} home={home:?} target={target:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        obs.known_rock.clear();
+        let home = TilePos::new(0, 0);
+        let prior = UtilityPolicy::known_road_reach(&obs, home);
+        assert!(prior.frame_reached(TilePos::new(2, 2)));
+        obs.explored.fill(false);
+        assert!(!UtilityPolicy::known_road_reach(&obs, home).frame_reached(TilePos::new(2, 2)));
+        assert!(prior.frame_reached(TilePos::new(2, 2)));
+    }
+
     use crate::observation::UnitObs;
     use oxide_sim::ids::{BuildingId, PlayerId, UnitId};
 

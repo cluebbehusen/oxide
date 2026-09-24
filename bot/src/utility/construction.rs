@@ -685,7 +685,7 @@ impl UtilityPolicy {
         obs: &Observation,
         home: TilePos,
         projected_foundries: &[TilePos],
-        road_reach: &mut Option<super::terrain::KnownRoadReach>,
+        road_reach: &mut Option<crate::navigation::inputs::KnownRoadReach>,
     ) -> Vec<TilePos> {
         let mut extractors: Vec<_> = obs
             .my_buildings

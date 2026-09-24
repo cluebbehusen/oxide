@@ -506,9 +506,14 @@ mod tests {
                     TilePos::new(9, 10),
                 )),
                 2 => obs.ally_buildings[0].provisional = true,
-                3 => map
-                    .non_ground_terrain
-                    .push((TilePos::new(12, 10), oxide_sim::map::Terrain::Rock)),
+                3 => {
+                    map.non_ground_terrain = map
+                        .non_ground_terrain
+                        .iter()
+                        .copied()
+                        .chain([(TilePos::new(12, 10), oxide_sim::map::Terrain::Rock)])
+                        .collect()
+                }
                 4 => obs.blips.push(TilePos::new(28, 12)),
                 5 => policy.state.contested_harvest_regions.push(
                     super::super::super::ContestedHarvestRegion {
@@ -587,7 +592,7 @@ mod tests {
             map_height: obs.map_height,
             starting_foundries: Vec::new(),
             teams: Vec::new(),
-            non_ground_terrain: Vec::new(),
+            non_ground_terrain: Default::default(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         };

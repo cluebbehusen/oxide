@@ -7857,7 +7857,7 @@ mod tests {
             map_height: observation.map_height,
             starting_foundries: Vec::new(),
             teams: vec![None, None],
-            non_ground_terrain,
+            non_ground_terrain: non_ground_terrain.into(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
@@ -12944,9 +12944,12 @@ mod tests {
             building(81, 1, BuildingKind::FlakTurret, flak, true),
         ];
         let mut public_map = movement_cap_serpentine_map(&observation);
-        public_map
+        public_map.non_ground_terrain = public_map
             .non_ground_terrain
-            .retain(|(tile, _)| *tile != primary && *tile != secondary && *tile != flak);
+            .iter()
+            .copied()
+            .filter(|(tile, _)| *tile != primary && *tile != secondary && *tile != flak)
+            .collect();
         let intelligence = knowledge(&observation);
         assert_eq!(targetable_flak(&intelligence.air_defense_at(primary)), None);
         assert_eq!(

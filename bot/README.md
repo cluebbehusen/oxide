@@ -39,8 +39,10 @@ navigation caches, and policy dials rebuild from the session's scenario, which
 the session snapshot binding ties to the world. Owner validators reject only
 state that could panic or cause unbounded work. A forged value that changes play
 but not safety is accepted. The payload is an internal same-version continuation
-format. It remains at revision 1 while the save system is unpublished; no legacy
-layout migration is provided. It never enters authoritative `State` or its hash.
+format. Field preparation restores authored terrain from that same scenario
+while retaining its dynamic layout and unfinished or completed searches. It
+remains at revision 1 while the save system is unpublished; no legacy layout
+migration is provided. It never enters authoritative `State` or its hash.
 Allocation validates exact owner updates before applying any. Observation,
 learning, and accepted operation maintenance survive unrelated rejection;
 rejected proposals acquire no members or production. No planner snapshot is

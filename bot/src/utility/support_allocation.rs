@@ -971,7 +971,7 @@ mod tests {
         obs.known_peaks.clear();
         obs.known_frames.clear();
         obs.known_scrap.clear();
-        map.non_ground_terrain.clear();
+        map.non_ground_terrain = Default::default();
         map.extractor_frames.clear();
         map.initial_scrap.clear();
         obs.my_units.truncate(1);

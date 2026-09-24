@@ -12,11 +12,34 @@ use std::sync::{Arc, OnceLock};
 pub(crate) struct NavigationInputs {
     ordinary: [OnceLock<Arc<Surface>>; 2],
     public: OnceLock<PublicSurfaces>,
+    known_roads: OnceLock<Arc<[u32]>>,
+}
+
+pub(crate) struct KnownRoadReach {
+    labels: Arc<[u32]>,
+    home: TilePos,
+    dimensions: (i32, i32),
+}
+
+impl KnownRoadReach {
+    pub(crate) fn frame_reached(&self, anchor: TilePos) -> bool {
+        if super::flood::tile_index(self.dimensions.0, self.dimensions.1, self.home).is_none() {
+            return false;
+        }
+        (anchor.y..anchor.y + 2).any(|y| {
+            (anchor.x..anchor.x + 2).any(|x| {
+                let tile = TilePos::new(x, y);
+                // The original flood seeds home even when it is blocked.
+                tile == self.home
+                    || super::components::connects(self.dimensions, &self.labels, self.home, tile)
+            })
+        })
+    }
 }
 
 struct PublicSurfaces {
     dimensions: (i32, i32),
-    terrain: Vec<(TilePos, Terrain)>,
+    terrain: Arc<[(TilePos, Terrain)]>,
     domains: [OnceLock<Arc<Surface>>; 2],
 }
 
@@ -85,6 +108,28 @@ impl Surface {
 }
 
 impl NavigationInputs {
+    pub fn known_roads(&self, obs: &Observation, home: TilePos) -> KnownRoadReach {
+        let labels = Arc::clone(self.known_roads.get_or_init(|| {
+            let mut open = obs.explored.clone();
+            open.resize(super::flood::area(obs.map_width, obs.map_height), false);
+            for &tile in &obs.known_rock {
+                if let Some(index) = super::flood::tile_index(obs.map_width, obs.map_height, tile) {
+                    open[index] = false;
+                }
+            }
+            super::components::labels(
+                QueryPurpose::ConstructionAccess,
+                (obs.map_width, obs.map_height),
+                open,
+            )
+        }));
+        KnownRoadReach {
+            labels,
+            home,
+            dimensions: (obs.map_width, obs.map_height),
+        }
+    }
+
     pub fn surface(
         &self,
         purpose: QueryPurpose,
@@ -115,7 +160,7 @@ impl NavigationInputs {
                     }
                 }
             }
-            for &(tile, terrain) in &map.non_ground_terrain {
+            for &(tile, terrain) in map.non_ground_terrain.iter() {
                 let blocked = match domain {
                     Domain::Ground => terrain.blocks_ground(),
                     Domain::Air => terrain.blocks_air(),
@@ -245,7 +290,7 @@ mod tests {
             map_height: 4,
             starting_foundries: Vec::new(),
             teams: Vec::new(),
-            non_ground_terrain: vec![(TilePos::new(1, 0), Terrain::Pit)],
+            non_ground_terrain: [(TilePos::new(1, 0), Terrain::Pit)].into(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         };
@@ -257,10 +302,9 @@ mod tests {
             &public,
             &surface(&obs, Domain::Ground, Some(&map))
         ));
-        map.non_ground_terrain.clear();
+        map.non_ground_terrain = Default::default();
         assert!(surface(&obs, Domain::Ground, Some(&map)).open[1]);
-        map.non_ground_terrain
-            .push((TilePos::new(1, 0), Terrain::Pit));
+        map.non_ground_terrain = [(TilePos::new(1, 0), Terrain::Pit)].into();
         assert!(Arc::ptr_eq(
             &public,
             &surface(&obs, Domain::Ground, Some(&map))

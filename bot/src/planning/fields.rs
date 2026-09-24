@@ -21,19 +21,24 @@ struct Job {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FieldPreparation {
-    generation: Option<(PublicMapBriefing, BlockedGroundLayout)>,
+    #[serde(skip)]
+    map: Option<Arc<PublicMapBriefing>>,
+    generation: Option<BlockedGroundLayout>,
     jobs: BTreeMap<Vec<TilePos>, Job>,
     next_pending: usize,
 }
 
 impl FieldPreparation {
+    pub(super) fn restore_map(&mut self, map: &PublicMapBriefing) {
+        self.map = self.generation.as_ref().map(|_| Arc::new(map.clone()));
+    }
+
     pub(super) fn valid_checkpoint(&self, map: &PublicMapBriefing, tick: u64) -> bool {
         self.jobs.len() <= RETAINED_JOBS
             && match &self.generation {
                 None => self.jobs.is_empty(),
-                Some((generation, blocked)) => {
-                    generation == map
-                        && blocked.valid_checkpoint(map)
+                Some(blocked) => {
+                    blocked.valid_checkpoint(map)
                         && self.jobs.iter().all(|(sources, job)| {
                             job.used_at <= tick && job.work.valid_checkpoint(map, sources)
                         })
@@ -45,7 +50,7 @@ impl FieldPreparation {
         self.jobs.retain(|_, job| {
             job.work.is_ready() || tick.saturating_sub(job.used_at) < PENDING_IDLE_LIFETIME
         });
-        let Some((map, blocked)) = &self.generation else {
+        let (Some(map), Some(blocked)) = (&self.map, &self.generation) else {
             return;
         };
         let mut pending = self
@@ -85,12 +90,9 @@ impl FieldPreparation {
         sources: impl IntoIterator<Item = TilePos>,
         budget: &mut WorkBudget,
     ) -> Progress<Arc<PublicGroundDistances>> {
-        if self
-            .generation
-            .as_ref()
-            .is_none_or(|(prior_map, prior_blocked)| prior_map != map || prior_blocked != blocked)
-        {
-            self.generation = Some((map.clone(), blocked.clone()));
+        if self.map.as_deref() != Some(map) || self.generation.as_ref() != Some(blocked) {
+            self.map = Some(Arc::new(map.clone()));
+            self.generation = Some(blocked.clone());
             self.jobs.clear();
             self.next_pending = 0;
         }

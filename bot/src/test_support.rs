@@ -268,7 +268,7 @@ pub(crate) fn briefing(
         map_height: height,
         starting_foundries: starts,
         teams: vec![Some(0), Some(1)],
-        non_ground_terrain,
+        non_ground_terrain: non_ground_terrain.into(),
         extractor_frames: Vec::new(),
         initial_scrap: Vec::new(),
     }

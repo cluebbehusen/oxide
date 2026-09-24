@@ -595,7 +595,7 @@ mod tests {
             map_height: 32,
             starting_foundries: vec![],
             teams: vec![None, None],
-            non_ground_terrain: vec![],
+            non_ground_terrain: Default::default(),
             extractor_frames: vec![],
             initial_scrap: vec![],
         };

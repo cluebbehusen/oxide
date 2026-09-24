@@ -1141,7 +1141,11 @@ mod tests {
                 Progress::Deferred
             );
         }
-        let clone = planning.clone();
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&planning, &mut bytes).unwrap();
+        let mut clone: PlanningWork = ciborium::from_reader(bytes.as_slice()).unwrap();
+        clone.restore_map(&map);
+        assert_eq!(planning, clone);
         for tick in (12..120).step_by(12) {
             planning.begin(tick);
             clone.begin(tick);
