@@ -37,8 +37,10 @@ budgeted search progress survive; observational query caches and public-map
 navigation caches and policy dials rebuild from the scenario configuration. The
 payload is an internal same-version continuation format. It remains at revision
 1 while the save system is unpublished; no legacy layout migration is provided.
-It is separate from policy rollback checkpoints and never enters authoritative
-`State` or its hash.
+It never enters authoritative `State` or its hash. Allocation validates exact
+owner updates before applying any. Observation, learning, and accepted operation
+maintenance survive unrelated rejection; rejected proposals acquire no members
+or production. No planner snapshot is restored.
 
 Experience has one owner; connected-target ranking borrows that history.
 Decision trace receipts are not persisted. Follow-through watches require their
@@ -76,18 +78,21 @@ Strategy's `think_alone` fixtures advance a single planner with fixture funding.
 They select the richest active revision and then use the real resource
 scheduler; they do not exercise portfolio competition or controller admission.
 `Brain` tests own command-level funding, preemption and cross-domain ownership;
-allocation-session tests own transactional rejection and rollback. Test-only
-roster references and work counters verify query equivalence and bounds without
-adding another runtime execution mode. Force-package fixtures supply the same
-bounded `PlanningWork` as production; missing planning state defers purchases.
-Tests comparing completed packages explicitly resume partial work within the
-unchanged decision allowance. The exhaustive funding reference is only an
-independent oracle, never a fallback inside the planner.
+allocation-session tests own exact admission and rejection. Test-only roster
+references and work counters verify query equivalence and bounds without adding
+another runtime execution mode. Force-package fixtures supply the same bounded
+`PlanningWork` as production; missing planning state defers purchases. Tests
+comparing completed packages explicitly resume partial work within the unchanged
+decision allowance. The exhaustive funding reference is only an independent
+oracle, never a fallback inside the planner.
 
 Team relief keeps observed pressure age separate from its proposed force.
-Allocation rollback restores accepted relief ownership and cooldown, retains
-pressure and outcome evidence, and discards the unaccepted proposal. A retry
-revalidates current members without restarting pressure credibility.
+Proposals hold no units and are not persisted. A retry revalidates current
+members without restarting pressure credibility. An admitted preparation holds
+its exact group and home screen until pressure becomes credible; then it
+dispatches the group and releases the screen. Accepted relief and raid orders
+use their retained actor claims; contested members cannot record a dispatch.
+Procurement and new membership enter through exact admitted values.
 
 ```sh
 cargo test -p oxide-bot --locked

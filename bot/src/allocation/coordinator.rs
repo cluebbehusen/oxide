@@ -11,7 +11,7 @@ use super::{
     AllocationCapacity, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedMarginalError, ConnectedPortfolioContext, DeferrableCapitalClaim,
     DomainAllocationResult, DomainInvestmentProposal, ForecastClaim, ImportedObligation,
-    LayoutValidator, LegacyChannel, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
+    LayoutValidator, ObligationClass, ObligationKey, ProducerJobClaim, ProposalKey,
     ScheduledProducerJob, accepted_portfolio_rank, future_producer_lane_reservations,
 };
 use crate::observation::Observation;
@@ -19,7 +19,7 @@ use crate::observation::Observation;
 use crate::observation::ObservationData;
 use crate::resources::ProducerLaneReservations;
 use crate::resources::{BuilderObligation, ResourceSnapshot, SiteFootprint};
-use crate::strategy::{ActiveConnectedObligation, StrategicDecision};
+use crate::strategy::ActiveConnectedObligation;
 use crate::trace::AllocationTrace;
 use crate::utility::FreshEmergencyDefense;
 use chassis::Tick;
@@ -881,17 +881,16 @@ pub(crate) fn clamped_current_reserve_obligation(
     }
 }
 
-/// Creates one explicit unmigrated unit-ownership adapter.
-pub(crate) fn legacy_unit_obligation(
+/// Claims the exact observed members of a retained owner.
+pub(crate) fn retained_unit_obligation(
     accepted_at: Tick,
-    channel: LegacyChannel,
-    sequence: u32,
+    key: ObligationKey,
     units: Vec<UnitId>,
 ) -> Result<ImportedObligation, ClaimBundleError> {
     Ok(imported_obligation(
-        ObligationClass::Legacy,
+        ObligationClass::PersistentPlan,
         accepted_at,
-        ObligationKey::Legacy { channel, sequence },
+        key,
         ClaimBundle::new(0, Vec::new(), Vec::new(), units, Vec::new(), Vec::new())?,
     ))
 }
@@ -901,9 +900,8 @@ pub(crate) struct OperationProductionRequest<'a> {
     pub(crate) cadence: Tick,
     pub(crate) accepted_at: Tick,
     pub(crate) decision_tick: Tick,
-    pub(crate) channel: LegacyChannel,
-    pub(crate) sequence: u32,
-    pub(crate) decision: &'a StrategicDecision,
+    pub(crate) key: ObligationKey,
+    pub(crate) purchases: &'a crate::production::ProductionPlan,
     pub(crate) protect_reserve: bool,
     /// Earlier same-think producer commands, in their committed order.
     /// These are projection context only; this obligation does not claim them.
@@ -921,9 +919,8 @@ pub(crate) fn operation_production_obligation(
         cadence,
         accepted_at,
         decision_tick,
-        channel,
-        sequence,
-        decision,
+        key,
+        purchases,
         protect_reserve,
         prior_producer_intents,
         production_deadline,
@@ -951,8 +948,10 @@ pub(crate) fn operation_production_obligation(
             append(*building, *kind)?;
         }
     }
-    let jobs = decision
-        .production()
+    let jobs = purchases
+        .purchases
+        .iter()
+        .copied()
         .map(|(building, kind)| {
             let projected = append(building, kind)?;
             Ok(ProducerJobClaim::fixed(
@@ -966,14 +965,14 @@ pub(crate) fn operation_production_obligation(
         })
         .collect::<Result<Vec<_>, CoordinatorInputError>>()?;
     let current_scrap = if protect_reserve {
-        decision.reserved_scrap
+        purchases.reserved_scrap
     } else {
         0
     };
     Ok(imported_obligation(
-        ObligationClass::Legacy,
+        ObligationClass::PersistentPlan,
         accepted_at,
-        ObligationKey::Legacy { channel, sequence },
+        key,
         ClaimBundle::new(
             current_scrap,
             Vec::new(),
@@ -1240,7 +1239,7 @@ mod tests {
         ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
         ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
         ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposal,
-        FreshConnectedProposalFixture, StrategicDecision,
+        FreshConnectedProposalFixture,
     };
     use crate::trace::{ConnectedMarginalDispositionTrace, ConnectedPortfolioSelectionTrace};
     use crate::utility::{
@@ -1544,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_training_is_charged_exactly_once() {
+    fn operation_purchases_is_charged_exactly_once() {
         let mut obs = observation();
         obs.tick = 120;
         obs.scrap = 100;
@@ -1556,12 +1555,8 @@ mod tests {
         ));
         obs.my_queues.push(Vec::new());
         let resources = ResourceSnapshot::from_observation(&obs);
-        let decision = StrategicDecision {
-            intents: vec![crate::executive::Intent::TrainAt {
-                building: BuildingId(9),
-                kind: UnitKind::Sentinel,
-            }],
-            reservations: vec![UnitId(3)],
+        let decision = crate::production::ProductionPlan {
+            purchases: vec![(BuildingId(9), UnitKind::Sentinel)],
             reserved_scrap: 17,
         };
         let obligation = operation_production_obligation(
@@ -1571,9 +1566,8 @@ mod tests {
                 cadence: 12,
                 accepted_at: 24,
                 decision_tick: 120,
-                channel: LegacyChannel::Lift,
-                sequence: 0,
-                decision: &decision,
+                key: ObligationKey::LiftPurchases,
+                purchases: &decision,
                 prior_producer_intents: &[],
                 production_deadline: 1_200,
             },
@@ -1598,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn later_legacy_training_replays_the_earlier_same_tick_fifo_prefix() {
+    fn later_operation_purchases_replays_the_earlier_same_tick_fifo_prefix() {
         let mut obs = observation();
         obs.tick = 120;
         obs.scrap = UnitKind::Skyhook
@@ -1613,20 +1607,12 @@ mod tests {
         ));
         obs.my_queues.push(Vec::new());
         let resources = ResourceSnapshot::from_observation(&obs);
-        let first = StrategicDecision {
-            intents: vec![crate::executive::Intent::TrainAt {
-                building: BuildingId(9),
-                kind: UnitKind::Skyhook,
-            }],
-            reservations: Vec::new(),
+        let first = crate::production::ProductionPlan {
+            purchases: vec![(BuildingId(9), UnitKind::Skyhook)],
             reserved_scrap: 0,
         };
-        let second = StrategicDecision {
-            intents: vec![crate::executive::Intent::TrainAt {
-                building: BuildingId(9),
-                kind: UnitKind::Kestrel,
-            }],
-            reservations: Vec::new(),
+        let second = crate::production::ProductionPlan {
+            purchases: vec![(BuildingId(9), UnitKind::Kestrel)],
             reserved_scrap: 0,
         };
         let first_obligation = operation_production_obligation(
@@ -1636,9 +1622,8 @@ mod tests {
                 cadence: 12,
                 accepted_at: 24,
                 decision_tick: obs.tick,
-                channel: LegacyChannel::Lift,
-                sequence: 0,
-                decision: &first,
+                key: ObligationKey::LiftPurchases,
+                purchases: &first,
                 prior_producer_intents: &[],
                 production_deadline: 1_200,
             },
@@ -1651,10 +1636,9 @@ mod tests {
                 cadence: 12,
                 accepted_at: 36,
                 decision_tick: obs.tick,
-                channel: LegacyChannel::StrategicAir,
-                sequence: 0,
-                decision: &second,
-                prior_producer_intents: &first.intents,
+                key: ObligationKey::AirPurchases,
+                purchases: &second,
+                prior_producer_intents: &first.intents().collect::<Vec<_>>(),
                 production_deadline: 1_200,
             },
         )
@@ -1882,7 +1866,7 @@ mod tests {
         });
         let mut expected = proposal.clone();
         assert!(expected.select_marginal(&proposal.marginal_variants()[0]));
-        let obligation = legacy_unit_obligation(100, LegacyChannel::StandingArmy, 0, vec![blocked])
+        let obligation = retained_unit_obligation(100, ObligationKey::StandingArmy, vec![blocked])
             .expect("the existing unit claim is valid");
         let allocation = CrossDomainAllocation {
             capacity: capacity_with_units(vec![first, blocked]),

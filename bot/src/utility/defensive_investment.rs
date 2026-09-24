@@ -883,7 +883,7 @@ mod tests {
             .expect("Foundries are constructible")
             .cost;
         policy
-            .commit_adjudicated_foundry(
+            .prepare_adjudicated_foundry(
                 FreshFoundryProposal::fixture(
                     TilePos::new(8, 14),
                     UnitId(4),
@@ -900,9 +900,9 @@ mod tests {
                     ),
                 ),
                 obs.tick,
-                &mut Vec::new(),
             )
-            .expect("the fixture installs one saved Foundry builder");
+            .expect("the fixture installs one saved Foundry builder")
+            .apply(&mut policy, &mut Vec::new());
 
         let resources = ResourceSnapshot::from_observation(&obs);
         let profile = low_fortification_profile();

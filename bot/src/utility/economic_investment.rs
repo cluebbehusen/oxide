@@ -1404,7 +1404,7 @@ mod tests {
             .expect("the unclaimed map offers a technology site");
         let economy = expansion_economy(&Dials::default(), &obs, obs.scrap, Reserve::Exact(0));
         policy
-            .commit_adjudicated_foundry(
+            .prepare_adjudicated_foundry(
                 FreshFoundryProposal::fixture(
                     saved,
                     UnitId(2),
@@ -1421,9 +1421,9 @@ mod tests {
                     ),
                 ),
                 obs.tick,
-                &mut Vec::new(),
             )
-            .unwrap();
+            .unwrap()
+            .apply(&mut policy, &mut Vec::new());
         let alternative = fabricator(quotes(&policy, &obs, &map, &profile, &demands))
             .expect("a saved site must not repeatedly veto every technology proposal");
         let (width, height) = BuildingKind::Fabricator.base_stats().size;

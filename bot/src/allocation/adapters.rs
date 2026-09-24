@@ -41,7 +41,7 @@ pub(crate) enum DomainPayload {
     /// Exact Repair Bay site, builder, and capital.
     SupportConstruction(EconomicInvestment),
     /// Exact deployment to a currently pressured allied Foundry.
-    SupportRelief(crate::team::TeamReliefOperation),
+    SupportRelief(crate::team::ReliefProposal),
     /// Exact fighter deployment to an exposed own asset.
     SupportDeployment(crate::utility::SupportDeployment),
     /// Exact question and live observer or dedicated purchase.
@@ -563,7 +563,7 @@ pub(crate) struct AcceptedDomainPayloads {
     support: Option<crate::utility::RepairAssignment>,
     support_procurement: Option<StandingForceProposal>,
     support_construction: Option<EconomicInvestment>,
-    support_relief: Option<crate::team::TeamReliefOperation>,
+    support_relief: Option<crate::team::ReliefProposal>,
     support_deployment: Option<crate::utility::SupportDeployment>,
     reconnaissance: Option<crate::utility::ReconProposal>,
 }
@@ -575,7 +575,7 @@ impl AcceptedDomainPayloads {
     pub(crate) fn take_reconnaissance(&mut self) -> Option<crate::utility::ReconProposal> {
         self.reconnaissance.take()
     }
-    pub(crate) fn take_support_relief(&mut self) -> Option<crate::team::TeamReliefOperation> {
+    pub(crate) fn take_support_relief(&mut self) -> Option<crate::team::ReliefProposal> {
         self.support_relief.take()
     }
     pub(crate) fn take_support_construction(&mut self) -> Option<EconomicInvestment> {

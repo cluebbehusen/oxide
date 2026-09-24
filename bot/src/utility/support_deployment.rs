@@ -12,6 +12,21 @@ const HORIZON: Tick = 1_800;
 const QUIET: Tick = 300;
 const SERVICE_RADIUS: i32 = 6;
 
+pub(crate) struct SupportDeploymentCommit(SupportDeployment);
+
+impl SupportDeploymentCommit {
+    pub(crate) fn apply(self, policy: &mut UtilityPolicy, intents: &mut Vec<Intent>) {
+        let deployment = self.0;
+        intents.push(deployment.intent());
+        policy.state.support_deployments.active.push(deployment);
+        policy
+            .state
+            .support_deployments
+            .active
+            .sort_by_key(|work| work.key);
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -522,12 +537,11 @@ impl UtilityPolicy {
         proposals
     }
 
-    pub(crate) fn commit_support_deployment(
-        &mut self,
+    pub(crate) fn prepare_support_deployment(
+        &self,
         deployment: SupportDeployment,
         obs: &Observation,
-        intents: &mut Vec<Intent>,
-    ) -> bool {
+    ) -> Option<SupportDeploymentCommit> {
         if deployment.accepted_at != obs.tick
             || deployment.deadline <= obs.tick
             || self.support_reservations().contains(&deployment.unit)
@@ -546,15 +560,9 @@ impl UtilityPolicy {
                     && !obs.my_queued_units.contains(&unit.id)
             })
         {
-            return false;
+            return None;
         }
-        intents.push(deployment.intent());
-        self.state.support_deployments.active.push(deployment);
-        self.state
-            .support_deployments
-            .active
-            .sort_by_key(|work| work.key);
-        true
+        Some(SupportDeploymentCommit(deployment))
     }
 }
 
@@ -685,8 +693,18 @@ mod tests {
                 .any(|work| !work.key.air && work.unit == UnitId(101))
         );
         for work in quoted {
-            assert!(policy.commit_support_deployment(work.clone(), &obs, &mut vec![]));
-            assert!(!policy.commit_support_deployment(work, &obs, &mut vec![]));
+            policy
+                .prepare_support_deployment(work.clone(), &obs)
+                .expect("the exact proposal is admissible")
+                .apply(&mut policy, &mut vec![]);
+            assert!(
+                !policy
+                    .prepare_support_deployment(work, &obs)
+                    .is_some_and(|commit| {
+                        commit.apply(&mut policy, &mut vec![]);
+                        true
+                    })
+            );
         }
         assert_eq!(
             policy.support_reservations(),
@@ -717,7 +735,10 @@ mod tests {
             8,
         );
         for work in quoted {
-            assert!(policy.commit_support_deployment(work, &obs, &mut vec![]));
+            policy
+                .prepare_support_deployment(work, &obs)
+                .expect("the exact proposal is admissible")
+                .apply(&mut policy, &mut vec![]);
         }
         let deadline = policy.state.support_deployments.active[0].deadline;
         obs.tick += 24;
@@ -776,7 +797,10 @@ mod tests {
         let worker = deployment.unit;
         let deadline = deployment.deadline;
         let goal = deployment.goal;
-        assert!(policy.commit_support_deployment(deployment, &obs, &mut vec![]));
+        policy
+            .prepare_support_deployment(deployment, &obs)
+            .expect("the exact proposal is admissible")
+            .apply(&mut policy, &mut vec![]);
         let observe = |policy: &mut UtilityPolicy, obs: &Observation| {
             let resources = ResourceSnapshot::from_observation(obs);
             let context = context(obs, &map, &profile, &resources);

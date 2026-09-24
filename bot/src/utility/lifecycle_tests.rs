@@ -8,7 +8,7 @@ use crate::query_work::QueryPurpose;
 use oxide_sim::ids::PlayerId;
 
 #[test]
-fn rejected_policy_state_keeps_queries_correct_for_restored_and_changed_inputs() {
+fn policy_queries_follow_current_evidence_and_geometry() {
     let node = TilePos::new(12, 10);
     let map =
         PublicMapBriefing::from_scenario(&scenario_with(
@@ -74,7 +74,6 @@ fn rejected_policy_state_keeps_queries_correct_for_restored_and_changed_inputs()
         policy.queries.knowledge_paths.borrow().clone(),
         Default::default()
     );
-    let checkpoint = policy.speculative_checkpoint();
     policy.state.work_experience.dead_nodes.push(node);
     policy
         .state
@@ -89,11 +88,11 @@ fn rejected_policy_state_keeps_queries_correct_for_restored_and_changed_inputs()
     let speculative = evaluate(&policy, &changed, true);
     assert_ne!(speculative, baseline);
     let warmed = policy.queries.clone();
-    policy.restore_checkpoint(checkpoint.clone());
-    assert_eq!(policy.speculative_checkpoint(), checkpoint);
+    policy.state.work_experience.dead_nodes.clear();
+    policy.state.contested_harvest_regions.clear();
     assert_eq!(
         policy.queries, warmed,
-        "rollback must not copy query storage"
+        "changing policy evidence does not replace query storage"
     );
     assert_eq!(evaluate(&policy, &obs, false), baseline);
 
@@ -122,7 +121,7 @@ fn rejected_policy_state_keeps_queries_correct_for_restored_and_changed_inputs()
 }
 
 #[test]
-fn checkpoint_preserves_planning_allowance_continuations_and_eventual_results() {
+fn policy_evidence_does_not_reset_planning_allowance_or_continuations() {
     let map = briefing();
     let blocked = BlockedGroundLayout::from_predicate(&map, |_| false);
     let source = TilePos::new(7, 10);
@@ -135,13 +134,10 @@ fn checkpoint_preserves_planning_allowance_continuations_and_eventual_results() 
     policy.planning = PlanningWork::with_allowance(128);
     policy.planning.begin(0);
     assert_eq!(request(&policy, 0), Progress::Deferred);
-    let checkpoint = policy.speculative_checkpoint();
     policy.planning.begin(1);
     assert_eq!(request(&policy, 1), Progress::Deferred);
     let control = policy.clone();
     policy.state.work_experience.dead_nodes.push(source);
-    policy.restore_checkpoint(checkpoint);
-    assert_eq!(policy.state, control.state);
     assert_eq!(policy.planning, control.planning);
     for tick in 1..100 {
         policy.planning.begin(tick);
