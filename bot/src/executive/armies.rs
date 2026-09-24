@@ -1267,28 +1267,6 @@ fn local_fight_strength(obs: &Observation, members: &[&UnitObs]) -> (u64, u64) {
     (mine, theirs)
 }
 
-/// Whether marching this body into the visible force near `target` would
-/// immediately cross the Executive's own catastrophic-withdrawal floor.
-/// Utility uses this before recommitting a body that has already made it home;
-/// otherwise its staged state erases the evidence that the same fight just
-/// routed it.
-pub(crate) fn catastrophically_outmatched_near(
-    obs: &Observation,
-    members: &[UnitId],
-    target: TilePos,
-    radius: i32,
-) -> bool {
-    let roster = UnitRoster::new(&obs.my_units);
-    let mine_units = roster.members(members);
-    let opposition: Vec<&UnitObs> = obs
-        .enemy_units
-        .iter()
-        .filter(|unit| obs.visible(unit.tile) && unit.tile.chebyshev(target) <= radius)
-        .collect();
-    let (mine, theirs) = matched_strength(&mine_units, &opposition);
-    catastrophic_matchup(mine, theirs)
-}
-
 /// Whether at least two members already near a visible threat hold a clear
 /// matched-strength advantage. This is the local-defense exception to a full
 /// offensive muster: it lets an existing screen crush a lone intruder without
@@ -1315,12 +1293,6 @@ pub(crate) fn locally_overmatches_near(
         .collect();
     let (mine, theirs) = matched_strength(&mine_units, &opposition);
     theirs > 0 && mine.saturating_mul(2) >= theirs.saturating_mul(3)
-}
-
-fn catastrophic_matchup(mine: u64, theirs: u64) -> bool {
-    theirs > 0
-        && mine.saturating_mul(u64::from(WITHDRAW_MARGIN_DEN))
-            < theirs.saturating_mul(u64::from(WITHDRAW_MARGIN_NUM))
 }
 
 fn matched_strength(mine_units: &[&UnitObs], opposition: &[&UnitObs]) -> (u64, u64) {

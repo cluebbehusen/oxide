@@ -754,7 +754,6 @@ impl UtilityPolicy {
                     && cancellations.retained(unit).is_none()
                     && !enlisted.contains(&unit.id)
                     && !reserved.contains(&unit.id)
-                    && self.state.scout != Some(unit.id)
                     && self
                         .state
                         .foundry_saving
@@ -1176,7 +1175,6 @@ impl UtilityPolicy {
             .iter()
             .filter(|builder| context.available_builders.contains(&builder.id))
             .filter(|builder| builder_is_free(obs, builder))
-            .filter(|builder| self.state.scout != Some(builder.id))
             .collect();
         builders.sort_unstable_by_key(|builder| builder.id);
         builders.dedup_by_key(|builder| builder.id);
@@ -1375,10 +1373,6 @@ impl UtilityPolicy {
                 available_builders.contains(&builder.id)
                     && claimed.binary_search(&builder.id).is_err()
                     && !self.state.evacuating_workers.contains(&builder.id)
-                    && self
-                        .state
-                        .retreating_contested_scout
-                        .is_none_or(|retreat| retreat.unit != builder.id)
             })
             .collect();
         if builders.is_empty() || self.opening_construction_recovery(obs, &builders).is_some() {
@@ -4638,14 +4632,11 @@ mod tests {
             TilePos::new(32, 10),
         ));
         obs.blips.push(TilePos::new(20, 10));
-        for seen_air in [false, true] {
-            let mut policy = UtilityPolicy::new();
-            policy.state.seen_air = seen_air;
-            assert!(
-                construction_intents_with_public_map(&mut policy, &obs, &public_map).is_empty(),
-                "current threats require an admitted defensive investment"
-            );
-        }
+        let mut policy = UtilityPolicy::new();
+        assert!(
+            construction_intents_with_public_map(&mut policy, &obs, &public_map).is_empty(),
+            "current threats require an admitted defensive investment"
+        );
     }
 
     #[test]

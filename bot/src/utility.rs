@@ -38,7 +38,6 @@ use oxide_sim::stats::{BuildingKind, Domain, UnitKind};
 use std::collections::BTreeSet;
 
 mod combat;
-use combat::ScoutingContext;
 pub(crate) use combat::{GroundMissionInputs, ground_weapon_reaches_footprint};
 mod construction;
 mod construction_checks;
@@ -96,17 +95,6 @@ pub(crate) use production::{CombatCoreStatus, combat_core_status};
 
 /// How far from home an enemy unit counts as an intruder (Chebyshev).
 const DEFENSE_RADIUS: i32 = 8;
-/// Ticks between scout refreshes toward a known enemy base, and the
-/// window inside which that intel still counts as fresh.
-const SCOUT_REFRESH: u64 = 1800;
-/// A failed solo overflight may be attempted again after two ordinary recon
-/// intervals. This is long enough to prevent a replacement conveyor while
-/// keeping disconnected maps strategically live.
-const SOLO_SCOUT_RETRY_TICKS: u64 = SCOUT_REFRESH * 2;
-/// Require a stable quiet interval before a timed retry. A transient gap
-/// between hostile sightings is not evidence that another overflight differs
-/// from the one which just failed.
-const SOLO_SCOUT_QUIET_TICKS: u64 = SCOUT_REFRESH / 6;
 /// Scrap kept banked past a Fabricator's price before teching — the
 /// fighting reserve that keeps the sentinel drip alive.
 const TECH_RESERVE: u32 = 70;
@@ -120,10 +108,6 @@ const HOME_SALVAGE_RADIUS: i32 = 14;
 
 /// Known anti-air within this range of a raid target scrubs the raid.
 const RAID_AA_RADIUS: i32 = 6;
-
-fn is_air_threat(unit: &UnitObs) -> bool {
-    unit.kind.stats().domain == Domain::Air && unit.kind.role() != oxide_sim::stats::Role::Scout
-}
 
 /// Persistent quarantine covers the anonymous incident's actual danger area.
 /// Route projection rejects paths through it separately, so widening the
@@ -152,105 +136,6 @@ struct HarvesterWatch {
     tile: TilePos,
     hp: u32,
     source: Option<TilePos>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ContestedRecon {
-    region: TilePos,
-    target: TilePos,
-}
-
-impl ContestedRecon {
-    #[cfg(test)]
-    const fn at(region: TilePos) -> Self {
-        Self {
-            region,
-            target: region,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct RetreatingContestedScout {
-    unit: UnitId,
-    order_dispatched: bool,
-    suspend_solo_air_on_loss: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum PublicScoutPrior {
-    HostileStart(StartingFoundry),
-    Extractor(TilePos),
-}
-
-impl PublicScoutPrior {
-    const fn anchor(self) -> TilePos {
-        match self {
-            Self::HostileStart(start) => start.anchor,
-            Self::Extractor(anchor) => anchor,
-        }
-    }
-
-    fn footprint(self) -> (i32, i32) {
-        match self {
-            Self::HostileStart(_) => BuildingKind::Foundry.base_stats().size,
-            Self::Extractor(_) => BuildingKind::Extractor.base_stats().size,
-        }
-    }
-
-    fn footprint_explored(self, obs: &Observation) -> bool {
-        let (width, height) = self.footprint();
-        (0..height).all(|dy| (0..width).all(|dx| obs.explored(self.anchor().offset(dx, dy))))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum ScoutDispatchRole {
-    Ordinary,
-    PublicGround(PublicScoutPrior),
-    SoloAir,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct ScoutDispatch {
-    unit: UnitId,
-    from: TilePos,
-    to: TilePos,
-    role: ScoutDispatchRole,
-}
-
-impl ScoutDispatch {
-    const fn ordinary(unit: UnitId, from: TilePos, to: TilePos) -> Self {
-        Self {
-            unit,
-            from,
-            to,
-            role: ScoutDispatchRole::Ordinary,
-        }
-    }
-
-    const fn public_ground(
-        unit: UnitId,
-        from: TilePos,
-        to: TilePos,
-        prior: PublicScoutPrior,
-    ) -> Self {
-        Self {
-            unit,
-            from,
-            to,
-            role: ScoutDispatchRole::PublicGround(prior),
-        }
-    }
-
-    const fn solo_air(unit: UnitId, from: TilePos, to: TilePos) -> Self {
-        Self {
-            unit,
-            from,
-            to,
-            role: ScoutDispatchRole::SoloAir,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -575,8 +460,8 @@ impl Dials {
 }
 
 /// Channel-based scripted policy. Its memory is bot-local and legitimate
-/// (a bot is a command source, not sim state): harvest blacklists, raid
-/// memory, and the scout rotation.
+/// (a bot is a command source, not sim state): harvest blacklists and raid
+/// memory.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UtilityPolicy {
     pub(crate) state: PolicyState,
@@ -589,10 +474,6 @@ pub struct UtilityPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PolicyState {
     pub(crate) work_experience: experience_work::WorkExperience,
-    /// Largest hostile ground force observed within the difficulty's
-    /// strategic memory window. Its exact old position may be stale; voluntary
-    /// attack timing consumes only the common recent portion of this fact.
-    opponent_force_peak: Option<(u64, u64)>,
 
     /// Bank reading at the last think and the last tick it grew — the
     /// starvation clock behind the desperation endgame. A bank that has
@@ -626,47 +507,10 @@ pub(crate) struct PolicyState {
     pub(crate) support_work: support_allocation::SupportWork,
     pub(crate) support_deployments: support_deployment::SupportDeployments,
     pub(crate) reconnaissance: reconnaissance::Reconnaissance,
-    /// The designated scout, held only mid-sweep (released between
-    /// sweeps so the draft can have it back).
-    scout: Option<UnitId>,
-    /// Which leg of the search sweep the scout is on.
-    scout_leg: u32,
-    /// The last scout order and the job it was assigned. Dispatch-time role
-    /// survives later objective selection so loss handling cannot reinterpret
-    /// an old ground probe or dedicated overflight as ordinary movement.
-    scout_dispatch: Option<ScoutDispatch>,
-    /// Current authored-prior reconnaissance cannot use a ground route. This
-    /// is recomputed from public terrain and current resource knowledge rather
-    /// than retained as evidence that the route is permanently severed.
-    public_prior_air_scout_needed: bool,
-    /// Current contested reconnaissance has no eligible ordinary body. This is
-    /// recomputed as the roster changes; it does not prove a ground route failed.
-    contested_recon_air_scout_needed: bool,
-    /// A dispatched ground look failed or became unsafe, proving that its next
-    /// attempt needs an aircraft. This durable evidence remains independent of
-    /// the recomputable authored-start prior above.
-    persistent_air_scout_needed: bool,
-    /// A dispatched dedicated scout died before completing its solo look.
-    /// Reconsider only after changed current sight or the bounded loss
-    /// cooldown and quiet interval; remembered ghosts are not new evidence.
-    solo_air_scout_suspended: bool,
-    /// First tick of uninterrupted absence of actionable enemy sight after a
-    /// solo scout loss.
-    solo_air_scout_dark_since: Option<u64>,
-    /// Earliest tick a quiet map may fund one more solo overflight.
-    solo_air_scout_retry_at: u64,
-    /// Tick when a scout was last sent toward a known enemy base. Dispatch
-    /// cadence is not evidence that the destination was actually observed.
-    scout_sent_at: u64,
-    /// Tick of the last confirmed current sight of an enemy Foundry.
-    scouted_at: u64,
     /// Authored hostile starts whose complete Foundry footprint has since been
     /// seen empty. These are retired public priors, not destroyed-building
     /// intelligence; live and remembered contacts remain in the observation.
     cleared_hostile_starts: Vec<PlayerId>,
-    /// Whether enemy air has ever been sighted — the sky stays suspect
-    /// afterward.
-    seen_air: bool,
 
     /// Player-facing controller memory for work regions where allied losses
     /// tied to a current or last-observed worker made anonymous salvage unsafe.
@@ -683,14 +527,6 @@ pub(crate) struct PolicyState {
     /// Region centers whose warning or fog-honest threat projection currently
     /// makes reconnaissance itself unsafe.
     contested_recon_blocked: BTreeSet<TilePos>,
-    /// Scout currently assigned to a specific recovery region.
-    contested_scout: Option<(UnitId, TilePos)>,
-    /// A recovery scout recalled by fresh danger remains protected from every
-    /// other channel until it is observed back in the safe home area.
-    retreating_contested_scout: Option<RetreatingContestedScout>,
-    /// Earliest tick after a failed recovery may be attempted again. A
-    /// recalled survivor starts this cooldown only after reaching home.
-    contested_recon_retry_at: u64,
     /// Workers already sent out of a contested work region. This avoids
     /// replacing the same escape route every think while still retrying a
     /// bounced evacuation once the unit becomes idle.
@@ -863,41 +699,6 @@ impl UtilityPolicy {
         Self::default()
     }
 
-    fn air_scout_needed(&self) -> bool {
-        if self.state.reconnaissance.observed_at.is_some() {
-            return self.state.reconnaissance.needs_air;
-        }
-        self.state.public_prior_air_scout_needed
-            || self.state.contested_recon_air_scout_needed
-            || self.state.persistent_air_scout_needed
-    }
-
-    fn public_ground_probe_pending(&self, obs: &Observation, prior: PublicScoutPrior) -> bool {
-        match prior {
-            PublicScoutPrior::Extractor(_) => !prior.footprint_explored(obs),
-            PublicScoutPrior::HostileStart(start) => {
-                obs.enemy_buildings.is_empty()
-                    && self
-                        .state
-                        .cleared_hostile_starts
-                        .binary_search(&start.player)
-                        .is_err()
-            }
-        }
-    }
-
-    fn active_public_ground_probe(&self, obs: &Observation, unit: UnitId) -> bool {
-        self.state.scout_dispatch.is_some_and(|dispatch| {
-            dispatch.unit == unit
-                && match dispatch.role {
-                    ScoutDispatchRole::PublicGround(prior) => {
-                        self.public_ground_probe_pending(obs, prior)
-                    }
-                    ScoutDispatchRole::Ordinary | ScoutDispatchRole::SoloAir => false,
-                }
-        })
-    }
-
     /// Public hostile starts that have not received current negative evidence.
     ///
     /// The briefing remains immutable. Controller-local evidence suppresses a
@@ -1047,8 +848,8 @@ impl UtilityPolicy {
     }
 
     /// Refreshes same-observation incident evidence before shared allocation
-    /// freezes an exact construction builder. The ordinary Utility pass repeats
-    /// this idempotent refresh before issuing any required evacuation.
+    /// freezes an exact construction builder and before Utility issues any
+    /// required evacuation.
     pub(crate) fn refresh_allocation_worker_safety(
         &mut self,
         obs: &Observation,
@@ -1110,7 +911,6 @@ impl UtilityPolicy {
                                 && !enlisted.contains(&unit.id)
                                 && !reserved.contains(&unit.id)
                                 && !claimed.contains(&unit.id)
-                                && self.state.scout != Some(unit.id)
                                 && self
                                     .state
                                     .foundry_saving
@@ -1703,23 +1503,9 @@ impl UtilityPolicy {
             obs.map_width - 1 - home_tile.x,
             obs.map_height - 1 - home_tile.y,
         );
-        if obs.enemy_units.iter().any(is_air_threat) {
-            self.state.seen_air = true;
-        }
-
         {
             if let Some(public_map) = mode.public_map {
                 self.clear_visible_public_starts(obs, public_map);
-            }
-            if self.state.reconnaissance.observed_at != Some(obs.tick) {
-                self.audit_missing_scout(obs);
-                self.refresh_solo_air_scout_suspension(obs);
-                self.refresh_contested_harvest_regions(
-                    obs,
-                    mode.unit_contacts,
-                    mode.building_contacts,
-                );
-                self.retreat_contested_scout(obs, home_tile, &mut intents);
             }
             self.evacuate_contested_workers(
                 obs,
@@ -1731,11 +1517,6 @@ impl UtilityPolicy {
         }
         let mut protected = strategic_reserved.to_vec();
         protected.extend(self.state.evacuating_workers.iter().copied());
-        protected.extend(
-            self.state
-                .retreating_contested_scout
-                .map(|retreat| retreat.unit),
-        );
         protected.sort_unstable();
         protected.dedup();
         let reserved = protected.as_slice();
@@ -1821,48 +1602,6 @@ impl UtilityPolicy {
         let mut budget =
             foundry.spending_after(utility_admission_scrap.saturating_sub(deferred_scrap));
 
-        let harvesters = obs
-            .my_units
-            .iter()
-            .filter(|u| u.kind.stats().harvest.is_some())
-            .count();
-        let contested_recon = self.contested_recon_target(obs, home_tile);
-        let scouting_admitted =
-            harvesters >= immediate_harvester_target(dials) as usize || contested_recon.is_some();
-        if scouting_admitted && self.state.reconnaissance.observed_at != Some(obs.tick) {
-            // Exact scout ownership precedes every implicit utility claim.
-            let mut unavailable = enlisted.to_vec();
-            unavailable.extend_from_slice(reserved);
-            unavailable.extend(
-                self.state
-                    .foundry_saving
-                    .as_ref()
-                    .map(|saving| saving.plan.builder),
-            );
-            unavailable.sort_unstable();
-            unavailable.dedup();
-            self.scouting_with_context(
-                obs,
-                ScoutingContext {
-                    home: home_tile,
-                    contested_recon,
-                    public_map: mode.public_map,
-                    enlisted: &unavailable,
-                    cancellations,
-                },
-                &mut intents,
-            );
-        } else if self.state.reconnaissance.observed_at != Some(obs.tick) {
-            // Production still consumes this recomputable demand when the
-            // roster is not yet large enough to dispatch the scouting channel.
-            self.state.contested_recon_air_scout_needed = false;
-            self.refresh_public_prior_air_scout_demand(
-                obs,
-                home_tile,
-                mode.public_map,
-                cancellations,
-            );
-        }
         self.economy(
             obs,
             home_tile,
@@ -2045,7 +1784,6 @@ impl UtilityPolicy {
             .then(|| self.harvest_danger_projection(obs, unit_contacts, building_contacts));
         self.state.contested_recon_blocked.clear();
         let mut cleared_regions = BTreeSet::new();
-        let mut timed_out_regions = BTreeSet::new();
         for region in &mut self.state.contested_harvest_regions {
             let active_incident = obs.salvage_incidents.iter().any(|incident| {
                 incident.chebyshev(region.center)
@@ -2076,7 +1814,6 @@ impl UtilityPolicy {
                         .contested_harvest_clear_tiles
                         .retain(|(center, _)| *center != region.center);
                     self.state.contested_recon_blocked.insert(region.center);
-                    timed_out_regions.insert(region.center);
                     continue;
                 }
                 let mut observed_any = false;
@@ -2106,34 +1843,18 @@ impl UtilityPolicy {
                 }
             }
         }
-        if !timed_out_regions.is_empty() {
-            self.state.contested_recon_retry_at = self
-                .state
-                .contested_recon_retry_at
-                .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
-        }
-        if let Some((scout, region)) = self.state.contested_scout
-            && self.state.contested_recon_blocked.contains(&region)
-        {
-            self.recall_contested_scout(scout);
-        }
         self.state
             .contested_harvest_regions
             .retain(|region| !cleared_regions.contains(&region.center));
         while self.state.contested_harvest_regions.len() > oxide_sim::stats::HARVEST_INCIDENT_CAP {
-            let (evict, evicted_center) = self
+            let evict = self
                 .state
                 .contested_harvest_regions
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, region)| (region.last_evidence, region.center.y, region.center.x))
-                .map(|(index, region)| (index, region.center))
+                .map(|(index, _)| index)
                 .expect("an over-cap contested-region ledger is nonempty");
-            if let Some((scout, region)) = self.state.contested_scout
-                && region == evicted_center
-            {
-                self.recall_contested_scout(scout);
-            }
             self.state.contested_harvest_regions.remove(evict);
         }
         self.state
@@ -2149,19 +1870,6 @@ impl UtilityPolicy {
                     })
                     .is_ok()
             });
-        if let Some((scout, region)) = self.state.contested_scout
-            && !self
-                .state
-                .contested_harvest_regions
-                .iter()
-                .any(|candidate| candidate.center == region)
-        {
-            self.state.contested_scout = None;
-            if self.state.scout == Some(scout) {
-                self.state.scout = None;
-                self.state.scout_dispatch = None;
-            }
-        }
     }
 
     fn contested_region_tiles(
@@ -2202,103 +1910,6 @@ impl UtilityPolicy {
         regions
             .iter()
             .any(|region| region.center.chebyshev(location) <= CONTESTED_HARVEST_RADIUS)
-    }
-
-    fn contested_recon_target(&self, obs: &Observation, home: TilePos) -> Option<ContestedRecon> {
-        if obs.tick < self.state.contested_recon_retry_at
-            || self.state.retreating_contested_scout.is_some()
-        {
-            return None;
-        }
-        self.state
-            .contested_harvest_regions
-            .iter()
-            .filter(|region| !self.state.contested_recon_blocked.contains(&region.center))
-            .map(|region| {
-                (
-                    region.center.chebyshev(home),
-                    region.center.y,
-                    region.center.x,
-                )
-            })
-            .min()
-            .map(|(_, y, x)| TilePos::new(x, y))
-            .map(|region| {
-                let target = Self::contested_region_tiles(obs, region)
-                    .filter(|tile| {
-                        !self
-                            .state
-                            .contested_harvest_clear_tiles
-                            .contains(&(region, *tile))
-                    })
-                    .min_by_key(|tile| (tile.chebyshev(region), tile.y, tile.x))
-                    .unwrap_or(region);
-                ContestedRecon { region, target }
-            })
-    }
-
-    fn retreat_contested_scout(
-        &mut self,
-        obs: &Observation,
-        home: TilePos,
-        intents: &mut Vec<Intent>,
-    ) {
-        let Some(retreat) = self.state.retreating_contested_scout else {
-            return;
-        };
-        let scout = retreat.unit;
-        let Some(unit) = obs.my_units.iter().find(|unit| unit.id == scout) else {
-            self.state.retreating_contested_scout = None;
-            self.state.contested_recon_retry_at = self
-                .state
-                .contested_recon_retry_at
-                .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
-            if retreat.suspend_solo_air_on_loss {
-                self.suspend_solo_air_scout(obs.tick);
-            }
-            return;
-        };
-        let goal = self.passable_near(obs, home);
-        if unit.tile.chebyshev(goal) <= 1 {
-            self.state.retreating_contested_scout = None;
-            self.state.contested_recon_retry_at = self
-                .state
-                .contested_recon_retry_at
-                .max(obs.tick.saturating_add(CONTESTED_RECON_RETRY_TICKS));
-        } else if !retreat.order_dispatched || unit.idle {
-            intents.push(Intent::MoveUnits {
-                units: vec![scout],
-                goal,
-            });
-            self.state.retreating_contested_scout = Some(RetreatingContestedScout {
-                unit: scout,
-                order_dispatched: true,
-                suspend_solo_air_on_loss: retreat.suspend_solo_air_on_loss,
-            });
-        }
-    }
-
-    fn recall_contested_scout(&mut self, scout: UnitId) {
-        if !self
-            .state
-            .contested_scout
-            .is_some_and(|(assigned, _)| assigned == scout)
-        {
-            return;
-        }
-        self.state.contested_scout = None;
-        let suspend_solo_air_on_loss = self.state.scout_dispatch.is_some_and(|dispatch| {
-            dispatch.unit == scout && matches!(dispatch.role, ScoutDispatchRole::SoloAir)
-        });
-        if self.state.scout == Some(scout) {
-            self.state.scout = None;
-            self.state.scout_dispatch = None;
-        }
-        self.state.retreating_contested_scout = Some(RetreatingContestedScout {
-            unit: scout,
-            order_dispatched: false,
-            suspend_solo_air_on_loss,
-        });
     }
 
     fn evacuate_contested_workers(
@@ -2359,14 +1970,6 @@ impl UtilityPolicy {
                 }
                 if !self.state.evacuating_workers.contains(&unit.id) {
                     self.state.evacuating_workers.push(unit.id);
-                }
-            }
-            if self.state.scout == Some(unit.id) {
-                let public_prior_probe = self.active_public_ground_probe(obs, unit.id);
-                self.state.scout = None;
-                self.state.scout_dispatch = None;
-                if public_prior_probe {
-                    self.state.persistent_air_scout_needed = true;
                 }
             }
         }
@@ -2490,7 +2093,7 @@ mod tests {
     use crate::observation::{BuildingObs, Observation, UnitObs};
     use crate::{PersonalityTraits, Specialty};
     use oxide_sim::ids::{BuildingId, PlayerId, UnitId};
-    use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec, UnitSpec};
+    use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance, PlayerSpec};
     use oxide_sim::stats::Role;
     use oxide_sim::{Command, PlayerCommand, Scenario};
 
@@ -2657,46 +2260,6 @@ mod tests {
             founding,
             ..crate::test_support::unit(id, PlayerId(0), UnitKind::Harvester, TilePos::new(5, 5))
         }
-    }
-
-    #[test]
-    fn evacuating_a_completed_public_probe_does_not_manufacture_air_demand() {
-        let home = TilePos::new(3, 10);
-        let incident = TilePos::new(16, 10);
-        let frame = TilePos::new(24, 10);
-        let worker = UnitObs {
-            tile: incident,
-            ..harvester(1, None)
-        };
-        let obs = obs_with(vec![worker]);
-        let prior = PublicScoutPrior::Extractor(frame);
-        let mut policy = UtilityPolicy::new();
-        policy.state.scout = Some(UnitId(1));
-        policy.state.scout_dispatch = Some(ScoutDispatch::public_ground(
-            UnitId(1),
-            home,
-            frame.offset(-4, 0),
-            prior,
-        ));
-        policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
-            center: incident,
-            last_evidence: obs.tick,
-            sweep_started_at: None,
-        }];
-        let mut intents = Vec::new();
-
-        policy.evacuate_contested_workers(&obs, home, None, None, &mut intents);
-
-        assert_eq!(policy.state.scout, None);
-        assert_eq!(policy.state.scout_dispatch, None);
-        assert!(
-            !policy.state.persistent_air_scout_needed,
-            "evacuation runs before scouting retirement and must inspect the exact completed assignment"
-        );
-        assert!(intents.iter().any(|intent| matches!(
-            intent,
-            Intent::MoveUnits { units, .. } if units == &[UnitId(1)]
-        )));
     }
 
     #[test]
@@ -3231,7 +2794,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_core_bootstrap_precedes_scouting_and_other_discretionary_spending() {
+    fn ready_core_bootstrap_precedes_other_discretionary_spending() {
         let home = TilePos::new(2, 8);
         let frame = home.offset(6, 0);
         let mut units: Vec<_> = (1..=3).map(|id| harvester(id, None)).collect();
@@ -3265,9 +2828,7 @@ mod tests {
             1_616_201,
         ));
         let dials = Dials::scripted(&profile, DifficultyTuning::for_level(BotDifficulty::Prime));
-        let scout = oxide_sim::stats::Role::Scout.unit_for(obs.faction);
         let mut policy = UtilityPolicy::new();
-        policy.state.persistent_air_scout_needed = true;
 
         let intents = policy.think_residual(&dials, &obs, &[], &[], &[], &map);
 
@@ -3285,10 +2846,6 @@ mod tests {
                 anchor,
                 ..
             } if *anchor == frame
-        )));
-        assert!(intents.iter().all(|intent| !matches!(
-            intent,
-            Intent::TrainAt { kind, .. } if *kind == scout
         )));
         let spent = intents.iter().fold(0_u32, |total, intent| {
             total.saturating_add(match intent {
@@ -3457,6 +3014,7 @@ mod tests {
             ));
             let dials = Dials::scripted(&profile, tuning);
             let mut policy = UtilityPolicy::new();
+            policy.refresh_allocation_worker_safety(&obs, &[], &[]);
             let urgent = policy.think_with_intelligence(
                 &dials,
                 &obs,
@@ -3469,20 +3027,18 @@ mod tests {
                     &public_map(&obs),
                     Vec::new(),
                     Default::default(),
-                ),
+                )
+                .with_ground_missions(GroundMissionInputs {
+                    unavailable: &[],
+                    enlisted: &army.members,
+                    tuning,
+                    relief: None,
+                }),
             );
 
             assert!(urgent.iter().any(|intent| matches!(
                 intent,
                 Intent::MoveUnits { units, .. } if units == &[UnitId(10)]
-            )));
-            assert!(urgent.iter().any(|intent| matches!(
-                intent,
-                Intent::PushArmy { army: id, target } if *id == army.id && *target == threat
-            )));
-            assert!(urgent.iter().any(|intent| matches!(
-                intent,
-                Intent::FormArmy { size, .. } if *size >= 6
             )));
             assert!(
                 urgent.iter().all(|intent| matches!(
@@ -3497,10 +3053,6 @@ mod tests {
             assert!(policy.state.work_experience.last_sent.is_empty());
             assert_eq!(policy.state.work_experience, Default::default());
             assert!(policy.state.work_experience.dead_anchors.is_empty());
-            assert_eq!(policy.state.scout, None);
-            assert_eq!(policy.state.scout_leg, 0);
-            assert_eq!(policy.state.scout_sent_at, 0);
-            assert_eq!(policy.state.scouted_at, 0);
 
             obs.tick = super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
             let admitted = policy.think_with_intelligence(
@@ -3962,31 +3514,27 @@ mod tests {
                 sweep_started_at: None,
             }]
         );
-        assert_eq!(
-            policy.contested_recon_target(&obs, TilePos::new(3, 10)),
-            None,
-            "the authoritative warning must expire before a scout enters the kill zone"
-        );
-
         obs.salvage_incidents.clear();
         obs.tick += oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
         obs.known_peaks.push(center);
         policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(
-            policy
-                .contested_recon_target(&obs, TilePos::new(3, 10))
-                .map(|recon| recon.target),
-            Some(center.offset(-1, -1)),
-            "an unoccupiable peak at the incident center must advance to a deterministic unseen cell"
-        );
 
         let mut looks = 0;
-        while let Some(recon) = policy.contested_recon_target(&obs, TilePos::new(3, 10)) {
+        while !policy.state.contested_harvest_regions.is_empty() {
+            let target = UtilityPolicy::contested_region_tiles(&obs, center)
+                .filter(|tile| {
+                    !policy
+                        .state
+                        .contested_harvest_clear_tiles
+                        .contains(&(center, *tile))
+                })
+                .min_by_key(|tile| (tile.chebyshev(center), tile.y, tile.x))
+                .expect("an uncleared region has an unseen tile");
             assert!(
                 looks < (CONTESTED_RECON_RADIUS * 2 + 1).pow(2),
                 "the finite danger square must not create an unbounded recon loop"
             );
-            set_visible(&mut obs, recon.target, true);
+            set_visible(&mut obs, target, true);
             obs.tick += 1;
             policy.refresh_contested_harvest_regions(&obs, None, None);
             looks += 1;
@@ -3996,399 +3544,6 @@ mod tests {
             "one recent clean sweep should reopen the region without a second cooldown"
         );
         assert!(looks > 1, "partial sight must not clear the region");
-    }
-
-    #[test]
-    fn an_actual_kestrel_stamps_the_region_and_reopens_harvest_work() {
-        let width = 52;
-        let height = 20;
-        let home = TilePos::new(2, 8);
-        let center = TilePos::new(22, 10);
-        let mut map = vec![".".repeat(width); height];
-        map[usize::try_from(home.y).unwrap()].replace_range(
-            usize::try_from(home.x).unwrap()..usize::try_from(home.x + 1).unwrap(),
-            "1",
-        );
-        map[8].replace_range(47..48, "2");
-        map[usize::try_from(center.y).unwrap()].replace_range(
-            usize::try_from(center.x).unwrap()..usize::try_from(center.x + 1).unwrap(),
-            "s",
-        );
-        let scenario = Scenario {
-            mode: Default::default(),
-            name: "contested recovery flight".into(),
-            seed: 41,
-            map,
-            players: vec![
-                PlayerSpec {
-                    name: "Ferrous".into(),
-                    faction: oxide_sim::state::Faction::Ferrous,
-                    team: None,
-                    scrap: 0,
-                    bot: false,
-                    bot_config: None,
-                },
-                PlayerSpec {
-                    name: "Cupric".into(),
-                    faction: oxide_sim::state::Faction::Cupric,
-                    team: None,
-                    scrap: 0,
-                    bot: false,
-                    bot_config: None,
-                },
-            ],
-            units: vec![
-                UnitSpec {
-                    player: 0,
-                    kind: UnitKind::Harvester,
-                    x: 6,
-                    y: 11,
-                },
-                UnitSpec {
-                    player: 0,
-                    kind: UnitKind::Kestrel,
-                    x: 6,
-                    y: 8,
-                },
-            ],
-            buildings: Vec::new(),
-            meta: None,
-        };
-        let public_map = PublicMapBriefing::from_scenario(&scenario).unwrap();
-        let mut state = scenario.build().unwrap();
-        let me = PlayerId(0);
-        let harvester = state
-            .units()
-            .iter()
-            .find(|unit| unit.player == me && unit.kind == UnitKind::Harvester)
-            .unwrap()
-            .id;
-        let kestrel = state
-            .units()
-            .iter()
-            .find(|unit| unit.player == me && unit.kind == UnitKind::Kestrel)
-            .unwrap()
-            .id;
-        let starting_tile = state.unit(kestrel).unwrap().tile();
-        let opposite_corners = [
-            center.offset(-CONTESTED_RECON_RADIUS, -CONTESTED_RECON_RADIUS),
-            center.offset(CONTESTED_RECON_RADIUS, CONTESTED_RECON_RADIUS),
-        ];
-        let initial = Observation::fog_honest(&state, me);
-        assert!(
-            opposite_corners.iter().all(|tile| !initial.visible(*tile)),
-            "the recovery region must begin outside home vision"
-        );
-
-        let mut policy = UtilityPolicy::new();
-        policy.state.contested_harvest_regions = vec![ContestedHarvestRegion {
-            center,
-            last_evidence: 0,
-            sweep_started_at: None,
-        }];
-        let mut executive = Executive::new();
-        let dials = Dials {
-            harvester_target: 1,
-            ..Dials::default()
-        };
-
-        let mut moved = false;
-        let mut stamped_both_corners = false;
-        let mut harvest_dispatched = false;
-
-        for _ in 0..400 {
-            let obs = Observation::fog_honest(&state, me);
-            moved |= state.unit(kestrel).unwrap().tile() != starting_tile;
-            stamped_both_corners |= opposite_corners.iter().all(|tile| obs.visible(*tile));
-            let intents = policy.think_residual(&dials, &obs, &[], &[], &[], &public_map);
-            let commands = executive.apply_with_reservations(me, &obs, &intents, &[]);
-            harvest_dispatched |= commands.iter().any(|command| {
-                matches!(
-                    command.command,
-                    Command::Harvest { ref units, node, .. }
-                        if units.contains(&harvester) && node == center
-                )
-            });
-            let report = state.tick(&commands);
-            assert!(
-                report.events.iter().all(|event| !matches!(
-                    event,
-                    oxide_sim::Event::CommandRejected { player, .. } if *player == me
-                )),
-                "the recovery controller emitted a rejected command: {:?}",
-                report.events
-            );
-            if harvest_dispatched {
-                break;
-            }
-        }
-
-        assert!(moved, "the real Kestrel must leave its home position");
-        assert!(
-            stamped_both_corners,
-            "the moving Kestrel must establish simultaneous current sight across the whole square"
-        );
-        assert!(
-            policy.state.contested_harvest_regions.is_empty(),
-            "complete current sight must clear the persistent quarantine"
-        );
-        assert!(
-            harvest_dispatched,
-            "the same policy must reopen the revealed scrap for its real Harvester"
-        );
-    }
-
-    #[test]
-    fn fresh_danger_holds_a_recalled_scout_until_home_then_starts_the_retry_delay() {
-        let home = TilePos::new(3, 10);
-        let center = TilePos::new(16, 10);
-        let mut worker = harvester(1, None);
-        worker.tile = center;
-        worker.idle = false;
-        worker.harvesting = Some(center.offset(1, 0));
-        let mut scout = fighter(2, PlayerId(0), center.offset(-2, 0));
-        scout.kind = UnitKind::Kestrel;
-        scout.hp = UnitKind::Kestrel.stats().max_hp;
-        scout.idle = false;
-        let mut obs = obs_with(vec![worker, scout]);
-        obs.visible.fill(false);
-        let mut policy = UtilityPolicy::new();
-
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick = 100;
-        obs.my_units[0].hp -= 1;
-        obs.salvage_incidents = vec![center];
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick += oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
-        obs.salvage_incidents.clear();
-        set_visible(&mut obs, center, true);
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        let recon = policy
-            .contested_recon_target(&obs, home)
-            .expect("the quiet region needs a recovery look");
-        policy.state.scout = Some(UnitId(2));
-        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(UnitId(2), home, recon.target));
-        policy.state.contested_scout = Some((UnitId(2), center));
-
-        obs.enemy_units
-            .push(fighter(90, PlayerId(1), center.offset(2, 0)));
-        obs.tick += 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-
-        assert_eq!(policy.state.scout, None);
-        assert_eq!(
-            policy.state.retreating_contested_scout,
-            Some(RetreatingContestedScout {
-                unit: UnitId(2),
-                order_dispatched: false,
-                suspend_solo_air_on_loss: false,
-            })
-        );
-        assert_eq!(policy.contested_recon_target(&obs, home), None);
-        assert_eq!(
-            policy.state.contested_recon_retry_at, 0,
-            "the regional retry cooldown starts on safe return, not recall"
-        );
-        let mut intents = Vec::new();
-        policy.retreat_contested_scout(&obs, home, &mut intents);
-        assert_eq!(
-            intents,
-            vec![Intent::MoveUnits {
-                units: vec![UnitId(2)],
-                goal: home,
-            }],
-            "danger must replace an in-flight recon order with an immediate retreat"
-        );
-
-        obs.my_units[1].idle = true;
-        obs.tick += CONTESTED_RECON_RETRY_TICKS * 2;
-        intents.clear();
-        policy.retreat_contested_scout(&obs, home, &mut intents);
-        assert_eq!(
-            intents,
-            vec![Intent::MoveUnits {
-                units: vec![UnitId(2)],
-                goal: home,
-            }],
-            "an idle scout still in the field must retry its retreat after any wall-clock delay"
-        );
-        assert_eq!(
-            policy.state.retreating_contested_scout,
-            Some(RetreatingContestedScout {
-                unit: UnitId(2),
-                order_dispatched: true,
-                suspend_solo_air_on_loss: false,
-            }),
-            "timer expiry and an idle body cannot release a remote recovery scout"
-        );
-
-        obs.my_units[1].tile = home.offset(1, 0);
-        obs.tick += 1;
-        intents.clear();
-        policy.retreat_contested_scout(&obs, home, &mut intents);
-        assert!(intents.is_empty());
-        assert_eq!(policy.state.retreating_contested_scout, None);
-        let retry_at = obs.tick + CONTESTED_RECON_RETRY_TICKS;
-        assert_eq!(policy.state.contested_recon_retry_at, retry_at);
-
-        obs.enemy_units.clear();
-        obs.tick = retry_at - 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.contested_recon_target(&obs, home), None);
-        obs.tick = retry_at;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert!(
-            policy.contested_recon_target(&obs, home).is_some(),
-            "the danger abort must delay rather than permanently suppressing reconnaissance"
-        );
-    }
-
-    #[test]
-    fn a_recalled_solo_air_scout_keeps_loss_provenance_on_the_return_leg() {
-        let home = TilePos::new(3, 10);
-        let region = TilePos::new(20, 10);
-        let mut scout = fighter(2, PlayerId(0), region);
-        scout.kind = UnitKind::Kestrel;
-        scout.hp = UnitKind::Kestrel.stats().max_hp;
-        let mut obs = obs_with(vec![scout]);
-        obs.tick = 100;
-        let mut policy = UtilityPolicy::new();
-        policy.state.scout = Some(UnitId(2));
-        policy.state.scout_dispatch = Some(ScoutDispatch::solo_air(UnitId(2), home, region));
-        policy.state.contested_scout = Some((UnitId(2), region));
-
-        policy.recall_contested_scout(UnitId(2));
-
-        assert_eq!(
-            policy.state.retreating_contested_scout,
-            Some(RetreatingContestedScout {
-                unit: UnitId(2),
-                order_dispatched: false,
-                suspend_solo_air_on_loss: true,
-            })
-        );
-        obs.tick += 1;
-        obs.my_units.clear();
-        let mut intents = Vec::new();
-        policy.retreat_contested_scout(&obs, home, &mut intents);
-
-        assert!(intents.is_empty());
-        assert_eq!(policy.state.retreating_contested_scout, None);
-        assert!(policy.state.solo_air_scout_suspended);
-        assert_eq!(
-            policy.state.solo_air_scout_retry_at,
-            obs.tick + SOLO_SCOUT_RETRY_TICKS
-        );
-    }
-
-    #[test]
-    fn a_no_progress_recon_target_recalls_and_reserves_its_scout_until_home() {
-        let home = TilePos::new(3, 10);
-        let center = TilePos::new(16, 10);
-        let mut worker = harvester(1, None);
-        worker.tile = center;
-        worker.idle = false;
-        worker.harvesting = Some(center.offset(1, 0));
-        let mut scout = fighter(2, PlayerId(0), home.offset(2, 0));
-        scout.kind = UnitKind::Kestrel;
-        scout.hp = UnitKind::Kestrel.stats().max_hp;
-        let mut obs = obs_with(vec![worker, scout]);
-        obs.visible.fill(false);
-        let mut policy = UtilityPolicy::new();
-
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick = 100;
-        obs.my_units[0].hp -= 1;
-        obs.salvage_incidents = vec![center];
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        obs.tick += oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1;
-        obs.salvage_incidents.clear();
-        set_visible(&mut obs, center, true);
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        let sweep_started = policy.state.contested_harvest_regions[0]
-            .sweep_started_at
-            .expect("the center sight starts a bounded sweep");
-        let recon = policy
-            .contested_recon_target(&obs, home)
-            .expect("partial coverage has a deterministic next target");
-
-        let mut issued = Vec::new();
-        for _ in 0..20 {
-            let mut intents = Vec::new();
-            policy.scouting_with_context(
-                &obs,
-                ScoutingContext {
-                    home,
-                    contested_recon: Some(recon),
-                    public_map: None,
-                    enlisted: &[],
-                    cancellations: FoundationCancellations::default(),
-                },
-                &mut intents,
-            );
-            issued.extend(intents);
-            obs.tick += super::super::difficulty::STRATEGIC_ADMISSION_CADENCE;
-        }
-        assert_eq!(
-            issued,
-            vec![Intent::Scout {
-                unit: UnitId(2),
-                to: recon.target,
-            }],
-            "an accepted but unproductive target gets one command, not one per think"
-        );
-
-        obs.tick = sweep_started + CONTESTED_RECON_SWEEP_TICKS + 1;
-        policy.refresh_contested_harvest_regions(&obs, None, None);
-        assert_eq!(policy.state.scout, None);
-        assert_eq!(policy.state.contested_scout, None);
-        assert_eq!(
-            policy.state.retreating_contested_scout,
-            Some(RetreatingContestedScout {
-                unit: UnitId(2),
-                order_dispatched: false,
-                suspend_solo_air_on_loss: true,
-            })
-        );
-        assert_eq!(policy.contested_recon_target(&obs, home), None);
-
-        let mut retreat = Vec::new();
-        policy.retreat_contested_scout(&obs, home, &mut retreat);
-        assert_eq!(
-            retreat,
-            vec![Intent::MoveUnits {
-                units: vec![UnitId(2)],
-                goal: home,
-            }],
-            "timing out an impossible target must replace it with one retreat"
-        );
-        retreat.clear();
-        obs.tick += CONTESTED_RECON_RETRY_TICKS * 2;
-        policy.retreat_contested_scout(&obs, home, &mut retreat);
-        assert_eq!(
-            retreat,
-            vec![Intent::MoveUnits {
-                units: vec![UnitId(2)],
-                goal: home,
-            }],
-            "an idle remote scout retries the retreat instead of becoming eligible for other work"
-        );
-        assert!(policy.state.retreating_contested_scout.is_some());
-
-        obs.my_units[1].tile = home.offset(1, 0);
-        obs.tick += 1;
-        retreat.clear();
-        policy.retreat_contested_scout(&obs, home, &mut retreat);
-        assert!(
-            retreat.is_empty(),
-            "arrival inside the home area completes the existing retreat"
-        );
-        assert_eq!(policy.state.retreating_contested_scout, None);
-        assert_eq!(
-            policy.state.contested_recon_retry_at,
-            obs.tick + CONTESTED_RECON_RETRY_TICKS,
-            "the bounded retry delay begins only after the scout is safe"
-        );
     }
 
     #[test]
@@ -4628,13 +3783,6 @@ mod tests {
         obs.visible = vec![false; 1_024 * 64];
         obs.explored = vec![true; 1_024 * 64];
         obs.tick = 100;
-        policy.state.scout = Some(UnitId(50));
-        policy.state.scout_dispatch = Some(ScoutDispatch::ordinary(
-            UnitId(50),
-            TilePos::new(3, 3),
-            strictly_oldest,
-        ));
-        policy.state.contested_scout = Some((UnitId(50), strictly_oldest));
         policy.refresh_contested_harvest_regions(&obs, None, None);
 
         let centers: Vec<_> = policy
@@ -4650,15 +3798,6 @@ mod tests {
             "after the strictly oldest region, equal-age evidence evicts by (y, x)"
         );
         assert!(centers.contains(&tied_second));
-        assert_eq!(
-            policy.state.retreating_contested_scout,
-            Some(RetreatingContestedScout {
-                unit: UnitId(50),
-                order_dispatched: false,
-                suspend_solo_air_on_loss: false,
-            }),
-            "evicting a capped recovery region must retain its attached scout for retreat"
-        );
         assert!(
             centers
                 .windows(2)

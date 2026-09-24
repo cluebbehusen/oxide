@@ -374,7 +374,6 @@ impl UtilityPolicy {
                     && !context.claims.enlisted.contains(&builder.id)
                     && !context.claims.reserved.contains(&builder.id)
                     && !unavailable.contains(&builder.id)
-                    && self.state.scout != Some(builder.id)
             })
             .collect();
         let resources = ResourceSnapshot::from_observation(obs);
@@ -501,7 +500,6 @@ impl UtilityPolicy {
             .filter(|builder| builder.id == obligation.builder())
             .filter(|builder| context.available_builders.contains(&builder.id))
             .filter(|builder| builder_is_free(obs, builder))
-            .filter(|builder| self.state.scout != Some(builder.id))
             .collect::<Vec<_>>();
         let danger = self.harvest_danger_projection(
             obs,

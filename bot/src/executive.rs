@@ -25,7 +25,7 @@ mod missions;
 pub(super) mod threats;
 pub use missions::{ArmyMission, ArmyObjective, ArmyPurpose, MissionDecision, MissionDisposition};
 
-pub(super) use armies::{catastrophically_outmatched_near, locally_overmatches_near};
+pub(super) use armies::locally_overmatches_near;
 
 /// Stable handle for an army within one bot's executive.
 #[derive(

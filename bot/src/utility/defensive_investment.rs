@@ -187,10 +187,6 @@ impl UtilityPolicy {
                     .iter()
                     .any(|candidate| candidate.id == builder.id)
                     && !self.state.evacuating_workers.contains(&builder.id)
-                    && self
-                        .state
-                        .retreating_contested_scout
-                        .is_none_or(|retreat| retreat.unit != builder.id)
                     && resources
                         .builders()
                         .binary_search_by_key(&builder.id, |resource| resource.id)
@@ -720,11 +716,11 @@ const fn safety_rank(value: ExecutionSafety) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::HarvesterWatch;
     use super::super::construction::{
         FoundryConfidence, FoundryExecutionSafety, FoundryOpportunityCase, FoundryStrategicValue,
         FoundryTimeToImpact, FoundryUrgency, FreshFoundryProposal,
     };
-    use super::super::{HarvesterWatch, RetreatingContestedScout};
     use super::*;
     use crate::intelligence::ContactEvidence;
     use crate::observation::{BuildingObs, UnitObs};
@@ -861,22 +857,14 @@ mod tests {
     #[test]
     fn voluntary_defense_uses_only_unowned_safe_construction_builders() {
         let (mut obs, briefing) = opportunity_fixture();
-        obs.my_units.extend([
+        obs.my_units = vec![
             unit(2, PlayerId(0), UnitKind::Harvester, TilePos::new(6, 11)),
-            unit(3, PlayerId(0), UnitKind::Harvester, TilePos::new(6, 12)),
             unit(4, PlayerId(0), UnitKind::Harvester, TilePos::new(7, 12)),
             unit(5, PlayerId(0), UnitKind::Harvester, TilePos::new(8, 11)),
-        ]);
-        obs.my_units.sort_unstable_by_key(|unit| unit.id);
+        ];
 
         let mut policy = UtilityPolicy::new();
-        policy.state.scout = Some(UnitId(1));
         policy.state.evacuating_workers.push(UnitId(2));
-        policy.state.retreating_contested_scout = Some(RetreatingContestedScout {
-            unit: UnitId(3),
-            order_dispatched: true,
-            suspend_solo_air_on_loss: false,
-        });
         let foundry_cost = BuildingKind::Foundry
             .base_stats()
             .construction
@@ -955,7 +943,7 @@ mod tests {
                     Default::default()
                 )
                 .is_empty(),
-            "active scouts, evacuating workers, retreating recovery scouts, and saved Foundry builders are not voluntary defense fallbacks"
+            "evacuating workers and saved Foundry builders are not voluntary defense fallbacks"
         );
     }
 
