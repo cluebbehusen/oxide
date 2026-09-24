@@ -738,6 +738,96 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
 }
 
 #[test]
+fn funding_blocked_saved_foundry_without_capital_still_commits() {
+    let mut observation = connected_observation(0, 0);
+    let builder = UnitId(200);
+    let foundry_anchor = TilePos::new(15, 14);
+    observation.my_units.push(owned_unit(
+        builder.0,
+        UnitKind::Harvester,
+        TilePos::new(12, 15),
+    ));
+    observation.my_units.sort_unstable_by_key(|unit| unit.id);
+    let foundry_cost = BuildingKind::Foundry
+        .base_stats()
+        .construction
+        .expect("Foundries are constructible")
+        .cost;
+    let forecast_deadline = observation.tick.saturating_add(120);
+    let mut policy = UtilityPolicy::new();
+    policy
+        .prepare_adjudicated_foundry(
+            FreshFoundryProposal::fixture(
+                foundry_anchor,
+                builder,
+                0,
+                foundry_cost,
+                0,
+                forecast_deadline,
+                foundry_case(),
+            ),
+            observation.tick,
+        )
+        .expect("the forecast-backed fixture installs one exact saved Foundry")
+        .apply(&mut policy, &mut Vec::new());
+
+    observation.tick = forecast_deadline.saturating_add(12);
+    let resources = ResourceSnapshot::from_observation(&observation);
+    let saved = policy
+        .validated_foundry_obligation(&observation, &resources, true, observation.scrap)
+        .expect("bounded recovery retains the funding-blocked Foundry");
+    assert!(saved.blocked());
+    assert_eq!(
+        saved
+            .current_construction_capital()
+            .saturating_add(saved.forecast_construction_capital()),
+        0,
+        "an empty bank past the forecast deadline leaves no capital to claim"
+    );
+
+    let setup = SessionProfile::new(prime_profile());
+    let briefing = connected_briefing(&observation);
+    let mut intelligence = StrategicIntelligence::new();
+    intelligence.update(&observation);
+    let mut strategy = StrategicPlanner::new();
+    let mut lifts = LiftPlanner::new();
+    let mut team = TeamReliefPlanner::new();
+    let mut raids = RaidPlanner::new();
+
+    let mut prepared = prepared(&observation, None);
+    prepared.resources = resources;
+    prepared.obligations =
+        vec![saved_foundry_obligation(saved).expect("the blocked saved Foundry has exact claims")];
+    prepared.saved_foundry = Some(saved);
+    prepared.allocation_horizon = observation
+        .tick
+        .saturating_add(connected_preparation_horizon());
+    let mut trace = AllocationTrace::default();
+    let mut session = AllocationSession::new(
+        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
+        AllocationParticipants {
+            policy: &mut policy,
+            strategy: &mut strategy,
+            lifts: &mut lifts,
+            team: &mut team,
+            raids: &mut raids,
+        },
+        advanced(),
+        Some(&mut trace),
+    );
+    let resolved = session.resolve(prepared);
+    let outcome = session.finish_allocation(resolved);
+
+    assert!(
+        outcome.allocation_ok,
+        "a retained plan that claims no capital must not reject the whole allocation: {:?}",
+        trace.coordinator_failure
+    );
+    assert!(outcome.fresh_foundry_intents.is_empty());
+    assert!(policy.foundry_builder_lease(&observation).is_some());
+}
+
+#[test]
 fn rolled_back_connected_procurement_retries_without_extending_deadline() {
     let mut observation = connected_observation(120, 10_000);
     let (planner, _) = current_connected_planner(&observation);

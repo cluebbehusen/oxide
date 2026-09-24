@@ -1975,8 +1975,10 @@ impl<'a> AllocationSession<'a> {
             Some(assignment) => {
                 saved.with_allocated_funding(assignment.current_scrap, assignment.forecast_scrap)
             }
-            None if saved.ready_to_build() => Some(saved),
-            None => None,
+            // Only deferrable capital is reattributed. A payable plan claims its
+            // current scrap directly, and a blocked plan with no remaining
+            // capital claims none.
+            None => Some(saved),
         };
         if prepared.saved_foundry.is_none() {
             return Err((
