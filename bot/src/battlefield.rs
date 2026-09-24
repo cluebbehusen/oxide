@@ -143,7 +143,6 @@ pub struct BattlefieldAssessment {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Battlefield {
-    map: (i32, i32),
     tracks: BTreeMap<UnitId, Motion>,
     assessment: BattlefieldAssessment,
     observed_at: Option<Tick>,
@@ -157,10 +156,6 @@ impl Battlefield {
         tuning: DifficultyTuning,
         public_map: Option<&super::briefing::PublicMapBriefing>,
     ) {
-        if self.map != (obs.map_width, obs.map_height) {
-            *self = Self::default();
-            self.map = (obs.map_width, obs.map_height);
-        }
         if self.observed_at.is_some_and(|tick| tick >= obs.tick) {
             return;
         }

@@ -1289,8 +1289,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let mut allocation = CrossDomainAllocation {
             capacity: contextual_capacity(
@@ -1791,8 +1789,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let proposal = connected_investment_proposal(connected);
 
@@ -1841,8 +1837,6 @@ mod tests {
                 ConnectedOffenseClaims::fixture(vec![first], Vec::new()),
                 ConnectedOffenseClaims::fixture(vec![first, blocked], Vec::new()),
             ],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let mut expected = proposal.clone();
         assert!(expected.select_marginal(&proposal.marginal_variants()[0]));
@@ -1896,8 +1890,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let common_case = ProposalCase::from(connected_case());
         let mut allocation = CrossDomainAllocation {
@@ -2021,8 +2013,6 @@ mod tests {
                     vec![airworks],
                 )],
             )],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let expected_marginal = connected.marginal_variants()[0].clone();
         let common_case = ProposalCase::from(connected_case());
@@ -2154,8 +2144,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let capacity = contextual_capacity(
             foundry_cost,
@@ -2362,8 +2350,6 @@ mod tests {
                 )],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: 0,
@@ -2434,8 +2420,6 @@ mod tests {
                 ],
             ),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let resources = ResourcePlanningProjection::fixture(ResourcePlanningFixture {
             current_scrap: kind.stats().cost.saturating_mul(2),

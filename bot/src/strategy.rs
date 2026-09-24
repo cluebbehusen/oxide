@@ -1520,12 +1520,9 @@ impl ConnectedMarginalVariant {
 pub(crate) struct FreshConnectedProposal {
     origin: ConnectedProposalOrigin,
     target: BuildingContact,
-    targets: ConnectedTargetSelection,
     variants: Vec<ConnectedProposalVariant>,
     marginal: Vec<ConnectedMarginalVariant>,
     selected_variant: usize,
-    protected_current_scrap: u32,
-    protected_forecast_scrap: u32,
     case: ConnectedOpportunityCase,
 }
 
@@ -1603,8 +1600,6 @@ impl FreshConnectedProposal {
             case,
             minimum_claims,
             marginal_additions,
-            protected_current_scrap,
-            protected_forecast_scrap,
         } = fixture;
         let derived_at = deadline.saturating_sub(1);
         let package = ConnectedForcePackage {
@@ -1699,16 +1694,9 @@ impl FreshConnectedProposal {
                 last_seen: Some(derived_at),
                 evidence: ContactEvidence::Current,
             },
-            targets: ConnectedTargetSelection {
-                target_anchors: vec![anchor],
-                suppression_targets: Vec::new(),
-                growth_order: Vec::new(),
-            },
             variants,
             marginal,
             selected_variant: 0,
-            protected_current_scrap,
-            protected_forecast_scrap,
             case,
         }
     }
@@ -1730,8 +1718,6 @@ pub(crate) struct FreshConnectedProposalFixture {
     pub(crate) case: ConnectedOpportunityCase,
     pub(crate) minimum_claims: ConnectedOffenseClaims,
     pub(crate) marginal_additions: Vec<ConnectedOffenseClaims>,
-    pub(crate) protected_current_scrap: u32,
-    pub(crate) protected_forecast_scrap: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2423,12 +2409,9 @@ fn derive_connected_proposal_with_resources(
     Ok(FreshConnectedProposal {
         origin,
         target: target.clone(),
-        targets: resources.targets.clone(),
         variants,
         marginal,
         selected_variant: 0,
-        protected_current_scrap: coordination.protected_current_scrap,
-        protected_forecast_scrap: coordination.protected_forecast_scrap,
         case,
     })
 }

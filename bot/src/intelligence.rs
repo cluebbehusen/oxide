@@ -300,14 +300,6 @@ impl StrategicIntelligence {
             "strategic intelligence observations must be monotonic"
         );
 
-        if self.observed_at.is_some()
-            && (self.map_width != observation.map_width
-                || self.map_height != observation.map_height)
-        {
-            self.units.clear();
-            self.buildings.clear();
-        }
-
         for contact in &mut self.units {
             contact.evidence = ContactEvidence::Remembered;
         }
@@ -316,28 +308,20 @@ impl StrategicIntelligence {
         }
 
         for unit in &observation.enemy_units {
+            let current = UnitContact {
+                id: unit.id,
+                player: unit.player,
+                kind: unit.kind,
+                tile: unit.tile,
+                hp: unit.hp,
+                grounded: unit.grounded,
+                last_seen: observation.tick,
+                evidence: ContactEvidence::Current,
+            };
             if let Some(contact) = self.units.iter_mut().find(|contact| contact.id == unit.id) {
-                *contact = UnitContact {
-                    id: unit.id,
-                    player: unit.player,
-                    kind: unit.kind,
-                    tile: unit.tile,
-                    hp: unit.hp,
-                    grounded: unit.grounded,
-                    last_seen: observation.tick,
-                    evidence: ContactEvidence::Current,
-                };
+                *contact = current;
             } else {
-                self.units.push(UnitContact {
-                    id: unit.id,
-                    player: unit.player,
-                    kind: unit.kind,
-                    tile: unit.tile,
-                    hp: unit.hp,
-                    grounded: unit.grounded,
-                    last_seen: observation.tick,
-                    evidence: ContactEvidence::Current,
-                });
+                self.units.push(current);
             }
         }
         self.units.retain(|contact| {
@@ -350,32 +334,23 @@ impl StrategicIntelligence {
             .iter()
             .filter(|building| building.seen)
         {
+            let current = BuildingContact {
+                id: Some(building.id),
+                player: building.player,
+                kind: building.kind,
+                anchor: building.anchor,
+                hp: building.hp,
+                built: building.built,
+                tier: building.tier,
+                last_seen: Some(observation.tick),
+                evidence: ContactEvidence::Current,
+            };
             if let Some(contact) = self.buildings.iter_mut().find(|contact| {
                 contact.player == building.player && contact.anchor == building.anchor
             }) {
-                *contact = BuildingContact {
-                    id: Some(building.id),
-                    player: building.player,
-                    kind: building.kind,
-                    anchor: building.anchor,
-                    hp: building.hp,
-                    built: building.built,
-                    tier: building.tier,
-                    last_seen: Some(observation.tick),
-                    evidence: ContactEvidence::Current,
-                };
+                *contact = current;
             } else {
-                self.buildings.push(BuildingContact {
-                    id: Some(building.id),
-                    player: building.player,
-                    kind: building.kind,
-                    anchor: building.anchor,
-                    hp: building.hp,
-                    built: building.built,
-                    tier: building.tier,
-                    last_seen: Some(observation.tick),
-                    evidence: ContactEvidence::Current,
-                });
+                self.buildings.push(current);
             }
         }
 
@@ -527,20 +502,7 @@ impl StrategicIntelligence {
         if tile.x < 0 || tile.y < 0 || tile.x >= self.map_width || tile.y >= self.map_height {
             return false;
         }
-        let Ok(width) = usize::try_from(self.map_width) else {
-            return false;
-        };
-        let Ok(x) = usize::try_from(tile.x) else {
-            return false;
-        };
-        let Ok(y) = usize::try_from(tile.y) else {
-            return false;
-        };
-        y.checked_mul(width)
-            .and_then(|row| row.checked_add(x))
-            .and_then(|index| self.visible.get(index))
-            .copied()
-            .unwrap_or(false)
+        self.visible[tile.y as usize * self.map_width as usize + tile.x as usize]
     }
 }
 
@@ -1141,39 +1103,6 @@ mod tests {
         intelligence.update(&seen);
 
         assert_eq!(intelligence, once);
-    }
-
-    #[test]
-    fn changing_map_dimensions_discards_contacts_from_the_previous_map() {
-        let old_unit = TilePos::new(19, 11);
-        let old_building = TilePos::new(17, 10);
-        let mut large = observation(100);
-        set_visible(&mut large, old_unit);
-        set_visible(&mut large, old_building);
-        large.enemy_units = vec![enemy_unit(8, UnitKind::Flakhound, old_unit)];
-        large.enemy_buildings = vec![enemy_building(
-            4,
-            BuildingKind::FlakTurret,
-            old_building,
-            true,
-        )];
-
-        let mut intelligence = StrategicIntelligence::new();
-        intelligence.update(&large);
-
-        let mut small = observation(200);
-        small.map_width = 4;
-        small.map_height = 3;
-        small.visible = vec![false; 12];
-        small.explored = vec![false; 12];
-        intelligence.update(&small);
-
-        assert!(intelligence.units().is_empty());
-        assert!(intelligence.buildings().is_empty());
-        assert_eq!(
-            intelligence.air_defense_at(old_unit).evidence(),
-            AirDefenseEvidence::Unknown
-        );
     }
 
     #[test]

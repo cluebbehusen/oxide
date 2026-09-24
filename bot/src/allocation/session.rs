@@ -3623,8 +3623,6 @@ mod tests {
             ),
             minimum_claims: ConnectedOffenseClaims::fixture(Vec::new(), provider_jobs),
             marginal_additions: Vec::new(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         })
     }
 
@@ -5405,8 +5403,6 @@ mod tests {
                 ConnectedOffenseClaims::fixture(vec![UnitId(5), UnitId(7)], Vec::new()),
                 ConnectedOffenseClaims::fixture(vec![UnitId(7), UnitId(9)], Vec::new()),
             ],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
 
         assert_eq!(
@@ -5708,8 +5704,6 @@ mod tests {
                     vec![BuildingId(12)],
                 )],
             )],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         })
         .into_active_revision_fixture();
         let key = ConnectedOffenseKey {
@@ -6065,8 +6059,6 @@ mod tests {
                 ConnectedOffenseClaims::fixture(Vec::new(), Vec::new()),
                 ConnectedOffenseClaims::fixture(vec![UnitId(201)], Vec::new()),
             ],
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
         });
         let first = inputs.derive(&[], &[]);
         let claimed = inputs.derive(&[UnitId(201)], &[]);

@@ -313,8 +313,7 @@ pub(crate) fn standing_force_investment_proposal(
             Vec::new(),
             vec![job; proposal.raid.as_ref().map_or(1, |raid| raid.missing)],
         )?
-    }
-    .with_minimum_residual_scrap(proposal.minimum_residual_scrap());
+    };
     let claims = claims.with_paid_queue(
         proposal
             .raid
@@ -894,8 +893,6 @@ mod tests {
             case: connected_case(),
             minimum_claims: claims,
             marginal_additions: marginals,
-            protected_current_scrap: 777,
-            protected_forecast_scrap: 555,
         })
     }
 
@@ -1007,8 +1004,7 @@ mod tests {
             personality_emphasis: 67,
             case,
             eligible_producers: vec![BuildingId(9), BuildingId(3), BuildingId(9)],
-        })
-        .with_minimum_residual_scrap(150);
+        });
         let proposal = standing_force_investment_proposal(original.clone())
             .expect("one immediate producer request is a valid claim bundle");
 
@@ -1019,7 +1015,6 @@ mod tests {
         assert_eq!(proposal.case(), case);
         assert_eq!(proposal.personality_preference(), Some(67));
         assert_eq!(proposal.claims().current_scrap(), 0);
-        assert_eq!(proposal.claims().minimum_residual_scrap(), 150);
         assert!(proposal.claims().forecast_scrap().is_empty());
         assert!(proposal.claims().builders().is_empty());
         assert!(proposal.claims().units().is_empty());
