@@ -720,9 +720,6 @@ impl UtilityPolicy {
         let Some(briefing) = public_map else {
             return false;
         };
-        if briefing.map_width() != obs.map_width || briefing.map_height() != obs.map_height {
-            return false;
-        }
         let regions = briefing.regions();
         let reaches = |anchor, size| regions.reaches_footprint(home, anchor, size);
         self.uncleared_hostile_starts(briefing, obs.me)

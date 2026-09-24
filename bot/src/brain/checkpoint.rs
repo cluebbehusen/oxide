@@ -2,10 +2,34 @@ use super::*;
 use crate::checkpoint::{BotCheckpoint, MAX_BYTES, VERSION};
 use serde::{Deserialize, Serialize};
 
+/// Controller memory that cannot be rebuilt from the scenario. The profile
+/// and briefings are derived on restore.
+#[derive(Serialize, Deserialize)]
+struct MindV1 {
+    intelligence: StrategicIntelligence,
+    battlefield: crate::battlefield::Battlefield,
+    experience: crate::experience::Experience,
+    strategy: StrategicPlanner,
+    lifts: LiftPlanner,
+    team: TeamReliefPlanner,
+    raids: RaidPlanner,
+}
+
+#[derive(Serialize)]
+struct MindRef<'a> {
+    intelligence: &'a StrategicIntelligence,
+    battlefield: &'a crate::battlefield::Battlefield,
+    experience: &'a crate::experience::Experience,
+    strategy: &'a StrategicPlanner,
+    lifts: &'a LiftPlanner,
+    team: &'a TeamReliefPlanner,
+    raids: &'a RaidPlanner,
+}
+
 #[derive(Serialize, Deserialize)]
 struct BrainV1 {
     player: PlayerId,
-    mind: Box<PlayerFacingMind>,
+    mind: MindV1,
     policy: UtilityPolicy,
     exec: Executive,
     orientation: Option<Orientation>,
@@ -14,7 +38,7 @@ struct BrainV1 {
 #[derive(Serialize)]
 struct BrainRef<'a> {
     player: PlayerId,
-    mind: &'a PlayerFacingMind,
+    mind: MindRef<'a>,
     policy: &'a UtilityPolicy,
     exec: &'a Executive,
     orientation: Option<Orientation>,
@@ -32,7 +56,15 @@ impl Brain {
         } = self;
         let wire = BrainRef {
             player: *player,
-            mind,
+            mind: MindRef {
+                intelligence: &mind.intelligence,
+                battlefield: &mind.battlefield,
+                experience: &mind.experience,
+                strategy: &mind.strategy,
+                lifts: &mind.lifts,
+                team: &mind.team,
+                raids: &mind.raids,
+            },
             policy,
             exec,
             orientation: *orientation,
@@ -79,25 +111,17 @@ impl Brain {
             .filter(|_| seat.bot)
             .ok_or("checkpoint seat is not a configured bot")?;
         let map = PublicMapBriefing::from_scenario(scenario).map_err(|error| error.to_string())?;
-        let expected = Self::scripted(player, config, Arc::new(map.clone()));
-        if mind.profile != expected.mind.profile || *mind.public_map != map {
-            return Err("controller checkpoint disagrees with scenario".into());
-        }
         if state.map().width() != map.map_width() || state.map().height() != map.map_height() {
             return Err("controller checkpoint map mismatch".into());
         }
-        if let Some(orientation) = orientation {
-            if orientation.checkpoint_dimensions() != (map.map_width(), map.map_height()) {
-                return Err("controller checkpoint orientation mismatch".into());
-            }
-            if mind.oriented_public_map.as_ref() != Some(&orientation.briefing(&map)) {
-                return Err("controller checkpoint oriented briefing mismatch".into());
-            }
-        } else if mind.oriented_public_map.is_some() {
-            return Err("oriented briefing without orientation".into());
+        if orientation.is_some_and(|orientation| {
+            orientation.checkpoint_dimensions() != (map.map_width(), map.map_height())
+        }) {
+            return Err("controller checkpoint orientation mismatch".into());
         }
+        let oriented_public_map = orientation.map(|orientation| orientation.briefing(&map));
         if !policy.valid_checkpoint(
-            mind.oriented_public_map.as_ref().unwrap_or(&map),
+            oriented_public_map.as_ref().unwrap_or(&map),
             state.current_tick(),
         ) {
             return Err("invalid controller planning continuation".into());
@@ -111,10 +135,30 @@ impl Brain {
         {
             return Err("invalid controller intelligence".into());
         }
+        let expected = Self::scripted(player, config, Arc::new(map));
+        let MindV1 {
+            intelligence,
+            battlefield,
+            experience,
+            strategy,
+            lifts,
+            team,
+            raids,
+        } = mind;
         Ok(Self {
             player,
             dials: expected.dials,
-            mind,
+            mind: Box::new(PlayerFacingMind {
+                intelligence,
+                battlefield,
+                experience,
+                strategy,
+                lifts,
+                team,
+                raids,
+                oriented_public_map,
+                ..*expected.mind
+            }),
             policy,
             exec,
             orientation,
@@ -195,11 +239,5 @@ mod tests {
         wire.player = PlayerId(0);
         bad.payload = encode(&wire).unwrap();
         assert!(Brain::from_checkpoint(&bad, &scenario, &state).is_err());
-        scenario.players[1]
-            .bot_config
-            .as_mut()
-            .unwrap()
-            .personality_seed += 1;
-        assert!(Brain::from_checkpoint(&checkpoint, &scenario, &state).is_err());
     }
 }

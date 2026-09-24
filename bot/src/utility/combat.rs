@@ -168,9 +168,6 @@ impl UtilityPolicy {
         target_size: (i32, i32),
     ) -> bool {
         let (width, height) = (public_map.map_width(), public_map.map_height());
-        if width != obs.map_width || height != obs.map_height {
-            return false;
-        }
         let initial_scrap = |tile: TilePos| {
             public_map
                 .initial_scrap()

@@ -7044,9 +7044,6 @@ fn known_ground_connection(
     }
 
     if let Some(public_map) = public_map {
-        if public_map.map_width() != obs.map_width || public_map.map_height() != obs.map_height {
-            return None;
-        }
         return Some(public_ground_connected(public_map, &starts, &goals));
     }
 

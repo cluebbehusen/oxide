@@ -210,6 +210,14 @@ impl Brain {
         if obs.me != self.player || !self.decision_due(obs.tick) {
             return Vec::new();
         }
+        assert_eq!(
+            (
+                self.mind.public_map.map_width(),
+                self.mind.public_map.map_height()
+            ),
+            (obs.map_width, obs.map_height),
+            "the controller's briefing must describe the observed map"
+        );
         let _query_capture = super::query_work::Capture::new(observer);
         let maintenance_scope = PhaseScope::new(observer, BotPhase::Maintenance);
         // The wounded rear line lives on the home-side corner of the Foundry:
