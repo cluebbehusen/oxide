@@ -9,9 +9,8 @@ use core::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::resources::{
-    PlanningProjectionError, ProducerLaneReservationError, ProducerLaneReservations,
-    ProducerPlanningProjection, ReservedProducerJob, ResourcePlanningProjection, ResourceSnapshot,
-    SiteFootprint,
+    PlanningProjectionError, ProducerLaneReservations, ProducerPlanningProjection,
+    ReservedProducerJob, ResourcePlanningProjection, ResourceSnapshot, SiteFootprint,
 };
 use chassis::Tick;
 use chassis::grid::TilePos;
@@ -1421,9 +1420,6 @@ pub(crate) enum AllocationError {
         /// Exact failed claim.
         conflict: AllocationConflict,
     },
-    /// The selected producer schedule could not be replayed against the exact
-    /// resource projection used to select it.
-    ProducerReservation(ProducerLaneReservationError),
 }
 
 /// Why one well-formed fresh proposal was not selected.
@@ -1547,7 +1543,7 @@ pub(crate) struct CapitalFundingAssignment {
 pub(crate) fn future_producer_lane_reservations(
     capacity: &AllocationCapacity,
     schedule: &[ScheduledProducerJob],
-) -> Result<ProducerLaneReservations, ProducerLaneReservationError> {
+) -> ProducerLaneReservations {
     ProducerLaneReservations::from_jobs(
         &capacity.resources,
         schedule.iter().map(|job| ReservedProducerJob {

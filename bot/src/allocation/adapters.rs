@@ -216,7 +216,7 @@ impl AllocationPersonality {
 /// Retains one expansion domain's frozen payload and exact shared claims.
 pub(crate) fn foundry_investment_proposal(
     proposal: FreshFoundryProposal,
-) -> Result<DomainInvestmentProposal, ClaimBundleError> {
+) -> DomainInvestmentProposal {
     let claims = ClaimBundle::new(
         0,
         Vec::new(),
@@ -224,27 +224,29 @@ pub(crate) fn foundry_investment_proposal(
         Vec::new(),
         vec![proposal_site(&proposal)],
         Vec::new(),
-    )?
+    )
+    .expect("one Foundry builder and site with deferred capital form a valid bundle")
     .with_deferrable_capital(DeferrableCapitalClaim {
         through: proposal.forecast_deadline(),
         amount: proposal.construction_capital(),
-    })?;
-    Ok(InvestmentProposal::fresh(
+    })
+    .expect("one Foundry builder and site with deferred capital form a valid bundle");
+    InvestmentProposal::fresh(
         ProposalKey::FoundryExpansion(FoundryExpansionKey {
             anchor: proposal.anchor(),
         }),
         proposal.case().into(),
         claims,
         DomainPayload::Foundry(proposal),
-    ))
+    )
 }
 
 /// Retains one connected domain's exact minimum and ordered producer choices.
 pub(crate) fn connected_investment_proposal(
     proposal: FreshConnectedProposal,
-) -> Result<DomainInvestmentProposal, ClaimBundleError> {
-    let claims = connected_claim_bundle(proposal.minimum_claims())?;
-    Ok(InvestmentProposal::retained(
+) -> DomainInvestmentProposal {
+    let claims = connected_claim_bundle(proposal.minimum_claims());
+    InvestmentProposal::retained(
         ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
             objective: proposal.objective(),
             anchor: proposal.anchor(),
@@ -253,7 +255,7 @@ pub(crate) fn connected_investment_proposal(
         proposal.accepted_at(),
         claims,
         DomainPayload::Connected(Box::new(proposal)),
-    ))
+    )
 }
 
 /// Retains one independently useful standing-force purchase or bounded wait.
@@ -353,7 +355,7 @@ pub(crate) fn standing_force_investment_proposals(
 /// Retains one defensive domain's frozen builder, site, and exact capital claim.
 pub(crate) fn defense_investment_proposal(
     proposal: FreshDefenseProposal,
-) -> Result<DomainInvestmentProposal, ClaimBundleError> {
+) -> DomainInvestmentProposal {
     let claims = ClaimBundle::new(
         proposal.construction_capital(),
         Vec::new(),
@@ -361,9 +363,10 @@ pub(crate) fn defense_investment_proposal(
         Vec::new(),
         vec![proposal.site()],
         Vec::new(),
-    )?
+    )
+    .expect("one defense builder and site form a valid bundle")
     .with_minimum_residual_scrap(proposal.minimum_residual_scrap());
-    Ok(InvestmentProposal::fresh(
+    InvestmentProposal::fresh(
         ProposalKey::Defense(DefenseInvestmentKey {
             kind: proposal.kind(),
             anchor: proposal.anchor(),
@@ -371,19 +374,18 @@ pub(crate) fn defense_investment_proposal(
         proposal.case(),
         claims,
         DomainPayload::Defense(proposal),
-    ))
+    )
 }
 
 /// Retains the defensive domain's deterministic best-first alternatives.
 pub(crate) fn defense_investment_proposals(
     proposals: Vec<FreshDefenseProposal>,
-) -> Result<Vec<DomainInvestmentProposal>, ClaimBundleError> {
+) -> Vec<DomainInvestmentProposal> {
     proposals
         .into_iter()
         .enumerate()
         .map(|(preference, proposal)| {
-            defense_investment_proposal(proposal)
-                .map(|proposal| proposal.with_domain_preference(preference))
+            defense_investment_proposal(proposal).with_domain_preference(preference)
         })
         .collect()
 }
@@ -392,7 +394,7 @@ pub(crate) fn defense_investment_proposals(
 /// acceptance priority.
 pub(crate) fn active_connected_revision_obligation(
     proposal: &FreshConnectedProposal,
-) -> Result<ImportedObligation, ClaimBundleError> {
+) -> ImportedObligation {
     debug_assert!(proposal.revises_active_operation());
     let identity = proposal.identity();
     let minimum = proposal.minimum_claims();
@@ -408,7 +410,7 @@ pub(crate) fn active_connected_revision_obligation(
             )
         })
         .collect();
-    Ok(super::imported_obligation(
+    super::imported_obligation(
         ObligationClass::PersistentPlan,
         proposal.accepted_at(),
         ObligationKey::ConnectedOffense {
@@ -422,8 +424,9 @@ pub(crate) fn active_connected_revision_obligation(
             minimum.units().to_vec(),
             Vec::new(),
             provider_jobs,
-        )?,
-    ))
+        )
+        .expect("connected claims name canonical units"),
+    )
 }
 
 /// Carries an active revision's opaque payload through portfolio selection.
@@ -446,15 +449,11 @@ pub(crate) fn active_connected_revision_investment_proposal(
 }
 
 /// Converts one cumulative additions-only scale step without charging jobs twice.
-pub(crate) fn connected_marginal_claims(
-    marginal: &ConnectedMarginalVariant,
-) -> Result<ClaimBundle, ClaimBundleError> {
+pub(crate) fn connected_marginal_claims(marginal: &ConnectedMarginalVariant) -> ClaimBundle {
     connected_claim_bundle(marginal.additions())
 }
 
-fn connected_claim_bundle(
-    claims: &ConnectedOffenseClaims,
-) -> Result<ClaimBundle, ClaimBundleError> {
+fn connected_claim_bundle(claims: &ConnectedOffenseClaims) -> ClaimBundle {
     let paid = claims
         .paid_providers()
         .iter()
@@ -483,7 +482,8 @@ fn connected_claim_bundle(
             })
             .collect(),
     )
-    .map(|claims| claims.with_paid_queue(paid))
+    .expect("connected claims name canonical units")
+    .with_paid_queue(paid)
 }
 
 fn proposal_site(proposal: &FreshFoundryProposal) -> crate::resources::SiteFootprint {
@@ -618,8 +618,6 @@ pub(crate) enum ConnectedMarginalError {
     NoAcceptedConnectedProposal,
     /// The scale token does not belong to the retained connected proposal.
     StaleVariant,
-    /// The domain supplied internally inconsistent exact claims.
-    MalformedClaims(ClaimBundleError),
     /// Shared resources cannot fit the complete additions-only step.
     Conflict(AllocationConflict),
 }
@@ -627,9 +625,9 @@ pub(crate) enum ConnectedMarginalError {
 impl DomainAllocationResult {
     /// Exact connected opportunity key retained by selection, if any.
     pub(crate) fn accepted_connected_key(&self) -> Option<ConnectedOffenseKey> {
-        self.accepted.iter().find_map(|proposal| {
-            validate_payload_key(proposal);
-            match proposal.key() {
+        self.accepted
+            .iter()
+            .find_map(|proposal| match proposal.key() {
                 ProposalKey::ConnectedOffenseMinimum(key) => Some(key),
                 ProposalKey::FoundryExpansion(_)
                 | ProposalKey::StandingForce(_)
@@ -641,15 +639,14 @@ impl DomainAllocationResult {
                 | ProposalKey::SupportDeployment(_)
                 | ProposalKey::SupportRelief(_)
                 | ProposalKey::Economy(_) => None,
-            }
-        })
+            })
     }
 
     /// Retained cumulative scale choices, still owned by the domain payload.
     pub(crate) fn connected_marginal_variants(&self) -> Option<&[ConnectedMarginalVariant]> {
-        self.accepted.iter().find_map(|proposal| {
-            validate_payload_key(proposal);
-            match proposal.payload() {
+        self.accepted
+            .iter()
+            .find_map(|proposal| match proposal.payload() {
                 DomainPayload::Connected(payload) => Some(payload.marginal_variants()),
                 DomainPayload::Foundry(_)
                 | DomainPayload::StandingForce(_)
@@ -661,8 +658,7 @@ impl DomainAllocationResult {
                 | DomainPayload::SupportDeployment(_)
                 | DomainPayload::SupportRelief(_)
                 | DomainPayload::Economy(_) => None,
-            }
-        })
+            })
     }
 
     /// Applies one retained additions-only scale step and updates its payload together.
@@ -689,26 +685,17 @@ impl DomainAllocationResult {
         let (key, belongs) = self
             .accepted
             .iter()
-            .find_map(|proposal| {
-                validate_payload_key(proposal);
-                match (proposal.key(), proposal.payload()) {
-                    (
-                        ProposalKey::ConnectedOffenseMinimum(key),
-                        DomainPayload::Connected(payload),
-                    ) => Some((key, payload.marginal_variants().contains(marginal))),
-                    (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(_))
-                    | (ProposalKey::StandingForce(_), DomainPayload::StandingForce(_))
-                    | (ProposalKey::Defense(_), DomainPayload::Defense(_))
-                    | (ProposalKey::Economy(_), DomainPayload::Economy(_)) => None,
-                    _ => unreachable!("payload validation is exhaustive above"),
+            .find_map(|proposal| match (proposal.key(), proposal.payload()) {
+                (ProposalKey::ConnectedOffenseMinimum(key), DomainPayload::Connected(payload)) => {
+                    Some((key, payload.marginal_variants().contains(marginal)))
                 }
+                _ => None,
             })
             .ok_or(ConnectedMarginalError::NoAcceptedConnectedProposal)?;
         if !belongs {
             return Err(ConnectedMarginalError::StaleVariant);
         }
-        let claims =
-            connected_marginal_claims(marginal).map_err(ConnectedMarginalError::MalformedClaims)?;
+        let claims = connected_marginal_claims(marginal);
         if !self
             .refine_connected_offense(capacity, key, &claims, refine)
             .map_err(ConnectedMarginalError::Conflict)?
@@ -823,47 +810,6 @@ impl DomainAllocationResult {
     }
 }
 
-fn validate_payload_key(proposal: &DomainInvestmentProposal) {
-    assert!(
-        matches!(
-            (proposal.key(), proposal.payload()),
-            (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(_))
-                | (
-                    ProposalKey::ConnectedOffenseMinimum(_),
-                    DomainPayload::Connected(_)
-                )
-                | (
-                    ProposalKey::StandingForce(_),
-                    DomainPayload::StandingForce(_)
-                )
-                | (ProposalKey::Defense(_), DomainPayload::Defense(_))
-                | (ProposalKey::Economy(_), DomainPayload::Economy(_))
-                | (ProposalKey::Support(_), DomainPayload::Support(_))
-                | (
-                    ProposalKey::SupportDeployment(_),
-                    DomainPayload::SupportDeployment(_)
-                )
-                | (
-                    ProposalKey::Reconnaissance(_),
-                    DomainPayload::Reconnaissance(_)
-                )
-                | (
-                    ProposalKey::SupportRelief(_),
-                    DomainPayload::SupportRelief(_)
-                )
-                | (
-                    ProposalKey::SupportConstruction(_),
-                    DomainPayload::SupportConstruction(_)
-                )
-                | (
-                    ProposalKey::SupportProcurement(_),
-                    DomainPayload::SupportProcurement(_)
-                )
-        ),
-        "an allocation payload must match its proposal domain"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,8 +909,7 @@ mod tests {
             .cost;
         let current = cost - 17;
         let original = foundry(UnitId(4), current, 17);
-        let proposal = foundry_investment_proposal(original.clone())
-            .expect("the Foundry footprint and claims are valid");
+        let proposal = foundry_investment_proposal(original.clone());
 
         assert_eq!(
             proposal.key(),
@@ -1023,8 +968,7 @@ mod tests {
         );
         let cost = original.construction_capital();
         let site = original.site();
-        let proposal = defense_investment_proposal(original)
-            .expect("one exact defensive build is a valid claim bundle");
+        let proposal = defense_investment_proposal(original);
 
         assert_eq!(
             proposal.key(),
@@ -1180,10 +1124,11 @@ mod tests {
             case,
             eligible_producers: vec![producer],
         });
-        let mut proposals = vec![
-            foundry_investment_proposal(foundry(builder, foundry_cost, 0))
-                .expect("the Foundry request adapts"),
-        ];
+        let mut proposals = vec![foundry_investment_proposal(foundry(
+            builder,
+            foundry_cost,
+            0,
+        ))];
         proposals.extend(
             standing_force_investment_proposals(vec![wait, fallback])
                 .expect("the wait and fallback adapt as alternatives"),
@@ -1302,8 +1247,7 @@ mod tests {
             .construction
             .expect("Foundries are constructible")
             .cost;
-        let foundry = foundry_investment_proposal(foundry(UnitId(1), foundry_cost, 0))
-            .expect("the exact Foundry request adapts");
+        let foundry = foundry_investment_proposal(foundry(UnitId(1), foundry_cost, 0));
         let producer =
             ProducerPlanningProjection::fixture(producer, NOW, 12, NOW, vec![NOW], vec![kind])
                 .expect("the producer fixture is valid");
@@ -1347,7 +1291,7 @@ mod tests {
             .cost;
         let builder = UnitId(4);
         let original = foundry(builder, cost - 17, 17);
-        let proposal = foundry_investment_proposal(original.clone()).unwrap();
+        let proposal = foundry_investment_proposal(original.clone());
         let resources = AllocationCapacity::fixture(
             ResourcePlanningProjection::fixture(ResourcePlanningFixture {
                 current_scrap: cost - 17,
@@ -1412,8 +1356,7 @@ mod tests {
             ConnectedOffenseClaims::fixture(Vec::new(), vec![job]),
             Vec::new(),
         );
-        let proposal = connected_investment_proposal(original.clone())
-            .expect("the exact connected claims are valid");
+        let proposal = connected_investment_proposal(original.clone());
         assert_eq!(proposal.claims().current_scrap(), 0);
         assert!(proposal.claims().forecast_scrap().is_empty());
         assert_eq!(
@@ -1467,8 +1410,7 @@ mod tests {
         let marginal = original.marginal_variants()[0].clone();
         let mut expected = original.clone();
         assert!(expected.select_marginal(&marginal));
-        let proposal =
-            connected_investment_proposal(original).expect("the exact connected minimum is valid");
+        let proposal = connected_investment_proposal(original);
         let producers = [
             (BuildingId(8), minimum_kind),
             (BuildingId(9), marginal_kind),
@@ -1558,11 +1500,9 @@ mod tests {
         )
         .into_active_revision_fixture();
         let marginal = revision.marginal_variants()[0].clone();
-        let obligation = active_connected_revision_obligation(&revision)
-            .expect("the revision minimum adapts as retained work");
+        let obligation = active_connected_revision_obligation(&revision);
         let carrier = active_connected_revision_investment_proposal(revision);
-        let foundry = foundry_investment_proposal(foundry(builder, 50, 0))
-            .expect("the compatible Foundry adapts exactly");
+        let foundry = foundry_investment_proposal(foundry(builder, 50, 0));
         let producers = [
             (BuildingId(8), minimum_kind),
             (BuildingId(9), marginal_kind),
@@ -1623,13 +1563,11 @@ mod tests {
                 FoundryTimeToImpact::Near,
                 FoundryExecutionSafety::Secure,
             ),
-        ))
-        .expect("the Foundry proposal is valid");
+        ));
         let offense = connected_investment_proposal(connected(
             ConnectedOffenseClaims::fixture(vec![actor], Vec::new()),
             Vec::new(),
-        ))
-        .expect("the connected proposal is valid");
+        ));
         assert_eq!(foundry.case(), offense.case());
         let resources = capacity(
             50,

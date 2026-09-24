@@ -13,9 +13,7 @@ use super::allocation::{
     Urgency,
 };
 use super::observation::Observation;
-use super::resources::{
-    PlanningProjectionError, ProducerLaneReservationError, ResourceSnapshot, SiteFootprint,
-};
+use super::resources::{PlanningProjectionError, ResourceSnapshot, SiteFootprint};
 use super::strategy::force_package::{ForceFamily, ForcePackageRejection};
 use super::strategy::{
     AirOperation, AirOperationOutcome, AirRecoveryReason, ConnectedPackageDiagnostics,
@@ -2614,25 +2612,6 @@ pub enum AllocationErrorTrace {
         /// First failed claim.
         conflict: AllocationConflictTrace,
     },
-    /// The selected schedule named a producer absent from its resource basis.
-    ProducerReservationUnknownProducer {
-        /// Exact missing producer.
-        producer: BuildingId,
-    },
-    /// The selected current-tick append could no longer be replayed.
-    ProducerReservationAppendUnavailable {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Unit whose append failed.
-        kind: UnitKind,
-    },
-    /// Replaying a selected current-tick append changed its FIFO timing.
-    ProducerReservationTimingMismatch {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Unit whose timing changed.
-        kind: UnitKind,
-    },
 }
 
 impl From<AllocationError> for AllocationErrorTrace {
@@ -2652,17 +2631,6 @@ impl From<AllocationError> for AllocationErrorTrace {
                 obligation: obligation.into(),
                 conflict: conflict.into(),
             },
-            AllocationError::ProducerReservation(error) => match error {
-                ProducerLaneReservationError::UnknownProducer { producer } => {
-                    Self::ProducerReservationUnknownProducer { producer }
-                }
-                ProducerLaneReservationError::CurrentAppendUnavailable { producer, kind } => {
-                    Self::ProducerReservationAppendUnavailable { producer, kind }
-                }
-                ProducerLaneReservationError::CurrentTimingMismatch { producer, kind } => {
-                    Self::ProducerReservationTimingMismatch { producer, kind }
-                }
-            },
         }
     }
 }
@@ -2675,14 +2643,8 @@ pub enum AllocationCoordinatorStageTrace {
     ObligationCollection,
     /// The current resource basis could not produce a bounded allocation horizon.
     CapacityProjection,
-    /// The selected Foundry candidate could not be adapted into shared claims.
-    FoundryProposalAdaptation,
-    /// A defensive candidate could not be adapted into exact shared claims.
-    DefenseProposalAdaptation,
     /// An economic candidate could not be adapted into exact shared claims.
     EconomyProposalAdaptation,
-    /// The selected connected-operation candidate could not be adapted into shared claims.
-    ConnectedProposalAdaptation,
     /// The selected standing-force candidate could not be adapted into shared claims.
     StandingForceProposalAdaptation,
     /// A retained saved Foundry could not emit its exact build command.
@@ -2833,26 +2795,12 @@ pub enum PlanningProjectionErrorTrace {
         /// Observed queue length.
         queued: u32,
     },
-    /// Owner-visible front progress exceeded the front unit's train time.
-    MalformedFrontProgress {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Observed progress.
-        progress: u32,
-        /// Complete train time.
-        train_ticks: u32,
-    },
     /// Queue, cadence, or horizon arithmetic overflowed.
     TickOverflow,
     /// Completed-source income overflowed the simulation scrap type.
     ForecastOverflow {
         /// Last included production tick.
         through: Tick,
-    },
-    /// A recurring source had a zero payment period.
-    ZeroIncomePeriod {
-        /// Exact completed income source.
-        source: BuildingId,
     },
 }
 
@@ -2880,21 +2828,9 @@ impl From<PlanningProjectionError> for PlanningProjectionErrorTrace {
                     queued: bounded_count(queued),
                 }
             }
-            PlanningProjectionError::MalformedFrontProgress {
-                producer,
-                progress,
-                train_ticks,
-            } => Self::MalformedFrontProgress {
-                producer,
-                progress,
-                train_ticks,
-            },
             PlanningProjectionError::TickOverflow => Self::TickOverflow,
             PlanningProjectionError::ForecastOverflow { through } => {
                 Self::ForecastOverflow { through }
-            }
-            PlanningProjectionError::ZeroIncomePeriod { source } => {
-                Self::ZeroIncomePeriod { source }
             }
         }
     }
@@ -3958,9 +3894,9 @@ mod tests {
     #[test]
     fn coordinator_failure_trace_preserves_stage_and_exact_reason() {
         assert_eq!(
-            serde_json::to_value(AllocationCoordinatorStageTrace::DefenseProposalAdaptation)
+            serde_json::to_value(AllocationCoordinatorStageTrace::EconomyProposalAdaptation)
                 .expect("the coordinator stage serializes"),
-            Value::from("defense_proposal_adaptation")
+            Value::from("economy_proposal_adaptation")
         );
         let mut trace = AllocationTrace::default();
         let input = CoordinatorInputError::ImmediateProducerUnavailable {
@@ -4062,32 +3998,12 @@ mod tests {
                 },
             ),
             (
-                PlanningProjectionError::MalformedFrontProgress {
-                    producer: BuildingId(5),
-                    progress: 31,
-                    train_ticks: 30,
-                },
-                PlanningProjectionErrorTrace::MalformedFrontProgress {
-                    producer: BuildingId(5),
-                    progress: 31,
-                    train_ticks: 30,
-                },
-            ),
-            (
                 PlanningProjectionError::TickOverflow,
                 PlanningProjectionErrorTrace::TickOverflow,
             ),
             (
                 PlanningProjectionError::ForecastOverflow { through: 300 },
                 PlanningProjectionErrorTrace::ForecastOverflow { through: 300 },
-            ),
-            (
-                PlanningProjectionError::ZeroIncomePeriod {
-                    source: BuildingId(6),
-                },
-                PlanningProjectionErrorTrace::ZeroIncomePeriod {
-                    source: BuildingId(6),
-                },
             ),
         ];
         for (error, expected) in projection_cases {
@@ -4193,7 +4109,6 @@ mod tests {
                     0,
                 );
                 crate::allocation::defense_investment_proposal(proposal)
-                    .expect("the exact defense claim is valid")
             })
             .collect::<Vec<_>>();
         let accepted = proposals

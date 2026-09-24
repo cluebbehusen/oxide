@@ -774,10 +774,7 @@ impl<'a> AllocationSession<'a> {
         let mut rejected_connected_candidate = active_revision.rejected;
         let connected_candidate = if active_revision.proposal.is_some() {
             active_revision.proposal
-        } else if admission_tick
-            && obligations.island_preparation.is_none()
-            && !obligations.invalid_active_connected
-        {
+        } else if admission_tick && obligations.island_preparation.is_none() {
             match self.participants.strategy.fresh_connected_minimum_proposal(
                 self.context.evidence.experience,
                 FreshConnectedProposalRequest::new(
@@ -1275,36 +1272,18 @@ impl<'a> AllocationSession<'a> {
             }
         }
         if let Some(proposal) = prepared.fresh_foundry.take() {
-            match foundry_investment_proposal(proposal) {
-                Ok(proposal) => allocation.offer(
-                    proposal
-                        .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
-                        .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
-                ),
-                Err(error) => {
-                    return Err(AllocationFailure::Coordinator((
-                        AllocationCoordinatorStageTrace::FoundryProposalAdaptation,
-                        error.into(),
-                    )));
-                }
-            }
+            allocation.offer(
+                foundry_investment_proposal(proposal)
+                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                    .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+            );
         }
-        match defense_investment_proposals(core::mem::take(&mut prepared.fresh_defense)) {
-            Ok(proposals) => {
-                for proposal in proposals {
-                    allocation.offer(
-                        proposal
-                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
-                            .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
-                    );
-                }
-            }
-            Err(error) => {
-                return Err(AllocationFailure::Coordinator((
-                    AllocationCoordinatorStageTrace::DefenseProposalAdaptation,
-                    error.into(),
-                )));
-            }
+        for proposal in defense_investment_proposals(core::mem::take(&mut prepared.fresh_defense)) {
+            allocation.offer(
+                proposal
+                    .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                    .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+            );
         }
         if let Some(proposal) = prepared.fresh_connected.take() {
             if proposal.revises_active_operation() {
@@ -1314,19 +1293,11 @@ impl<'a> AllocationSession<'a> {
                         .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
                 );
             } else {
-                match connected_investment_proposal(proposal) {
-                    Ok(proposal) => allocation.offer(
-                        proposal
-                            .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
-                            .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
-                    ),
-                    Err(error) => {
-                        return Err(AllocationFailure::Coordinator((
-                            AllocationCoordinatorStageTrace::ConnectedProposalAdaptation,
-                            error.into(),
-                        )));
-                    }
-                }
+                allocation.offer(
+                    connected_investment_proposal(proposal)
+                        .with_voluntary_scrap_guard(allocatable_voluntary_scrap_guard)
+                        .with_minimum_residual_scrap(prepared.prospective_carrier_floor),
+                );
             }
         }
         match core::mem::take(&mut prepared.standing_force) {
@@ -1472,7 +1443,7 @@ impl<'a> AllocationSession<'a> {
             if let Some(active) = &prepared.active_connected {
                 prepared
                     .obligations
-                    .push(active_connected_obligation(active).ok()?);
+                    .push(active_connected_obligation(active));
             }
         }
         if prepared.obligations.iter().any(|obligation| {
@@ -2178,8 +2149,6 @@ struct ObligationPreparation {
     coordinator_failure: Option<CoordinatorFailure>,
     active_connected: Option<ActiveConnectedObligation>,
     active_lift: Option<ActiveLiftProductionObligation>,
-    invalid_active_connected: bool,
-    invalid_active_lift: bool,
     retained_air_claims: Option<(Tick, Vec<UnitId>)>,
     island_preparation: Option<crate::strategy::IslandPreparation>,
 }
@@ -2373,8 +2342,8 @@ fn push_clamped_current_reserve(
     decision_tick: Tick,
     key: ObligationKey,
     desired: u32,
-) -> Result<(), AllocationCoordinatorFailureReasonTrace> {
-    match clamped_current_reserve_obligation(
+) {
+    if let Some(obligation) = clamped_current_reserve_obligation(
         obligations,
         bank,
         accepted_at,
@@ -2382,12 +2351,7 @@ fn push_clamped_current_reserve(
         key,
         desired,
     ) {
-        Ok(Some(obligation)) => {
-            obligations.push(obligation);
-            Ok(())
-        }
-        Ok(None) => Ok(()),
-        Err(error) => Err(error.into()),
+        obligations.push(obligation);
     }
 }
 
@@ -2839,8 +2803,8 @@ fn feasible_active_lift_future_production_obligation(
 
 fn active_lift_production_obligation(
     obligation: &ActiveLiftProductionObligation,
-) -> Result<ImportedObligation, ClaimBundleError> {
-    Ok(imported_obligation(
+) -> ImportedObligation {
+    imported_obligation(
         ObligationClass::PersistentPlan,
         obligation.accepted_at(),
         ObligationKey::LiftProduction,
@@ -2865,8 +2829,9 @@ fn active_lift_production_obligation(
                     )
                 })
                 .collect(),
-        )?,
-    ))
+        )
+        .expect("Lift production claims only fixed jobs"),
+    )
 }
 
 fn lift_preceding_production_context(
@@ -2888,10 +2853,10 @@ fn lift_preceding_production_context(
         .max(connected.map_or(0, ActiveConnectedObligation::deadline));
     let mut allocation = CrossDomainAllocation::new(resources, horizon, cadence).ok()?;
     if let Some(lift) = lift {
-        allocation.import(active_lift_production_obligation(lift).ok()?);
+        allocation.import(active_lift_production_obligation(lift));
     }
     if let Some(connected) = connected {
-        allocation.import(active_connected_obligation(connected).ok()?);
+        allocation.import(active_connected_obligation(connected));
     }
     let settled = allocation
         .resolve_planned(AllocationPersonality::default(), None, planning)
@@ -4337,8 +4302,6 @@ mod tests {
             coordinator_failure: None,
             active_connected: None,
             active_lift: None,
-            invalid_active_connected: false,
-            invalid_active_lift: false,
             retained_air_claims: None,
             island_preparation: None,
         };
@@ -4547,10 +4510,7 @@ mod tests {
 
         let mut control = CrossDomainAllocation::new(&resources, operation.deadline, 12)
             .expect("the fixture projection is valid");
-        control.offer(
-            connected_investment_proposal(connected.clone())
-                .expect("the connected claim shape is valid"),
-        );
+        control.offer(connected_investment_proposal(connected.clone()));
         let mut control_trace = AllocationTrace::default();
         control
             .resolve(AllocationPersonality::default(), Some(&mut control_trace))
@@ -4564,10 +4524,7 @@ mod tests {
             let mut allocation = CrossDomainAllocation::new(&resources, operation.deadline, 12)
                 .expect("the fixture projection is valid");
             allocation.import(lift_obligation.clone());
-            allocation.offer(
-                connected_investment_proposal(connected.clone())
-                    .expect("the connected claim shape is valid"),
-            );
+            allocation.offer(connected_investment_proposal(connected.clone()));
             let mut trace = AllocationTrace::default();
             allocation
                 .resolve(AllocationPersonality::default(), Some(&mut trace))
@@ -5058,7 +5015,7 @@ mod tests {
         let active = connected_obligation(&mut strategy, &observation);
         let resources = ResourceSnapshot::from_observation(&observation);
         let mut allocation = CrossDomainAllocation::new(&resources, active.deadline(), 12).unwrap();
-        allocation.import(active_connected_obligation(&active).unwrap());
+        allocation.import(active_connected_obligation(&active));
         allocation.import(imported_obligation(
             ObligationClass::PersistentPlan,
             observation.tick,
@@ -5206,12 +5163,10 @@ mod tests {
         if let Some(revision) = revision {
             input
                 .obligations
-                .push(active_connected_revision_obligation(&revision).unwrap());
+                .push(active_connected_revision_obligation(&revision));
             input.fresh_connected = Some(revision);
         } else {
-            input
-                .obligations
-                .push(active_connected_obligation(&active).unwrap());
+            input.obligations.push(active_connected_obligation(&active));
             input.active_connected = Some(active.clone());
         }
         input.obligations.push(imported_obligation(
@@ -5942,7 +5897,7 @@ mod tests {
                 12,
             )
             .unwrap();
-            allocation.offer(connected_investment_proposal(connected).unwrap());
+            allocation.offer(connected_investment_proposal(connected));
             let settlement = allocation
                 .resolve(AllocationPersonality::default(), None)
                 .unwrap();

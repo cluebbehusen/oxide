@@ -2209,9 +2209,7 @@ pub(crate) fn prospective_airworks_package_value(
             }) => return Progress::Deferred,
             Err(_) => return Progress::ProvenInfeasible,
         };
-        let Ok(investment) = connected_investment_proposal(proposal.clone()) else {
-            return Progress::ProvenInfeasible;
-        };
+        let investment = connected_investment_proposal(proposal.clone());
         match allocate_requiring_planned(
             &capacity,
             obligations.to_vec(),
@@ -8168,7 +8166,7 @@ mod tests {
         let mut allocation =
             CrossDomainAllocation::new(&resources, active.deadline(), request.tuning.cadence)
                 .ok()?;
-        allocation.import(active_connected_obligation(&active).ok()?);
+        allocation.import(active_connected_obligation(&active));
         allocation
             .resolve(AllocationPersonality::default(), None)
             .ok()
@@ -8254,7 +8252,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(obs);
         let mut allocation =
             CrossDomainAllocation::new(&resources, obligation.deadline(), 12).unwrap();
-        allocation.import(active_connected_obligation(&obligation).unwrap());
+        allocation.import(active_connected_obligation(&obligation));
         allocation
             .resolve(AllocationPersonality::default(), None)
             .unwrap()

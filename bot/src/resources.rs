@@ -295,31 +295,6 @@ pub(crate) struct ReservedProducerJob {
     pub(crate) ready_before: Tick,
 }
 
-/// Why an accepted producer schedule could not be overlaid on the resource
-/// projection from which it was allocated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProducerLaneReservationError {
-    /// The schedule named a producer absent from the projection.
-    UnknownProducer {
-        /// Exact missing producer.
-        producer: BuildingId,
-    },
-    /// A current-tick append was no longer legal on its accepted producer.
-    CurrentAppendUnavailable {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Unit whose append failed.
-        kind: UnitKind,
-    },
-    /// Replaying a current-tick append changed its accepted FIFO timing.
-    CurrentTimingMismatch {
-        /// Exact producer.
-        producer: BuildingId,
-        /// Unit whose timing changed.
-        kind: UnitKind,
-    },
-}
-
 /// Accepted future producer work overlaid on an otherwise truthful
 /// [`Observation`].
 ///
@@ -351,7 +326,7 @@ impl ProducerLaneReservations {
     pub(crate) fn from_jobs(
         resources: &ResourcePlanningProjection,
         jobs: impl IntoIterator<Item = ReservedProducerJob>,
-    ) -> Result<Self, ProducerLaneReservationError> {
+    ) -> Self {
         let observed_at = resources.observed_at();
         let mut scheduled: Vec<_> = jobs
             .into_iter()
@@ -386,32 +361,23 @@ impl ProducerLaneReservations {
                 let mut baseline = resources
                     .producer(producer)
                     .cloned()
-                    .ok_or(ProducerLaneReservationError::UnknownProducer { producer })?;
+                    .expect("an accepted schedule names only projected producers");
                 for due in scheduled
                     .iter()
                     .filter(|job| job.producer == producer && job.enqueued_at == observed_at)
                 {
-                    let projected = baseline.append(due.kind, observed_at).ok_or(
-                        ProducerLaneReservationError::CurrentAppendUnavailable {
-                            producer,
-                            kind: due.kind,
-                        },
-                    )?;
-                    if (projected.starts_at, projected.ready_at) != (due.starts_at, due.ready_at) {
-                        return Err(ProducerLaneReservationError::CurrentTimingMismatch {
-                            producer,
-                            kind: due.kind,
-                        });
-                    }
+                    baseline
+                        .append(due.kind, observed_at)
+                        .expect("an accepted current append replays on its own projection");
                 }
-                Ok(baseline)
+                baseline
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self {
+            .collect();
+        Self {
             baselines,
             current_jobs,
             jobs,
-        })
+        }
     }
 
     /// Whether this exact producer carries accepted work on or after this tick.
@@ -1138,50 +1104,6 @@ mod current_reserve_tests {
     }
 
     #[test]
-    fn producer_reservations_reject_an_unknown_accepted_lane_without_panicking() {
-        let resources = producer_projection();
-        let result = ProducerLaneReservations::from_jobs(
-            &resources,
-            [reserved_job(
-                BuildingId(99),
-                UnitKind::Sentinel,
-                0,
-                0,
-                Tick::from(UnitKind::Sentinel.stats().train_ticks).saturating_sub(1),
-            )],
-        );
-
-        assert_eq!(
-            result,
-            Err(ProducerLaneReservationError::UnknownProducer {
-                producer: BuildingId(99),
-            })
-        );
-    }
-
-    #[test]
-    fn producer_reservations_reject_changed_current_timing_without_panicking() {
-        let resources = producer_projection();
-        let train_ticks = Tick::from(UnitKind::Sentinel.stats().train_ticks);
-        let due_now = reserved_job(BuildingId(7), UnitKind::Sentinel, 0, 0, train_ticks);
-        let future = reserved_job(
-            BuildingId(7),
-            UnitKind::Sentinel,
-            train_ticks.saturating_add(1),
-            train_ticks.saturating_add(1),
-            train_ticks.saturating_mul(2),
-        );
-
-        assert_eq!(
-            ProducerLaneReservations::from_jobs(&resources, [due_now, future]),
-            Err(ProducerLaneReservationError::CurrentTimingMismatch {
-                producer: BuildingId(7),
-                kind: UnitKind::Sentinel,
-            })
-        );
-    }
-
-    #[test]
     fn producer_reservations_recognize_only_exact_current_and_future_jobs() {
         let resources = producer_projection();
         let train_ticks = Tick::from(UnitKind::Sentinel.stats().train_ticks);
@@ -1199,8 +1121,7 @@ mod current_reserve_tests {
             train_ticks,
             train_ticks.saturating_mul(2).saturating_sub(1),
         );
-        let reservations = ProducerLaneReservations::from_jobs(&resources, [current, future])
-            .expect("the exact two-job lane is valid");
+        let reservations = ProducerLaneReservations::from_jobs(&resources, [current, future]);
 
         assert_eq!(reservations.current_jobs(), &[current]);
         assert_eq!(reservations.jobs(), &[future]);

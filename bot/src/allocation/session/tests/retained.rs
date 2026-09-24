@@ -35,7 +35,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
             LiftProducerFunding::new(0, UnitKind::Skyhook.stats().cost),
         )]);
         let active = lift.active_production_obligation().unwrap();
-        let production = active_lift_production_obligation(&active).unwrap();
+        let production = active_lift_production_obligation(&active);
         let builder = UnitId(200);
         observation.my_units.push(owned_unit(
             builder.0,
@@ -67,7 +67,7 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let foundry = policy
             .validated_foundry_obligation(&observation, &resources, true, cost)
             .unwrap();
-        let protected = saved_foundry_obligation(foundry).unwrap();
+        let protected = saved_foundry_obligation(foundry);
         let mut proof = CrossDomainAllocation::new(&resources, operation.deadline, 12).unwrap();
         proof.import(protected.clone());
         proof.import(production.clone());
@@ -89,8 +89,6 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
             coordinator_failure: None,
             active_connected: None,
             active_lift: Some(active.clone()),
-            invalid_active_connected: false,
-            invalid_active_lift: false,
             retained_air_claims: None,
             island_preparation: None,
         };
@@ -206,7 +204,7 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     )]);
     let members = lift.operation().unwrap().payload.clone();
     let active = lift.active_production_obligation().unwrap();
-    let production = active_lift_production_obligation(&active).unwrap();
+    let production = active_lift_production_obligation(&active);
     let protected = imported_obligation(
         ObligationClass::PersistentPlan,
         0,
@@ -229,8 +227,6 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
         coordinator_failure: None,
         active_connected: None,
         active_lift: Some(active),
-        invalid_active_connected: false,
-        invalid_active_lift: false,
         retained_air_claims: None,
         island_preparation: None,
     };
@@ -481,8 +477,7 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         newer_key,
         ClaimBundle::new(0, vec![], vec![], vec![], vec![], vec![job.clone(), job]).unwrap(),
     );
-    let active_import = active_connected_obligation(&active)
-        .expect("the older connected obligation adapts exactly");
+    let active_import = active_connected_obligation(&active);
     let active_owner = active_import.owner();
     let mut proof = CrossDomainAllocation::new(&resources, active.deadline(), 12)
         .expect("the fixture horizon is valid");
@@ -506,8 +501,6 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
         coordinator_failure: None,
         active_connected: Some(active.clone()),
         active_lift: None,
-        invalid_active_connected: false,
-        invalid_active_lift: false,
         retained_air_claims: None,
         island_preparation: None,
     };
@@ -670,10 +663,7 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
 
     let mut prepared = prepared(&observation, None);
     prepared.resources = resources;
-    prepared.obligations = vec![
-        saved_foundry_obligation(saved)
-            .expect("the ready saved Foundry has exact mandatory claims"),
-    ];
+    prepared.obligations = vec![saved_foundry_obligation(saved)];
     prepared.saved_foundry = Some(saved);
     prepared.standing_force = StandingForcePreparation::Unconditional(vec![standing]);
     prepared.allocation_horizon = forecast_deadline.max(standing_ready_before);
@@ -766,8 +756,7 @@ fn funding_blocked_saved_foundry_without_capital_still_commits() {
 
     let mut prepared = prepared(&observation, None);
     prepared.resources = resources;
-    prepared.obligations =
-        vec![saved_foundry_obligation(saved).expect("the blocked saved Foundry has exact claims")];
+    prepared.obligations = vec![saved_foundry_obligation(saved)];
     prepared.saved_foundry = Some(saved);
     prepared.allocation_horizon = observation
         .tick

@@ -5883,8 +5883,7 @@ mod tests {
                 ready_at: timing.ready_at,
                 ready_before: deadline,
             }],
-        )
-        .expect("the exact future lift schedule overlays the raw observation");
+        );
         let brain = foundry_competition_brain(&scenario);
         let profile = *brain.profile();
         let mut planner = StrategicPlanner::new();
@@ -5984,8 +5983,7 @@ mod tests {
                 ready_at: timing.ready_at,
                 ready_before: deadline,
             }],
-        )
-        .expect("the exact future lift schedule overlays the raw observation");
+        );
         let brain = foundry_competition_brain(&scenario);
         let profile = *brain.profile();
         let mut planner = StrategicPlanner::new();

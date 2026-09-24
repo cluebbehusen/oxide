@@ -3628,8 +3628,7 @@ mod tests {
                 ready_at,
                 ready_before: ready_at + 1,
             }],
-        )
-        .expect("the accepted test schedule matches its resource projection");
+        );
         let before = obs.my_queues.clone();
 
         let mut planner = LiftPlanner::new();
@@ -3729,8 +3728,7 @@ mod tests {
                     ready_before: second_ready.saturating_add(1),
                 },
             ],
-        )
-        .expect("the accepted current prefix matches the empty lane");
+        );
 
         let mut planner = LiftPlanner::new();
         let decision = planner.think_with_admission_and_producer_lanes(

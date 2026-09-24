@@ -3215,10 +3215,7 @@ mod tests {
         let resources = ResourceSnapshot::from_observation(&obs);
         let mut allocation = CrossDomainAllocation::new(&resources, deadline, 12)
             .expect("the two producer lanes have a valid bounded forecast");
-        allocation.offer(
-            connected_investment_proposal(connected)
-                .expect("the connected package has exact claims"),
-        );
+        allocation.offer(connected_investment_proposal(connected));
         for proposal in standing_force_investment_proposals(lancers)
             .expect("the route-local standing alternatives have exact claims")
         {
