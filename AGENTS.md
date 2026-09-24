@@ -68,6 +68,11 @@ state on every run and platform.**
 - Player saves restore validated session checkpoints without executing history.
   Replays retain world origins and commands. Tick `N` is the state before
   commands stamped `N` execute; restoration never adds a hidden mutation.
+- Controller checkpoints store only memory that cannot be rebuilt. Restore
+  derives the profile, briefings, and caches from the session's scenario, which
+  the snapshot binding ties to the world. Controller validation rejects state
+  that could panic or cause unbounded work; a forged value that only changes
+  play is accepted, so do not store derived data to cross-check it.
 - `FogView` is the canonical player-knowledge surface. Omniscient QA views must
   never feed a bot or player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.

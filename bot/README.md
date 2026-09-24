@@ -31,17 +31,20 @@ Commands are gathered in canonical seat order before `State::tick`. This crate
 adds no threads and no wall-clock decisions.
 
 `SeatBot::checkpoint` captures controller memory and unfinished planning by
-borrowing the seat. Restoration checks a separately versioned CBOR payload
-against the scenario, configuration, and world boundary. Decision memory and
-budgeted search progress survive; the resolved profile, authored and oriented
-briefings, observational query caches, public-map navigation caches, and policy
-dials rebuild from the scenario configuration. The payload is an internal
-same-version continuation format. It remains at revision 1 while the save system
-is unpublished; no legacy layout migration is provided. It never enters
-authoritative `State` or its hash. Allocation validates exact owner updates
-before applying any. Observation, learning, and accepted operation maintenance
-survive unrelated rejection; rejected proposals acquire no members or
-production. No planner snapshot is restored.
+borrowing the seat. Restoration decodes a separately versioned, canonical CBOR
+payload and checks its seat, map dimensions, and orientation against the
+session. Decision memory and budgeted search progress survive; the resolved
+profile, authored and oriented briefings, observational query caches, public-map
+navigation caches, and policy dials rebuild from the session's scenario, which
+the session snapshot binding ties to the world. Owner validators reject only
+state that could panic or cause unbounded work. A forged value that changes play
+but not safety is accepted. The payload is an internal same-version continuation
+format. It remains at revision 1 while the save system is unpublished; no legacy
+layout migration is provided. It never enters authoritative `State` or its hash.
+Allocation validates exact owner updates before applying any. Observation,
+learning, and accepted operation maintenance survive unrelated rejection;
+rejected proposals acquire no members or production. No planner snapshot is
+restored.
 
 Experience has one owner; connected-target ranking borrows that history.
 Decision trace receipts are not persisted. Follow-through watches require their
