@@ -870,27 +870,25 @@ mod tests {
             .construction
             .expect("Foundries are constructible")
             .cost;
-        policy
-            .prepare_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    TilePos::new(8, 14),
-                    UnitId(4),
-                    0,
-                    foundry_cost,
-                    0,
-                    obs.tick.saturating_add(12),
-                    FoundryOpportunityCase::fixture(
-                        FoundryUrgency::Timely,
-                        FoundryConfidence::Supported,
-                        FoundryStrategicValue::Material,
-                        FoundryTimeToImpact::Near,
-                        FoundryExecutionSafety::Secure,
-                    ),
+        policy.commit_adjudicated_foundry(
+            FreshFoundryProposal::fixture(
+                TilePos::new(8, 14),
+                UnitId(4),
+                0,
+                foundry_cost,
+                0,
+                obs.tick.saturating_add(12),
+                FoundryOpportunityCase::fixture(
+                    FoundryUrgency::Timely,
+                    FoundryConfidence::Supported,
+                    FoundryStrategicValue::Material,
+                    FoundryTimeToImpact::Near,
+                    FoundryExecutionSafety::Secure,
                 ),
-                obs.tick,
-            )
-            .expect("the fixture installs one saved Foundry builder")
-            .apply(&mut policy, &mut Vec::new());
+            ),
+            obs.tick,
+            &mut Vec::new(),
+        );
 
         let resources = ResourceSnapshot::from_observation(&obs);
         let profile = low_fortification_profile();

@@ -2690,8 +2690,6 @@ pub enum AllocationCoordinatorStageTrace {
     SavedFoundryDispatch,
     /// A selected connected payload could not be installed into its domain planner.
     ConnectedProposalCommit,
-    /// A selected Foundry payload could not be installed into its domain planner.
-    FoundryProposalCommit,
 }
 
 /// One typed failure outside the allocator's portfolio search.
@@ -2731,8 +2729,6 @@ pub enum AllocationCoordinatorFailureReasonTrace {
     },
     /// A retained payload no longer matched the exact plan it was meant to dispatch.
     ExactDispatchRejected,
-    /// Another saved Foundry appeared after proposal derivation.
-    ExistingFoundryCommitment,
 }
 
 impl From<&CoordinatorInputError> for AllocationCoordinatorFailureReasonTrace {

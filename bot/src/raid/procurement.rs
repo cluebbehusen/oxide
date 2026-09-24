@@ -500,16 +500,6 @@ impl RaidPlanner {
         briefing: &PublicMapBriefing,
         orientation: Orientation,
     ) -> Option<RaidProcurementCommit> {
-        if self.active.is_some()
-            || request.observed_at != obs.tick
-            || request.deadline <= obs.tick
-            || request.missing > RAID_GROUP_SIZE
-            || self.preparation.as_ref().is_some_and(|prior| {
-                prior.objective != request.objective || prior.deadline != request.deadline
-            })
-        {
-            return None;
-        }
         let owner = ClaimOwner::Proposal(ProposalKey::StandingForce(
             crate::allocation::StandingForceKey {
                 kind: UnitKind::Scuttler,

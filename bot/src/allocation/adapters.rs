@@ -746,16 +746,13 @@ impl DomainAllocationResult {
             match (key, payload) {
                 (ProposalKey::FoundryExpansion(_), DomainPayload::Foundry(mut payload)) => {
                     debug_assert!(payloads.foundry.is_none());
-                    assert!(
-                        payload.rebind_funding(
-                            claims.current_scrap(),
-                            claims
-                                .forecast_scrap()
-                                .iter()
-                                .map(|claim| claim.amount)
-                                .fold(0, u32::saturating_add),
-                        ),
-                        "allocation preserves a Foundry proposal's exact total capital"
+                    payload.rebind_funding(
+                        claims.current_scrap(),
+                        claims
+                            .forecast_scrap()
+                            .iter()
+                            .map(|claim| claim.amount)
+                            .fold(0, u32::saturating_add),
                     );
                     payloads.foundry = Some(payload);
                 }

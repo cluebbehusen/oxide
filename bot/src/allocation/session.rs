@@ -1620,8 +1620,8 @@ impl<'a> AllocationSession<'a> {
                     .current_scrap;
                 (saved, current)
             });
-        self.bind_saved_foundry_funding(prepared, &settlement)?;
-        self.dispatch_ready_saved_foundry(prepared, &mut effects)?;
+        bind_saved_foundry_funding(prepared, &settlement);
+        dispatch_ready_saved_foundry(prepared, &mut effects);
         let lift = self.prepare_lift_commit(prepared, &producer_schedule)?;
         let mut payloads = settlement.into_payloads();
         let connected = payloads
@@ -1658,69 +1658,6 @@ impl<'a> AllocationSession<'a> {
         {
             return Err(rejected());
         }
-        let foundry = payloads
-            .take_foundry()
-            .map(|proposal| {
-                self.participants
-                    .policy
-                    .prepare_adjudicated_foundry(proposal, self.context.observation.tick)
-                    .map_err(|_| {
-                        (
-                            AllocationCoordinatorStageTrace::FoundryProposalCommit,
-                            AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment,
-                        )
-                    })
-            })
-            .transpose()?;
-        let recon_funding = producer_schedule
-            .iter()
-            .filter_map(|job| match job.owner {
-                ClaimOwner::Obligation {
-                    key: ObligationKey::Reconnaissance(key),
-                    ..
-                } => Some(
-                    self.participants
-                        .policy
-                        .prepare_reconnaissance_funding(key, *job, self.context.observation)
-                        .ok_or_else(rejected),
-                ),
-                _ => None,
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let recon = payloads
-            .take_reconnaissance()
-            .map(|proposal| {
-                let funding = producer_schedule
-                    .iter()
-                    .find(|job| {
-                        job.owner
-                            == ClaimOwner::Proposal(ProposalKey::Reconnaissance(proposal.key()))
-                    })
-                    .copied();
-                self.participants
-                    .policy
-                    .prepare_reconnaissance_commit(proposal, funding, self.context.observation)
-                    .ok_or_else(rejected)
-            })
-            .transpose()?;
-        let deployment = payloads
-            .take_support_deployment()
-            .map(|proposal| {
-                self.participants
-                    .policy
-                    .prepare_support_deployment(proposal, self.context.observation)
-                    .ok_or_else(rejected)
-            })
-            .transpose()?;
-        let repair = payloads
-            .take_support()
-            .map(|proposal| {
-                self.participants
-                    .policy
-                    .prepare_repair_assignment(proposal, self.context.observation)
-                    .ok_or_else(rejected)
-            })
-            .transpose()?;
         let standing_force = payloads.take_standing_force();
         let raid = standing_force
             .as_ref()
@@ -1751,15 +1688,6 @@ impl<'a> AllocationSession<'a> {
                         self.context.public_map,
                         self.context.orientation,
                     )
-                    .ok_or_else(rejected)
-            })
-            .transpose()?;
-        let relief = payloads
-            .take_support_relief()
-            .map(|proposal| {
-                self.participants
-                    .team
-                    .prepare_relief_commit(proposal)
                     .ok_or_else(rejected)
             })
             .transpose()?;
@@ -1798,7 +1726,7 @@ impl<'a> AllocationSession<'a> {
         self.participants
             .strategy
             .record_connected_purchases(&producer_schedule, self.context.observation.tick);
-        if let Some(commit) = foundry {
+        if let Some(foundry) = payloads.take_foundry() {
             if prepared
                 .connected_accepted_at
                 .is_some_and(|accepted_at| accepted_at <= self.context.observation.tick)
@@ -1814,13 +1742,38 @@ impl<'a> AllocationSession<'a> {
                     .prior_operation_spendable
                     .max(prepared.active_lift_spendable);
             }
-            commit.apply(self.participants.policy, &mut effects.fresh_foundry_intents);
+            self.participants.policy.commit_adjudicated_foundry(
+                foundry,
+                self.context.observation.tick,
+                &mut effects.fresh_foundry_intents,
+            );
         }
-        for commit in recon_funding {
-            commit.apply(self.participants.policy);
+        for job in &producer_schedule {
+            if let ClaimOwner::Obligation {
+                key: ObligationKey::Reconnaissance(key),
+                ..
+            } = job.owner
+            {
+                self.participants.policy.bind_reconnaissance_funding(
+                    key,
+                    *job,
+                    self.context.observation,
+                );
+            }
         }
-        if let Some(commit) = recon {
-            commit.apply(self.participants.policy, &mut effects.fresh_economy_intents);
+        if let Some(proposal) = payloads.take_reconnaissance() {
+            let funding = producer_schedule
+                .iter()
+                .find(|job| {
+                    job.owner == ClaimOwner::Proposal(ProposalKey::Reconnaissance(proposal.key()))
+                })
+                .copied();
+            self.participants.policy.commit_reconnaissance(
+                proposal,
+                funding,
+                self.context.observation,
+                &mut effects.fresh_economy_intents,
+            );
         }
         if let Some(economy) = payloads.take_economy() {
             let current = economy.current_capital;
@@ -1830,16 +1783,20 @@ impl<'a> AllocationSession<'a> {
                 &mut effects.fresh_economy_intents,
             );
         }
-        if let Some(commit) = deployment {
-            commit.apply(self.participants.policy, &mut effects.fresh_economy_intents);
+        if let Some(deployment) = payloads.take_support_deployment() {
+            self.participants
+                .policy
+                .commit_support_deployment(deployment, &mut effects.fresh_economy_intents);
         }
         if let Some(defense) = payloads.take_defense() {
             self.participants
                 .policy
                 .commit_adjudicated_defense(defense, &mut effects.fresh_defense_intents);
         }
-        if let Some(commit) = repair {
-            commit.apply(self.participants.policy, &mut effects.fresh_economy_intents);
+        if let Some(repair) = payloads.take_support() {
+            self.participants
+                .policy
+                .commit_repair_assignment(repair, &mut effects.fresh_economy_intents);
         }
         if let Some(standing_force) = standing_force
             && standing_force.accumulation().is_some()
@@ -1868,8 +1825,8 @@ impl<'a> AllocationSession<'a> {
         if let Some(bay) = payloads.take_support_construction() {
             effects.fresh_economy_intents.push(bay.intent());
         }
-        if let Some(commit) = relief {
-            prepared.team_decision = commit.apply(self.participants.team);
+        if let Some(relief) = payloads.take_support_relief() {
+            prepared.team_decision = relief.apply(self.participants.team);
         }
         self.participants
             .policy
@@ -1954,59 +1911,6 @@ impl<'a> AllocationSession<'a> {
                     &mut effects.fresh_emergency_defense_intents,
                 );
         }
-    }
-
-    fn bind_saved_foundry_funding(
-        &self,
-        prepared: &mut PreparedAllocation,
-        settlement: &CrossDomainSettlement,
-    ) -> Result<(), CoordinatorFailure> {
-        let Some(saved) = prepared.saved_foundry else {
-            return Ok(());
-        };
-        let owner = ClaimOwner::Obligation {
-            class: ObligationClass::PersistentPlan,
-            accepted_at: saved.accepted_at(),
-            key: ObligationKey::SavedFoundry {
-                anchor: saved.anchor(),
-            },
-        };
-        prepared.saved_foundry = match settlement.capital_assignment(owner) {
-            Some(assignment) => {
-                saved.with_allocated_funding(assignment.current_scrap, assignment.forecast_scrap)
-            }
-            // Only deferrable capital is reattributed. A payable plan claims its
-            // current scrap directly, and a blocked plan with no remaining
-            // capital claims none.
-            None => Some(saved),
-        };
-        if prepared.saved_foundry.is_none() {
-            return Err((
-                AllocationCoordinatorStageTrace::SavedFoundryDispatch,
-                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-            ));
-        }
-        Ok(())
-    }
-
-    fn dispatch_ready_saved_foundry(
-        &mut self,
-        prepared: &PreparedAllocation,
-        effects: &mut CommitEffects,
-    ) -> Result<(), CoordinatorFailure> {
-        if let Some(saved) = prepared.saved_foundry
-            && saved.ready_to_build()
-            && !self
-                .participants
-                .policy
-                .dispatch_validated_foundry(saved, &mut effects.fresh_foundry_intents)
-        {
-            return Err((
-                AllocationCoordinatorStageTrace::SavedFoundryDispatch,
-                AllocationCoordinatorFailureReasonTrace::ExactDispatchRejected,
-            ));
-        }
-        Ok(())
     }
 
     /// Applies selected updates only after all checks; observed ownership survives rejection.
@@ -3315,6 +3219,37 @@ pub(crate) fn test_allocate_policy(
         );
     }
     outcome
+}
+
+fn bind_saved_foundry_funding(
+    prepared: &mut PreparedAllocation,
+    settlement: &CrossDomainSettlement,
+) {
+    let Some(saved) = prepared.saved_foundry else {
+        return;
+    };
+    let owner = ClaimOwner::Obligation {
+        class: ObligationClass::PersistentPlan,
+        accepted_at: saved.accepted_at(),
+        key: ObligationKey::SavedFoundry {
+            anchor: saved.anchor(),
+        },
+    };
+    // Only deferrable capital is reattributed. A payable plan claims its
+    // current scrap directly, and a blocked plan with no remaining capital
+    // claims none.
+    if let Some(assignment) = settlement.capital_assignment(owner) {
+        prepared.saved_foundry =
+            Some(saved.with_allocated_funding(assignment.current_scrap, assignment.forecast_scrap));
+    }
+}
+
+fn dispatch_ready_saved_foundry(prepared: &PreparedAllocation, effects: &mut CommitEffects) {
+    if let Some(saved) = prepared.saved_foundry
+        && saved.ready_to_build()
+    {
+        UtilityPolicy::dispatch_validated_foundry(saved, &mut effects.fresh_foundry_intents);
+    }
 }
 
 #[cfg(test)]
@@ -4993,177 +4928,6 @@ mod tests {
     }
 
     #[test]
-    fn late_foundry_rejection_precedes_connected_commit() {
-        use crate::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
-            OutcomeReason,
-        };
-        let mut observation = connected_observation(1_200, 10_000);
-        let builder = UnitId(200);
-        observation.my_units.push(owned_unit(
-            builder.0,
-            UnitKind::Harvester,
-            TilePos::new(12, 15),
-        ));
-        let setup = SessionProfile::new(prime_profile());
-        let briefing = connected_briefing(&observation);
-        let intelligence = StrategicIntelligence::new();
-        let connected = current_connected_proposal(&observation);
-        let foundry = FreshFoundryProposal::fixture(
-            TilePos::new(15, 14),
-            builder,
-            BuildingKind::Foundry
-                .base_stats()
-                .construction
-                .unwrap()
-                .cost,
-            0,
-            0,
-            observation.tick + 1_200,
-            foundry_case(),
-        );
-        let maintenance = vec![Intent::StopUnits {
-            units: vec![builder],
-        }];
-
-        // A stale prepared quote can conflict with retained ownership even
-        // though its resource claims settle. Exercise that internal boundary.
-        for restore in [false, true] {
-            let mut policy = UtilityPolicy::new();
-            policy
-                .prepare_adjudicated_foundry(foundry.clone(), observation.tick)
-                .unwrap()
-                .apply(&mut policy, &mut Vec::new());
-            policy.planning = crate::planning::PlanningWork::with_allowance(1);
-            let blocked = crate::navigation::public_fields::BlockedGroundLayout::from_predicate(
-                &briefing,
-                |_| false,
-            );
-            assert_eq!(
-                policy.planning.field(
-                    QueryPurpose::NavigationTest,
-                    observation.tick,
-                    &briefing,
-                    &blocked,
-                    [TilePos::new(1, 1)],
-                ),
-                crate::planning::Progress::Deferred
-            );
-            let expected_policy = policy.clone();
-            let original_strategy = StrategicPlanner::new();
-            let mut strategy = original_strategy.clone();
-            let mut team = TeamReliefPlanner::new();
-            let mut lifts = LiftPlanner::new();
-            let mut raids = RaidPlanner::new();
-
-            let journal = &mut raids.outcomes;
-            journal.watch(
-                &observation,
-                EpisodeId {
-                    owner: EpisodeOwner::Raid,
-                    serial: 1,
-                },
-                ExperienceKey {
-                    doctrine: Doctrine::Pressure,
-                    x: 3,
-                    y: 3,
-                    subject: ExperienceSubject::Building(Some(oxide_sim::BuildingId(4))),
-                },
-                &[],
-                1,
-            );
-            journal.finish(
-                &observation,
-                Outcome::Aborted,
-                OutcomeReason::UnsafeApproach,
-                750,
-                false,
-            );
-            let observed_raids = raids.clone();
-            let mut input = prepared(&observation, None);
-            input.maintenance_intents = maintenance.clone();
-            let mut allocation = CrossDomainAllocation::new(
-                &input.resources,
-                observation.tick + 10_000,
-                setup.dials.cadence,
-            )
-            .unwrap();
-            allocation.offer(connected_investment_proposal(connected.clone()).unwrap());
-            allocation.offer(foundry_investment_proposal(foundry.clone()).unwrap());
-            let settlement = allocation
-                .resolve(AllocationPersonality::default(), None)
-                .unwrap();
-            assert!(!settlement.producer_schedule().is_empty());
-            let mut trace = AllocationTrace::default();
-            let mut session = AllocationSession::new(
-                setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
-                AllocationParticipants {
-                    policy: &mut policy,
-                    strategy: &mut strategy,
-                    lifts: &mut lifts,
-                    team: &mut team,
-                    raids: &mut raids,
-                },
-                advanced(),
-                Some(&mut trace),
-            );
-            if restore {
-                let outcome = session.finish_allocation(ResolvedAllocation {
-                    prepared: input,
-                    settlement: Ok(settlement),
-                });
-                assert!(!outcome.allocation_ok);
-                assert!(!outcome.accepted_connected);
-                assert_eq!(outcome.maintenance_intents, maintenance);
-                assert!(outcome.allocated_producer_intents.is_empty());
-                assert!(outcome.fresh_foundry_intents.is_empty());
-                assert!(outcome.fresh_economy_intents.is_empty());
-                assert!(outcome.fresh_defense_intents.is_empty());
-                assert!(outcome.fresh_emergency_defense_intents.is_empty());
-                assert_eq!(outcome.team_decision, StrategicDecision::default());
-                assert_eq!(outcome.raid_decision, StrategicDecision::default());
-                assert_eq!(
-                    outcome.producer_lane_reservations,
-                    ProducerLaneReservations::default()
-                );
-                assert_eq!(outcome.budget.utility_spendable, 0);
-                assert_eq!(outcome.budget.residual_scrap, 0);
-                assert_eq!(policy.state, expected_policy.state);
-                assert_eq!(policy.planning, expected_policy.planning);
-                assert_eq!(strategy, original_strategy);
-                assert_eq!(raids, observed_raids);
-                let failure = trace.coordinator_failure.unwrap();
-                assert_eq!(
-                    failure.stage,
-                    AllocationCoordinatorStageTrace::FoundryProposalCommit
-                );
-                assert_eq!(
-                    failure.reason,
-                    AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment
-                );
-            } else {
-                let Err(failure) = session.commit_settlement(&mut input, settlement) else {
-                    panic!("the stale Foundry quote must reject before connected commitment");
-                };
-                assert!(
-                    session
-                        .participants
-                        .strategy
-                        .connected_package_diagnostics()
-                        .is_none()
-                );
-                assert_eq!(
-                    failure,
-                    (
-                        AllocationCoordinatorStageTrace::FoundryProposalCommit,
-                        AllocationCoordinatorFailureReasonTrace::ExistingFoundryCommitment,
-                    )
-                );
-            }
-        }
-    }
-
-    #[test]
     fn rejected_allocation_retains_policy_evidence_and_unfinished_search() {
         let mut observation = observation();
         observation
@@ -5283,21 +5047,19 @@ mod tests {
             .expect("Foundries are constructible")
             .cost;
         let mut policy = UtilityPolicy::new();
-        policy
-            .prepare_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    TilePos::new(8, 8),
-                    UnitId(777),
-                    foundry_cost,
-                    0,
-                    0,
-                    observation.tick,
-                    foundry_case(),
-                ),
+        policy.commit_adjudicated_foundry(
+            FreshFoundryProposal::fixture(
+                TilePos::new(8, 8),
+                UnitId(777),
+                foundry_cost,
+                0,
+                0,
                 observation.tick,
-            )
-            .expect("the fixture installs one exact saved Foundry")
-            .apply(&mut policy, &mut Vec::new());
+                foundry_case(),
+            ),
+            observation.tick,
+            &mut Vec::new(),
+        );
         let resources = ResourceSnapshot::from_observation(&observation);
         let observed_context = EconomicInvestmentContext {
             evidence: Default::default(),

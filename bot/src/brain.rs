@@ -2123,10 +2123,7 @@ mod tests {
             relief.reservations().is_empty(),
             "an unaccepted proposal owns no units"
         );
-        let accepted = relief
-            .prepare_relief_commit(proposal)
-            .unwrap()
-            .apply(&mut relief);
+        let accepted = proposal.apply(&mut relief);
         assert!(accepted.intents.is_empty());
         assert_eq!(
             relief.operation().unwrap().phase,

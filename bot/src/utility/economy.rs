@@ -903,10 +903,7 @@ mod tests {
             ),
             "the focused fixture should expose one exact ready Foundry investment",
         );
-        policy
-            .prepare_adjudicated_foundry(proposal, obs.tick)
-            .expect("the focused fixture has no prior expansion obligation")
-            .apply(policy, &mut intents);
+        policy.commit_adjudicated_foundry(proposal, obs.tick, &mut intents);
         intents
     }
 
@@ -1883,10 +1880,7 @@ mod tests {
             "the project should expose a ready exact Foundry investment",
         );
         let mut intents = Vec::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, fixture.obs.tick)
-            .expect("the fixture has no prior expansion obligation")
-            .apply(&mut policy, &mut intents);
+        policy.commit_adjudicated_foundry(proposal, fixture.obs.tick, &mut intents);
         intents = policy.think_with_intelligence(
             &fixture.dials,
             &fixture.obs,
@@ -2369,10 +2363,7 @@ mod tests {
             "bounded future income should make the exact safe investment ready",
         );
         let mut intents = Vec::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, observation.tick)
-            .expect("there is no prior expansion obligation")
-            .apply(&mut policy, &mut intents);
+        policy.commit_adjudicated_foundry(proposal, observation.tick, &mut intents);
         let accepted = policy
             .state
             .foundry_saving
@@ -2486,10 +2477,7 @@ mod tests {
             AdjudicatedFoundryCommit::Save
         );
         let mut policy = UtilityPolicy::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, accepted_observation.tick)
-            .expect("there is no prior expansion obligation")
-            .apply(&mut policy, &mut Vec::new());
+        policy.commit_adjudicated_foundry(proposal, accepted_observation.tick, &mut Vec::new());
         assert_eq!(
             policy
                 .state
@@ -2643,10 +2631,7 @@ mod tests {
         let expected_anchor = proposal.anchor();
         let expected_builder = proposal.builder();
         let mut prelude = Vec::new();
-        policy
-            .prepare_adjudicated_foundry(proposal, fixture.obs.tick)
-            .expect("there is no prior expansion obligation")
-            .apply(&mut policy, &mut prelude);
+        policy.commit_adjudicated_foundry(proposal, fixture.obs.tick, &mut prelude);
         policy.admit_test_repair(
             &fixture.obs,
             &fixture.public_map,

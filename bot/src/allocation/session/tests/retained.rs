@@ -57,21 +57,19 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         observation.scrap = cost;
         let resources = ResourceSnapshot::from_observation(&observation);
         let mut policy = UtilityPolicy::new();
-        policy
-            .prepare_adjudicated_foundry(
-                FreshFoundryProposal::fixture(
-                    TilePos::new(10, 22),
-                    builder,
-                    cost,
-                    0,
-                    0,
-                    operation.deadline,
-                    foundry_case(),
-                ),
-                foundry_accepted_at,
-            )
-            .unwrap()
-            .apply(&mut policy, &mut Vec::new());
+        policy.commit_adjudicated_foundry(
+            FreshFoundryProposal::fixture(
+                TilePos::new(10, 22),
+                builder,
+                cost,
+                0,
+                0,
+                operation.deadline,
+                foundry_case(),
+            ),
+            foundry_accepted_at,
+            &mut Vec::new(),
+        );
         let foundry = policy
             .validated_foundry_obligation(&observation, &resources, true, cost)
             .unwrap();
@@ -438,21 +436,19 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
         .cost;
     let foundry_anchor = TilePos::new(15, 14);
     let mut policy = UtilityPolicy::new();
-    policy
-        .prepare_adjudicated_foundry(
-            FreshFoundryProposal::fixture(
-                foundry_anchor,
-                builder,
-                foundry_cost,
-                0,
-                0,
-                fixed_deadline,
-                foundry_case(),
-            ),
-            observation.tick,
-        )
-        .expect("the fixture installs one exact saved Foundry")
-        .apply(&mut policy, &mut Vec::new());
+    policy.commit_adjudicated_foundry(
+        FreshFoundryProposal::fixture(
+            foundry_anchor,
+            builder,
+            foundry_cost,
+            0,
+            0,
+            fixed_deadline,
+            foundry_case(),
+        ),
+        observation.tick,
+        &mut Vec::new(),
+    );
 
     observation.tick = observation.tick.saturating_add(12);
     let mut strategy = planner;
@@ -636,21 +632,19 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     let mut policy = UtilityPolicy::new();
     policy.planning = crate::planning::PlanningWork::with_allowance(allowance);
     let mut initial_intents = Vec::new();
-    policy
-        .prepare_adjudicated_foundry(
-            FreshFoundryProposal::fixture(
-                foundry_anchor,
-                builder,
-                0,
-                foundry_cost,
-                0,
-                forecast_deadline,
-                foundry_case(),
-            ),
-            observation.tick,
-        )
-        .expect("the forecast-backed fixture installs one exact saved Foundry")
-        .apply(&mut policy, &mut initial_intents);
+    policy.commit_adjudicated_foundry(
+        FreshFoundryProposal::fixture(
+            foundry_anchor,
+            builder,
+            0,
+            foundry_cost,
+            0,
+            forecast_deadline,
+            foundry_case(),
+        ),
+        observation.tick,
+        &mut initial_intents,
+    );
     assert!(
         initial_intents.is_empty(),
         "forecast capital cannot dispatch the Foundry at admission"
@@ -755,21 +749,19 @@ fn funding_blocked_saved_foundry_without_capital_still_commits() {
         .cost;
     let forecast_deadline = observation.tick.saturating_add(120);
     let mut policy = UtilityPolicy::new();
-    policy
-        .prepare_adjudicated_foundry(
-            FreshFoundryProposal::fixture(
-                foundry_anchor,
-                builder,
-                0,
-                foundry_cost,
-                0,
-                forecast_deadline,
-                foundry_case(),
-            ),
-            observation.tick,
-        )
-        .expect("the forecast-backed fixture installs one exact saved Foundry")
-        .apply(&mut policy, &mut Vec::new());
+    policy.commit_adjudicated_foundry(
+        FreshFoundryProposal::fixture(
+            foundry_anchor,
+            builder,
+            0,
+            foundry_cost,
+            0,
+            forecast_deadline,
+            foundry_case(),
+        ),
+        observation.tick,
+        &mut Vec::new(),
+    );
 
     observation.tick = forecast_deadline.saturating_add(12);
     let resources = ResourceSnapshot::from_observation(&observation);
