@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GroundMissionInputs<'a> {
-    pub(crate) missions: &'a [(ArmyId, ArmyMission)],
     pub(crate) unavailable: &'a [UnitId],
     pub(crate) enlisted: &'a [UnitId],
     pub(crate) tuning: DifficultyTuning,
@@ -28,15 +27,6 @@ struct MissionAssignments<'a> {
     departing_members: BTreeSet<UnitId>,
     fresh: usize,
     routes: Option<crate::navigation::commands::RouteProjection<'a>>,
-}
-
-impl<'a> GroundMissionInputs<'a> {
-    fn prior(self, id: ArmyId) -> Option<&'a ArmyMission> {
-        self.missions
-            .iter()
-            .find(|(army, _)| *army == id)
-            .map(|(_, mission)| mission)
-    }
 }
 
 struct MissionArmy<'a> {
@@ -157,22 +147,21 @@ impl UtilityPolicy {
         context: MissionContext<'a>,
         intents: &mut Vec<Intent>,
     ) {
+        let mut assignments = MissionAssignments {
+            away_from_home: armies
+                .iter()
+                .filter_map(|army| army.mission.as_ref().map(|mission| (army.id, mission)))
+                .filter(|(_, mission)| {
+                    mission.goal.chebyshev(context.home) > 12 && obs.tick < mission.deadline
+                })
+                .map(|(army, _)| army)
+                .collect(),
+            ..Default::default()
+        };
         let armies: Vec<_> = armies
             .iter()
             .filter_map(|army| MissionArmy::prepare(army, obs, context.inputs.unavailable))
             .collect();
-        let mut assignments = MissionAssignments {
-            away_from_home: context
-                .inputs
-                .missions
-                .iter()
-                .filter(|(_, mission)| {
-                    mission.goal.chebyshev(context.home) > 12 && obs.tick < mission.deadline
-                })
-                .map(|(army, _)| *army)
-                .collect(),
-            ..Default::default()
-        };
         self.service_retained_missions(obs, &armies, context, &mut assignments, intents);
         self.assign_defense_missions(obs, &armies, context, &mut assignments, intents);
         if context.mode.admit_voluntary_macro {
@@ -200,7 +189,7 @@ impl UtilityPolicy {
         let assessment = mode.evidence.battlefield;
         // Retained missions remain serviced when fresh attention is closed.
         for army in armies.iter().filter(|army| army.eligible(inputs)) {
-            let Some(mission) = inputs.prior(army.body.id) else {
+            let Some(mission) = army.body.mission.as_ref() else {
                 continue;
             };
             let lost_asset = match mission.purpose {
@@ -267,7 +256,7 @@ impl UtilityPolicy {
                 if self.army_reaches(
                     obs,
                     &mut assignments.routes,
-                    &army.body,
+                    &army.body.members,
                     goal,
                     mode.public_map,
                 ) {
@@ -350,7 +339,7 @@ impl UtilityPolicy {
                 .collect();
             candidates.sort_unstable_by_key(|army| {
                 (
-                    !inputs.prior(army.body.id).is_some_and(|mission| {
+                    !army.body.mission.as_ref().is_some_and(|mission| {
                         mission.purpose == ArmyPurpose::Defend(pressure.asset)
                     }),
                     army.center.manhattan(goal),
@@ -399,9 +388,10 @@ impl UtilityPolicy {
                 if strength.saturating_mul(2) < required.saturating_sub(coverage) {
                     continue;
                 }
-                let same = inputs
-                    .prior(army.body.id)
-                    .is_some_and(|mission| mission.purpose == ArmyPurpose::Defend(pressure.asset));
+                let same =
+                    army.body.mission.as_ref().is_some_and(|mission| {
+                        mission.purpose == ArmyPurpose::Defend(pressure.asset)
+                    });
                 if !same
                     && (!strategic_admission_tick(obs.tick)
                         || assignments.fresh >= inputs.tuning.attention_slots)
@@ -435,7 +425,7 @@ impl UtilityPolicy {
                 if !self.army_reaches(
                     obs,
                     &mut assignments.routes,
-                    &army.body,
+                    &army.body.members,
                     goal,
                     mode.public_map,
                 ) {
@@ -444,8 +434,10 @@ impl UtilityPolicy {
                 if !same
                     && goal.chebyshev(home) <= 12
                     && army.body.state == ArmyState::Staging
-                    && inputs
-                        .prior(army.body.id)
+                    && army
+                        .body
+                        .mission
+                        .as_ref()
                         .is_none_or(|mission| mission.purpose == ArmyPurpose::Reserve)
                     && army.body.members.len() >= minimum.saturating_mul(2)
                 {
@@ -582,18 +574,13 @@ impl UtilityPolicy {
                     })
                     .min_by_key(|unit| (unit.tile.chebyshev(pressure.anchor), unit.id))
                     .map_or(pressure.anchor, |unit| unit.tile);
-                let trial = Army {
-                    id: ArmyId(0),
-                    members: members.clone(),
-                    state: ArmyState::Staging,
-                    staging: pressure.anchor,
-                    target: None,
-                    focus: None,
-                    progress: None,
-                    issued: None,
-                    bounces: 0,
-                };
-                if !self.army_reaches(obs, &mut assignments.routes, &trial, goal, mode.public_map) {
+                if !self.army_reaches(
+                    obs,
+                    &mut assignments.routes,
+                    &members,
+                    goal,
+                    mode.public_map,
+                ) {
                     continue;
                 }
                 claimed.extend_from_slice(&members);
@@ -667,7 +654,7 @@ impl UtilityPolicy {
             if assignments.assigned.contains(&army.body.id) {
                 continue;
             }
-            if inputs.prior(army.body.id).is_some_and(|mission| {
+            if army.body.mission.as_ref().is_some_and(|mission| {
                 matches!(mission.purpose, ArmyPurpose::Defend(_)) && obs.tick < mission.deadline
             }) {
                 continue;
@@ -684,7 +671,7 @@ impl UtilityPolicy {
             let mut ranked = objectives.clone();
             ranked.sort_unstable_by_key(|building| objective_key(building, doctrine));
             for objective in &ranked {
-                let current = inputs.prior(army.body.id);
+                let current = army.body.mission.as_ref();
                 if current.is_some_and(|mission| {
                     matches!(mission.purpose, ArmyPurpose::Pressure(target) if target.matches(objective))
                         && obs.tick < mission.deadline
@@ -787,7 +774,7 @@ impl UtilityPolicy {
                     || !self.army_reaches(
                         obs,
                         &mut assignments.routes,
-                        &deploying,
+                        &deploying.members,
                         goal,
                         mode.public_map,
                     )
@@ -843,7 +830,7 @@ impl UtilityPolicy {
                 army.body.state == ArmyState::Staging
                     && army.body.target.is_none()
                     && !assignments.assigned.contains(&army.body.id)
-                    && inputs.prior(army.body.id).is_none_or(|mission| {
+                    && army.body.mission.as_ref().is_none_or(|mission| {
                         matches!(mission.purpose, ArmyPurpose::Reserve | ArmyPurpose::Recover)
                     })
             })
@@ -885,15 +872,17 @@ impl UtilityPolicy {
                     && source.body.target.is_none()
                     && !assignments.assigned.contains(&source.body.id)
                     && source.body.staging.chebyshev(rally) <= 2
-                    && inputs
-                        .prior(source.body.id)
+                    && source
+                        .body
+                        .mission
+                        .as_ref()
                         .is_none_or(|mission| mission.purpose == ArmyPurpose::Reserve)
             }) {
                 if source.body.members.iter().all(|id| !claimed.contains(id))
                     && self.army_reaches(
                         obs,
                         &mut assignments.routes,
-                        &source.body,
+                        &source.body.members,
                         rally,
                         mode.public_map,
                     )
@@ -911,18 +900,7 @@ impl UtilityPolicy {
             let mut group = members.clone();
             group.push(unit.id);
             group.sort_unstable();
-            let trial = Army {
-                id: ArmyId(0),
-                members: group.clone(),
-                state: ArmyState::Staging,
-                staging: rally,
-                target: None,
-                focus: None,
-                progress: None,
-                issued: None,
-                bounces: 0,
-            };
-            if self.army_reaches(obs, &mut assignments.routes, &trial, rally, mode.public_map) {
+            if self.army_reaches(obs, &mut assignments.routes, &group, rally, mode.public_map) {
                 members = group;
             }
         }
@@ -932,7 +910,7 @@ impl UtilityPolicy {
                 members,
                 staging: rally,
                 mission: staging_army
-                    .and_then(|army| inputs.prior(army.body.id))
+                    .and_then(|army| army.body.mission.as_ref())
                     .filter(|mission| {
                         mission.purpose == ArmyPurpose::Reserve
                             && mission.goal == rally

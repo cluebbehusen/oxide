@@ -264,18 +264,10 @@ impl Brain {
             mind.experience
                 .observe(&oriented, tuning.opponent_force_memory);
             self.policy.observe_work_experience(&oriented);
-            for journal in self.exec.ground_outcomes.values_mut() {
-                for mut report in std::mem::take(&mut journal.pending) {
-                    orientation.episode(&mut report);
-                    mind.experience.report(report);
-                }
+            for mut report in self.exec.take_ground_reports() {
+                orientation.episode(&mut report);
+                mind.experience.report(report);
             }
-            let live_armies: std::collections::BTreeSet<_> =
-                self.exec.armies().iter().map(|army| army.id).collect();
-            self.exec
-                .ground_outcomes
-                .retain(|id, _| live_armies.contains(id));
-            self.exec.missions.retain(|id, _| live_armies.contains(id));
             for report in std::mem::take(&mut self.policy.state.work_experience.pending) {
                 mind.experience.report(report);
             }
@@ -297,9 +289,9 @@ impl Brain {
                 recorder.trace_mut().experience = mind.experience.trace();
                 recorder.trace_mut().missions = self
                     .exec
-                    .missions
+                    .armies()
                     .iter()
-                    .map(|(id, mission)| (id.0, mission.clone()))
+                    .filter_map(|army| army.mission.clone().map(|mission| (army.id.0, mission)))
                     .collect();
             }
         }
@@ -436,18 +428,7 @@ impl Brain {
         ground_unavailable.extend(self.exec.muster_exclusions());
         ground_unavailable.sort_unstable();
         ground_unavailable.dedup();
-        let missions: Vec<_> = self
-            .exec
-            .missions
-            .iter()
-            .map(|(id, mission)| {
-                let mut mission = mission.clone();
-                orientation.mission(&mut mission);
-                (*id, mission)
-            })
-            .collect();
         let ground_inputs = super::utility::GroundMissionInputs {
-            missions: &missions,
             unavailable: &ground_unavailable,
             enlisted: &enlisted,
             tuning,
@@ -504,9 +485,7 @@ impl Brain {
             builder_lease,
         );
 
-        for journal in self.exec.ground_outcomes.values_mut() {
-            journal.link_handoff(&lifts.outcomes);
-        }
+        self.exec.link_ground_handoff(&lifts.outcomes);
 
         self.policy
             .record_dispatched_work(&oriented, orientation, &lowered);
@@ -2526,18 +2505,9 @@ mod tests {
 
         let mut obs = test_island_observation();
         let armies = [
+            Army::staging(ArmyId(1), vec![UnitId(1), UnitId(2)], TilePos::new(3, 3)),
             Army {
-                id: ArmyId(1),
-                members: vec![UnitId(1), UnitId(2)],
-                state: ArmyState::Staging,
-                staging: TilePos::new(3, 3),
-                target: None,
-                focus: None,
-                progress: None,
-                issued: None,
-                bounces: 0,
-            },
-            Army {
+                mission: None,
                 id: ArmyId(2),
                 members: vec![UnitId(3)],
                 state: ArmyState::Staging,
@@ -2549,6 +2519,7 @@ mod tests {
                 bounces: 0,
             },
             Army {
+                mission: None,
                 id: ArmyId(3),
                 members: vec![UnitId(5)],
                 state: ArmyState::Staging,
@@ -2560,6 +2531,7 @@ mod tests {
                 bounces: 0,
             },
             Army {
+                mission: None,
                 id: ArmyId(4),
                 members: vec![UnitId(6)],
                 state: ArmyState::Pushing,
@@ -7761,10 +7733,15 @@ mod tests {
                 .copied()
                 .filter(|unit| strategic_claims.binary_search(unit).is_err())
                 .collect();
-            let mission = brain
+            let staged = brain
                 .exec
-                .missions
-                .get(&army.id)
+                .armies()
+                .iter()
+                .find(|candidate| candidate.id == army.id)
+                .expect("the defending remainder remains tracked");
+            let mission = staged
+                .mission
+                .as_ref()
                 .expect("the unreserved body receives a defense responsibility");
             assert!(matches!(
                 mission.purpose,
@@ -7787,12 +7764,6 @@ mod tests {
                     "unreserved members must remain available for the visible emergency: {commands:?}"
                 );
             }
-            let staged = brain
-                .exec
-                .armies()
-                .iter()
-                .find(|candidate| candidate.id == army.id)
-                .expect("the defending remainder remains tracked");
             assert_eq!(staged.members, available, "think {think}");
             assert_eq!(staged.state, ArmyState::Pushing);
             assert_eq!(staged.target, Some(mission.goal));

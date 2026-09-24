@@ -482,20 +482,10 @@ fn island_obs() -> Observation {
 }
 
 fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
-    use crate::{Army, ArmyId, ArmyState};
+    use crate::{Army, ArmyId};
 
     let members: Vec<UnitId> = obs.my_units.iter().map(|unit| unit.id).collect();
-    let army = Army {
-        id: ArmyId(7),
-        members,
-        state: ArmyState::Staging,
-        staging: TilePos::new(7, 6),
-        target: None,
-        focus: None,
-        progress: None,
-        issued: None,
-        bounces: 0,
-    };
+    let army = Army::staging(ArmyId(7), members, TilePos::new(7, 6));
     let dials = Dials {
         own_strength_scale: u16::MAX,
         ..Dials::default()
@@ -506,19 +496,9 @@ fn staged_ground_push_intents(obs: &Observation) -> Vec<Intent> {
 
 #[test]
 fn ground_armies_only_push_enemy_sites_in_their_own_known_component() {
-    use crate::{Army, ArmyId, ArmyState};
+    use crate::{Army, ArmyId};
 
-    let army = |members: Vec<UnitId>, staging: TilePos| Army {
-        id: ArmyId(7),
-        members,
-        state: ArmyState::Staging,
-        staging,
-        target: None,
-        focus: None,
-        progress: None,
-        issued: None,
-        bounces: 0,
-    };
+    let army = |members: Vec<UnitId>, staging: TilePos| Army::staging(ArmyId(7), members, staging);
     let ids: Vec<UnitId> = (1..=6).map(UnitId).collect();
     let dials = Dials {
         own_strength_scale: u16::MAX,
@@ -625,24 +605,18 @@ fn ground_armies_do_not_invent_a_road_through_an_unexplored_gulf() {
 
 #[test]
 fn only_the_player_facing_controller_route_checks_defensive_retargets() {
-    use crate::{Army, ArmyId, ArmyState};
+    use crate::{Army, ArmyId};
 
     let mut obs = island_obs();
     obs.my_units = (1..=3)
         .map(|id| unit_obs(id, 0, UnitKind::Sentinel, 15 + id as i32, 6))
         .collect();
     obs.enemy_units = vec![unit_obs(20, 1, UnitKind::Sentinel, 5, 4)];
-    let army = Army {
-        id: ArmyId(7),
-        members: vec![UnitId(1), UnitId(2), UnitId(3)],
-        state: ArmyState::Staging,
-        staging: TilePos::new(16, 6),
-        target: None,
-        focus: None,
-        progress: None,
-        issued: None,
-        bounces: 0,
-    };
+    let army = Army::staging(
+        ArmyId(7),
+        vec![UnitId(1), UnitId(2), UnitId(3)],
+        TilePos::new(16, 6),
+    );
     let dials = Dials::default();
 
     let player_facing =

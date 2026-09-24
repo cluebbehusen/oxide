@@ -118,6 +118,23 @@ pub struct MissionDecision {
 }
 
 impl Executive {
+    pub(crate) fn take_ground_reports(&mut self) -> Vec<crate::experience::EpisodeReport> {
+        let reports = self
+            .ground_outcomes
+            .values_mut()
+            .flat_map(|journal| std::mem::take(&mut journal.pending))
+            .collect();
+        self.ground_outcomes
+            .retain(|id, _| self.armies.iter().any(|army| army.id == *id));
+        reports
+    }
+
+    pub(crate) fn link_ground_handoff(&mut self, source: &crate::experience::OutcomeJournal) {
+        for journal in self.ground_outcomes.values_mut() {
+            journal.link_handoff(source);
+        }
+    }
+
     pub(super) fn watch_ground_mission(
         &mut self,
         obs: &Observation,
@@ -207,19 +224,14 @@ impl Executive {
         let peers: Vec<_> = self
             .ground_outcomes
             .iter()
-            .filter(|(id, _)| {
-                match (
-                    mission.purpose,
-                    self.missions.get(id).map(|mission| mission.purpose),
-                ) {
-                    (ArmyPurpose::Pressure(target), Some(ArmyPurpose::Pressure(other))) => {
-                        target.same_site(&other)
-                    }
-                    (ArmyPurpose::Defend(target), Some(ArmyPurpose::Defend(other))) => {
-                        target == other
-                    }
-                    _ => false,
-                }
+            .filter(|(_, journal)| match mission.purpose {
+                ArmyPurpose::Pressure(target) => journal
+                    .objective()
+                    .is_some_and(|other| target.same_site(&other)),
+                ArmyPurpose::Defend(target) => journal.context().is_some_and(|context| {
+                    context.subject == ExperienceSubject::Building(Some(target))
+                }),
+                _ => false,
             })
             .filter_map(|(id, journal)| {
                 journal
@@ -251,10 +263,10 @@ impl Executive {
     pub(super) fn observe_ground_outcomes(&mut self, obs: &Observation) {
         use crate::experience::{Outcome, OutcomeReason, own_unit_health};
         for (id, journal) in &mut self.ground_outcomes {
-            let Some(mission) = self.missions.get(id) else {
-                continue;
-            };
             if let Some(army) = self.armies.iter().find(|army| army.id == *id) {
+                let Some(mission) = &army.mission else {
+                    continue;
+                };
                 journal.observe_phase(army.state as u8);
                 if army.state == ArmyState::Engaging {
                     journal.progress(1);
@@ -315,7 +327,9 @@ impl Executive {
                     1000,
                     true,
                 );
-            } else if matches!(mission.purpose, ArmyPurpose::Pressure(target) if journal.observe_objective(obs, target.observed_id(obs)))
+            } else if journal
+                .objective()
+                .is_some_and(|target| journal.observe_objective(obs, target.observed_id(obs)))
             {
                 journal.finish(
                     obs,
@@ -344,7 +358,7 @@ impl Executive {
         staging: TilePos,
         minimum: usize,
         unavailable: &[UnitId],
-    ) -> Option<ArmyId> {
+    ) -> Option<&mut Army> {
         if members.is_empty() || minimum < 2 || members.windows(2).any(|pair| pair[0] >= pair[1]) {
             return None;
         }
@@ -353,7 +367,7 @@ impl Executive {
             if army.state != ArmyState::Staging {
                 return None;
             }
-            if self.missions.get(&id).is_some_and(|mission| {
+            if army.mission.as_ref().is_some_and(|mission| {
                 mission.purpose != ArmyPurpose::Reserve || mission.goal.chebyshev(staging) > 2
             }) {
                 return None;
@@ -393,9 +407,9 @@ impl Executive {
                 }) {
                     return None;
                 }
-                if self
-                    .missions
-                    .get(&source.id)
+                if source
+                    .mission
+                    .as_ref()
                     .is_some_and(|mission| mission.purpose != ArmyPurpose::Reserve)
                 {
                     return None;
@@ -421,17 +435,7 @@ impl Executive {
                 let next = self.next_army.checked_add(1)?;
                 let id = ArmyId(self.next_army);
                 self.next_army = next;
-                self.armies.push(Army {
-                    id,
-                    members: Vec::new(),
-                    state: ArmyState::Staging,
-                    staging,
-                    target: None,
-                    focus: None,
-                    progress: None,
-                    issued: None,
-                    bounces: 0,
-                });
+                self.armies.push(Army::staging(id, Vec::new(), staging));
                 id
             }
         };
@@ -442,6 +446,8 @@ impl Executive {
                     .retain(|member| members.binary_search(member).is_err());
             }
         }
+        self.armies
+            .retain(|army| army.id == id || !army.members.is_empty());
         let army = self
             .armies
             .iter_mut()
@@ -450,9 +456,6 @@ impl Executive {
         army.members.extend_from_slice(members);
         army.members.sort_unstable();
         army.staging = staging;
-        self.armies.retain(|army| !army.members.is_empty());
-        self.missions
-            .retain(|id, _| self.armies.iter().any(|army| army.id == *id));
-        Some(id)
+        Some(army)
     }
 }

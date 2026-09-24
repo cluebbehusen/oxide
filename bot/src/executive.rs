@@ -49,6 +49,8 @@ pub enum ArmyState {
 /// A body of fighters managed as one thing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Army {
+    /// Accepted responsibility, absent on an unassigned body.
+    pub mission: Option<ArmyMission>,
     /// Handle.
     pub id: ArmyId,
     /// Members, id order. Pruned of the dead every think.
@@ -73,6 +75,23 @@ pub struct Army {
     /// Consecutive march orders that bounced at issue. Two in a row is
     /// route testimony: the target is unreachable from here today.
     pub bounces: u8,
+}
+
+impl Army {
+    pub(crate) fn staging(id: ArmyId, members: Vec<UnitId>, staging: TilePos) -> Self {
+        Self {
+            id,
+            members,
+            staging,
+            mission: None,
+            state: ArmyState::Staging,
+            target: None,
+            focus: None,
+            progress: None,
+            issued: None,
+            bounces: 0,
+        }
+    }
 }
 
 /// What a policy may ask for. Intents mutate executive bookkeeping or
@@ -262,9 +281,7 @@ struct PlayerFacingTactics {
 /// ticks because armies are controller memory rather than simulation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Executive {
-    pub(crate) ground_outcomes:
-        std::collections::BTreeMap<ArmyId, super::experience::OutcomeJournal>,
-    pub(crate) missions: std::collections::BTreeMap<ArmyId, ArmyMission>,
+    ground_outcomes: std::collections::BTreeMap<ArmyId, super::experience::OutcomeJournal>,
     #[serde(skip)]
     pub(crate) mission_decisions: Vec<missions::MissionDecision>,
     armies: Vec<Army>,

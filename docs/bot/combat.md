@@ -4,6 +4,12 @@
 
 ## Controller-local battlefield loop
 
+Each army stores its accepted mission alongside its tactical state. Policy
+orients that combined view once. Executive keeps outcome journals separately:
+pending evidence can outlive the body's removal or reorganization. Executive
+drains reports in army-ID order before retiring missing bodies' journals; Brain
+orients and learns from those reports before scoring its next decision.
+
 Ground mission planning prepares each available army's center, ground-capable
 count, and marching strength once per decision. Unchanged armies are borrowed;
 only staging armies with newly unavailable members need an owned filtered copy.

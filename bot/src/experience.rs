@@ -692,6 +692,10 @@ impl OutcomeJournal {
         self.watch.as_ref().map(|watch| watch.report.credit)
     }
 
+    pub(crate) fn objective(&self) -> Option<super::executive::ArmyObjective> {
+        self.watch.as_ref()?.report.objective
+    }
+
     pub(crate) fn all_participants_lost(&self, obs: &Observation) -> bool {
         self.watch.as_ref().is_some_and(|watch| {
             !watch.members.is_empty()
