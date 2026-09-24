@@ -484,6 +484,7 @@ pub(crate) fn lift_unavailable(
 
 #[cfg(test)]
 mod tests {
+    mod ownership;
     #[test]
     fn admitted_operation_capital_is_independent_of_portfolio_command_insertion() {
         let decision = StrategicDecision {

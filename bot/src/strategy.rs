@@ -7524,6 +7524,7 @@ fn recover(op: &mut AirOperation, reason: AirRecoveryReason, now: Tick) {
 
 #[cfg(test)]
 mod tests {
+    mod producer_reservations;
     use super::super::observation::BuildingObs;
     use super::super::profile::{PersonalityTraits, Specialty};
     use super::*;

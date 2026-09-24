@@ -3320,6 +3320,7 @@ pub(crate) fn test_allocate_policy(
 #[cfg(test)]
 mod tests {
     mod commit;
+    mod ownership;
     mod relief;
     mod retained;
     use super::super::{
