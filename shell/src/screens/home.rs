@@ -1,7 +1,6 @@
 //! The front door: Continue, Play, Tutorial, Replays, Settings, Quit.
 //! Windowless update; every row's session verb executes in the caller.
 
-use crate::autosave;
 use crate::game::SoundKind;
 use crate::menu::Menu;
 use macroquad::prelude::Vec2;
@@ -34,6 +33,7 @@ pub enum Out {
 pub struct HomeScreen {
     /// The rows.
     pub menu: Menu,
+    pub(crate) catalog_ready: bool,
     /// What each menu row does, in row order. Rows are values, not indices,
     /// so a conditional row (Recover, Continue) cannot shift its neighbours
     /// onto the wrong verb.
@@ -45,11 +45,27 @@ pub struct HomeScreen {
 impl HomeScreen {
     /// Builds the door, checking for a resumable autosave.
     pub fn open() -> Self {
-        let resumable = autosave::latest_compatible().is_some();
-        Self::with_resumable(resumable).with_recovery(
-            crate::paths::recovery_dir()
-                .and_then(|root| oxide_kit::recovery::latest_interrupted(&root)),
-        )
+        Self::with_resumable(false)
+    }
+
+    pub(crate) fn set_catalog(&mut self, resumable: bool, recovery: Option<std::path::PathBuf>) {
+        let selected = self.rows[self.menu.selected];
+        let mut fresh = Self::with_resumable(resumable).with_recovery(recovery.map(|directory| {
+            oxide_kit::recovery::InterruptedMatch {
+                directory,
+                ticks: 0,
+                scenario: String::new(),
+            }
+        }));
+        if let Some(index) = fresh.rows.iter().position(|row| *row == selected) {
+            fresh.menu.select(index);
+        }
+        fresh.catalog_ready = true;
+        *self = fresh;
+    }
+
+    pub(crate) fn clear_recovery(&mut self) {
+        self.set_catalog(self.rows.contains(&Out::Continue), None);
     }
 
     fn with_recovery(mut self, recovery: Option<oxide_kit::recovery::InterruptedMatch>) -> Self {
@@ -58,7 +74,11 @@ impl HomeScreen {
             let seconds = record.ticks / oxide_sim::TICKS_PER_SECOND as u64;
             self.menu.items.insert(
                 0,
-                format!("Recover match ({:02}:{:02})", seconds / 60, seconds % 60),
+                if record.ticks == 0 {
+                    "Recover match".into()
+                } else {
+                    format!("Recover match ({:02}:{:02})", seconds / 60, seconds % 60)
+                },
             );
             self.rows.insert(0, Out::Recover);
         }
@@ -84,6 +104,7 @@ impl HomeScreen {
             menu: Menu::new("OXIDE", items),
             rows,
             recovery: None,
+            catalog_ready: false,
         }
     }
 

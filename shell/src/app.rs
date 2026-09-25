@@ -14,6 +14,7 @@
 //! Every screen variant carries that screen's complete state, so a mode
 //! without its payload is unrepresentable.
 
+mod persistence;
 mod screen_flow;
 
 use crate::debug_server::IncomingRequest;
@@ -91,6 +92,7 @@ enum Screen {
     /// Game visible but veiled; the pause screen owns input,
     /// confirmation and save-naming state included.
     Pause(PauseScreen),
+    Busy(Box<persistence::Busy>),
 }
 
 /// Everything that outlives a screen: the live session, the config,
@@ -151,6 +153,10 @@ struct App {
     frame_profiler: FrameProfiler,
     report_job: crate::diagnostic_report::ReportJob,
     performance: crate::performance::Performance,
+    persistence: persistence::Worker,
+    persistence_result: Option<Result<persistence::Output>>,
+    catalog_id: Option<u64>,
+    catalog_delete: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -475,7 +481,7 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
             playback.paused || playback.seeking.is_some(),
         ),
         Screen::FinalMap(_) => match_soundtrack_scene(&game.view(), true),
-        Screen::Pause(_) => match_soundtrack_scene(&game.view(), true),
+        Screen::Busy(_) | Screen::Pause(_) => match_soundtrack_scene(&game.view(), true),
         Screen::Settings { back, .. } | Screen::Codex { back, .. }
             if matches!(**back, Screen::Pause(_)) =>
         {
@@ -684,6 +690,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         soundtrack,
         frame_profiler: FrameProfiler::new(profile_frames),
         report_job: Default::default(),
+        persistence: persistence::Worker::new()?,
+        persistence_result: None,
+        catalog_id: None,
+        catalog_delete: None,
         performance: crate::performance::Performance::default(),
     };
     let mut ui_view = capture_ui(&screen, &app);
@@ -771,6 +781,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         };
         let frame_tick_start = visible_tick(&screen, &app);
         let frame_mode = visible_profile_mode(&screen);
+        app.poll_persistence(&mut screen);
         // The camera never queries the window itself; feed it the viewport
         // once per frame (handles live resizes, keeps camera math pure),
         // then advance any zoom glide. Menus take the same injection —
@@ -991,17 +1002,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             // it, and a Home-classified Cancel would strand it with no
             // route back.
             let over_a_match = screen_holds_live_match(&screen);
-            match app.save_before_leaving(screens::pause::LeaveVerb::Quit, !over_a_match) {
-                Ok(()) => {
-                    if let Screen::Playback(playback) = &screen {
-                        playback.finish_diagnostics();
-                    }
-                    std::process::exit(0)
-                }
-                Err(dialog) => {
-                    app.game.presentation.paused = true;
-                    screen = Screen::Pause(*dialog);
-                }
+            if let Screen::Busy(busy) = &mut screen {
+                busy.request_quit();
+            } else {
+                screen = app.persistence_screen(
+                    persistence::Intent::Leave(screens::pause::LeaveVerb::Quit, !over_a_match),
+                    screen,
+                );
             }
         }
 
@@ -1022,16 +1029,6 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         next_frame().await;
         drop(wait_diagnostic_scope);
     }
-}
-
-/// Loads a record back into a live session — the one loader behind both
-/// Home's Continue and the shelf's Load, so the two verbs cannot drift.
-/// Checkpoints restore directly; compatible legacy saves reconstruct once.
-fn resume(
-    path: &std::path::Path,
-    diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
-) -> Result<Game> {
-    crate::saved_game::load(path, diagnostics)
 }
 
 /// The Surrender row shares the simulation's seat command gate.
@@ -1093,6 +1090,7 @@ fn visible_profile_mode(screen: &Screen) -> &'static str {
         Screen::Results(_) => "results",
         Screen::Replays(_) => "replays",
         Screen::Pause(_) => "pause",
+        Screen::Busy(busy) => busy.mode(),
     }
 }
 
@@ -1145,6 +1143,7 @@ fn screen_holds_live_match(screen: &Screen) -> bool {
             PlaybackReturn::Pause | PlaybackReturn::Results
         ),
         Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) => false,
+        Screen::Busy(_) => true,
     }
 }
 
@@ -1170,31 +1169,13 @@ impl App {
         self.performance.reset();
         self.input.reset_session();
     }
-
-    /// Autosaves the live match before the player leaves it. A failed save
-    /// returns the dialog that holds the door instead, because leaving anyway
-    /// would be silent data loss. `cancel_home` says whether Cancel returns
-    /// to Home rather than to the match behind the dialog.
-    fn save_before_leaving(
-        &mut self,
-        verb: screens::pause::LeaveVerb,
-        cancel_home: bool,
-    ) -> Result<(), Box<PauseScreen>> {
-        autosave::save(&mut self.game).map(drop).map_err(|err| {
-            Box::new(PauseScreen::open_save_failed(
-                err.player_line(),
-                verb,
-                self.game.state.result().is_some(),
-                can_surrender(&self.game),
-                cancel_home,
-            ))
-        })
-    }
 }
 
 /// Carries session-level toggles (pause/speed/overlay) onto a fresh game.
 fn keep_flags(mut fresh: Game, old: &Game) -> Game {
-    old.finish_recovery();
+    if let Some(writer) = &old.recovery {
+        writer.finish(old.state.current_tick());
+    }
     fresh.presentation.paused = old.presentation.paused;
     fresh.presentation.speed = old.presentation.speed;
     fresh.presentation.overlay = old.presentation.overlay;
@@ -1243,6 +1224,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
             };
         }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
+        Screen::Busy(busy) => (busy.mode(), Some(&busy.menu)),
         Screen::Pause(ps) => (
             if ps.saving_failed() {
                 "save_failed"
@@ -1408,6 +1390,15 @@ fn route(playback: bool, final_map: bool, request: &Request) -> Route {
 
 fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
     let IncomingRequest { id, request, reply } = incoming;
+    if matches!(screen, Screen::Busy(_)) && frozen_map_refuses(&request) {
+        reply
+            .send(ResponseEnvelope::err(
+                id,
+                "a save or load owns the session; wait for it to finish",
+            ))
+            .ok();
+        return;
+    }
     let playback = matches!(&*screen, Screen::Playback(_));
     let final_map = matches!(&*screen, Screen::FinalMap(_));
     if route(playback, final_map, &request) == Route::RefuseFrozen {

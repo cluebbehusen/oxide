@@ -86,7 +86,7 @@ pub struct Selection {
 mod fx;
 mod presentation;
 pub(crate) use presentation::{Presentation, Scene};
-mod checkpoint;
+pub(crate) mod checkpoint;
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 
@@ -148,6 +148,35 @@ pub(crate) fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
 }
 
 impl Game {
+    pub(crate) fn retire(self) -> impl FnOnce() + Send {
+        let Self {
+            state,
+            bots,
+            bot_decision,
+            recorder,
+            live_stats,
+            recovery,
+            diagnostics,
+            presentation,
+            ..
+        } = self;
+        drop(presentation);
+        move || {
+            if let Some(writer) = &recovery {
+                finish_recording(writer, state.current_tick());
+            }
+            drop((
+                state,
+                bots,
+                bot_decision,
+                recorder,
+                live_stats,
+                recovery,
+                diagnostics,
+            ));
+        }
+    }
+
     pub(crate) fn view(&self) -> Scene<'_> {
         Scene::new(
             &self.state,
@@ -238,30 +267,6 @@ impl Game {
     /// — this is "load game".
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
         Self::from_replay_observed(replay, None)
-    }
-
-    pub(crate) fn from_recovery(
-        record: oxide_kit::recovery::Inspection,
-        diagnostics: Option<&oxide_kit::diagnostics::Recorder>,
-    ) -> Result<Self> {
-        let Some(checkpoint) = record.checkpoint else {
-            return Self::from_replay_observed(record.replay, diagnostics);
-        };
-        let core = checkpoint.resume_recording(&record.replay)?;
-        let mut game = Self::new(core.scenario)?;
-        game.replace_state_after_jump(&core.state);
-        game.bots = core.bots;
-        game.pending = PendingCommands(core.pending);
-        game.recorder = record.replay;
-        game.live_stats = core
-            .stats
-            .ok_or_else(|| anyhow::anyhow!("shell recovery requires live statistics"))?;
-        game.end_stats = game
-            .state
-            .result()
-            .map(|_| game.live_stats.snapshot(&game.state));
-        game.presentation.paused = true;
-        Ok(game)
     }
 
     pub(crate) fn from_replay_observed(
@@ -445,12 +450,6 @@ impl Game {
             self.recovery_warned = true;
             self.presentation
                 .toast(format!("Recovery stopped: {error}"));
-        }
-    }
-
-    pub(crate) fn finish_recovery(&self) {
-        if let Some(writer) = &self.recovery {
-            finish_recording(writer, self.state.current_tick());
         }
     }
 
@@ -795,7 +794,9 @@ mod tests {
         original.advance_ticks(120);
         resumed.advance_ticks(120);
         assert_eq!(original.hash_hex(), resumed.hash_hex());
-        original.finish_recovery();
+        if let Some(writer) = &original.recovery {
+            finish_recording(writer, original.state.current_tick());
+        }
         assert!(original.recovery.as_ref().unwrap().status().clean);
         let directory = original.recovery.as_ref().unwrap().directory().to_owned();
         drop(original);

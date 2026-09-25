@@ -114,7 +114,7 @@ pub enum Out {
     /// Confirmed: leave the process.
     Quit,
     /// Try the failed save again, then perform the verb if it lands.
-    RetrySave(LeaveVerb),
+    RetrySave(LeaveVerb, bool),
     /// Perform the verb without a save — the row that guarantees a
     /// player on a permanently full disk can always leave.
     LeaveUnsaved(LeaveVerb),
@@ -273,14 +273,6 @@ impl PauseScreen {
         self.naming.is_some()
     }
 
-    /// Refreshes the failure sentence after a retry failed again —
-    /// the dialog stays up, the reason stays current.
-    pub fn set_save_failure_line(&mut self, line: String) {
-        if let Some(dialog) = self.save_failed.as_mut() {
-            dialog.line = line;
-        }
-    }
-
     /// The subtitle for the current face of the screen.
     pub fn subtitle<'a>(&'a self, scenario_name: &'a str) -> &'a str {
         if let Some(dialog) = &self.save_failed {
@@ -369,7 +361,7 @@ impl PauseScreen {
         if let Some(dialog) = &self.save_failed {
             let (verb, cancel_home) = (dialog.verb, dialog.cancel_home);
             match picked {
-                Some(0) => return Out::RetrySave(verb),
+                Some(0) => return Out::RetrySave(verb, cancel_home),
                 Some(2) => return Out::LeaveUnsaved(verb),
                 Some(_) => {}
                 None if escaped => {}
@@ -572,7 +564,7 @@ mod tests {
             PauseScreen::open_save_failed("x".to_string(), LeaveVerb::MainMenu, false, true, false);
         assert_eq!(
             activate(&mut p, "Retry"),
-            Out::RetrySave(LeaveVerb::MainMenu)
+            Out::RetrySave(LeaveVerb::MainMenu, false)
         );
         assert!(p.saving_failed(), "the dialog waits on the retry's verdict");
         assert_eq!(

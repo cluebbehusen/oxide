@@ -1,14 +1,18 @@
-//! Player saves are bounded session checkpoints; recordings remain command logs.
+//! Compact player checkpoints with independently readable metadata.
 
+#[cfg(test)]
 use crate::game::Game;
+use crate::game::checkpoint::{GameCheckpoint, RestoredGame, SaveCapture};
 use anyhow::{Context, Result, ensure};
 use chassis::replay::ReplayMeta;
 use oxide_sim::SIM_VERSION;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 const VERSION: u32 = 1;
+const MAGIC: &[u8; 8] = b"OXIDESAV";
+const MAX_HEADER: usize = 64 * 1024;
 const MAX_BYTES: usize = oxide_kit::checkpoint::MAX_BYTES;
 
 #[derive(Serialize, Deserialize)]
@@ -18,18 +22,8 @@ struct Header {
     meta: ReplayMeta,
     map: String,
     seats: usize,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Document<G> {
-    save: Header,
-    game: G,
-}
-
-#[derive(Deserialize)]
-struct Discriminator {
-    save: Option<Header>,
+    compressed_bytes: u64,
+    decoded_bytes: u64,
 }
 
 pub struct RecordInfo {
@@ -40,42 +34,70 @@ pub struct RecordInfo {
     pub legacy: bool,
 }
 
-pub fn write(game: &Game, meta: ReplayMeta, path: &Path) -> Result<()> {
+#[cfg(test)]
+fn write(game: &Game, meta: ReplayMeta, path: &Path) -> Result<()> {
+    write_capture(game.capture_save(), meta, path)
+}
+
+pub(crate) fn write_capture(capture: SaveCapture, meta: ReplayMeta, path: &Path) -> Result<()> {
+    let checkpoint = capture.checkpoint()?;
+    let mut payload = Vec::new();
+    ciborium::into_writer(&checkpoint, &mut payload)?;
     ensure!(
-        matches!(meta.kind.as_deref(), Some("save" | "autosave")),
-        "invalid save kind"
+        payload.len() <= MAX_BYTES,
+        "save exceeds decoded byte limit"
     );
-    ensure!(
-        meta.sim_version == SIM_VERSION && meta.ticks == Some(game.state.current_tick()),
-        "save metadata mismatch"
-    );
-    let document = Document {
-        save: Header {
-            version: VERSION,
-            meta,
-            map: game.scenario.name.clone(),
-            seats: game.scenario.players.len(),
-        },
-        game,
+    // Metadata is obtained from the checkpoint itself, without restoring controllers.
+    let (map, seats, tick) = checkpoint.metadata();
+    ensure!(meta.ticks == Some(tick), "save metadata mismatch");
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3)?;
+    encoder.include_checksum(true)?;
+    encoder.write_all(&payload)?;
+    let compressed = encoder.finish()?;
+    let header = Header {
+        version: VERSION,
+        meta,
+        map: map.to_owned(),
+        seats,
+        compressed_bytes: compressed.len() as u64,
+        decoded_bytes: payload.len() as u64,
     };
-    let bytes = serde_json::to_vec(&document)?;
-    ensure!(bytes.len() <= MAX_BYTES, "save exceeds byte limit");
+    check_header(&header)?;
+    let header = serde_json::to_vec(&header)?;
+    ensure!(
+        header.len() <= MAX_HEADER && 12 + header.len() + compressed.len() <= MAX_BYTES,
+        "save exceeds byte limit"
+    );
     chassis::fsx::write_atomic(path, |writer| {
-        writer.write_all(&bytes)?;
+        writer.write_all(MAGIC)?;
+        writer.write_all(&(header.len() as u32).to_le_bytes())?;
+        writer.write_all(&header)?;
+        writer.write_all(&compressed)?;
         Ok(())
     })
 }
 
-fn read(path: &Path) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
+fn read_header(reader: &mut impl Read, file_bytes: u64) -> Result<Header> {
+    ensure!(file_bytes <= MAX_BYTES as u64, "save exceeds byte limit");
+    let mut magic = [0; 8];
+    reader.read_exact(&mut magic)?;
+    ensure!(&magic == MAGIC, "unsupported player save format");
+    let mut length = [0; 4];
+    reader.read_exact(&mut length)?;
+    let length = u32::from_le_bytes(length) as usize;
+    ensure!(length <= MAX_HEADER, "save header exceeds byte limit");
+    let mut bytes = vec![0; length];
+    reader.read_exact(&mut bytes)?;
+    let header: Header = serde_json::from_slice(&bytes)?;
     ensure!(
-        file.metadata()?.len() <= MAX_BYTES as u64,
-        "save exceeds byte limit"
+        header.compressed_bytes <= MAX_BYTES as u64 && header.decoded_bytes <= MAX_BYTES as u64,
+        "save payload exceeds byte limit"
     );
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= MAX_BYTES, "save exceeds byte limit");
-    Ok(bytes)
+    ensure!(
+        file_bytes == 12 + length as u64 + header.compressed_bytes,
+        "save payload length mismatch"
+    );
+    Ok(header)
 }
 
 fn check_header(header: &Header) -> Result<()> {
@@ -96,43 +118,64 @@ fn check_header(header: &Header) -> Result<()> {
     Ok(())
 }
 
-fn decode(bytes: &[u8]) -> Result<Game> {
-    let document: Document<Game> = serde_json::from_slice(bytes)?;
-    check_header(&document.save)?;
+pub(crate) fn prepare_load(path: &Path) -> Result<RestoredGame> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("loading save {}", path.display()))?;
+    let len = file.metadata()?.len();
+    let header = read_header(&mut file, len).context("loading save header")?;
+    check_header(&header)?;
+    let mut compressed = Vec::new();
+    file.take(header.compressed_bytes + 1)
+        .read_to_end(&mut compressed)?;
     ensure!(
-        document.save.meta.ticks == Some(document.game.state.current_tick())
-            && document.save.map == document.game.scenario.name
-            && document.save.seats == document.game.scenario.players.len(),
+        compressed.len() as u64 == header.compressed_bytes,
+        "save payload length mismatch"
+    );
+    ensure!(
+        compressed
+            .get(4)
+            .is_some_and(|descriptor| descriptor & 4 != 0),
+        "save frame has no checksum"
+    );
+    let frame_len = zstd::zstd_safe::find_frame_compressed_size(&compressed)
+        .map_err(|code| anyhow::anyhow!("invalid compressed frame: {code}"))?;
+    ensure!(frame_len == compressed.len(), "trailing compressed payload");
+    let mut payload = Vec::new();
+    zstd::stream::read::Decoder::new(compressed.as_slice())?
+        .take(header.decoded_bytes + 1)
+        .read_to_end(&mut payload)?;
+    ensure!(
+        payload.len() as u64 == header.decoded_bytes,
+        "decoded payload length mismatch"
+    );
+    let mut reader = payload.as_slice();
+    let checkpoint: GameCheckpoint = ciborium::from_reader(&mut reader)?;
+    ensure!(reader.is_empty(), "trailing checkpoint payload");
+    let game = checkpoint.restore()?;
+    ensure!(
+        header.meta.ticks == Some(game.tick())
+            && header.map == game.scenario().name
+            && header.seats == game.scenario().players.len(),
         "save metadata does not match session"
     );
-    Ok(document.game)
+    Ok(game)
 }
 
-pub fn load(path: &Path, diagnostics: Option<&oxide_kit::diagnostics::Recorder>) -> Result<Game> {
-    let bytes = read(path).with_context(|| format!("loading save {}", path.display()))?;
-    let header: Discriminator = serde_json::from_slice(&bytes)?;
-    if let Some(header) = header.save {
-        check_header(&header)?;
-        decode(&bytes)
-    } else {
-        let replay = oxide_kit::load_replay(path)?;
-        let mut game = Game::from_replay_observed(replay, diagnostics)?;
-        game.recorder = oxide_kit::GameReplay::with_origin(
-            SIM_VERSION,
-            game.scenario.clone(),
-            oxide_kit::recording::WorldOrigin::capture(&game.scenario, &game.state)?,
-        )?;
-        game.presentation.paused = true;
-        Ok(game)
-    }
+#[cfg(test)]
+pub fn load(path: &Path, _diagnostics: Option<&oxide_kit::diagnostics::Recorder>) -> Result<Game> {
+    prepare_load(path).map(RestoredGame::install)
 }
 
 pub fn inspect(path: &Path) -> Result<RecordInfo> {
-    let bytes = read(path)?;
-    let header: Discriminator = serde_json::from_slice(&bytes)?;
-    if let Some(header) = header.save {
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut magic = [0; 8];
+    let compact = file.read_exact(&mut magic).is_ok() && &magic == MAGIC;
+    if compact {
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0))?;
+        let header = read_header(&mut file, len)?;
         let problem = check_header(&header)
-            .and_then(|()| decode(&bytes).map(drop))
             .err()
             .map(|error| format!("{error:#}"));
         Ok(RecordInfo {
@@ -142,22 +185,45 @@ pub fn inspect(path: &Path) -> Result<RecordInfo> {
             problem,
             legacy: false,
         })
+    } else if path.extension().and_then(|extension| extension.to_str()) == Some("oxsave") {
+        anyhow::bail!("invalid player save header");
+    } else if &magic == b"{\"save\":"
+        || path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.starts_with("save-") || stem.starts_with("autosave-"))
+    {
+        Ok(RecordInfo {
+            meta: ReplayMeta {
+                sim_version: String::new(),
+                description: None,
+                ticks: None,
+                kind: None,
+                saved_at: None,
+            },
+            map: path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            seats: 0,
+            problem: Some("unsupported player save format".into()),
+            legacy: true,
+        })
     } else {
+        // Replay inspection remains separate from player checkpoint restoration.
         let replay = oxide_kit::load_replay(path)?;
         let kind = crate::saves::record_kind(&replay.meta, path);
-        let problem = (|| -> Result<()> {
-            replay.validate(Some(SIM_VERSION))?;
-            oxide_kit::bounded_replay_duration(&replay)?;
-            if kind.resumable() {
-                ensure!(
-                    replay.origin.is_none(),
-                    "recording has no controller checkpoint for live continuation"
-                );
-            }
-            Ok(())
-        })()
-        .err()
-        .map(|error| format!("{error:#}"));
+        let problem = if kind.resumable() {
+            Some("unsupported player save format".into())
+        } else {
+            replay
+                .validate(Some(SIM_VERSION))
+                .map_err(anyhow::Error::from)
+                .and_then(|()| oxide_kit::bounded_replay_duration(&replay).map(|_| ()))
+                .err()
+                .map(|error| format!("{error:#}"))
+        };
         let ticks = oxide_kit::replay_duration(&replay);
         let mut meta = replay.meta;
         meta.ticks = Some(ticks);
@@ -175,7 +241,6 @@ pub fn inspect(path: &Path) -> Result<RecordInfo> {
 mod tests {
     use super::*;
     use oxide_sim::{BuildingId, Command, Scenario, UnitKind};
-    use serde_json::json;
     use std::path::PathBuf;
 
     struct Fixture(PathBuf);
@@ -183,7 +248,7 @@ mod tests {
         fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "oxide-player-save-{}-{}.json",
+                "oxide-player-save-{}-{}.oxsave",
                 std::process::id(),
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
@@ -205,25 +270,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_saves_with_no_human_or_multiple_passive_seats_remain_resumable() {
-        for bot in [false, true] {
-            let path = Fixture::new();
-            let mut scenario = Scenario::skirmish();
-            for player in &mut scenario.players {
-                player.bot = bot;
-                player.bot_config = None;
-            }
-            let mut replay = oxide_kit::GameReplay::new(SIM_VERSION, scenario);
-            replay.meta.kind = Some("save".into());
-            replay.meta.ticks = Some(0);
-            std::fs::write(&path.0, serde_json::to_vec(&replay).unwrap()).unwrap();
-            assert!(inspect(&path.0).unwrap().problem.is_none());
-            let game = load(&path.0, None).unwrap();
-            assert_eq!(game.presentation.human, oxide_sim::PlayerId(0));
-        }
-    }
-
-    #[test]
     fn save_restores_pending_input_and_exact_future_without_any_recording_history() {
         let path = Fixture::new();
         let mut original = Game::new(Scenario::skirmish()).unwrap();
@@ -235,17 +281,7 @@ mod tests {
         let start = original.state.current_tick();
         let bank = original.state.player(original.presentation.human).scrap;
         write(&original, meta(&original), &path.0).unwrap();
-        let bytes = std::fs::read(&path.0).unwrap();
-        let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(document["game"].get("recorded").is_none());
-        assert!(document["game"].get("recorder").is_none());
-        assert_eq!(
-            document["game"]["session"]["pending"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        assert!(std::fs::read(&path.0).unwrap().starts_with(MAGIC));
         // Missing historical commands cannot affect the saved continuation.
         original.recorder.commands.clear();
         let mut restored = load(&path.0, None).unwrap();
@@ -304,115 +340,66 @@ mod tests {
         assert_eq!(again.recorder.start_tick(), restored.state.current_tick());
         assert!(again.recorder.commands.is_empty());
     }
-
     #[test]
-    fn legacy_import_reconstructs_once_and_preserves_the_source_file() {
-        let legacy = Fixture::new();
-        let converted = Fixture::new();
-        let mut original = Game::new(Scenario::skirmish()).unwrap();
-        original.advance_ticks(73);
-        original.recorder.meta = meta(&original);
-        original.recorder.save(&legacy.0).unwrap();
-        let bytes = std::fs::read(&legacy.0).unwrap();
-        assert!(inspect(&legacy.0).unwrap().legacy);
-        let mut restored = load(&legacy.0, None).unwrap();
-        assert_eq!(restored.state.hash(), original.state.hash());
-        assert_eq!(restored.recorder.start_tick(), 73);
-        assert!(restored.recorder.commands.is_empty());
-        write(&restored, meta(&restored), &converted.0).unwrap();
-        assert!(!inspect(&converted.0).unwrap().legacy);
-        let mut checkpoint = load(&converted.0, None).unwrap();
-        for _ in 0..48 {
-            let expected = original.do_tick().events;
-            assert_eq!(expected, restored.do_tick().events);
-            assert_eq!(expected, checkpoint.do_tick().events);
-            assert_eq!(original.state.hash(), checkpoint.state.hash());
-        }
-        assert_eq!(std::fs::read(&legacy.0).unwrap(), bytes);
-    }
-
-    #[test]
-    fn compatibility_and_corruption_are_reported_before_installation() {
+    fn metadata_reads_stop_before_the_payload_and_corruption_is_checked_on_load() {
         let path = Fixture::new();
         let game = Game::new(Scenario::skirmish()).unwrap();
         write(&game, meta(&game), &path.0).unwrap();
-        let document: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path.0).unwrap()).unwrap();
-        for (pointer, value, message) in [
-            ("/save/version", json!(999), "save format"),
-            ("/save/meta/sim_version", json!("foreign"), "foreign"),
-            ("/game/version", json!(999), "shell checkpoint"),
-            ("/game/session/version", json!(999), "session checkpoint"),
-            (
-                "/game/session/bots/0/version",
-                json!(999),
-                "controller checkpoint",
-            ),
-            ("/game/human", json!(1), "local seat"),
-            ("/save/meta/ticks", json!(42), "metadata"),
-            ("/save/map", json!("different map"), "metadata"),
-            ("/save/seats", json!(9), "metadata"),
-            ("/save/meta/kind", json!("match"), "save kind"),
+        let original = std::fs::read(&path.0).unwrap();
+        let header_end = 12 + u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
+        let mut metadata_only = &original[..header_end];
+        let header = read_header(&mut metadata_only, original.len() as u64).unwrap();
+        assert!(metadata_only.is_empty());
+        assert_eq!(header.meta.ticks, Some(0));
+        let mut corrupt = original.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        std::fs::write(&path.0, &corrupt).unwrap();
+        assert!(
+            inspect(&path.0).unwrap().problem.is_none(),
+            "header eligibility is not payload validation"
+        );
+        assert!(
+            prepare_load(&path.0).is_err(),
+            "checksum protects the payload"
+        );
+        for bytes in [
+            original[..original.len() - 1].to_vec(),
+            [original.as_slice(), b"extra"].concat(),
         ] {
-            let mut bad = document.clone();
-            *bad.pointer_mut(pointer).expect(pointer) = value;
-            std::fs::write(&path.0, serde_json::to_vec(&bad).unwrap()).unwrap();
-            let error = load(&path.0, None)
-                .err()
-                .expect("invalid save cannot install");
-            assert!(
-                format!("{error:#}").contains(message),
-                "{pointer}: {error:#}"
-            );
-            let info = inspect(&path.0).unwrap();
-            assert!(info.problem.unwrap().contains(message));
+            std::fs::write(&path.0, bytes).unwrap();
+            assert!(prepare_load(&path.0).is_err());
+            assert!(inspect(&path.0).is_err());
         }
-        std::fs::write(&path.0, b"{\"save\":").unwrap();
-        assert!(load(&path.0, None).is_err());
-        std::fs::File::create(&path.0)
-            .unwrap()
-            .set_len(MAX_BYTES as u64 + 1)
-            .unwrap();
-        assert!(
-            load(&path.0, None)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("loading save")
-        );
-        assert!(
-            inspect(&path.0)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("byte limit")
-        );
+        let mut malformed = original;
+        malformed[8..12].copy_from_slice(&((MAX_HEADER + 1) as u32).to_le_bytes());
+        std::fs::write(&path.0, malformed).unwrap();
+        assert!(prepare_load(&path.0).is_err());
     }
 
     #[test]
-    fn world_only_records_and_unbounded_legacy_saves_cannot_resume() {
+    fn header_session_mismatch_and_decoding_expansion_are_rejected() {
         let path = Fixture::new();
         let game = Game::new(Scenario::skirmish()).unwrap();
-        let mut replay = oxide_kit::GameReplay::with_origin(
-            SIM_VERSION,
-            game.scenario.clone(),
-            oxide_kit::recording::WorldOrigin::capture(&game.scenario, &game.state).unwrap(),
-        )
-        .unwrap();
-        replay.meta.kind = Some("save".into());
-        replay.save(&path.0).unwrap();
-        assert!(
-            inspect(&path.0)
-                .unwrap()
-                .problem
-                .unwrap()
-                .contains("controller checkpoint")
-        );
-        assert!(load(&path.0, None).is_err());
-        replay.origin = None;
-        replay.meta.ticks = Some(oxide_kit::MAX_REPLAY_TICKS + 1);
-        replay.save(&path.0).unwrap();
-        assert!(inspect(&path.0).unwrap().problem.is_some());
-        assert!(load(&path.0, None).is_err());
+        write(&game, meta(&game), &path.0).unwrap();
+        let original = std::fs::read(&path.0).unwrap();
+        let end = 12 + u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
+        let header: serde_json::Value = serde_json::from_slice(&original[12..end]).unwrap();
+        for (field, value) in [
+            ("version", serde_json::json!(999)),
+            ("map", serde_json::json!("different")),
+            ("seats", serde_json::json!(99)),
+            ("decoded_bytes", serde_json::json!(1)),
+            ("decoded_bytes", serde_json::json!(MAX_BYTES + 1)),
+        ] {
+            let mut changed = header.clone();
+            changed[field] = value;
+            let bytes = serde_json::to_vec(&changed).unwrap();
+            let mut file = MAGIC.to_vec();
+            file.extend((bytes.len() as u32).to_le_bytes());
+            file.extend(bytes);
+            file.extend(&original[end..]);
+            std::fs::write(&path.0, file).unwrap();
+            assert!(prepare_load(&path.0).is_err(), "{field}");
+        }
     }
 }

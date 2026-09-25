@@ -18,7 +18,11 @@ fn backdrop_fx_advances(screen: &Screen) -> bool {
         Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
             !matches!(**back, Screen::Pause(_))
         }
-        Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_) | Screen::Pause(_) => false,
+        Screen::Playing
+        | Screen::Playback(_)
+        | Screen::FinalMap(_)
+        | Screen::Pause(_)
+        | Screen::Busy(_) => false,
     }
 }
 
@@ -130,6 +134,7 @@ pub(super) fn update_and_draw(
         Screen::Results(results) => results_frame(app, results, &events, &mut rerun)?,
         Screen::Replays(shelf) => replays_frame(app, shelf, &events, &mut rerun),
         Screen::Pause(ps) => pause_frame(app, ps, &events)?,
+        Screen::Busy(busy) => persistence::frame(app, busy, &events)?,
     };
 
     Ok(ScreenFrame {
@@ -140,6 +145,9 @@ pub(super) fn update_and_draw(
 }
 
 fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32) -> Result<Screen> {
+    if !home.catalog_ready {
+        app.request_catalog();
+    }
     // The title scene: a cold front door drifts its camera
     // slowly across the backdrop world instead of freezing
     // a frame — presentation only, and only while nothing
@@ -169,46 +177,15 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
     match out {
         screens::home::Out::Stay | screens::home::Out::Settings | screens::home::Out::Roster => {}
         screens::home::Out::Recover => {
-            let _scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
-            let recovered = home
-                .recovery
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("recording is no longer available"))
-                .and_then(|record| oxide_kit::recovery::inspect(&record.directory))
-                .and_then(|record| Game::from_recovery(record, app.game.diagnostics.as_deref()));
-            match recovered {
-                Ok(fresh) => {
-                    app.install_session(fresh, true, None);
-                    app.game.recovery_source = home
-                        .recovery
-                        .as_ref()
-                        .map(|record| record.directory.clone());
-                    app.game.start_recovery();
-                    app.game
-                        .presentation
-                        .toast("Recovered match is paused. Resume when ready.");
-                    next = Some(Screen::Playing);
-                }
-                Err(error) => {
-                    app.menu_notice =
-                        Some((format!("Recovery unavailable: {error:#}"), get_time() + 8.0));
-                }
+            if let Some(record) = &home.recovery {
+                let path = record.directory.clone();
+                return Ok(
+                    app.persistence_screen(persistence::Intent::Recover(path), Screen::Home(home))
+                );
             }
         }
         screens::home::Out::Continue => {
-            let _scope = app
-                .game
-                .diagnostic_span(oxide_kit::diagnostics::Phase::ReplayLoad);
-            if let Some(fresh) = autosave::latest_compatible()
-                .and_then(|path| resume(&path, app.game.diagnostics.as_deref()).ok())
-            {
-                app.install_session(fresh, true, None);
-                next = Some(Screen::Playing);
-            } else {
-                app.game.presentation.toast("that save no longer loads");
-            }
+            return Ok(app.persistence_screen(persistence::Intent::Continue, Screen::Home(home)));
         }
         screens::home::Out::Play => {
             next = Some(Screen::Wizard(Wizard::open(&app.draft)));
@@ -224,10 +201,10 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
             next = Some(Screen::Replays(Shelf::open()));
         }
         screens::home::Out::Quit => {
-            match app.save_before_leaving(screens::pause::LeaveVerb::Quit, true) {
-                Ok(()) => std::process::exit(0),
-                Err(dialog) => next = Some(Screen::Pause(*dialog)),
-            }
+            return Ok(app.persistence_screen(
+                persistence::Intent::Leave(screens::pause::LeaveVerb::Quit, true),
+                Screen::Home(home),
+            ));
         }
     }
     render::draw(&app.game.view(), &app.sprites, &app.input);
@@ -648,21 +625,9 @@ fn results_frame(
     results.draw(&app.game);
     Ok(match out {
         screens::results::Out::Stay => Screen::Results(results),
-        screens::results::Out::Rematch => match autosave::save(&mut app.game) {
-            Ok(_) => {
-                let fresh = rebuild_match(&app.game)?;
-                app.install_session(fresh, app.args.paused, None);
-                *rerun = true;
-                Screen::Playing
-            }
-            Err(err) => {
-                app.menu_notice = Some((
-                    format!("cannot save result: {}", err.player_line()),
-                    get_time() + 5.0,
-                ));
-                Screen::Results(results)
-            }
-        },
+        screens::results::Out::Rematch => {
+            app.persistence_screen(persistence::Intent::Rematch, Screen::Results(results))
+        }
         screens::results::Out::Watch => match result_playback(&app.game) {
             Ok(session) => {
                 *rerun = true;
@@ -681,19 +646,17 @@ fn results_frame(
             *rerun = true;
             Screen::FinalMap(FinalMapScreen::open())
         }
-        screens::results::Out::Home => {
-            match app.save_before_leaving(screens::pause::LeaveVerb::MainMenu, false) {
-                Ok(()) => {
-                    *rerun = true;
-                    Screen::Home(HomeScreen::open())
-                }
-                Err(dialog) => Screen::Pause(*dialog),
-            }
-        }
+        screens::results::Out::Home => app.persistence_screen(
+            persistence::Intent::Leave(screens::pause::LeaveVerb::MainMenu, false),
+            Screen::Results(results),
+        ),
     })
 }
 
 fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &mut bool) -> Screen {
+    if !shelf.catalog_ready {
+        app.request_catalog();
+    }
     let mut leave: Option<Screen> = None;
     let input_scope = app
         .game
@@ -727,27 +690,11 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
             }
         },
         screens::shelf::Out::Load(path) => {
-            match resume(&path, app.game.diagnostics.as_deref()) {
-                // The same loader Continue uses, so the two
-                // verbs cannot drift apart.
-                Ok(fresh) => {
-                    app.install_session(fresh, true, None);
-                    render::draw(&app.game.view(), &app.sprites, &app.input);
-                    *rerun = true;
-                    leave = Some(Screen::Playing);
-                }
-                Err(_) => {
-                    app.game
-                        .presentation
-                        .sounds_pending
-                        .push((SoundKind::Denied, None));
-                }
-            }
+            return app.persistence_screen(persistence::Intent::Load(path), Screen::Replays(shelf));
         }
-        screens::shelf::Out::Deleted => {
-            // Re-list; Home re-evaluates its Continue row on
-            // the way out, since every exit rebuilds it.
-            shelf = Shelf::open();
+        screens::shelf::Out::Delete(path) => {
+            app.catalog_delete = Some(path);
+            shelf.catalog_ready = false;
         }
         screens::shelf::Out::Stay => {}
     }
@@ -792,14 +739,7 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
             Screen::Pause(ps)
         }
         screens::pause::Out::Save(name) => {
-            // Stay paused either way: the player may want to
-            // save and then quit.
-            let verdict = match autosave::save_named(&app.game, &name) {
-                Ok(_) => format!("saved: {name}"),
-                Err(err) => err.player_line(),
-            };
-            ps.end_naming(verdict);
-            Screen::Pause(ps)
+            app.persistence_screen(persistence::Intent::Named(name), Screen::Pause(ps))
         }
         screens::pause::Out::Settings => {
             // The pause payload rides along intact: leaving
@@ -852,30 +792,18 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
             app.install_session(fresh, app.args.paused, tutorial);
             Screen::Playing
         }
-        screens::pause::Out::MainMenu => {
-            match app.save_before_leaving(screens::pause::LeaveVerb::MainMenu, false) {
-                Ok(()) => Screen::Home(HomeScreen::open()),
-                Err(dialog) => Screen::Pause(*dialog),
-            }
-        }
-        screens::pause::Out::Quit => {
-            match app.save_before_leaving(screens::pause::LeaveVerb::Quit, false) {
-                Ok(()) => std::process::exit(0),
-                Err(dialog) => Screen::Pause(*dialog),
-            }
-        }
-        screens::pause::Out::RetrySave(verb) => match autosave::save(&mut app.game) {
-            Ok(_) => match verb {
-                screens::pause::LeaveVerb::MainMenu => Screen::Home(HomeScreen::open()),
-                screens::pause::LeaveVerb::Quit => std::process::exit(0),
-            },
-            Err(err) => {
-                // The dialog stays up; only the reason may
-                // have changed.
-                ps.set_save_failure_line(err.player_line());
-                Screen::Pause(ps)
-            }
-        },
+        screens::pause::Out::MainMenu => app.persistence_screen(
+            persistence::Intent::Leave(screens::pause::LeaveVerb::MainMenu, false),
+            Screen::Pause(ps),
+        ),
+        screens::pause::Out::Quit => app.persistence_screen(
+            persistence::Intent::Leave(screens::pause::LeaveVerb::Quit, false),
+            Screen::Pause(ps),
+        ),
+        screens::pause::Out::RetrySave(verb, cancel_home) => app.persistence_screen(
+            persistence::Intent::Leave(verb, cancel_home),
+            Screen::Pause(ps),
+        ),
         screens::pause::Out::LeaveUnsaved(verb) => match verb {
             screens::pause::LeaveVerb::MainMenu => Screen::Home(HomeScreen::open()),
             screens::pause::LeaveVerb::Quit => std::process::exit(0),

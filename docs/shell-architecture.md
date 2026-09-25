@@ -201,21 +201,35 @@ tutorial progress, concession statistics, and decorative boundary exploration.
 Camera, selection, effects, and interpolation rebuild, the wall clock starts
 paused, and recovery/diagnostic workers are not serialized.
 
-Continue and named saves use the shell adapter in a versioned player-save
-envelope. The loader bounds reads to 256 MiB before decoding, requires matching
-save, shell, session, controller, and simulation revisions, and validates the
-metadata against the restored session before installation. Restoration runs no
-historical ticks and starts a fresh world-origin recording at the saved tick.
-Pending input is still pending and enters that recording only when its tick
-executes. A save is self-contained and never requires an earlier recording or
-save file. Cross-version migration is not implemented.
+Player saves use `.oxsave`: eight-byte `OXIDESAV` magic, a little-endian 32-bit
+header length, a JSON metadata header, and one checksummed Zstandard frame
+containing a CBOR shell checkpoint. Headers are bounded to 64 KiB; both file
+size and decoded payload are bounded to 256 MiB. The loader requires exact
+lengths and no trailing frames or checkpoint data, checks revisions, and
+validates metadata against the restored session. Controller payloads are CBOR
+byte strings. No old player-save import or format migration is provided.
 
-Compatible legacy replay-backed saves reconstruct through `Game::from_replay`
-once, then start a fresh recording segment. The next save writes the checkpoint
-format; import never rewrites the source. Legacy reconstruction retains its
-interactive tick limit. Named saves persist until explicitly deleted; autosaves
-and finished-match recordings rotate separately. Finished matches remain
+Restoration runs no historical ticks and starts a fresh world-origin recording
+at the saved tick. Pending input remains pending until that tick executes. A
+save is self-contained. Named saves persist until explicitly deleted; autosaves
+and finished-match recordings rotate separately. Finished matches remain JSON
 recordings, containing the available history since the current segment began.
+
+One app-owned worker performs save encoding, disk I/O, decompression,
+restoration, catalog scans, and recovery preparation. It admits one operation at
+a time; a foreground screen can hold one pending intent while a cancelled
+catalog or load finishes. Cancellation does not release admission early. Jobs
+have unique IDs so a stale result cannot replace a newer session. Restoration
+produces CPU data; presentation is installed only on the frame thread. Replaced
+session data and recovery-close waits are retired on the worker.
+
+A loading frame is presented before dispatch. Loads can be cancelled until
+recovery publication begins; cancellation retains the previous session and never
+supersedes a recovery source. Named saves keep the match paused until
+completion. Save-before-leaving failures preserve Retry, Cancel, and Leave
+Without Saving. A window-close request during a save waits for that operation
+and the required exit save. The debug protocol reports `loading`/`saving` and
+refuses session mutations while those screens own the boundary.
 
 Recordings can additionally start from a versioned world checkpoint. Its
 scenario and world fingerprint are validated, and commands cannot precede its
@@ -227,11 +241,12 @@ history. World-only recordings cannot resume live play because they lack
 controller memory.
 
 Save publication reserves a collision-free destination and uses the chassis
-atomic-write path. Failures are reported to the player. Shelf discovery skips
-malformed files and labels incompatible formats and versions. Checkpoint rows
-validate the complete session without executing it; Continue selects the newest
-compatible autosave, skipping invalid or unavailable neighbors. Legacy save rows
-identify that loading reconstructs the match.
+atomic-write path. Failures are reported to the player. Checkpoint discovery
+reads metadata only: eligibility is not full validation. Continue tries eligible
+autosaves newest first on the worker, skipping corrupt payloads and installing
+the already restored result. Old player saves remain unavailable on disk. Home
+recovery discovery uses bounded status metadata and inactive leases; selection
+validates the journal and its completed prefix before installation.
 
 `Game::from_replay` reconstructs state from the recorded commands. Bots observe
 reconstruction to restore their controller-local memory, but their regenerated
@@ -373,7 +388,7 @@ Procedural quarry boundaries and pits derive from map geometry with fog-aware
 visibility. The shell extends allied unit sight discs and completed-building
 footprint sight into a bounded off-map quarry margin. Its presentation-only
 exploration cache updates on every tick, including bulk advances, and rebuilds
-from legacy command logs during import. Player checkpoints retain that cache
+during explicit command-log reconstruction. Player checkpoints retain that cache
 directly. Map tiles retain authoritative simulation fog; the replay viewer
 remains fog-free. Animation, heading, and weapon effects use the relevant
 simulation state rather than inventing movement or firing delays.

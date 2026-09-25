@@ -5,7 +5,7 @@
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
-use crate::saves::{self, ReplayEntry};
+use crate::saves::ReplayEntry;
 use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
 
@@ -24,7 +24,7 @@ pub enum Out {
     Watch(std::path::PathBuf),
     /// A record was deleted; the caller rebuilds the shelf and the
     /// Home menu (the deleted file may have been Continue's save).
-    Deleted,
+    Delete(std::path::PathBuf),
 }
 
 /// What one menu row stands for. Rows are values, not arithmetic: the
@@ -47,6 +47,7 @@ pub struct Shelf {
     /// Everything loadable, watchable, or deletable, newest first
     /// within its section.
     pub entries: Vec<ReplayEntry>,
+    pub(crate) catalog_ready: bool,
     /// The rows: section headers, one row per entry, plus Back —
     /// always plus Back, which is the 0.9 regression this construction
     /// pins (a delete-refresh once dropped it and stranded mouse-only
@@ -61,7 +62,31 @@ pub struct Shelf {
 impl Shelf {
     /// Scans the save and replay directories like the front door does.
     pub fn open() -> Self {
-        Self::from_entries(saves::discover())
+        let mut shelf = Self::from_entries(Vec::new());
+        shelf.catalog_ready = false;
+        shelf
+    }
+
+    pub(crate) fn set_catalog(&mut self, entries: Vec<ReplayEntry>) {
+        let selected = self.rows.get(self.menu.selected).and_then(|row| match row {
+            RowKind::Entry(i) => Some(self.entries[*i].path.clone()),
+            _ => None,
+        });
+        let was_empty = self.entries.is_empty();
+        let mut fresh = Self::from_entries(entries);
+        if let Some(path) = selected {
+            if let Some(row) = fresh
+                .rows
+                .iter()
+                .position(|row| matches!(row, RowKind::Entry(i) if fresh.entries[*i].path == path))
+            {
+                fresh.menu.select(row);
+            }
+        } else if !was_empty {
+            fresh.menu.select(fresh.menu.items.len() - 1);
+        }
+        fresh.catalog_ready = true;
+        *self = fresh;
     }
 
     /// Builds the shelf over the given records (tests inject their own).
@@ -93,6 +118,7 @@ impl Shelf {
         rows.push(RowKind::Back);
         Self {
             entries,
+            catalog_ready: true,
             menu: Menu::with_headers("SAVES & REPLAYS", items, headers),
             rows,
             arming: None,
@@ -139,14 +165,14 @@ impl Shelf {
                 None => Out::Stay,
             };
         }
-        if x_pressed && let Some(RowKind::Entry(i)) = self.rows.get(self.menu.selected).copied() {
+        if x_pressed
+            && self.catalog_ready
+            && let Some(RowKind::Entry(i)) = self.rows.get(self.menu.selected).copied()
+        {
             let row = self.menu.selected;
             if self.arming == Some(row) {
-                if let Some(entry) = self.entries.get(i) {
-                    std::fs::remove_file(&entry.path).ok();
-                }
                 self.arming = None;
-                return Out::Deleted;
+                return Out::Delete(self.entries[i].path.clone());
             }
             self.arming = Some(row);
         }
@@ -269,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_takes_two_x_presses_on_the_same_row_and_removes_the_file() {
+    fn deletion_requires_two_presses_and_is_dispatched_to_the_owner() {
         let dir = std::env::temp_dir().join(format!("oxide-shelf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("doomed.json");
@@ -278,8 +304,8 @@ mod tests {
             Shelf::from_entries(vec![entry("doomed", true, RecordKind::Match, path.clone())]);
         assert_eq!(drive(&mut shelf, Key::X), Out::Stay, "first X only arms");
         assert!(path.exists(), "arming deletes nothing");
-        assert_eq!(drive(&mut shelf, Key::X), Out::Deleted);
-        assert!(!path.exists(), "the second X removes the file");
+        assert_eq!(drive(&mut shelf, Key::X), Out::Delete(path.clone()));
+        assert!(path.exists(), "the worker owns disk operations");
         std::fs::remove_dir_all(&dir).ok();
     }
 

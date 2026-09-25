@@ -2,7 +2,7 @@
 //!
 //! Failure is a first-class outcome here: a quit path that cannot
 //! write its record must be able to say so before the process exits,
-//! which is why [`save`] reports [`SaveOutcome`] and [`SaveError`]
+//! which is why [`SaveJob::run`] reports [`SaveOutcome`] and [`SaveError`]
 //! instead of a bool.
 
 use crate::game::Game;
@@ -24,7 +24,7 @@ const TEMP_ORPHAN_AGE: Duration = Duration::from_secs(3600);
 /// atomically replaces it.
 const RESERVATION_MARKER_PREFIX: &str = "oxide-save-reservation:";
 
-/// What a successful [`save`] call actually did.
+/// What a successful [`SaveJob::run`] call actually did.
 #[derive(Debug)]
 pub enum SaveOutcome {
     /// A record landed at this path. Runtime quit flows need only the
@@ -77,109 +77,6 @@ impl SaveError {
     }
 }
 
-/// Writes the session to disk and rotates old ones out. Live matches
-/// save as `autosave-` (what Continue resumes); finished ones save as
-/// `match-` — the shelf lists both, so a completed game is always
-/// watchable afterward.
-pub fn save(game: &mut Game) -> Result<SaveOutcome, SaveError> {
-    let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
-    // The nothing-to-do gates come before directory resolution so a
-    // cold quit on a machine with no data dir stays a quiet success.
-    if game.state.current_tick() == 0 && game.pending.is_empty() {
-        game.finish_recovery();
-        return Ok(SaveOutcome::NothingToSave);
-    }
-    // A session saves once: Main Menu already wrote this match, and the
-    // same game lingers as the Home backdrop — quitting from there would
-    // write a colliding twin and eat a retention slot.
-    if game.autosave_done {
-        return Ok(SaveOutcome::AlreadySaved);
-    }
-    let dir = crate::paths::autosave_dir().ok_or(SaveError::NoDataDir)?;
-    write_record(game, &dir)
-}
-
-/// The testable core: the gates, the name walk, the write, the
-/// rotation — everything but the platform directory lookup.
-fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
-    write_record_with(game, dir, |game, path| {
-        if game.state.result().is_some() {
-            game.recorder.save(path).map_err(Into::into)
-        } else {
-            crate::saved_game::write(game, game.recorder.meta.clone(), path)
-        }
-    })
-}
-
-fn write_record_with(
-    game: &mut Game,
-    dir: &Path,
-    save_record: impl FnOnce(&Game, &Path) -> anyhow::Result<()>,
-) -> Result<SaveOutcome, SaveError> {
-    if game.state.current_tick() == 0 && game.pending.is_empty() {
-        game.finish_recovery();
-        return Ok(SaveOutcome::NothingToSave);
-    }
-    if game.autosave_done {
-        return Ok(SaveOutcome::AlreadySaved);
-    }
-    std::fs::create_dir_all(dir).map_err(|source| SaveError::CreateDir {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let tick = game.state.current_tick();
-    let prefix = if game.state.result().is_some() {
-        "match"
-    } else {
-        "autosave"
-    };
-    game.recorder.meta.ticks = Some(tick);
-    // The record says what it is: the shelf classifies on `kind` and
-    // falls back to the filename prefix only for pre-0.13 files.
-    game.recorder.meta.kind = Some(prefix.to_string());
-    game.recorder.meta.saved_at = Some(now_unix());
-    // Tick-stamped names collide across sessions (same map, same quit
-    // tick); walk a counter until a free name turns up so rotation
-    // always keeps the newest sessions instead of overwriting one.
-    let path = free_path(dir, prefix, tick, game.scenario.seed)?
-        .publish(|path| save_record(game, path))
-        .map_err(|(path, source)| SaveError::Write { path, source })?;
-    game.finish_recovery();
-    game.autosave_done = true;
-    rotate(dir);
-    Ok(SaveOutcome::Wrote(path))
-}
-
-/// Writes a player-named save into the saves directory, which rotation
-/// never touches — a save the player asked for is deleted only by the
-/// player. The name lives in the record's `description`, never in the
-/// filename, so reserved names, path traversal, and length limits never
-/// become a class of bug. Leaves the live recorder untouched (a later
-/// quit-autosave must not inherit the name) and never marks the session
-/// saved: explicit saves and quit autosaves are independent records.
-pub fn save_named(game: &Game, name: &str) -> Result<PathBuf, SaveError> {
-    let _scope = game.diagnostic_span(oxide_kit::diagnostics::Phase::Save);
-    let dir = crate::paths::saves_dir().ok_or(SaveError::NoDataDir)?;
-    write_named(game, name, &dir, now_unix())
-}
-
-/// The testable core of [`save_named`]: everything but the platform
-/// directory lookup and the wall clock.
-fn write_named(game: &Game, name: &str, dir: &Path, saved_at: u64) -> Result<PathBuf, SaveError> {
-    std::fs::create_dir_all(dir).map_err(|source| SaveError::CreateDir {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let mut meta = game.recorder.meta.clone();
-    meta.ticks = Some(game.state.current_tick());
-    meta.description = Some(name.to_string());
-    meta.kind = Some("save".to_string());
-    meta.saved_at = Some(saved_at);
-    free_path(dir, "save", game.state.current_tick(), game.scenario.seed)?
-        .publish(|path| crate::saved_game::write(game, meta, path))
-        .map_err(|(path, source)| SaveError::Write { path, source })
-}
-
 /// Owns an exclusively-created path until an atomic write replaces its
 /// marker. A failed write removes the marker, while an error reported
 /// after rename leaves the published record intact.
@@ -226,10 +123,11 @@ fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> Result<PathReser
     static RESERVATION_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut n = 0u64;
     loop {
+        let extension = if prefix == "match" { "json" } else { "oxsave" };
         let path = if n == 0 {
-            dir.join(format!("{prefix}-{tick:010}.json"))
+            dir.join(format!("{prefix}-{tick:010}.{extension}"))
         } else {
-            dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.json"))
+            dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.{extension}"))
         };
         match std::fs::File::create_new(&path) {
             Ok(mut file) => {
@@ -295,7 +193,10 @@ fn rotate_prefix(dir: &Path, prefix: &str, keep: usize) {
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .filter(|p| {
+            p.extension().and_then(|e| e.to_str())
+                == Some(if prefix == "match-" { "json" } else { "oxsave" })
+        })
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
@@ -328,49 +229,133 @@ fn is_reservation_marker(path: &Path) -> bool {
     file.read_exact(&mut prefix).is_ok() && prefix == RESERVATION_MARKER_PREFIX.as_bytes()
 }
 
-/// The newest compatible autosave. Unavailable formats and corrupt sessions
-/// remain on disk but are never offered for Continue.
-pub fn latest_compatible() -> Option<PathBuf> {
-    latest_compatible_in(&crate::paths::autosave_dir()?)
+/// Header-eligible autosaves, newest first. Loading must still validate the payload.
+pub(crate) fn candidates() -> Vec<PathBuf> {
+    crate::saves::discover(|| false)
+        .into_iter()
+        .filter(|entry| entry.compatible && entry.kind == crate::saves::RecordKind::Autosave)
+        .map(|entry| entry.path)
+        .collect()
 }
 
-/// [`latest_compatible`] over an explicit directory — the injectable
-/// core its siblings already have, so the prefix filter, the version
-/// gate, and above all the newest-first ordering are testable: a
-/// reversed sort here silently resumes an OLD save with no error at
-/// all, and rotation deletes the newer ones soon after.
-fn latest_compatible_in(dir: &std::path::Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .collect();
-    files.sort_by_key(|p| {
-        (
-            std::fs::metadata(p).and_then(|m| m.modified()).ok(),
-            p.clone(),
-        )
-    });
-    files.into_iter().rev().find(|path| {
-        // Continue resumes live sessions only; `match-` records are for
-        // the shelf.
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("autosave-"))
-            && crate::saved_game::inspect(path)
-                .map(|r| {
-                    r.problem.is_none()
-                        && crate::saves::record_kind(&r.meta, path)
-                            == crate::saves::RecordKind::Autosave
+pub(crate) enum SaveData {
+    Checkpoint(crate::game::checkpoint::SaveCapture),
+    Recording(oxide_kit::GameReplay),
+}
+
+pub(crate) struct SaveJob {
+    data: Option<SaveData>,
+    meta: chassis::replay::ReplayMeta,
+    seed: u64,
+    dir: Option<PathBuf>,
+    named: bool,
+    already_saved: bool,
+    recovery: Option<std::sync::Arc<oxide_kit::recovery::RecoveryWriter>>,
+}
+
+impl SaveJob {
+    pub(crate) fn capture(game: &Game, name: Option<&str>) -> Self {
+        let named = name.is_some();
+        let needed = named
+            || (!game.autosave_done
+                && (game.state.current_tick() != 0 || !game.pending.is_empty()));
+        let mut meta = game.recorder.meta.clone();
+        meta.ticks = Some(game.state.current_tick());
+        meta.saved_at = Some(now_unix());
+        meta.kind = Some(
+            if named {
+                "save"
+            } else if game.state.result().is_some() {
+                "match"
+            } else {
+                "autosave"
+            }
+            .into(),
+        );
+        if let Some(name) = name {
+            meta.description = Some(name.into());
+        }
+        let data = needed.then(|| {
+            if !named && game.state.result().is_some() {
+                let mut replay = game.recorder.clone();
+                replay.meta = meta.clone();
+                SaveData::Recording(replay)
+            } else {
+                SaveData::Checkpoint(game.capture_save())
+            }
+        });
+        Self {
+            data,
+            meta,
+            seed: game.scenario.seed,
+            dir: if named {
+                crate::paths::saves_dir()
+            } else {
+                crate::paths::autosave_dir()
+            },
+            named,
+            already_saved: game.autosave_done,
+            recovery: (!named).then(|| game.recovery.clone()).flatten(),
+        }
+    }
+
+    pub(crate) fn run(self) -> Result<SaveOutcome, SaveError> {
+        let outcome = if let Some(data) = self.data {
+            let dir = self.dir.ok_or(SaveError::NoDataDir)?;
+            std::fs::create_dir_all(&dir).map_err(|source| SaveError::CreateDir {
+                path: dir.clone(),
+                source,
+            })?;
+            let prefix = self.meta.kind.as_deref().unwrap();
+            let path = free_path(&dir, prefix, self.meta.ticks.unwrap(), self.seed)?
+                .publish(|path| match data {
+                    SaveData::Checkpoint(capture) => {
+                        crate::saved_game::write_capture(capture, self.meta.clone(), path)
+                    }
+                    SaveData::Recording(replay) => replay.save(path).map_err(Into::into),
                 })
-                .unwrap_or(false)
-    })
+                .map_err(|(path, source)| SaveError::Write { path, source })?;
+            if !self.named {
+                rotate(&dir);
+            }
+            SaveOutcome::Wrote(path)
+        } else if self.already_saved {
+            SaveOutcome::AlreadySaved
+        } else {
+            SaveOutcome::NothingToSave
+        };
+        if let Some(writer) = self.recovery {
+            crate::game::finish_recording(&writer, self.meta.ticks.unwrap());
+        }
+        Ok(outcome)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
+        let mut job = SaveJob::capture(game, None);
+        job.dir = Some(dir.to_owned());
+        let result = job.run()?;
+        game.autosave_done = true;
+        Ok(result)
+    }
+    fn write_named(
+        game: &Game,
+        name: &str,
+        dir: &Path,
+        saved_at: u64,
+    ) -> Result<PathBuf, SaveError> {
+        let mut job = SaveJob::capture(game, Some(name));
+        job.dir = Some(dir.to_owned());
+        job.meta.saved_at = Some(saved_at);
+        match job.run()? {
+            SaveOutcome::Wrote(path) => Ok(path),
+            _ => unreachable!(),
+        }
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -383,108 +368,6 @@ mod tests {
         ));
         std::fs::remove_dir_all(&dir).ok();
         dir
-    }
-
-    #[test]
-    fn continue_picks_the_newest_compatible_autosave_only() {
-        // The genuinely silent slice is the ordering: a reversed sort
-        // resumes an OLD save with no error, and rotation deletes the
-        // newer ones shortly after. Prefix and version filters ride
-        // along.
-        let dir = scratch("latest");
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(
-            latest_compatible_in(&dir).is_none(),
-            "empty dir offers nothing"
-        );
-
-        let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
-        game.advance_ticks(1);
-        let Ok(SaveOutcome::Wrote(older)) = write_record(&mut game, &dir) else {
-            panic!("first record writes");
-        };
-        std::thread::sleep(std::time::Duration::from_millis(20));
-
-        // A match- record newer than everything: never offered.
-        let shelf = dir.join("match-shelf.json");
-        std::fs::copy(&older, &shelf).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-
-        let mut second = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
-        second.advance_ticks(2);
-        let Ok(SaveOutcome::Wrote(newer)) = write_record(&mut second, &dir) else {
-            panic!("second record writes");
-        };
-        std::thread::sleep(std::time::Duration::from_millis(20));
-
-        // A version-mismatched autosave newer than everything: skipped.
-        let stale = dir.join("autosave-zz-stale.json");
-        let body = std::fs::read_to_string(&newer).unwrap();
-        std::fs::write(
-            &stale,
-            body.replace(oxide_sim::SIM_VERSION, "0.0.1-archaeology"),
-        )
-        .unwrap();
-
-        assert_eq!(
-            latest_compatible_in(&dir),
-            Some(newer.clone()),
-            "the newest compatible autosave wins over older, shelf, and stale"
-        );
-
-        std::fs::remove_file(&newer).unwrap();
-        assert_eq!(
-            latest_compatible_in(&dir),
-            Some(older),
-            "removing the newest falls back to the older compatible record"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn continue_skips_invalid_checkpoints_and_can_fall_back_to_a_legacy_save() {
-        let dir = scratch("continue-formats");
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut game = Game::new(oxide_sim::Scenario::skirmish()).unwrap();
-        game.advance_ticks(37);
-        let legacy = dir.join("autosave-legacy.json");
-        game.recorder.meta.ticks = Some(37);
-        game.recorder.save(&legacy).unwrap();
-        let Ok(SaveOutcome::Wrote(checkpoint)) = write_record(&mut game, &dir) else {
-            panic!("checkpoint writes")
-        };
-        // Explicit timestamps make newest-first selection independent of filesystem granularity.
-        for (path, secs) in [(&legacy, 1), (&checkpoint, 2)] {
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-                .unwrap();
-        }
-        let original: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-        for (index, pointer) in [
-            "/save/version",
-            "/game/session/version",
-            "/game/session/bots/0/version",
-            "/game/human",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let mut bad = original.clone();
-            *bad.pointer_mut(pointer).unwrap() = serde_json::json!(999);
-            std::fs::write(
-                dir.join(format!("autosave-invalid-{index}.json")),
-                serde_json::to_vec(&bad).unwrap(),
-            )
-            .unwrap();
-        }
-        assert_eq!(latest_compatible_in(&dir), Some(checkpoint.clone()));
-        std::fs::remove_file(checkpoint).unwrap();
-        assert_eq!(latest_compatible_in(&dir), Some(legacy));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -553,7 +436,7 @@ mod tests {
             game.configure_diagnostics(true);
             let directory = game.recovery.as_ref().unwrap().directory().to_owned();
             let outcome = if public_path {
-                save(&mut game)
+                SaveJob::capture(&game, None).run()
             } else {
                 write_record(&mut game, &root.join("saves"))
             };
@@ -666,36 +549,28 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_autosave_removes_only_its_uncommitted_reservation() {
+    fn a_failed_publication_removes_only_its_uncommitted_reservation() {
         let dir = scratch("failed-reservation");
-        let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
-        game.advance_ticks(1);
-
-        let err = write_record_with(&mut game, &dir, |_, _| {
-            Err(std::io::Error::other("write refused").into())
-        })
-        .expect_err("the injected write fails");
-        let SaveError::Write { path, .. } = err else {
-            panic!("the write failure keeps its path");
-        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = free_path(&dir, "save", 1, 0).unwrap();
+        let path = held.path.clone();
+        assert!(held.publish(|_| Err::<(), _>("write refused")).is_err());
+        assert!(!path.exists());
+        let held = free_path(&dir, "save", 1, 0).unwrap();
+        let path = held.path.clone();
         assert!(
-            !path.exists(),
-            "a failed write removes its reservation marker"
+            held.publish(|path| {
+                chassis::fsx::write_atomic(path, |writer| {
+                    writer.write_all(b"published")?;
+                    Ok::<_, std::io::Error>(())
+                })
+                .unwrap();
+                Err::<(), _>("late durability failure")
+            })
+            .is_err()
         );
-        assert!(!game.autosave_done, "the session still owes a save");
-
-        let err = write_record_with(&mut game, &dir, |record, path| {
-            crate::saved_game::write(record, record.recorder.meta.clone(), path)?;
-            Err(std::io::Error::other("late durability failure").into())
-        })
-        .expect_err("a post-rename failure still reports");
-        let SaveError::Write { path, .. } = err else {
-            panic!("the late failure keeps its path");
-        };
-        crate::saved_game::inspect(&path)
-            .expect("a published replay is not mistaken for the marker");
-        assert!(!game.autosave_done, "durability was not confirmed");
-        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(std::fs::read(path).unwrap(), b"published");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -707,10 +582,11 @@ mod tests {
         let tick = game.state.current_tick();
         let seed = game.scenario.seed;
         for n in 0..1000 {
+            let extension = "oxsave";
             let path = if n == 0 {
-                dir.join(format!("save-{tick:010}.json"))
+                dir.join(format!("save-{tick:010}.{extension}"))
             } else {
-                dir.join(format!("save-{tick:010}-{seed}-{n}.json"))
+                dir.join(format!("save-{tick:010}-{seed}-{n}.{extension}"))
             };
             std::fs::write(path, b"occupied").expect("create known collision");
         }
@@ -797,20 +673,22 @@ mod tests {
         // save, one fresh temp. Names sort in age order so the mtime
         // tie-break stays deterministic.
         for n in 0..6 {
-            std::fs::write(dir.join(format!("autosave-000000000{n}.json")), b"{}").unwrap();
+            std::fs::write(dir.join(format!("autosave-000000000{n}.oxsave")), b"{}").unwrap();
         }
         std::fs::write(dir.join("match-0000000100.json"), b"{}").unwrap();
         std::fs::write(dir.join("save-outpost.json"), b"{}").unwrap();
+        std::fs::write(dir.join("autosave-legacy.json"), b"{}").unwrap();
         std::fs::write(dir.join("autosave-0000000001.tmp.42.0"), b"live").unwrap();
         rotate(&dir);
         assert!(
-            !dir.join("autosave-0000000000.json").exists(),
+            !dir.join("autosave-0000000000.oxsave").exists(),
             "only the oldest autosave died"
         );
         for n in 1..6 {
-            assert!(dir.join(format!("autosave-000000000{n}.json")).exists());
+            assert!(dir.join(format!("autosave-000000000{n}.oxsave")).exists());
         }
         assert!(dir.join("match-0000000100.json").exists());
+        assert!(dir.join("autosave-legacy.json").exists());
         assert!(
             dir.join("save-outpost.json").exists(),
             "explicit saves are never rotation's to take"
@@ -842,11 +720,11 @@ mod tests {
         let dir = scratch("at-budget");
         std::fs::create_dir_all(&dir).unwrap();
         for n in 0..KEEP_AUTOSAVES {
-            std::fs::write(dir.join(format!("autosave-{n:010}.json")), b"{}").unwrap();
+            std::fs::write(dir.join(format!("autosave-{n:010}.oxsave")), b"{}").unwrap();
         }
         rotate(&dir);
         for n in 0..KEEP_AUTOSAVES {
-            assert!(dir.join(format!("autosave-{n:010}.json")).exists());
+            assert!(dir.join(format!("autosave-{n:010}.oxsave")).exists());
         }
         std::fs::remove_dir_all(&dir).ok();
     }
