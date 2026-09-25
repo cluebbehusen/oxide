@@ -126,6 +126,10 @@ an interval that has already reached a result. `profile-shell` reconstructs only
 through `--from`; commands after that tick come from the live continuation, not
 the recorded replay suffix.
 
+For changes to hot paths, caches, scheduling, persistence or session
+transitions, use the scoped workloads and regression checks in
+[Performance and persistence regression procedure](references/performance.md).
+
 ### Profile screen transitions
 
 Launch with `--profile-frames` and bracket one transition at a time with

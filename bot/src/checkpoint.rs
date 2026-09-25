@@ -67,3 +67,27 @@ where
     assert_eq!(value, &restored);
     restored
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opaque_payload_uses_a_compact_byte_string() {
+        let checkpoint = BotCheckpoint {
+            version: VERSION,
+            payload: (0..=255).cycle().take(4096).collect(),
+        };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&checkpoint, &mut bytes).unwrap();
+        assert!(
+            bytes.len() <= checkpoint.payload.len() + 128,
+            "binary payload expanded from {} to {} bytes",
+            checkpoint.payload.len(),
+            bytes.len()
+        );
+        let restored: BotCheckpoint = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(checkpoint.payload, restored.payload);
+        assert_eq!(checkpoint.version, restored.version);
+    }
+}
