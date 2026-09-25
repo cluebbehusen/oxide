@@ -341,9 +341,13 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                 });
             }
             Err(error) => {
+                eprintln!(
+                    "{} failed: {error:#}",
+                    if loading { "Load" } else { "Save" }
+                );
                 if busy.quit_after {
                     return Ok(Screen::Pause(PauseScreen::open_save_failed(
-                        format!("could not save: {error:#}"),
+                        error.to_string(),
                         screens::pause::LeaveVerb::Quit,
                         app.game.state.result().is_some(),
                         can_surrender(&app.game),
@@ -352,7 +356,7 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                 }
                 if let Intent::Leave(verb, home) = busy.intent {
                     return Ok(Screen::Pause(PauseScreen::open_save_failed(
-                        format!("could not save: {error:#}"),
+                        error.to_string(),
                         verb,
                         app.game.state.result().is_some(),
                         can_surrender(&app.game),
@@ -365,14 +369,15 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                     home.clear_recovery();
                 }
                 app.menu_notice = Some((
-                    format!(
-                        "{} failed: {error:#}",
-                        if loading { "Load" } else { "Save" }
-                    ),
+                    if loading {
+                        format!("Load failed: {error}")
+                    } else {
+                        error.to_string()
+                    },
                     get_time() + 8.0,
                 ));
                 if let Screen::Pause(ref mut pause) = *busy.back {
-                    pause.end_naming(format!("could not save: {error:#}"));
+                    pause.end_naming(error.to_string());
                 }
                 return Ok(*busy.back);
             }
@@ -393,8 +398,10 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                 };
                 let job = autosave::SaveJob::capture(&app.game, name);
                 Box::new(move |_| {
-                    job.run()
-                        .map_err(|error| anyhow::anyhow!("{}: {error}", error.player_line()))?;
+                    job.run().map_err(|error| {
+                        let line = error.player_line();
+                        anyhow::Error::new(error).context(line)
+                    })?;
                     Ok(Output::Saved)
                 })
             }

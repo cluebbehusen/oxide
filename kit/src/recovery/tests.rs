@@ -714,6 +714,78 @@ fn retention_preserves_export_readers_and_explicit_reports() {
 }
 
 #[test]
+fn admission_prefers_clean_records_and_preserves_protected_or_invalid_ones() {
+    let root = temp();
+    let directories: Vec<_> = (0..5)
+        .map(|index| root.join(format!("session-{index}")))
+        .collect();
+    for (index, directory) in directories.iter().enumerate() {
+        std::fs::create_dir(directory).unwrap();
+        File::create(directory.join("lease")).unwrap();
+        File::create(directory.join("readers")).unwrap();
+        let bytes = match index {
+            0 => encoded(Vec::new()),
+            3 => b"invalid journal".to_vec(),
+            _ => encoded(vec![Event::Clean { tick: 0 }]),
+        };
+        std::fs::write(directory.join("recovery.bin"), bytes).unwrap();
+    }
+    let reader = File::open(directories[1].join("readers")).unwrap();
+    reader.lock_shared().unwrap();
+    let active = File::open(directories[4].join("lease")).unwrap();
+    active.lock().unwrap();
+    let writer = start(root.clone()).unwrap();
+    wait(&writer, |status| status.ready || status.error.is_some());
+    assert!(writer.status().error.is_none(), "{:?}", writer.status());
+    assert_eq!(session_directories(&root).len(), 5);
+    for (index, directory) in directories.iter().enumerate() {
+        assert_eq!(directory.exists(), index != 2, "{}", directory.display());
+    }
+    drop_and_wait(writer);
+    drop((reader, active));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn interrupted_admission_refuses_protected_records_then_reclaims_the_oldest() {
+    let root = temp();
+    let mut readers = Vec::new();
+    let mut directories = Vec::new();
+    for index in 0..3 {
+        let directory = root.join(format!("session-{index}"));
+        std::fs::create_dir(&directory).unwrap();
+        File::create(directory.join("lease")).unwrap();
+        File::create(directory.join("readers")).unwrap();
+        let reader = File::open(directory.join("readers")).unwrap();
+        reader.lock_shared().unwrap();
+        readers.push(reader);
+        std::fs::write(directory.join("recovery.bin"), encoded(Vec::new())).unwrap();
+        directories.push(directory);
+    }
+    let refused = start(root.clone()).unwrap();
+    wait(&refused, |status| status.error.is_some());
+    assert!(
+        refused
+            .status()
+            .error
+            .unwrap()
+            .contains("interrupted recovery limit")
+    );
+    assert!(!refused.directory().exists());
+    assert!(directories.iter().all(|directory| directory.exists()));
+    drop(refused);
+    readers[0].unlock().unwrap();
+    let admitted = start(root.clone()).unwrap();
+    wait(&admitted, |status| status.ready || status.error.is_some());
+    assert!(admitted.status().error.is_none(), "{:?}", admitted.status());
+    assert!(!directories[0].exists());
+    assert!(directories[1..].iter().all(|directory| directory.exists()));
+    drop_and_wait(admitted);
+    drop(readers);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn report_verification_rejects_a_changed_replay() {
     let root = temp();
     let writer = start(root.clone()).unwrap();
