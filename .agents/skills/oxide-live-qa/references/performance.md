@@ -93,6 +93,12 @@ improvement.
 Use the native shell for these measurements. The live protocol remains usable
 for UI/status queries while a persistence operation owns the session.
 
+For a fixed late-game input, copy the retained
+[Skyhook checkpoint](../../../../driver/tests/fixtures/performance/skyhook-late.oxsave)
+into the isolated profile's saves folder, then load it through the shelf. It has
+seven bots at tick 21839 and is a profiling fixture, not a format-compatibility
+golden. Replace it deliberately when the unpublished format changes.
+
 For an isolated automated session, launch from a separate terminal. This changes
 only the child process environment and prints the disposable profile location:
 
