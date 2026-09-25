@@ -15,6 +15,9 @@ use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_T
 
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
+/// Travel, in logical px at 1x, past which a finger scrolls the list
+/// instead of tapping a row.
+const DRAG_SLOP: f32 = 8.0;
 
 thread_local! {
     static MENU_BINDINGS: std::cell::RefCell<crate::action::BindingMap> = std::cell::RefCell::new(crate::action::BindingMap::classic());
@@ -72,6 +75,10 @@ pub struct Menu {
     wheel_accum: f32,
     /// Row armed by a mouse press or the owning finger.
     press: Press<usize>,
+    /// The first finger down, which scrolls the list once it drags. A
+    /// touch-only player has no wheel or paging keys, so this is the
+    /// only way to reach rows below the window.
+    drag: Option<TouchDrag>,
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
     /// activated — the map browser's format headings.
     headers: Vec<usize>,
@@ -79,6 +86,18 @@ pub struct Menu {
     /// width, zero for a centered list: the codex shifts its list left
     /// to make room for the page beside it.
     pub shift: f32,
+}
+
+/// A finger dragging a menu list.
+#[derive(Debug, Clone, Copy)]
+struct TouchDrag {
+    id: u64,
+    last_y: f32,
+    /// Total distance moved, for the tap-versus-drag slop.
+    travel: f32,
+    /// Movement not yet spent on a whole row of scrolling.
+    carry: f32,
+    scrolling: bool,
 }
 
 fn view_w() -> f32 {
@@ -106,6 +125,7 @@ impl Menu {
             hover: None,
             wheel_accum: 0.0,
             press: Press::default(),
+            drag: None,
             headers,
             shift: 0.0,
         };
@@ -196,6 +216,38 @@ impl Menu {
         self.selected = self.snap_clamped(clamped, if clamped < self.selected { -1 } else { 1 });
     }
 
+    /// Follows the dragging finger to `y`. Past the slop the drag owns
+    /// the gesture: the armed row is dropped, and each row-height of
+    /// travel scrolls one row, with the content following the finger.
+    /// Returns whether the drag is scrolling.
+    fn drag_to(&mut self, y: f32) -> bool {
+        let Some(mut drag) = self.drag else {
+            return false;
+        };
+        let dy = y - drag.last_y;
+        drag.last_y = y;
+        drag.travel += dy.abs();
+        if !drag.scrolling && drag.travel > DRAG_SLOP * ui() {
+            drag.scrolling = true;
+            self.press.cancel();
+            self.hover = None;
+        }
+        if drag.scrolling {
+            drag.carry += dy;
+            let (_, row, _, _) = self.layout();
+            while drag.carry >= row {
+                self.scroll_by(-1);
+                drag.carry -= row;
+            }
+            while drag.carry <= -row {
+                self.scroll_by(1);
+                drag.carry += row;
+            }
+        }
+        self.drag = Some(drag);
+        drag.scrolling
+    }
+
     fn row_at(&self, point: Vec2) -> Option<usize> {
         (0..self.items.len()).find(|i| self.item_rect(*i).is_some_and(|r| r.contains(point)))
     }
@@ -261,6 +313,34 @@ impl Menu {
             return None;
         }
         for event in events {
+            match *event {
+                RawEvent::TouchDown { id, y, .. } if self.drag.is_none() => {
+                    self.drag = Some(TouchDrag {
+                        id,
+                        last_y: y,
+                        travel: 0.0,
+                        carry: 0.0,
+                        scrolling: false,
+                    });
+                }
+                RawEvent::TouchMove { id, y, .. }
+                    if self.drag.is_some_and(|drag| drag.id == id) && self.drag_to(y) =>
+                {
+                    continue;
+                }
+                RawEvent::TouchUp { id, .. }
+                    if self
+                        .drag
+                        .is_some_and(|drag| drag.id == id && drag.scrolling) =>
+                {
+                    self.drag = None;
+                    continue;
+                }
+                RawEvent::TouchUp { id, .. } if self.drag.is_some_and(|drag| drag.id == id) => {
+                    self.drag = None;
+                }
+                _ => {}
+            }
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
@@ -728,6 +808,101 @@ mod empty_tests {
             Some(1)
         );
         assert_eq!(menu.selected, 1);
+    }
+
+    fn drag(menu: &mut Menu, id: u64, x: f32, from: f32, to: f32) -> Option<usize> {
+        let mut mouse = vec2(0.0, 0.0);
+        let mut events = vec![RawEvent::TouchDown { id, x, y: from }];
+        let steps = 12;
+        for step in 1..=steps {
+            let y = from + (to - from) * step as f32 / steps as f32;
+            events.push(RawEvent::TouchMove { id, x, y });
+        }
+        events.push(RawEvent::TouchUp { id, x, y: to });
+        menu.handle(&events, &mut mouse)
+    }
+
+    #[test]
+    fn a_touch_drag_scrolls_a_long_list_without_activating() {
+        crate::render::set_viewport(1280.0, 400.0);
+        let mut items: Vec<String> = (0..39).map(|i| format!("row {i}")).collect();
+        items.push("Back".to_string());
+        let mut menu = Menu::new("LONG", items);
+        assert!(menu.item_rect(39).is_none(), "Back starts below the window");
+        let x = menu.item_rect(0).expect("first row").center().x;
+        for _ in 0..10 {
+            assert_eq!(
+                drag(&mut menu, 7, x, 330.0, 180.0),
+                None,
+                "a drag never activates"
+            );
+        }
+        let back = menu
+            .item_rect(39)
+            .expect("dragging up reveals Back")
+            .center();
+        let mut mouse = vec2(0.0, 0.0);
+        let tapped = menu.handle(
+            &[
+                RawEvent::TouchDown {
+                    id: 8,
+                    x: back.x,
+                    y: back.y,
+                },
+                RawEvent::TouchUp {
+                    id: 8,
+                    x: back.x,
+                    y: back.y,
+                },
+            ],
+            &mut mouse,
+        );
+        assert_eq!(tapped, Some(39));
+        drag(&mut menu, 9, x, 180.0, 330.0);
+        assert_eq!(
+            menu.visible_range()[0],
+            30,
+            "dragging down 150 px of 30 px rows shows five earlier rows"
+        );
+    }
+
+    #[test]
+    fn a_touch_within_the_slop_still_activates_its_row() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut menu = Menu::new("TOUCH", vec!["one".to_string(), "two".to_string()]);
+        let row = menu.item_rect(1).expect("second row").center();
+        assert_eq!(drag(&mut menu, 7, row.x, row.y, row.y + 3.0), Some(1));
+    }
+
+    #[test]
+    fn a_drag_that_began_on_a_row_never_commits_it() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut menu = Menu::new("TOUCH", vec!["one".to_string(), "two".to_string()]);
+        let row = menu.item_rect(1).expect("second row").center();
+        let mut mouse = vec2(0.0, 0.0);
+        let events = [
+            RawEvent::TouchDown {
+                id: 7,
+                x: row.x,
+                y: row.y,
+            },
+            RawEvent::TouchMove {
+                id: 7,
+                x: row.x,
+                y: row.y + 40.0,
+            },
+            RawEvent::TouchMove {
+                id: 7,
+                x: row.x,
+                y: row.y,
+            },
+            RawEvent::TouchUp {
+                id: 7,
+                x: row.x,
+                y: row.y,
+            },
+        ];
+        assert_eq!(menu.handle(&events, &mut mouse), None);
     }
 
     #[test]
