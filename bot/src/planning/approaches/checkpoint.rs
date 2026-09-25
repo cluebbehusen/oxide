@@ -160,6 +160,55 @@ mod tests {
     }
 
     #[test]
+    fn completed_field_storage_scales_with_recipes_not_distance_arrays() {
+        let blocked = vec![false; 128 * 128];
+        let grid = KnownGrid::new(128, 128, &blocked).unwrap();
+        let mut work = ApproachPreparation::default();
+        for x in 0..32 {
+            assert!(matches!(
+                work.advance(
+                    QueryPurpose::NavigationTest,
+                    24,
+                    grid,
+                    &[TilePos::new(x, 127)],
+                    None,
+                    &mut WorkBudget::new(usize::MAX),
+                ),
+                Progress::Ready(_)
+            ));
+        }
+        assert_eq!(work.counts(), (0, 32));
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&work, &mut bytes).unwrap();
+        assert!(
+            bytes.len() <= 32 * 1024,
+            "completed recipes grew to {} bytes",
+            bytes.len()
+        );
+        let mut restored: ApproachPreparation = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(work, restored);
+        let mut budget = WorkBudget::new(0);
+        for x in 0..32 {
+            assert!(matches!(
+                restored.advance(
+                    QueryPurpose::NavigationTest,
+                    25,
+                    grid,
+                    &[TilePos::new(x, 127)],
+                    None,
+                    &mut budget,
+                ),
+                Progress::Ready(_)
+            ));
+        }
+        assert_eq!(
+            budget.spent(),
+            0,
+            "restoration cannot turn ready answers back into budgeted work"
+        );
+    }
+
+    #[test]
     fn oversized_complete_recipes_are_rejected_before_reconstruction() {
         let jobs = (0..130)
             .map(|n| {

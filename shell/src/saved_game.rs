@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use chassis::replay::ReplayMeta;
 use oxide_sim::SIM_VERSION;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const VERSION: u32 = 1;
@@ -169,12 +169,15 @@ pub fn load(path: &Path, _diagnostics: Option<&oxide_kit::diagnostics::Recorder>
 pub fn inspect(path: &Path) -> Result<RecordInfo> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
+    inspect_reader(path, &mut file, len)
+}
+
+fn inspect_reader(path: &Path, file: &mut (impl Read + Seek), len: u64) -> Result<RecordInfo> {
     let mut magic = [0; 8];
     let compact = file.read_exact(&mut magic).is_ok() && &magic == MAGIC;
     if compact {
-        use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0))?;
-        let header = read_header(&mut file, len)?;
+        let header = read_header(file, len)?;
         let problem = check_header(&header)
             .err()
             .map(|error| format!("{error:#}"));
@@ -347,10 +350,41 @@ mod tests {
         write(&game, meta(&game), &path.0).unwrap();
         let original = std::fs::read(&path.0).unwrap();
         let header_end = 12 + u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
-        let mut metadata_only = &original[..header_end];
-        let header = read_header(&mut metadata_only, original.len() as u64).unwrap();
-        assert!(metadata_only.is_empty());
-        assert_eq!(header.meta.ticks, Some(0));
+        struct MetadataOnly {
+            inner: std::io::Cursor<Vec<u8>>,
+            limit: u64,
+            payload_attempted: bool,
+        }
+        impl Read for MetadataOnly {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if self.inner.position().saturating_add(bytes.len() as u64) > self.limit {
+                    self.payload_attempted = true;
+                    return Err(std::io::Error::other("catalog touched checkpoint payload"));
+                }
+                self.inner.read(bytes)
+            }
+        }
+        impl Seek for MetadataOnly {
+            fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+                let position = self.inner.seek(from)?;
+                if position > self.limit {
+                    self.payload_attempted = true;
+                    return Err(std::io::Error::other(
+                        "catalog sought into checkpoint payload",
+                    ));
+                }
+                Ok(position)
+            }
+        }
+        let mut reader = MetadataOnly {
+            inner: std::io::Cursor::new(original.clone()),
+            limit: header_end as u64,
+            payload_attempted: false,
+        };
+        let info = inspect_reader(&path.0, &mut reader, original.len() as u64).unwrap();
+        assert!(!reader.payload_attempted);
+        assert_eq!(reader.inner.position(), header_end as u64);
+        assert_eq!(info.meta.ticks, Some(0));
         let mut corrupt = original.clone();
         *corrupt.last_mut().unwrap() ^= 1;
         std::fs::write(&path.0, &corrupt).unwrap();
@@ -374,6 +408,55 @@ mod tests {
         malformed[8..12].copy_from_slice(&((MAX_HEADER + 1) as u32).to_le_bytes());
         std::fs::write(&path.0, malformed).unwrap();
         assert!(prepare_load(&path.0).is_err());
+    }
+
+    #[test]
+    fn representative_checkpoints_stay_compact_and_continue_exactly() {
+        let mut dense = oxide_kit::bench::mass_battle(250, 7);
+        oxide_kit::bench::all_bots(&mut dense);
+        let skyhook: Scenario =
+            serde_json::from_str(include_str!("../../scenarios/skyhook-anchorage.json")).unwrap();
+        for scenario in [dense, skyhook] {
+            let path = Fixture::new();
+            let mut game = Game::new(scenario).unwrap();
+            game.advance_ticks(24);
+            write(&game, meta(&game), &path.0).unwrap();
+            let mut file = std::fs::File::open(&path.0).unwrap();
+            let bytes = file.metadata().unwrap().len();
+            let header = read_header(&mut file, bytes).unwrap();
+            eprintln!(
+                "{}: file={bytes}, decoded={}",
+                game.scenario.name, header.decoded_bytes
+            );
+            assert!(
+                bytes <= 1024 * 1024,
+                "{}: compressed checkpoint grew to {bytes} bytes",
+                game.scenario.name
+            );
+            assert!(
+                header.decoded_bytes <= 8 * 1024 * 1024,
+                "{}: checkpoint grew to {} decoded bytes",
+                game.scenario.name,
+                header.decoded_bytes
+            );
+            let mut restored = prepare_load(&path.0).unwrap().install();
+            assert_eq!(game.hash_hex(), restored.hash_hex());
+            let start = game.state.current_tick();
+            for _ in 0..24 {
+                assert_eq!(game.do_tick().events, restored.do_tick().events);
+                assert_eq!(game.hash_hex(), restored.hash_hex());
+            }
+            let suffix: Vec<_> = game
+                .recorder
+                .commands
+                .iter()
+                .filter(|command| command.tick >= start)
+                .collect();
+            assert_eq!(
+                serde_json::to_value(suffix).unwrap(),
+                serde_json::to_value(&restored.recorder.commands).unwrap()
+            );
+        }
     }
 
     #[test]

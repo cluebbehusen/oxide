@@ -118,6 +118,14 @@ exposes different seed cells that nevertheless generated identical play. Treat
 those metrics as diagnostics; inspect the preserved replays and use human play
 and replay judgment to decide whether behavior is credible or fun.
 
+## Performance regression checks
+
+The
+[performance and persistence procedure](../.agents/skills/oxide-live-qa/references/performance.md)
+provides fresh-checkout workload commands, portable save-size and planning-work
+guards, and scoped native timing requirements. Use its fixed inputs for
+candidate/control comparisons; wall-clock thresholds are machine-qualified.
+
 ## Coverage boundaries
 
 `tests/hashes.rs` runs six small controller-free scenarios for economy,

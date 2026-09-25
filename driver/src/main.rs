@@ -389,7 +389,7 @@ enum Cmd {
     /// Resume a record prefix and profile a live Playing interval in a
     /// temporary real GPU-backed shell.
     ProfileShell {
-        /// Replay or save JSON whose prefix becomes the live match.
+        /// Scenario-origin replay JSON whose prefix becomes the live match.
         replay: PathBuf,
         /// First tick included in the measured window.
         #[arg(long, default_value_t = 0)]
@@ -403,7 +403,7 @@ enum Cmd {
         /// Debug-server port for the temporary shell.
         #[arg(long, default_value_t = 4198)]
         port: u16,
-        /// Profile an unoptimized development shell instead of release.
+        /// Profile the development shell instead of release.
         #[arg(long)]
         dev: bool,
     },

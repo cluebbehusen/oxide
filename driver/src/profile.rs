@@ -1,6 +1,6 @@
 //! Reproducible profiling of a resumed match in the actual GPU-backed shell.
 
-use crate::auto::{ShellGuard, build_shell_executable_for};
+use crate::auto::{ShellGuard, build_shell_executable_for, isolate_home};
 use crate::client::Client;
 use anyhow::{Context, Result, bail, ensure};
 use oxide_kit::runner::GameReplay;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 /// Inputs for one native-shell profiling run.
 pub struct ProfileOptions<'a> {
-    /// Replay or save whose prefix becomes a live resumed match.
+    /// Scenario-origin replay whose prefix becomes a live resumed match.
     pub replay: &'a Path,
     /// First replay tick included in the timed window.
     pub from: u64,
@@ -22,7 +22,7 @@ pub struct ProfileOptions<'a> {
     pub speed: f64,
     /// Debug-server port used by the temporary shell.
     pub port: u16,
-    /// Build the unoptimized development profile instead of release.
+    /// Build the development profile instead of release.
     pub dev: bool,
 }
 
@@ -92,12 +92,12 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let executable = build_shell_executable_for(!options.dev)?;
-    let prefix = TemporaryReplay::create(&root, options.port, prefix_at(record, options.from))?;
+    let workspace = ProfileWorkspace::create(&root, options.port, prefix_at(record, options.from))?;
     let mut command = std::process::Command::new(executable);
     command
         .args([
             "--replay",
-            prefix.path().to_string_lossy().as_ref(),
+            workspace.replay.to_string_lossy().as_ref(),
             "--debug-server",
             "--paused",
             "--profile-frames",
@@ -107,7 +107,8 @@ pub fn run(options: &ProfileOptions<'_>) -> Result<ProfileReport> {
             &options.port.to_string(),
         ])
         .env("OXIDE_RESOURCE_ROOT", &root)
-        .current_dir(&root);
+        .current_dir(&workspace.directory);
+    isolate_home(&mut command, &workspace.directory);
     let child = command.spawn().context("spawning profiled Oxide shell")?;
     let _guard = ShellGuard::new(child);
     let mut client = connect(options.port)?;
@@ -259,33 +260,37 @@ fn validate_resume_tick(total: u64, from: u64) -> Result<()> {
     Ok(())
 }
 
-struct TemporaryReplay {
-    path: PathBuf,
+struct ProfileWorkspace {
+    directory: PathBuf,
+    replay: PathBuf,
 }
 
-impl TemporaryReplay {
+impl ProfileWorkspace {
     fn create(root: &Path, port: u16, replay: GameReplay) -> Result<Self> {
-        let directory = root.join("target/oxide-profile");
-        std::fs::create_dir_all(&directory).context("creating profile scratch directory")?;
-        let path = directory.join(format!(
-            "live-prefix-{}-{port}-{}.json",
+        let parent = root.join("target/oxide-profile");
+        std::fs::create_dir_all(&parent).context("creating profile scratch directory")?;
+        let directory = parent.join(format!(
+            "{}-{port}-{}",
             std::process::id(),
-            replay.meta.ticks.unwrap_or(0)
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
         ));
+        std::fs::create_dir(&directory).context("creating isolated profile workspace")?;
+        let workspace = Self {
+            replay: directory.join("prefix.json"),
+            directory,
+        };
         replay
-            .save(&path)
-            .with_context(|| format!("writing temporary replay prefix {}", path.display()))?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
+            .save(&workspace.replay)
+            .context("writing temporary replay prefix")?;
+        Ok(workspace)
     }
 }
 
-impl Drop for TemporaryReplay {
+impl Drop for ProfileWorkspace {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.path).ok();
+        std::fs::remove_dir_all(&self.directory).ok();
     }
 }
 
