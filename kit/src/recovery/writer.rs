@@ -364,24 +364,7 @@ fn run(
         .truncate(false)
         .open(root.join("budget.lock"))?;
     budget.lock()?;
-    prune(root);
-    let sessions = session_directories(root);
-    ensure!(
-        sessions.len() < 5,
-        "recovery session limit: existing records are protected"
-    );
-    ensure!(
-        sessions
-            .iter()
-            .filter(|directory| inspect(directory).is_ok_and(|record| !record.clean))
-            .count()
-            < 3,
-        "interrupted recovery limit: existing records are protected"
-    );
-    ensure!(
-        managed_size(root).saturating_add(SESSION_RESERVATION) <= MANAGED_BYTES,
-        "recovery storage budget exhausted"
-    );
+    admit(root)?;
     std::fs::create_dir(directory)?;
     let lease = File::options()
         .read(true)
@@ -645,26 +628,34 @@ fn managed_size(root: &Path) -> u64 {
         })
         .sum()
 }
-fn prune(root: &Path) {
-    let mut directories = session_directories(root);
-    directories.sort_by_key(|directory| {
-        (
-            !inspect(directory).is_ok_and(|record| record.clean),
-            directory.clone(),
-        )
+// The caller holds the budget lock, so journal flushes cannot change this
+// inspection while retention and admission use it.
+fn admit(root: &Path) -> Result<()> {
+    let mut directories: Vec<_> = session_directories(root)
+        .into_iter()
+        .map(|directory| {
+            let clean = inspect(&directory).ok().map(|record| record.clean);
+            (directory, clean)
+        })
+        .collect();
+    directories.sort_by(|(a, clean_a), (b, clean_b)| {
+        (clean_a != &Some(true), a).cmp(&(clean_b != &Some(true), b))
     });
     let mut remaining = directories.len();
     let mut interrupted = directories
         .iter()
-        .filter(|directory| inspect(directory).is_ok_and(|record| !record.clean))
+        .filter(|(_, clean)| *clean == Some(false))
         .count();
-    for directory in directories {
+    for (directory, clean) in directories {
         if remaining < 5
             && interrupted < 3
             && managed_size(root).saturating_add(SESSION_RESERVATION) <= MANAGED_BYTES
         {
             break;
         }
+        let Some(clean) = clean else {
+            continue;
+        };
         let Some(_lease) = inactive(&directory) else {
             continue;
         };
@@ -678,13 +669,24 @@ fn prune(root: &Path) {
         if readers.try_lock().is_err() {
             continue;
         }
-        if let Ok(record) = inspect(&directory)
-            && std::fs::remove_dir_all(&directory).is_ok()
-        {
+        if std::fs::remove_dir_all(&directory).is_ok() {
             remaining -= 1;
-            if !record.clean {
+            if !clean {
                 interrupted = interrupted.saturating_sub(1);
             }
         }
     }
+    ensure!(
+        remaining < 5,
+        "recovery session limit: existing records are protected"
+    );
+    ensure!(
+        interrupted < 3,
+        "interrupted recovery limit: existing records are protected"
+    );
+    ensure!(
+        managed_size(root).saturating_add(SESSION_RESERVATION) <= MANAGED_BYTES,
+        "recovery storage budget exhausted"
+    );
+    Ok(())
 }
