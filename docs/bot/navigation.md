@@ -19,7 +19,11 @@ terrain, share their component labels and command-frame masks across consumers.
 Exploration restrictions have separate derived masks; danger and hypothetical
 footprints remain query overlays. Search scratch remains query- or worker-owned.
 Alternate public briefings and command orientations are checked against exact
-inputs and cannot reuse an incompatible surface.
+inputs and cannot reuse an incompatible surface. Construction shares known-road
+component labels across origins within an observation, including escape from a
+blocked origin through its open neighbors. Authored terrain is shared across
+briefing clones and prepared orientations. Changing a hypothetical briefing
+gives it separate terrain storage.
 
 Exact component labels can also be shared across observations with identical
 dimensions and complete passability masks. Each worker retains at most sixteen
@@ -92,8 +96,12 @@ traversal that can yield after a deterministic number of queue entries. Fresh
 Foundry logistics, voluntary coverage, and production refinement share a
 controller-owned work allowance. Passability preparation and traversal consume
 work; unfinished fields resume on later decisions and never mean unreachable.
-Foundry retains four jobs. Ground coverage, air coverage, and candidate routing
-each retain at most sixteen pending jobs and 32 MiB of completed field payloads.
+Foundry retains four jobs. Its checkpoint stores dynamic exclusions and search
+progress; restoration binds authored terrain from the session scenario before
+pending work resumes. Ground coverage, air coverage, and candidate routing split
+each controller's 96 MiB completed-field payload allowance evenly, with at most
+sixteen pending jobs per domain. Pending jobs and Foundry storage are additional
+to that payload allowance; it is not a bound on total controller memory.
 Candidate fields include the hypothetical footprint in their key without
 replacing other candidates' progress. Exact terrain and blocking changes
 invalidate affected work; unfinished field jobs expire after 120 ticks without a

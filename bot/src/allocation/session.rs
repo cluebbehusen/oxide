@@ -3230,7 +3230,7 @@ mod tests {
             map_height: 20,
             starting_foundries: Vec::new(),
             teams: vec![None],
-            non_ground_terrain: Vec::new(),
+            non_ground_terrain: Default::default(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
@@ -3315,7 +3315,7 @@ mod tests {
             map_height: observation.map_height,
             starting_foundries: Vec::new(),
             teams: vec![None, None],
-            non_ground_terrain: Vec::new(),
+            non_ground_terrain: Default::default(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         };
@@ -3520,7 +3520,7 @@ mod tests {
             map_height: observation.map_height,
             starting_foundries: Vec::new(),
             teams: vec![None, None],
-            non_ground_terrain: Vec::new(),
+            non_ground_terrain: Default::default(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
@@ -4579,7 +4579,7 @@ mod tests {
                 anchor: TilePos::new(24, 10),
             }],
             teams: vec![None, None],
-            non_ground_terrain: vec![],
+            non_ground_terrain: Default::default(),
             extractor_frames: vec![],
             initial_scrap: vec![],
         };

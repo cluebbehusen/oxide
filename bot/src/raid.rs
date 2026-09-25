@@ -1015,7 +1015,7 @@ mod tests {
             map_height: obs.map_height,
             starting_foundries: vec![],
             teams: vec![None, None],
-            non_ground_terrain: vec![],
+            non_ground_terrain: Default::default(),
             extractor_frames: vec![],
             initial_scrap: vec![],
         };

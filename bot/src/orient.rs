@@ -216,7 +216,7 @@ impl Orientation {
         for start in &mut oriented.starting_foundries {
             start.anchor = self.anchor(start.anchor, foundry_size);
         }
-        for (position, _) in &mut oriented.non_ground_terrain {
+        for (position, _) in std::sync::Arc::make_mut(&mut oriented.non_ground_terrain) {
             *position = self.tile(*position);
         }
         for frame in &mut oriented.extractor_frames {
@@ -225,8 +225,7 @@ impl Orientation {
         for (position, _) in &mut oriented.initial_scrap {
             *position = self.tile(*position);
         }
-        oriented
-            .non_ground_terrain
+        std::sync::Arc::make_mut(&mut oriented.non_ground_terrain)
             .sort_by_key(|(position, _)| (position.y, position.x));
         oriented
             .extractor_frames
@@ -234,6 +233,7 @@ impl Orientation {
         oriented
             .initial_scrap
             .sort_by_key(|(position, _)| (position.y, position.x));
+        oriented.share_prepared_terrain();
         oriented
     }
 

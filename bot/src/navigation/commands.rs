@@ -2376,7 +2376,7 @@ mod tests {
             map_height: obs.map_height,
             starting_foundries: Vec::new(),
             teams: Vec::new(),
-            non_ground_terrain,
+            non_ground_terrain: non_ground_terrain.into(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
@@ -2571,7 +2571,7 @@ mod tests {
                         .map(|y| (TilePos::new(6, y), Terrain::Rock))
                         .collect()
                 }
-                4 => map.non_ground_terrain.clear(),
+                4 => map.non_ground_terrain = Default::default(),
                 5 => obs.explored.fill(false),
                 6 => obs.explored.fill(true),
                 _ => {}
@@ -2604,7 +2604,12 @@ mod tests {
         }
         // A zero-length command is accepted before A* tests public terrain;
         // the safety entry point's observed-terrain guard still takes precedence.
-        map.non_ground_terrain.push((from, Terrain::Rock));
+        map.non_ground_terrain = map
+            .non_ground_terrain
+            .iter()
+            .copied()
+            .chain([(from, Terrain::Rock)])
+            .collect();
         let routes = RouteProjection::ground_avoiding_with_public_terrain(
             QueryPurpose::NavigationTest,
             &obs,

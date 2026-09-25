@@ -378,6 +378,22 @@ fn newborn_at_factory(
             })
 }
 
+fn air_danger_mask((width, height): (i32, i32), sources: &[(TilePos, Fx)]) -> Vec<bool> {
+    let mut blocked = vec![false; crate::navigation::flood::area(width, height)];
+    for &(source, range) in sources {
+        let radius = range.ceil().to_num::<i32>();
+        let squared = range * range;
+        for y in (source.y - radius).max(0)..=(source.y + radius).min(height - 1) {
+            for x in (source.x - radius).max(0)..=(source.x + radius).min(width - 1) {
+                if source.center().dist_sq(TilePos::new(x, y).center()) <= squared {
+                    blocked[(y * width + x) as usize] = true;
+                }
+            }
+        }
+    }
+    blocked
+}
+
 struct ReconRoutes<'a> {
     context: EconomicInvestmentContext<'a>,
     danger: &'a danger::HarvestDangerProjection,
@@ -426,7 +442,7 @@ impl<'a> ReconRoutes<'a> {
                     .iter()
                     .filter(|weapon| weapon.targets.covers(Domain::Air))
                 {
-                    air_sources.push((unit.tile.center(), weapon.range + Fx::from_num(1)));
+                    air_sources.push((unit.tile, weapon.range + Fx::from_num(1)));
                 }
             }
             for building in context.building_contacts {
@@ -440,22 +456,19 @@ impl<'a> ReconRoutes<'a> {
                     .filter(|weapon| weapon.targets.covers(Domain::Air))
                 {
                     air_sources.push((
-                        building.anchor.center(),
+                        building.anchor,
                         weapon.range + Fx::from_num(stats.size.0.max(stats.size.1)),
                     ));
                 }
             }
+            let danger = air_danger_mask((obs.map_width, obs.map_height), &air_sources);
             RouteProjection::avoiding_with_public_terrain(
                 QueryPurpose::ReconApproach,
                 obs,
                 Domain::Air,
                 context.briefing,
                 context.orientation,
-                |tile| {
-                    air_sources
-                        .iter()
-                        .any(|(source, range)| source.dist_sq(tile.center()) <= *range * *range)
-                },
+                |tile| danger[(tile.y * obs.map_width + tile.x) as usize],
             )
         })
     }
@@ -1656,6 +1669,31 @@ impl ReconQuestion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stamped_air_danger_matches_circular_weapon_coverage() {
+        let sources = [
+            (TilePos::new(-1, 3), Fx::from_num(2)),
+            (TilePos::new(4, 2), Fx::from_num(3) / 2),
+            (TilePos::new(7, 6), Fx::from_num(4)),
+        ];
+        for count in 0..=sources.len() {
+            let mask = air_danger_mask((9, 7), &sources[..count]);
+            for y in 0..7 {
+                for x in 0..9 {
+                    let target = TilePos::new(x, y).center();
+                    assert_eq!(
+                        mask[(y * 9 + x) as usize],
+                        sources[..count]
+                            .iter()
+                            .any(|(source, range)| source.center().dist_sq(target)
+                                <= *range * *range)
+                    );
+                }
+            }
+        }
+    }
+
     use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 
     fn fixture() -> (Observation, PublicMapBriefing, ResolvedProfile) {
@@ -1707,7 +1745,7 @@ mod tests {
                 },
             ],
             teams: vec![None, None, None],
-            non_ground_terrain: vec![],
+            non_ground_terrain: Default::default(),
             extractor_frames: vec![],
             initial_scrap: vec![],
         };

@@ -14,7 +14,7 @@ struct ReachScratch {
     frontier: VecDeque<TilePos>,
 }
 
-pub(super) fn area(width: i32, height: i32) -> usize {
+pub(crate) fn area(width: i32, height: i32) -> usize {
     usize::try_from(width)
         .ok()
         .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))

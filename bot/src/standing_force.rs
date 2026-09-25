@@ -1150,7 +1150,7 @@ pub(crate) fn derive_standing_force_with_demand(
         let Some(service) = projection.targets.iter().copied().min() else {
             continue;
         };
-        let unmet = resources.current_scrap().amount().saturating_add(
+        let unmet = (resources.current_scrap().amount().saturating_add(
             resources
                 .forecast()
                 .income_through(
@@ -1158,7 +1158,8 @@ pub(crate) fn derive_standing_force_with_demand(
                         .saturating_add(super::strategy::connected_preparation_horizon()),
                 )
                 .amount(),
-        ) / UnitKind::Sentinel.stats().cost.max(1).max(1);
+        ) / UnitKind::Sentinel.stats().cost)
+            .max(1);
         for role in [Role::AirGround, Role::Bomber] {
             routing.capability_demands.push(CapabilityDemand {
                 kind: role.unit_for(obs.faction),
@@ -1224,7 +1225,7 @@ fn force_projection_candidates(
     let sentinel_strength = full_ground_strength(UnitKind::Sentinel).max(1);
     let lancer_strength = full_ground_strength(UnitKind::Lancer).max(1);
     let affordable_depth =
-        resources.current_scrap().amount() / UnitKind::Sentinel.stats().cost.max(1).max(1);
+        (resources.current_scrap().amount() / UnitKind::Sentinel.stats().cost).max(1);
     let case = ProposalCase {
         urgency: Urgency::Developmental,
         confidence: Confidence::Prior,
@@ -2207,7 +2208,7 @@ mod tests {
             map_height: obs.map_height,
             starting_foundries: Vec::new(),
             teams: vec![None, None],
-            non_ground_terrain,
+            non_ground_terrain: non_ground_terrain.into(),
             extractor_frames: Vec::new(),
             initial_scrap: Vec::new(),
         }
@@ -3047,6 +3048,54 @@ mod tests {
         .expect("the unprotected paid site needs security in its own component");
 
         assert_eq!(proposal.eligible_producers(), &[BuildingId(20)]);
+    }
+
+    #[test]
+    fn low_capital_preserves_ground_and_disconnected_air_investment_demand() {
+        for disconnected in [false, true] {
+            for scrap in [0, UnitKind::Sentinel.stats().cost - 1] {
+                let mut obs = observation(scrap);
+                let terrain = if disconnected {
+                    (0..obs.map_height)
+                        .map(|y| (TilePos::new(16, y), Terrain::Pit))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                obs.known_rock = terrain.iter().map(|(tile, _)| *tile).collect();
+                let map = public_map(&obs, terrain);
+                let targets = [StandingGroundTarget::point(TilePos::new(22, 10))];
+                let (profile, tuning) = prime();
+                let (proposals, demands) = derive_standing_force_with_demand(
+                    &obs,
+                    &StrategicIntelligence::new(),
+                    &profile,
+                    tuning,
+                    &ResourceSnapshot::from_observation(&obs),
+                    StandingForceContext::new(&[], &[]).with_ground_routing(
+                        StandingGroundTarget::point(TilePos::new(8, 10)),
+                        Some(&map),
+                        &targets,
+                        None,
+                    ),
+                );
+                let kind = if disconnected {
+                    UnitKind::Buzzard
+                } else {
+                    UnitKind::Sentinel
+                };
+                assert!(
+                    demands.iter().any(|demand| demand.kind == kind
+                        && demand.reason == StandingForceReason::ForceProjection
+                        && demand.unmet > 0),
+                    "unfunded capability must still motivate investment: {demands:?}"
+                );
+                assert!(
+                    proposals.is_empty(),
+                    "demand does not grant a missing producer or purchase capital"
+                );
+            }
+        }
     }
 
     #[test]
