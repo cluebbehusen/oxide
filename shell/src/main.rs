@@ -40,6 +40,7 @@ mod theme;
 mod track_motion;
 mod tutorial;
 mod typography;
+mod viewer_touch;
 
 use clap::Parser;
 use macroquad::prelude::*;

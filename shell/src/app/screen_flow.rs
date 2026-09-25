@@ -610,7 +610,11 @@ fn playback_frame(
             &app.input,
             Some(app.performance.view()),
         );
-        screens::playback::playback_hud(&pb, vec2(screen_width(), screen_height()));
+        screens::playback::playback_hud(
+            &pb,
+            vec2(screen_width(), screen_height()),
+            app.input.mouse,
+        );
         Screen::Playback(pb)
     }
 }
@@ -641,7 +645,7 @@ fn final_map_frame(
         &app.input,
         Some(app.performance.view()),
     );
-    final_map.draw_hud();
+    final_map.draw_hud(app.input.mouse);
     if leave {
         app.game.presentation.spectate = false;
         *rerun = true;

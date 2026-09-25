@@ -3,6 +3,7 @@
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
 use crate::game::{self, GameReplay, Presentation, Scene};
+use crate::press::{Fed, Press};
 use crate::render;
 use crate::render::prim::{fill_rect, stroke_rect};
 use anyhow::{Context, Result};
@@ -47,6 +48,14 @@ pub struct PlaybackSession {
     pub seeking: Option<u64>,
     /// A held press is scrubbing the timeline.
     pub scrubbing: bool,
+    /// The corner transport buttons' press.
+    buttons: Press<Transport>,
+    /// The finger scrubbing the timeline, if one landed on the bar.
+    scrub_finger: Option<u64>,
+    /// The finger steering the camera from the minimap.
+    minimap_finger: Option<u64>,
+    /// Pan and pinch for fingers on the battlefield.
+    viewer_touch: crate::viewer_touch::ViewerTouch,
     /// The composition timeline overlay is showing.
     pub show_stats: bool,
     /// Match statistics, computed from the record on first toggle —
@@ -161,6 +170,10 @@ impl PlaybackSession {
             return_to: ReturnTo::Home,
             seeking: None,
             scrubbing: false,
+            buttons: Press::default(),
+            scrub_finger: None,
+            minimap_finger: None,
+            viewer_touch: Default::default(),
             show_stats: false,
             stats: None,
             replay: record,
@@ -189,6 +202,21 @@ impl PlaybackSession {
     }
 }
 
+/// The viewer's corner buttons: the only way out, and the only
+/// transport, for a player without keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    Back,
+    PlayPause,
+}
+
+fn transport_buttons(s: f32) -> [(macroquad::prelude::Rect, Transport); 2] {
+    [
+        (crate::button::corner_slot(0, s), Transport::Back),
+        (crate::button::corner_slot(1, s), Transport::PlayPause),
+    ]
+}
+
 /// Where the scrub bar lives: a strip above the transport line,
 /// stopping short of the minimap's corner. One geometry source for
 /// hit-testing and drawing, like all chrome.
@@ -200,9 +228,17 @@ pub fn scrub_rect(game: &Scene<'_>, viewport: Vec2) -> macroquad::prelude::Rect 
     macroquad::prelude::Rect::new(12.0 * s, y, (right - 12.0 * s).max(60.0 * s), 10.0 * s)
 }
 
-pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
+pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
     let s = render::ui_scale();
     let size = 18.0 * s;
+    for (rect, button) in transport_buttons(s) {
+        let label = match button {
+            Transport::Back => "BACK",
+            Transport::PlayPause if pb.paused => "PLAY",
+            Transport::PlayPause => "PAUSE",
+        };
+        crate::button::draw(rect, label, rect.contains(mouse), s);
+    }
     // The timeline: played track, live position, and the ghost of a
     // seek in flight.
     let bar = scrub_rect(&pb.view(), viewport);
@@ -262,8 +298,11 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         pb.bindings.label(Action::Back),
     );
     // A 640px window cannot seat the controls hint; the transport
-    // numbers alone must never run off both edges.
-    let line = if measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s {
+    // numbers alone must never run off both edges. A touch-only build
+    // has no keys to hint at.
+    let line = if crate::platform::TOUCH_ONLY
+        || measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s
+    {
         format!(
             "PLAYBACK  {} / {}  |  {}x{}",
             pb.engine.position(),
@@ -420,62 +459,10 @@ impl PlaybackSession {
     ) -> bool {
         let mut seek_to: Option<u64> = None;
         let mut leave = false;
+        let ui = render::ui_scale();
+        let buttons = transport_buttons(ui);
         for e in events {
             match e {
-                RawEvent::MouseMove { x, y } => {
-                    *mouse = vec2(*x, *y);
-                    if let Some(anchor) = self.middle_anchor {
-                        self.presentation
-                            .camera
-                            .pan((anchor - *mouse) / self.presentation.camera.zoom);
-                        self.middle_anchor = Some(*mouse);
-                    }
-                    if self.scrubbing {
-                        let bar = scrub_rect(&self.view(), viewport);
-                        seek_to = Some(self.tick_at(bar, mouse.x));
-                    }
-                    // A held minimap press keeps steering, clamped so
-                    // sliding off the edge doesn't stall the pan — same
-                    // feel as live play.
-                    if self.minimap_drag {
-                        let rect = render::minimap_rect(&self.view());
-                        let clamped = vec2(
-                            x.clamp(rect.x, rect.x + rect.w - 1.0),
-                            y.clamp(rect.y, rect.y + rect.h - 1.0),
-                        );
-                        if let Some(world) = render::minimap_world_at(&self.view(), clamped) {
-                            self.presentation.camera.center = world;
-                            self.presentation.camera.pan(vec2(0.0, 0.0));
-                        }
-                    }
-                }
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x,
-                    y,
-                } => {
-                    *mouse = vec2(*x, *y);
-                    let bar = scrub_rect(&self.view(), viewport);
-                    if bar.contains(*mouse) {
-                        self.scrubbing = true;
-                        seek_to = Some(self.tick_at(bar, mouse.x));
-                    } else if let Some(world) = render::minimap_world_at(&self.view(), *mouse) {
-                        self.presentation.camera.center = world;
-                        self.presentation.camera.pan(vec2(0.0, 0.0));
-                        self.minimap_drag = true;
-                    }
-                }
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    ..
-                } => {
-                    self.minimap_drag = false;
-                    self.scrubbing = false;
-                }
-                RawEvent::Wheel { delta } => {
-                    let delta = if zoom_inverted { -*delta } else { *delta };
-                    self.presentation.camera.zoom_at(*mouse, delta);
-                }
                 RawEvent::KeyDown { key } => {
                     if let Some(ActionEvent::Pressed(action)) = self.resolver.key_edge_in(
                         &self.bindings,
@@ -502,16 +489,24 @@ impl PlaybackSession {
                     self.resolver
                         .key_edge_in(&self.bindings, *key, false, InputContext::Playback);
                 }
-                RawEvent::MouseDown {
-                    button: MouseButton::Middle,
-                    x,
-                    y,
-                } => self.middle_anchor = Some(vec2(*x, *y)),
-                RawEvent::MouseUp {
-                    button: MouseButton::Middle,
-                    ..
-                } => self.middle_anchor = None,
-                _ => {}
+                _ => {
+                    // The corner buttons see the pointer first; the
+                    // timeline, minimap, and battlefield get the rest.
+                    let zone_at = |p: Vec2, _| {
+                        buttons
+                            .iter()
+                            .find(|(rect, _)| rect.contains(p))
+                            .map(|(_, button)| *button)
+                    };
+                    match self.buttons.feed(e, zone_at) {
+                        Fed::Activated(Transport::Back) => leave = true,
+                        Fed::Activated(Transport::PlayPause) => self.paused = !self.paused,
+                        Fed::Held => {}
+                        Fed::Ignored => {
+                            self.apply_pointer(e, viewport, ui, zoom_inverted, mouse, &mut seek_to)
+                        }
+                    }
+                }
             }
         }
         if leave {
@@ -542,6 +537,132 @@ impl PlaybackSession {
             self.accum = 0.0;
         }
         false
+    }
+
+    /// One pointer event on the timeline, minimap, or battlefield. A
+    /// finger that lands on the timeline scrubs and one on the minimap
+    /// steers; any other finger pans or pinches the camera.
+    fn apply_pointer(
+        &mut self,
+        e: &RawEvent,
+        viewport: Vec2,
+        ui: f32,
+        zoom_inverted: bool,
+        mouse: &mut Vec2,
+        seek_to: &mut Option<u64>,
+    ) {
+        match *e {
+            RawEvent::MouseMove { x, y } => {
+                *mouse = vec2(x, y);
+                if let Some(anchor) = self.middle_anchor {
+                    self.presentation
+                        .camera
+                        .pan((anchor - *mouse) / self.presentation.camera.zoom);
+                    self.middle_anchor = Some(*mouse);
+                }
+                if self.scrubbing {
+                    let bar = scrub_rect(&self.view(), viewport);
+                    *seek_to = Some(self.tick_at(bar, mouse.x));
+                }
+                if self.minimap_drag {
+                    self.steer_minimap(*mouse);
+                }
+            }
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+            } => {
+                *mouse = vec2(x, y);
+                let bar = scrub_rect(&self.view(), viewport);
+                if bar.contains(*mouse) {
+                    self.scrubbing = true;
+                    *seek_to = Some(self.tick_at(bar, mouse.x));
+                } else if let Some(world) = render::minimap_world_at(&self.view(), *mouse) {
+                    self.presentation.camera.center = world;
+                    self.presentation.camera.pan(vec2(0.0, 0.0));
+                    self.minimap_drag = true;
+                }
+            }
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.minimap_drag = false;
+                self.scrubbing = false;
+            }
+            RawEvent::Wheel { delta } => {
+                let delta = if zoom_inverted { -delta } else { delta };
+                self.presentation.camera.zoom_at(*mouse, delta);
+            }
+            RawEvent::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+            } => self.middle_anchor = Some(vec2(x, y)),
+            RawEvent::MouseUp {
+                button: MouseButton::Middle,
+                ..
+            } => self.middle_anchor = None,
+            RawEvent::TouchDown { id, x, y } => {
+                let p = vec2(x, y);
+                let bar = scrub_rect(&self.view(), viewport);
+                if self.scrub_finger == Some(id) || self.minimap_finger == Some(id) {
+                    // A platform's repeat report of a finger already
+                    // scrubbing or steering.
+                } else if self.scrub_finger.is_none()
+                    && crate::layout::touch_pad(bar, ui).contains(p)
+                {
+                    self.scrub_finger = Some(id);
+                    *seek_to = Some(self.tick_at(bar, p.x));
+                } else if self.minimap_finger.is_none()
+                    && let Some(world) = render::minimap_world_at(&self.view(), p)
+                {
+                    self.minimap_finger = Some(id);
+                    self.presentation.camera.center = world;
+                    self.presentation.camera.pan(vec2(0.0, 0.0));
+                } else {
+                    self.viewer_touch
+                        .apply(e, &mut self.presentation.camera, ui);
+                }
+            }
+            RawEvent::TouchMove { id, x, y } => {
+                if self.scrub_finger == Some(id) {
+                    let bar = scrub_rect(&self.view(), viewport);
+                    *seek_to = Some(self.tick_at(bar, x));
+                } else if self.minimap_finger == Some(id) {
+                    self.steer_minimap(vec2(x, y));
+                } else {
+                    self.viewer_touch
+                        .apply(e, &mut self.presentation.camera, ui);
+                }
+            }
+            RawEvent::TouchUp { id, .. } => {
+                if self.scrub_finger == Some(id) {
+                    self.scrub_finger = None;
+                } else if self.minimap_finger == Some(id) {
+                    self.minimap_finger = None;
+                } else {
+                    self.viewer_touch
+                        .apply(e, &mut self.presentation.camera, ui);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A held minimap press keeps steering, clamped so sliding off the
+    /// edge doesn't stall the pan: the same feel as live play.
+    fn steer_minimap(&mut self, p: Vec2) {
+        let rect = render::minimap_rect(&self.view());
+        let clamped = vec2(
+            p.x.clamp(rect.x, rect.x + rect.w - 1.0),
+            p.y.clamp(rect.y, rect.y + rect.h - 1.0),
+        );
+        if let Some(world) = render::minimap_world_at(&self.view(), clamped) {
+            self.presentation.camera.center = world;
+            self.presentation.camera.pan(vec2(0.0, 0.0));
+        }
     }
 
     /// Advances replay time and presentation after input has been handled.
@@ -855,6 +976,142 @@ mod tests {
         key(&mut pb, Key::PageDown);
         assert_eq!(pb.engine.position(), 60, "seeks clamp to the total");
         assert!(key(&mut pb, Key::Escape), "Escape closes the viewer");
+    }
+
+    fn feed(pb: &mut PlaybackSession, events: &[RawEvent]) -> bool {
+        let mut mouse = vec2(0.0, 0.0);
+        pb.apply_input(events, 0.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse)
+    }
+
+    fn tap(id: u64, p: Vec2) -> [RawEvent; 2] {
+        [
+            RawEvent::TouchDown { id, x: p.x, y: p.y },
+            RawEvent::TouchUp { id, x: p.x, y: p.y },
+        ]
+    }
+
+    fn click(p: Vec2) -> [RawEvent; 2] {
+        [
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_corner_buttons_leave_and_toggle_by_click_and_by_tap() {
+        let [back, play] = transport_buttons(render::ui_scale()).map(|(rect, _)| rect.center());
+        let mut pb = session();
+        assert!(!feed(&mut pb, &tap(1, play)));
+        assert!(pb.paused, "a tap pauses");
+        assert!(!feed(&mut pb, &click(play)));
+        assert!(!pb.paused, "a click resumes");
+        assert!(feed(&mut pb, &tap(2, back)), "a tap on Back leaves");
+        let mut pb = session();
+        assert!(feed(&mut pb, &click(back)), "so does a click");
+    }
+
+    #[test]
+    fn a_back_press_that_slides_off_stays() {
+        let [(back, _), _] = transport_buttons(render::ui_scale());
+        let off = vec2(back.center().x, back.y + back.h + 200.0);
+        let mut pb = session();
+        let before = pb.presentation.camera.center;
+        let events = [
+            RawEvent::TouchDown {
+                id: 1,
+                x: back.center().x,
+                y: back.center().y,
+            },
+            RawEvent::TouchMove {
+                id: 1,
+                x: off.x,
+                y: off.y,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: off.x,
+                y: off.y,
+            },
+        ];
+        assert!(!feed(&mut pb, &events));
+        assert_eq!(
+            pb.presentation.camera.center, before,
+            "a finger born on a button never pans"
+        );
+    }
+
+    #[test]
+    fn a_touch_on_the_scrub_band_seeks_and_a_drag_retargets() {
+        let mut pb = session();
+        let bar = scrub_rect(&pb.view(), vec2(1280.0, 800.0));
+        // Just above the thin bar, inside its fingertip target.
+        let start = vec2(bar.x + bar.w * 0.5, bar.y - 8.0);
+        feed(
+            &mut pb,
+            &[RawEvent::TouchDown {
+                id: 1,
+                x: start.x,
+                y: start.y,
+            }],
+        );
+        assert_eq!(pb.seeking, Some(30));
+        feed(
+            &mut pb,
+            &[RawEvent::TouchMove {
+                id: 1,
+                x: bar.x + bar.w,
+                y: start.y,
+            }],
+        );
+        assert_eq!(pb.seeking, Some(60), "the drag re-targets the seek");
+        feed(
+            &mut pb,
+            &[RawEvent::TouchUp {
+                id: 1,
+                x: bar.x + bar.w,
+                y: start.y,
+            }],
+        );
+        assert_eq!(pb.scrub_finger, None);
+    }
+
+    #[test]
+    fn a_touch_drag_on_the_battlefield_moves_only_the_camera() {
+        let mut pb = session();
+        let before = pb.presentation.camera.center;
+        let from = vec2(640.0, 300.0);
+        let to = vec2(540.0, 300.0);
+        feed(
+            &mut pb,
+            &[
+                RawEvent::TouchDown {
+                    id: 1,
+                    x: from.x,
+                    y: from.y,
+                },
+                RawEvent::TouchMove {
+                    id: 1,
+                    x: to.x,
+                    y: to.y,
+                },
+                RawEvent::TouchUp {
+                    id: 1,
+                    x: to.x,
+                    y: to.y,
+                },
+            ],
+        );
+        assert!(pb.presentation.camera.center.x > before.x);
+        assert_eq!(pb.seeking, None);
+        assert_eq!(pb.engine.position(), 0, "camera gestures never seek");
     }
 
     #[test]

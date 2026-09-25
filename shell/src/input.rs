@@ -1237,7 +1237,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
                         if !input.pinching
                             && let Some(start) = input.pair_dist
-                            && (new_dist - start).abs() > 24.0 * input.ui
+                            && (new_dist - start).abs()
+                                > crate::viewer_touch::PINCH_START_PX * input.ui
                         {
                             input.pinching = true;
                         }
@@ -1247,7 +1248,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             let spread = new_dist - old;
                             if spread != 0.0 {
                                 let mid = (input.touches[0].1.at + input.touches[1].1.at) * 0.5;
-                                game.presentation.camera.zoom_at(mid, spread * 0.02);
+                                game.presentation.camera.zoom_at(
+                                    mid,
+                                    spread * crate::viewer_touch::PINCH_NOTCHES_PER_PX,
+                                );
                             }
                         }
                     }
