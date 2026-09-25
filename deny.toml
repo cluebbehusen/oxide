@@ -32,3 +32,5 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The workspace patch pins unreleased miniquad for iOS scene support.
+allow-git = ["https://github.com/not-fl3/miniquad"]

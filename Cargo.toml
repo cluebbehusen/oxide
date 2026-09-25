@@ -22,6 +22,12 @@ oxide-bot = { path = "bot" }
 oxide-protocol = { path = "protocol" }
 oxide-kit = { path = "kit" }
 
+# iPadOS 27 refuses to launch apps linked against its SDK unless they adopt
+# the UIScene lifecycle, and only unreleased miniquad master does. The pin
+# also brings iOS dpi reporting. Drop it once a release carries both.
+[patch.crates-io]
+miniquad = { git = "https://github.com/not-fl3/miniquad", rev = "39c928fb7e09fd44e45f37fe9a98503968bca412" }
+
 # `cargo run` is how the game is played day to day, and an unoptimized
 # `fixed`-point sim ticks ~25x slower than release — big battles would eat
 # the frame budget. Light optimization for our code, full for dependencies,

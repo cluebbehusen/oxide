@@ -27,7 +27,7 @@ zstd = "0.13"
 clap = { version = "4", features = ["derive"] }
 # The audio feature is NOT in macroquad's defaults — without it every
 # sound call is a warning-printing stub.
-macroquad = { version = "0.4", features = ["audio"] }
+macroquad = { version = "0.4.16", features = ["audio"] }
 # Screenshots are encoded by hand: macroquad's Image::export_png unwraps
 # on write errors, which would let one bad debug-socket path kill the
 # whole session.
