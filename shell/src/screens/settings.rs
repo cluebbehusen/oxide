@@ -199,12 +199,22 @@ impl Row {
         Row::Back,
     ];
 
-    /// Where this row sits in the menu.
+    /// Where this row sits in this build's menu.
     fn index(self) -> usize {
-        Self::ALL
+        rows(crate::platform::TOUCH_ONLY)
             .iter()
             .position(|row| *row == self)
-            .expect("every row is listed")
+            .expect("the row is offered on this build")
+    }
+
+    /// Rows a touch-only build cannot use: key rebinding needs a
+    /// keyboard, edge pan needs a hovering pointer, and there is no file
+    /// manager to open a folder in.
+    fn needs_desktop(self) -> bool {
+        matches!(
+            self,
+            Row::EdgePan | Row::LeftHandedPreset | Row::Controls | Row::OpenDiagnostics
+        )
     }
 
     fn label(self, config: &Config) -> String {
@@ -238,10 +248,21 @@ impl Row {
     }
 }
 
+/// The rows this build offers, in menu order.
+fn rows(touch_only: bool) -> Vec<Row> {
+    Row::ALL
+        .into_iter()
+        .filter(|row| !(touch_only && row.needs_desktop()))
+        .collect()
+}
+
 fn settings_menu(config: &Config) -> Menu {
     Menu::new(
         "SETTINGS",
-        Row::ALL.iter().map(|row| row.label(config)).collect(),
+        rows(crate::platform::TOUCH_ONLY)
+            .iter()
+            .map(|row| row.label(config))
+            .collect(),
     )
 }
 
@@ -430,7 +451,7 @@ impl SettingsScreen {
                 if escaped {
                     update.out = Out::Leave;
                 } else if let Some(index) = self.menu.handle(events, mouse) {
-                    let row = Row::ALL[index];
+                    let row = rows(crate::platform::TOUCH_ONLY)[index];
                     sounds.push((SoundKind::Click, None));
                     // Any activation is "the next action": the standing
                     // notice has had its say.
@@ -618,6 +639,22 @@ impl SettingsScreen {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn a_touch_only_build_hides_rows_it_cannot_use() {
+        let touch = rows(true);
+        for hidden in [
+            Row::EdgePan,
+            Row::LeftHandedPreset,
+            Row::Controls,
+            Row::OpenDiagnostics,
+        ] {
+            assert!(!touch.contains(&hidden), "{hidden:?} needs a desktop");
+        }
+        assert_eq!(touch.last(), Some(&Row::Back), "Back stays last");
+        assert_eq!(touch.len(), Row::ALL.len() - 4);
+        assert_eq!(rows(false), Row::ALL.to_vec(), "desktop keeps every row");
+    }
 
     #[test]
     fn marker_settings_apply_live_and_remain_touch_reachable_in_small_windows() {

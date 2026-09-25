@@ -87,6 +87,11 @@ impl HomeScreen {
 
     /// Builds the door with resumability decided by the caller (tests).
     pub fn with_resumable(resumable: bool) -> Self {
+        Self::build(resumable, !crate::platform::TOUCH_ONLY)
+    }
+
+    /// Quit is left out where the platform, not the app, closes apps.
+    fn build(resumable: bool, quit: bool) -> Self {
         let (items, rows) = resumable
             .then_some(("Continue", Out::Continue))
             .into_iter()
@@ -96,8 +101,8 @@ impl HomeScreen {
                 ("Replays", Out::Replays),
                 ("Roster", Out::Roster),
                 ("Settings", Out::Settings),
-                ("Quit", Out::Quit),
             ])
+            .chain(quit.then_some(("Quit", Out::Quit)))
             .map(|(label, out)| (label.to_string(), out))
             .unzip();
         Self {
@@ -165,6 +170,15 @@ mod tests {
         assert_eq!(pick(&mut resumable, 4), Out::Roster);
         assert_eq!(pick(&mut resumable, 6), Out::Quit);
     }
+    #[test]
+    fn a_touch_only_door_offers_no_quit_and_keeps_its_verbs() {
+        let mut door = HomeScreen::build(true, false);
+        assert!(!door.menu.items.iter().any(|item| item == "Quit"));
+        assert_eq!(pick(&mut door, 0), Out::Continue);
+        assert_eq!(pick(&mut door, 5), Out::Settings);
+        assert_eq!(door.rows.len(), door.menu.items.len());
+    }
+
     #[test]
     fn recovery_is_explicit_and_does_not_change_continue_or_play() {
         for resumable in [false, true] {

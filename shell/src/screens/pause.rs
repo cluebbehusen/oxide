@@ -55,8 +55,9 @@ impl Row {
 /// Replay belongs to decided matches; Save Game and Surrender to
 /// running ones, with Surrender further limited to a seat that still
 /// has a voice — a resigned or eliminated spectator is shown no verb
-/// the sim would only reject.
-fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
+/// the sim would only reject. Quit is left out where the platform, not
+/// the app, closes apps.
+fn rows(finished: bool, can_surrender: bool, quit: bool) -> Vec<Row> {
     let mut rows = vec![Row::Resume];
     if finished {
         rows.push(Row::WatchReplay);
@@ -68,7 +69,10 @@ fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
     if !finished && can_surrender {
         rows.push(Row::Surrender);
     }
-    rows.extend([Row::Restart, Row::MainMenu, Row::Quit]);
+    rows.extend([Row::Restart, Row::MainMenu]);
+    if quit {
+        rows.push(Row::Quit);
+    }
     rows
 }
 
@@ -175,7 +179,7 @@ fn confirm_menu(row: Row) -> Menu {
 impl PauseScreen {
     /// Opens on the pause rows.
     pub fn open(finished: bool, can_surrender: bool) -> Self {
-        let rows = rows(finished, can_surrender);
+        let rows = rows(finished, can_surrender, !crate::platform::TOUCH_ONLY);
         let items: Vec<String> = rows.iter().map(|r| r.label().to_string()).collect();
         Self {
             menu: Menu::new("PAUSED", items),
@@ -463,6 +467,16 @@ mod tests {
             drive(p, Key::Up);
         }
         drive(p, Key::Enter)
+    }
+
+    #[test]
+    fn a_touch_only_pause_menu_offers_no_quit() {
+        for finished in [false, true] {
+            let touch = rows(finished, true, false);
+            assert!(!touch.contains(&Row::Quit));
+            assert_eq!(touch.last(), Some(&Row::MainMenu));
+            assert!(rows(finished, true, true).contains(&Row::Quit));
+        }
     }
 
     #[test]
