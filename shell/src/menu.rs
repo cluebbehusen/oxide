@@ -464,6 +464,10 @@ impl Menu {
             );
         }
 
+        if self.items.is_empty() {
+            return;
+        }
+
         // ASCII on purpose: the default font has no glyphs for arrows.
         let hint = MENU_BINDINGS.with(|bindings| {
             let bindings = bindings.borrow();

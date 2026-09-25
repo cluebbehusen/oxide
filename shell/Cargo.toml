@@ -22,6 +22,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+ciborium = "0.2.2"
+zstd = "0.13"
 clap = { version = "4", features = ["derive"] }
 # The audio feature is NOT in macroquad's defaults — without it every
 # sound call is a warning-printing stub.

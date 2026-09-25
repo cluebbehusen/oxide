@@ -43,6 +43,15 @@ pub struct RestoredSession {
 }
 
 impl SessionCheckpoint {
+    /// Cheap metadata for an already captured checkpoint.
+    pub fn metadata(&self) -> (&str, usize, u64) {
+        (
+            &self.scenario.name,
+            self.scenario.players.len(),
+            self.state.current_tick(),
+        )
+    }
+
     /// Starts a world-only recording at this session boundary.
     pub fn recording(&self) -> Result<GameReplay> {
         self.validate_world()?;
@@ -89,11 +98,21 @@ impl SessionCheckpoint {
     /// Restores controllers, then observes only the recorded suffix. Pending
     /// inputs survive an empty suffix; a completed first tick consumes them once.
     pub fn resume_recording(self, replay: &GameReplay) -> Result<RestoredSession> {
+        self.resume_recording_cancellable(replay, || false)
+    }
+
+    /// Restores a recorded suffix with a cooperative host cancellation boundary per tick.
+    pub fn resume_recording_cancellable(
+        self,
+        replay: &GameReplay,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<RestoredSession> {
         self.validate_origin(replay)?;
         let end = crate::bounded_replay_duration(replay)?;
         let mut session = self.restore()?;
         let mut cursor = replay.cursor();
         for tick in session.state.current_tick()..end {
+            ensure!(!cancelled(), "recovery cancelled");
             let commands: Vec<_> = cursor
                 .take_tick(tick)
                 .iter()

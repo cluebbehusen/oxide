@@ -13,6 +13,7 @@ pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub struct BotCheckpoint {
     pub(crate) version: u32,
     // CBOR preserves compound map keys and the controller's tagged enums.
+    #[serde(with = "serde_bytes")]
     pub(crate) payload: Vec<u8>,
 }
 

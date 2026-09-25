@@ -12,7 +12,9 @@ const PENDING_FIELDS: usize = 16;
 const READY_BYTES: usize = super::APPROACH_READY_BYTES / 3;
 const IDLE_LIFETIME: u64 = 120;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+mod checkpoint;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
     query_purpose: QueryPurpose,
     used: u64,
@@ -81,7 +83,7 @@ struct Generation {
     blocked: Vec<bool>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub(super) struct ApproachPreparation {
     generation: Option<Generation>,
     jobs: BTreeMap<(Option<BlockedRect>, Vec<TilePos>), Job>,

@@ -88,12 +88,27 @@ fn elide(stem: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry)>) {
+    scan_cancellable(dir, out, &|| false);
+}
+
+fn scan_cancellable(
+    dir: &std::path::Path,
+    out: &mut Vec<(std::time::SystemTime, ReplayEntry)>,
+    cancelled: &impl Fn() -> bool,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for path in entries.filter_map(|e| e.ok()).map(|e| e.path()) {
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        if cancelled() {
+            break;
+        }
+        if !matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("json" | "oxsave")
+        ) {
             continue;
         }
         let Ok(replay) = crate::saved_game::inspect(&path) else {
@@ -163,15 +178,15 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
 }
 
 /// Every known replay, newest first.
-pub fn discover() -> Vec<ReplayEntry> {
+pub fn discover(cancelled: impl Fn() -> bool) -> Vec<ReplayEntry> {
     let mut found = Vec::new();
     if let Some(dir) = crate::paths::autosave_dir() {
-        scan(&dir, &mut found);
+        scan_cancellable(&dir, &mut found, &cancelled);
     }
     if let Some(dir) = crate::paths::saves_dir() {
-        scan(&dir, &mut found);
+        scan_cancellable(&dir, &mut found, &cancelled);
     }
-    scan(&crate::paths::replays_dir(), &mut found);
+    scan_cancellable(&crate::paths::replays_dir(), &mut found, &cancelled);
     found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     found.into_iter().map(|(_, e)| e).collect()
 }

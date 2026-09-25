@@ -427,6 +427,38 @@ pub fn latest_interrupted(root: &Path) -> Option<InterruptedMatch> {
     latest_record(root, true)
 }
 
+/// Cheap candidates for a menu. These are hints; inspect and validate on selection.
+/// A crash can leave no status file, so absence does not disqualify a journal.
+pub fn interrupted_candidates(root: &Path) -> Vec<PathBuf> {
+    let mut directories = session_directories(root);
+    directories.sort();
+    directories
+        .into_iter()
+        .rev()
+        .filter(|directory| {
+            let Some(_lease) = read_lease(directory) else {
+                return false;
+            };
+            let small_json = |name: &str| -> Option<serde_json::Value> {
+                let file = File::open(directory.join(name)).ok()?;
+                let mut bytes = Vec::new();
+                std::io::Read::take(file, 4097)
+                    .read_to_end(&mut bytes)
+                    .ok()?;
+                (bytes.len() <= 4096)
+                    .then(|| serde_json::from_slice(&bytes).ok())
+                    .flatten()
+            };
+            !small_json("status.json").is_some_and(|value| value["clean"] == true)
+                && !small_json("superseded.json").is_some_and(|value| {
+                    value["by"]
+                        .as_str()
+                        .is_some_and(|by| by.starts_with("session-"))
+                })
+        })
+        .collect()
+}
+
 /// Find diagnostic evidence even when the first simulation tick never completed.
 pub fn latest_diagnostic_record(root: &Path) -> Option<InterruptedMatch> {
     latest_record(root, false)

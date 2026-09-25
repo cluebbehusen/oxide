@@ -11,6 +11,7 @@ oxide-sim = { workspace = true }
 chassis = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 ciborium = "0.2.2"
+serde_bytes = "0.11"
 
 [dev-dependencies]
 serde_json = { workspace = true }
