@@ -23,15 +23,9 @@ the complete unit roster, settings, and controls. Normal skirmishes use
 deterministic rules-based opponents with four difficulty levels and Turtle,
 Balanced, or Aggressive stances. A hidden seeded identity varies each opponent's
 strategic preferences. They receive no extra resources, information, build
-access, or combat advantages. Economic investment follows reachable work,
-production bottlenecks, and useful capability demand rather than fixed worker or
-factory quotas. Reconnaissance pursues explicit information questions with
-independently owned observers. Repair assignments and allied relief share the
-same resource allocation as economic and military investments. Ground armies
-take specific defensive, pressure, reserve, or recovery responsibilities.
-Observed movement and bounded experience inform later choices; lost contacts
-never become predicted positions inside fog. New reports do not renew older
-experience, and sensor investments compare coverage at construction readiness.
+access, or combat advantages. The [bot architecture](docs/bot-architecture.md)
+explains current ownership and execution; [bot strategy](docs/bot-strategy.md)
+describes the intended opponent behavior.
 
 ## The game
 
@@ -160,7 +154,8 @@ The implementation contracts are documented in
 
 ## Development
 
-To run the complete Rust gates:
+Common Rust checks (the complete gates, including coverage, are in
+[AGENTS.md](AGENTS.md#validation)):
 
 ```sh
 cargo fmt --all --check
@@ -193,8 +188,8 @@ under [`.agents/skills/`](.agents/skills/).
 
 Continue and named saves restore session checkpoints directly and open paused.
 They preserve the world, opponent memory, pending input, and statistics without
-replaying the opening. Compatible legacy saves reconstruct once on load; the
-next save uses a checkpoint and leaves the original file intact.
+replaying the opening. Player saves use the compact `.oxsave` format; legacy
+player-save import is not supported. Recorded-match playback remains separate.
 
 Recordings contain a starting scenario or world checkpoint and tick-stamped
 commands. Loading a player save starts a new recording segment at the saved

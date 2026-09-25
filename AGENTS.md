@@ -18,9 +18,10 @@ Read the README for the crate you are changing:
 | [`oxide-shell`](shell/README.md)       | Macroquad input, UI, rendering, audio, persistence, and live session.         |
 | [`oxide-driver`](driver/README.md)     | Headless runner, inspectors, map audit, live client, profiling, and smoke QA. |
 
-Implementation contracts live in `docs/simulation-architecture.md` and
-`docs/shell-architecture.md`. Keep those descriptive. Put repeatable procedures
-in a skill and historical results in notes or version control.
+Implementation contracts live in `docs/simulation-architecture.md`,
+`docs/shell-architecture.md`, and `docs/bot-architecture.md`. Keep those
+descriptive. Put repeatable procedures in a skill and historical results in
+notes or version control.
 
 ## Keep instructions in their proper place
 
@@ -37,6 +38,26 @@ descriptions of the implementation in crate READMEs or architecture documents.
 Track a multi-step workstream in a named note under `agent-notes/` only when the
 user directs it. Once created, maintain that note through Kladde.
 
+## Architecture and Rust quality
+
+For a substantive change, establish who owns the data and when it expires,
+whether it can be derived, how its cost scales with seats/units/map size, which
+observable contract proves it works, and which existing mechanism it replaces or
+extends. Apply these questions proportionately; trivial edits need no design
+report.
+
+Use enums for mutually exclusive states and required fields for facts a state
+always needs; keep independent facts separate. Keep mutation and public APIs
+narrow; prefer concrete interfaces until multiple real consumers justify
+abstraction. Borrow shared inputs where practical, and justify retained data and
+costly clones through ownership or measured need. Clippy and coverage support
+review; they do not establish architectural quality.
+
+Consider deterministic parallelism for expensive independent work after removing
+duplication: frozen inputs, private mutable scratch, fixed work allowances and
+canonical result ordering. Admission and shared mutation remain ordered; measure
+overhead and contention before adding workers.
+
 ## Determinism contract
 
 The target is strict: **same seed plus same command log produces bit-identical
@@ -44,8 +65,10 @@ state on every run and platform.**
 
 - `chassis`, `oxide-sim`, and `oxide-bot` contain no floating-point arithmetic.
   Use `chassis::fx::Fx`; floats are presentation-only.
-- Never depend on `HashMap` or `HashSet` iteration for an outcome. Iterate in a
-  canonical order and finish tie-break keys with an id or `(y, x)`.
+- Never depend on `HashMap` or `HashSet` iteration for an outcome. Use complete,
+  stable ordering. Geometric ties must also preserve the documented symmetry:
+  use the existing query-, footprint-, or owner-relative ranks instead of
+  introducing absolute id or row-major preferences.
 - Once a `Scenario` exists, all outcome-relevant randomness comes from
   `chassis::rng::Pcg32` and a recorded seed or documented stream. Never consult
   time, threads, the OS, or ambient entropy during a match. The shell may use
@@ -53,26 +76,31 @@ state on every run and platform.**
   constructing a New Match scenario; those exact values must be recorded in it.
 - `State::tick(&[PlayerCommand])` is the only game-state transition. Mouse,
   touch, bot, replay, and debug input all stage recorded commands.
-- Simulation time is ticks only. Rendering, audio, caches, debug reads, and
-  frame timing are observational.
+- Simulation time is ticks only. Rendering, audio, presentation caches, debug
+  reads and frame timing are observational. Bot planning progress and answer
+  readiness can affect future commands and must follow deterministic budgets.
 - Preserve documented parity when a pass alternates direction for fairness.
 
 ## State and session boundaries
 
 - Keep `State` fields private. Add a narrow immutable accessor instead of
   exposing or mutating internal collections.
-- `State::validate_invariants` is the deserialization trust boundary. Every new
-  serialized field needs validation and an adversarial integrity test.
+- `State::validate_invariants` is the deserialization trust boundary. For each
+  new serialized field, decide its invariants and cover reachable round trips
+  plus meaningful malformed states. Reuse tests of the owning invariant rather
+  than adding one assertion per field or duplicating Serde's primitive checks.
 - Rejected commands leave authoritative state unchanged. Preserve set semantics
   by sorting and deduplicating id lists at dispatch.
 - Player saves restore validated session checkpoints without executing history.
   Replays retain world origins and commands. Tick `N` is the state before
   commands stamped `N` execute; restoration never adds a hidden mutation.
-- Controller checkpoints store only memory that cannot be rebuilt. Restore
-  derives the profile, briefings, and caches from the session's scenario, which
-  the snapshot binding ties to the world. Controller validation rejects state
-  that could panic or cause unbounded work; a forged value that only changes
-  play is accepted, so do not store derived data to cross-check it.
+- Controller checkpoints preserve memory, saved knowledge and deterministic work
+  progress needed for continuation. Scenario-derived data rebuilds from the
+  bound scenario; completed planning answers rebuild from retained recipes and
+  knowledge without spending live work or delaying readiness. Do not drop
+  progress merely because its eventual answer is derivable. Controller
+  validation rejects state that could panic or cause unbounded work; a forged
+  value that only changes play is accepted.
 - `FogView` is the canonical player-knowledge surface. Omniscient QA views must
   never feed a bot or player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.

@@ -153,10 +153,10 @@ bounded per-phase instrumentation instead of guessing from one long interval.
 
 ## Validate changes
 
-Run focused protocol, replay, session-parity, shell, and UI tests first. Run
-ignored native batteries when their GPU or window behavior is in scope. Then run
-the repository-wide tests, Clippy, and format checks required by the root
-instructions.
+Choose focused protocol, replay, session-parity, shell or UI tests for the
+changed boundary. Run ignored native batteries when their window behavior is in
+scope. Satisfy required gates locally or through CI under `AGENTS.md`, without
+duplicating running checks.
 
 Keep screenshots and replays in their gitignored scratch directories. Put stable
 test fixtures under crate test directories, and inspect the index so no local

@@ -61,62 +61,20 @@ Run commands from the workspace root:
 cargo run -p oxide-driver -- --help
 cargo run -p oxide-driver -- run skirmish --ticks 2000 --all-bots
 cargo run -p oxide-driver -- bot-eval skirmish --difficulty prime --paired
-cargo run -p oxide-driver -- bot-eval skirmish --difficulty prime \
-  --opponent-difficulty standard --same-personality-seed --paired
-cargo run -p oxide-driver -- bot-eval skirmish \
-  --difficulty prime --stance balanced --opponent-difficulty standard --paired \
-  --ticks 60000 --scenario-seeds 7000,7001 \
-  --personality-seeds 9000,9001 --faction-cells fc,cf \
-  --geometries authored,rot180 \
-  --candidate prime-standard-a \
-  --out replays/prime-standard-a.jsonl \
-  --replay-dir replays/prime-standard-a
 cargo test -p oxide-driver --locked
 ```
 
-Controlled comparisons cross `--faction-cells fc,cf` with
-`--geometries authored,rot180`. `--paired` exchanges complete controller
-profiles while holding the physical map and faction rosters fixed. Independent
-`--scenario-seeds` and `--personality-seeds` form a Cartesian product: the
-latter sets each cell's primary personality, with ordinary seat-seed assignment
-and `--same-personality-seed` semantics. `--runs` selects consecutive seed cells
-and cannot be combined with explicit axes. The runner refuses nominal cells that
-resolve to the same executable matchup. Replay evidence requires `--out`,
-keeping exact structured controller provenance beside every saved replay.
-
-`sweep`, `pace-sweep`, `sweep-factorial`, and `bench --scenario` accept
-`--difficulty`, `--stance`, and `--personality-seed`, defaulting to
-Standard/Balanced/zero. Every seat receives that same full profile, fixed across
-simulation seeds. Structured sweep reports and textual output identify the exact
-profile and simulation version. These results measure the configured bot
-interacting with the simulation; symmetric profiles do not isolate engine or map
-fairness. The synthetic mass-battle benchmark remains simulation-only.
-
-`--decision-trace-out` requires `--out` and an explicit candidate. It records
-only diagnostics produced by the player-facing controller at actual decision
-ticks for either seat. The sidecar is captured during the authoritative
-evaluation run because reconstructing policy reasoning later from a replay may
-use different controller code. It is not replay input, and enabling it does not
-change the compact row, command stream, final hash, or replay payload.
+The
+[evaluation procedure](../.agents/skills/scripted-bot/references/evaluation.md)
+owns comparison matrices, trace capture, seed/profile provenance and anomaly
+interpretation. The live-QA skill owns native inspection. Aggregate results do
+not establish opponent quality or isolate simulation fairness.
 
 `bot-eval --jobs N` bounds concurrent matches (default four, capped by available
 CPUs and leg count). Multiple match workers disable nested bot-seat parallelism;
-`--jobs 1` runs legs serially with ordinary seat scheduling. Workers stage each
-completed replay and stream trace records to private files. Completed payloads
-are not accumulated in memory. Rows and traces merge in input-plan order before
-the whole invocation publishes. This improves evaluation throughput, not the
-latency of an individual simulation tick.
-
-Each `bot-eval` row reports rejected commands and stalled orders by reason. Its
-per-unit stall breakdown distinguishes one persistently blocked order from a
-controller-wide failure and points replay inspection at the exact unit. When one
-unit stalls the same way `--stall-loop-limit` times (200 by default, 0
-disables), the leg stops with `termination: stall_loop` and a `stall_loop`
-record naming the seat, unit, reason, count, and tick, instead of burning the
-ceiling on an order a controller re-issues every think. The command-stream hash
-exposes different seed cells that nevertheless generated identical play. Treat
-those metrics as diagnostics; inspect the preserved replays and use human play
-and replay judgment to decide whether behavior is credible or fun.
+`--jobs 1` uses ordinary seat scheduling. Each worker stages replay and trace
+output privately; results merge in input-plan order before publication. This
+improves batch throughput, not individual tick latency.
 
 ## Performance regression checks
 

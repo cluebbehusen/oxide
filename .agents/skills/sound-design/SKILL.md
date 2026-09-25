@@ -105,5 +105,6 @@ Run the generator's focused tests and reproducibility check, then Rust tests for
 asset loading, event mapping, and mixer behavior. The mechanical gates must
 cover format, duration, peak, DC offset, spectral audibility, deterministic
 bytes, complete asset mapping, retrigger gaps, zoom weighting, coalescing, and
-the protected alert. Finish with the repository-wide tests, Clippy, and format
-check required by `AGENTS.md`.
+the protected alert. Select the relevant cases for the changed event or mixer
+boundary; retain the existing deterministic asset gates. Required repository
+gates run locally or through CI under `AGENTS.md`, without duplicate CI runs.

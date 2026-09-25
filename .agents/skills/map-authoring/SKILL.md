@@ -120,7 +120,10 @@ pressure, spawn spacing, pairings, and Extractor access. The maintained bands
 and tolerances in `driver/tests/map_gates.rs` are authoritative; do not
 duplicate their current numbers in this skill.
 
-Then run the shipped gates and a real liveness pass:
+For a shipped-map layout or seat change, run the map gates and choose the
+headless/native checks that exercise its changed routes, resources or opening.
+An orchestration or metadata-only edit does not require a full match matrix.
+Relevant commands are:
 
 ```sh
 cargo test -p oxide-driver --test map_gates --locked

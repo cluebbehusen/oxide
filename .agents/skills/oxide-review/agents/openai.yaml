@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Review"
+  short_description: "Review Oxide contracts, architecture and evidence"
+  default_prompt: "Use $oxide-review to evaluate this Oxide change against current code, reproduce material findings, and report evidence and limitations."

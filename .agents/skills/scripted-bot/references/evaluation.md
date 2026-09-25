@@ -1,8 +1,13 @@
 # Evaluation procedure
 
-Then run complete seeded matches on representative shapes: a normal duel, an
-island or severed-ground map, a team map, and a long or grand map. Ask the
-driver for its current syntax rather than copying stale flags:
+Choose the matrix for the change before running matches. Cross-domain policy or
+broad behavior changes need a normal duel, an island or severed-ground map, team
+play, and a long/grand map. A domain change needs the shapes and profiles that
+exercise it; a structural-only refactor starts with focused equivalence checks.
+Expand when failures, untested interactions or player-facing claims require it.
+Do not run the full matrix for every helper or documentation edit.
+
+Ask the driver for its current syntax rather than copying stale flags:
 
 ```sh
 cargo run -p oxide-driver -- run --help
@@ -13,9 +18,10 @@ The complete-match path is `run <scenario> --all-bots`; ordinary `--bots` honors
 the scenario's configured chairs and therefore leaves its human chair under
 human control. Add `--save-replay <path>` for review evidence.
 
-Sample every difficulty and stance across the review set, plus multiple
-personality seeds. Lower difficulty is not required to lose every paired match,
-but its cognitive limits should remain visible and internally consistent.
+Sample the affected difficulties and stances with fixed personality seeds.
+Changes to shared profile resolution or cognitive limits warrant coverage across
+all rungs and stances. Lower difficulty is not required to lose every paired
+match, but its cognitive limits should remain visible and internally consistent.
 
 Use `bot-eval` for reproducible player-facing profile cells. It stops when the
 match decides, emits one compact JSONL row per leg, and can preserve the replay:

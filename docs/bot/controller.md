@@ -25,11 +25,10 @@ a difficulty, stance, and personality seed. `seat_bots` passes that exact setup
 and one shared immutable scenario briefing to the fog-honest `Brain::scripted`
 controller. Player-facing decisions stop when the own seat resigns or has no
 remaining Foundry, even while teammates keep the match alive; remnant units
-continue their ordinary simulation programs without new bot commands. Legacy
-replay imports rebuild that briefing from the recorded scenario before
-fast-forwarding controller memory. Checkpoint saves restore retained controller
-memory directly and rebuild observational caches; neither path consults ambient
-input.
+continue their ordinary simulation programs without new bot commands.
+Scenario-origin replay continuation rebuilds the briefing and observes the
+recorded command history; player checkpoints restore retained memory directly.
+Neither path consults ambient input.
 
 Profile resolution turns the seed into six bounded preferences: air, siege,
 support, fortification, greed, and guile. Stance bounds their strategic posture;
@@ -98,6 +97,27 @@ current shape. The Oxide replay loader recognizes known retired
 bot-configuration shapes only inside a replay stamped with another simulation
 version, normalizing that setup metadata so deliberate archaeology can reach the
 version check. Serialization emits only the current shape.
+
+## Controller checkpoints
+
+`SeatBot::checkpoint` borrows the seat and stores a canonical CBOR payload.
+Restore checks the seat, map dimensions and orientation against the bound
+session. Profile, authored/oriented briefings and policy dials rebuild from the
+scenario. Observational query caches can be recomputed from their current
+inputs. Decision memory, dynamic knowledge, work cursors and unfinished searches
+survive. Completed approach fields persist their recipes and use ages; restore
+reconstructs their answers from saved knowledge before installing the
+controller, without spending the live planning allowance or changing readiness
+or retention. Expanded storage is bounded before rebuilding. See
+[navigation](navigation.md) for work lifetimes and invalidation.
+
+Owner validators reject memory that could panic or cause unbounded work, not
+forged history that merely changes play. They do not duplicate tuning formulas
+or authenticate controller history. The controller format remains at revision 1
+while player saves are unpublished; no legacy layout migration is provided.
+Controller memory is separate from authoritative `State` and its hash. The
+[shell persistence contract](../shell-architecture.md#persistence-and-replay)
+owns session binding, file format and background-worker behavior.
 
 ## Diagnostic traces
 

@@ -73,10 +73,11 @@ Validation covers, among other things:
 
 `Pcg32` validates its odd stream increment at its own deserialization boundary.
 
-Each new serialized field needs an invariant decision and an adversarial case in
-`sim/tests/state_integrity.rs`. The same test suite also round-trips states the
-real simulation produces, preventing the validator from becoming stricter than
-reachable reality.
+Each new serialized field needs an invariant decision. The integrity tests
+exercise meaningful malformed relationships and bounds, while round-tripping
+states the real simulation produces so validation cannot become stricter than
+reachable reality. Extend the owning contract's coverage rather than duplicating
+primitive decoding checks for each field.
 
 ## Tick pipeline
 
@@ -127,17 +128,18 @@ They are rebuilt at their use points and never serialized or hashed.
 Destroyed airborne Condors, Moths, and Skyhooks leave a pending crash. The
 record retains owner, kind, heading, launch and contact positions, and start and
 arrival ticks. Contact is fixed at death using the last actual airborne
-displacement, capped at flight speed, with 20% average deceleration over 13
-ticks. A hovering transport therefore falls in place. The removed aircraft and
-its cargo cease acting immediately, and ordinary death salvage is unchanged.
+displacement, capped at flight speed and reduced by the crash's deceleration.
+Crash duration and blast profiles live in `sim/src/stats.rs`; trajectory and
+impact resolution live in `sim/src/tick/aircraft_crashes.rs`. A hovering
+transport therefore falls in place. The removed aircraft and its cargo cease
+acting immediately, and ordinary death salvage is unchanged.
 
-At contact, a two-tile blast damages every hostile ground unit and nearby
-building footprint: 50 damage for Condor, 40 for Moth and Skyhook. Allies and
-airborne units are immune; impacts over pits do no damage. Targets can move into
-or out of the blast before arrival. Pending crashes resolve in death-tick and
-unit-id order and survive state serialization. Victory is immediate once the
-Foundry condition is met; any crashes still pending are discarded without
-damage.
+At contact, the blast damages hostile ground units and nearby building
+footprints. Allies and airborne units are immune; impacts over pits do no
+damage. Targets can move into or out of the blast before arrival. Pending
+crashes resolve in death-tick and unit-id order and survive state serialization.
+Victory is immediate once the Foundry condition is met; any crashes still
+pending are discarded without damage.
 
 ## Commands and unit programs
 
@@ -178,17 +180,16 @@ air column and remain impassable.
 
 Talon, Darter, Shrike, Sylph, Kestrel, and Gnat cruise heading-first but can
 hover at rest. Their travel and fixed-gun traverse rates are independent of
-bomber flight: eight compass steps per tick for Talon, six for Shrike, ten for
-Darter, Sylph, and Kestrel, and twelve for Gnat. At full speed these give turn
-radii of roughly 0.7 to 1.1 tiles. Near waypoints they slow to tighten the arc;
-intermediate waypoints can be rounded only when the onward segment is clear. An
-obstructed step holds position while the nose turns and replans from the actual
-position. Arrivals, Stop, and in-range attacks hover rather than orbit or land.
-Fixed guns traverse with the body before firing ordinary hitscan shots; Advance
-only fires when already aligned and does not turn away from its route to aim.
-These aircraft spawn facing the map center, matching mirrored initial turn
-costs. Buzzard, Wisp, and Skyhook retain independent travel without a cruise
-turn radius.
+bomber flight; per-kind rates live in `UnitKind::cruise_turn_rate` in
+`sim/src/stats.rs`. Near waypoints they slow to tighten the arc; intermediate
+waypoints can be rounded only when the onward segment is clear. An obstructed
+step holds position while the nose turns and replans from the actual position.
+Arrivals, Stop, and in-range attacks hover rather than orbit or land. Fixed guns
+traverse with the body before firing ordinary hitscan shots; Advance only fires
+when already aligned and does not turn away from its route to aim. These
+aircraft spawn facing the map center, matching mirrored initial turn costs.
+Buzzard, Wisp, and Skyhook retain independent travel without a cruise turn
+radius.
 
 Condor and Moth use committed heading-first flight: only the heading steers, at
 most `turn_rate` compass steps per tick, so every waypoint is accepted inside

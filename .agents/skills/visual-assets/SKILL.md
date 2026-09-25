@@ -99,12 +99,12 @@ are later diagnostic tripwires, never substitutes for art judgment.
 For a new or open visual direction, use ImageGen or a similar image-generation
 tool — if your session actually has one — to explore complete mechanical
 assemblies, state changes, and material ideas before authoring candidates. Check
-your tool registry rather than assuming: Codex sessions have ImageGen; Claude
-sessions currently do not. Prefer one calibration entity per concept study over
-a dense whole-roster board. Without such a tool, author materially distinct
-mechanical archetypes directly in code. Image generation is not required when
-promoting an already approved design or making a tightly bounded edit whose
-direction is fixed.
+the available tools in the current session rather than assuming capability from
+the agent's name. Prefer one calibration entity per concept study over a dense
+whole-roster board. Without such a tool, author materially distinct mechanical
+archetypes directly in code. Image generation is not required when promoting an
+already approved design or making a tightly bounded edit whose direction is
+fixed.
 
 Use generated imagery as reference, not as the shipping raster. Before reducing
 it to Oxide geometry, list the dominant mechanism and the purposeful secondary
@@ -238,5 +238,6 @@ boundaries. Before running broad quantitative gates, record the human fidelity
 verdict for the calibration set and stop if it has not passed. For a review-only
 bank, also prove that a representative candidate is ignored with
 `git check-ignore -v`, that the ledger has unique stable IDs, and that each
-session's supported-media count equals its intended candidate count. Finish with
-repository-wide tests, Clippy, and format checks from `AGENTS.md`.
+session's supported-media count equals its intended candidate count. Required
+repository gates run locally or through CI under `AGENTS.md`, without
+duplicating running checks.
