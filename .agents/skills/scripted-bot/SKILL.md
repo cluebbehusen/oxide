@@ -26,6 +26,9 @@ proposal derivation, admission, persistent execution, or command lowering.
 Capture a deterministic scenario and seed before changing policy. For a
 structural refactor, name the old mechanism being removed and preserve the
 commands, state hashes, events and deterministic planning progress it produced.
+A justified behavior correction instead needs a focused before/after regression;
+historical whole-match hashes do not define correctness. Apply the repository's
+hash/version rules using any existing session authorization.
 
 The bot receives fog-honest observations and an immutable public briefing.
 Authored starts, initial resources and terrain are priors, never current enemy
@@ -99,12 +102,12 @@ For battlefield or reconnaissance ownership, include `battlefield_adaptation`,
 `recon_support` and the owning planner tests. Required gates and CI duplication
 rules live in `AGENTS.md`.
 
-For complete matches and profiling, use
-[Evaluation procedure](references/evaluation.md). Representative behavior
-changes need an ordinary duel, severed-ground or island play, team play and a
-long/grand map. Sample difficulties, stances and multiple personality seeds as
-relevant. A lower difficulty need not lose every paired match; its cognitive
-limits must remain explainable and monotone.
+Use the [evaluation procedure](references/evaluation.md) to select a match
+matrix for the changed behavior. Cross-domain policy changes need broad
+representative play; a local refactor starts with the affected contracts. Select
+difficulties, stances and seeds that exercise the changed decisions. A lower
+difficulty need not lose every paired match; its cognitive limits must remain
+explainable and monotone.
 
 Finish player-facing changes with replay review and the native QA path in
 `oxide-live-qa`. Watch beyond the opening: economy, replacement, tech use,

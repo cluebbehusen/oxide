@@ -1,116 +1,64 @@
 ---
 name: agent-notes
 description:
-  Upon user direction only, maintain durable Oxide agent workstream notes under
-  agent-notes with Kladde. Use when planning, tracking, handing off, or closing
-  multi-step repository work, or when recording agent-facing goals, decisions,
-  findings, actions, and open questions.
+  Maintain a concise Oxide workstream decision brief under agent-notes with
+  Kladde. Create one only at the user's direction; maintain an existing note
+  when planning, handing off, or closing its authorized workstream.
 ---
 
 # Oxide agent notes
 
-Use Kladde to keep one durable note for each bounded workstream. The note is a
-decision record and execution ledger that can survive handoffs and context
-compaction, not a transcript of an agent session.
+Keep one living decision brief for a bounded workstream. It should let another
+agent continue correctly without reading the conversation. It is not an activity
+log. Create a note only when the user directs it; reuse and maintain it
+thereafter within the authorized scope. A read-only request does not authorize
+note edits.
 
-Agent notes live in the repository's `agent-notes/` notebook. You should only
-create them when directed by a user. Do not create or update notes on your own
-initiative. You may ask the user if they wish to record this activity in a note,
-but do not create a note without explicit direction. Once the note has been
-created, you may maintain it without explicit user direction.
+## Preserve decisions, not a transcript
 
-## Choose the note boundary
+Use these headings when they have content:
 
-Create or reuse one named note for a coherent initiative such as a repository
-reset, bot rewrite, or rendering pass. Continue that note across sessions and
-agents. Do not create one note per agent, day, or implementation attempt.
+- **Goal:** one stable sentence describing the intended outcome.
+- **Decisions:** consequential choices, constraints and their reasons.
+- **Findings:** established facts a successor needs, with useful evidence links.
+- **Actions:** outcome-level tasks and their completion state.
+- **Open Questions:** unresolved decisions or unknowns, not known work items.
 
-Use this stable shape:
+Keep an agreed plan stable. Change it for an accepted scope decision or to mark
+outcomes complete, not to append every implementation step. Update or replace a
+stale finding; remove a resolved question and retain its decision only if
+useful. Record partial or blocked outcomes honestly.
 
-```markdown
-# Workstream name
+Omit routine test counts, file lists, PR-by-PR status, command transcripts and
+unrelated discoveries. Put implementation history in version control and
+detailed measurements in reproducible evidence. Include a link only when a
+successor needs it; a committed handoff must not depend on private machine
+paths. Summarize negative experiments by their useful conclusion and conditions,
+not every trial.
 
-## Goal
+At handoff or closeout, condense the note to the decisions, results, limitations
+and remaining work that still matter. Prefer a short brief over another appended
+section. Preserve useful material before deleting superseded notes or evidence,
+and follow the user's cleanup scope; maintaining a note does not authorize
+archiving or deleting unrelated work.
 
-One sentence describing the successful outcome.
+## Edit through Kladde
 
-## Decisions
-
-- Decisions made before the work is started or while the work is in progress;
-  these should include what is and is not in scope, and any constraints on the
-  work.
-
-## Findings
-
-- Non-obvious fact that changed or constrained the work.
-
-## Actions
-
-- [ ] Outcome-level task written before work begins.
-  - Concrete action or evidence belongs here. This is where you record what you
-    did, what changed, and what was verified. Keep the task open until the
-    outcome is genuinely achieved.
-
-## Open Questions
-
-- A genuine unresolved decision or unknown, to surface to the user later.
-```
-
-Keep the goal to one stable sentence. Record choices and their reasons under
-Decisions. Findings are facts a future agent would otherwise have to rediscover;
-phrase them so they remain accurate after a later fix.
-
-Seed Actions with outcome-level tasks before implementation. Keep a task open
-until its outcome is genuinely achieved. Nest concise evidence beneath it: what
-changed, what was verified, and any limitation that remains. Do not turn the
-note into a file list, command transcript, or routine test-count report.
-
-Open Questions contains only unresolved choices or unknowns. When one is
-answered, remove it and preserve the answer under Decisions. A known actionable
-gap belongs in Actions as an unchecked task, not in Open Questions.
-
-## Make every semantic edit through Kladde
-
-Use `--notebook agent-notes` and target the named note explicitly. Kladde's
-locking and atomic replacement keep concurrent agents from losing one another's
-updates. Do not use shell redirection or direct file writes for ordinary note
-changes.
-
-Create and seed a note through Kladde:
+Target the named note explicitly with `--notebook agent-notes`. Kladde's lock
+and atomic replacement prevent concurrent agents from losing changes. Use its
+semantic operations rather than direct writes or guessed line numbers:
 
 ```sh
-kladde new repo-reset.md --notebook agent-notes
-kladde append "# Oxide Repository Reset" repo-reset.md --notebook agent-notes
-kladde append "## Goal" repo-reset.md --notebook agent-notes
-kladde append "Restore a clear development baseline." repo-reset.md \
-  --notebook agent-notes
-kladde append "## Decisions" repo-reset.md --notebook agent-notes
-kladde append "## Findings" repo-reset.md --notebook agent-notes
-kladde append "## Actions" repo-reset.md --notebook agent-notes
-kladde append "## Open Questions" repo-reset.md --notebook agent-notes
+kladde read repo-reset.md --notebook agent-notes
+kladde append '- [ ] Reconcile architecture guidance.' repo-reset.md --notebook agent-notes --under Actions
+kladde check --match 'Reconcile architecture guidance' repo-reset.md --notebook agent-notes --under Actions
+kladde remove --match 'Obsolete finding' repo-reset.md --notebook agent-notes --under Findings
 ```
 
-Add a task, its evidence, and then check it only after completion:
+Use `kladde new` only for a user-requested new note. `--under` selects headings;
+`--under-bullet` selects a bullet by its text prefix (including `[ ]` for an
+unchecked task). Include the leading `-` in appended bullets and let Kladde
+indent children. Consult `kladde <command> --help` for other operations.
 
-```sh
-kladde append "- [ ] Reconcile the architecture documents." repo-reset.md \
-  --notebook agent-notes --under Actions
-kladde append "- Corrected the documented tick pipeline." repo-reset.md \
-  --notebook agent-notes --under Actions \
-  --under-bullet "[ ] Reconcile the architecture"
-kladde check --match "Reconcile the architecture" repo-reset.md \
-  --notebook agent-notes --under Actions
-```
-
-`append` writes text verbatim, so include the leading `-` for a bullet. When
-nesting under an unchecked task, `--under-bullet` includes its `[ ]` marker;
-append evidence before checking the task. Let Kladde choose indentation.
-
-Use placed appends, `check`, `uncheck`, and `remove` rather than guessing at
-line positions. If a fact becomes stale, retract or rewrite it instead of
-leaving the note internally contradictory. At a natural breakpoint and before
-handoff, reconcile task states, findings, decisions, and open questions.
-
-Prettier may normalize the Markdown after Kladde releases the notebook lock. Run
-the repository Markdown formatting gate before considering the note update
-complete.
+Format Markdown with Prettier after Kladde releases its lock. Keep the user's
+daily note separate and follow its own capture rules.

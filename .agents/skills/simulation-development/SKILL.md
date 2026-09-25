@@ -14,8 +14,9 @@ the same scenario and command log still produce the intended exact state.
 
 ## Establish the contract
 
-Read `sim/README.md`, `docs/simulation-architecture.md`, and the focused tests
-for the subsystem before editing. Reduce a bug to one observable contract:
+Read `sim/README.md`, the relevant sections of
+`docs/simulation-architecture.md`, and the subsystem's focused tests before
+editing. Reduce a bug to one observable contract:
 
 - the command or tick phase that owns the behavior;
 - the state visible immediately before and after it;
@@ -38,13 +39,16 @@ remembered-world case so the fix cannot become an information oracle.
 - Use integers or `chassis::fx::Fx`; floats do not enter `chassis` or
   `oxide-sim`.
 - Use `chassis::rng::Pcg32` with an explicit stream derived from the scenario.
-- Iterate entities in id order. Sort other choices by a complete stable key
-  ending in an id or `(y, x)`.
+- Preserve canonical entity iteration and complete stable choice keys. For
+  geometric ties, reuse the query-, footprint-, or owner-relative ranks in
+  `chassis::path` and `oxide_sim::geometry`; deterministic absolute ordering
+  alone does not preserve map symmetry.
 - Do not make outcomes depend on a hash collection's iteration order.
 - Route every mutation through `State::tick`; add a narrow read accessor when a
   consumer needs more information.
-- Validate new serialized fields in `State::validate_invariants` and add both a
-  well-formed round trip and an adversarial forgery.
+- For serialized changes, identify the owning invariant and extend its reachable
+  round-trip and meaningful malformed-state coverage. Follow the trust-boundary
+  rule in `AGENTS.md`.
 - Preserve the fixed tick phase order unless changing that order is the stated
   gameplay change.
 
@@ -87,17 +91,12 @@ cargo test -p oxide-sim --test fuzz --locked
 cargo test -p oxide-sim --test determinism --locked
 ```
 
-Then run the workspace gates in `AGENTS.md`.
-
-An intended rules change may alter replay reconstruction even when the current
-hash fixtures do not exercise it. Never change the workspace package version or
-`SIM_VERSION` without explicit approval from the human user; a request to
-implement the rules change is not approval for a compatibility-version bump. If
-existing hash rows move, inspect the drift and ask the user whether to approve a
-version bump or a same-version bless. Only after that decision, regenerate with
-`BLESS=1 cargo test -p oxide-driver --locked` and inspect every changed fixture.
-Using `BLESS_SAME_VERSION=1` also requires explicit approval from the human
-user.
+Required gates may run locally or through CI under `AGENTS.md`; do not duplicate
+running CI checks. For an intentional behavior correction, prove the new outcome
+with a focused regression. Historical fixture parity does not override that
+contract. Follow the hash/version approval rules in `AGENTS.md`, using any
+applicable approval already given in the session. No version bump is implied by
+permission to fix behavior.
 
 ## Verify the real report
 

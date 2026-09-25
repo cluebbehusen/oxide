@@ -66,7 +66,7 @@ has precedence over a mission directive and replaces the abandoned mission with
 recovery after recording its outcome. An accepted defense assignment dispatches
 its exact body even when proximity has already marked it engaged. Lowering
 receipts expose actual acceptance and refusal boundaries independently of
-command counts.
+command counts. These decision receipts are not persisted.
 
 Pressure objectives bind the observed owner, kind, and complete footprint, plus
 a live id only when current sight supplied one. Remembered placeholders are not
@@ -75,23 +75,26 @@ deadline, while another remembered site cannot keep it alive. Objective anchors
 use footprint orientation independently of movement goals. Outcome watches
 resolve current identity at that exact site before measuring observed damage.
 
+`Brain` owns accumulated experience; connected-target ranking borrows it.
 Operation and work owners submit bounded episode reports to `experience`.
 Ground, air, transport, raid, relief, reconnaissance, repair, harvest, and
 construction reporting use observed progress and owner-only presence. Carried
 units remain present but unavailable. Foundation observation continues after the
 builder leaves; a delivery watch continues without ownership of its landed
-troops. Shared coordination credits prevent these components from teaching the
-same outcome repeatedly. Stronger assault evidence may replace preliminary
-delivery credit. Ambiguous attribution cannot earn broad doctrine credit.
-Inconclusive lost-contact or deadline reports with known own casualties retain
-half-strength contextual evidence and can request approach reconnaissance. They
-remain inconclusive about the objective and never contribute to doctrine. Frozen
-objective owner, kind, and footprint anchor link failed approaches to remembered
-buildings without relying on their placeholder ids. Ground reports entering
-policy memory orient both their context point and frozen objective footprint, so
-later observation matching uses one coordinate frame. Defensive service uses a
-provider's movement domain for routing, including parked aircraft; target
-exposure still uses its current body domain.
+troops. Follow-through watches require an objective baseline in their decoded
+type. Retained learning collections use the same storage bounds on load as in
+live insertion. Shared coordination credits prevent these components from
+teaching the same outcome repeatedly. Stronger assault evidence may replace
+preliminary delivery credit. Ambiguous attribution cannot earn broad doctrine
+credit. Inconclusive lost-contact or deadline reports with known own casualties
+retain half-strength contextual evidence and can request approach
+reconnaissance. They remain inconclusive about the objective and never
+contribute to doctrine. Frozen objective owner, kind, and footprint anchor link
+failed approaches to remembered buildings without relying on their placeholder
+ids. Ground reports entering policy memory orient both their context point and
+frozen objective footprint, so later observation matching uses one coordinate
+frame. Defensive service uses a provider's movement domain for routing,
+including parked aircraft; target exposure still uses its current body domain.
 
 Experience subjects distinguish building and unit identities, construction and
 production kinds, upgrades, harvest, and reconnaissance. Construction reports

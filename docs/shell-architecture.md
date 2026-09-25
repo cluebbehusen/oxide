@@ -273,12 +273,14 @@ from its restored session checkpoint and new world-origin recording.
 
 The worker publishes durable progress separately from live progress. Storage
 failure or queue exhaustion stops capture with a visible warning while gameplay
-continues. Flush cadence is a target, not a guaranteed loss bound. Clean exit
-requires a durable completion marker; force quit can preserve only bytes already
-written. Recovery retires the interrupted source only after its replacement
-baseline is durable and the original diagnostic evidence has been preserved. An
-exclusive source claim prevents concurrent or stale callers from recovering an
-already-retired record.
+continues. Flush cadence is a target, not a guaranteed loss bound. A recovery
+journal is clean only after its completion marker is durable. After a successful
+player save, the exit path waits at most one second for that marker; a timeout
+or recovery error can leave an interrupted journal even after an ordinary exit.
+Force quit preserves only bytes already written. Recovery retires the
+interrupted source only after its replacement baseline is durable and the
+original diagnostic evidence has been preserved. An exclusive source claim
+prevents concurrent or stale callers from recovering an already-retired record.
 
 Filesystem leases protect active writers and report readers from retention.
 Managed sessions have bounded counts and storage; active records and malformed
