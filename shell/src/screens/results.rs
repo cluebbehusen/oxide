@@ -624,42 +624,7 @@ impl ResultsScreen {
 
         for (index, (label, rect)) in ACTIONS.iter().zip(action_rects(viewport, s)).enumerate() {
             let active = self.hover == Some(index) || self.selected == index;
-            draw_rectangle(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                if active {
-                    theme::SURFACE_CARD
-                } else {
-                    theme::SURFACE_PANEL
-                },
-            );
-            draw_rectangle_lines(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                if active { 2.0 * s } else { 1.0 * s },
-                if active {
-                    theme::TEXT_ACCENT
-                } else {
-                    theme::TEXT_DISABLED
-                },
-            );
-            let action_size = 16.0 * s;
-            let dims = measure_text(label, None, action_size as u16, 1.0);
-            draw_text(
-                label,
-                rect.x + (rect.w - dims.width) * 0.5,
-                rect.y + rect.h * 0.62,
-                action_size,
-                if active {
-                    theme::TEXT_PRIMARY
-                } else {
-                    theme::TEXT_BODY
-                },
-            );
+            crate::button::draw(rect, label, active, s);
         }
     }
 }

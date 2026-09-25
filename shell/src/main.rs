@@ -9,6 +9,7 @@ mod autosave;
 mod bot_label;
 mod boundary_fog;
 mod building_actions;
+mod button;
 mod camera;
 mod config;
 mod debug_server;
