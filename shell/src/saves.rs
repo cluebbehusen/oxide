@@ -88,14 +88,20 @@ fn elide(stem: &str) -> String {
     }
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct RecordTime {
+    saved_at: std::time::SystemTime,
+    modified: std::time::SystemTime,
+}
+
 #[cfg(test)]
-fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry)>) {
+fn scan(dir: &std::path::Path, out: &mut Vec<(RecordTime, ReplayEntry)>) {
     scan_cancellable(dir, out, &|| false);
 }
 
 fn scan_cancellable(
     dir: &std::path::Path,
-    out: &mut Vec<(std::time::SystemTime, ReplayEntry)>,
+    out: &mut Vec<(RecordTime, ReplayEntry)>,
     cancelled: &impl Fn() -> bool,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -122,7 +128,10 @@ fn scan_cancellable(
         // A record's own saved_at outranks mtime: a copied or synced
         // file reports the copy date, and only the metadata tells the
         // truth about when the save was made.
-        let modified = replay
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let saved_at = replay
             .meta
             .saved_at
             // checked: a copied or hand-edited record can carry any
@@ -131,9 +140,8 @@ fn scan_cancellable(
             .and_then(|secs| {
                 std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs))
             })
-            .or_else(|| std::fs::metadata(&path).and_then(|m| m.modified()).ok())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        let date = modified
+            .unwrap_or(modified);
+        let date = saved_at
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| civil_date(d.as_secs()))
             .unwrap_or_default();
@@ -165,7 +173,7 @@ fn scan_cancellable(
             )
         };
         out.push((
-            modified,
+            RecordTime { saved_at, modified },
             ReplayEntry {
                 path,
                 label,
@@ -187,8 +195,14 @@ pub fn discover(cancelled: impl Fn() -> bool) -> Vec<ReplayEntry> {
         scan_cancellable(&dir, &mut found, &cancelled);
     }
     scan_cancellable(&crate::paths::replays_dir(), &mut found, &cancelled);
-    found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    found.into_iter().map(|(_, e)| e).collect()
+    newest_first(found)
+}
+
+fn newest_first(mut found: Vec<(RecordTime, ReplayEntry)>) -> Vec<ReplayEntry> {
+    found.sort_by(|(left_time, left), (right_time, right)| {
+        (right_time, &right.path).cmp(&(left_time, &left.path))
+    });
+    found.into_iter().map(|(_, entry)| entry).collect()
 }
 
 #[cfg(test)]
@@ -302,6 +316,54 @@ mod tests {
     }
 
     #[test]
+    fn catalog_orders_autosaves_by_saved_time_then_mtime_then_path() {
+        let dir = std::env::temp_dir().join(format!("oxide-save-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let game = crate::game::Game::new(oxide_sim::Scenario::skirmish()).unwrap();
+        for (name, saved_at, modified) in [
+            ("copied", 99, 900),
+            ("older", 100, 100),
+            ("a", 100, 101),
+            ("b", 100, 101),
+            ("newest", 101, 1),
+        ] {
+            let mut meta = game.recorder.meta.clone();
+            meta.kind = Some("autosave".into());
+            meta.ticks = Some(game.state.current_tick());
+            meta.saved_at = Some(saved_at);
+            let path = dir.join(format!("{name}.oxsave"));
+            crate::saved_game::write_capture(game.capture_save(), meta, &path).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified))
+                .unwrap();
+        }
+        for reverse in [false, true] {
+            let mut found = Vec::new();
+            scan(&dir, &mut found);
+            if reverse {
+                found.reverse();
+            }
+            let candidates = newest_first(found)
+                .into_iter()
+                .filter(|entry| entry.compatible && entry.kind == RecordKind::Autosave)
+                .map(|entry| {
+                    entry
+                        .path
+                        .file_stem()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(candidates, ["newest", "b", "a", "older", "copied"]);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn the_calendar_is_honest_without_a_time_crate() {
         assert_eq!(civil_date(0), "1970-01-01");
         assert_eq!(civil_date(86_399), "1970-01-01", "last second of day one");
@@ -369,7 +431,7 @@ mod tests {
             "saves are loaded, not watched"
         );
         assert_ne!(
-            out[0].0,
+            out[0].0.saved_at,
             std::time::UNIX_EPOCH,
             "overflowing saved_at falls back to mtime"
         );

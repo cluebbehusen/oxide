@@ -238,6 +238,26 @@ mod tests {
         assert!(game.presentation.boundary_fog.explored(tile));
         let mut replay = game.recorder.clone();
         replay.meta.ticks = Some(game.state.current_tick());
+        let recovered = crate::game::checkpoint::RestoredGame::recover(
+            oxide_kit::recovery::Inspection {
+                kind: oxide_kit::recovery::RecordingKind::LiveMatch,
+                build: Default::default(),
+                session: "boundary-exploration".into(),
+                replay: replay.clone(),
+                checkpoint: None,
+                prepared: None,
+                issue: None,
+                clean: false,
+            },
+            || false,
+        )
+        .unwrap()
+        .install();
+        assert_eq!(game.hash_hex(), recovered.hash_hex());
+        assert_eq!(
+            game.presentation.boundary_fog,
+            recovered.presentation.boundary_fog
+        );
         let resumed = Game::from_replay(replay).unwrap();
         assert_eq!(game.hash_hex(), resumed.hash_hex());
         assert_eq!(

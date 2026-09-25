@@ -144,8 +144,13 @@ impl RestoredGame {
             "recording is not an interrupted live match"
         );
         let recovery_origin = record.checkpoint.clone();
-        let core = if let Some(checkpoint) = record.checkpoint {
-            checkpoint.resume_recording_cancellable(&record.replay, &cancelled)?
+        let (core, boundary_fog) = if let Some(checkpoint) = record.checkpoint {
+            let core = checkpoint.resume_recording_cancellable(&record.replay, &cancelled)?;
+            let fog = crate::boundary_fog::BoundaryFog::new(
+                &core.state,
+                Game::local_seat(&core.scenario),
+            );
+            (core, fog)
         } else {
             let scenario = record.replay.setup.clone();
             record.replay.validate(Some(SIM_VERSION))?;
@@ -154,6 +159,8 @@ impl RestoredGame {
                 "missing recovery checkpoint"
             );
             let mut state = scenario.build()?;
+            let human = Game::local_seat(&scenario);
+            let mut boundary_fog = crate::boundary_fog::BoundaryFog::new(&state, human);
             let mut bots = seat_bots(&scenario)?;
             let mut stats = oxide_kit::stats::LiveMatchStats::new(&state);
             let mut cursor = record.replay.cursor();
@@ -168,22 +175,25 @@ impl RestoredGame {
                     .collect();
                 let report = state.tick(&commands);
                 stats.observe(&state, &report.events);
+                boundary_fog.observe(&state, human);
             }
             anyhow::ensure!(cursor.is_finished(), "unconsumed recovery commands");
-            oxide_kit::checkpoint::RestoredSession {
-                scenario,
-                state,
-                bots,
-                pending: Vec::new(),
-                stats: Some(stats),
-            }
+            (
+                oxide_kit::checkpoint::RestoredSession {
+                    scenario,
+                    state,
+                    bots,
+                    pending: Vec::new(),
+                    stats: Some(stats),
+                },
+                boundary_fog,
+            )
         };
         anyhow::ensure!(
             core.stats.is_some(),
             "shell recovery requires live statistics"
         );
         let human = Game::local_seat(&core.scenario);
-        let boundary_fog = crate::boundary_fog::BoundaryFog::new(&core.state, human);
         Ok(Self {
             core,
             recorder: record.replay,
@@ -347,8 +357,22 @@ mod tests {
             serde_json::to_vec(&restored.recorder.commands).unwrap()
         );
         finish_recording(&writer, restored.state.current_tick());
+        let lease = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(writer.directory().join("lease"))
+            .unwrap();
         drop(restored);
         drop(writer);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lease.try_lock().is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recovery writer did not release its lease"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(lease);
         std::fs::remove_dir_all(root).unwrap();
     }
 
