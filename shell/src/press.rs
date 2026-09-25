@@ -5,6 +5,21 @@
 //! A screen supplies its own hit test and calls in with whichever zone the
 //! pointer is over; this type only remembers what was armed.
 
+use macroquad::prelude::{Vec2, vec2};
+use oxide_protocol::{MouseButton, RawEvent};
+
+/// What one pointer event meant to a screen's buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fed<Z> {
+    /// No button claims the event; the screen handles it.
+    Ignored,
+    /// A button claims the event (it armed, is tracking, or the press
+    /// was released elsewhere); the screen must not also act on it.
+    Held,
+    /// A button was pressed and released in place.
+    Activated(Z),
+}
+
 /// Armed pointer state over a screen's hit zones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Press<Z> {
@@ -55,6 +70,53 @@ impl<Z: Copy + PartialEq> Press<Z> {
         (zone == Some(armed)).then_some(armed)
     }
 
+    /// Routes one pointer event through the gesture. `zone_at` is the
+    /// screen's hit test; its flag says whether the pointer is a finger,
+    /// for screens that pad fingertip targets.
+    pub fn feed(&mut self, event: &RawEvent, zone_at: impl Fn(Vec2, bool) -> Option<Z>) -> Fed<Z> {
+        let claimed = |zone: Option<Z>| match zone {
+            Some(zone) => Fed::Activated(zone),
+            None => Fed::Held,
+        };
+        match *event {
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+            } => {
+                let zone = zone_at(vec2(x, y), false);
+                self.mouse_down(zone);
+                if zone.is_some() {
+                    Fed::Held
+                } else {
+                    Fed::Ignored
+                }
+            }
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+            } if self.mouse.is_some() => claimed(self.mouse_up(zone_at(vec2(x, y), false))),
+            // Some platforms re-report every live finger when another
+            // lands; the owning finger's repeat start changes nothing.
+            RawEvent::TouchDown { id, .. } if self.owns(id) => Fed::Held,
+            RawEvent::TouchDown { id, x, y } if self.touch_free() => {
+                let zone = zone_at(vec2(x, y), true);
+                self.touch_down(id, zone);
+                if zone.is_some() {
+                    Fed::Held
+                } else {
+                    Fed::Ignored
+                }
+            }
+            RawEvent::TouchMove { id, .. } if self.owns(id) => Fed::Held,
+            RawEvent::TouchUp { id, x, y } if self.owns(id) => {
+                claimed(self.touch_up(zone_at(vec2(x, y), true)))
+            }
+            _ => Fed::Ignored,
+        }
+    }
+
     /// Drops whatever is armed.
     pub fn cancel(&mut self) {
         *self = Self::default();
@@ -69,6 +131,96 @@ impl<Z: Copy + PartialEq> Press<Z> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn zone(p: Vec2, _touch: bool) -> Option<u8> {
+        (p.x < 100.0).then_some(1)
+    }
+
+    #[test]
+    fn feed_commits_only_a_release_on_the_armed_zone() {
+        let mut press = Press::default();
+        let down = |x| RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y: 0.0,
+        };
+        let up = |x| RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&down(10.0), zone), Fed::Held);
+        assert_eq!(press.feed(&up(20.0), zone), Fed::Activated(1));
+        assert_eq!(press.feed(&down(10.0), zone), Fed::Held);
+        assert_eq!(
+            press.feed(&up(500.0), zone),
+            Fed::Held,
+            "a press dragged away still belongs to the button"
+        );
+        let touch = RawEvent::TouchDown {
+            id: 3,
+            x: 10.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&touch, zone), Fed::Held);
+        let lift = RawEvent::TouchUp {
+            id: 3,
+            x: 12.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&lift, zone), Fed::Activated(1));
+    }
+
+    #[test]
+    fn feed_leaves_unarmed_events_to_the_caller() {
+        let mut press = Press::default();
+        let away = RawEvent::TouchDown {
+            id: 3,
+            x: 500.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&away, zone), Fed::Ignored);
+        let drag = RawEvent::TouchMove {
+            id: 3,
+            x: 10.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&drag, zone), Fed::Ignored);
+        let release = RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x: 10.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&release, zone), Fed::Ignored);
+    }
+
+    #[test]
+    fn feed_ignores_a_re_reported_start_for_the_owning_finger() {
+        let mut press = Press::default();
+        let start = RawEvent::TouchDown {
+            id: 3,
+            x: 10.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&start, zone), Fed::Held);
+        let repeat = RawEvent::TouchDown {
+            id: 3,
+            x: 11.0,
+            y: 0.0,
+        };
+        assert_eq!(press.feed(&repeat, zone), Fed::Held);
+        assert_eq!(press.armed_touch(), Some((3, 1)));
+        let other = RawEvent::TouchDown {
+            id: 4,
+            x: 10.0,
+            y: 0.0,
+        };
+        assert_eq!(
+            press.feed(&other, zone),
+            Fed::Ignored,
+            "a second finger cannot steal the press"
+        );
+    }
 
     #[test]
     fn a_mouse_press_commits_only_when_released_on_the_armed_zone() {

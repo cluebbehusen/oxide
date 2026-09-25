@@ -425,6 +425,7 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
             WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
             WizardStep::Setup => w.draw_setup(&app.draft, &mut app.previews),
         }
+        w.draw_back(app.input.mouse);
         Screen::Wizard(w)
     }
 }

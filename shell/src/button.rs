@@ -4,6 +4,18 @@
 use crate::theme;
 use macroquad::prelude::{Rect, draw_rectangle, draw_rectangle_lines, draw_text, measure_text};
 
+/// The `index`th button slot along the top-left corner: a fingertip
+/// tall, wide enough for a short verb, and clear of the window edge.
+pub(crate) fn corner_slot(index: usize, s: f32) -> Rect {
+    let width = 104.0 * s;
+    Rect::new(
+        16.0 * s + index as f32 * (width + 8.0 * s),
+        16.0 * s,
+        width,
+        crate::layout::MIN_TOUCH_TARGET * s,
+    )
+}
+
 /// Draws one action button; `active` marks hover or keyboard focus.
 pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
     draw_rectangle(
@@ -42,4 +54,20 @@ pub(crate) fn draw(rect: Rect, label: &str, active: bool, s: f32) {
             theme::TEXT_BODY
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corner_slots_are_fingertip_sized_and_never_overlap() {
+        for s in [0.75, 1.0, 1.5] {
+            let first = corner_slot(0, s);
+            let second = corner_slot(1, s);
+            assert!(first.h >= crate::layout::MIN_TOUCH_TARGET * s);
+            assert!(first.x > 0.0 && first.y > 0.0);
+            assert!(first.x + first.w < second.x, "slots keep a gap at {s}");
+        }
+    }
 }
