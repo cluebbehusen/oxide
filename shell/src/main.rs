@@ -22,6 +22,7 @@ mod menu;
 mod panel;
 mod paths;
 mod performance;
+mod platform;
 mod presentation_animation;
 mod press;
 mod production;

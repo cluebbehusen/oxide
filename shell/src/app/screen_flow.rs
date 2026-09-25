@@ -38,6 +38,19 @@ fn playing_escape_opens_pause(
     escape_pressed && (!had_selection || decided || conceded_banner)
 }
 
+/// Freezes the live match under the pause menu. Opening the menu
+/// dismisses the concede overlay for good, so Resume from here is clean
+/// spectating.
+fn open_pause(game: &mut Game) -> Screen {
+    game.presentation.conceded_banner = false;
+    game.presentation.paused = true;
+    game.demo.paused_menu = true;
+    Screen::Pause(PauseScreen::open(
+        game.state.result().is_some(),
+        can_surrender(game),
+    ))
+}
+
 /// Resolves the wizard's semantic outcome and owns the one seed-consumption
 /// boundary. A failed launch leaves the current window available for retry;
 /// successful construction consumes exactly one window before the game is
@@ -453,6 +466,7 @@ fn playing_frame(
     input::apply_events(&mut app.game, &mut app.input, events);
     input::update_held(&mut app.game, &app.input, dt);
     input::update_touch(&mut app.game, &mut app.input);
+    let menu_pressed = app.input.take_menu_request();
     // The cursor telegraphs the verb: crosshair while
     // placing or plotting, pointer over chrome.
     macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&app.game, &app.input));
@@ -460,22 +474,17 @@ fn playing_frame(
     // except over a decided match (or the concede overlay),
     // where the banner promises 'Press Esc to continue' and
     // must mean it even with a selection still alive.
+    // The menu button skips that walk: it names the menu outright.
     let mut next: Option<Screen> = None;
-    if playing_escape_opens_pause(
-        escape_pressed,
-        had_selection,
-        app.game.state.result().is_some(),
-        app.game.presentation.conceded_banner,
-    ) {
-        // Opening the menu dismisses the concede overlay for
-        // good — Resume from here is clean spectating.
-        app.game.presentation.conceded_banner = false;
-        app.game.presentation.paused = true;
-        app.game.demo.paused_menu = true;
-        next = Some(Screen::Pause(PauseScreen::open(
+    if menu_pressed
+        || playing_escape_opens_pause(
+            escape_pressed,
+            had_selection,
             app.game.state.result().is_some(),
-            can_surrender(&app.game),
-        )));
+            app.game.presentation.conceded_banner,
+        )
+    {
+        next = Some(open_pause(&mut app.game));
     }
     if let Some(t) = app.tutorial.as_mut() {
         if !t.advance(&app.game.demo) {
@@ -852,6 +861,21 @@ mod tests {
         assert!(!playing_escape_opens_pause(true, true, false, false));
         assert!(playing_escape_opens_pause(true, true, true, false));
         assert!(playing_escape_opens_pause(true, true, false, true));
+    }
+
+    #[test]
+    fn opening_pause_freezes_play_and_ends_the_concede_banner() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+        game.presentation.conceded_banner = true;
+        let screen = open_pause(&mut game);
+        assert!(matches!(screen, Screen::Pause(_)));
+        assert!(game.presentation.paused);
+        assert!(!game.presentation.conceded_banner);
+        assert!(
+            game.demo.paused_menu,
+            "the menu button teaches the tutorial's pause lesson like Escape"
+        );
     }
 
     #[test]

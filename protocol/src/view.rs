@@ -418,6 +418,14 @@ pub struct UiView {
     /// The legacy chrome array describes only the enclosing bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panel_regions: Option<[[f32; 4]; 2]>,
+    /// The top bar's menu button [x, y, width, height]; a click or tap
+    /// there opens the pause menu. Absent outside live play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub menu_button: Option<[f32; 4]>,
+    /// The top bar's clock or PAUSED status [x, y, width, height]; a
+    /// click or tap there toggles pause. Absent outside live play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_status: Option<[f32; 4]>,
 }
 
 impl StateView {

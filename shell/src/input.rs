@@ -183,6 +183,9 @@ pub struct InputState {
     /// CUMULATIVE change against this, so a slow pinch (under a pixel
     /// per event) still reads as one instead of committing a box.
     pub(crate) pair_dist: Option<f32>,
+    /// The menu button was pressed this frame. Input cannot switch
+    /// screens itself, so the frame loop takes this one-shot request.
+    pub(crate) menu_requested: bool,
     /// The active binding profile.
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
@@ -396,6 +399,7 @@ impl InputState {
             last_tap: None,
             pinching: false,
             pair_dist: None,
+            menu_requested: false,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
@@ -516,6 +520,12 @@ impl InputState {
         self.last_tap = None;
         self.pinching = false;
         self.pair_dist = None;
+        self.menu_requested = false;
+    }
+
+    /// Consumes this frame's menu-button press, if any.
+    pub(crate) fn take_menu_request(&mut self) -> bool {
+        std::mem::take(&mut self.menu_requested)
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -1008,9 +1018,18 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     continue;
                 }
                 // The idle badge cycles workers on click.
-                let badge = game.presentation.layout.get().idle_badge;
+                let layout = game.presentation.layout.get();
+                let badge = layout.idle_badge;
                 if badge.w > 0.0 && badge.contains(vec2(x, y)) {
                     cycle_idle_worker(game);
+                    continue;
+                }
+                if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
+                    input.menu_requested = true;
+                    continue;
+                }
+                if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
+                    dispatch_action(game, input, Action::TogglePause);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -1325,6 +1344,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 // bar, which the bare-chrome swallow
                                 // below would otherwise eat.
                                 cycle_idle_worker(game);
+                            } else if layout.menu_button.w > 0.0
+                                && crate::layout::touch_pad(layout.menu_button, input.ui)
+                                    .contains(p)
+                            {
+                                // Checked before the status so the
+                                // menu wins where the padded targets
+                                // overlap.
+                                input.menu_requested = true;
+                            } else if layout.pause_status.w > 0.0
+                                && crate::layout::touch_pad(layout.pause_status, input.ui)
+                                    .contains(p)
+                            {
+                                dispatch_action(game, input, Action::TogglePause);
                             } else if click_on_hud(game, p) {
                                 // Bare chrome: the tap is swallowed.
                             } else if double {

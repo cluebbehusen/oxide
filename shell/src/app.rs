@@ -1183,6 +1183,12 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh
 }
 
+/// A top-bar control's rect for the automation surface: reported only
+/// during live play, and only while the bar draws it.
+fn live_rect(screen: &Screen, rect: Rect) -> Option<[f32; 4]> {
+    (matches!(screen, Screen::Playing) && rect.w > 0.0).then_some([rect.x, rect.y, rect.w, rect.h])
+}
+
 fn capture_ui(screen: &Screen, app: &App) -> UiView {
     let (mode_name, menu): (&str, Option<&Menu>) = match screen {
         Screen::Home(home) => ("home", Some(&home.menu)),
@@ -1206,6 +1212,8 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 hover: w.ui_hover(),
                 chrome: None,
                 panel_regions: None,
+                menu_button: None,
+                pause_status: None,
             };
         }
         Screen::Playing => ("playing", None),
@@ -1221,6 +1229,8 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 hover: results.hover(),
                 chrome: None,
                 panel_regions: None,
+                menu_button: None,
+                pause_status: None,
             };
         }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
@@ -1245,6 +1255,8 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
         visible_range: menu.map(Menu::visible_range),
         hover: menu.and_then(Menu::hover),
+        menu_button: live_rect(screen, app.game.presentation.layout.get().menu_button),
+        pause_status: live_rect(screen, app.game.presentation.layout.get().pause_status),
         panel_regions: matches!(screen, Screen::Playing).then(|| {
             app.game
                 .presentation
