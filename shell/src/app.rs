@@ -157,6 +157,9 @@ struct App {
     persistence_result: Option<Result<persistence::Output>>,
     catalog_id: Option<u64>,
     catalog_delete: Option<std::path::PathBuf>,
+    /// Presented frames in a row spent in live play; the suspension
+    /// pause reads it to tell a stalled match from a heavy transition.
+    live_streak: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -695,8 +698,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         catalog_id: None,
         catalog_delete: None,
         performance: crate::performance::Performance::default(),
+        live_streak: 0,
     };
     let mut ui_view = capture_ui(&screen, &app);
+    // A rerun pass re-enters the loop inside the same presented frame;
+    // the frame's starting screen is the one recorded before it.
+    let mut rerun_pass = false;
+    let mut began_playing = false;
 
     loop {
         if let Some(result) = app.report_job.poll() {
@@ -748,7 +756,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let input_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
         app.game.poll_recovery();
-        let dt = get_frame_time();
+        let time = FrameTime::measure(get_frame_time());
+        if !rerun_pass {
+            began_playing = matches!(screen, Screen::Playing);
+        }
+        rerun_pass = false;
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
                 // An injected event is consumed by the NEXT frame; any
@@ -791,7 +803,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             .camera
             .set_viewport(vec2(screen_width(), screen_height()));
         render::set_viewport(screen_width(), screen_height());
-        app.game.presentation.camera.update(dt);
+        app.game.presentation.camera.update(time.presentation);
 
         let input_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
@@ -838,7 +850,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             &mut app,
             screen,
             events,
-            dt,
+            time,
             ctrl_at_frame_start,
             shift_at_frame_start,
         )?;
@@ -856,6 +868,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 frame_tick_start,
                 frame_started,
             );
+            rerun_pass = true;
             continue;
         }
 
@@ -936,7 +949,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             soundtrack.update(
                 soundtrack_scene(&screen, &app.game),
                 combat_impulse,
-                dt,
+                time.presentation,
                 app.config.volumes,
             );
             soundtrack.apply(&app.sounds);
@@ -1024,6 +1037,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
         drop(screen_diagnostic_scope);
         drop(frame_diagnostic_scope);
+        app.live_streak = next_live_streak(
+            app.live_streak,
+            began_playing,
+            matches!(screen, Screen::Playing),
+        );
         let wait_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::FrameWait);
         next_frame().await;
@@ -1181,6 +1199,45 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh.presentation.overlay = old.presentation.overlay;
     fresh.recovery_root.clone_from(&old.recovery_root);
     fresh
+}
+
+/// One presented frame's wall time. Presentation (camera glides, held
+/// pans, effects, music) reads a clamped value so a suspension or a
+/// clock jump cannot fling it; the simulation clocks read the unclamped
+/// value and cap their own catch-up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FrameTime {
+    pub(crate) presentation: f32,
+    pub(crate) raw: f32,
+}
+
+/// Presentation never advances more than this per frame.
+const MAX_PRESENTATION_DT: f32 = 0.25;
+
+impl FrameTime {
+    /// Frame time comes from the system clock, which can step backward
+    /// or produce garbage; either reads as no time passing, since a NaN
+    /// in a clock accumulator would stall it for good.
+    fn measure(reported: f32) -> Self {
+        let raw = if reported.is_finite() {
+            reported.max(0.0)
+        } else {
+            0.0
+        };
+        Self {
+            presentation: raw.min(MAX_PRESENTATION_DT),
+            raw,
+        }
+    }
+}
+
+/// Consecutive presented frames that began and ended in live play.
+fn next_live_streak(streak: u8, began_playing: bool, ended_playing: bool) -> u8 {
+    if began_playing && ended_playing {
+        streak.saturating_add(1)
+    } else {
+        0
+    }
 }
 
 /// A top-bar control's rect for the automation surface: reported only
@@ -1627,6 +1684,40 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_time_bounds_presentation_and_sanitizes_the_clock() {
+        let ordinary = FrameTime::measure(0.016);
+        assert_eq!(ordinary.presentation, 0.016);
+        assert_eq!(ordinary.raw, 0.016);
+        let suspended = FrameTime::measure(60.0);
+        assert_eq!(suspended.presentation, MAX_PRESENTATION_DT);
+        assert_eq!(
+            suspended.raw, 60.0,
+            "the sim clocks cap their own catch-up and still see the gap"
+        );
+        for garbage in [-1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                FrameTime::measure(garbage),
+                FrameTime {
+                    presentation: 0.0,
+                    raw: 0.0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn the_live_streak_counts_only_unbroken_live_frames() {
+        let mut streak = 0;
+        for _ in 0..3 {
+            streak = next_live_streak(streak, true, true);
+        }
+        assert_eq!(streak, 3);
+        assert_eq!(next_live_streak(streak, true, false), 0, "leaving play");
+        assert_eq!(next_live_streak(streak, false, true), 0, "arriving in play");
+        assert_eq!(next_live_streak(u8::MAX, true, true), u8::MAX);
+    }
 
     #[test]
     fn diagnostics_follow_playback_speed_instead_of_the_hidden_live_clock() {

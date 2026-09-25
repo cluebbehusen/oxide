@@ -189,6 +189,12 @@ impl PauseScreen {
         }
     }
 
+    /// Shows `notice` as the subtitle until the next activation.
+    pub fn with_notice(mut self, notice: impl Into<String>) -> Self {
+        self.notice = Some(notice.into());
+        self
+    }
+
     /// Longest save name the field accepts — what the shelf row can
     /// show without eliding.
     pub const NAME_MAX: usize = 26;
@@ -457,6 +463,21 @@ mod tests {
             drive(p, Key::Up);
         }
         drive(p, Key::Enter)
+    }
+
+    #[test]
+    fn a_notice_reads_as_the_subtitle_until_a_row_is_picked() {
+        let mut p = PauseScreen::open(false, true).with_notice("paused after an interruption");
+        assert_eq!(p.subtitle("Skirmish"), "paused after an interruption");
+        drive(&mut p, Key::Down);
+        assert_eq!(
+            p.subtitle("Skirmish"),
+            "paused after an interruption",
+            "moving the cursor is not an activation"
+        );
+        activate(&mut p, "Restart");
+        drive(&mut p, Key::Enter);
+        assert_eq!(p.subtitle("Skirmish"), "Skirmish");
     }
 
     #[test]
