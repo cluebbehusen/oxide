@@ -119,22 +119,29 @@ fn runtime_label(runtime: &str) -> Option<String> {
 /// The device a `--device` query names: an exact identifier, an exact
 /// name (ignoring case), or the one device whose name contains it.
 pub fn find<'a>(devices: &'a [Device], query: &str) -> Result<&'a Device> {
-    let wanted = query.to_lowercase();
     if let Some(device) = devices.iter().find(|d| d.id.eq_ignore_ascii_case(query)) {
         return Ok(device);
     }
-    if let Some(device) = devices.iter().find(|d| d.name.to_lowercase() == wanted) {
-        return Ok(device);
-    }
-    let matches: Vec<&Device> = devices
+    // Two runtimes can each carry a simulator of the same model, so an
+    // exact name is only as good as it is unique.
+    let wanted = query.to_lowercase();
+    let exact: Vec<&Device> = devices
         .iter()
-        .filter(|d| d.name.to_lowercase().contains(&wanted))
+        .filter(|d| d.name.to_lowercase() == wanted)
         .collect();
+    let matches = if exact.is_empty() {
+        devices
+            .iter()
+            .filter(|d| d.name.to_lowercase().contains(&wanted))
+            .collect()
+    } else {
+        exact
+    };
     match matches.as_slice() {
         [device] => Ok(device),
         [] => bail!("no device matches {query:?}\n{}", listing(devices)),
         _ => bail!(
-            "{query:?} matches more than one device\n{}",
+            "{query:?} matches more than one device; pick one by id or number\n{}",
             listing(devices)
         ),
     }
@@ -184,12 +191,6 @@ pub fn run(device: Option<&str>, list: bool) -> Result<()> {
     }
     let root = workspace_root();
     let devices = discover()?;
-    if devices.is_empty() {
-        bail!(
-            "no paired iPad or iPad simulator found; pair an iPad in Xcode or \
-             add an iPad simulator"
-        );
-    }
     if list {
         print!("{}", listing(&devices));
         return Ok(());
@@ -221,26 +222,69 @@ fn workspace_root() -> PathBuf {
 
 /// Paired iPads first, then simulators.
 fn discover() -> Result<Vec<Device>> {
+    combine(list_physical(), list_simulators())
+}
+
+/// Joins both discoveries. A tool that fails is reported rather than read
+/// as "no devices": its error prints as a warning when the other tool
+/// found something to run on, and becomes the error when nothing did.
+pub fn combine(
+    physical: std::result::Result<Vec<Device>, String>,
+    simulators: std::result::Result<Vec<Device>, String>,
+) -> Result<Vec<Device>> {
+    let mut devices = Vec::new();
+    let mut problems = Vec::new();
+    for found in [physical, simulators] {
+        match found {
+            Ok(found) => devices.extend(found),
+            Err(problem) => problems.push(problem),
+        }
+    }
+    if devices.is_empty() {
+        if problems.is_empty() {
+            bail!(
+                "no paired iPad or iPad simulator found; pair an iPad in Xcode or \
+                 add an iPad simulator"
+            );
+        }
+        bail!("no devices found:\n{}", problems.join("\n"));
+    }
+    for problem in &problems {
+        eprintln!("warning: {problem}");
+    }
+    Ok(devices)
+}
+
+fn list_physical() -> std::result::Result<Vec<Device>, String> {
     let json = std::env::temp_dir().join(format!("oxide-ios-devices-{}.json", std::process::id()));
-    let status = Command::new("xcrun")
+    let output = Command::new("xcrun")
         .args(["devicectl", "list", "devices", "--quiet", "--json-output"])
         .arg(&json)
-        .status()
-        .context("running xcrun devicectl (is full Xcode installed?)")?;
-    let physical = if status.success() {
-        let text = std::fs::read_to_string(&json).unwrap_or_default();
-        let _ = std::fs::remove_file(&json);
-        physical_ipads(&serde_json::from_str(&text).unwrap_or(Value::Null))
-    } else {
-        Vec::new()
-    };
+        .output()
+        .map_err(|error| {
+            format!("could not run xcrun devicectl (is full Xcode installed?): {error}")
+        })?;
+    let text = std::fs::read_to_string(&json).unwrap_or_default();
+    let _ = std::fs::remove_file(&json);
+    if !output.status.success() {
+        return Err(format!("xcrun devicectl failed:\n{}", tool_output(&output)));
+    }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("xcrun devicectl wrote unreadable JSON: {error}"))?;
+    Ok(physical_ipads(&value))
+}
+
+fn list_simulators() -> std::result::Result<Vec<Device>, String> {
     let output = Command::new("xcrun")
         .args(["simctl", "list", "devices", "available", "--json"])
         .output()
-        .context("running xcrun simctl")?;
-    let simulators =
-        ipad_simulators(&serde_json::from_slice(&output.stdout).unwrap_or(Value::Null));
-    Ok(physical.into_iter().chain(simulators).collect())
+        .map_err(|error| format!("could not run xcrun simctl: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("xcrun simctl failed:\n{}", tool_output(&output)));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("xcrun simctl printed unreadable JSON: {error}"))?;
+    Ok(ipad_simulators(&value))
 }
 
 fn pick(devices: &[Device], remembered: Option<&str>) -> Result<Device> {
@@ -504,6 +548,40 @@ mod tests {
         assert_eq!(find(&devices, "connor").unwrap().id, "00008132-AAAA");
         assert!(find(&devices, "iPad").is_err(), "ambiguous");
         assert!(find(&devices, "watch").is_err(), "no match");
+    }
+
+    #[test]
+    fn a_name_shared_across_runtimes_must_be_picked_by_id() {
+        let mut devices = all();
+        let mut twin = devices[1].clone();
+        twin.id = "SIM-9".to_string();
+        twin.detail = "simulator, iOS 26.0".to_string();
+        devices.push(twin);
+        let error = find(&devices, "iPad Pro 13-inch (M5)")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("more than one"), "{error}");
+        assert_eq!(
+            find(&devices, "SIM-9").unwrap().detail,
+            "simulator, iOS 26.0"
+        );
+    }
+
+    #[test]
+    fn a_failing_tool_is_reported_not_read_as_no_devices() {
+        let ipad = || Ok(physical_ipads(&devicectl()));
+        let broken = || Err("xcrun simctl failed:\nCoreSimulator is broken".to_string());
+        assert_eq!(
+            combine(ipad(), broken()).unwrap().len(),
+            1,
+            "the iPad still works"
+        );
+        let error = combine(Ok(Vec::new()), broken()).unwrap_err().to_string();
+        assert!(error.contains("CoreSimulator is broken"), "{error}");
+        let error = combine(Ok(Vec::new()), Ok(Vec::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no paired iPad"), "{error}");
     }
 
     #[test]
