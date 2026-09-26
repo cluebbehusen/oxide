@@ -138,6 +138,9 @@ impl Brain {
         {
             return Err("invalid controller intelligence".into());
         }
+        if !mind.strategy.valid_checkpoint(&map, state.current_tick()) {
+            return Err("invalid controller strategy".into());
+        }
         let expected = Self::scripted(player, config, Arc::new(map));
         let MindV1 {
             intelligence,
@@ -242,5 +245,33 @@ mod tests {
         wire.player = PlayerId(0);
         bad.payload = encode(&wire).unwrap();
         assert!(Brain::from_checkpoint(&bad, &scenario, &state).is_err());
+    }
+
+    #[test]
+    fn checkpoint_rejects_a_forged_strategy() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.players[1].bot = true;
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::default());
+        let state = scenario.build().unwrap();
+        let checkpoint = seat_bots(&scenario).unwrap()[0].checkpoint().unwrap();
+        let (width, height) = (state.map().width(), state.map().height());
+        let restore = |target| {
+            let mut wire: BrainV1 = ciborium::from_reader(checkpoint.payload.as_slice()).unwrap();
+            wire.mind.strategy = StrategicPlanner::remembered_watch_fixture(
+                PlayerId(0),
+                target,
+                state.current_tick(),
+            );
+            let forged = BotCheckpoint {
+                version: checkpoint.version,
+                payload: encode(&wire).unwrap(),
+            };
+            Brain::from_checkpoint(&forged, &scenario, &state).err()
+        };
+        assert_eq!(restore(TilePos::new(width - 1, height - 1)), None);
+        assert_eq!(
+            restore(TilePos::new(width, 0)).as_deref(),
+            Some("invalid controller strategy")
+        );
     }
 }

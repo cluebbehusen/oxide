@@ -1,3 +1,4 @@
+mod checkpoint;
 mod producer_reservations;
 use super::super::observation::BuildingObs;
 use super::super::profile::{PersonalityTraits, Specialty};
@@ -11,6 +12,14 @@ fn planner_with_operation(op: AirOperation, plan: AirPlan) -> StrategicPlanner {
         air: Some(ActiveAirOperation { op, plan }),
         ..StrategicPlanner::new()
     }
+}
+
+fn connected_air_plan(
+    package: ConnectedForcePackage,
+    admitted_at: Tick,
+    scope: TilePos,
+) -> AirPlan {
+    AirPlan::Connected(Box::new(ConnectedPlan::new(package, admitted_at, scope)))
 }
 
 const HOME: TilePos = TilePos::new(3, 10);
@@ -173,7 +182,6 @@ fn planning_context<'a>(
     AirPlanningContext {
         allow_procurement: true,
         planning: Some(fixture_planning),
-        profile: identity,
         tuning: DifficultyTuning::for_level(identity.difficulty),
         obs: observation,
         intel: intelligence,
@@ -269,7 +277,7 @@ fn connected_test_plan(observation: &Observation) -> AirPlan {
     let faction = observation.faction;
     let scout = Role::Scout.unit_for(faction);
     let strike = Role::Bomber.unit_for(faction);
-    AirPlan::connected(
+    connected_air_plan(
         ConnectedForcePackage {
             derived_at: observation.tick,
             preparation_deadline: observation
@@ -504,9 +512,9 @@ fn wealthy_airborne_operation(
     operation.scout = Some(UnitId(1));
     operation.strike_aircraft = (100..110).map(UnitId).collect();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 10;
-    plan.desired_screen = 5;
-    plan.screen = (200..205).map(UnitId).collect();
+    plan.island_mut().desired_strike_aircraft = 10;
+    plan.island_mut().desired_screen = 5;
+    plan.island_mut().screen = (200..205).map(UnitId).collect();
     let planner = planner_with_operation(operation, plan);
     (battle, planner)
 }
@@ -706,6 +714,7 @@ fn allocate_connected_in_test(
 fn procure_connected_in_test(
     op: &AirOperation,
     plan: &AirPlan,
+    identity: &ResolvedProfile,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) {
@@ -716,7 +725,7 @@ fn procure_connected_in_test(
     });
     let resources = ResourceSnapshot::from_observation(context.obs);
     let request = FreshConnectedProposalRequest::new(
-        context.profile,
+        identity,
         context.tuning,
         context.obs,
         &resources,
@@ -800,7 +809,7 @@ fn paid_connected_queue_keeps_duplicates_and_releases_completed_history() {
     active.op.scout = None;
     active.op.artillery.clear();
     active.op.strike_aircraft.clear();
-    active.plan.connected_package.as_mut().unwrap().suppression[0].count = 2;
+    active.plan.package_mut().unwrap().suppression[0].count = 2;
     let kind = UnitKind::Bombard;
     let ready = obs.tick + Tick::from(kind.stats().train_ticks) - 1;
     let purchases = vec![
@@ -819,7 +828,7 @@ fn paid_connected_queue_keeps_duplicates_and_releases_completed_history() {
             delayed: false,
         },
     ];
-    active.plan.paid_connected_production = purchases.clone();
+    active.plan.connected_mut().paid_production = purchases.clone();
     assert_eq!(planner.paid_connected_production(&obs), purchases);
     obs.my_queues[2] = vec![kind, kind];
     obs.tick = ready;
@@ -848,7 +857,8 @@ fn blocked_paid_connected_queue_remains_owned_after_predicted_completion() {
     let kind = UnitKind::Bombard;
     active
         .plan
-        .paid_connected_production
+        .connected_mut()
+        .paid_production
         .push(ConnectedPurchase {
             producer: BuildingId(12),
             kind,
@@ -1272,13 +1282,11 @@ fn provider_visible_on_the_deadline_can_complete_assembly() {
     active.op.strike_aircraft.pop();
     let package = active
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("the fixture has a connected package");
     package.derived_at = observation.tick - 1;
     package.preparation_deadline = observation.tick;
-    active.plan.admitted_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
-    active.plan.assembly_timeout = CONNECTED_PREPARATION_HORIZON;
+    active.plan.connected_mut().admitted_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
     active.op.started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
     active.op.phase_started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
 
@@ -1319,13 +1327,11 @@ fn provider_first_visible_on_the_deadline_survives_the_recon_transition() {
     active.op.strike_aircraft.pop();
     let package = active
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("the fixture has a connected package");
     package.derived_at = observation.tick - 1;
     package.preparation_deadline = observation.tick;
-    active.plan.admitted_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
-    active.plan.assembly_timeout = CONNECTED_PREPARATION_HORIZON;
+    active.plan.connected_mut().admitted_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
     active.op.started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
     active.op.phase_started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
 
@@ -1882,7 +1888,7 @@ fn airborne_hold_lands_the_bombers_and_keeps_a_fixed_wing_screen_over_home() {
         .my_units
         .push(own(30, UnitKind::Buzzard, TilePos::new(5, 8)));
     let mut plan = AirPlan::island(&profile(), &observation);
-    plan.screen = vec![UnitId(30)];
+    plan.island_mut().screen = vec![UnitId(30)];
     let mut operation = operation(AirOperationPhase::SuppressAa, 100);
     let pad = landing_pad(&observation, HOME).unwrap();
 
@@ -1957,12 +1963,10 @@ fn artillery_staging_is_dispatched_once_until_the_goal_or_mission_changes() {
     ));
     let intelligence = knowledge(&suppression_observation);
     let mut suppression = StrategicDecision::default();
-    let identity = profile();
     let mut plan = connected_test_plan(&suppression_observation);
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: Some(&fixture_planning),
-        profile: &identity,
         tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
         obs: &suppression_observation,
         intel: &intelligence,
@@ -2457,6 +2461,7 @@ fn shared_procurement_spreads_work_and_refuses_an_unfundable_package() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &obs, &intelligence),
         &mut out,
     );
@@ -2479,6 +2484,7 @@ fn shared_procurement_spreads_work_and_refuses_an_unfundable_package() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &obs, &intelligence),
         &mut partial,
     );
@@ -2518,6 +2524,7 @@ fn a_full_operation_queue_holds_the_next_provider_cost_until_a_slot_opens() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &observation, &intelligence),
         &mut decision,
     );
@@ -2551,8 +2558,7 @@ fn shared_procurement_protects_capital_for_the_complete_blocked_package() {
         .retain(|unit| unit.kind == UnitKind::Kestrel);
     let mut plan = connected_test_plan(&observation);
     let package = plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected test plan has a package");
     package.strike = vec![ProviderDemand {
         kind: UnitKind::Buzzard,
@@ -2588,6 +2594,7 @@ fn shared_procurement_protects_capital_for_the_complete_blocked_package() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &observation, &intelligence),
         &mut decision,
     );
@@ -2610,6 +2617,7 @@ fn shared_procurement_protects_capital_for_the_complete_blocked_package() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &observation, &intelligence),
         &mut parallel,
     );
@@ -2700,8 +2708,7 @@ fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
     )
     .expect("forecast income can fund marginal suppression after the minimum package");
     let package = plan
-        .connected_package
-        .as_ref()
+        .package()
         .expect("connected plan carries its force package");
     let minimum: Vec<_> = package
         .provider_priority
@@ -2733,6 +2740,7 @@ fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &observation, &intelligence),
         &mut decision,
     );
@@ -2967,7 +2975,7 @@ fn the_next_operation_reuses_its_standby_roles_before_training_replacements() {
     assert_eq!(operation.strike_aircraft, [UnitId(3)]);
     let retry_package = planner
         .air_plan()
-        .and_then(|plan| plan.connected_package.as_ref())
+        .and_then(|plan| plan.package())
         .expect("the retry retains its selected force package");
     let selected_strike = retry_package
         .strike
@@ -4135,7 +4143,7 @@ fn a_non_air_identity_retains_the_connected_operation_repertoire() {
 
     assert!(planner.air_operation().is_some());
     assert!(planner.air_plan().is_some_and(|plan| {
-        plan.connected_package.as_ref().is_some_and(|package| {
+        plan.package().is_some_and(|package| {
             !package.recon.is_empty()
                 && !package.suppression.is_empty()
                 && !package.strike.is_empty()
@@ -4187,16 +4195,9 @@ fn resolved_siege_identity_enters_the_playbook_with_a_complete_repertoire() {
     let siege_plan = siege_planner
         .air_plan()
         .expect("the resolved Siege identity enters the connected playbook");
-    assert!(
-        siege_plan
-            .connected_package
-            .as_ref()
-            .is_some_and(|package| {
-                !package.recon.is_empty()
-                    && !package.suppression.is_empty()
-                    && !package.strike.is_empty()
-            })
-    );
+    assert!(siege_plan.package().is_some_and(|package| {
+        !package.recon.is_empty() && !package.suppression.is_empty() && !package.strike.is_empty()
+    }));
 
     let mut low_planner = StrategicPlanner::new();
     low_planner.think_alone(
@@ -4393,7 +4394,7 @@ fn precommit_package_rebase_preserves_every_surviving_frozen_target() {
             },
         },
     );
-    let plan = AirPlan::connected(
+    let plan = connected_air_plan(
         full_package
             .map(ConnectedForcePackageOptions::into_largest)
             .unwrap_or_else(|reason| {
@@ -4403,8 +4404,7 @@ fn precommit_package_rebase_preserves_every_surviving_frozen_target() {
         TARGET,
     );
     assert_eq!(
-        plan.connected_package
-            .as_ref()
+        plan.package()
             .expect("the fixture begins with a connected package")
             .target_anchors,
         vec![left_survivor, TARGET, right_survivor]
@@ -4442,8 +4442,7 @@ fn precommit_package_rebase_preserves_every_surviving_frozen_target() {
     assert_eq!(active.op.target_id, Some(BuildingId(81)));
     let revised = active
         .plan
-        .connected_package
-        .as_ref()
+        .package()
         .expect("the surviving target retains a connected package");
     assert_eq!(revised.derived_at, after_destruction.tick);
     assert_eq!(revised.target_anchors, vec![left_survivor, right_survivor]);
@@ -4496,20 +4495,15 @@ fn adjudicated_precommit_rebase_preserves_exact_package_and_surviving_targets() 
     }
     assert_eq!(
         proposal.variants[proposal.selected_variant]
-            .active
             .plan
-            .connected_package
-            .as_ref()
-            .expect("the proposal owns an exact package")
+            .package
             .target_anchors,
         vec![left_survivor, TARGET, right_survivor]
     );
     let mut expected_package = proposal.variants[proposal.selected_variant]
-        .active
         .plan
-        .connected_package
-        .clone()
-        .expect("the selected proposal retains its exact package");
+        .package
+        .clone();
     let mut planner = StrategicPlanner::new();
     planner.commit_connected(proposal);
     let _ = planner.think_after_connected_adjudication(StrategicThinkContext::new(
@@ -4567,7 +4561,7 @@ fn adjudicated_precommit_rebase_preserves_exact_package_and_surviving_targets() 
     assert_eq!(active.op.target_kind, BuildingKind::Turret);
     assert_eq!(active.op.target_id, Some(BuildingId(81)));
     assert_eq!(
-        active.plan.connected_package.as_ref(),
+        active.plan.package(),
         Some(&expected_package),
         "adjudicated continuation may prune destroyed targets and rebind owner identity, but cannot rerank or rederive its exact package"
     );
@@ -4629,20 +4623,10 @@ fn fresh_connected_proposal_is_pure_repeatable_and_keeps_one_minimum_basis() {
         battle.tick.saturating_add(connected_preparation_horizon())
     );
     let minimum = &first.variants[0];
-    let minimum_package = minimum
-        .active
-        .plan
-        .connected_package
-        .as_ref()
-        .expect("every proposal variant has a connected package");
+    let minimum_package = &minimum.plan.package;
     assert!(!minimum.claims.provider_jobs.is_empty());
     for variant in &first.variants {
-        let package = variant
-            .active
-            .plan
-            .connected_package
-            .as_ref()
-            .expect("every proposal variant has a connected package");
+        let package = &variant.plan.package;
         assert_eq!(package.target_anchors, minimum_package.target_anchors);
         assert_eq!(
             package.preparation_deadline,
@@ -4832,7 +4816,7 @@ fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
             .all(|job| job.kind() != UnitKind::Kestrel)
     );
     let mut planner = StrategicPlanner::new();
-    planner.air = Some(proposal.variants[0].active.clone());
+    planner.air = Some(proposal.variants[0].clone().into_active());
     assert_eq!(
         planner.reconnaissance_paid_claims(
             &battle,
@@ -4970,12 +4954,7 @@ fn connected_proposal_uses_completed_income_without_double_counting_provider_cos
         .expect("completed Extractors make the minimum forecast-feasible")
         .expect("the forecast-funded operation produces a proposal");
     let minimum = &proposal.variants[0];
-    let package = minimum
-        .active
-        .plan
-        .connected_package
-        .as_ref()
-        .expect("the proposal retains its exact package");
+    let package = &minimum.plan.package;
 
     assert_eq!(
         minimum.claims.provider_jobs.len(),
@@ -5753,6 +5732,7 @@ fn connected_package_uses_only_producers_that_can_reach_the_operation() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &observation, &intelligence),
         &mut decision,
     );
@@ -5976,11 +5956,7 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
     )
     .expect("an inaccessible secondary target must not reject the viable primary");
     assert_eq!(
-        peak_plan
-            .connected_package
-            .as_ref()
-            .expect("connected plan")
-            .target_anchors,
+        peak_plan.package().expect("connected plan").target_anchors,
         vec![TARGET]
     );
 
@@ -5992,8 +5968,7 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
     let operation = operation(AirOperationPhase::Strike, after_primary.tick);
     let mut pit_plan = connected_test_plan(&after_primary);
     pit_plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected package")
         .target_anchors = pit_selection.target_anchors;
     assert_eq!(
@@ -6002,8 +5977,7 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
         Some(secondary)
     );
     pit_plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected package")
         .target_anchors = peak_selection.target_anchors;
     assert_eq!(
@@ -6027,8 +6001,7 @@ fn connected_operation_survives_the_primary_and_completes_at_the_remaining_ancho
         .as_mut()
         .expect("active operation")
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected package")
         .target_anchors = vec![TARGET, secondary];
 
@@ -6273,7 +6246,7 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
     .expect("an open Bombard lane can cover the optional target in time");
     assert_eq!(
         open_plan
-            .connected_package
+            .package()
             .expect("connected package")
             .target_anchors,
         vec![primary, secondary]
@@ -6304,9 +6277,7 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
     )
     .expect("the live primary-only package remains feasible");
     assert_eq!(
-        plan.connected_package
-            .expect("connected package")
-            .target_anchors,
+        plan.package().expect("connected package").target_anchors,
         vec![primary],
         "a route-only optional target must not enlarge a package whose only covering producer cannot finish before the fixed deadline"
     );
@@ -6407,8 +6378,7 @@ fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
     let active = planner.air.as_mut().expect("active operation");
     active
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected package")
         .target_anchors = vec![TARGET];
     let mut coordination = coordination(&fixture_planning, None);
@@ -6546,8 +6516,7 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
     operation.target = primary;
     operation.target_id = Some(BuildingId(80));
     let mut plan = connected_test_plan(&hidden);
-    plan.connected_package
-        .as_mut()
+    plan.package_mut()
         .expect("connected package")
         .target_anchors = vec![primary, secondary];
     assert_eq!(
@@ -6567,7 +6536,6 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
         &AirPlanningContext {
             allow_procurement: true,
             planning: Some(&fixture_planning),
-            profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &hidden,
             intel: &intelligence,
@@ -6610,7 +6578,6 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
         &AirPlanningContext {
             allow_procurement: true,
             planning: Some(&fixture_planning),
-            profile: &identity,
             tuning: DifficultyTuning::for_level(identity.difficulty),
             obs: &cleared,
             intel: &intelligence,
@@ -6649,15 +6616,13 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     let mut intelligence = knowledge(&observation);
     let mut operation = operation(AirOperationPhase::Verify, observation.tick);
     let mut plan = connected_test_plan(&observation);
-    plan.connected_package
-        .as_mut()
+    plan.package_mut()
         .expect("connected package")
         .target_anchors = vec![TARGET, secondary];
     let identity = profile();
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: Some(&fixture_planning),
-        profile: &identity,
         tuning: DifficultyTuning::for_level(identity.difficulty),
         obs: &observation,
         intel: &intelligence,
@@ -6698,7 +6663,6 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: Some(&fixture_planning),
-        profile: &identity,
         tuning: DifficultyTuning::for_level(identity.difficulty),
         obs: &observation,
         intel: &intelligence,
@@ -6742,14 +6706,12 @@ fn connected_verify_checks_the_selected_secondary_approach_before_striking() {
     let identity = profile();
     let mut operation = operation(AirOperationPhase::Verify, observation.tick);
     let mut plan = connected_test_plan(&observation);
-    plan.connected_package
-        .as_mut()
+    plan.package_mut()
         .expect("connected package")
         .target_anchors = vec![TARGET, secondary];
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: Some(&fixture_planning),
-        profile: &identity,
         tuning: DifficultyTuning::for_level(identity.difficulty),
         obs: &observation,
         intel: &intelligence,
@@ -6945,8 +6907,7 @@ fn current_air_defense_first_seen_on_the_deadline_prevents_stale_force_freeze() 
     let active = planner.air.as_mut().expect("the fixture has an operation");
     let package = active
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("the fixture has a connected package");
     package.derived_at = battle.tick - 1;
     package.preparation_deadline = battle.tick;
@@ -6995,7 +6956,7 @@ fn retained_connected_operation_grows_before_freeze_and_is_immutable_afterward()
     let mut planner = with_operation(AirOperationPhase::Assemble, admitted_at);
     let initial_package = planner
         .air_plan()
-        .and_then(|plan| plan.connected_package.clone())
+        .and_then(|plan| plan.package().cloned())
         .expect("the fixture begins with an admitted connected package");
     let fixed_deadline = initial_package.preparation_deadline;
 
@@ -7013,7 +6974,7 @@ fn retained_connected_operation_grows_before_freeze_and_is_immutable_afterward()
 
     let revised_package = planner
         .air_plan()
-        .and_then(|plan| plan.connected_package.clone())
+        .and_then(|plan| plan.package().cloned())
         .expect("the retained operation keeps its connected package");
     assert_eq!(revised_package.derived_at, richer.tick);
     assert_eq!(revised_package.preparation_deadline, fixed_deadline);
@@ -7028,7 +6989,7 @@ fn retained_connected_operation_grows_before_freeze_and_is_immutable_afterward()
     active.op.stage = AirStage::SuppressAa;
     active.op.phase_started_at = richer.tick;
     active.op.membership_frozen_at = Some(richer.tick);
-    let frozen_package = active.plan.connected_package.clone();
+    let frozen_package = active.plan.package().cloned();
     let frozen_members = (
         active.op.scout,
         active.op.artillery.clone(),
@@ -7047,7 +7008,7 @@ fn retained_connected_operation_grows_before_freeze_and_is_immutable_afterward()
         .air
         .as_ref()
         .expect("the frozen operation remains active");
-    assert_eq!(active.plan.connected_package, frozen_package);
+    assert_eq!(active.plan.package().cloned(), frozen_package);
     assert_eq!(
         (
             active.op.scout,
@@ -7086,14 +7047,13 @@ fn rich_targets_scale_connected_packages_beyond_the_old_fixed_cohort() {
 
     for plan in [&siege_plan, &air_plan] {
         let package = plan
-            .connected_package
-            .as_ref()
+            .package()
             .expect("connected admission owns an explicit package");
         assert!(!package.recon.is_empty());
         assert!(!package.suppression.is_empty());
         assert!(!package.strike.is_empty());
         assert!(
-            plan.desired_artillery + plan.desired_strike_aircraft > 3,
+            plan.desired_artillery() + plan.desired_strike_aircraft() > 3,
             "a rich defended cluster should justify more than the removed fixed cohort: {package:?}"
         );
     }
@@ -7190,8 +7150,7 @@ fn hidden_connected_target_revalidates_current_funding_evidence() {
     let plan = derived_connected_test_plan(&profile(), &initial)
         .expect("the completed Extractor forecast funds the admitted minimum");
     let package = plan
-        .connected_package
-        .as_ref()
+        .package()
         .expect("the fixture derives a connected package");
     assert_eq!(package.current_scrap, 0);
     assert!(package.forecast_scrap > 0);
@@ -7327,8 +7286,7 @@ fn stale_target_does_not_let_marginal_providers_bypass_a_lost_minimum() {
 
     let mut plan = connected_test_plan(&first);
     let package = plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("the admitted connected plan carries its package");
     package.suppression = vec![
         ProviderDemand {
@@ -7382,8 +7340,6 @@ fn stale_target_does_not_let_marginal_providers_bypass_a_lost_minimum() {
             count: 1,
         },
     ];
-    plan.desired_artillery = 2;
-    plan.desired_strike_aircraft = 2;
 
     let mut operation = operation(AirOperationPhase::Recon, hidden.tick);
     operation.artillery.clear();
@@ -7431,8 +7387,7 @@ fn paid_front_queue_survives_prerequisite_loss_but_new_work_does_not() {
 
         let mut plan = connected_test_plan(&initial);
         let package = plan
-            .connected_package
-            .as_mut()
+            .package_mut()
             .expect("the admitted plan carries its exact package");
         package.preparation_deadline = deadline;
         package.strike = vec![ProviderDemand {
@@ -7463,8 +7418,6 @@ fn paid_front_queue_survives_prerequisite_loss_but_new_work_does_not() {
         package.minimum_capability.strike = strike;
         package.useful_capability.strike = strike;
         package.chosen_capability.strike = strike;
-        plan.desired_strike_aircraft = 1;
-        plan.assembly_timeout = deadline - admitted_at;
 
         let mut operation = operation(AirOperationPhase::Assemble, admitted_at);
         operation.strike_aircraft.clear();
@@ -7706,8 +7659,7 @@ fn connected_operation_does_not_wait_for_an_arbitrary_second_bombard() {
     operation.strike_aircraft = vec![UnitId(3), UnitId(4)];
     let plan = derived_connected_test_plan(&identity, &battle)
         .expect("the observed force can field a connected package");
-    assert_eq!(preferred_artillery(&identity, &battle), UnitKind::Bombard);
-    assert_eq!(plan.desired_artillery, 1);
+    assert_eq!(plan.desired_artillery(), 1);
     let mut planner = planner_with_operation(operation, plan);
     let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
     let intel = knowledge(&battle);
@@ -7753,9 +7705,9 @@ fn a_wealthy_scattering_like_bot_starts_airborne_bombers_without_lift_support() 
         TARGET
     );
     let plan = planner.air_plan().expect("the operation owns a plan");
-    assert_eq!(plan.suppression, AirSuppression::Airborne);
-    assert!(plan.desired_strike_aircraft >= 4);
-    assert_eq!(plan.desired_artillery, 0);
+    assert!(plan.airborne());
+    assert!(plan.desired_strike_aircraft() >= 4);
+    assert_eq!(plan.desired_artillery(), 0);
 }
 
 #[test]
@@ -7829,10 +7781,7 @@ fn a_preexisting_lift_makes_the_second_starting_air_operation_inherit_its_exact_
     assert_eq!(operation.target_player, request.player);
     assert_eq!(operation.target, request.target);
     assert_eq!(operation.target_id, Some(BuildingId(81)));
-    assert_eq!(
-        planner.air_plan().map(|plan| plan.suppression),
-        Some(AirSuppression::Airborne)
-    );
+    assert_eq!(planner.air_plan().map(AirPlan::airborne), Some(true));
 }
 
 #[test]
@@ -7967,8 +7916,8 @@ fn an_unexplored_remembered_target_on_the_public_home_landmass_uses_connected_re
     assert!(!operation.assault_admitted());
     assert_eq!(operation.target, TARGET);
     assert_eq!(
-        planner.air_plan().map(|plan| plan.suppression),
-        Some(AirSuppression::GroundArtillery),
+        planner.air_plan().map(AirPlan::airborne),
+        Some(false),
         "publicly connected terrain must not enter the wealthy island doctrine"
     );
 }
@@ -8005,10 +7954,7 @@ fn a_remembered_high_value_target_cannot_hide_a_current_island_objective() {
         .expect("the current disconnected objective starts an air operation");
     assert_eq!(operation.target_id, Some(BuildingId(81)));
     assert_eq!(operation.target, island_foundry);
-    assert_eq!(
-        planner.air_plan().map(|plan| plan.suppression),
-        Some(AirSuppression::Airborne)
-    );
+    assert_eq!(planner.air_plan().map(AirPlan::airborne), Some(true));
 }
 
 #[test]
@@ -8501,9 +8447,9 @@ fn every_difficulty_waits_for_shared_current_sight_before_claiming_an_assault() 
         snapshots.push((
             admitted.artillery.clone(),
             admitted.strike_aircraft.clone(),
-            plan.desired_artillery,
-            plan.desired_strike_aircraft,
-            plan.desired_screen,
+            plan.desired_artillery(),
+            plan.desired_strike_aircraft(),
+            plan.desired_screen(),
         ));
     }
 
@@ -8558,10 +8504,7 @@ fn remembered_connected_target_admits_the_normal_combined_plan_when_reacquired()
         .expect("the remembered connected objective starts scout-only reconnaissance");
     assert!(!operation.assault_admitted());
     assert_eq!(recon.reservations, [UnitId(1)]);
-    assert_eq!(
-        planner.air_plan().map(|plan| plan.suppression),
-        Some(AirSuppression::GroundArtillery)
-    );
+    assert_eq!(planner.air_plan().map(AirPlan::airborne), Some(false));
 
     let mut current = wealthy_island_obs(5_016, 1);
     reveal_ground_route(&mut current);
@@ -8581,10 +8524,10 @@ fn remembered_connected_target_admits_the_normal_combined_plan_when_reacquired()
     assert!(admitted.assault_admitted());
     assert_eq!(admitted.started_at, current.tick);
     let plan = planner.air_plan().expect("the assault owns a plan");
-    assert_eq!(plan.suppression, AirSuppression::GroundArtillery);
-    assert!(plan.desired_artillery > 0);
-    assert_eq!(plan.desired_screen, 0);
-    assert!(plan.connected_package.is_some());
+    assert!(!plan.airborne());
+    assert!(plan.desired_artillery() > 0);
+    assert_eq!(plan.desired_screen(), 0);
+    assert!(plan.package().is_some());
 }
 
 #[test]
@@ -8608,8 +8551,8 @@ fn a_large_island_wave_schedules_screen_then_bombers_across_airworks() {
     );
 
     let plan = planner.air_plan().expect("the operation owns a plan");
-    assert_eq!(plan.desired_strike_aircraft, 6);
-    assert_eq!(plan.desired_screen, 2);
+    assert_eq!(plan.desired_strike_aircraft(), 6);
+    assert_eq!(plan.desired_screen(), 2);
     let training: Vec<_> = decision
         .intents
         .iter()
@@ -8668,7 +8611,7 @@ fn a_large_island_wave_schedules_screen_then_bombers_across_airworks() {
         "queued aircraft remain real factory work until they complete"
     );
     assert!(
-        plan.assembly_timeout >= 2_660,
+        plan.assembly_timeout() >= 2_660,
         "the deadline covers the faction's exact scheduled production time"
     );
 }
@@ -8684,8 +8627,7 @@ fn connected_capacity_uses_exact_paid_front_progress() {
     observation.my_queue_progress = vec![UnitKind::Condor.stats().train_ticks, 1];
     let mut plan = connected_test_plan(&observation);
     let package = plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("the operation owns a connected package");
     package.recon.clear();
     package.strike = vec![ProviderDemand {
@@ -8745,12 +8687,12 @@ fn every_difficulty_freezes_the_same_growing_air_roster_at_shared_admission() {
 
         assert_eq!(operation.started_at, 5_016, "{difficulty:?}");
         assert_eq!(
-            plan.desired_strike_aircraft,
-            expected.desired_strike_aircraft
+            plan.desired_strike_aircraft(),
+            expected.desired_strike_aircraft()
         );
-        assert_eq!(plan.desired_screen, expected.desired_screen);
-        assert_eq!(plan.assembly_timeout, expected.assembly_timeout);
-        snapshots.push((plan.desired_strike_aircraft, plan.desired_screen));
+        assert_eq!(plan.desired_screen(), expected.desired_screen());
+        assert_eq!(plan.assembly_timeout(), expected.assembly_timeout());
+        snapshots.push((plan.desired_strike_aircraft(), plan.desired_screen()));
     }
 
     assert!(snapshots.windows(2).all(|pair| pair[0] == pair[1]));
@@ -8779,8 +8721,8 @@ fn fighter_reinforcements_do_not_inflate_an_admitted_airborne_plan() {
     planner.think_alone(&identity, tuning, &reinforced, &intel, HOME, &[]);
 
     let current = AirPlan::island(&identity, &reinforced);
-    assert!(current.desired_strike_aircraft > frozen.desired_strike_aircraft);
-    assert!(current.desired_screen > frozen.desired_screen);
+    assert!(current.desired_strike_aircraft() > frozen.desired_strike_aircraft());
+    assert!(current.desired_screen() > frozen.desired_screen());
     assert_eq!(planner.air_plan().unwrap(), &frozen);
 }
 
@@ -8804,11 +8746,15 @@ fn admitted_airborne_plan_does_not_shrink_after_economy_and_roster_losses() {
     let frozen = planner.air_plan().cloned().unwrap();
 
     let depleted = wealthy_island_obs(5_019, 1);
+    let renewable = |observation: &Observation| {
+        completed(observation, BuildingKind::Extractor)
+            + completed(observation, BuildingKind::Reclaimer)
+    };
+    assert!(renewable(&depleted) < renewable(&wealthy));
+    assert!(combat_roster(&depleted) < combat_roster(&wealthy));
     let current = AirPlan::island(&identity, &depleted);
-    assert!(current.observed_renewable < frozen.observed_renewable);
-    assert!(current.observed_fighters < frozen.observed_fighters);
-    assert!(current.desired_strike_aircraft < frozen.desired_strike_aircraft);
-    assert!(current.desired_screen < frozen.desired_screen);
+    assert!(current.desired_strike_aircraft() < frozen.desired_strike_aircraft());
+    assert!(current.desired_screen() < frozen.desired_screen());
 
     intel.update(&depleted);
     planner.think_alone(&identity, tuning, &depleted, &intel, HOME, &[]);
@@ -8824,7 +8770,7 @@ fn suppression_commitment_freezes_air_force_targets_despite_a_later_surge() {
     let screen_kind = Role::AirGround.unit_for(battle.faction);
     let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
     for offset in 0..plan
-        .desired_strike_aircraft
+        .desired_strike_aircraft()
         .saturating_sub(operation.strike_aircraft.len())
     {
         let id = 100 + u32::try_from(offset).unwrap();
@@ -8833,19 +8779,17 @@ fn suppression_commitment_freezes_air_force_targets_despite_a_later_surge() {
             .push(own(id, bomber_kind, TilePos::new(4, 6)));
         operation.strike_aircraft.push(UnitId(id));
     }
-    for offset in 0..plan.desired_screen {
+    for offset in 0..plan.desired_screen() {
         let id = 200 + u32::try_from(offset).unwrap();
         battle
             .my_units
             .push(own(id, screen_kind, TilePos::new(5, 6)));
-        plan.screen.push(UnitId(id));
+        plan.island_mut().screen.push(UnitId(id));
     }
     battle.my_units.sort_unstable_by_key(|unit| unit.id);
-    let frozen_strike_aircraft = plan.desired_strike_aircraft;
-    let frozen_screen = plan.desired_screen;
-    let frozen_renewable = plan.observed_renewable;
-    let frozen_fighters = plan.observed_fighters;
-    let frozen_timeout = plan.assembly_timeout;
+    let frozen_strike_aircraft = plan.desired_strike_aircraft();
+    let frozen_screen = plan.desired_screen();
+    let frozen_timeout = plan.assembly_timeout();
     let mut planner = planner_with_operation(operation, plan);
 
     add_renewable_economy(&mut battle, 12);
@@ -8859,8 +8803,8 @@ fn suppression_commitment_freezes_air_force_targets_despite_a_later_surge() {
     battle.my_units.sort_unstable_by_key(|unit| unit.id);
     battle.tick += 1;
     let unconstrained = AirPlan::island(&profile(), &battle);
-    assert!(unconstrained.desired_strike_aircraft > frozen_strike_aircraft);
-    assert!(unconstrained.desired_screen > frozen_screen);
+    assert!(unconstrained.desired_strike_aircraft() > frozen_strike_aircraft);
+    assert!(unconstrained.desired_screen() > frozen_screen);
     let intel = knowledge(&battle);
 
     think(&mut planner, &battle, &intel);
@@ -8868,11 +8812,9 @@ fn suppression_commitment_freezes_air_force_targets_despite_a_later_surge() {
     let committed = planner
         .air_plan()
         .expect("the committed operation retains its frozen plan");
-    assert_eq!(committed.desired_strike_aircraft, frozen_strike_aircraft);
-    assert_eq!(committed.desired_screen, frozen_screen);
-    assert_eq!(committed.observed_renewable, frozen_renewable);
-    assert_eq!(committed.observed_fighters, frozen_fighters);
-    assert_eq!(committed.assembly_timeout, frozen_timeout);
+    assert_eq!(committed.desired_strike_aircraft(), frozen_strike_aircraft);
+    assert_eq!(committed.desired_screen(), frozen_screen);
+    assert_eq!(committed.assembly_timeout(), frozen_timeout);
 }
 
 #[test]
@@ -8894,8 +8836,8 @@ fn airborne_suppression_hits_visible_flak_then_waits_for_fresh_clearance() {
         true,
     ));
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.screen = vec![UnitId(30), UnitId(31)];
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().screen = vec![UnitId(30), UnitId(31)];
     let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
     operation.artillery.clear();
     let mut planner = planner_with_operation(operation, plan);
@@ -8980,9 +8922,9 @@ fn airborne_corridor_actions_distinguish_current_remembered_and_absent_static_aa
         let mut operation = operation(AirOperationPhase::SuppressAa, observation.tick);
         operation.artillery.clear();
         let mut plan = AirPlan::island(&profile(), observation);
-        plan.desired_strike_aircraft = 2;
-        plan.desired_screen = 0;
-        plan.screen.clear();
+        plan.island_mut().desired_strike_aircraft = 2;
+        plan.island_mut().desired_screen = 0;
+        plan.island_mut().screen.clear();
         planner_with_operation(operation, plan)
     };
     let status = |planner: &StrategicPlanner,
@@ -9280,8 +9222,8 @@ fn airborne_suppression_does_not_ignore_visible_midflight_flak() {
         true,
     ));
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
     let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
     operation.artillery.clear();
     let mut planner = planner_with_operation(operation, plan);
@@ -9307,14 +9249,14 @@ fn an_assembled_wealthy_wave_accepts_mobile_aa_but_still_suppresses_current_flak
     let (battle, mut planner) =
         wealthy_airborne_operation(AirOperationPhase::Assemble, UnitKind::Sentinel, 12);
     planner.air_op_mut().unwrap().strike_aircraft.clear();
-    planner.air_plan_mut().unwrap().screen.clear();
+    planner.air_plan_mut().unwrap().island_mut().screen.clear();
     let intel = knowledge(&battle);
 
     let assembly = think(&mut planner, &battle, &intel);
     let frozen = planner.air_operation().unwrap();
     assert_eq!(frozen.phase(), AirOperationPhase::SuppressAa);
     assert_eq!(frozen.strike_aircraft.len(), 10);
-    assert_eq!(planner.air_plan().unwrap().screen.len(), 5);
+    assert_eq!(planner.air_plan().unwrap().screen().len(), 5);
     let expected: Vec<_> = std::iter::once(UnitId(1))
         .chain((100..110).chain(200..205).map(UnitId))
         .collect();
@@ -9358,7 +9300,12 @@ fn an_assembled_wealthy_wave_accepts_mobile_aa_but_still_suppresses_current_flak
     let (mut defended, mut flak_planner) =
         wealthy_airborne_operation(AirOperationPhase::Assemble, UnitKind::Sentinel, 12);
     flak_planner.air_op_mut().unwrap().strike_aircraft.clear();
-    flak_planner.air_plan_mut().unwrap().screen.clear();
+    flak_planner
+        .air_plan_mut()
+        .unwrap()
+        .island_mut()
+        .screen
+        .clear();
     defended.enemy_buildings.push(building(
         81,
         1,
@@ -9454,9 +9401,9 @@ fn shared_air_support_clears_and_reconnoiters_the_frozen_drop_envelope_before_re
     let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
     operation.artillery.clear();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
-    plan.screen.clear();
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
+    plan.island_mut().screen.clear();
     let mut planner = planner_with_operation(operation, plan);
     let request = LiftSupportRequest {
         player: PlayerId(1),
@@ -9600,9 +9547,9 @@ fn island_bombers_can_strike_without_a_screen_or_transport() {
     let mut operation = operation(AirOperationPhase::Strike, battle.tick);
     operation.artillery.clear();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
-    plan.screen.clear();
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
+    plan.island_mut().screen.clear();
     let mut planner = planner_with_operation(operation, plan);
     let intel = knowledge(&battle);
 
@@ -9621,9 +9568,9 @@ fn an_active_bomber_strike_is_not_reissued_but_an_idle_member_rejoins() {
     let mut operation = operation(AirOperationPhase::Strike, battle.tick);
     operation.artillery.clear();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
-    plan.screen.clear();
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
+    plan.island_mut().screen.clear();
     let mut planner = planner_with_operation(operation, plan);
 
     let first = think(&mut planner, &battle, &knowledge(&battle));
@@ -9674,9 +9621,9 @@ fn a_strike_keeps_its_exact_attack_until_current_sight_loses_the_target() {
     let mut operation = operation(AirOperationPhase::Strike, battle.tick);
     operation.artillery.clear();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
-    plan.screen.clear();
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
+    plan.island_mut().screen.clear();
     let mut planner = planner_with_operation(operation, plan);
     let mut intel = knowledge(&battle);
 
@@ -9739,9 +9686,9 @@ fn an_opportunistic_strike_does_not_move_the_shared_coordination_anchor() {
     let mut operation = operation(AirOperationPhase::Strike, battle.tick);
     operation.artillery.clear();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
-    plan.screen.clear();
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
+    plan.island_mut().screen.clear();
     let mut planner = planner_with_operation(operation, plan);
     let request = LiftSupportRequest {
         player: PlayerId(1),
@@ -9792,8 +9739,7 @@ fn an_exact_strike_validates_the_selected_cluster_target_not_the_operation_ancho
     let active = planner.air.as_mut().expect("active operation");
     active
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected package")
         .target_anchors = vec![TARGET, secondary];
     assert_eq!(
@@ -9882,8 +9828,8 @@ fn surviving_screen_cannot_hide_the_loss_of_an_airborne_bomber_force() {
         .my_units
         .push(own(31, UnitKind::Buzzard, TilePos::new(5, 12)));
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.screen = vec![UnitId(30), UnitId(31)];
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().screen = vec![UnitId(30), UnitId(31)];
     let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
     operation.artillery.clear();
     let mut planner = planner_with_operation(operation, plan);
@@ -9980,8 +9926,8 @@ fn airborne_assembly_fails_closed_when_known_peaks_seal_scout_ingress() {
     battle.my_units[0].tile = TilePos::new(4, 10);
     battle.known_peaks = (0..battle.map_height).map(|y| TilePos::new(8, y)).collect();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
     let mut operation = operation(AirOperationPhase::Assemble, battle.tick);
     operation.artillery.clear();
     let mut planner = planner_with_operation(operation, plan);
@@ -10044,8 +9990,8 @@ fn airborne_assembly_fills_an_undispatched_scout_slot_then_launches_the_complete
     let mut battle = wealthy_island_obs(5_000, 1);
     battle.my_units[0].tile = HOME;
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
     let mut operation = operation(AirOperationPhase::Assemble, battle.tick);
     operation.scout = Some(UnitId(99));
     operation.scout_dispatch = None;
@@ -10079,8 +10025,8 @@ fn losing_a_dispatched_scout_during_assembly_recovers_without_replacement() {
     let mut battle = wealthy_island_obs(5_000, 1);
     battle.my_units[0].tile = HOME;
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
     let mut operation = operation(AirOperationPhase::Assemble, battle.tick);
     operation.scout = Some(UnitId(99));
     operation.scout_dispatch = Some((UnitId(99), TARGET));
@@ -10300,8 +10246,7 @@ fn connected_phases_suppress_aa_covering_a_secondary_cluster_target() {
         active.op.target_id = Some(BuildingId(80));
         active
             .plan
-            .connected_package
-            .as_mut()
+            .package_mut()
             .expect("connected package")
             .target_anchors = vec![primary, secondary];
         let decision = think(&mut planner, &battle, &intel);
@@ -10400,8 +10345,7 @@ fn connected_selection_excludes_secondary_aa_sealed_by_peaks() {
     active.op.target_id = Some(BuildingId(80));
     active
         .plan
-        .connected_package
-        .as_mut()
+        .package_mut()
         .expect("connected package")
         .target_anchors = selection.target_anchors;
     let mut coordination = coordination(&fixture_planning, None);
@@ -10518,9 +10462,9 @@ fn airborne_suppression_aborts_from_clear_and_uncertain_corridors_when_recon_is_
         let mut operation = operation(AirOperationPhase::SuppressAa, battle.tick);
         operation.artillery.clear();
         let mut plan = AirPlan::island(&identity, &battle);
-        plan.desired_strike_aircraft = 2;
-        plan.desired_screen = 0;
-        plan.screen.clear();
+        plan.island_mut().desired_strike_aircraft = 2;
+        plan.island_mut().desired_screen = 0;
+        plan.island_mut().screen.clear();
         let mut planner = planner_with_operation(operation, plan);
 
         let decision = planner.think_alone(
@@ -10575,9 +10519,9 @@ fn airborne_verification_never_commits_while_its_recon_route_is_sealed() {
         let mut operation = operation(AirOperationPhase::Verify, battle.tick);
         operation.artillery.clear();
         let mut plan = AirPlan::island(&identity, &battle);
-        plan.desired_strike_aircraft = 2;
-        plan.desired_screen = 0;
-        plan.screen.clear();
+        plan.island_mut().desired_strike_aircraft = 2;
+        plan.island_mut().desired_screen = 0;
+        plan.island_mut().screen.clear();
         let mut planner = planner_with_operation(operation, plan);
 
         let decision = planner.think_alone(&identity, tuning, &battle, &intel, HOME, &[]);
@@ -10715,8 +10659,8 @@ fn an_airborne_strike_returns_to_suppression_when_corridor_flak_appears() {
     let mut operation = operation(AirOperationPhase::Strike, battle.tick);
     operation.artillery.clear();
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
     let mut planner = planner_with_operation(operation, plan);
     let intel = knowledge(&battle);
 
@@ -10751,8 +10695,8 @@ fn destroyed_target_completes_the_strike_and_releases_a_waiting_lift() {
     operation.artillery.clear();
     operation.strike_issued_at = Some(battle.tick - 20);
     let mut plan = AirPlan::island(&profile(), &battle);
-    plan.desired_strike_aircraft = 2;
-    plan.desired_screen = 0;
+    plan.island_mut().desired_strike_aircraft = 2;
+    plan.island_mut().desired_screen = 0;
     let mut planner = planner_with_operation(operation, plan);
 
     let completion = think(&mut planner, &battle, &knowledge(&battle));
@@ -10872,6 +10816,7 @@ fn a_siege_identity_trains_available_avalanches_for_its_operation() {
     procure_connected_in_test(
         &operation,
         &plan,
+        &identity,
         &planning_context(&fixture_planning, &identity, &observation, &intelligence),
         &mut decision,
     );
@@ -10887,7 +10832,7 @@ fn a_siege_identity_trains_available_avalanches_for_its_operation() {
             ..
         }
     )));
-    assert_eq!(plan.desired_artillery, 1);
+    assert_eq!(plan.desired_artillery(), 1);
 }
 
 #[test]
@@ -11111,10 +11056,10 @@ fn resolved_air_personalities_change_island_timing_and_wing_size_without_removin
     let low_plan = AirPlan::island(&low, &later);
     let high_plan = AirPlan::island(&high, &later);
     assert_eq!(
-        high_plan.desired_strike_aircraft,
-        low_plan.desired_strike_aircraft + 1
+        high_plan.desired_strike_aircraft(),
+        low_plan.desired_strike_aircraft() + 1
     );
-    assert_eq!(high_plan.desired_screen, low_plan.desired_screen + 1);
+    assert_eq!(high_plan.desired_screen(), low_plan.desired_screen() + 1);
 }
 
 #[test]
@@ -11148,10 +11093,10 @@ fn stance_changes_island_timing_force_size_and_retry_cadence() {
     let aggressive_plan = AirPlan::island(&aggressive, &observation);
     let turtle_plan = AirPlan::island(&turtle, &observation);
     assert_eq!(
-        aggressive_plan.desired_strike_aircraft,
-        turtle_plan.desired_strike_aircraft + 2
+        aggressive_plan.desired_strike_aircraft(),
+        turtle_plan.desired_strike_aircraft() + 2
     );
-    assert!(aggressive_plan.assembly_timeout > turtle_plan.assembly_timeout);
+    assert!(aggressive_plan.assembly_timeout() > turtle_plan.assembly_timeout());
 
     let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
     assert!(cooldown(&turtle, tuning) > cooldown(&aggressive, tuning));
