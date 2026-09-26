@@ -245,9 +245,8 @@ The ribbon row is `[X] [QUEUE] [ribbon]`, published as `LayoutModel.neutral`,
 `queue_toggle`, and `mode_ribbon`, and shown while a mode is armed, the human
 owns part of the selection, or QUEUE is on. `ribbon_row_press` hit-tests it
 before every other target: the X runs `InputState::go_neutral` (no armed mode,
-QUEUE off, nothing selected) and the ribbon cancels its mode. With own units
-selected and `TouchPrefs::tap_to_move` on, a tap whose `select::pick` finds
-nothing issues the context order; `pick` gives a fingertip a wider reach than a
+QUEUE off, nothing selected) and the ribbon cancels its mode. Taps and clicks
+select through `select::pick`, which gives a fingertip a wider reach than a
 cursor. `readout_point` puts the pile readout under a resting battlefield finger
 or the mouse, never at a stale mouse point on a touch device.
 

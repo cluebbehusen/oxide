@@ -106,9 +106,6 @@ pub struct TouchPrefs {
     pub double_tap_ms: u32,
     /// A still finger held this long fires the context gesture.
     pub long_press_ms: u32,
-    /// With own units selected, a tap on open ground orders them there
-    /// instead of clearing the selection.
-    pub tap_to_move: bool,
 }
 
 impl Default for TouchPrefs {
@@ -116,7 +113,6 @@ impl Default for TouchPrefs {
         Self {
             double_tap_ms: 300,
             long_press_ms: 350,
-            tap_to_move: true,
         }
     }
 }
@@ -132,7 +128,6 @@ impl TouchPrefs {
                 .long_press_ms
                 .clamp(50, 2000)
                 .max(self.double_tap_ms.clamp(50, 1000) + 50),
-            tap_to_move: self.tap_to_move,
         }
     }
 }

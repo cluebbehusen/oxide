@@ -163,7 +163,6 @@ enum Row {
     UiScale,
     EdgePan,
     InvertZoom,
-    TapToMove,
     ReducedMotion,
     Colorblind,
     PerformanceDisplay,
@@ -178,7 +177,7 @@ enum Row {
 
 impl Row {
     /// Every row, in the order the menu shows them.
-    const ALL: [Row; 18] = [
+    const ALL: [Row; 17] = [
         Row::MasterVolume,
         Row::EffectsVolume,
         Row::UiVolume,
@@ -186,7 +185,6 @@ impl Row {
         Row::UiScale,
         Row::EdgePan,
         Row::InvertZoom,
-        Row::TapToMove,
         Row::ReducedMotion,
         Row::Colorblind,
         Row::PerformanceDisplay,
@@ -217,11 +215,6 @@ impl Row {
         )
     }
 
-    /// Rows only a touch-only build offers.
-    fn needs_touch(self) -> bool {
-        matches!(self, Row::TapToMove)
-    }
-
     fn label(self, config: &Config) -> String {
         let pct = |v: f32| format!("{}%", (v * 100.0).round());
         let onoff = |v: bool| if v { "on" } else { "off" };
@@ -233,7 +226,6 @@ impl Row {
             Row::UiScale => format!("UI scale: {}", pct(config.ui_scale)),
             Row::EdgePan => format!("Edge pan: {}", onoff(config.camera.edge_pan)),
             Row::InvertZoom => format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
-            Row::TapToMove => format!("Tap to move: {}", onoff(config.touch.tap_to_move)),
             Row::ReducedMotion => format!("Reduced motion: {}", onoff(config.reduced_motion)),
             Row::Colorblind => format!("Colorblind accents: {}", onoff(config.colorblind)),
             Row::PerformanceDisplay => format!(
@@ -266,13 +258,7 @@ fn settings_hint(touch_only: bool) -> &'static str {
 fn rows(touch_only: bool) -> Vec<Row> {
     Row::ALL
         .into_iter()
-        .filter(|row| {
-            if touch_only {
-                !row.needs_desktop()
-            } else {
-                !row.needs_touch()
-            }
-        })
+        .filter(|row| !(touch_only && row.needs_desktop()))
         .collect()
 }
 
@@ -312,7 +298,6 @@ fn cycle_setting(config: &mut Config, row: Row) -> bool {
         }
         Row::EdgePan => config.camera.edge_pan = !config.camera.edge_pan,
         Row::InvertZoom => config.camera.zoom_inverted = !config.camera.zoom_inverted,
-        Row::TapToMove => config.touch.tap_to_move = !config.touch.tap_to_move,
         Row::ReducedMotion => {
             config.reduced_motion = !config.reduced_motion;
             render::set_reduced_motion(config.reduced_motion);
@@ -720,17 +705,7 @@ mod tests {
             assert!(!touch.contains(&hidden), "{hidden:?} needs a desktop");
         }
         assert_eq!(touch.len(), Row::ALL.len() - 4);
-        assert!(touch.contains(&Row::TapToMove));
-        let desktop = rows(false);
-        assert!(
-            !desktop.contains(&Row::TapToMove),
-            "tap to move is touch-only"
-        );
-        assert_eq!(
-            desktop.len(),
-            Row::ALL.len() - 1,
-            "desktop keeps every other row"
-        );
+        assert_eq!(rows(false), Row::ALL.to_vec(), "desktop keeps every row");
     }
 
     #[test]

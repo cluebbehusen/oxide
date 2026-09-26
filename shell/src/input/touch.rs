@@ -505,27 +505,11 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     }
 }
 
-/// A still tap on the battlefield. With own units selected and tap to
-/// move on, a tap that picks nothing orders them there, as a long-press
-/// would; with the build palette open, it only closes the palette.
-/// Otherwise it selects, and a quick second tap on a unit sweeps its kind.
+/// A still tap on the battlefield selects, and a quick second tap on a
+/// unit sweeps its kind.
 fn world_tap(game: &mut Game, input: &mut InputState, p: Vec2, double: bool) {
     let picked = select::pick(game, p, input.ui, super::Pointer::Touch);
-    let human = game.presentation.human;
-    let commands_units = game
-        .presentation
-        .selection
-        .units
-        .iter()
-        .any(|id| game.state.unit(*id).is_some_and(|u| u.player == human));
-    if picked.is_none() && input.touch_prefs.tap_to_move && commands_units {
-        if input.build_menu {
-            input.close_construction();
-        } else {
-            orders::context_order(game, p, input.queue_held());
-        }
-        input.last_tap = None;
-    } else if double && picked.is_some() && !input.queue_held() {
+    if double && picked.is_some() && !input.queue_held() {
         select_all_of_kind_on_screen(game, p, input.ui, super::Pointer::Touch);
         input.last_tap = None;
     } else {

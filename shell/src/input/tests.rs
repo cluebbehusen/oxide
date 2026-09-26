@@ -3173,11 +3173,10 @@ fn own_fighter(game: &Game) -> (oxide_sim::UnitId, Vec2) {
 }
 
 #[test]
-fn a_tap_on_open_ground_moves_own_units() {
+fn a_ground_tap_deselects_and_a_long_press_orders() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let (fighter, at) = own_fighter(&game);
-    game.presentation.selection.units = vec![fighter];
     let last_ping_queued = |game: &Game| {
         game.presentation
             .fx
@@ -3188,29 +3187,33 @@ fn a_tap_on_open_ground_moves_own_units() {
                 _ => None,
             })
     };
+    game.presentation.selection.units = vec![fighter];
     tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "a tap deselects"
+    );
+    assert!(game.pending.is_empty(), "and never orders");
+
+    game.presentation.selection.units = vec![fighter];
+    long_press_world(&mut game, &mut input, at + vec2(4.0, 2.0));
     assert!(
         game.pending
             .iter()
             .any(|c| matches!(c.command, Command::Advance { queue: false, .. })),
-        "the tap ordered: {:?}",
+        "the long-press ordered: {:?}",
         game.pending
     );
     assert_eq!(last_ping_queued(&game), Some(false));
-    assert_eq!(
-        game.presentation.selection.units,
-        vec![fighter],
-        "still selected"
-    );
 
     game.pending.clear();
     input.queue_toggle = true;
-    tap_world(&mut game, &mut input, at + vec2(4.0, -2.0));
+    long_press_world(&mut game, &mut input, at + vec2(4.0, -2.0));
     assert!(
         game.pending
             .iter()
             .any(|c| matches!(c.command, Command::Advance { queue: true, .. })),
-        "QUEUE queues the tap's order"
+        "QUEUE queues the long-press's order"
     );
     assert_eq!(last_ping_queued(&game), Some(true), "and its ping says so");
 }
@@ -3237,7 +3240,7 @@ fn a_fingertip_that_just_misses_a_unit_still_selects_it() {
 }
 
 #[test]
-fn a_unit_tap_then_a_quick_ground_tap_moves_and_a_double_tap_still_sweeps() {
+fn a_double_tap_on_a_unit_sweeps_its_kind() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let harvesters: Vec<_> = game
@@ -3258,75 +3261,6 @@ fn a_unit_tap_then_a_quick_ground_tap_moves_and_a_double_tap_still_sweeps() {
         harvesters.len(),
         "a double tap on a unit sweeps its kind"
     );
-
-    let ground = game
-        .presentation
-        .camera
-        .to_screen(harvesters[0].1 + vec2(4.0, 3.0));
-    input.now = 3.0;
-    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
-    input.now = 3.1;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_down(1, ground), touch_up(1, ground)],
-    );
-    assert!(
-        game.pending
-            .iter()
-            .any(|c| matches!(c.command, Command::Advance { .. })),
-        "the quick ground tap moves instead of sweeping: {:?}",
-        game.pending
-    );
-}
-
-#[test]
-fn a_ground_tap_deselects_when_it_cannot_move_anything() {
-    let mut game = headless_game();
-    let mut input = InputState::new();
-    let (fighter, at) = own_fighter(&game);
-    let ground = at + vec2(4.0, 2.0);
-
-    input.touch_prefs.tap_to_move = false;
-    game.presentation.selection.units = vec![fighter];
-    tap_world(&mut game, &mut input, ground);
-    assert!(game.presentation.selection.units.is_empty(), "setting off");
-    assert!(game.pending.is_empty());
-
-    input.touch_prefs.tap_to_move = true;
-    let foundry = game
-        .state
-        .buildings()
-        .iter()
-        .find(|b| b.player == game.presentation.human)
-        .expect("own Foundry")
-        .id;
-    game.presentation.selection.buildings = vec![foundry];
-    tap_world(&mut game, &mut input, ground);
-    assert!(
-        game.presentation.selection.buildings.is_empty(),
-        "buildings only"
-    );
-    assert!(game.pending.is_empty());
-}
-
-#[test]
-fn a_ground_tap_with_the_palette_open_only_closes_it() {
-    let mut game = headless_game();
-    let mut input = InputState::new();
-    let harvester = game
-        .state
-        .units()
-        .iter()
-        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
-        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
-        .expect("a harvester");
-    game.presentation.selection.units = vec![harvester.0];
-    input.build_menu = true;
-    tap_world(&mut game, &mut input, harvester.1 + vec2(4.0, 3.0));
-    assert!(!input.build_menu, "the palette closed");
-    assert_eq!(game.presentation.selection.units, vec![harvester.0]);
-    assert!(game.pending.is_empty(), "and nothing moved");
 }
 
 #[test]
@@ -3399,7 +3333,6 @@ fn touch_windows_keep_their_ordering_invariant() {
     let prefs = crate::config::TouchPrefs {
         double_tap_ms: 600,
         long_press_ms: 300,
-        ..crate::config::TouchPrefs::default()
     }
     .clamped();
     assert!(prefs.long_press_ms > prefs.double_tap_ms);
