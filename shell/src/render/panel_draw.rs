@@ -1287,33 +1287,40 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     }
     use crate::layout::TooltipSide;
     let s = ui_scale();
+    // A resting finger previews the card it covers; a touch-only build
+    // has no hover, so its stale mouse point never does.
+    let pointer = match input.touch_preview() {
+        Some(p) => Some((p, Some(s))),
+        None => (!crate::platform::TOUCH_ONLY).then_some((input.mouse, None)),
+    };
+    let Some(hit) =
+        pointer.and_then(|(p, touch_ui)| crate::layout::card_under(&layout, p, touch_ui))
+    else {
+        return;
+    };
     // The hovered RECT is the anchor, not just the index: the orders
     // dock stacks upward from the band, so a tooltip pinned to the
     // band's top edge described chip 1 beside chip 8.
-    let hovered = layout.roster_slots[..layout.roster_count]
-        .iter()
-        .enumerate()
-        .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-        .and_then(|(i, (r, _))| panel.roster.get(i).map(|c| (c, *r, TooltipSide::Above)))
-        .or_else(|| {
-            layout.cards[..layout.card_count]
-                .iter()
-                .enumerate()
-                .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-                .and_then(|(i, (r, _))| panel.cards.get(i).map(|c| (c, *r, TooltipSide::Above)))
-        })
-        .or_else(|| {
-            layout.queue_slots[..layout.queue_count]
-                .iter()
-                .enumerate()
-                .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-                .and_then(|(i, (r, _))| {
-                    // Anchored across the dock's full width so the box
-                    // clears the strip cleanly at any chip inset.
-                    let row = Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h);
-                    panel.queue.get(i).map(|c| (c, row, TooltipSide::RightOf))
-                })
-        });
+    let r = hit.rect;
+    let hovered = match hit.row {
+        crate::layout::CardRow::Roster => panel
+            .roster
+            .get(hit.index)
+            .map(|c| (c, r, TooltipSide::Above)),
+        crate::layout::CardRow::Cards => panel
+            .cards
+            .get(hit.index)
+            .map(|c| (c, r, TooltipSide::Above)),
+        crate::layout::CardRow::Queue => {
+            // Anchored across the dock's full width so the box
+            // clears the strip cleanly at any chip inset.
+            let row = Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h);
+            panel
+                .queue
+                .get(hit.index)
+                .map(|c| (c, row, TooltipSide::RightOf))
+        }
+    };
     let Some((card, anchor, side)) = hovered else {
         return;
     };

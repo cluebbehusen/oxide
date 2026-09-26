@@ -2240,6 +2240,93 @@ fn a_resting_world_finger_charges_the_long_press_ring() {
     assert_eq!(long_press_progress(&input), None, "chrome owns its ground");
 }
 
+/// Attack-move and Run side by side in the command band, with a fighter
+/// selected so either card arms its verb.
+fn two_card_band() -> (Game, macroquad::math::Rect, macroquad::math::Rect) {
+    let mut game = headless_game();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.presentation.selection.units = vec![fighter];
+    let attack = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let run = macroquad::math::Rect::new(362.0, 700.0, 60.0, 60.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[0] = (
+        attack,
+        crate::panel::CardAction::Dispatch(Action::AttackMove),
+    );
+    layout.cards[1] = (run, crate::panel::CardAction::Dispatch(Action::Run));
+    layout.card_count = 2;
+    game.presentation.layout.set(layout);
+    (game, attack, run)
+}
+
+#[test]
+fn a_resting_finger_previews_a_card_and_lifting_in_place_activates_it() {
+    let (mut game, attack, _) = two_card_band();
+    let mut input = InputState::new();
+    let at = attack.center();
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, at)]);
+    assert_eq!(input.touch_preview(), None, "a fresh touch may be a tap");
+    input.now = 2.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
+    assert_eq!(input.touch_preview(), Some(at), "a resting finger previews");
+
+    // Reading past the long-press window neither orders nor spends the tap.
+    input.now = 4.0;
+    update_touch(&mut game, &mut input);
+    assert!(game.pending.is_empty(), "a held card orders nothing");
+    assert_eq!(
+        input.touch_preview(),
+        Some(at),
+        "the preview outlasts the long-press"
+    );
+    apply_events(&mut game, &mut input, &[touch_up(1, at)]);
+    assert!(input.attacking, "lifting in place activates the card");
+
+    // World ground never previews.
+    let ground = vec2(400.0, 300.0);
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, ground)]);
+    input.now = 10.2;
+    assert_eq!(input.touch_preview(), None, "the battlefield has no cards");
+}
+
+#[test]
+fn a_finger_that_leaves_its_card_activates_nothing() {
+    let (mut game, attack, run) = two_card_band();
+    let mut input = InputState::new();
+
+    // Sliding off past the slop cancels, and the preview ends with it.
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, attack.center())]);
+    input.now = 2.5;
+    let away = attack.center() - vec2(0.0, 120.0);
+    apply_events(&mut game, &mut input, &[touch_move(1, away)]);
+    assert_eq!(input.touch_preview(), None);
+    apply_events(&mut game, &mut input, &[touch_up(1, away)]);
+
+    // Landing on one card and lifting on its neighbor, inside the slop.
+    let edge = vec2(attack.right() - 4.0, attack.center().y);
+    let over = vec2(run.x + 4.0, run.center().y);
+    assert!(edge.distance(over) < 2.0 * 12.0, "premise: still a tap");
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, edge)]);
+    input.now = 5.05;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, over), touch_up(2, over)],
+    );
+
+    assert!(!input.attacking && !input.running, "neither card arms");
+    assert!(game.pending.is_empty());
+}
+
 #[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a

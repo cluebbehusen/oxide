@@ -556,6 +556,16 @@ impl InputState {
         self.menu_requested = false;
     }
 
+    /// Where a lone finger has rested on chrome long enough to preview
+    /// the card under it.
+    pub(crate) fn touch_preview(&self) -> Option<Vec2> {
+        let [(_, finger)] = self.touches.as_slice() else {
+            return None;
+        };
+        let rested = (self.now - finger.down_at) * 1000.0 >= TOUCH_REST_MS;
+        (finger.chrome && !finger.moved && rested).then_some(finger.at)
+    }
+
     /// Consumes this frame's menu-button press, if any.
     pub(crate) fn take_menu_request(&mut self) -> bool {
         std::mem::take(&mut self.menu_requested)
@@ -1041,12 +1051,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // Panel cards are buttons: each carries the exact action
                 // its click performs — the same action its hotkey routes.
                 let layout = game.presentation.layout.get();
-                let card_hit = layout.roster_slots[..layout.roster_count]
-                    .iter()
-                    .chain(layout.cards[..layout.card_count].iter())
-                    .chain(layout.queue_slots[..layout.queue_count].iter())
-                    .find(|(r, _)| r.w > 0.0 && r.contains(vec2(x, y)))
-                    .map(|(_, a)| *a);
+                let card_hit =
+                    crate::layout::card_under(&layout, vec2(x, y), None).map(|hit| hit.action);
                 if let Some(action) = card_hit {
                     activate_card(game, input, action);
                     continue;
@@ -1361,19 +1367,20 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             }
                             // Chrome next, through the touch pad: a
                             // fingertip needs 44 logical px even where
-                            // the drawn card is smaller.
+                            // the drawn card is smaller. A finger that
+                            // landed on another card activates nothing.
                             let layout = game.presentation.layout.get();
-                            let card = layout.roster_slots[..layout.roster_count]
-                                .iter()
-                                .chain(layout.cards[..layout.card_count].iter())
-                                .chain(layout.queue_slots[..layout.queue_count].iter())
-                                .find(|(r, _)| {
-                                    r.w > 0.0 && crate::layout::touch_pad(*r, input.ui).contains(p)
-                                })
-                                .map(|(_, a)| *a);
+                            let card = crate::layout::card_under(&layout, p, Some(input.ui));
                             let badge = layout.idle_badge;
-                            if let Some(action) = card {
-                                activate_card(game, input, action);
+                            if let Some(hit) = card {
+                                let origin = crate::layout::card_under(
+                                    &layout,
+                                    lifted.origin,
+                                    Some(input.ui),
+                                );
+                                if origin == Some(hit) {
+                                    activate_card(game, input, hit.action);
+                                }
                             } else if badge.w > 0.0
                                 && crate::layout::touch_pad(badge, input.ui).contains(p)
                             {
@@ -1811,13 +1818,14 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     if (input.now - tp.down_at) * 1000.0 < f64::from(input.touch_prefs.long_press_ms) {
         return;
     }
-    input.touches[0].1.fired = true;
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world
-    // point hiding under the HUD.
+    // point hiding under the HUD. The finger stays unfired, so lifting
+    // it after reading a card's preview still activates the card.
     if crate::render::minimap_world_at(&game.view(), tp.at).is_some() || click_on_hud(game, tp.at) {
         return;
     }
+    input.touches[0].1.fired = true;
     let world = game.presentation.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     // Only entities the viewer can actually SEE steer the gesture — an

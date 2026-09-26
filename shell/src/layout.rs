@@ -226,6 +226,48 @@ impl LayoutModel {
     }
 }
 
+/// The panel row a card sits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardRow {
+    Roster,
+    Cards,
+    Queue,
+}
+
+/// A published panel card under a pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CardHit {
+    pub(crate) row: CardRow,
+    pub(crate) index: usize,
+    pub(crate) rect: Rect,
+    pub(crate) action: CardAction,
+}
+
+/// The card under `p`, searching the roster, then command cards, then
+/// the queue. A fingertip (`touch_ui`) hits through each card's padded
+/// touch target; a mouse hits the drawn rect.
+pub(crate) fn card_under(layout: &LayoutModel, p: Vec2, touch_ui: Option<f32>) -> Option<CardHit> {
+    let rows: [(CardRow, &[(Rect, CardAction)]); 3] = [
+        (CardRow::Roster, &layout.roster_slots[..layout.roster_count]),
+        (CardRow::Cards, &layout.cards[..layout.card_count]),
+        (CardRow::Queue, &layout.queue_slots[..layout.queue_count]),
+    ];
+    rows.into_iter().find_map(|(row, slots)| {
+        slots
+            .iter()
+            .enumerate()
+            .find_map(|(index, &(rect, action))| {
+                let target = touch_ui.map_or(rect, |ui| touch_pad(rect, ui));
+                (rect.w > 0.0 && target.contains(p)).then_some(CardHit {
+                    row,
+                    index,
+                    rect,
+                    action,
+                })
+            })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +290,44 @@ mod tests {
         assert!(!model.chrome_owns(vec2(400.0, 600.0)));
         assert!(!model.chrome_owns(vec2(229.0, 723.0)));
         assert!(!model.chrome_owns(vec2(800.0, 760.0)));
+    }
+
+    #[test]
+    fn card_hits_pad_for_fingertips_and_search_roster_first() {
+        let mut model = LayoutModel::default();
+        let chip = Rect::new(100.0, 500.0, 24.0, 24.0);
+        let card = Rect::new(200.0, 500.0, 60.0, 60.0);
+        model.roster_slots[0] = (chip, CardAction::FilterKind(oxide_sim::UnitKind::Harvester));
+        model.roster_count = 1;
+        model.cards[0] = (Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::Upgrade);
+        model.cards[1] = (card, CardAction::ArmRally);
+        model.card_count = 2;
+        model.cards[2] = (Rect::new(300.0, 500.0, 60.0, 60.0), CardAction::ClearRally);
+
+        let beside_chip = vec2(chip.right() + 5.0, chip.center().y);
+        assert_eq!(
+            card_under(&model, beside_chip, None),
+            None,
+            "a mouse hits the drawn chip"
+        );
+        let hit = card_under(&model, beside_chip, Some(1.0)).expect("a fingertip reaches the pad");
+        assert_eq!((hit.row, hit.index, hit.rect), (CardRow::Roster, 0, chip));
+
+        let hit = card_under(&model, card.center(), None).expect("the live card");
+        assert_eq!(
+            (hit.row, hit.index, hit.action),
+            (CardRow::Cards, 1, CardAction::ArmRally)
+        );
+        assert_eq!(
+            card_under(&model, vec2(0.0, 0.0), Some(1.0)),
+            None,
+            "zero-size slots are empty"
+        );
+        assert_eq!(
+            card_under(&model, vec2(330.0, 530.0), None),
+            None,
+            "past the live count"
+        );
     }
 
     fn compute_at(panel_top: f32, ui: f32) -> LayoutModel {
