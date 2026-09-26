@@ -67,7 +67,8 @@ pub fn step_traced(
     TracedStep { report, traces }
 }
 
-fn record_and_tick(
+/// Records `commands` at the current tick, then executes them as one tick.
+pub fn record_and_tick(
     state: &mut State,
     commands: Vec<PlayerCommand>,
     replay: Option<&mut GameReplay>,

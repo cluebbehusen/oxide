@@ -21,8 +21,9 @@ if cargo llvm-cov report --json --summary-only --output-path "$report"; then
               elif . == "bot" then {rank: 2, name: "oxide-bot"}
               elif . == "protocol" then {rank: 3, name: "oxide-protocol"}
               elif . == "kit" then {rank: 4, name: "oxide-kit"}
-              elif . == "shell" then {rank: 5, name: "oxide-shell"}
-              elif . == "driver" then {rank: 6, name: "oxide-driver"}
+              elif . == "net" then {rank: 5, name: "oxide-net"}
+              elif . == "shell" then {rank: 6, name: "oxide-shell"}
+              elif . == "driver" then {rank: 7, name: "oxide-driver"}
               else {rank: 0, name: .}
               end;
         def row($name; $covered; $count):
