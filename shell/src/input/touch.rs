@@ -36,9 +36,9 @@ pub(crate) struct TouchPoint {
     /// Whether it ever left the slop circle — a moved finger is a
     /// drag, never a tap or a long-press.
     pub moved: bool,
-    /// Whether it already did its one job. A spent finger never taps or
-    /// long-presses.
-    pub spent: Spent,
+    /// Whether it already did its one job: its long-press fired, or it
+    /// outlived its pair. A spent finger never taps or long-presses.
+    pub spent: bool,
     /// Whether it ever belonged to a two-finger pair.
     pub paired: bool,
     /// The card it landed on, as it stood then.
@@ -81,24 +81,11 @@ pub(crate) struct LiftedFinger {
 /// How many lifted pair fingers are remembered: a pair has two.
 const LIFTED_MEMORY: usize = 2;
 
-/// What a finger has already done.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Spent {
-    /// Nothing yet: its lift may still tap.
-    Live,
-    /// Its long-press fired. It still rests where it pressed, so what it
-    /// rests on can still be read.
-    Fired,
-    /// It outlived its pair, or it was picked back up after iOS reported
-    /// it lifted: no longer a finger that means anything where it rests.
-    Yielded,
-}
-
 impl TouchPoint {
     /// A still, unspent finger: its lift may still be a tap, and on the
     /// battlefield its rest may still charge a long-press.
     fn still(&self) -> bool {
-        !self.moved && self.spent == Spent::Live
+        !self.moved && !self.spent
     }
 }
 
@@ -190,25 +177,6 @@ fn born_at(game: &Game, input: &InputState, p: Vec2) -> TouchBorn {
 /// than the start of a tap, so feedback never flashes under quick taps.
 pub(crate) const TOUCH_REST_MS: f64 = 120.0;
 
-/// Where the pile readout reads, and whether a finger (rather than the
-/// mouse) points there. A lone battlefield finger that rests without
-/// dragging reads what lies under it, including after its long-press
-/// fires and while placing or plotting a patrol; a finger that outlived
-/// a pair means nothing where it rests. The mouse reads only while it is
-/// the pointer in use, never from a stale point on a touch device.
-pub(crate) fn readout_point(input: &InputState) -> Option<(Vec2, bool)> {
-    if let [(_, finger)] = input.touches.as_slice() {
-        let rested = (input.now - finger.down_at) * 1000.0 >= TOUCH_REST_MS;
-        let reads = finger.born == TouchBorn::World
-            && !finger.moved
-            && finger.spent != Spent::Yielded
-            && rested;
-        return reads.then_some((finger.at, true));
-    }
-    (input.touches.is_empty() && input.last_pointer == super::Pointer::Mouse)
-        .then_some((input.mouse, false))
-}
-
 /// Where a battlefield long-press is charging and how full it is, from
 /// zero once the finger has rested to one as the order fires. Only a
 /// lone world-born finger that has neither moved nor fired charges.
@@ -247,7 +215,7 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             down_at: input.now,
             born,
             moved: false,
-            spent: Spent::Live,
+            spent: false,
             card: pressed_card(game, p, input.ui),
             paired: false,
         },
@@ -305,7 +273,7 @@ fn readopt(input: &mut InputState, id: u64, p: Vec2) -> bool {
             down_at: input.now,
             born: lifted.born,
             moved: lifted.moved,
-            spent: Spent::Yielded,
+            spent: true,
             paired: false,
             card: None,
         },
@@ -419,7 +387,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             // or a pinch, its own still release must not
             // read as a tap and select whatever sits under
             // the resting finger.
-            input.touches[0].1.spent = Spent::Yielded;
+            input.touches[0].1.spent = true;
             input.pair = None;
         }
         0 => {
@@ -542,7 +510,7 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     if (input.now - tp.down_at) * 1000.0 < f64::from(input.touch_prefs.long_press_ms) {
         return;
     }
-    input.touches[0].1.spent = Spent::Fired;
+    input.touches[0].1.spent = true;
     // Like a right-click, a long-press is a new intent: it stands down
     // any verb left armed before issuing its own order.
     input.close_construction();

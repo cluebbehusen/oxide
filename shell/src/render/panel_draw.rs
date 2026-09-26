@@ -690,6 +690,18 @@ pub(crate) fn draw_panel(
                 }
                 CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, faction, tint),
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
+                CardIcon::Salvage { wreck } => blit(
+                    dest,
+                    if *wreck {
+                        sprites.wreck_pile()
+                    } else {
+                        sprites.scrap(
+                            oxide_sim::stats::SCRAP_NODE_AMOUNT,
+                            oxide_sim::stats::SCRAP_NODE_AMOUNT,
+                        )
+                    },
+                    tint,
+                ),
                 CardIcon::Order { verb, .. } => blit(dest, sprites.verb_icon(*verb), tint),
             }
             return;

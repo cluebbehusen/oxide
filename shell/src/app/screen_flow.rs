@@ -727,6 +727,7 @@ fn results_frame(
             app.game.presentation.spectate = true;
             app.game.presentation.selection.units.clear();
             app.game.presentation.selection.buildings.clear();
+            app.game.presentation.selection.pile = None;
             *rerun = true;
             Screen::FinalMap(FinalMapScreen::open())
         }

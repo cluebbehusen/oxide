@@ -60,6 +60,26 @@ fn draw_queued_mark(center: Vec2, arm: f32, color: Color) {
     line_between(center - vec2(0.0, arm), center + vec2(0.0, arm), 2.0, color);
 }
 
+/// An inspected salvage tile wears a selected building's outline.
+pub(crate) fn draw_selected_pile(game: &crate::game::Scene<'_>) {
+    let Some(tile) = game.presentation.selection.pile else {
+        return;
+    };
+    let zoom = game.presentation.camera.zoom;
+    let screen = game
+        .presentation
+        .camera
+        .to_screen(vec2(tile.x as f32, tile.y as f32));
+    draw_rectangle_lines(
+        screen.x - 2.0,
+        screen.y - 2.0,
+        zoom + 4.0,
+        zoom + 4.0,
+        3.0,
+        BONE,
+    );
+}
+
 /// Paid provisional scaffolds remain faint amber footprints until their
 /// ground has been verified.
 pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprites) {

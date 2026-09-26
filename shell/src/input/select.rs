@@ -145,6 +145,9 @@ pub(super) fn click_select(
     if !additive {
         game.presentation.selection.buildings.clear();
     }
+    if picked.is_some() {
+        game.presentation.selection.pile = None;
+    }
     if let Some(Picked::Unit(id, owner)) = picked {
         game.presentation.selection.buildings.clear();
         let current_owner = game
@@ -205,9 +208,12 @@ pub(super) fn click_select(
     if additive {
         return; // shift-miss leaves the selection alone
     }
-    // …otherwise clear.
+    // …otherwise inspect the salvage under it, or clear.
     game.presentation.selection.units.clear();
     game.presentation.selection.buildings.clear();
+    let world = game.presentation.camera.to_world(screen);
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    game.presentation.selection.pile = game.view().known_salvage(tile).is_some().then_some(tile);
 }
 
 pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additive: bool) {
@@ -367,6 +373,7 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
     if !additive {
         game.presentation.selection.units.clear();
         game.presentation.selection.buildings.clear();
+        game.presentation.selection.pile = None;
     }
 }
 

@@ -97,6 +97,48 @@ pub struct Presentation {
     pub(super) accum: f32,
 }
 
+/// Salvage the viewer knows lies on a tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Salvage {
+    /// A scrap node, with the scrap left in it.
+    Scrap(u32),
+    /// A wreck, with the scrap left in it.
+    Wreck(u32),
+}
+
+impl Salvage {
+    /// The scrap left, whatever the source.
+    pub(crate) fn amount(self) -> u32 {
+        match self {
+            Self::Scrap(amount) | Self::Wreck(amount) => amount,
+        }
+    }
+}
+
+/// What `human` knows of the salvage on `tile`: live amounts on visible
+/// ground, remembered amounts under fog, and nothing where they have
+/// never looked, so no readout can leak what fog took back.
+pub(crate) fn known_salvage(
+    state: &State,
+    human: PlayerId,
+    all_seeing: bool,
+    tile: chassis::grid::TilePos,
+) -> Option<Salvage> {
+    let vision = state.vision(human);
+    let (scrap, wreck) = if all_seeing || vision.visible(tile) {
+        (state.map().scrap_at(tile), state.map().wreck_at(tile))
+    } else if vision.explored(tile) {
+        (vision.remembered_scrap(tile), vision.remembered_wreck(tile))
+    } else {
+        return None;
+    };
+    match (scrap, wreck) {
+        (0, 0) => None,
+        (0, wreck) => Some(Salvage::Wreck(wreck)),
+        (scrap, _) => Some(Salvage::Scrap(scrap)),
+    }
+}
+
 /// One immutable world paired with its presentation and pending human commands.
 #[derive(Clone, Copy)]
 pub(crate) struct Scene<'a> {
@@ -148,6 +190,15 @@ impl<'a> Scene<'a> {
     /// The local player's fog view (what rendering and targeting honor).
     pub fn my_vision(&self) -> &oxide_sim::Vision {
         self.state.vision(self.presentation.human)
+    }
+    /// What the local player knows of the salvage on `tile`.
+    pub(crate) fn known_salvage(&self, tile: chassis::grid::TilePos) -> Option<Salvage> {
+        known_salvage(
+            self.state,
+            self.presentation.human,
+            self.presentation.all_seeing(),
+            tile,
+        )
     }
     pub(crate) fn draw_hull_heading(&self, id: UnitId, alpha: f32) -> f32 {
         self.presentation.draw_hull_heading(self.state, id, alpha)

@@ -246,9 +246,12 @@ and `mode_ribbon`. The ribbon shows while a mode is armed; the QUEUE chip shows
 on touch-only builds while the human commands a selected unit or QUEUE is on.
 `ribbon_row_press` hit-tests the row before every other target: the chip toggles
 QUEUE and the ribbon cancels its mode. Taps and clicks select through
-`select::pick`, which gives a fingertip a wider reach than a cursor.
-`readout_point` puts the pile readout under a resting battlefield finger or the
-mouse, never at a stale mouse point on a touch device.
+`select::pick`, which gives a fingertip a wider reach than a cursor. A press
+that picks nothing on a tile with known salvage selects that tile as
+`Selection::pile`, read-only and exclusive: any other selection drops it, and
+`Game` drops it once the viewer knows of no salvage there. Its panel and the
+desktop hover readout share `Scene::known_salvage`, which reads live amounts on
+visible ground and remembered amounts under fog.
 
 Coaching text waits for a stuck player. `hints::HintClock`, fed each frame's
 screen mode and presses, fades coaching in after about 15 seconds without a

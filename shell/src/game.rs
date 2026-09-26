@@ -81,12 +81,15 @@ pub struct Selection {
     /// in practice), kept in id order. Commands validate ownership at
     /// their own gates.
     pub buildings: Vec<BuildingId>,
+    /// An inspected salvage tile: held only while nothing else is
+    /// selected and the viewer knows the tile still holds salvage.
+    pub pile: Option<chassis::grid::TilePos>,
 }
 
 /// A transient visual effect (never sim-relevant).
 mod fx;
 mod presentation;
-pub(crate) use presentation::{Presentation, Scene};
+pub(crate) use presentation::{Presentation, Salvage, Scene};
 pub(crate) mod checkpoint;
 pub(crate) mod network;
 mod projectiles;
@@ -626,6 +629,11 @@ impl Game {
                         && self.state.building_apparent(human, building))
             })
         });
+        if let Some(tile) = self.presentation.selection.pile
+            && presentation::known_salvage(&self.state, human, all_seeing, tile).is_none()
+        {
+            self.presentation.selection.pile = None;
+        }
         report
     }
 

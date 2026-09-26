@@ -247,6 +247,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             }
             game.presentation.selection.units.clear();
             game.presentation.selection.buildings.clear();
+            game.presentation.selection.pile = None;
         }
         Action::SetBookmark(slot) => {
             input.bookmarks[slot as usize] = Some(game.presentation.camera.center);

@@ -103,9 +103,9 @@ place, and tap it to confirm. While Patrol is armed, taps (or left-clicks) add
 waypoints. With units selected, the QUEUE toggle beside the command ribbon
 stands in for Shift: taps add to the selection, orders queue, and armed commands
 stay armed. It stays lit while on, and one tap turns it off. Tapping the ribbon
-cancels its command. Resting a finger on a scrap pile shows what it holds. Key
-help and gesture hints stay hidden until a screen has sat idle for about 15
-seconds.
+cancels its command. Tapping a scrap pile selects it, and its panel shows the
+scrap left and how many of your harvesters work it. Key help and gesture hints
+stay hidden until a screen has sat idle for about 15 seconds.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;

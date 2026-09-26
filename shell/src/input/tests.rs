@@ -3250,66 +3250,105 @@ fn a_double_tap_on_a_unit_sweeps_its_kind() {
 }
 
 #[test]
-fn a_resting_finger_reads_the_pile_under_it() {
+fn a_tap_on_a_scrap_pile_selects_it_for_its_panel() {
     let mut game = headless_game();
     let mut input = InputState::new();
-    let pile = game.presentation.camera.to_screen(vec2(7.5, 2.5));
-    input.now = 1.0;
-    apply_events(&mut game, &mut input, &[touch_down(1, pile)]);
-    assert_eq!(readout_point(&input), None, "a fresh touch may be a tap");
-    input.now = 1.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
-    assert_eq!(readout_point(&input), Some((pile, true)));
-    let text = crate::render::pile_readout(&game.view(), pile).expect("the home pile holds scrap");
     let tile = TilePos::new(7, 2);
-    assert_eq!(text, format!("scrap {}", game.state.map().scrap_at(tile)));
+    let scrap = game.state.map().scrap_at(tile);
+    assert!(scrap > 0, "premise: the home pile holds scrap");
+    let (fighter, _) = own_fighter(&game);
+    game.presentation.selection.units = vec![fighter];
+    tap_world(&mut game, &mut input, vec2(7.5, 2.5));
+    assert!(game.presentation.selection.units.is_empty());
+    assert_eq!(game.presentation.selection.pile, Some(tile));
+    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a pile panel");
+    assert_eq!(panel.title, "Scrap pile");
+    assert!(panel.cards.is_empty(), "a pile takes no orders");
+    let row = |panel: &crate::panel::Panel, label: &str| {
+        panel
+            .info
+            .rows
+            .iter()
+            .find(|row| row.label == label)
+            .map(|row| row.value.clone())
+    };
+    assert_eq!(row(&panel, "Scrap left"), Some(scrap.to_string()));
+    assert_eq!(row(&panel, "Harvesters"), Some("0".into()));
 
-    // It keeps reading after the long-press fires...
-    input.now = 3.0;
-    update_touch(&mut game, &mut input);
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .expect("a harvester")
+        .id;
+    game.issue(Command::Harvest {
+        units: vec![harvester],
+        node: tile,
+        queue: false,
+    });
+    game.present_ticks(1);
+    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a pile panel");
+    assert_eq!(row(&panel, "Harvesters"), Some("1".into()));
+
+    tap_world(&mut game, &mut input, vec2(12.5, 12.5));
     assert_eq!(
-        readout_point(&input),
-        Some((pile, true)),
-        "fired, still resting"
+        game.presentation.selection.pile, None,
+        "bare ground clears it"
     );
-    apply_events(&mut game, &mut input, &[touch_up(1, pile)]);
-
-    // ...but a drag, or a finger that outlived its pair, reads nothing.
-    input.now = 10.0;
-    apply_events(&mut game, &mut input, &[touch_down(2, pile)]);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_move(2, pile - vec2(60.0, 0.0))],
-    );
-    input.now = 11.0;
-    assert_eq!(readout_point(&input), None, "a drag");
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_up(2, pile - vec2(60.0, 0.0))],
-    );
-
-    input.now = 20.0;
-    let other = pile + vec2(200.0, 100.0);
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_down(3, pile), touch_down(4, other)],
-    );
-    apply_events(&mut game, &mut input, &[touch_up(4, other)]);
-    input.now = 21.0;
-    assert_eq!(readout_point(&input), None, "a pair survivor");
-    apply_events(&mut game, &mut input, &[touch_up(3, pile)]);
 }
 
 #[test]
-fn a_touch_device_never_reads_at_a_stale_mouse_point() {
+fn selecting_anything_else_drops_the_pile() {
+    let mut game = headless_game();
     let mut input = InputState::new();
-    input.mouse = vec2(400.0, 300.0);
-    input.last_pointer = Pointer::Mouse;
-    assert_eq!(readout_point(&input), Some((vec2(400.0, 300.0), false)));
-    input.last_pointer = Pointer::Touch;
-    assert_eq!(readout_point(&input), None);
+    let tile = TilePos::new(7, 2);
+    game.presentation.selection.pile = Some(tile);
+    let (fighter, at) = own_fighter(&game);
+    tap_world(&mut game, &mut input, at);
+    assert_eq!(game.presentation.selection.units, vec![fighter]);
+    assert_eq!(game.presentation.selection.pile, None);
+
+    game.presentation.selection.units.clear();
+    game.presentation.selection.pile = Some(tile);
+    dispatch_action(&mut game, &mut input, Action::CycleIdleWorker);
+    apply_events(&mut game, &mut input, &[]);
+    assert!(!game.presentation.selection.units.is_empty());
+    assert_eq!(
+        game.presentation.selection.pile, None,
+        "any selection writer, not just taps"
+    );
+}
+
+#[test]
+fn a_pile_the_viewer_cannot_know_is_never_selected_and_is_dropped_once_empty() {
+    let mut game = headless_game();
+    let input = InputState::new();
+    let map = game.state.map();
+    let tiles: Vec<TilePos> = (0..map.height())
+        .flat_map(|y| (0..map.width()).map(move |x| TilePos::new(x, y)))
+        .collect();
+    let unseen = *tiles
+        .iter()
+        .find(|&&t| map.scrap_at(t) > 0 && !game.my_vision().explored(t))
+        .expect("scrap the human has never seen");
+    let empty = *tiles
+        .iter()
+        .find(|&&t| game.my_vision().visible(t) && map.scrap_at(t) == 0 && map.wreck_at(t) == 0)
+        .expect("visible bare ground");
+    let screen = game
+        .presentation
+        .camera
+        .to_screen(vec2(unseen.x as f32 + 0.5, unseen.y as f32 + 0.5));
+    select::click_select(&mut game, screen, false, input.ui, Pointer::Touch);
+    assert_eq!(game.presentation.selection.pile, None, "fog hides it");
+
+    game.presentation.selection.pile = Some(empty);
+    game.present_ticks(1);
+    assert_eq!(
+        game.presentation.selection.pile, None,
+        "a tile with no known salvage drops out on the next tick"
+    );
 }
 
 #[test]

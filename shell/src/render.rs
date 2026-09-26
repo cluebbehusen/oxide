@@ -76,8 +76,6 @@ mod pits;
 pub(crate) mod prim;
 mod support_brackets;
 mod world;
-#[cfg(test)]
-pub(crate) use chrome::pile_readout;
 use chrome::*;
 use entities::*;
 pub use minimap::*;
@@ -490,6 +488,7 @@ pub(crate) fn draw_with_performance(
     crate::strategic_markers::draw_resources(game);
     crate::strategic_markers::draw_extractor_frames(game);
     draw_buildings(game, sprites);
+    entities::draw_selected_pile(game);
     crate::strategic_markers::draw_buildings(game);
     draw_units(game, sprites, alpha);
     crate::strategic_markers::draw_markers(game, alpha);

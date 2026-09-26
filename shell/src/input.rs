@@ -579,10 +579,7 @@ impl InputState {
             return None;
         };
         let rested = (self.now - finger.down_at) * 1000.0 >= TOUCH_REST_MS;
-        (finger.born == TouchBorn::Chrome
-            && !finger.moved
-            && finger.spent == touch::Spent::Live
-            && rested)
+        (finger.born == TouchBorn::Chrome && !finger.moved && !finger.spent && rested)
             .then_some(finger.at)
     }
 
@@ -959,7 +956,7 @@ use select::{
 };
 pub use touch::update_touch;
 pub(crate) use touch::{
-    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress, readout_point, touch_box,
+    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress, touch_box,
 };
 
 /// The cursor shape the current intent deserves: crosshair while
@@ -1266,6 +1263,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
         {
             input.close_construction();
         }
+    }
+    let selection = &mut game.presentation.selection;
+    if !selection.units.is_empty() || !selection.buildings.is_empty() {
+        selection.pile = None;
     }
 }
 
