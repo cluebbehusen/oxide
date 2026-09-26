@@ -332,6 +332,7 @@ fn settings_frame(
     render::draw(&app.game.view(), &app.sprites, &app.input);
     veil();
     sc.draw();
+    crate::button::draw_back(app.input.mouse);
     if up.out == screens::settings::Out::Leave {
         // Back to wherever this screen displaced: Home, or
         // the untouched pause menu still waiting on its
@@ -361,6 +362,7 @@ fn codex_frame(
     veil();
     let viewer = app.game.state.player(app.game.presentation.human).faction;
     codex.draw(&app.sprites, viewer);
+    crate::button::draw_back(app.input.mouse);
     if out == screens::codex::Out::Leave {
         *back
     } else {
@@ -778,6 +780,7 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
         render::draw(&app.game.view(), &app.sprites, &app.input);
         veil();
         shelf.menu.draw(&shelf.subtitle());
+        crate::button::draw_back(app.input.mouse);
         Screen::Replays(shelf)
     }
 }

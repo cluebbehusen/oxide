@@ -1034,9 +1034,7 @@ impl Wizard {
 
     /// Draws the corner Back button both steps share.
     pub fn draw_back(&self, mouse: Vec2) {
-        let s = crate::render::ui_scale();
-        let rect = crate::button::corner_slot(0, s);
-        crate::button::draw(rect, "BACK", rect.contains(mouse), s);
+        crate::button::draw_back(mouse);
     }
 
     /// Draws the setup screen: team-grouped seat cards, the Start

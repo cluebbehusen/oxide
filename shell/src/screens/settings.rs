@@ -173,12 +173,11 @@ enum Row {
     Diagnostics,
     OpenDiagnostics,
     ExportDiagnostics,
-    Back,
 }
 
 impl Row {
     /// Every row, in the order the menu shows them.
-    const ALL: [Row; 18] = [
+    const ALL: [Row; 17] = [
         Row::MasterVolume,
         Row::EffectsVolume,
         Row::UiVolume,
@@ -196,7 +195,6 @@ impl Row {
         Row::Diagnostics,
         Row::OpenDiagnostics,
         Row::ExportDiagnostics,
-        Row::Back,
     ];
 
     /// Where this row sits in this build's menu.
@@ -243,7 +241,6 @@ impl Row {
             Row::Diagnostics => format!("Diagnostics: {}", onoff(config.diagnostics)),
             Row::OpenDiagnostics => "Open diagnostics folder".to_string(),
             Row::ExportDiagnostics => "Export diagnostic report".to_string(),
-            Row::Back => "Back".to_string(),
         }
     }
 }
@@ -321,11 +318,9 @@ fn cycle_setting(config: &mut Config, row: Row) -> bool {
             config.markers.scale = scale_step(config.markers.scale);
             crate::strategic_markers::set_prefs(config.markers);
         }
-        Row::LeftHandedPreset
-        | Row::Controls
-        | Row::OpenDiagnostics
-        | Row::ExportDiagnostics
-        | Row::Back => return false,
+        Row::LeftHandedPreset | Row::Controls | Row::OpenDiagnostics | Row::ExportDiagnostics => {
+            return false;
+        }
     }
     true
 }
@@ -353,7 +348,6 @@ fn controls_menu(config: &Config, selected_slot: usize) -> Menu {
         }
     }
     items.push("Reset all to defaults".into());
-    items.push("Back".into());
     Menu::with_headers("CONTROLS", items, headers)
 }
 
@@ -366,6 +360,7 @@ pub struct SettingsScreen {
     /// The screen's status line, if one is up.
     pub notice: Option<Notice>,
     binding_slot: usize,
+    back: crate::button::BackButton,
 }
 
 impl SettingsScreen {
@@ -377,6 +372,7 @@ impl SettingsScreen {
             menu: settings_menu(config),
             notice: None,
             binding_slot: 0,
+            back: crate::button::BackButton::default(),
         }
     }
 
@@ -403,6 +399,14 @@ impl SettingsScreen {
                 }
             }
         }
+    }
+
+    /// Returns from Controls to the settings rows, on the Controls row.
+    fn leave_controls(&mut self, config: &Config) {
+        self.face = Face::Settings;
+        self.menu = settings_menu(config);
+        self.menu.select(Row::Controls.index());
+        self.notice = None;
     }
 
     fn goto_controls(&mut self, config: &Config, select: usize) {
@@ -452,6 +456,22 @@ impl SettingsScreen {
             out: Out::Stay,
             dirty: false,
         };
+        // The BACK button steps out exactly as Escape does on each face,
+        // capture included: it cancels a rebind without binding anything.
+        let (back, routed) = self.back.route(events);
+        let events = routed.as_slice();
+        if back {
+            sounds.push((SoundKind::Click, None));
+            match self.face {
+                Face::Settings => update.out = Out::Leave,
+                Face::Controls { rebinding: Some(_) } => {
+                    self.face = Face::Controls { rebinding: None };
+                    self.notice = None;
+                }
+                Face::Controls { rebinding: None } => self.leave_controls(config),
+            }
+            return update;
+        }
         let escaped = events
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
@@ -493,8 +513,6 @@ impl SettingsScreen {
                         update.out = Out::ExportDiagnostics;
                     } else if row == Row::Controls {
                         self.goto_controls(config, 0);
-                    } else {
-                        update.out = Out::Leave;
                     }
                 }
             }
@@ -583,10 +601,7 @@ impl SettingsScreen {
                     let row = self.menu.selected;
                     self.goto_controls(config, row);
                 } else if escaped {
-                    self.face = Face::Settings;
-                    self.menu = settings_menu(config);
-                    self.menu.select(Row::Controls.index());
-                    self.notice = None;
+                    self.leave_controls(config);
                 } else if x_pressed
                     && control_rows()
                         .get(self.menu.selected)
@@ -632,10 +647,6 @@ impl SettingsScreen {
                         update.dirty = true;
                         *live = config.bindings.clone();
                         self.goto_controls(config, row);
-                    } else {
-                        self.face = Face::Settings;
-                        self.menu = settings_menu(config);
-                        self.menu.select(Row::Controls.index());
                     }
                 }
             }
@@ -666,7 +677,6 @@ mod tests {
         ] {
             assert!(!touch.contains(&hidden), "{hidden:?} needs a desktop");
         }
-        assert_eq!(touch.last(), Some(&Row::Back), "Back stays last");
         assert_eq!(touch.len(), Row::ALL.len() - 4);
         assert_eq!(rows(false), Row::ALL.to_vec(), "desktop keeps every row");
     }
@@ -714,6 +724,33 @@ mod tests {
         }
         crate::render::set_viewport(1280.0, 800.0);
         crate::render::set_user_scale(1.0);
+    }
+
+    #[test]
+    fn the_back_button_steps_out_one_level_like_escape() {
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        assert!(!screen.menu.items.iter().any(|item| item == "Back"));
+        let back = crate::button::press_back(true);
+
+        screen.goto_controls(&config, 1);
+        screen.face = Face::Controls { rebinding: Some(1) };
+        let update = drive(&mut screen, &mut config, &mut live, &back, false);
+        assert_eq!(
+            screen.face,
+            Face::Controls { rebinding: None },
+            "cancels capture"
+        );
+        assert!(!update.dirty, "a cancelled capture binds nothing");
+        assert_eq!(config.bindings, BindingMap::classic());
+
+        drive(&mut screen, &mut config, &mut live, &back, false);
+        assert_eq!(screen.face, Face::Settings);
+        assert_eq!(screen.menu.selected, Row::Controls.index());
+
+        let update = drive(&mut screen, &mut config, &mut live, &back, false);
+        assert_eq!(update.out, Out::Leave);
     }
 
     fn drive(
