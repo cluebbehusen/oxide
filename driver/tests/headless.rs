@@ -3,8 +3,8 @@
 //! without a window.
 
 use oxide_driver::{pool, runner};
-use oxide_sim::{Scenario, State};
-use std::path::PathBuf;
+use oxide_sim::{PlayerCommand, Scenario, State};
+use std::path::{Path, PathBuf};
 
 fn assert_state_round_trip(state: &State) -> anyhow::Result<()> {
     state.validate_invariants()?;
@@ -17,14 +17,73 @@ fn assert_state_round_trip(state: &State) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn play_and_check_integrity(scenario: &Scenario, ticks: u64) -> anyhow::Result<()> {
+/// Hash samples and the command log of one soak run. CI compares the hash
+/// logs across operating systems; replaying the command log elsewhere
+/// separates a bot divergence from a simulation one.
+struct SoakTrace {
+    stem: PathBuf,
+    hashes: String,
+    replay: oxide_kit::GameReplay,
+}
+
+impl SoakTrace {
+    fn new(stem: &Path, scenario: &Scenario) -> Self {
+        Self {
+            stem: stem.to_owned(),
+            hashes: String::new(),
+            replay: chassis::replay::Replay::new(oxide_sim::SIM_VERSION, scenario.clone()),
+        }
+    }
+
+    fn record(&mut self, state: &State, commands: &[PlayerCommand]) {
+        for command in commands {
+            self.replay.record(state.current_tick(), command.clone());
+        }
+    }
+
+    fn sample(&mut self, state: &State) {
+        use std::fmt::Write;
+        writeln!(
+            self.hashes,
+            "{} {:#018x}",
+            state.current_tick(),
+            state.hash()
+        )
+        .expect("writing to a String cannot fail");
+    }
+
+    fn finish(mut self, state: &State) -> anyhow::Result<()> {
+        if !state.current_tick().is_multiple_of(TRACE_HASH_INTERVAL) {
+            self.sample(state);
+        }
+        self.replay.meta.ticks = Some(state.current_tick());
+        std::fs::write(self.stem.with_extension("hashes"), &self.hashes)?;
+        self.replay.save(self.stem.with_extension("replay.json"))?;
+        Ok(())
+    }
+}
+
+fn play_and_check_integrity(
+    scenario: &Scenario,
+    ticks: u64,
+    trace: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut state = scenario.build()?;
     let mut bots = oxide_bot::seat_bots(scenario)?;
+    let mut trace = trace.map(|stem| SoakTrace::new(stem, scenario));
     assert_state_round_trip(&state)?;
     for _ in 0..ticks {
         let commands: Vec<_> = bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
+        if let Some(trace) = &mut trace {
+            trace.record(&state, &commands);
+        }
         state.tick(&commands);
         let tick = state.current_tick();
+        if let Some(trace) = &mut trace
+            && tick.is_multiple_of(TRACE_HASH_INTERVAL)
+        {
+            trace.sample(&state);
+        }
         if tick.is_multiple_of(STATE_VALIDATION_INTERVAL) {
             state.validate_invariants()?;
         }
@@ -34,6 +93,9 @@ fn play_and_check_integrity(scenario: &Scenario, ticks: u64) -> anyhow::Result<(
         if state.result().is_some() {
             break;
         }
+    }
+    if let Some(trace) = trace {
+        trace.finish(&state)?;
     }
     assert_state_round_trip(&state)
 }
@@ -116,6 +178,11 @@ const INTEGRITY_TICKS: u64 = 12_000;
 const LARGE_MAP_INTEGRITY_TICKS: u64 = 24_000;
 const STATE_VALIDATION_INTERVAL: u64 = 100;
 const STATE_ROUND_TRIP_INTERVAL: u64 = 500;
+const TRACE_HASH_INTERVAL: u64 = 20;
+/// When set, each integrity run writes `<map>.hashes` and
+/// `<map>.replay.json` into this directory. CI compares the hash files
+/// across operating systems.
+const TRACE_DIR_VAR: &str = "OXIDE_SOAK_TRACE_DIR";
 
 fn integrity_horizon(scenario: &Scenario) -> u64 {
     match scenario.meta.as_ref().map(|m| m.pace.as_str()) {
@@ -140,9 +207,16 @@ fn every_shipped_scenario_preserves_state_integrity() {
 
 fn assert_scenarios_preserve_state_integrity(paths: &[PathBuf]) {
     use anyhow::Context;
+    let trace_dir = std::env::var_os(TRACE_DIR_VAR).map(PathBuf::from);
+    if let Some(dir) = &trace_dir {
+        std::fs::create_dir_all(dir).unwrap();
+    }
     pool::fan_out(paths, |path| {
         let scenario = all_bots(path);
-        play_and_check_integrity(&scenario, integrity_horizon(&scenario))
+        let trace = trace_dir
+            .as_ref()
+            .map(|dir| dir.join(path.file_stem().expect("scenario file name")));
+        play_and_check_integrity(&scenario, integrity_horizon(&scenario), trace.as_deref())
             .with_context(|| format!("{} failed state integrity", path.display()))
     })
     .unwrap();
