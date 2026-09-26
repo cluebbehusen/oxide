@@ -18,6 +18,8 @@ Oxide requires a current Rust toolchain. From the repository root:
 cargo run -p oxide-shell --release
 ```
 
+To play on an iPad, see [the iPad build](shell/README.md#ipad-build).
+
 The main menu includes the tutorial, skirmish setup, saved games and replays,
 the complete unit roster, settings, and controls. Normal skirmishes use
 deterministic rules-based opponents with four difficulty levels and Turtle,
@@ -55,31 +57,31 @@ weapons, and prerequisites.
 Most actions are available as clickable cards in the selection panel. These
 shortcuts cover the core loop:
 
-| Input                                    | Action                                                                                                 |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| WASD / arrow keys                        | Pan the camera; both sets work together.                                                               |
-| Wheel / middle drag                      | Zoom / pan the camera.                                                                                 |
-| `U` with a building / transport selected | Upgrade / unload here.                                                                                 |
-| `Y` / Shift+`Y` with a producer selected | Set / clear rally.                                                                                     |
-| Left click / drag                        | Select a unit, building, or group.                                                                     |
-| Shift + click / drag                     | Add to or remove from the current selection.                                                           |
-| Right click                              | Give the contextual order: harvest scrap, attack an enemy, repair an ally, or advance to ground.       |
-| Shift + right click                      | Queue the contextual order.                                                                            |
-| `F`, then ground                         | Attack-move and engage along the route.                                                                |
-| `M`, then ground                         | Move without engaging.                                                                                 |
-| `R`                                      | Mark patrol points; press `R` again to start the loop.                                                 |
-| `B`                                      | Open construction; select an available worker if needed. Press again to return to categories or close. |
-| `B`, then Q/E/R/T, then Q/E/R/T          | Choose a construction category, then a building.                                                       |
-| `C`, then a damaged machine              | Order selected Harvesters to repair it.                                                                |
-| `V`, then an own building                | Salvage the building for a partial refund. Foundries cannot be salvaged.                               |
-| `X`                                      | Stop selected units, or cancel a selected new construction site.                                       |
-| Q/E/R/T/Z/X with a producer selected     | Train the unit in that card slot.                                                                      |
-| Ctrl + `1`–`5` / `1`–`5`                 | Assign or recall a control group.                                                                      |
-| `N`                                      | Select and center the next idle Harvester.                                                             |
-| `Space`                                  | Center the camera on your Foundry.                                                                     |
-| `Tab`                                    | Jump to the last under-attack alert.                                                                   |
-| `P`                                      | Pause immediately.                                                                                     |
-| `Esc`                                    | Cancel the active action, clear selection, or open the pause menu.                                     |
+| Input                                    | Action                                                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| WASD / arrow keys                        | Pan the camera; both sets work together.                                                                                  |
+| Wheel / middle drag                      | Zoom / pan the camera.                                                                                                    |
+| `U` with a building / transport selected | Upgrade / unload here.                                                                                                    |
+| `Y` / Shift+`Y` with a producer selected | Set / clear rally.                                                                                                        |
+| Left click / drag                        | Select a unit, building, or group.                                                                                        |
+| Shift + click / drag                     | Add to or remove from the current selection.                                                                              |
+| Right click                              | Give the contextual order: harvest scrap, attack an enemy, repair an ally, or advance to ground.                          |
+| Shift + right click                      | Queue the contextual order.                                                                                               |
+| `F`, then ground                         | Attack-move and engage along the route.                                                                                   |
+| `M`, then ground                         | Move without engaging.                                                                                                    |
+| `R`                                      | Mark patrol points; press `R` again to start the loop.                                                                    |
+| `B`                                      | Open construction; select an available worker if needed. Press again to return to categories or close.                    |
+| `B`, then Q/E/R/T, then Q/E/R/T          | Choose a construction category, then a building.                                                                          |
+| `C`, then a damaged machine              | Order selected Harvesters to repair it.                                                                                   |
+| `V`, then an own building                | Salvage the building for a partial refund. Foundries cannot be salvaged.                                                  |
+| `X`                                      | Stop selected units, or cancel a selected new construction site.                                                          |
+| Q/E/R/T/Z/X with a producer selected     | Train the unit in that card slot.                                                                                         |
+| Ctrl + `1`–`5` / `1`–`5`                 | Assign or recall a control group.                                                                                         |
+| `N`                                      | Select and center the next idle Harvester.                                                                                |
+| `Space`                                  | Center the camera on your Foundry.                                                                                        |
+| `Tab`                                    | Jump to the last under-attack alert.                                                                                      |
+| `P`                                      | Pause immediately; clicking the clock at the top right does the same.                                                     |
+| `Esc`                                    | Cancel the active action, clear selection, or open the pause menu. The ≡ button at the top right opens the menu directly. |
 
 Controls offers primary and secondary bindings for every keyboard action,
 including buildings, production slots, groups, bookmarks, replay controls, and
@@ -88,6 +90,11 @@ the selected binding. Mouse selection of either binding column works too. Escape
 cancels capture (or restores Escape when editing Back). The binding editor and
 save-name entry retain conventional editing keys so custom mappings cannot lock
 you out. Existing custom bindings are preserved when upgrading.
+
+On a touchscreen, tap to select, drag to pan, pinch to zoom, and long-press for
+the contextual order. Two fingers drag a selection box, and a double tap selects
+every unit of that kind on screen. The cards, the ≡ menu button, and the clock
+(tap to pause) cover the rest.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;

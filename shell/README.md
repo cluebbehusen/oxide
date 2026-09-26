@@ -24,6 +24,9 @@ crate-level rustdoc.
   decorative boundary exploration. Restoration opens paused and rebuilds
   transient presentation at the current viewport.
 - `input` and `action` form the single hardware and injected-input funnel.
+  `press` and `button` give full-screen surfaces one press gesture and button
+  style; `viewer_touch` pans and pinches the read-only viewers.
+- `platform` states whether the build is touch-only (iOS).
 - `building_actions` derives single and grouped building controls from their
   capabilities, using projected pending orders for eligibility and spending.
 - `production` shares selected-factory purchases and collective queue
@@ -58,6 +61,31 @@ cargo test -p oxide-shell --locked
 cargo run -p oxide-driver -- smoke --spawn
 ```
 
+## iPad build
+
+`ios/` wraps the shell in an Xcode project whose only build phase runs Cargo for
+the device or simulator and places the binary where Xcode signs and packages it,
+with `assets/` and `scenarios/` copied in. It needs full Xcode (not only the
+Command Line Tools), the `aarch64-apple-ios` Rust target (plus
+`aarch64-apple-ios-sim` for the simulator), and an iPad with Developer Mode on.
+Set your signing team in the ignored `ios/Local.xcconfig`, never in Xcode's
+Signing pane, which writes it into the shared project file:
+
+```sh
+rustup target add aarch64-apple-ios
+cp ios/Local.xcconfig.example ios/Local.xcconfig   # set DEVELOPMENT_TEAM
+xcodebuild -project ios/Oxide.xcodeproj -scheme Oxide -configuration Release \
+  -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode \
+  -allowProvisioningUpdates build
+xcrun devicectl list devices
+xcrun devicectl device install app --device <id> \
+  target/ios-xcode/Build/Products/Release-iphoneos/Oxide.app
+xcrun devicectl device process launch --device <id> dev.luebbehusen.oxide
+```
+
+iPadOS 27 requires the UIScene lifecycle, so the workspace pins an unreleased
+miniquad commit; see the workspace `Cargo.toml` for why that exact commit.
+
 ## Sandbox sessions
 
 Launch an authored scene with `--scenario path/to/scene.json`. Set its `mode` to
@@ -79,14 +107,14 @@ Ordinary play preserves a recent completed match prefix in the platform data
 folder. After an abnormal exit, Home offers **Recover match** and opens it
 paused. Ordinary Continue and named saves remain separate.
 
-Settings provides **Diagnostics**, **Open diagnostics folder**, and **Export
-diagnostic report**. Detailed capture defaults Off; `--diagnostics` enables it
-for one launch. Reports stay local and contain a replay plus available phase,
-frame, and suspected-stall evidence. Diagnostic capture does not require the
-debug server. After leaving a recorded playback, export retains that viewer's
-report source until live play resumes. `diagnostic_report` runs exports and
-folder operations off the frame thread; `kit::recovery` and `kit::diagnostics`
-own bounded persistence.
+Settings provides **Diagnostics**, **Open diagnostics folder** (not on iPad),
+and **Export diagnostic report**. Detailed capture defaults Off; `--diagnostics`
+enables it for one launch. Reports stay local and contain a replay plus
+available phase, frame, and suspected-stall evidence. Diagnostic capture does
+not require the debug server. After leaving a recorded playback, export retains
+that viewer's report source until live play resumes. `diagnostic_report` runs
+exports and folder operations off the frame thread; `kit::recovery` and
+`kit::diagnostics` own bounded persistence.
 
 See [the persistence contract](../docs/shell-architecture.md) for durability,
 retention, compatibility, and timing semantics. Recovery warnings mean the

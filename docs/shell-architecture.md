@@ -92,6 +92,15 @@ The frame loop:
 4. Renders the active screen from interpolated presentation state.
 5. Captures requested screenshots, replies, and yields to presentation.
 
+Presentation (camera glides, held pans, effects, and music) reads frame time
+clamped to a quarter second. The live and replay clocks read the unclamped time
+and cap their own catch-up. A negative or non-finite clock reading counts as no
+time. A live frame of two seconds or more means the app stopped presenting, as a
+suspended iPad app or a sleeping Mac does; the match opens the pause menu with a
+notice instead of resuming. Frame time arrives one frame late, so the rule
+requires two consecutive live frames, which keeps startup, launches, and loads
+from reading as suspensions. Debug-server sessions are exempt.
+
 `oxide_protocol::RawEvent` is the common hardware and injected-input vocabulary.
 `input::apply_events` maps gameplay events into camera/selection changes and
 staged commands. Cross-frame gestures, held keys, touch state, control groups,
@@ -143,9 +152,11 @@ minimum touch targets; production wraps in the remaining columns. Card
 rectangles and panel bounds share the same separator and inset calculations.
 
 Coordinates are logical throughout the input/layout pipeline; the hardware
-adapter applies DPI conversion once. Drawing publishes a shared `LayoutModel`
-whose rectangles also drive hit testing. The HUD's supported layout floor is
-1280×800 at default UI scale. Smaller windows are overflow stress cases.
+adapter applies DPI conversion once. Touches arrive through the same ordered
+input stream as mouse events, one event per phase. Drawing publishes a shared
+`LayoutModel` whose rectangles also drive hit testing. The HUD's supported
+layout floor is 1280×800 at default UI scale. Smaller windows are overflow
+stress cases.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated
@@ -174,6 +185,28 @@ building; a damaged Foundry also receives repair after delivery. Empty welders
 retain the existing repair click, and unfinished sites retain construction.
 Cargo returns replace work even when Shift is held; they never resume an
 interrupted harvest job.
+
+### Touch-only builds
+
+`platform::TOUCH_ONLY` is true on iOS, where only touches and on-screen keyboard
+characters arrive: no hardware keys, mouse, hover, or wheel. Code branches on
+the constant, and pure helpers take it as a parameter, so both variants compile
+and test on every platform.
+
+Every screen offers a pointer path for what Escape does, on every platform. The
+top bar ends in a menu button that opens the pause menu, and its clock or PAUSED
+status toggles pause; both are `LayoutModel` chrome that `UiView` reports. The
+New Match steps, replay playback, and the final map draw corner Back buttons,
+and playback adds Play/Pause. These ride `Press::feed`, which also tells the
+screen when a button claimed an event. Menu lists scroll by touch drag, and the
+read-only viewers pan and pinch through `ViewerTouch`. The save-name field has
+Save and Cancel; on touch-only builds the frame loop raises and hides the
+on-screen keyboard to follow it.
+
+Touch-only builds hide rows they cannot use: Controls and the left-handed preset
+(key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no
+file manager), and Quit (the platform closes apps). A match the platform
+terminates in the background returns through recovery.
 
 ## Persistence and replay
 
@@ -462,3 +495,4 @@ composition; presentation and input claims require the real shell.
 | Native presentation           | `shell/src/render.rs`, `shell/src/assets.rs`                                   | Asset tests, `shell/tests/presentation_animation.rs`, native capture tests |
 | CPU schematics                | `kit/src/render.rs`                                                            | `driver/tests/golden.rs`                                                   |
 | Audio                         | `shell/src/audio_mix.rs`, `shell/src/soundtrack.rs`                            | Module tests                                                               |
+| iPad build                    | `ios/`, `shell/src/platform.rs`                                                | iOS clippy in CI, device builds                                            |
