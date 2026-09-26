@@ -555,9 +555,10 @@ impl Menu {
             return;
         }
 
+        let scrolls = first > 0 || first + visible < self.items.len();
         let hint = coaching
             .map(binding_hint)
-            .unwrap_or_else(|| menu_footer(crate::platform::TOUCH_ONLY));
+            .unwrap_or_else(|| menu_footer(crate::platform::TOUCH_ONLY, scrolls));
         let mut hint_size = 18.0 * s;
         let mut hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
         let max_width = view_w() - 32.0 * s;
@@ -575,12 +576,17 @@ impl Menu {
     }
 }
 
-/// The line under every menu: its keys and clicks on desktop, taps and
-/// drags on a touch-only build. ASCII on purpose: the default font has
-/// no glyphs for arrows.
-fn menu_footer(touch_only: bool) -> String {
+/// The line under every menu: its keys and clicks on desktop, taps on a
+/// touch-only build, plus the drag only when the list actually scrolls.
+/// ASCII on purpose: the default font has no glyphs for arrows.
+fn menu_footer(touch_only: bool, scrolls: bool) -> String {
     if touch_only {
-        return "tap to choose - drag to scroll".to_string();
+        return if scrolls {
+            "tap to choose - drag to scroll"
+        } else {
+            "tap to choose"
+        }
+        .to_string();
     }
     MENU_BINDINGS.with(|bindings| {
         let bindings = bindings.borrow();
@@ -766,8 +772,14 @@ mod footer_tests {
 
     #[test]
     fn the_footer_speaks_touch_on_touch_only_builds() {
-        assert!(menu_footer(false).ends_with("confirm - or click"));
-        crate::platform::assert_touch_copy(&menu_footer(true));
+        assert!(menu_footer(false, true).ends_with("confirm - or click"));
+        crate::platform::assert_touch_copy(&menu_footer(true, true));
+    }
+
+    #[test]
+    fn the_touch_footer_offers_a_drag_only_when_the_list_scrolls() {
+        assert_eq!(menu_footer(true, false), "tap to choose");
+        assert!(menu_footer(true, true).ends_with("drag to scroll"));
     }
 }
 
