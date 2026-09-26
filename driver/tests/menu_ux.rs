@@ -16,6 +16,7 @@
 use anyhow::{Result, bail};
 use oxide_driver::auto::{
     ShellGuard, SpawnOptions, activate_labeled, assert_mode, press_key, spawn_shell, ui,
+    wait_for_mode,
 };
 use oxide_driver::client::Client;
 use oxide_protocol::{Key, MouseButton, RawEvent, Request};
@@ -289,7 +290,12 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
     assert_mode(&mut client, "pause_menu", "Settings > Esc returns to pause")?;
     activate_labeled(&mut client, "main menu")?;
     activate_labeled(&mut client, "main menu")?;
-    assert_mode(&mut client, "home", "pause > Main Menu confirmed")?;
+    wait_for_mode(
+        &mut client,
+        "home",
+        &["saving"],
+        "pause > Main Menu confirmed",
+    )?;
     Ok(())
 }
 
