@@ -2044,19 +2044,33 @@ fn connected_opportunity_case(
     }
 }
 
+/// Whether a remembered or current structure can anchor a prospective first
+/// Airworks campaign.
+pub(crate) fn prospective_air_target(contact: &BuildingContact, now: Tick) -> bool {
+    contact.built && contact.hp > 0 && contact.confidence_at(now) > 0
+}
+
 /// Values a complete, route-serviceable minimum after a proposed first Airworks.
 /// The hypothetical producer is confined to sizing; it never becomes an owned claim.
+/// Sizing assumes remembered targets still stand as last seen, so each value is
+/// discounted by that target's confidence.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the sizing witness mirrors the exact quote inputs it must respect"
+)]
 pub(crate) fn prospective_airworks_package_value(
     request: FreshConnectedProposalRequest<'_>,
     candidate: crate::observation::BuildingObs,
     candidate_sites: &[TilePos],
     ready_after: Tick,
+    fund_by: Tick,
     deadline: Tick,
     obligations: &[crate::allocation::ImportedObligation],
     planning: &crate::planning::PlanningWork,
 ) -> Option<u64> {
     use crate::allocation::{
-        AllocationCapacity, AllocationPersonality, allocate_requiring_planned,
+        AllocationCapacity, AllocationPersonality, ClaimBundle, DeferrableCapitalClaim,
+        ImportedObligation, ObligationClass, ObligationKey, allocate_requiring_planned,
         connected_investment_proposal, current_reserve_at,
     };
     use crate::planning::Progress;
@@ -2066,10 +2080,12 @@ pub(crate) fn prospective_airworks_package_value(
     }
     let mut prospective = request.obs.clone();
     let cost = BuildingKind::Airworks.base_stats().construction?.cost;
-    prospective.scrap = prospective
+    let bank = prospective
         .scrap
-        .checked_sub(request.coordination.protected_current_scrap)?
-        .checked_sub(cost)?;
+        .saturating_sub(request.coordination.protected_current_scrap);
+    let paid_now = bank.min(cost);
+    let shortfall = cost - paid_now;
+    prospective.scrap = bank - paid_now;
     prospective.my_buildings.push(candidate);
     prospective.my_queues.push(Vec::new());
     prospective.my_queue_progress.push(0);
@@ -2078,7 +2094,8 @@ pub(crate) fn prospective_airworks_package_value(
     let restored = request
         .coordination
         .protected_current_scrap
-        .min(current_reserve_at(obligations, prospective.tick));
+        .min(current_reserve_at(obligations, prospective.tick))
+        .min(request.obs.scrap - bank);
     prospective.scrap += restored;
     let capacity = AllocationCapacity::from_snapshot(
         &ResourceSnapshot::from_observation(&prospective),
@@ -2086,11 +2103,38 @@ pub(crate) fn prospective_airworks_package_value(
         request.tuning.cadence,
     )
     .ok()?;
+    // Capital the bank cannot cover now is owed from forecast by the factory's
+    // funding deadline, exactly as the proposed saving will be charged.
+    let mut obligations = obligations.to_vec();
+    if shortfall > 0 {
+        obligations.push(ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: prospective.tick,
+            key: ObligationKey::SavedEconomy(crate::utility::EconomicInvestmentKey::Build {
+                kind: BuildingKind::Airworks,
+                anchor: site,
+            }),
+            claims: ClaimBundle::new(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .ok()?
+            .with_deferrable_capital(DeferrableCapitalClaim {
+                through: fund_by,
+                amount: shortfall,
+            })
+            .ok()?,
+        });
+    }
     // A new campaign cannot make retained obligations fit after buying its factory.
     if !matches!(
         super::allocation::forecast::refine_obligations(
             &capacity,
-            obligations,
+            &obligations,
             request.coordination.planning?,
         ),
         super::planning::Progress::Ready(())
@@ -2102,11 +2146,18 @@ pub(crate) fn prospective_airworks_package_value(
     let coordination = StrategicCoordination {
         enlisted: &unavailable,
         protected_current_scrap: 0,
+        protected_forecast_scrap: request
+            .coordination
+            .protected_forecast_scrap
+            .saturating_add(shortfall),
         ..request.coordination
     };
+    let intel = request
+        .intel
+        .assuming_remembered_buildings(prospective.tick);
     let campaign_routes = CampaignRoutes::new(
         &prospective,
-        request.intel,
+        &intel,
         coordination.public_map,
         coordination.orientation,
     );
@@ -2118,7 +2169,7 @@ pub(crate) fn prospective_airworks_package_value(
         tuning: request.tuning,
         obs: &prospective,
         resource_snapshot: &resources,
-        intel: request.intel,
+        intel: &intel,
         home: request.home,
         coordination,
         unavailable: &unavailable,
@@ -2128,20 +2179,31 @@ pub(crate) fn prospective_airworks_package_value(
     if deadline <= prospective.tick {
         return None;
     }
-    let mut targets: Vec<_> = request
-        .intel
+    let confidence = |target: &BuildingContact| {
+        request
+            .intel
+            .buildings()
+            .iter()
+            .find(|remembered| {
+                remembered.player == target.player && remembered.anchor == target.anchor
+            })
+            .map_or(0, |remembered| remembered.confidence_at(prospective.tick))
+    };
+    let mut targets: Vec<_> = intel
         .buildings()
         .iter()
-        .filter(|target| {
-            target.evidence == ContactEvidence::Current && target.built && target.hp > 0
-        })
+        .filter(|target| target.built && target.hp > 0 && confidence(target) > 0)
         .collect();
     let distances = coordination
         .public_map
         .map(|map| map.regions().distances(request.home));
     targets.sort_by_key(|target| {
         (
-            std::cmp::Reverse(u64::from(target.hp) * u64::from(building_value(target.kind))),
+            std::cmp::Reverse(
+                u64::from(target.hp)
+                    * u64::from(building_value(target.kind))
+                    * u64::from(confidence(target)),
+            ),
             distances
                 .as_ref()
                 .and_then(|distances| distances.estimate(target.anchor))
@@ -2165,7 +2227,7 @@ pub(crate) fn prospective_airworks_package_value(
         let route = ConnectedRouteContext {
             campaign_routes: Some(&campaign_routes),
             unavailable_paid: &[],
-            intel: request.intel,
+            intel: &intel,
             home: request.home,
             target: target.anchor,
             public_map: coordination.public_map,
@@ -2199,7 +2261,7 @@ pub(crate) fn prospective_airworks_package_value(
         let investment = connected_investment_proposal(proposal.clone());
         match allocate_requiring_planned(
             &capacity,
-            obligations.to_vec(),
+            obligations.clone(),
             vec![investment.clone()],
             AllocationPersonality::default(),
             investment.key(),
@@ -2209,13 +2271,15 @@ pub(crate) fn prospective_airworks_package_value(
             Ok(None) => return Progress::Deferred,
             Err(_) => return Progress::ProvenInfeasible,
         }
+        let package_cost: u64 = proposal
+            .minimum_claims()
+            .provider_jobs()
+            .iter()
+            .map(|job| u64::from(job.kind().stats().cost))
+            .sum();
         Progress::Ready(
-            proposal
-                .minimum_claims()
-                .provider_jobs()
-                .iter()
-                .map(|job| u64::from(job.kind().stats().cost))
-                .sum(),
+            package_cost * u64::from(confidence(target))
+                / u64::from(crate::intelligence::MAX_CONFIDENCE),
         )
     });
     match result {

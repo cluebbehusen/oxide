@@ -422,6 +422,67 @@ impl StrategicIntelligence {
         self.visible.clone_from(&observation.visible);
     }
 
+    /// Knowledge at `observation` plus remembered contacts from controller
+    /// memory updated through the same observation. Hypothetical sizing uses
+    /// this when it holds only that memory's contact slices.
+    pub(crate) fn with_remembered_contacts(
+        observation: &Observation,
+        units: &[UnitContact],
+        buildings: &[BuildingContact],
+    ) -> Self {
+        let mut intelligence = Self::new();
+        intelligence.update(observation);
+        for remembered in units
+            .iter()
+            .filter(|contact| contact.evidence == ContactEvidence::Remembered)
+        {
+            if !intelligence
+                .units
+                .iter()
+                .any(|contact| contact.id == remembered.id)
+            {
+                intelligence.units.push(remembered.clone());
+            }
+        }
+        intelligence.units.sort_by_key(|contact| contact.id);
+        for remembered in buildings
+            .iter()
+            .filter(|contact| contact.evidence == ContactEvidence::Remembered)
+        {
+            match intelligence.buildings.iter_mut().find(|contact| {
+                contact.player == remembered.player && contact.anchor == remembered.anchor
+            }) {
+                Some(ghost) if ghost.evidence == ContactEvidence::Remembered => {
+                    *ghost = remembered.clone();
+                }
+                Some(_) => {}
+                None => intelligence.buildings.push(remembered.clone()),
+            }
+        }
+        intelligence.buildings.sort_by_key(|contact| {
+            (
+                contact.anchor.y,
+                contact.anchor.x,
+                contact.player,
+                contact.kind,
+            )
+        });
+        intelligence
+    }
+
+    /// The same knowledge with every remembered building of positive
+    /// confidence treated as currently observed. Only hypothetical sizing may
+    /// use this; it must never admit an operation or issue a command.
+    pub(crate) fn assuming_remembered_buildings(&self, now: Tick) -> Self {
+        let mut assumed = self.clone();
+        for contact in &mut assumed.buildings {
+            if contact.evidence == ContactEvidence::Remembered && contact.confidence_at(now) > 0 {
+                contact.evidence = ContactEvidence::Current;
+            }
+        }
+        assumed
+    }
+
     /// Tick of the most recently ingested observation.
     pub fn observed_at(&self) -> Option<Tick> {
         self.observed_at

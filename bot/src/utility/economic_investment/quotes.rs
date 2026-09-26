@@ -17,7 +17,8 @@ struct CapitalPreparation<'a> {
     unmet_income: u64,
     income_evidence: Option<ProposalCase>,
     builders: Vec<&'a UnitObs>,
-    bootstrap_air: bool,
+    /// Knowledge that can value a first Airworks, when one may be quoted.
+    bootstrap_air: Option<StrategicIntelligence>,
     projected_bank: u32,
 }
 impl<'a> EconomicQuotes<'a> {
@@ -329,23 +330,6 @@ impl<'a> EconomicQuotes<'a> {
             })
             .filter(|unit| retained.is_none_or(|saving| saving.builder == Some(unit.id)))
             .collect::<Vec<_>>();
-        let bootstrap_air = !obs
-            .my_buildings
-            .iter()
-            .any(|building| building.kind == BuildingKind::Airworks)
-            && !UtilityPolicy::deferred_claims(obs)
-                .iter()
-                .any(|(kind, _)| *kind == BuildingKind::Airworks)
-            && obs
-                .enemy_buildings
-                .iter()
-                .any(|building| building.seen && building.hp > 0)
-            && obs.scrap.saturating_sub(context.protected_scrap)
-                >= BuildingKind::Airworks
-                    .base_stats()
-                    .construction
-                    .unwrap()
-                    .cost;
         self.routes.get_or_insert_with(|| service_routes(context));
         let projected_bank = obs
             .scrap
@@ -357,6 +341,32 @@ impl<'a> EconomicQuotes<'a> {
                     .income_through(deadline.saturating_sub(1))
                     .amount(),
             );
+        let bootstrap_air = (!obs
+            .my_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Airworks)
+            && !UtilityPolicy::deferred_claims(obs)
+                .iter()
+                .any(|(kind, _)| *kind == BuildingKind::Airworks)
+            && projected_bank
+                >= BuildingKind::Airworks
+                    .base_stats()
+                    .construction
+                    .unwrap()
+                    .cost)
+            .then(|| {
+                StrategicIntelligence::with_remembered_contacts(
+                    obs,
+                    context.unit_contacts,
+                    context.building_contacts,
+                )
+            })
+            .filter(|intelligence| {
+                intelligence
+                    .buildings()
+                    .iter()
+                    .any(|contact| crate::strategy::prospective_air_target(contact, obs.tick))
+            });
         CapitalPreparation {
             retained,
             horizon,
@@ -376,7 +386,7 @@ impl<'a> EconomicQuotes<'a> {
         let retained = capital.retained;
         let unmet_income = capital.unmet_income;
         let builders = &capital.builders;
-        let bootstrap_air = capital.bootstrap_air;
+        let bootstrap_air = capital.bootstrap_air.is_some();
 
         let mut possible = Vec::new();
         if retained.is_none() {
@@ -501,7 +511,7 @@ impl<'a> EconomicQuotes<'a> {
         let unmet_income = capital.unmet_income;
         let income_evidence = capital.income_evidence;
         let builders = &capital.builders;
-        let bootstrap_air = capital.bootstrap_air;
+        let bootstrap_air = capital.bootstrap_air.as_ref();
         let projected_bank = capital.projected_bank;
 
         let funding = self
@@ -561,6 +571,18 @@ impl<'a> EconomicQuotes<'a> {
                 continue;
             };
             let funding_delay = funding.delay(stats.cost, deadline);
+            let fund_by = retained.map_or_else(
+                || {
+                    if funding_delay == 0 {
+                        obs.tick
+                    } else {
+                        obs.tick
+                            .saturating_add(funding_delay)
+                            .saturating_add(context.cadence.max(1))
+                    }
+                },
+                |saving| saving.fund_by,
+            );
             let delay = funding_delay
                 .saturating_add(travel_ticks(worker.kind, distance))
                 .saturating_add(
@@ -591,9 +613,9 @@ impl<'a> EconomicQuotes<'a> {
                 _ => {
                     let mut value =
                         infrastructure_benefit(&mut infrastructure, kind, anchor, horizon, delay);
-                    if kind == BuildingKind::Airworks && bootstrap_air {
-                        let mut intelligence = StrategicIntelligence::new();
-                        intelligence.update(obs);
+                    if kind == BuildingKind::Airworks
+                        && let Some(intelligence) = bootstrap_air
+                    {
                         let home = obs
                             .my_buildings
                             .iter()
@@ -619,7 +641,7 @@ impl<'a> EconomicQuotes<'a> {
                             DifficultyTuning::for_level(context.profile.difficulty),
                             obs,
                             context.resources,
-                            &intelligence,
+                            intelligence,
                             home,
                             crate::strategy::StrategicCoordination {
                                 planning: Some(&policy.planning),
@@ -641,6 +663,7 @@ impl<'a> EconomicQuotes<'a> {
                             candidate,
                             &airworks_sites,
                             delay,
+                            fund_by,
                             deadline,
                             context.obligations,
                             &policy.planning,
@@ -696,18 +719,7 @@ impl<'a> EconomicQuotes<'a> {
                 observed_at: obs.tick,
                 ready_at: obs.tick.saturating_add(delay),
                 deadline,
-                fund_by: retained.map_or_else(
-                    || {
-                        if funding_delay == 0 {
-                            obs.tick
-                        } else {
-                            obs.tick
-                                .saturating_add(funding_delay)
-                                .saturating_add(context.cadence.max(1))
-                        }
-                    },
-                    |saving| saving.fund_by,
-                ),
+                fund_by,
                 case,
                 benefit,
                 personality: context.profile.traits.greed,
