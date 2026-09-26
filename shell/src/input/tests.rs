@@ -2171,6 +2171,76 @@ fn one_finger_drags_the_camera_and_two_box_select() {
 }
 
 #[test]
+fn a_resting_world_finger_charges_the_long_press_ring() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let ground = vec2(400.0, 300.0);
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, ground)]);
+    assert_eq!(
+        long_press_progress(&input),
+        None,
+        "a fresh touch may be a tap"
+    );
+    input.now = 5.0 + (TOUCH_REST_MS - 10.0) / 1000.0;
+    assert_eq!(long_press_progress(&input), None, "quick taps never flash");
+
+    let charge = f64::from(input.touch_prefs.long_press_ms) - TOUCH_REST_MS;
+    input.now = 5.0 + (TOUCH_REST_MS + charge * 0.5) / 1000.0;
+    let (at, half) = long_press_progress(&input).expect("a resting finger charges");
+    assert_eq!(at, ground);
+    assert!(
+        (half - 0.5).abs() < 0.01,
+        "halfway through the hold: {half}"
+    );
+
+    input.now = 5.0 + f64::from(input.touch_prefs.long_press_ms) / 1000.0 + 0.01;
+    update_touch(&mut game, &mut input);
+    assert_eq!(long_press_progress(&input), None, "a fired press is spent");
+    apply_events(&mut game, &mut input, &[touch_up(1, ground)]);
+
+    // A finger that pans, a second finger, or chrome ground never charges.
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, ground)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, ground + vec2(80.0, 0.0))],
+    );
+    input.now = 10.3;
+    assert_eq!(long_press_progress(&input), None, "a pan is not a hold");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(2, ground + vec2(80.0, 0.0))],
+    );
+
+    input.now = 20.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            touch_down(3, ground),
+            touch_down(4, ground + vec2(200.0, 0.0)),
+        ],
+    );
+    input.now = 20.3;
+    assert_eq!(long_press_progress(&input), None, "a pair is not a hold");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(3, ground), touch_up(4, ground + vec2(200.0, 0.0))],
+    );
+
+    game.presentation.layout.set(top_bar_layout());
+    let menu = game.presentation.layout.get().menu_button.center();
+    input.now = 30.0;
+    apply_events(&mut game, &mut input, &[touch_down(5, menu)]);
+    input.now = 30.3;
+    assert_eq!(long_press_progress(&input), None, "chrome owns its ground");
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.

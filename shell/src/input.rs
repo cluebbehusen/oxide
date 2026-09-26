@@ -59,6 +59,29 @@ fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> St
     )
 }
 
+/// How long a finger must rest before it reads as deliberate rather
+/// than the start of a tap, so feedback never flashes under quick taps.
+pub(crate) const TOUCH_REST_MS: f64 = 150.0;
+
+/// Where a battlefield long-press is charging and how full it is, from
+/// zero once the finger has rested to one as the order fires. Only a
+/// lone world-born finger that has neither moved nor fired charges.
+pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
+    let [(_, finger)] = input.touches.as_slice() else {
+        return None;
+    };
+    if finger.moved || finger.fired || finger.chrome {
+        return None;
+    }
+    let held_ms = (input.now - finger.down_at) * 1000.0;
+    if held_ms < TOUCH_REST_MS {
+        return None;
+    }
+    let charge_ms = (f64::from(input.touch_prefs.long_press_ms) - TOUCH_REST_MS).max(1.0);
+    let progress = ((held_ms - TOUCH_REST_MS) / charge_ms).min(1.0);
+    Some((finger.at, progress as f32))
+}
+
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 

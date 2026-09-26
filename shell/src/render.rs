@@ -513,6 +513,7 @@ pub(crate) fn draw_with_performance(
     }
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
+    draw_long_press_ring(input);
     draw_salvage_tooltip(game, input);
     draw_hud(game, sprites, input, performance);
     if game.presentation.overlay {
