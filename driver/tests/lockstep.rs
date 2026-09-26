@@ -7,15 +7,17 @@ use chassis::rng::Pcg32;
 use oxide_bot::{PublicMapBriefing, SeatBot};
 use oxide_kit::{GameReplay, bot_execution, runner};
 use oxide_net::{
-    ClientEnd, ClientSession, DropReason, HostEvent, HostSession, PROGRESS_TIMEOUT,
-    SILENCE_TIMEOUT, reports_hash,
+    ClientEnd, ClientSession, Connection, DropReason, HostEvent, HostSession, JoinMessage,
+    Listener, LobbyMessage, PROGRESS_TIMEOUT, SILENCE_TIMEOUT, StartBarrier, reports_hash,
+    same_build,
 };
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Command, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, Tick};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 const STEP: Duration = Duration::from_millis(10);
 const TICK: Duration = Duration::from_millis(50);
@@ -486,5 +488,191 @@ fn a_diverged_client_halts_every_machine_at_the_next_report() {
         net.host.machine.state.current_tick(),
         halted,
         "the host stopped sealing"
+    );
+}
+
+/// Polls until `poll` yields, failing after ten seconds.
+fn wait<T>(mut poll: impl FnMut() -> Option<T>) -> T {
+    let start = Instant::now();
+    loop {
+        if let Some(value) = poll() {
+            return value;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "timed out");
+        thread::sleep(ms(1));
+    }
+}
+
+fn recv(connection: &Connection) -> String {
+    wait(|| connection.try_recv().expect("the peer stays connected"))
+}
+
+/// Sends host lines to seats, which the host seated in `CLIENTS` order.
+fn send_to_seats(seated: &[Connection], lines: Vec<(PlayerId, String)>) {
+    for (seat, line) in lines {
+        seated[usize::from(seat.0) - 1].send(&line);
+    }
+}
+
+#[test]
+fn a_match_starts_and_stays_in_sync_over_tcp() {
+    const COMMIT: &str = "lockstep-test";
+    let scenario = scenario();
+    let clock = Instant::now();
+    let listener = Listener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let clients: Vec<Connection> = CLIENTS
+        .iter()
+        .map(|_| {
+            let connection = Connection::connect(address).unwrap();
+            connection.send(&JoinMessage::hello(COMMIT).encode());
+            connection
+        })
+        .collect();
+
+    // The host seats connections in accept order and answers each Hello.
+    let seated: Vec<Connection> = CLIENTS
+        .iter()
+        .map(|_| {
+            let connection = wait(|| listener.try_accept().unwrap());
+            let JoinMessage::Hello { protocol, commit } =
+                JoinMessage::decode(&recv(&connection)).unwrap()
+            else {
+                panic!("a client opens with Hello");
+            };
+            assert!(same_build(protocol, &commit, COMMIT));
+            connection.send(&LobbyMessage::hello(COMMIT).encode());
+            connection
+        })
+        .collect();
+    for connection in &clients {
+        let LobbyMessage::Hello { protocol, commit } =
+            LobbyMessage::decode(&recv(connection)).unwrap()
+        else {
+            panic!("the host answers with Hello");
+        };
+        assert!(same_build(protocol, &commit, COMMIT));
+    }
+
+    let mut host = Machine::new(&scenario, HOST);
+    let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let mut barrier = StartBarrier::new(
+        &scenario,
+        HOST,
+        &CLIENTS,
+        host.state.hash(),
+        clock.elapsed(),
+    );
+    send_to_seats(&seated, barrier.take_outgoing());
+    let mut machines: Vec<Machine> = clients
+        .iter()
+        .map(|connection| {
+            let LobbyMessage::Start { seat, scenario } =
+                LobbyMessage::decode(&recv(connection)).unwrap()
+            else {
+                panic!("the host starts the match");
+            };
+            let machine = Machine::new(&scenario, seat);
+            let ready = JoinMessage::Ready {
+                hash: machine.state.hash(),
+            };
+            connection.send(&ready.encode());
+            machine
+        })
+        .collect();
+    let mut session = wait(|| {
+        for (connection, &seat) in seated.iter().zip(&CLIENTS) {
+            while let Some(line) = connection.try_recv().unwrap() {
+                barrier.receive(seat, &line).unwrap();
+            }
+        }
+        barrier.poll(clock.elapsed()).unwrap()
+    });
+    send_to_seats(&seated, barrier.take_outgoing());
+    let mut sessions: Vec<ClientSession> = clients
+        .iter()
+        .map(|connection| {
+            assert_eq!(
+                LobbyMessage::decode(&recv(connection)).unwrap(),
+                LobbyMessage::Go
+            );
+            ClientSession::new(clock.elapsed())
+        })
+        .collect();
+
+    let started = Instant::now();
+    let mut draining = false;
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the match stalled"
+        );
+        let now = clock.elapsed();
+        for (connection, &seat) in seated.iter().zip(&CLIENTS) {
+            while let Some(line) = connection.try_recv().unwrap() {
+                session.receive(seat, &line, now);
+            }
+        }
+        assert!(session.poll(now).is_empty(), "no drops or desyncs");
+        if !draining {
+            for order in host.orders() {
+                session.submit(order);
+            }
+            if let Some(mut batch) = session.seal(now) {
+                batch.extend(bot_execution::commands(&host.state, &mut bots));
+                session.publish(&batch);
+                host.execute(batch);
+                let state = &host.state;
+                session.executed(|| state.hash());
+            }
+            if host.state.current_tick() >= 80 {
+                draining = true;
+                session.set_paused(true);
+            }
+        }
+        send_to_seats(&seated, session.take_outgoing());
+        for ((connection, client), machine) in clients.iter().zip(&mut sessions).zip(&mut machines)
+        {
+            while let Some(line) = connection.try_recv().unwrap() {
+                client.receive(&line, now).unwrap();
+            }
+            while let Some(batch) = client.next_batch() {
+                for order in machine.orders() {
+                    client.send(order);
+                }
+                machine.execute(batch);
+                let state = &machine.state;
+                client.executed(|| state.hash());
+            }
+            client.poll(now).unwrap();
+            for line in client.take_outgoing() {
+                connection.send(&line);
+            }
+        }
+        let tick = host.state.current_tick();
+        if draining
+            && machines
+                .iter()
+                .all(|machine| machine.state.current_tick() == tick)
+        {
+            break;
+        }
+        thread::sleep(ms(1));
+    }
+    for machine in &machines {
+        assert_eq!(machine.commands(), host.commands(), "{:?}", machine.seat);
+        assert_eq!(machine.hashes, host.hashes, "{:?}", machine.seat);
+        assert_eq!(
+            machine.state.hash(),
+            host.state.hash(),
+            "{:?}",
+            machine.seat
+        );
+    }
+    assert!(
+        host.commands()
+            .iter()
+            .any(|(_, order)| CLIENTS.contains(&order.player)),
+        "client orders crossed the sockets"
     );
 }

@@ -134,9 +134,10 @@ its own README with its purpose, main modules, and focused development commands.
 - [`protocol/`](protocol/README.md) defines the JSON-lines debug contract,
   hardware-neutral input events, state views, fog-honest views, and transport
   shared by live and windowless sessions.
-- [`net/`](net/README.md) is `oxide-net`, the lockstep multiplayer session core.
-  It decides which commands every machine executes on which tick and watches
-  peer liveness and desync, without performing I/O.
+- [`net/`](net/README.md) is `oxide-net`, lockstep multiplayer. Its I/O-free
+  session core decides which commands every machine executes on which tick and
+  watches peer liveness and desync; its start barrier and TCP transport take
+  connected machines to a shared tick zero.
 - [`kit/`](kit/README.md) contains Oxide-specific services shared by the shell
   and driver, including headless running, replay playback, statistics, combat
   fixtures, and the deterministic CPU renderer.

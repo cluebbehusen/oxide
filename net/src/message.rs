@@ -1,7 +1,80 @@
-//! JSON-lines wire messages between a host and its clients.
+//! JSON-lines wire messages between a host and its clients. A connection
+//! speaks [`JoinMessage`] and [`LobbyMessage`] until Go, then
+//! [`ClientMessage`] and [`HostMessage`].
 
-use oxide_sim::{Command, PlayerCommand, Tick};
+use crate::PROTOCOL_VERSION;
+use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, Tick};
 use serde::{Deserialize, Serialize};
+
+/// A line a joining client sends before the match starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum JoinMessage {
+    /// The client's wire protocol and build commit. Its shape never
+    /// changes, so mismatched builds can still read each other's Hello.
+    Hello {
+        /// The client's [`PROTOCOL_VERSION`].
+        protocol: u32,
+        /// The commit the client was built from.
+        commit: String,
+    },
+    /// The client built the match and its world at tick zero hashes to
+    /// `hash`.
+    Ready {
+        /// `State::hash` at tick zero.
+        hash: u64,
+    },
+}
+
+/// A line the host sends to a joining client before the match starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LobbyMessage {
+    /// The host's wire protocol and build commit, in the same fixed shape
+    /// as the client's Hello.
+    Hello {
+        /// The host's [`PROTOCOL_VERSION`].
+        protocol: u32,
+        /// The commit the host was built from.
+        commit: String,
+    },
+    /// The frozen roster's match: the client's seat and the scenario every
+    /// machine builds.
+    Start {
+        /// The seat this client plays.
+        seat: PlayerId,
+        /// The match every machine builds.
+        scenario: Box<Scenario>,
+    },
+    /// Every client is ready; the match begins at tick zero.
+    Go,
+}
+
+impl JoinMessage {
+    /// This build's Hello.
+    pub fn hello(commit: &str) -> Self {
+        Self::Hello {
+            protocol: PROTOCOL_VERSION,
+            commit: commit.to_owned(),
+        }
+    }
+}
+
+impl LobbyMessage {
+    /// This build's Hello.
+    pub fn hello(commit: &str) -> Self {
+        Self::Hello {
+            protocol: PROTOCOL_VERSION,
+            commit: commit.to_owned(),
+        }
+    }
+}
+
+/// Whether a peer's Hello matches this build: the same protocol version and
+/// the same commit.
+pub fn same_build(protocol: u32, peer_commit: &str, commit: &str) -> bool {
+    protocol == PROTOCOL_VERSION && peer_commit == commit
+}
 
 /// A line a client sends to the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,33 +120,23 @@ pub enum HostMessage {
     },
 }
 
-impl ClientMessage {
-    /// One wire line, without the trailing newline.
-    pub fn encode(&self) -> String {
-        encode(self)
-    }
+macro_rules! wire_lines {
+    ($($message:ty),+) => {$(
+        impl $message {
+            /// One wire line, without the trailing newline.
+            pub fn encode(&self) -> String {
+                serde_json::to_string(self).expect("wire messages always serialize")
+            }
 
-    /// Parses one wire line.
-    pub fn decode(line: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(line)
-    }
+            /// Parses one wire line.
+            pub fn decode(line: &str) -> serde_json::Result<Self> {
+                serde_json::from_str(line)
+            }
+        }
+    )+};
 }
 
-impl HostMessage {
-    /// One wire line, without the trailing newline.
-    pub fn encode(&self) -> String {
-        encode(self)
-    }
-
-    /// Parses one wire line.
-    pub fn decode(line: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(line)
-    }
-}
-
-fn encode(message: &impl Serialize) -> String {
-    serde_json::to_string(message).expect("wire messages always serialize")
-}
+wire_lines!(ClientMessage, HostMessage, JoinMessage, LobbyMessage);
 
 #[cfg(test)]
 mod tests {
@@ -117,6 +180,26 @@ mod tests {
         for message in host {
             assert_eq!(HostMessage::decode(&message.encode()).unwrap(), message);
         }
+        for message in [JoinMessage::hello("abc"), JoinMessage::Ready { hash: 9 }] {
+            assert_eq!(JoinMessage::decode(&message.encode()).unwrap(), message);
+        }
+        for message in [
+            LobbyMessage::hello("abc"),
+            LobbyMessage::Start {
+                seat: PlayerId(2),
+                scenario: Box::new(Scenario::skirmish()),
+            },
+            LobbyMessage::Go,
+        ] {
+            assert_eq!(LobbyMessage::decode(&message.encode()).unwrap(), message);
+        }
+    }
+
+    #[test]
+    fn a_hello_matches_only_the_same_protocol_and_commit() {
+        assert!(same_build(PROTOCOL_VERSION, "abc", "abc"));
+        assert!(!same_build(PROTOCOL_VERSION + 1, "abc", "abc"));
+        assert!(!same_build(PROTOCOL_VERSION, "abd", "abc"));
     }
 
     #[test]
@@ -157,6 +240,20 @@ mod tests {
             HostMessage::Desync { tick: 40 }.encode(),
             r#"{"type":"desync","tick":40}"#
         );
+        let hello = format!(r#"{{"type":"hello","protocol":{PROTOCOL_VERSION},"commit":"abc"}}"#);
+        assert_eq!(JoinMessage::hello("abc").encode(), hello);
+        assert_eq!(LobbyMessage::hello("abc").encode(), hello);
+        assert_eq!(
+            JoinMessage::Ready { hash: 9 }.encode(),
+            r#"{"type":"ready","hash":9}"#
+        );
+        assert_eq!(LobbyMessage::Go.encode(), r#"{"type":"go"}"#);
+        let start = LobbyMessage::Start {
+            seat: PlayerId(2),
+            scenario: Box::new(Scenario::skirmish()),
+        }
+        .encode();
+        assert!(start.starts_with(r#"{"type":"start","seat":2,"scenario":{"#));
     }
 
     #[test]
@@ -176,6 +273,20 @@ mod tests {
             r#"{"type":"batch","commands":[]}"#,
         ] {
             assert!(HostMessage::decode(line).is_err(), "{line}");
+        }
+        for line in [
+            r#"{"type":"hello","protocol":1}"#,
+            r#"{"type":"ready","hash":1,"seat":0}"#,
+            r#"{"type":"ack","tick":1}"#,
+        ] {
+            assert!(JoinMessage::decode(line).is_err(), "{line}");
+        }
+        for line in [
+            r#"{"type":"hello","protocol":1,"commit":"abc","extra":true}"#,
+            r#"{"type":"start","seat":1}"#,
+            r#"{"type":"batch","tick":0,"commands":[]}"#,
+        ] {
+            assert!(LobbyMessage::decode(line).is_err(), "{line}");
         }
     }
 }

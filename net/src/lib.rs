@@ -3,13 +3,27 @@
 pub mod client;
 pub mod host;
 pub mod message;
+pub mod start;
+pub mod tcp;
 
 use oxide_sim::{TICKS_PER_SECOND, Tick};
 use std::time::Duration;
 
 pub use client::{ClientEnd, ClientSession};
 pub use host::{DropReason, HostEvent, HostSession};
-pub use message::{ClientMessage, HostMessage};
+pub use message::{ClientMessage, HostMessage, JoinMessage, LobbyMessage, same_build};
+pub use start::{StartBarrier, StartFailed};
+pub use tcp::{Closed, Connection, Listener};
+
+/// The wire protocol version both sides' Hello must match. Bump it for any
+/// wire change other than Hello itself, whose shape never changes.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// The host abandons a start that has not collected every Ready by then.
+pub const START_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The longest accepted line, excluding its newline.
+pub const MAX_LINE_BYTES: usize = 1 << 20;
 
 /// Clients attach their state hash to acknowledgements of ticks that are
 /// multiples of this.
