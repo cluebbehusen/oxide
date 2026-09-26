@@ -61,7 +61,7 @@ fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> St
 
 /// How long a finger must rest before it reads as deliberate rather
 /// than the start of a tap, so feedback never flashes under quick taps.
-pub(crate) const TOUCH_REST_MS: f64 = 150.0;
+pub(crate) const TOUCH_REST_MS: f64 = 120.0;
 
 /// Where a battlefield long-press is charging and how full it is, from
 /// zero once the finger has rested to one as the order fires. Only a

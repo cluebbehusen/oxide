@@ -2503,8 +2503,8 @@ pub(crate) fn draw_long_press_ring(input: &InputState) {
         return;
     };
     let s = ui_scale();
-    let radius = 40.0 * s;
-    let thickness = 4.0 * s;
+    let radius = 32.0 * s;
+    let thickness = 3.5 * s;
     stroke_circle(at, radius, 1.5 * s, Color::new(0.9, 0.88, 0.84, 0.3));
     crate::render::prim::stroke_arc(at, radius, thickness, progress * 360.0, BONE);
 }
