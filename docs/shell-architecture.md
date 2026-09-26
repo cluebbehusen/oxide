@@ -153,10 +153,13 @@ rectangles and panel bounds share the same separator and inset calculations.
 
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Touches arrive through the same ordered
-input stream as mouse events, one event per phase. Drawing publishes a shared
-`LayoutModel` whose rectangles also drive hit testing. The HUD's supported
-layout floor is 1280×800 at default UI scale. Smaller windows are overflow
-stress cases.
+input stream as mouse events. miniquad's iOS backend reports every live finger
+whenever one changes, so a landing re-reports the others as landing and a lift
+reports them all lifted. Gesture code treats a repeated landing as the same
+finger and picks up a falsely lifted pair finger on its next move. Drawing
+publishes a shared `LayoutModel` whose rectangles also drive hit testing. The
+HUD's supported layout floor is 1280×800 at default UI scale. Smaller windows
+are overflow stress cases.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated
@@ -213,6 +216,26 @@ and a finger that lands on one card and lifts on another activates neither. A
 world-born finger draws a filling ring from the same rest threshold until its
 long-press fires. Disabled cards publish `CardAction::Refused`, so a tap or
 click toasts the reason their hotkey gives.
+
+Gameplay touch lives in `input::touch`. Each finger records where it landed
+(`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that
+decides what it may drive for its whole life. A minimap finger steers the camera
+through `render::minimap_world_clamped`, the same clamp the mouse uses, except
+while rally or patrol take minimap taps as targets. A two-finger `Pair` starts
+undecided: a spread past `PINCH_START_PX` zooms, and a pair that rests for the
+long-press window claims a box whose corners follow the fingers. The box is
+drawn once the pair has rested, and the first lift commits it. A pair with a
+non-world finger, formed mid-pan, or formed while a mode is armed does neither.
+
+Touch placement drops a `PlacementGhost` centered under the finger instead of
+placing on the tap. Dragging the ghost moves it by whole tiles, and a still tap
+on it runs the shared `place_at` checks at the ghost's anchor; the tap point is
+never the anchor. `stop_placing` is the one way placement ends, so no ghost
+outlives its mode. The mouse's hover preview draws only while the mouse is the
+last pointer. While placement or a patrol route is armed, a world finger never
+long-presses; other armed verbs stand down for a long-press as they do for a
+right-click. `InputState::queue_held` merges Shift with the sticky QUEUE chip
+that touch-only builds show beside the mode ribbon.
 
 Touch-only builds hide rows they cannot use: Controls and the left-handed preset
 (key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no

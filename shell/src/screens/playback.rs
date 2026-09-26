@@ -655,12 +655,7 @@ impl PlaybackSession {
     /// A held minimap press keeps steering, clamped so sliding off the
     /// edge doesn't stall the pan: the same feel as live play.
     fn steer_minimap(&mut self, p: Vec2) {
-        let rect = render::minimap_rect(&self.view());
-        let clamped = vec2(
-            p.x.clamp(rect.x, rect.x + rect.w - 1.0),
-            p.y.clamp(rect.y, rect.y + rect.h - 1.0),
-        );
-        if let Some(world) = render::minimap_world_at(&self.view(), clamped) {
+        if let Some(world) = render::minimap_world_clamped(&self.view(), p) {
             self.presentation.camera.center = world;
             self.presentation.camera.pan(vec2(0.0, 0.0));
         }

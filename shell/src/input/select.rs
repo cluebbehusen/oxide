@@ -60,7 +60,7 @@ fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind) -> f32 {
 /// only while it is actually shown — and as tall as it actually drew
 /// (the packed palette wraps to several rows on narrow windows; clicks
 /// on the upper rows must not fall through to the world).
-pub(super) fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
+pub(super) fn click_on_hud(game: &Game, screen: Vec2) -> bool {
     game.presentation.layout.get().chrome_owns(screen)
 }
 

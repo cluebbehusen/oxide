@@ -167,18 +167,16 @@ pub(crate) fn draw_overlay_info(game: &crate::game::Scene<'_>) {
     );
 }
 
-fn mode_ribbon_geometry(
-    viewport: Vec2,
-    scale: f32,
-    label_width: f32,
-    panel_top: f32,
-) -> (Rect, Rect) {
-    let height = crate::layout::MIN_TOUCH_TARGET * scale;
-    let cancel_width = crate::layout::MIN_TOUCH_TARGET * scale;
-    let width = (label_width + 34.0 * scale + cancel_width)
-        .max(210.0 * scale)
-        .min((viewport.x - 24.0 * scale).max(cancel_width));
-    let x = (viewport.x - width) * 0.5;
+/// The armed-mode ribbon's narrowest width, in logical px at 1x.
+const RIBBON_MIN_W: f32 = 210.0;
+/// The QUEUE chip's width, in logical px at 1x.
+const QUEUE_CHIP_W: f32 = 96.0;
+/// The gap between the QUEUE chip and the ribbon.
+const RIBBON_ROW_GAP: f32 = 8.0;
+
+/// The top of the ribbon row: just above the panel band, or above the
+/// window's bottom edge, and never under the top bar.
+fn ribbon_row_y(viewport: Vec2, scale: f32, panel_top: f32, height: f32) -> f32 {
     let preferred_y = if panel_top.is_finite() {
         panel_top - height - 8.0 * scale
     } else {
@@ -186,7 +184,58 @@ fn mode_ribbon_geometry(
     };
     let min_y = crate::layout::TOP_BAR_H * scale + 8.0 * scale;
     let max_y = (viewport.y - height - 8.0 * scale).max(min_y);
-    let ribbon = Rect::new(x, preferred_y.clamp(min_y, max_y), width, height);
+    preferred_y.clamp(min_y, max_y)
+}
+
+/// The armed-mode ribbon's width for a label of `label_width`.
+fn ribbon_width(viewport: Vec2, scale: f32, label_width: f32) -> f32 {
+    let cancel_width = crate::layout::MIN_TOUCH_TARGET * scale;
+    (label_width + 34.0 * scale + cancel_width)
+        .max(RIBBON_MIN_W * scale)
+        .min((viewport.x - 24.0 * scale).max(cancel_width))
+}
+
+/// The QUEUE chip's slot: the chip and a minimum-width ribbon are
+/// centered as a pair, so the chip stays put while modes come and go
+/// and a wider ribbon grows to the right. Only a ribbon that would run
+/// off the window slides the pair left.
+fn queue_chip_geometry(viewport: Vec2, scale: f32, panel_top: f32, ribbon_w: f32) -> Rect {
+    let height = crate::layout::MIN_TOUCH_TARGET * scale;
+    let width = QUEUE_CHIP_W * scale;
+    let gap = RIBBON_ROW_GAP * scale;
+    let centered = (viewport.x - (width + gap + RIBBON_MIN_W * scale)) * 0.5;
+    let fits = viewport.x - 12.0 * scale - ribbon_w - gap - width;
+    let x = centered.min(fits).max(12.0 * scale);
+    Rect::new(
+        x,
+        ribbon_row_y(viewport, scale, panel_top, height),
+        width,
+        height,
+    )
+}
+
+/// The ribbon and its CANCEL square: centered, or starting at `left`
+/// beside the QUEUE chip.
+fn mode_ribbon_geometry(
+    viewport: Vec2,
+    scale: f32,
+    label_width: f32,
+    panel_top: f32,
+    left: Option<f32>,
+) -> (Rect, Rect) {
+    let height = crate::layout::MIN_TOUCH_TARGET * scale;
+    let cancel_width = crate::layout::MIN_TOUCH_TARGET * scale;
+    let width = ribbon_width(viewport, scale, label_width);
+    let x = match left {
+        Some(left) => left.min(viewport.x - width - 12.0 * scale),
+        None => (viewport.x - width) * 0.5,
+    };
+    let ribbon = Rect::new(
+        x,
+        ribbon_row_y(viewport, scale, panel_top, height),
+        width,
+        height,
+    );
     let cancel = Rect::new(
         ribbon.x + ribbon.w - cancel_width,
         ribbon.y,
@@ -196,26 +245,87 @@ fn mode_ribbon_geometry(
     (ribbon, cancel)
 }
 
-fn draw_mode_ribbon(input: &InputState, regions: &[Rect; 2]) -> (Rect, Rect) {
-    let Some(mode) = input.armed_mode() else {
-        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-        return (zero, zero);
-    };
+/// The armed-mode ribbon's text. Once a touch ghost is down, Build
+/// says how to finish, since the hand covers the ghost.
+fn ribbon_label(mode: crate::input::ArmedMode, ghost_down: bool, touch_only: bool) -> String {
+    match mode {
+        crate::input::ArmedMode::Build(_) if ghost_down && touch_only => {
+            format!("MODE  |  {} | TAP IT TO BUILD", mode.label())
+        }
+        _ => format!("MODE  |  {}", mode.label()),
+    }
+}
+
+/// Whether the human commands anything in the current selection.
+fn owns_selection(game: &crate::game::Scene<'_>) -> bool {
+    let human = game.presentation.human;
+    game.presentation
+        .selection
+        .units
+        .iter()
+        .any(|id| game.state.unit(*id).is_some_and(|u| u.player == human))
+        || game
+            .presentation
+            .selection
+            .buildings
+            .iter()
+            .any(|id| game.state.building(*id).is_some_and(|b| b.player == human))
+}
+
+/// The ribbon row: the armed-mode ribbon with its CANCEL, and on
+/// touch-only builds the QUEUE chip beside it while there is anything
+/// to queue for. Returns the ribbon, CANCEL, and chip rects (zero when
+/// absent).
+fn draw_ribbon_row(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+    regions: &[Rect; 2],
+) -> (Rect, Rect, Rect) {
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mode = input.armed_mode();
+    let show_chip = crate::platform::TOUCH_ONLY && (mode.is_some() || owns_selection(game));
+    if mode.is_none() && !show_chip {
+        return (zero, zero, zero);
+    }
     let s = ui_scale();
-    let label = format!("MODE  |  {}", mode.label());
+    let viewport = vec2(screen_width(), screen_height());
+    let label = mode.map(|mode| {
+        ribbon_label(
+            mode,
+            input.ghost_anchor().is_some(),
+            crate::platform::TOUCH_ONLY,
+        )
+    });
     let size = 15.0 * s;
-    let width = measure_text(&label, None, size as u16, 1.0).width;
-    let estimated_width = (width + 34.0 * s + crate::layout::MIN_TOUCH_TARGET * s)
-        .max(210.0 * s)
-        .min(screen_width() - 24.0 * s);
-    let x = (screen_width() - estimated_width) * 0.5;
+    let width = label.as_deref().map_or(0.0, |label| {
+        measure_text(label, None, size as u16, 1.0).width
+    });
+    let ribbon_w = ribbon_width(viewport, s, width);
+    // The row sits above whichever panel region lies under it.
+    let (x0, x1) = if show_chip {
+        let chip = queue_chip_geometry(viewport, s, f32::INFINITY, ribbon_w);
+        (chip.x, chip.x + chip.w + RIBBON_ROW_GAP * s + ribbon_w)
+    } else {
+        let x = (viewport.x - ribbon_w) * 0.5;
+        (x, x + ribbon_w)
+    };
     let panel_top = regions
         .iter()
-        .filter(|r| r.w > 0.0 && r.x < x + estimated_width && r.x + r.w > x)
+        .filter(|r| r.w > 0.0 && r.x < x1 && r.x + r.w > x0)
         .map(|r| r.y)
         .fold(f32::INFINITY, f32::min);
-    let (ribbon, cancel) =
-        mode_ribbon_geometry(vec2(screen_width(), screen_height()), s, width, panel_top);
+    let chip = if show_chip {
+        let chip = queue_chip_geometry(viewport, s, panel_top, ribbon_w);
+        crate::button::draw(chip, "QUEUE", input.queue_toggle, s);
+        chip
+    } else {
+        zero
+    };
+    let Some(label) = label else {
+        return (zero, zero, chip);
+    };
+    let left = show_chip.then_some(chip.x + chip.w + RIBBON_ROW_GAP * s);
+    let (ribbon, cancel) = mode_ribbon_geometry(viewport, s, width, panel_top, left);
     fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
     stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
     draw_rectangle(ribbon.x, ribbon.y, 4.0 * s, ribbon.h, SCRAP_COLOR);
@@ -238,7 +348,7 @@ fn draw_mode_ribbon(input: &InputState, regions: &[Rect; 2]) -> (Rect, Rect) {
         cancel_size,
         TEXT_PRIMARY,
     );
-    (ribbon, cancel)
+    (ribbon, cancel, chip)
 }
 
 fn toast_origin(viewport: Vec2, scale: f32, panel_top: f32, orders: Rect, index: usize) -> Vec2 {
@@ -395,7 +505,7 @@ pub(crate) fn draw_hud(
             minimap = zero;
         }
     }
-    let (mode_ribbon, mode_cancel) = draw_mode_ribbon(input, &panel_regions);
+    let (mode_ribbon, mode_cancel, queue_toggle) = draw_ribbon_row(game, input, &panel_regions);
     // Publish the frame's chrome geometry — the model hit-testing reads.
     let mut layout = crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
@@ -417,6 +527,7 @@ pub(crate) fn draw_hud(
         queue_count,
     );
     layout.panel_regions = panel_regions;
+    layout.queue_toggle = queue_toggle;
     game.presentation.layout.set(layout);
 
     if let Some(view) = performance {
@@ -524,13 +635,61 @@ mod tests {
     fn armed_mode_ribbon_and_cancel_fit_the_small_window_contract() {
         for panel_top in [f32::INFINITY, 150.0] {
             let viewport = vec2(640.0, 400.0);
-            let (ribbon, cancel) = mode_ribbon_geometry(viewport, 1.0, 180.0, panel_top);
+            let (ribbon, cancel) = mode_ribbon_geometry(viewport, 1.0, 180.0, panel_top, None);
             assert!(ribbon.x >= 0.0 && ribbon.x + ribbon.w <= viewport.x);
             assert!(ribbon.y >= crate::layout::TOP_BAR_H && ribbon.y + ribbon.h <= viewport.y);
             assert_eq!(cancel.h, crate::layout::MIN_TOUCH_TARGET);
             assert_eq!(cancel.w, crate::layout::MIN_TOUCH_TARGET);
             assert!(ribbon.contains(cancel.center()));
         }
+    }
+
+    #[test]
+    fn the_queue_chip_sits_beside_the_ribbon_inside_the_window() {
+        for (viewport, scale) in [
+            (vec2(1024.0, 768.0), 1.5),
+            (vec2(1194.0, 834.0), 1.0),
+            (vec2(1366.0, 1024.0), 1.25),
+        ] {
+            for panel_top in [f32::INFINITY, viewport.y - 180.0 * scale] {
+                let resting = queue_chip_geometry(viewport, scale, panel_top, 0.0);
+                for label in [60.0, 180.0, 320.0] {
+                    let ribbon_w = ribbon_width(viewport, scale, label * scale);
+                    let chip = queue_chip_geometry(viewport, scale, panel_top, ribbon_w);
+                    assert_eq!(chip.h, crate::layout::MIN_TOUCH_TARGET * scale);
+                    assert!(chip.x >= 0.0 && chip.y >= crate::layout::TOP_BAR_H * scale);
+                    assert!(chip.y + chip.h <= panel_top.min(viewport.y));
+                    if label == 60.0 {
+                        assert_eq!(chip, resting, "a short ribbon leaves the chip put");
+                    }
+                    let (ribbon, _) = mode_ribbon_geometry(
+                        viewport,
+                        scale,
+                        label * scale,
+                        panel_top,
+                        Some(chip.x + chip.w + RIBBON_ROW_GAP * scale),
+                    );
+                    assert!(
+                        ribbon.x >= chip.x + chip.w,
+                        "{viewport} @{scale}: no overlap"
+                    );
+                    assert!(ribbon.x + ribbon.w <= viewport.x);
+                    assert_eq!(ribbon.y, chip.y, "one row");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dropped_ghost_teaches_its_confirm_on_touch() {
+        let build = crate::input::ArmedMode::Build(oxide_sim::BuildingKind::Turret);
+        assert_eq!(ribbon_label(build, false, true), "MODE  |  BUILD Turret");
+        assert_eq!(
+            ribbon_label(build, true, true),
+            "MODE  |  BUILD Turret | TAP IT TO BUILD"
+        );
+        assert_eq!(ribbon_label(build, true, false), "MODE  |  BUILD Turret");
+        crate::platform::assert_touch_copy(&ribbon_label(build, true, true));
     }
 
     #[test]

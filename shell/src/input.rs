@@ -59,29 +59,6 @@ fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> St
     )
 }
 
-/// How long a finger must rest before it reads as deliberate rather
-/// than the start of a tap, so feedback never flashes under quick taps.
-pub(crate) const TOUCH_REST_MS: f64 = 120.0;
-
-/// Where a battlefield long-press is charging and how full it is, from
-/// zero once the finger has rested to one as the order fires. Only a
-/// lone world-born finger that has neither moved nor fired charges.
-pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
-    let [(_, finger)] = input.touches.as_slice() else {
-        return None;
-    };
-    if finger.moved || finger.fired || finger.chrome {
-        return None;
-    }
-    let held_ms = (input.now - finger.down_at) * 1000.0;
-    if held_ms < TOUCH_REST_MS {
-        return None;
-    }
-    let charge_ms = (f64::from(input.touch_prefs.long_press_ms) - TOUCH_REST_MS).max(1.0);
-    let progress = ((held_ms - TOUCH_REST_MS) / charge_ms).min(1.0);
-    Some((finger.at, progress as f32))
-}
-
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 
@@ -91,52 +68,6 @@ fn unit_pick_radius(kind: oxide_sim::UnitKind) -> f32 {
 
 /// Camera pan speed in screen pixels per second (converted by zoom).
 const PAN_PX_PER_SEC: f32 = 900.0;
-
-/// One live finger on the screen.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct TouchPoint {
-    /// Where it landed.
-    pub origin: Vec2,
-    /// Where it is now.
-    pub at: Vec2,
-    /// Wall clock at touch-down (the injected `now`).
-    pub down_at: f64,
-    /// Whether it ever left the slop circle — a moved finger is a
-    /// drag, never a tap or a long-press.
-    pub moved: bool,
-    /// Whether it LANDED on chrome (minimap or HUD). Chrome-born
-    /// fingers never drive world gestures: a swipe starting on the
-    /// command panel must not pan the camera behind it, and a
-    /// two-finger box with a chrome-born corner must not select.
-    pub chrome: bool,
-    /// Whether its long-press already fired (fire once per touch).
-    pub fired: bool,
-    /// The card it landed on, as it stood then.
-    pub card: Option<PressedCard>,
-}
-
-/// A card as a finger found it: its slot, its action, and its face. A
-/// resting finger lets the match change the panel under it (a queue
-/// shifts, a disabled card enables), so a lift activates only if it
-/// finds this same card, not merely the same slot.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct PressedCard {
-    hit: crate::layout::CardHit,
-    icon: Option<crate::panel::CardIcon>,
-}
-
-/// The card under a fingertip at `p`, if any.
-fn pressed_card(game: &Game, p: Vec2, ui: f32) -> Option<PressedCard> {
-    let hit = crate::layout::card_under(&game.presentation.layout.get(), p, Some(ui))?;
-    let icon = game
-        .presentation
-        .panel_model
-        .borrow()
-        .as_ref()
-        .and_then(|panel| panel.card(hit.row, hit.index))
-        .map(|card| card.icon);
-    Some(PressedCard { hit, icon })
-}
 
 /// The one persistent world-targeting mode currently armed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +104,42 @@ impl ArmedMode {
     }
 }
 
+/// Where the placement preview sits: the touch ghost when one is down,
+/// otherwise under the mouse, but only while the mouse is the pointer in
+/// use (a stale mouse point on a touch device would draw a stray ghost).
+pub(crate) fn placement_preview_anchor(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+) -> Option<(oxide_sim::BuildingKind, TilePos)> {
+    let kind = input.placing?;
+    if let Some(anchor) = input.ghost_anchor() {
+        return Some((kind, anchor));
+    }
+    (input.last_pointer == Pointer::Mouse).then(|| {
+        let world = game.presentation.camera.to_world(input.mouse);
+        let hovered = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        (kind, placement_anchor(game, kind, hovered))
+    })
+}
+
+/// Which pointer produced a press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pointer {
+    Mouse,
+    Touch,
+}
+
+/// Where a touch placement's ghost sits until a tap on it confirms.
+/// Touch has no hover, so the ghost stands in for the mouse's preview:
+/// dropped where the finger lands, dragged into place, and built only
+/// where it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlacementGhost {
+    pub(crate) anchor: TilePos,
+    /// While a finger drags it: the anchor and the world point at grab.
+    grab: Option<(TilePos, Vec2)>,
+}
+
 /// Cross-frame input state (cursor, held keys, drag origin).
 pub struct InputState {
     /// Last known cursor position, window pixels.
@@ -200,6 +167,11 @@ pub struct InputState {
     /// The live drag-to-place stroke, while the button stays down.
     /// `None` when no stroke is live.
     pub(crate) placing_stroke: Option<PlacingStroke>,
+    /// The touch placement's ghost, once a tap has dropped one.
+    pub(crate) touch_ghost: Option<PlacementGhost>,
+    /// The pointer that pressed last: the mouse's hover preview only
+    /// means something while the mouse is the one in use.
+    pub(crate) last_pointer: Pointer,
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
@@ -233,14 +205,14 @@ pub struct InputState {
     pub(crate) touches: Vec<(u64, TouchPoint)>,
     /// Wall-clock stamp of the last completed tap, for double-taps.
     pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
-    /// A two-finger pair that spread or squeezed reads as a pinch for
-    /// its whole lifetime — lifting one finger of a pinch must not
-    /// commit a box-select.
-    pub(crate) pinching: bool,
-    /// The pair's spread when it formed: pinch detection compares the
-    /// CUMULATIVE change against this, so a slow pinch (under a pixel
-    /// per event) still reads as one instead of committing a box.
-    pub(crate) pair_dist: Option<f32>,
+    /// The QUEUE toggle: touch's sticky stand-in for a held Shift.
+    pub(crate) queue_toggle: bool,
+    /// Whether this session already explained the QUEUE toggle.
+    queue_explained: bool,
+    /// The live two-finger gesture, if two fingers are down.
+    pub(crate) pair: Option<Pair>,
+    /// Pair fingers the platform reported lifted, newest last.
+    pub(crate) lifted_pair: Vec<touch::LiftedFinger>,
     /// The menu button was pressed this frame. Input cannot switch
     /// screens itself, so the frame loop takes this one-shot request.
     pub(crate) menu_requested: bool,
@@ -291,7 +263,7 @@ pub(crate) fn available_construction_scrap(
     game: &crate::game::Scene<'_>,
     input: &InputState,
 ) -> u32 {
-    let replaced = replaced_build_units(game, input.resolver.shift_held());
+    let replaced = replaced_build_units(game, input.queue_held());
     if game.pending.is_empty() {
         return game
             .state
@@ -442,6 +414,12 @@ impl InputState {
             patrol_route: None,
             placing: None,
             placing_stroke: None,
+            touch_ghost: None,
+            last_pointer: if crate::platform::TOUCH_ONLY {
+                Pointer::Touch
+            } else {
+                Pointer::Mouse
+            },
             salvaging: false,
             repairing: false,
             running: false,
@@ -455,8 +433,10 @@ impl InputState {
             touch_prefs: crate::config::TouchPrefs::default(),
             touches: Vec::new(),
             last_tap: None,
-            pinching: false,
-            pair_dist: None,
+            queue_toggle: false,
+            queue_explained: false,
+            pair: None,
+            lifted_pair: Vec::new(),
             menu_requested: false,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
@@ -519,19 +499,32 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     /// One armed left-click verb at a time: arming placement, salvage,
-    /// repair, run, attack-move, or rally stands the others down. `armed_click`
+    /// repair, run, attack-move, rally, or patrol stands the others down. `armed_click`
     /// resolves modes in a fixed priority order, so two live at once
     /// would make the next click do something other than what the toast
     /// promised — press M while placing and the click would still stamp
     /// a building.
     pub(crate) fn disarm_click_verbs(&mut self) {
-        self.placing = None;
-        self.placing_stroke = None;
+        self.stop_placing();
+        self.patrol_route = None;
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
         self.attacking = false;
         self.rallying.clear();
+    }
+
+    /// Drops placement: the armed kind, its stroke, and its ghost. The
+    /// one way placement ends, so no ghost outlives its mode.
+    pub(crate) fn stop_placing(&mut self) {
+        self.placing = None;
+        self.placing_stroke = None;
+        self.touch_ghost = None;
+    }
+
+    /// The touch ghost's anchor, while placement is armed.
+    pub(crate) fn ghost_anchor(&self) -> Option<TilePos> {
+        self.placing.and(self.touch_ghost).map(|ghost| ghost.anchor)
     }
 
     /// Current persistent mode, in the same priority order the world
@@ -565,8 +558,7 @@ impl InputState {
         self.minimap_drag = false;
         self.mmb_anchor = None;
         self.patrol_route = None;
-        self.placing = None;
-        self.placing_stroke = None;
+        self.stop_placing();
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
@@ -576,8 +568,9 @@ impl InputState {
         self.build_category = None;
         self.touches.clear();
         self.last_tap = None;
-        self.pinching = false;
-        self.pair_dist = None;
+        self.queue_toggle = false;
+        self.pair = None;
+        self.lifted_pair.clear();
         self.menu_requested = false;
     }
 
@@ -588,7 +581,26 @@ impl InputState {
             return None;
         };
         let rested = (self.now - finger.down_at) * 1000.0 >= TOUCH_REST_MS;
-        (finger.chrome && !finger.moved && rested).then_some(finger.at)
+        (finger.born == TouchBorn::Chrome && !finger.moved && !finger.spent && rested)
+            .then_some(finger.at)
+    }
+
+    /// Whether a press should queue its order, add to the selection, or
+    /// keep an armed mode for another target: a held Shift on a
+    /// keyboard, the sticky QUEUE toggle on touch.
+    pub(crate) fn queue_held(&self) -> bool {
+        self.queue_toggle || self.resolver.shift_held()
+    }
+
+    /// Flips the QUEUE toggle, explaining it the first time it turns
+    /// on in a session.
+    pub(crate) fn toggle_queue(&mut self, game: &mut Game) {
+        self.queue_toggle = !self.queue_toggle;
+        if self.queue_toggle && !self.queue_explained {
+            self.queue_explained = true;
+            game.presentation
+                .toast("queue on: taps add to the selection, orders queue, and modes stay armed");
+        }
     }
 
     /// Consumes this frame's menu-button press, if any.
@@ -603,6 +615,7 @@ impl InputState {
     /// would resolve to unrelated units in the new world.
     pub fn reset_session(&mut self) {
         self.reset_transient();
+        self.queue_explained = false;
         self.groups = Default::default();
         self.bookmarks = [None; 4];
         self.last_click = None;
@@ -942,12 +955,17 @@ mod orders;
 mod select;
 #[cfg(test)]
 mod tests;
+mod touch;
 
 use dispatch::dispatch_action;
 use orders::{context_order, rally_selected_producers};
 pub use select::idle_harvesters;
 use select::{
     box_select, click_on_hud, click_select, cycle_idle_worker, select_all_of_kind_on_screen,
+};
+pub use touch::update_touch;
+pub(crate) use touch::{
+    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress, touch_box,
 };
 
 /// The cursor shape the current intent deserves: crosshair while
@@ -980,21 +998,24 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
 pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
     for event in events {
         match *event {
+            RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => {
+                input.last_pointer = Pointer::Mouse;
+            }
+            RawEvent::TouchDown { .. } => input.last_pointer = Pointer::Touch,
+            _ => {}
+        }
+        match *event {
             RawEvent::MouseMove { x, y } => {
                 input.mouse = vec2(x, y);
                 // A held minimap press keeps steering: clamp the cursor
                 // into the minimap so sliding off its edge doesn't stall
                 // the pan mid-gesture.
-                if input.minimap_drag {
-                    let rect = crate::render::minimap_rect(&game.view());
-                    let clamped = vec2(
-                        x.clamp(rect.x, rect.x + rect.w - 1.0),
-                        y.clamp(rect.y, rect.y + rect.h - 1.0),
-                    );
-                    if let Some(world) = crate::render::minimap_world_at(&game.view(), clamped) {
-                        game.presentation.camera.center = world;
-                        game.presentation.camera.pan(Vec2::ZERO);
-                    }
+                if input.minimap_drag
+                    && let Some(world) =
+                        crate::render::minimap_world_clamped(&game.view(), vec2(x, y))
+                {
+                    game.presentation.camera.center = world;
+                    game.presentation.camera.pan(Vec2::ZERO);
                 }
                 // Middle-drag: the world follows the hand, so the pan
                 // moves against the cursor delta, scaled out of screen
@@ -1070,7 +1091,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                if armed_click(game, input, vec2(x, y)) {
+                if armed_click(game, input, vec2(x, y), Pointer::Mouse) {
                     continue;
                 }
                 // Panel cards are buttons: each carries the exact action
@@ -1095,6 +1116,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     dispatch_action(game, input, Action::TogglePause);
                     continue;
                 }
+                if layout.queue_toggle.w > 0.0 && layout.queue_toggle.contains(vec2(x, y)) {
+                    input.toggle_queue(game);
+                    continue;
+                }
                 // The minimap owns clicks landing on it: jump the camera,
                 // never start a drag-select there. HUD chrome swallows
                 // clicks outright.
@@ -1116,12 +1141,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // The placement stroke ends at release; Shift decides
                 // whether the MODE stays armed, exactly as the old
                 // one-click-per-wall rule did.
-                if input.placing_stroke.take().is_some() && !input.resolver.shift_held() {
-                    input.placing = None;
+                if input.placing_stroke.take().is_some() && !input.queue_held() {
+                    input.stop_placing();
                 }
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
-                    let additive = input.resolver.shift_held();
+                    let additive = input.queue_held();
                     if origin.distance(release) <= click_slop(input.ui) {
                         let now = input.now;
                         let double = !additive
@@ -1163,20 +1188,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
-                let queue = input.resolver.shift_held();
+                let queue = input.queue_held();
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                    if let Some(route) = &mut input.patrol_route {
-                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.presentation.toast(format!(
-                                "patrol is full: {} starts it",
-                                input.bindings.label(Action::Patrol)
-                            ));
-                        } else {
-                            route.push(tile);
-                            game.presentation
-                                .ping(vec2(world.x, world.y), PingKind::Rally);
-                        }
+                    if input.patrol_route.is_some() {
+                        add_patrol_waypoint(game, input, world);
                     } else {
                         let units = game.presentation.selection.units.clone();
                         // The same commandability gate the world path
@@ -1196,17 +1212,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
                     let world = game.presentation.camera.to_world(vec2(x, y));
-                    if let Some(route) = &mut input.patrol_route {
-                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.presentation.toast(format!(
-                                "patrol is full: {} starts it",
-                                input.bindings.label(Action::Patrol)
-                            ));
-                        } else {
-                            route
-                                .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
-                            game.presentation.ping(world, PingKind::Rally);
-                        }
+                    if input.patrol_route.is_some() {
+                        add_patrol_waypoint(game, input, world);
                     } else {
                         context_order(game, vec2(x, y), queue);
                     }
@@ -1239,202 +1246,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             RawEvent::KeyUp { key } => {
                 let _ = input.key_edge(key, false, input.context(game));
             }
-            // Desktop shell; the mobile shell will map these.
-            RawEvent::TouchDown { id, x, y } => {
-                let p = vec2(x, y);
-                input.touches.retain(|(tid, _)| *tid != id);
-                let chrome = crate::render::minimap_world_at(&game.view(), p).is_some()
-                    || click_on_hud(game, p);
-                input.touches.push((
-                    id,
-                    TouchPoint {
-                        origin: p,
-                        at: p,
-                        down_at: input.now,
-                        moved: false,
-                        fired: false,
-                        chrome,
-                        card: pressed_card(game, p, input.ui),
-                    },
-                ));
-                if input.touches.len() > 2 {
-                    // Three fingers mean nothing yet; the oldest yields.
-                    input.touches.remove(0);
-                }
-                if input.touches.len() == 2 {
-                    // A fresh pair starts undecided, whatever the last
-                    // pair was doing — a pinch must not outlive its
-                    // fingers and swallow the next pair's box.
-                    input.pinching = false;
-                    input.pair_dist =
-                        Some((input.touches[0].1.at - input.touches[1].1.at).length());
-                } else {
-                    input.pair_dist = None;
-                }
-            }
-            RawEvent::TouchMove { id, x, y } => {
-                let p = vec2(x, y);
-                let slop = click_slop(input.ui) * 2.0;
-                let two = input.touches.len() == 2;
-                let old_dist =
-                    two.then(|| (input.touches[0].1.at - input.touches[1].1.at).length());
-                let mut delta = Vec2::ZERO;
-                if let Some((_, tp)) = input.touches.iter_mut().find(|(tid, _)| *tid == id) {
-                    delta = p - tp.at;
-                    tp.at = p;
-                    if (p - tp.origin).length() > slop {
-                        tp.moved = true;
-                    }
-                }
-                match input.touches.len() {
-                    // One moved finger drags the world under the hand —
-                    // unless it landed on chrome, whose ground it keeps.
-                    1 if input.touches[0].1.moved && !input.touches[0].1.chrome => {
-                        game.presentation.camera.center -= delta / game.presentation.camera.zoom;
-                        game.presentation.camera.pan(Vec2::ZERO); // re-clamp
-                    }
-                    // Two fingers: a spread that has CUMULATIVELY moved
-                    // past the threshold is a pinch (zoom at the
-                    // midpoint) — per-event deltas would miss a slow
-                    // pinch entirely and mis-commit it as a box select.
-                    2 => {
-                        let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
-                        if !input.pinching
-                            && let Some(start) = input.pair_dist
-                            && (new_dist - start).abs()
-                                > crate::viewer_touch::PINCH_START_PX * input.ui
-                        {
-                            input.pinching = true;
-                        }
-                        if input.pinching
-                            && let Some(old) = old_dist
-                        {
-                            let spread = new_dist - old;
-                            if spread != 0.0 {
-                                let mid = (input.touches[0].1.at + input.touches[1].1.at) * 0.5;
-                                game.presentation.camera.zoom_at(
-                                    mid,
-                                    spread * crate::viewer_touch::PINCH_NOTCHES_PER_PX,
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            RawEvent::TouchDown { id, x, y } => touch::down(game, input, id, vec2(x, y)),
+            RawEvent::TouchMove { id, x, y } => touch::moved(game, input, id, vec2(x, y)),
             RawEvent::Text { .. } => {
                 // Typed characters exist for menu text fields (the
                 // save-name flow); gameplay deliberately has no text
                 // consumer — letters reach the world as semantic keys.
             }
-            RawEvent::TouchUp { id, x, y } => {
-                let p = vec2(x, y);
-                let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
-                    continue;
-                };
-                let (_, lifted) = input.touches.remove(pos);
-                match input.touches.len() {
-                    // Second finger of a pair released: a pair that
-                    // never pinched commits the box between the fingers
-                    // — both corners world-born; a chrome-born finger
-                    // boxes nothing behind its panel.
-                    1 => {
-                        if !input.pinching && !lifted.chrome && !input.touches[0].1.chrome {
-                            let other = input.touches[0].1.at;
-                            box_select(game, other, p, false);
-                        }
-                        // The survivor is spent EITHER way: after a box
-                        // or a pinch, its own still release must not
-                        // read as a tap and select whatever sits under
-                        // the resting finger.
-                        input.touches[0].1.moved = true;
-                    }
-                    0 => {
-                        input.pinching = false;
-                        input.pair_dist = None;
-                        if !lifted.moved && !lifted.fired {
-                            // A short still touch is a tap: select. Two
-                            // taps inside the window sweep the kind,
-                            // like a double-click.
-                            let double = input.last_tap.is_some_and(|(t, at)| {
-                                (input.now - t) * 1000.0
-                                    < f64::from(input.touch_prefs.double_tap_ms)
-                                    && (at - p).length() < click_slop(input.ui) * 2.0
-                            });
-                            // Armed modes first, exactly like the
-                            // mouse: the tap that follows an armed
-                            // Build or Salvage card completes the
-                            // command instead of selecting under it.
-                            // A tap is an atomic click — no drag can
-                            // follow, so the stroke closes here and
-                            // Shift decides the mode, like MouseUp.
-                            if armed_click(game, input, p) {
-                                if input.placing_stroke.take().is_some()
-                                    && !input.resolver.shift_held()
-                                {
-                                    input.placing = None;
-                                }
-                                input.last_tap = None;
-                                continue;
-                            }
-                            // The minimap owns its taps (jump the
-                            // camera), and HUD chrome swallows the
-                            // rest — same ownership order as clicks,
-                            // or a tap behind the panel would select
-                            // (and a minimap tap would grab) whatever
-                            // world ground happens to sit under the
-                            // chrome pixel.
-                            if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
-                                game.presentation.camera.center = world;
-                                game.presentation.camera.pan(Vec2::ZERO); // re-clamp
-                                continue;
-                            }
-                            // Chrome next, through the touch pad: a
-                            // fingertip needs 44 logical px even where
-                            // the drawn card is smaller. A finger that
-                            // landed on another card activates nothing.
-                            let layout = game.presentation.layout.get();
-                            let card = pressed_card(game, p, input.ui);
-                            let badge = layout.idle_badge;
-                            if let Some(card) = card {
-                                if lifted.card == Some(card) {
-                                    press_card(game, input, card.hit);
-                                }
-                            } else if badge.w > 0.0
-                                && crate::layout::touch_pad(badge, input.ui).contains(p)
-                            {
-                                // The idle badge cycles workers by
-                                // fingertip too — it sits in the top
-                                // bar, which the bare-chrome swallow
-                                // below would otherwise eat.
-                                cycle_idle_worker(game);
-                            } else if layout.menu_button.w > 0.0
-                                && crate::layout::touch_pad(layout.menu_button, input.ui)
-                                    .contains(p)
-                            {
-                                // Checked before the status so the
-                                // menu wins where the padded targets
-                                // overlap.
-                                input.menu_requested = true;
-                            } else if layout.pause_status.w > 0.0
-                                && crate::layout::touch_pad(layout.pause_status, input.ui)
-                                    .contains(p)
-                            {
-                                dispatch_action(game, input, Action::TogglePause);
-                            } else if click_on_hud(game, p) {
-                                // Bare chrome: the tap is swallowed.
-                            } else if double {
-                                select_all_of_kind_on_screen(game, p, input.ui);
-                                input.last_tap = None;
-                            } else {
-                                click_select(game, p, false, input.ui);
-                                input.last_tap = Some((input.now, p));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            RawEvent::TouchUp { id, x, y } => touch::up(game, input, id, vec2(x, y)),
         }
         if input.construction_open()
             && !matches!(
@@ -1452,7 +1271,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
-fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
+fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
     let cancel = game.presentation.layout.get().mode_cancel;
     if cancel.w > 0.0 && crate::layout::touch_pad(cancel, input.ui).contains(p) {
         if input.cancel_armed_mode() {
@@ -1497,91 +1316,196 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
             let world = game.presentation.camera.to_world(p);
+            if pointer == Pointer::Touch {
+                // A tap never builds on its own: it drops the ghost (or
+                // moves it here), and only a tap on the ghost confirms.
+                input.touch_ghost = Some(PlacementGhost {
+                    anchor: ghost_anchor_under(&game.view(), kind, world),
+                    grab: None,
+                });
+                return true;
+            }
             let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
             let anchor = placement_anchor(&game.view(), kind, clicked);
-            let queue = input.resolver.shift_held();
-            let projection = pending_build_projection(&game.view(), kind, anchor, queue);
-            // The ghost already showed red; a misclick must not throw
-            // away the armed mode on top of it. The toast names the
-            // actual blocker — "needs open ground" while your own
-            // harvester stands on the tile taught nobody anything.
-            // Explored-but-unseen ground is judged by the same intent
-            // predicate the ghost tints from — memory, never live
-            // state — so Fog here means genuinely unscouted.
-            if let Some(refusal) = projection.refusal {
-                use oxide_sim::PlaceRefusal;
-                game.presentation.toast(match refusal {
-                    PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
-                    PlaceRefusal::Terrain => "can't build there: impassable ground",
-                    PlaceRefusal::Building => "can't build there: something already stands there",
-                    PlaceRefusal::Unit => {
-                        "can't build there: an enemy machine is holding that ground"
-                    }
-                    PlaceRefusal::NotConstructible => "that can't be built",
-                    PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
-                    PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
-                    PlaceRefusal::FrameBlocked => {
-                        "can't build there: that ground belongs to a derelict frame"
-                    }
+            if place_at(game, input, kind, anchor) {
+                // The stroke opens: dragging stamps more of the same
+                // kind, queued. Whether the MODE survives the release
+                // is still Shift's call, decided at MouseUp.
+                input.placing_stroke = Some(PlacingStroke {
+                    anchors: vec![anchor],
                 });
-                game.presentation
-                    .sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
             }
-            // Judge the opening stamp after the exact pending command
-            // phase, with future prices held for surviving deferred
-            // claims. A broke click gets the honest toast, not an
-            // acknowledgment ping followed by a sim rejection.
-            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-            if projection.funds.available() < cost {
-                game.presentation.toast(format!(
-                    "not enough scrap for a {}",
-                    crate::typography::entity_name(kind.name())
-                ));
-                game.presentation
-                    .sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
-            }
-            // The opening stamp must also FIT the builder's program: a
-            // Shift click onto a crew already at the order-queue cap
-            // would ping and then die in the sim as QueueFull. Same
-            // honest refusal as the broke click, mode stays armed.
-            if !projection.queue_has_room {
-                game.presentation
-                    .toast("that builder's order queue is full");
-                game.presentation
-                    .sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
-            }
-            let units = game.presentation.selection.units.clone();
-            // Shift both keeps placing AND queues the build behind the
-            // builder's current program — chained construction in one
-            // gesture.
-            game.issue(Command::Build {
-                units,
-                kind,
-                anchor,
-                queue,
-                // Remembered ground defers the claim: the crew walks
-                // out and founds on arrival, paying then. Same click,
-                // two claim timings — the amber ghost already said
-                // which this stamp is.
-                defer: build_defer_needed(&game.view(), kind, anchor),
-            });
-            game.presentation
-                .ping(placement_ping(kind, anchor), PingKind::Rally);
-            // The stroke opens: dragging stamps more of the same kind,
-            // queued. Whether the MODE survives the release is still
-            // Shift's call, decided at MouseUp.
-            input.placing_stroke = Some(PlacingStroke {
-                anchors: vec![anchor],
-            });
         }
         return true;
     }
+    armed_verb_click(game, input, p)
+}
+
+/// The anchor that centers `kind`'s footprint on a finger at `world`,
+/// so the building lands under the finger rather than down and right of
+/// it. An Extractor snaps to the frame under the finger instead.
+fn ghost_anchor_under(
+    game: &crate::game::Scene<'_>,
+    kind: oxide_sim::BuildingKind,
+    world: Vec2,
+) -> TilePos {
+    if kind == oxide_sim::BuildingKind::Extractor {
+        let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        return placement_anchor(game, kind, tile);
+    }
+    let (w, h) = kind.base_stats().size;
+    TilePos::new(
+        (world.x - w as f32 * 0.5).round() as i32,
+        (world.y - h as f32 * 0.5).round() as i32,
+    )
+}
+
+/// The ghost's footprint on screen, padded to a fingertip.
+pub(crate) fn ghost_touch_rect(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+) -> Option<macroquad::math::Rect> {
+    let (kind, anchor) = (input.placing?, input.ghost_anchor()?);
+    let (w, h) = kind.base_stats().size;
+    let zoom = game.presentation.camera.zoom;
+    let corner = game
+        .presentation
+        .camera
+        .to_screen(vec2(anchor.x as f32, anchor.y as f32));
+    let rect = macroquad::math::Rect::new(corner.x, corner.y, w as f32 * zoom, h as f32 * zoom);
+    Some(crate::layout::touch_pad(rect, input.ui))
+}
+
+/// A finger landed on the ghost: it grabs it where it is.
+pub(crate) fn grab_ghost(game: &crate::game::Scene<'_>, input: &mut InputState, p: Vec2) {
+    let world = game.presentation.camera.to_world(p);
+    if let Some(ghost) = &mut input.touch_ghost {
+        ghost.grab = Some((ghost.anchor, world));
+    }
+}
+
+/// A grabbing finger moved: the ghost follows by whole tiles, keeping
+/// the offset where the finger took hold.
+pub(crate) fn drag_ghost(game: &crate::game::Scene<'_>, input: &mut InputState, p: Vec2) {
+    let Some(kind) = input.placing else {
+        return;
+    };
+    let world = game.presentation.camera.to_world(p);
+    if let Some(ghost) = &mut input.touch_ghost
+        && let Some((anchor, grabbed)) = ghost.grab
+    {
+        let shift = world - grabbed;
+        let moved = TilePos::new(
+            anchor.x + shift.x.round() as i32,
+            anchor.y + shift.y.round() as i32,
+        );
+        ghost.anchor = placement_anchor(game, kind, moved);
+    }
+}
+
+/// A still tap on the ghost: build exactly where it is drawn, judged
+/// afresh, since scrap, fog, and the selection may have changed since
+/// it was dropped. A refusal keeps the ghost; a success clears it and
+/// disarms, unless QUEUE keeps placement armed for the next one.
+pub(crate) fn confirm_ghost(game: &mut Game, input: &mut InputState) {
+    let (Some(kind), Some(anchor)) = (input.placing, input.ghost_anchor()) else {
+        return;
+    };
+    if place_at(game, input, kind, anchor) {
+        input.touch_ghost = None;
+        if !input.queue_held() {
+            input.stop_placing();
+        }
+    }
+}
+
+/// Stages `kind` at `anchor` for the selected builders, or says why
+/// not. Refusals toast and keep placement armed. Returns whether it
+/// placed.
+fn place_at(
+    game: &mut Game,
+    input: &InputState,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+) -> bool {
+    let queue = input.queue_held();
+    let projection = pending_build_projection(&game.view(), kind, anchor, queue);
+    // The ghost already showed red; a misclick must not throw
+    // away the armed mode on top of it. The toast names the
+    // actual blocker — "needs open ground" while your own
+    // harvester stands on the tile taught nobody anything.
+    // Explored-but-unseen ground is judged by the same intent
+    // predicate the ghost tints from — memory, never live
+    // state — so Fog here means genuinely unscouted.
+    if let Some(refusal) = projection.refusal {
+        use oxide_sim::PlaceRefusal;
+        game.presentation.toast(match refusal {
+            PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
+            PlaceRefusal::Terrain => "can't build there: impassable ground",
+            PlaceRefusal::Building => "can't build there: something already stands there",
+            PlaceRefusal::Unit => "can't build there: an enemy machine is holding that ground",
+            PlaceRefusal::NotConstructible => "that can't be built",
+            PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
+            PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
+            PlaceRefusal::FrameBlocked => {
+                "can't build there: that ground belongs to a derelict frame"
+            }
+        });
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Denied, None));
+        return false;
+    }
+    // Judge the opening stamp after the exact pending command
+    // phase, with future prices held for surviving deferred
+    // claims. A broke click gets the honest toast, not an
+    // acknowledgment ping followed by a sim rejection.
+    let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+    if projection.funds.available() < cost {
+        game.presentation.toast(format!(
+            "not enough scrap for a {}",
+            crate::typography::entity_name(kind.name())
+        ));
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Denied, None));
+        return false;
+    }
+    // The opening stamp must also FIT the builder's program: a
+    // Shift click onto a crew already at the order-queue cap
+    // would ping and then die in the sim as QueueFull. Same
+    // honest refusal as the broke click, mode stays armed.
+    if !projection.queue_has_room {
+        game.presentation
+            .toast("that builder's order queue is full");
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Denied, None));
+        return false;
+    }
+    let units = game.presentation.selection.units.clone();
+    // A held queue (Shift, or QUEUE on touch) both keeps placing AND
+    // queues the build behind the builder's current program — chained
+    // construction in one gesture.
+    game.issue(Command::Build {
+        units,
+        kind,
+        anchor,
+        queue,
+        // Remembered ground defers the claim: the crew walks
+        // out and founds on arrival, paying then. Same click,
+        // two claim timings — the amber ghost already said
+        // which this stamp is.
+        defer: build_defer_needed(&game.view(), kind, anchor),
+    });
+    game.presentation
+        .ping(placement_ping(kind, anchor), PingKind::Rally);
+    true
+}
+
+/// The armed left-click verbs after placement: salvage, weld, run, and
+/// attack-move.
+fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     if input.salvaging {
         // The same manners placement keeps: minimap jumps the camera,
         // a misclick keeps the mode armed, and Shift chains teardowns
@@ -1609,10 +1533,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::Salvage {
                 units,
                 building,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Harvest);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.salvaging = false;
             }
         }
@@ -1671,10 +1595,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::RepairUnit {
                 units,
                 target,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Harvest);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.repairing = false;
             }
         }
@@ -1693,10 +1617,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::Move {
                 units,
                 goal,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Move);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.running = false;
             }
         }
@@ -1715,16 +1639,60 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::AttackMove {
                 units,
                 goal,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Attack);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.attacking = false;
             }
         }
         return true;
     }
+    if input.patrol_route.is_some() {
+        // Left-clicks and taps collect the route just as right-clicks
+        // do; the minimap keeps its ground meaning.
+        let world = crate::render::minimap_world_at(&game.view(), p)
+            .or_else(|| (!click_on_hud(game, p)).then(|| game.presentation.camera.to_world(p)));
+        if let Some(world) = world {
+            add_patrol_waypoint(game, input, world);
+        }
+        return true;
+    }
     false
+}
+
+/// Adds a waypoint at `world` to the patrol route being collected, or
+/// says the route is full.
+fn add_patrol_waypoint(game: &mut Game, input: &mut InputState, world: Vec2) {
+    let key = input.bindings.label(Action::Patrol);
+    let Some(route) = &mut input.patrol_route else {
+        return;
+    };
+    if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
+        game.presentation
+            .toast(patrol_full_toast(&key, crate::platform::TOUCH_ONLY));
+    } else {
+        route.push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
+        game.presentation.ping(world, PingKind::Rally);
+    }
+}
+
+/// The toast that arms a patrol.
+pub(crate) fn patrol_arm_toast(key: &str, touch_only: bool) -> String {
+    if touch_only {
+        "patrol: tap waypoints, then tap Patrol again to start".to_string()
+    } else {
+        format!("patrol: click waypoints, {key} to start")
+    }
+}
+
+/// The toast when the route has no room for another waypoint.
+fn patrol_full_toast(key: &str, touch_only: bool) -> String {
+    if touch_only {
+        "patrol is full: tap Patrol to start it".to_string()
+    } else {
+        format!("patrol is full: {key} starts it")
+    }
 }
 
 pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, action: Action) {
@@ -1837,54 +1805,6 @@ fn press_card(game: &mut Game, input: &mut InputState, hit: crate::layout::CardH
         .and_then(|card| card.why.clone());
     if let Some(why) = why {
         game.presentation.toast(why);
-    }
-}
-
-/// The long-press carrier: a held finger emits no events, so its timer
-/// rides the frame loop beside `update_held`. A single still touch
-/// past the window fires the context gesture ONCE — on an entity it
-/// inspects (tap-select), on ground it issues the context order for
-/// the current selection, exactly like a right-click.
-pub fn update_touch(game: &mut Game, input: &mut InputState) {
-    if input.touches.len() != 1 {
-        return;
-    }
-    let (_, tp) = input.touches[0];
-    if tp.moved || tp.fired {
-        return;
-    }
-    if (input.now - tp.down_at) * 1000.0 < f64::from(input.touch_prefs.long_press_ms) {
-        return;
-    }
-    // Chrome owns its ground for the held finger too: a long-press on
-    // the minimap or panel band must not order the army to the world
-    // point hiding under the HUD. The finger stays unfired, so lifting
-    // it after reading a card's preview still activates the card.
-    if crate::render::minimap_world_at(&game.view(), tp.at).is_some() || click_on_hud(game, tp.at) {
-        return;
-    }
-    input.touches[0].1.fired = true;
-    let world = game.presentation.camera.to_world(tp.at);
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    // Only entities the viewer can actually SEE steer the gesture — an
-    // omniscient probe here let a hidden hostile under the fog flip a
-    // rally into a select, making occupancy observable through touch.
-    let sees = |t: TilePos| game.presentation.all_seeing() || game.my_vision().visible(t);
-    let on_entity = game.state.units().iter().any(|u| {
-        let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-        p.distance(world) <= unit_pick_radius(u.kind)
-            && (u.player == game.presentation.human || sees(u.tile()))
-    }) || game.state.buildings_at(tile).any(|b| {
-        // Same rule as fog, for stealth: an undetected buried charge
-        // must not flip a rally into a select, or taps would scan for
-        // occupancy the fog view denies.
-        b.player == game.presentation.human
-            || (sees(tile) && game.state.building_apparent(game.presentation.human, b))
-    });
-    if on_entity && game.presentation.selection.units.is_empty() {
-        select::click_select(game, tp.at, false, input.ui);
-    } else {
-        orders::context_order(game, tp.at, false);
     }
 }
 

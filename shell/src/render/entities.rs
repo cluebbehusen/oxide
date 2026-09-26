@@ -16,13 +16,12 @@ pub(crate) fn draw_placement_ghost(
     sprites: &Sprites,
     input: &InputState,
 ) {
-    let Some(kind) = input.placing else { return };
-    let world = game.presentation.camera.to_world(input.mouse);
-    let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    let anchor = crate::input::placement_anchor(game, kind, clicked);
+    let Some((kind, anchor)) = crate::input::placement_preview_anchor(game, input) else {
+        return;
+    };
     let zoom = game.presentation.camera.zoom;
     let (w, h) = kind.base_stats().size;
-    let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
+    let queue = input.placing_stroke.is_some() || input.queue_held();
     let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
         .presentation
@@ -2112,10 +2111,7 @@ fn visit_active_building_ranges(
             &mut visit,
         );
     }
-    if let Some(kind) = input.placing {
-        let world = game.presentation.camera.to_world(input.mouse);
-        let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-        let anchor = crate::input::placement_anchor(game, kind, clicked);
+    if let Some((kind, anchor)) = crate::input::placement_preview_anchor(game, input) {
         visit_building_ranges(vec2(anchor.x as f32, anchor.y as f32), kind, 0, visit);
     }
 }
@@ -2518,8 +2514,28 @@ pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) 
     if feedback == crate::input::DragFeedback::Still {
         return;
     }
-    let lo = origin.min(now);
-    let size = (origin - now).abs();
+    // Live preview starts only once release would commit a box-select.
+    draw_selection_rect(
+        game,
+        origin,
+        now,
+        feedback == crate::input::DragFeedback::Selection,
+    );
+}
+
+/// The two-finger selection box, while a touch pair draws one; its unit
+/// preview starts once the rest has claimed the box.
+pub(crate) fn draw_touch_box(game: &crate::game::Scene<'_>, input: &InputState) {
+    if let Some((a, b, claimed)) = crate::input::touch_box(input) {
+        draw_selection_rect(game, a, b, claimed);
+    }
+}
+
+/// A selection rectangle between two screen corners. With `preview`,
+/// the own units a release would select are ringed.
+fn draw_selection_rect(game: &crate::game::Scene<'_>, corner: Vec2, other: Vec2, preview: bool) {
+    let lo = corner.min(other);
+    let size = (corner - other).abs();
     draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
     draw_rectangle(
         lo.x,
@@ -2528,10 +2544,9 @@ pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) 
         size.y,
         Color::new(0.9, 0.88, 0.84, 0.08),
     );
-    if feedback != crate::input::DragFeedback::Selection {
+    if !preview {
         return;
     }
-    // Live preview starts only once release would commit a box-select.
     let a = game.presentation.camera.to_world(lo);
     let b = game.presentation.camera.to_world(lo + size);
     for unit in game.state.units() {

@@ -92,11 +92,16 @@ save-name entry retain conventional editing keys so custom mappings cannot lock
 you out. Existing custom bindings are preserved when upgrading.
 
 On a touchscreen, tap to select, drag to pan, pinch to zoom, and long-press for
-the contextual order. Two fingers drag a selection box, and a double tap selects
-every unit of that kind on screen. The cards, the ≡ menu button, and the clock
-(tap to pause) cover the rest. A ring fills while a long-press charges. Rest a
-finger on a card to read its details, then lift to use it or slide off to
-cancel. Tapping or clicking a disabled card says why it is unavailable.
+the contextual order; a ring fills while it charges. For a selection box, plant
+two fingers and lift one, or rest two fingers until the box appears and drag a
+corner. A double tap selects every unit of that kind on screen, and dragging on
+the minimap steers the camera. The cards, the ≡ menu button, and the clock (tap
+to pause) cover the rest. Rest a finger on a card to read its details, then lift
+to use it or slide off to cancel. Tapping or clicking a disabled card says why
+it is unavailable. To build, tap open ground to drop a ghost, drag it into
+place, and tap it to confirm. While Patrol is armed, taps (or left-clicks) add
+waypoints. The QUEUE toggle beside the command ribbon stands in for Shift: taps
+add to the selection, orders queue, and armed commands stay armed.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;

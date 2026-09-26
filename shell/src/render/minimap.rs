@@ -85,6 +85,22 @@ pub fn minimap_world_at(game: &crate::game::Scene<'_>, screen: Vec2) -> Option<V
     )
 }
 
+/// The world point a pointer dragging from the minimap steers to:
+/// clamped into the published rect, so sliding off an edge holds the
+/// view at that edge instead of stalling the pan. `None` while the
+/// minimap is hidden.
+pub fn minimap_world_clamped(game: &crate::game::Scene<'_>, screen: Vec2) -> Option<Vec2> {
+    let rect = game.presentation.layout.get().minimap;
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return None;
+    }
+    let clamped = vec2(
+        screen.x.clamp(rect.x, rect.x + rect.w - 1.0),
+        screen.y.clamp(rect.y, rect.y + rect.h - 1.0),
+    );
+    minimap_world_in(rect, game.state.map().width(), clamped)
+}
+
 /// Testable core of [`minimap_world_at`] (no window queries).
 pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
     if !rect.contains(screen) {

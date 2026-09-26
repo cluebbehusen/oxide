@@ -2052,8 +2052,8 @@ fn touch_taps_select_and_a_still_hold_orders() {
     assert_eq!(game.pending.len(), staged, "a long-press fires once");
 }
 
-#[test]
-fn an_armed_build_completes_on_a_tap() {
+/// A game with one own harvester selected and `kind` armed for placement.
+fn armed_placement(kind: oxide_sim::BuildingKind) -> (Game, InputState, oxide_sim::UnitId) {
     let mut game = headless_game();
     let mut input = InputState::new();
     let harvester = game
@@ -2064,31 +2064,222 @@ fn an_armed_build_completes_on_a_tap() {
         .unwrap()
         .id;
     game.presentation.selection.units = vec![harvester];
+    input.placing = Some(kind);
+    input.build_menu = true;
+    (game, input, harvester)
+}
+
+fn staged_anchors(game: &Game) -> Vec<TilePos> {
+    game.pending
+        .iter()
+        .filter_map(|c| match c.command {
+            Command::Build { anchor, .. } => Some(anchor),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_touch_placement_drops_a_ghost_then_builds_where_it_is_drawn() {
+    let kind = oxide_sim::BuildingKind::Turret;
+    let (mut game, mut input, harvester) = armed_placement(kind);
+    let foundry = game.state.buildings()[0].anchor;
+    let open = vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5);
+    tap_world(&mut game, &mut input, open);
+    assert!(
+        staged_anchors(&game).is_empty(),
+        "the first tap only drops a ghost"
+    );
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    let (w, h) = kind.base_stats().size;
+    let center = vec2(
+        ghost.x as f32 + w as f32 * 0.5,
+        ghost.y as f32 + h as f32 * 0.5,
+    );
+    assert!(
+        center.distance(open) <= 0.75,
+        "the ghost centers under the finger"
+    );
+
+    // A confirming tap anywhere on the ghost builds where it is drawn,
+    // never where the fingertip happened to land.
+    let corner = vec2(
+        ghost.x as f32 + w as f32 - 0.1,
+        ghost.y as f32 + h as f32 - 0.1,
+    );
+    tap_world(&mut game, &mut input, corner);
+    assert_eq!(staged_anchors(&game), vec![ghost]);
+    assert!(input.placing.is_none(), "a plain confirm disarms");
+    assert!(input.ghost_anchor().is_none());
+    assert_eq!(game.presentation.selection.units, vec![harvester]);
+}
+
+#[test]
+fn dragging_the_ghost_moves_it_by_whole_tiles_without_panning() {
+    let kind = oxide_sim::BuildingKind::Turret;
+    let (mut game, mut input, _) = armed_placement(kind);
+    let foundry = game.state.buildings()[0].anchor;
+    tap_world(
+        &mut game,
+        &mut input,
+        vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5),
+    );
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    let grab = game
+        .presentation
+        .camera
+        .to_screen(vec2(ghost.x as f32 + 0.5, ghost.y as f32 + 0.5));
+    let camera = game.presentation.camera.center;
+    let zoom = game.presentation.camera.zoom;
+    input.now += 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, grab)]);
+    for step in 1..=6 {
+        let p = grab + vec2(step as f32 * 0.5 * zoom, zoom);
+        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
+    }
+    input.now += 2.0;
+    update_touch(&mut game, &mut input);
+    let dropped = grab + vec2(3.0 * zoom, zoom);
+    apply_events(&mut game, &mut input, &[touch_up(1, dropped)]);
+    assert_eq!(input.ghost_anchor(), Some(ghost.offset(3, 1)));
+    assert_eq!(
+        game.presentation.camera.center, camera,
+        "a ghost drag never pans"
+    );
+    assert!(game.pending.is_empty(), "dropping the ghost builds nothing");
+}
+
+#[test]
+fn a_refused_confirm_keeps_the_ghost_and_the_mode() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].center();
+    let on_foundry = vec2(foundry.x.to_num::<f32>(), foundry.y.to_num::<f32>());
+    tap_world(&mut game, &mut input, on_foundry);
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    tap_world(&mut game, &mut input, on_foundry);
+    assert!(staged_anchors(&game).is_empty());
+    assert_eq!(input.ghost_anchor(), Some(ghost));
+    assert!(
+        game.presentation
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("can't build there")),
+        "the refusal says why"
+    );
+}
+
+#[test]
+fn queue_keeps_placement_armed_after_a_confirm() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    input.queue_toggle = true;
+    let foundry = game.state.buildings()[0].anchor;
+    let open = vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5);
+    tap_world(&mut game, &mut input, open);
+    tap_world(&mut game, &mut input, open);
+    assert_eq!(staged_anchors(&game).len(), 1);
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Build { queue: true, .. }))
+    );
+    assert_eq!(
+        input.placing,
+        Some(oxide_sim::BuildingKind::Turret),
+        "still armed"
+    );
+    assert!(
+        input.ghost_anchor().is_none(),
+        "the next tap drops a fresh ghost"
+    );
+}
+
+#[test]
+fn leaving_placement_leaves_no_ghost() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].anchor;
+    let open = vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5);
+    tap_world(&mut game, &mut input, open);
+    dispatch_action(&mut game, &mut input, Action::Back);
+    assert!(
+        input.placing.is_none() && input.touch_ghost.is_none(),
+        "Back"
+    );
     input.placing = Some(oxide_sim::BuildingKind::Turret);
+    tap_world(&mut game, &mut input, open);
+    assert!(input.cancel_armed_mode());
+    assert!(input.touch_ghost.is_none(), "CANCEL");
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    tap_world(&mut game, &mut input, open);
+    input.placing = Some(oxide_sim::BuildingKind::Bastion);
+    input.disarm_click_verbs();
+    assert!(input.touch_ghost.is_none(), "switching kinds");
+}
+
+#[test]
+fn a_long_press_while_placing_charges_nothing_and_orders_nothing() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].anchor;
+    let ground = game
+        .presentation
+        .camera
+        .to_screen(vec2(foundry.x as f32 + 4.5, foundry.y as f32 + 2.5));
+    input.now = 3.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, ground)]);
+    input.now = 3.25;
+    assert_eq!(long_press_progress(&input), None, "no ring while placing");
+    input.now = 4.0;
+    update_touch(&mut game, &mut input);
+    assert!(game.pending.is_empty(), "no context order");
+    apply_events(&mut game, &mut input, &[touch_up(1, ground)]);
+    assert!(
+        input.ghost_anchor().is_some(),
+        "the long rest still dropped a ghost"
+    );
+}
+
+#[test]
+fn an_extractor_ghost_snaps_to_its_frame() {
+    let frame = TilePos::new(7, 4);
+    let mut game = extractor_input_game();
+    let mut input = InputState::new();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player == game.presentation.human)
+        .expect("fixture worker")
+        .id;
+    game.presentation.selection.units = vec![worker];
+    input.placing = Some(oxide_sim::BuildingKind::Extractor);
+    tap_world(&mut game, &mut input, vec2(8.5, 5.5));
+    assert_eq!(input.ghost_anchor(), Some(frame));
+    tap_world(&mut game, &mut input, vec2(7.5, 4.5));
+    assert_eq!(staged_anchors(&game), vec![frame]);
+}
+
+#[test]
+fn a_touch_device_never_previews_placement_at_a_stale_mouse_point() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    input.mouse = vec2(400.0, 300.0);
+    assert!(
+        placement_preview_anchor(&game.view(), &input).is_some(),
+        "the mouse previews"
+    );
     let foundry = game.state.buildings()[0].anchor;
     let open = game
         .presentation
         .camera
         .to_screen(vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5));
-    input.now = 5.0;
+    input.now += 1.0;
     apply_events(&mut game, &mut input, &[touch_down(1, open)]);
-    input.now = 5.1;
+    assert!(
+        placement_preview_anchor(&game.view(), &input).is_none(),
+        "no ghost yet"
+    );
     apply_events(&mut game, &mut input, &[touch_up(1, open)]);
-    assert!(
-        game.pending
-            .iter()
-            .any(|c| matches!(c.command, Command::Build { .. })),
-        "the tap after an armed card places the site, not a select: {:?}",
-        game.pending
-    );
-    assert!(
-        input.placing.is_none(),
-        "an unmodified tap disarms like a plain click"
-    );
     assert_eq!(
-        game.presentation.selection.units,
-        vec![harvester],
-        "the armed tap never re-selected under the fingertip"
+        placement_preview_anchor(&game.view(), &input).map(|(_, anchor)| anchor),
+        input.ghost_anchor()
     );
 }
 
@@ -2441,6 +2632,471 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
             .any(|c| matches!(c.command, Command::CancelTrain { index: 0, .. }));
         assert_eq!(cancelled, !shifts, "shifted: {shifts}");
     }
+}
+
+#[test]
+fn a_re_reported_landing_is_the_same_finger() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let start = vec2(400.0, 300.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, start)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(1, start - vec2(60.0, 0.0))],
+    );
+    let panned = game.presentation.camera.center;
+    // iOS repeats the landing of a finger already down; the pan must
+    // carry on without a fresh slop circle.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_down(1, start - vec2(60.0, 0.0))],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(1, start - vec2(65.0, 0.0))],
+    );
+    assert_ne!(game.presentation.camera.center, panned, "the pan continues");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(1, start - vec2(65.0, 0.0))],
+    );
+
+    // A re-reported still finger is still a tap.
+    let unit = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .expect("an own unit");
+    let p = game.presentation.camera.to_screen(unit.1);
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, p), touch_down(2, p)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, p)]);
+    assert_eq!(game.presentation.selection.units, vec![unit.0]);
+}
+
+#[test]
+fn a_pair_finger_falsely_reported_lifted_keeps_panning() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = vec2(400.0, 300.0);
+    let b = vec2(600.0, 360.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b), touch_down(1, a)]);
+    // Finger 2 lifts, and iOS reports both lifted, survivor first.
+    apply_events(&mut game, &mut input, &[touch_up(1, a), touch_up(2, b)]);
+    assert!(input.touches.is_empty(), "premise: both reported lifted");
+    let before = game.presentation.camera.center;
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(4.0, 0.0))]);
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "no pan inside the slop"
+    );
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(80.0, 0.0))]);
+    assert_ne!(game.presentation.camera.center, before, "the survivor pans");
+    let units = game.presentation.selection.units.clone();
+    let buildings = game.presentation.selection.buildings.clone();
+    apply_events(&mut game, &mut input, &[touch_up(1, a - vec2(80.0, 0.0))]);
+    assert_eq!(game.presentation.selection.units, units, "and never taps");
+    assert_eq!(game.presentation.selection.buildings, buildings);
+    // The real lift forgets it: that id never moves the camera again.
+    let after = game.presentation.camera.center;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(1, a - vec2(200.0, 0.0))],
+    );
+    assert_eq!(game.presentation.camera.center, after);
+}
+
+#[test]
+fn a_falsely_lifted_minimap_finger_keeps_steering_and_never_pans() {
+    let on_map = vec2(1100.0, 650.0);
+    let drag = [vec2(1200.0, 700.0), vec2(900.0, 400.0), vec2(500.0, 400.0)];
+    // One minimap finger that is never interrupted...
+    let mut steady = headless_game();
+    let mut input = InputState::new();
+    publish_minimap(&steady);
+    apply_events(&mut steady, &mut input, &[touch_down(1, on_map)]);
+    for p in drag {
+        apply_events(&mut steady, &mut input, &[touch_move(1, p)]);
+    }
+    // ...and the same finger after iOS reported it lifted along with a
+    // second finger, off the minimap where a world finger would pan.
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    publish_minimap(&game);
+    let world = vec2(400.0, 300.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, on_map)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, world)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(2, world), touch_up(1, on_map)],
+    );
+    for p in drag {
+        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
+    }
+    assert_eq!(
+        game.presentation.camera.center,
+        steady.presentation.camera.center
+    );
+}
+
+#[test]
+fn a_move_from_an_unknown_finger_does_nothing() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let before = game.presentation.camera.center;
+    // The tutorial card swallowed this finger's landing.
+    for x in [400.0, 480.0, 560.0] {
+        apply_events(&mut game, &mut input, &[touch_move(7, vec2(x, 300.0))]);
+    }
+    apply_events(&mut game, &mut input, &[touch_up(7, vec2(560.0, 300.0))]);
+    assert_eq!(game.presentation.camera.center, before);
+    assert!(input.touches.is_empty());
+}
+
+#[test]
+fn a_box_survivor_pans_only_past_the_slop() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, b)]);
+    assert!(
+        !game.presentation.selection.units.is_empty(),
+        "the box landed"
+    );
+    let before = game.presentation.camera.center;
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(5.0, 0.0))]);
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "jitter is not a pan"
+    );
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(80.0, 0.0))]);
+    assert_ne!(game.presentation.camera.center, before);
+}
+
+#[test]
+fn a_resting_pair_draws_its_box_then_claims_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(4.0, 4.0));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a), touch_down(2, b)]);
+    assert_eq!(touch_box(&input), None, "a fresh pair may be a pinch");
+    input.now = 1.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
+    assert_eq!(
+        touch_box(&input),
+        Some((a, b, false)),
+        "a rested pair shows its box"
+    );
+    input.now = 1.0 + f64::from(input.touch_prefs.long_press_ms) / 1000.0 + 0.01;
+    update_touch(&mut game, &mut input);
+    assert_eq!(
+        touch_box(&input),
+        Some((a, b, true)),
+        "the rest claims the box"
+    );
+
+    // Claimed, a corner drag resizes instead of zooming.
+    let zoom = game.presentation.camera.zoom;
+    let far = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    apply_events(&mut game, &mut input, &[touch_move(2, far)]);
+    game.presentation.camera.update(1.0); // land any glide: headless has no frames
+    assert_eq!(game.presentation.camera.zoom, zoom, "no pinch once claimed");
+    assert_eq!(touch_box(&input), Some((a, far, true)));
+    apply_events(&mut game, &mut input, &[touch_up(2, far)]);
+    assert!(
+        !game.presentation.selection.units.is_empty(),
+        "the dragged-out box swept the base"
+    );
+    assert_eq!(touch_box(&input), None);
+}
+
+#[test]
+fn a_pair_that_moves_before_resting_still_pinches() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = vec2(400.0, 300.0);
+    input.now = 1.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_down(1, a), touch_down(2, a + vec2(260.0, 0.0))],
+    );
+    let zoom = game.presentation.camera.zoom;
+    // One finger still, the other squeezing in: the common thumb-anchored
+    // pinch grip.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, a + vec2(120.0, 0.0))],
+    );
+    assert_eq!(
+        input.pair.map(|pair| pair.state),
+        Some(touch::PairState::Pinch)
+    );
+    game.presentation.camera.update(1.0);
+    assert_ne!(game.presentation.camera.zoom, zoom);
+    input.now = 3.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(touch_box(&input), None, "a pinch never becomes a box");
+}
+
+#[test]
+fn a_pair_formed_mid_pan_or_while_armed_never_boxes() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(40.0, 0.0))]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, b)]);
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "a pan never boxes"
+    );
+    apply_events(&mut game, &mut input, &[touch_up(1, a - vec2(40.0, 0.0))]);
+
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .expect("a harvester")
+        .id;
+    game.presentation.selection.units = vec![harvester];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    input.build_menu = true;
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(3, a), touch_down(4, b)]);
+    input.now = 6.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(touch_box(&input), None);
+    apply_events(&mut game, &mut input, &[touch_up(4, b)]);
+    assert_eq!(game.presentation.selection.units, vec![harvester]);
+    assert_eq!(
+        input.placing,
+        Some(oxide_sim::BuildingKind::Turret),
+        "still armed"
+    );
+}
+
+#[test]
+fn the_queue_toggle_makes_touch_queue_and_add() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let own: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.presentation.human)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .take(2)
+        .collect();
+    let [(first, first_at), (second, second_at)] = own[..] else {
+        panic!("two own units");
+    };
+    input.queue_toggle = true;
+    tap_world(&mut game, &mut input, first_at);
+    tap_world(&mut game, &mut input, second_at);
+    let mut picked = game.presentation.selection.units.clone();
+    picked.sort();
+    let mut both = vec![first, second];
+    both.sort();
+    assert_eq!(picked, both, "a queued tap adds to the selection");
+
+    // A quick second tap on the same unit toggles it rather than
+    // sweeping every unit of its kind.
+    input.now += 1.0;
+    let p = game.presentation.camera.to_screen(first_at);
+    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
+    input.now += 0.1;
+    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
+    assert!(
+        game.presentation.selection.units.len() <= 2,
+        "no kind sweep"
+    );
+
+    game.presentation.selection.units = vec![first];
+    long_press_world(&mut game, &mut input, first_at + vec2(4.0, 2.0));
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { queue: true, .. })),
+        "a queued long-press appends the order: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn the_queue_chip_flips_by_tap_and_click() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let chip = macroquad::math::Rect::new(500.0, 620.0, 96.0, 44.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.queue_toggle = chip;
+    game.presentation.layout.set(layout);
+    tap(&mut game, &mut input, chip.center());
+    assert!(input.queue_held());
+    assert!(
+        game.presentation
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("queue on")),
+        "the first switch explains itself"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &click(chip.center().x, chip.center().y),
+    );
+    assert!(!input.queue_held());
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "the chip is chrome"
+    );
+    input.queue_toggle = true;
+    input.reset_transient();
+    assert!(!input.queue_held(), "leaving the screen drops it");
+}
+
+fn armed_patrol() -> (Game, InputState, oxide_sim::UnitId) {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.presentation.selection.units = vec![fighter];
+    dispatch_action(&mut game, &mut input, Action::Patrol);
+    assert_eq!(
+        input.patrol_route,
+        Some(Vec::new()),
+        "premise: patrol armed"
+    );
+    (game, input, fighter)
+}
+
+#[test]
+fn taps_collect_a_patrol_route_and_the_card_starts_it() {
+    let (mut game, mut input, fighter) = armed_patrol();
+    let minimap = publish_minimap(&game);
+    let before = game.presentation.camera.center;
+    tap_world(&mut game, &mut input, vec2(9.5, 5.5));
+    tap_world(&mut game, &mut input, vec2(12.5, 8.5));
+    tap(
+        &mut game,
+        &mut input,
+        vec2(minimap.x + 150.0, minimap.y + 120.0),
+    );
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "the minimap tap is a waypoint"
+    );
+    assert_eq!(input.patrol_route.as_ref().map(Vec::len), Some(3));
+    assert_eq!(
+        game.presentation.selection.units,
+        vec![fighter],
+        "taps never reselect"
+    );
+    dispatch_action(&mut game, &mut input, Action::Patrol);
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Patrol { waypoints, .. } if waypoints.len() == 3
+        )),
+        "the second Patrol starts the circuit: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn a_left_click_adds_a_patrol_waypoint_and_a_full_route_says_so() {
+    let (mut game, mut input, _) = armed_patrol();
+    let p = game.presentation.camera.to_screen(vec2(9.5, 5.5));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(input.patrol_route.as_ref().map(Vec::len), Some(1));
+    input.patrol_route = Some(vec![TilePos::new(9, 5); oxide_sim::stats::ORDER_QUEUE_CAP]);
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(
+        input.patrol_route.as_ref().map(Vec::len),
+        Some(oxide_sim::stats::ORDER_QUEUE_CAP)
+    );
+    assert!(
+        game.presentation
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("patrol is full"))
+    );
+}
+
+#[test]
+fn a_long_press_honors_the_armed_mode() {
+    // Collecting a route, a long rest never orders: its lift is just a
+    // slow tap, adding the waypoint under it.
+    let (mut game, mut input, fighter) = armed_patrol();
+    long_press_world(&mut game, &mut input, vec2(12.5, 8.5));
+    assert!(game.pending.is_empty());
+    assert_eq!(input.patrol_route, Some(vec![TilePos::new(12, 8)]));
+
+    // Any other armed verb stands down, as for a right-click, and the
+    // long-press issues its own order.
+    input.patrol_route = None;
+    input.attacking = true;
+    game.presentation.selection.units = vec![fighter];
+    long_press_world(&mut game, &mut input, vec2(12.5, 8.5));
+    assert!(!input.attacking, "the armed verb stood down");
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { .. })),
+        "the long-press ordered: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn patrol_is_exclusive_with_the_other_armed_verbs() {
+    let (mut game, mut input, _) = armed_patrol();
+    dispatch_action(&mut game, &mut input, Action::AttackMove);
+    assert!(input.attacking);
+    assert_eq!(
+        input.patrol_route, None,
+        "arming attack-move drops the route"
+    );
+    dispatch_action(&mut game, &mut input, Action::Patrol);
+    assert!(!input.attacking, "arming patrol stands attack-move down");
+    assert_eq!(input.patrol_route, Some(Vec::new()));
+}
+
+#[test]
+fn patrol_copy_speaks_touch_on_touch_only_builds() {
+    assert_eq!(
+        patrol_arm_toast("R", false),
+        "patrol: click waypoints, R to start"
+    );
+    crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
+    crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
 }
 
 #[test]
@@ -2804,20 +3460,91 @@ fn hardware_touches_arrive_once_in_order_and_in_logical_pixels() {
 }
 
 #[test]
+fn a_minimap_drag_steers_the_camera_like_the_mouse() {
+    // The same path by finger and by mouse, from the minimap's far
+    // corner, back across it, and off its edge (clamped).
+    let path = |minimap: macroquad::math::Rect| {
+        [
+            vec2(minimap.x + 180.0, minimap.y + 170.0),
+            vec2(minimap.x + 30.0, minimap.y + 30.0),
+            vec2(400.0, 300.0),
+        ]
+    };
+    let mut by_touch = Vec::new();
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let [land, cross, off] = path(minimap);
+    apply_events(&mut game, &mut input, &[touch_down(1, land)]);
+    by_touch.push(game.presentation.camera.center);
+    for p in [cross, off] {
+        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
+        by_touch.push(game.presentation.camera.center);
+    }
+    apply_events(&mut game, &mut input, &[touch_up(1, off)]);
+    assert_eq!(
+        game.presentation.camera.center, by_touch[2],
+        "lifting changes nothing"
+    );
+
+    let mut by_mouse = Vec::new();
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    publish_minimap(&game);
+    apply_events(&mut game, &mut input, &[left_down(land)]);
+    by_mouse.push(game.presentation.camera.center);
+    for p in [cross, off] {
+        apply_events(&mut game, &mut input, &[mouse_move(p)]);
+        by_mouse.push(game.presentation.camera.center);
+    }
+    assert_eq!(by_touch, by_mouse);
+    assert_ne!(by_touch[0], by_touch[1], "the drag really steered");
+}
+
+#[test]
+fn a_minimap_tap_with_rally_armed_sets_the_rally_without_steering() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.presentation.human)
+        .expect("own Foundry")
+        .id;
+    game.presentation.selection.buildings = vec![foundry];
+    input.rallying = vec![foundry];
+    let before = game.presentation.camera.center;
+    let p = vec2(minimap.x + 150.0, minimap.y + 150.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, p)]);
+    assert_eq!(game.presentation.camera.center, before);
+    apply_events(&mut game, &mut input, &[touch_up(1, p)]);
+    assert_eq!(game.presentation.camera.center, before);
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::SetRally { rally: Some(_), .. })),
+        "the minimap point became the rally: {:?}",
+        game.pending
+    );
+}
+
+#[test]
 fn chrome_born_touches_never_drive_world_gestures() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let minimap = publish_minimap(&game);
     let center_before = game.presentation.camera.center;
 
-    // A swipe that LANDS on the minimap must not pan the world
-    // behind it, however far it travels.
+    // A swipe that LANDS on the panel must not pan the world behind
+    // it, however far it travels.
+    let mut layout = game.presentation.layout.get();
+    layout.panel_regions[0] = macroquad::math::Rect::new(0.0, 680.0, 500.0, 120.0);
+    game.presentation.layout.set(layout);
     input.now = 2.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_down(1, vec2(minimap.x + 20.0, minimap.y + 20.0))],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, vec2(300.0, 720.0))]);
     apply_events(&mut game, &mut input, &[touch_move(1, vec2(400.0, 300.0))]);
     assert_eq!(
         game.presentation.camera.center, center_before,
@@ -3176,7 +3903,11 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
         let x = 640.0 + (i as f32) * 0.9;
         apply_events(&mut game, &mut input, &[touch_move(2, vec2(x, 400.0))]);
     }
-    assert!(input.pinching, "the cumulative spread reads as a pinch");
+    assert_eq!(
+        input.pair.map(|pair| pair.state),
+        Some(touch::PairState::Pinch),
+        "the cumulative spread reads as a pinch"
+    );
     game.presentation.camera.update(1.0); // land the glide: headless has no frames
     assert!(
         game.presentation.camera.zoom > zoom_before,
@@ -4289,12 +5020,14 @@ fn the_tutorial_survives_its_own_touch_instructions() {
         card.action == crate::panel::CardAction::ArmBuild(oxide_sim::BuildingKind::Turret)
     });
     tap_world(&mut game, &mut input, vec2(10.5, 4.5));
+    assert!(game.pending.is_empty(), "open ground only drops the ghost");
+    tap_world(&mut game, &mut input, vec2(10.5, 4.5));
     assert!(
         game.pending.iter().any(|c| matches!(
             &c.command,
             Command::Build { kind, .. } if *kind == oxide_sim::BuildingKind::Turret
         )),
-        "Build, a building, and a ground tap staged the site: {:?}",
+        "Build, a building, open ground, and the ghost staged the site: {:?}",
         game.pending
     );
     game.do_tick();
