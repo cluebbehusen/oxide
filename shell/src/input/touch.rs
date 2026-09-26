@@ -5,6 +5,20 @@
 
 use super::*;
 
+/// Where a finger landed, which decides what it may drive for its
+/// whole life. Chrome and minimap fingers never drive world gestures:
+/// a swipe starting on the command panel must not pan the camera
+/// behind it, and a two-finger box with a chrome corner must not select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TouchBorn {
+    /// Open battlefield.
+    World,
+    /// The minimap.
+    Minimap,
+    /// Any other HUD chrome.
+    Chrome,
+}
+
 /// One live finger on the screen.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TouchPoint {
@@ -14,16 +28,14 @@ pub(crate) struct TouchPoint {
     pub at: Vec2,
     /// Wall clock at touch-down (the injected `now`).
     pub down_at: f64,
+    /// Where it landed.
+    pub born: TouchBorn,
     /// Whether it ever left the slop circle — a moved finger is a
     /// drag, never a tap or a long-press.
     pub moved: bool,
-    /// Whether it LANDED on chrome (minimap or HUD). Chrome-born
-    /// fingers never drive world gestures: a swipe starting on the
-    /// command panel must not pan the camera behind it, and a
-    /// two-finger box with a chrome-born corner must not select.
-    pub chrome: bool,
-    /// Whether its long-press already fired (fire once per touch).
-    pub fired: bool,
+    /// Whether it already did its one job: its long-press fired, or it
+    /// outlived its pair. A spent finger never taps or long-presses.
+    pub spent: bool,
     /// The card it landed on, as it stood then.
     pub card: Option<PressedCard>,
 }
@@ -51,6 +63,53 @@ fn pressed_card(game: &Game, p: Vec2, ui: f32) -> Option<PressedCard> {
     Some(PressedCard { hit, icon })
 }
 
+impl TouchPoint {
+    /// A still, unspent finger: its lift may still be a tap, and on the
+    /// battlefield its rest may still charge a long-press.
+    fn still(&self) -> bool {
+        !self.moved && !self.spent
+    }
+}
+
+/// What a two-finger pair is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairState {
+    /// Neither a pinch nor anything else yet; a lift commits a box.
+    Undecided,
+    /// The spread changed past the threshold: zooming for the pair's
+    /// whole lifetime, so lifting one finger commits no box.
+    Pinch,
+}
+
+/// A live two-finger gesture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Pair {
+    /// The fingers' spread when the pair formed. Pinch detection
+    /// compares the CUMULATIVE change against it, so a slow pinch
+    /// (under a pixel per event) still reads as one.
+    pub start_dist: f32,
+    pub state: PairState,
+}
+
+/// The lone finger that may charge a battlefield long-press.
+fn world_hold(input: &InputState) -> Option<TouchPoint> {
+    let [(_, finger)] = input.touches.as_slice() else {
+        return None;
+    };
+    (finger.born == TouchBorn::World && finger.still()).then_some(*finger)
+}
+
+/// Where a finger landing at `p` was born.
+fn born_at(game: &Game, p: Vec2) -> TouchBorn {
+    if crate::render::minimap_world_at(&game.view(), p).is_some() {
+        TouchBorn::Minimap
+    } else if click_on_hud(game, p) {
+        TouchBorn::Chrome
+    } else {
+        TouchBorn::World
+    }
+}
+
 /// How long a finger must rest before it reads as deliberate rather
 /// than the start of a tap, so feedback never flashes under quick taps.
 pub(crate) const TOUCH_REST_MS: f64 = 120.0;
@@ -59,12 +118,7 @@ pub(crate) const TOUCH_REST_MS: f64 = 120.0;
 /// zero once the finger has rested to one as the order fires. Only a
 /// lone world-born finger that has neither moved nor fired charges.
 pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
-    let [(_, finger)] = input.touches.as_slice() else {
-        return None;
-    };
-    if finger.moved || finger.fired || finger.chrome {
-        return None;
-    }
+    let finger = world_hold(input)?;
     let held_ms = (input.now - finger.down_at) * 1000.0;
     if held_ms < TOUCH_REST_MS {
         return None;
@@ -77,17 +131,16 @@ pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
 /// A finger landed.
 pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     input.touches.retain(|(tid, _)| *tid != id);
-    let chrome =
-        crate::render::minimap_world_at(&game.view(), p).is_some() || click_on_hud(game, p);
+    let born = born_at(game, p);
     input.touches.push((
         id,
         TouchPoint {
             origin: p,
             at: p,
             down_at: input.now,
+            born,
             moved: false,
-            fired: false,
-            chrome,
+            spent: false,
             card: pressed_card(game, p, input.ui),
         },
     ));
@@ -95,15 +148,12 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         // Three fingers mean nothing yet; the oldest yields.
         input.touches.remove(0);
     }
-    if input.touches.len() == 2 {
-        // A fresh pair starts undecided, whatever the last
-        // pair was doing — a pinch must not outlive its
-        // fingers and swallow the next pair's box.
-        input.pinching = false;
-        input.pair_dist = Some((input.touches[0].1.at - input.touches[1].1.at).length());
-    } else {
-        input.pair_dist = None;
-    }
+    // A fresh pair starts undecided, whatever the last pair was doing:
+    // a pinch must not outlive its fingers and swallow the next box.
+    input.pair = (input.touches.len() == 2).then(|| Pair {
+        start_dist: (input.touches[0].1.at - input.touches[1].1.at).length(),
+        state: PairState::Undecided,
+    });
 }
 
 /// A finger moved.
@@ -122,7 +172,7 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     match input.touches.len() {
         // One moved finger drags the world under the hand —
         // unless it landed on chrome, whose ground it keeps.
-        1 if input.touches[0].1.moved && !input.touches[0].1.chrome => {
+        1 if input.touches[0].1.moved && input.touches[0].1.born == TouchBorn::World => {
             game.presentation.camera.center -= delta / game.presentation.camera.zoom;
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         }
@@ -132,13 +182,16 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         // pinch entirely and mis-commit it as a box select.
         2 => {
             let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
-            if !input.pinching
-                && let Some(start) = input.pair_dist
-                && (new_dist - start).abs() > crate::viewer_touch::PINCH_START_PX * input.ui
+            if let Some(pair) = &mut input.pair
+                && pair.state == PairState::Undecided
+                && (new_dist - pair.start_dist).abs()
+                    > crate::viewer_touch::PINCH_START_PX * input.ui
             {
-                input.pinching = true;
+                pair.state = PairState::Pinch;
             }
-            if input.pinching
+            if input
+                .pair
+                .is_some_and(|pair| pair.state == PairState::Pinch)
                 && let Some(old) = old_dist
             {
                 let spread = new_dist - old;
@@ -166,20 +219,25 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         // — both corners world-born; a chrome-born finger
         // boxes nothing behind its panel.
         1 => {
-            if !input.pinching && !lifted.chrome && !input.touches[0].1.chrome {
-                let other = input.touches[0].1.at;
-                box_select(game, other, p, false);
+            let survivor = input.touches[0].1;
+            if input
+                .pair
+                .is_some_and(|pair| pair.state == PairState::Undecided)
+                && lifted.born == TouchBorn::World
+                && survivor.born == TouchBorn::World
+            {
+                box_select(game, survivor.at, p, false);
             }
             // The survivor is spent EITHER way: after a box
             // or a pinch, its own still release must not
             // read as a tap and select whatever sits under
             // the resting finger.
-            input.touches[0].1.moved = true;
+            input.touches[0].1.spent = true;
+            input.pair = None;
         }
         0 => {
-            input.pinching = false;
-            input.pair_dist = None;
-            if !lifted.moved && !lifted.fired {
+            input.pair = None;
+            if lifted.still() {
                 // A short still touch is a tap: select. Two
                 // taps inside the window sweep the kind,
                 // like a double-click.
@@ -262,24 +320,17 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 /// inspects (tap-select), on ground it issues the context order for
 /// the current selection, exactly like a right-click.
 pub fn update_touch(game: &mut Game, input: &mut InputState) {
-    if input.touches.len() != 1 {
+    // Chrome owns its ground for the held finger too: a long-press on
+    // the minimap or panel band must not order the army to the world
+    // point hiding under the HUD. A chrome finger is never spent, so
+    // lifting it after reading a card's preview still activates it.
+    let Some(tp) = world_hold(input) else {
         return;
-    }
-    let (_, tp) = input.touches[0];
-    if tp.moved || tp.fired {
-        return;
-    }
+    };
     if (input.now - tp.down_at) * 1000.0 < f64::from(input.touch_prefs.long_press_ms) {
         return;
     }
-    // Chrome owns its ground for the held finger too: a long-press on
-    // the minimap or panel band must not order the army to the world
-    // point hiding under the HUD. The finger stays unfired, so lifting
-    // it after reading a card's preview still activates the card.
-    if crate::render::minimap_world_at(&game.view(), tp.at).is_some() || click_on_hud(game, tp.at) {
-        return;
-    }
-    input.touches[0].1.fired = true;
+    input.touches[0].1.spent = true;
     let world = game.presentation.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     // Only entities the viewer can actually SEE steer the gesture — an

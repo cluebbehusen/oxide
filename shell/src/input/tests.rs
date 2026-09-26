@@ -3176,7 +3176,11 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
         let x = 640.0 + (i as f32) * 0.9;
         apply_events(&mut game, &mut input, &[touch_move(2, vec2(x, 400.0))]);
     }
-    assert!(input.pinching, "the cumulative spread reads as a pinch");
+    assert_eq!(
+        input.pair.map(|pair| pair.state),
+        Some(touch::PairState::Pinch),
+        "the cumulative spread reads as a pinch"
+    );
     game.presentation.camera.update(1.0); // land the glide: headless has no frames
     assert!(
         game.presentation.camera.zoom > zoom_before,

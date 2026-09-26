@@ -164,14 +164,8 @@ pub struct InputState {
     pub(crate) touches: Vec<(u64, TouchPoint)>,
     /// Wall-clock stamp of the last completed tap, for double-taps.
     pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
-    /// A two-finger pair that spread or squeezed reads as a pinch for
-    /// its whole lifetime — lifting one finger of a pinch must not
-    /// commit a box-select.
-    pub(crate) pinching: bool,
-    /// The pair's spread when it formed: pinch detection compares the
-    /// CUMULATIVE change against this, so a slow pinch (under a pixel
-    /// per event) still reads as one instead of committing a box.
-    pub(crate) pair_dist: Option<f32>,
+    /// The live two-finger gesture, if two fingers are down.
+    pub(crate) pair: Option<Pair>,
     /// The menu button was pressed this frame. Input cannot switch
     /// screens itself, so the frame loop takes this one-shot request.
     pub(crate) menu_requested: bool,
@@ -386,8 +380,7 @@ impl InputState {
             touch_prefs: crate::config::TouchPrefs::default(),
             touches: Vec::new(),
             last_tap: None,
-            pinching: false,
-            pair_dist: None,
+            pair: None,
             menu_requested: false,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
@@ -507,8 +500,7 @@ impl InputState {
         self.build_category = None;
         self.touches.clear();
         self.last_tap = None;
-        self.pinching = false;
-        self.pair_dist = None;
+        self.pair = None;
         self.menu_requested = false;
     }
 
@@ -519,7 +511,8 @@ impl InputState {
             return None;
         };
         let rested = (self.now - finger.down_at) * 1000.0 >= TOUCH_REST_MS;
-        (finger.chrome && !finger.moved && rested).then_some(finger.at)
+        (finger.born == TouchBorn::Chrome && !finger.moved && !finger.spent && rested)
+            .then_some(finger.at)
     }
 
     /// Consumes this frame's menu-button press, if any.
@@ -882,7 +875,7 @@ use select::{
     box_select, click_on_hud, click_select, cycle_idle_worker, select_all_of_kind_on_screen,
 };
 pub use touch::update_touch;
-pub(crate) use touch::{TOUCH_REST_MS, TouchPoint, long_press_progress};
+pub(crate) use touch::{Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress};
 
 /// The cursor shape the current intent deserves: crosshair while
 /// placing a building or plotting a patrol, a pointer over clickable
@@ -919,16 +912,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // A held minimap press keeps steering: clamp the cursor
                 // into the minimap so sliding off its edge doesn't stall
                 // the pan mid-gesture.
-                if input.minimap_drag {
-                    let rect = crate::render::minimap_rect(&game.view());
-                    let clamped = vec2(
-                        x.clamp(rect.x, rect.x + rect.w - 1.0),
-                        y.clamp(rect.y, rect.y + rect.h - 1.0),
-                    );
-                    if let Some(world) = crate::render::minimap_world_at(&game.view(), clamped) {
-                        game.presentation.camera.center = world;
-                        game.presentation.camera.pan(Vec2::ZERO);
-                    }
+                if input.minimap_drag
+                    && let Some(world) =
+                        crate::render::minimap_world_clamped(&game.view(), vec2(x, y))
+                {
+                    game.presentation.camera.center = world;
+                    game.presentation.camera.pan(Vec2::ZERO);
                 }
                 // Middle-drag: the world follows the hand, so the pan
                 // moves against the cursor delta, scaled out of screen

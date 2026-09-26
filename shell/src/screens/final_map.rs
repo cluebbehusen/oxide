@@ -27,12 +27,7 @@ pub struct FinalMapScreen {
 /// A held minimap press keeps steering, clamped so sliding off the edge
 /// doesn't stall the pan.
 fn steer_minimap(game: &mut Game, p: Vec2) {
-    let rect = render::minimap_rect(&game.view());
-    let clamped = vec2(
-        p.x.clamp(rect.x, rect.x + rect.w - 1.0),
-        p.y.clamp(rect.y, rect.y + rect.h - 1.0),
-    );
-    if let Some(world) = render::minimap_world_at(&game.view(), clamped) {
+    if let Some(world) = render::minimap_world_clamped(&game.view(), p) {
         game.presentation.camera.center = world;
         game.presentation.camera.pan(Vec2::ZERO);
     }
