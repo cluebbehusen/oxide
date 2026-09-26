@@ -21,7 +21,7 @@ use crate::planning::{PlanningWork, Progress};
 use chassis::Tick;
 use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::TilePos;
-use oxide_sim::ids::{PlayerId, UnitId};
+use oxide_sim::ids::{BuildingId, PlayerId, UnitId};
 use oxide_sim::stats::{BOMB_SALVO_SPACING, BuildingKind, Domain, Role, UnitKind, WeaponStats};
 use std::cell::Cell;
 use std::cmp::Reverse;
@@ -309,22 +309,9 @@ impl PackageRefinement<'_> {
         let jobs = providers
             .iter()
             .map(|provider| {
-                let eligible = eligible_by_kind.entry(provider.kind).or_insert_with(|| {
-                    resources
-                        .producers()
-                        .iter()
-                        .filter(|lane| {
-                            access.allows(lane.producer, provider.kind)
-                                && lane.horizon_timing(&[provider.kind]).is_some_and(|timing| {
-                                    matches!(
-                                        timing.current_egress,
-                                        ProducerEgress::NotRequired | ProducerEgress::Open
-                                    )
-                                })
-                        })
-                        .map(|lane| lane.producer)
-                        .collect::<Vec<_>>()
-                });
+                let eligible = eligible_by_kind
+                    .entry(provider.kind)
+                    .or_insert_with(|| eligible_producers(resources, access, provider.kind, None));
                 ProducerJobClaim::flexible(
                     provider.kind,
                     provider.command_tick,
@@ -335,6 +322,31 @@ impl PackageRefinement<'_> {
             .collect();
         crate::allocation::forecast::refine(self.capacity, self.key, jobs, self.planning)
     }
+}
+
+/// Completed producers that `access` allows to train `kind` with open egress,
+/// limited to those that can finish it before `ready_before` when given.
+pub(super) fn eligible_producers(
+    resources: &ResourceSnapshot,
+    access: &ProductionAccess,
+    kind: UnitKind,
+    ready_before: Option<Tick>,
+) -> Vec<BuildingId> {
+    resources
+        .producers()
+        .iter()
+        .filter(|lane| {
+            access.allows(lane.producer, kind)
+                && lane.horizon_timing(&[kind]).is_some_and(|timing| {
+                    ready_before.is_none_or(|deadline| timing.no_block_latest_ready_tick < deadline)
+                        && matches!(
+                            timing.current_egress,
+                            ProducerEgress::NotRequired | ProducerEgress::Open
+                        )
+                })
+        })
+        .map(|lane| lane.producer)
+        .collect()
 }
 
 #[derive(Debug, Clone)]

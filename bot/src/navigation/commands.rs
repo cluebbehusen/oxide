@@ -1672,7 +1672,7 @@ fn known_building_covers(obs: &Observation, tile: TilePos) -> bool {
         || obs.enemy_buildings.iter().any(covers)
 }
 
-fn in_bounds(obs: &Observation, tile: TilePos) -> bool {
+pub(crate) fn in_bounds(obs: &Observation, tile: TilePos) -> bool {
     (0..obs.map_width).contains(&tile.x) && (0..obs.map_height).contains(&tile.y)
 }
 
