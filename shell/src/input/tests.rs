@@ -2599,6 +2599,115 @@ fn a_box_survivor_pans_only_past_the_slop() {
 }
 
 #[test]
+fn a_resting_pair_draws_its_box_then_claims_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(4.0, 4.0));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a), touch_down(2, b)]);
+    assert_eq!(touch_box(&input), None, "a fresh pair may be a pinch");
+    input.now = 1.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
+    assert_eq!(
+        touch_box(&input),
+        Some((a, b, false)),
+        "a rested pair shows its box"
+    );
+    input.now = 1.0 + f64::from(input.touch_prefs.long_press_ms) / 1000.0 + 0.01;
+    update_touch(&mut game, &mut input);
+    assert_eq!(
+        touch_box(&input),
+        Some((a, b, true)),
+        "the rest claims the box"
+    );
+
+    // Claimed, a corner drag resizes instead of zooming.
+    let zoom = game.presentation.camera.zoom;
+    let far = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    apply_events(&mut game, &mut input, &[touch_move(2, far)]);
+    game.presentation.camera.update(1.0); // land any glide: headless has no frames
+    assert_eq!(game.presentation.camera.zoom, zoom, "no pinch once claimed");
+    assert_eq!(touch_box(&input), Some((a, far, true)));
+    apply_events(&mut game, &mut input, &[touch_up(2, far)]);
+    assert!(
+        !game.presentation.selection.units.is_empty(),
+        "the dragged-out box swept the base"
+    );
+    assert_eq!(touch_box(&input), None);
+}
+
+#[test]
+fn a_pair_that_moves_before_resting_still_pinches() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = vec2(400.0, 300.0);
+    input.now = 1.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_down(1, a), touch_down(2, a + vec2(260.0, 0.0))],
+    );
+    let zoom = game.presentation.camera.zoom;
+    // One finger still, the other squeezing in: the common thumb-anchored
+    // pinch grip.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, a + vec2(120.0, 0.0))],
+    );
+    assert_eq!(
+        input.pair.map(|pair| pair.state),
+        Some(touch::PairState::Pinch)
+    );
+    game.presentation.camera.update(1.0);
+    assert_ne!(game.presentation.camera.zoom, zoom);
+    input.now = 3.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(touch_box(&input), None, "a pinch never becomes a box");
+}
+
+#[test]
+fn a_pair_formed_mid_pan_or_while_armed_never_boxes() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(40.0, 0.0))]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, b)]);
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "a pan never boxes"
+    );
+    apply_events(&mut game, &mut input, &[touch_up(1, a - vec2(40.0, 0.0))]);
+
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .expect("a harvester")
+        .id;
+    game.presentation.selection.units = vec![harvester];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    input.build_menu = true;
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(3, a), touch_down(4, b)]);
+    input.now = 6.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(touch_box(&input), None);
+    apply_events(&mut game, &mut input, &[touch_up(4, b)]);
+    assert_eq!(game.presentation.selection.units, vec![harvester]);
+    assert_eq!(
+        input.placing,
+        Some(oxide_sim::BuildingKind::Turret),
+        "still armed"
+    );
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.

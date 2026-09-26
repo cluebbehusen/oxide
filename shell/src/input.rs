@@ -879,7 +879,9 @@ use select::{
     box_select, click_on_hud, click_select, cycle_idle_worker, select_all_of_kind_on_screen,
 };
 pub use touch::update_touch;
-pub(crate) use touch::{Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress};
+pub(crate) use touch::{
+    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress, touch_box,
+};
 
 /// The cursor shape the current intent deserves: crosshair while
 /// placing a building or plotting a patrol, a pointer over clickable

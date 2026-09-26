@@ -2518,8 +2518,28 @@ pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) 
     if feedback == crate::input::DragFeedback::Still {
         return;
     }
-    let lo = origin.min(now);
-    let size = (origin - now).abs();
+    // Live preview starts only once release would commit a box-select.
+    draw_selection_rect(
+        game,
+        origin,
+        now,
+        feedback == crate::input::DragFeedback::Selection,
+    );
+}
+
+/// The two-finger selection box, while a touch pair draws one; its unit
+/// preview starts once the rest has claimed the box.
+pub(crate) fn draw_touch_box(game: &crate::game::Scene<'_>, input: &InputState) {
+    if let Some((a, b, claimed)) = crate::input::touch_box(input) {
+        draw_selection_rect(game, a, b, claimed);
+    }
+}
+
+/// A selection rectangle between two screen corners. With `preview`,
+/// the own units a release would select are ringed.
+fn draw_selection_rect(game: &crate::game::Scene<'_>, corner: Vec2, other: Vec2, preview: bool) {
+    let lo = corner.min(other);
+    let size = (corner - other).abs();
     draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
     draw_rectangle(
         lo.x,
@@ -2528,10 +2548,9 @@ pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) 
         size.y,
         Color::new(0.9, 0.88, 0.84, 0.08),
     );
-    if feedback != crate::input::DragFeedback::Selection {
+    if !preview {
         return;
     }
-    // Live preview starts only once release would commit a box-select.
     let a = game.presentation.camera.to_world(lo);
     let b = game.presentation.camera.to_world(lo + size);
     for unit in game.state.units() {

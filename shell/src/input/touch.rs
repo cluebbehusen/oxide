@@ -89,13 +89,18 @@ impl TouchPoint {
 /// What a two-finger pair is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairState {
-    /// Neither a pinch nor anything else yet; a lift commits a box.
+    /// Neither a pinch nor a held box yet; a lift commits a box.
     Undecided,
     /// The spread changed past the threshold: zooming for the pair's
     /// whole lifetime, so lifting one finger commits no box.
     Pinch,
-    /// A finger landed off the battlefield: the pair neither zooms
-    /// nor boxes.
+    /// The pair rested for the long-press window: a selection box whose
+    /// corners follow the fingers until one lifts. Holding one finger
+    /// still while the other moves is also a common pinch grip, so the
+    /// box must be claimed by resting before either finger drags.
+    Box,
+    /// A finger landed off the battlefield, the pair formed mid-pan, or
+    /// a mode was armed: the pair neither zooms nor boxes.
     Inert,
 }
 
@@ -106,7 +111,25 @@ pub(crate) struct Pair {
     /// compares the CUMULATIVE change against it, so a slow pinch
     /// (under a pixel per event) still reads as one.
     pub start_dist: f32,
+    /// Wall clock when the second finger landed.
+    pub formed_at: f64,
     pub state: PairState,
+}
+
+/// The selection box a two-finger pair is drawing, as its two screen
+/// corners, and whether the rest claimed it (so finger motion resizes
+/// it). An undecided pair shows its box once it has rested briefly.
+pub(crate) fn touch_box(input: &InputState) -> Option<(Vec2, Vec2, bool)> {
+    let pair = input.pair?;
+    let [(_, a), (_, b)] = input.touches.as_slice() else {
+        return None;
+    };
+    let rested = (input.now - pair.formed_at) * 1000.0 >= TOUCH_REST_MS;
+    match pair.state {
+        PairState::Box => Some((a.at, b.at, true)),
+        PairState::Undecided if rested => Some((a.at, b.at, false)),
+        _ => None,
+    }
 }
 
 /// The lone finger that may charge a battlefield long-press.
@@ -199,9 +222,14 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     // a pinch must not outlive its fingers and swallow the next box.
     input.pair = (input.touches.len() == 2).then(|| {
         let [(_, a), (_, b)] = [input.touches[0], input.touches[1]];
+        let both_world = a.born == TouchBorn::World && b.born == TouchBorn::World;
+        // A second finger joining a pan, or landing while a mode waits
+        // for its target, must not turn the gesture into a selection.
+        let free = both_world && !a.moved && input.armed_mode().is_none();
         Pair {
             start_dist: (a.at - b.at).length(),
-            state: if a.born == TouchBorn::World && b.born == TouchBorn::World {
+            formed_at: input.now,
+            state: if free {
                 PairState::Undecided
             } else {
                 PairState::Inert
@@ -334,9 +362,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             let survivor = input.touches[0].1;
             if input
                 .pair
-                .is_some_and(|pair| pair.state == PairState::Undecided)
-                && lifted.born == TouchBorn::World
-                && survivor.born == TouchBorn::World
+                .is_some_and(|pair| matches!(pair.state, PairState::Undecided | PairState::Box))
             {
                 box_select(game, survivor.at, p, false);
             }
@@ -432,6 +458,14 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 /// inspects (tap-select), on ground it issues the context order for
 /// the current selection, exactly like a right-click.
 pub fn update_touch(game: &mut Game, input: &mut InputState) {
+    // A pair emits no events while it rests either, so its box claim
+    // rides the same clock.
+    if let Some(pair) = &mut input.pair
+        && pair.state == PairState::Undecided
+        && (input.now - pair.formed_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms)
+    {
+        pair.state = PairState::Box;
+    }
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world
     // point hiding under the HUD. A chrome finger is never spent, so
