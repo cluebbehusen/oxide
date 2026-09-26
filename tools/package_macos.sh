@@ -50,14 +50,14 @@ PLIST
 # Icon, best effort: an iconset from the real mark (tools/gen_icon.py).
 # Missing tools or assets just mean a default-icon app.
 if command -v sips > /dev/null && command -v iconutil > /dev/null \
-    && [ -f assets/icon/oxide_1024.png ]; then
+    && [ -f assets/icon/oxide_desktop_1024.png ]; then
     ICONSET=$(mktemp -d)/oxide.iconset
     mkdir -p "$ICONSET"
     for SIZE in 16 32 128 256 512; do
-        sips -z $SIZE $SIZE assets/icon/oxide_1024.png \
+        sips -z $SIZE $SIZE assets/icon/oxide_desktop_1024.png \
             --out "$ICONSET/icon_${SIZE}x${SIZE}.png" > /dev/null
         DOUBLE=$((SIZE * 2))
-        sips -z $DOUBLE $DOUBLE assets/icon/oxide_1024.png \
+        sips -z $DOUBLE $DOUBLE assets/icon/oxide_desktop_1024.png \
             --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" > /dev/null
     done
     iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/oxide.icns"

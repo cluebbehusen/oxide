@@ -63,15 +63,16 @@ cargo run -p oxide-driver -- smoke --spawn
 
 ## iPad build
 
-`ios/` wraps the shell in an Xcode project whose only build phase runs Cargo for
-the device or simulator and places the binary where Xcode signs and packages it,
-with `assets/` and `scenarios/` copied in. It needs full Xcode (not only the
-Command Line Tools), the `aarch64-apple-ios` Rust target (plus
-`aarch64-apple-ios-sim` for the simulator), and an iPad with Developer Mode on.
-Set your signing team in the ignored `ios/Local.xcconfig`, never in Xcode's
-Signing pane, which writes it into the shared project file. If you sign with
-your own team, also set a bundle ID you control there (the example file shows
-how) and launch with that ID instead of `dev.luebbehusen.oxide`:
+`ios/` wraps the shell in an Xcode project with a script phase that runs Cargo
+for the device or simulator and places the binary where Xcode signs and packages
+it. Its resource phase copies `assets/` and `scenarios/` and compiles the
+app-icon catalog. It needs full Xcode (not only the Command Line Tools), the
+`aarch64-apple-ios` Rust target (plus `aarch64-apple-ios-sim` for the
+simulator), and an iPad with Developer Mode on. Set your signing team in the
+ignored `ios/Local.xcconfig`, never in Xcode's Signing pane, which writes it
+into the shared project file. If you sign with your own team, also set a bundle
+ID you control there (the example file shows how) and launch with that ID
+instead of `dev.luebbehusen.oxide`:
 
 ```sh
 rustup target add aarch64-apple-ios
@@ -87,6 +88,11 @@ xcrun devicectl device process launch --device <id> dev.luebbehusen.oxide
 
 iPadOS 27 requires the UIScene lifecycle, so the workspace pins an unreleased
 miniquad commit; see the workspace `Cargo.toml` for why that exact commit.
+
+`uv run tools/gen_icon.py` reproduces the shared desktop and iOS icon. The iOS
+catalog receives an opaque square master; desktop window icons and the macOS
+bundle use the same artwork with transparent outer corners. Commit both sets of
+generated files when changing the icon.
 
 ## Sandbox sessions
 
