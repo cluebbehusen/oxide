@@ -11,6 +11,38 @@ fn headless_game() -> Game {
         .expect("embedded skirmish builds")
 }
 
+#[test]
+fn only_the_host_pauses_a_lan_match() {
+    use crate::game::network::NetRole;
+    let mut duel = oxide_sim::Scenario::skirmish();
+    for player in &mut duel.players {
+        player.bot = false;
+        player.bot_config = None;
+    }
+    let lan = |seat, role| {
+        Game::networked(
+            duel.clone(),
+            oxide_sim::PlayerId(seat),
+            role,
+            vec2(1280.0, 800.0),
+        )
+        .unwrap()
+    };
+    let (mut host, mut client) = (lan(0, NetRole::Host), lan(1, NetRole::Client));
+    let mut input = InputState::new();
+    dispatch_action(&mut host, &mut input, Action::TogglePause);
+    dispatch_action(&mut client, &mut input, Action::TogglePause);
+    assert!(host.presentation.paused);
+    assert!(!client.presentation.paused);
+    assert!(
+        client
+            .presentation
+            .toasts
+            .iter()
+            .any(|toast| toast.text == "Only the host can pause.")
+    );
+}
+
 fn multi_producer_game() -> Game {
     let mut scenario = oxide_sim::Scenario::skirmish();
     scenario.buildings.push(oxide_sim::scenario::BuildingSpec {

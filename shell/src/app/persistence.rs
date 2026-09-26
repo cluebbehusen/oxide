@@ -346,20 +346,16 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
                     if loading { "Load" } else { "Save" }
                 );
                 if busy.quit_after {
-                    return Ok(Screen::Pause(PauseScreen::open_save_failed(
+                    return Ok(Screen::Pause(pause_menu(&app.game).with_save_failed(
                         error.to_string(),
                         screens::pause::LeaveVerb::Quit,
-                        app.game.state.result().is_some(),
-                        can_surrender(&app.game),
                         false,
                     )));
                 }
                 if let Intent::Leave(verb, home) = busy.intent {
-                    return Ok(Screen::Pause(PauseScreen::open_save_failed(
+                    return Ok(Screen::Pause(pause_menu(&app.game).with_save_failed(
                         error.to_string(),
                         verb,
-                        app.game.state.result().is_some(),
-                        can_surrender(&app.game),
                         home,
                     )));
                 }

@@ -59,6 +59,9 @@ then bot commands, then record, then `State::tick`.
   connection, or a protocol violation also drops it. A dropped seat leaves the
   progress gate at once, and its `Surrender` joins the next sealed batch.
 - A mismatched hash report halts the session and tells every client.
+  `HostSession::caught_up` reports when every live client has acknowledged every
+  published batch; a host ending a decided match waits for it so the final
+  reports are still checked.
 - Each side heartbeats when it has sent nothing for `HEARTBEAT_INTERVAL`.
   `HostSession::poll` must run on the host's game loop: a host whose loop hangs
   stops heartbeating, and clients end the session after `SILENCE_TIMEOUT`.

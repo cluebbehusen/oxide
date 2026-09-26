@@ -14,7 +14,11 @@ pub(super) struct ScreenFrame {
 /// frozen behind it.
 fn backdrop_fx_advances(screen: &Screen) -> bool {
     match screen {
-        Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Results(_) => true,
+        Screen::Home(_)
+        | Screen::Wizard(_)
+        | Screen::Replays(_)
+        | Screen::Results(_)
+        | Screen::Lobby(_) => true,
         Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
             !matches!(**back, Screen::Pause(_))
         }
@@ -68,8 +72,10 @@ fn gap_opens_pause(raw_dt: f32, live_streak: u8, running: bool, exempt: bool) ->
 /// lesson.
 fn open_pause(game: &mut Game, cause: PauseCause) -> Screen {
     game.presentation.conceded_banner = false;
-    game.presentation.paused = true;
-    let pause = PauseScreen::open(game.state.result().is_some(), can_surrender(game));
+    let pause = pause_menu(game);
+    if game.net_role().is_none() {
+        game.presentation.paused = true;
+    }
     Screen::Pause(match cause {
         PauseCause::Player => {
             game.demo.paused_menu = true;
@@ -142,6 +148,9 @@ pub(super) fn update_and_draw(
     // own clocks below, while Pause deliberately advances neither.
     if backdrop_fx_advances(&screen) {
         app.game.update_fx(time.presentation);
+    } else if app.net.is_some() && !matches!(screen, Screen::Playing) {
+        // A LAN match keeps ticking under menus, so its effects age too.
+        app.game.update_wall_clock_fx(time.presentation);
     }
     // A `rerun` transition re-enters the loop under the new screen before
     // presenting, so the frame shows the destination.
@@ -161,6 +170,7 @@ pub(super) fn update_and_draw(
             back,
         } => codex_frame(app, codex, back, &events),
         Screen::Wizard(w) => wizard_frame(app, w, &events, &mut rerun),
+        Screen::Lobby(lobby) => lobby_frame(app, lobby, &events, &mut rerun),
         Screen::Playing => playing_frame(
             app,
             &mut events,
@@ -185,6 +195,32 @@ pub(super) fn update_and_draw(
         rerun,
         profile_frame_active,
     })
+}
+
+/// A LAN match gathering: polls the lobby and installs the match on Go.
+fn lobby_frame(
+    app: &mut App,
+    mut lobby: Box<crate::screens::lobby::LobbyScreen>,
+    events: &[RawEvent],
+    rerun: &mut bool,
+) -> Screen {
+    if let Some((game, link)) = lobby.lobby.poll(app.clock.elapsed(), render::viewport()) {
+        app.install_networked(game, link);
+        *rerun = true;
+        return Screen::Playing;
+    }
+    let out = lobby.update(
+        events,
+        &mut app.input.mouse,
+        &mut app.game.presentation.sounds_pending,
+    );
+    if out == crate::screens::lobby::Out::Cancel {
+        return Screen::Home(HomeScreen::open());
+    }
+    render::draw(&app.game.view(), &app.sprites, &app.input);
+    veil();
+    lobby.menu.draw(&lobby.lobby.status());
+    Screen::Lobby(lobby)
 }
 
 fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32) -> Result<Screen> {
@@ -554,7 +590,7 @@ fn playing_frame(
         time.raw,
         app.live_streak,
         !app.game.presentation.paused && app.game.state.result().is_none(),
-        app.args.automation || app.args.debug_server,
+        app.args.automation || app.args.debug_server || app.game.net_role().is_some(),
     ) {
         next = Some(open_pause(&mut app.game, PauseCause::Suspension));
     }
@@ -569,9 +605,11 @@ fn playing_frame(
     let profile_stopped = if profile_barrier {
         false
     } else {
-        let stopped = app
-            .game
-            .advance_wall_clock(time.raw, app.frame_profiler.stop_tick());
+        // A LAN match's link runs its ticks before the screen frame.
+        let stopped = app.game.net_role().is_none()
+            && app
+                .game
+                .advance_wall_clock(time.raw, app.frame_profiler.stop_tick());
         app.game.update_wall_clock_fx(time.presentation);
         stopped
     };
@@ -620,10 +658,7 @@ fn playback_frame(
         pb.finish_diagnostics();
         *rerun = true;
         match pb.return_to {
-            PlaybackReturn::Pause => Screen::Pause(PauseScreen::open(
-                app.game.state.result().is_some(),
-                can_surrender(&app.game),
-            )),
+            PlaybackReturn::Pause => Screen::Pause(pause_menu(&app.game)),
             PlaybackReturn::Results => Screen::Results(ResultsScreen::open()),
             PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
         }
@@ -701,6 +736,13 @@ fn results_frame(
     results.draw(&app.game);
     Ok(match out {
         screens::results::Out::Stay => Screen::Results(results),
+        screens::results::Out::Rematch if app.game.net_role().is_some() => {
+            app.menu_notice = Some((
+                "Host a new match to play again.".to_owned(),
+                get_time() + 5.0,
+            ));
+            Screen::Results(results)
+        }
         screens::results::Out::Rematch => {
             app.persistence_screen(persistence::Intent::Rematch, Screen::Results(results))
         }

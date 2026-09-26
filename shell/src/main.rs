@@ -21,6 +21,7 @@ mod game;
 mod input;
 mod layout;
 mod menu;
+mod netplay;
 mod panel;
 mod paths;
 mod performance;
@@ -61,6 +62,20 @@ struct Args {
     /// seek — no recorder, no commands).
     #[arg(long, conflicts_with_all = ["scenario", "replay", "automation"])]
     watch: Option<String>,
+
+    /// Host a LAN match on this address (e.g. 0.0.0.0:4200). The
+    /// --scenario file's non-bot seats are the players; the host takes the
+    /// first.
+    #[arg(
+        long,
+        requires = "scenario",
+        conflicts_with_all = ["replay", "watch", "join", "automation"]
+    )]
+    host: Option<String>,
+
+    /// Join the LAN match hosted at this address (e.g. 192.168.1.20:4200).
+    #[arg(long, conflicts_with_all = ["scenario", "replay", "watch", "automation"])]
+    join: Option<String>,
 
     /// Serve the debug protocol on --port (skips the menu unless automated).
     #[arg(long)]
@@ -321,5 +336,30 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn hosting_needs_a_scenario_and_joining_takes_none() {
+        let parse = |args: &[&str]| Args::try_parse_from([&["oxide-shell"], args].concat());
+        assert!(parse(&["--host", "0.0.0.0:4200"]).is_err());
+        let host = parse(&["--host", "0.0.0.0:4200", "--scenario", "map.json"]).unwrap();
+        assert_eq!(host.host.as_deref(), Some("0.0.0.0:4200"));
+        let join = parse(&["--join", "10.0.0.2:4200"]).unwrap();
+        assert_eq!(join.join.as_deref(), Some("10.0.0.2:4200"));
+        for invalid in [
+            &["--join", "10.0.0.2:4200", "--scenario", "map.json"][..],
+            &["--join", "a:1", "--host", "b:1", "--scenario", "map.json"],
+            &[
+                "--host",
+                "b:1",
+                "--scenario",
+                "map.json",
+                "--replay",
+                "save.json",
+            ],
+            &["--join", "a:1", "--watch", "match.json"],
+        ] {
+            assert!(parse(invalid).is_err(), "accepted {invalid:?}");
+        }
     }
 }

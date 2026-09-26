@@ -256,16 +256,23 @@ pub(crate) struct SaveJob {
 impl SaveJob {
     pub(crate) fn capture(game: &Game, name: Option<&str>) -> Self {
         let named = name.is_some();
+        debug_assert!(
+            !(named && game.net_role().is_some()),
+            "LAN matches offer no named save"
+        );
         let needed = named
             || (!game.autosave_done
                 && (game.state.current_tick() != 0 || !game.pending.is_empty()));
+        // A LAN match cannot resume on one machine, so it keeps the
+        // watch-only record a decided match keeps.
+        let recording = game.state.result().is_some() || game.net_role().is_some();
         let mut meta = game.recorder.meta.clone();
         meta.ticks = Some(game.state.current_tick());
         meta.saved_at = Some(now_unix());
         meta.kind = Some(
             if named {
                 "save"
-            } else if game.state.result().is_some() {
+            } else if recording {
                 "match"
             } else {
                 "autosave"
@@ -276,7 +283,7 @@ impl SaveJob {
             meta.description = Some(name.into());
         }
         let data = needed.then(|| {
-            if !named && game.state.result().is_some() {
+            if !named && recording {
                 let mut replay = game.recorder.clone();
                 replay.meta = meta.clone();
                 SaveData::Recording(replay)
@@ -395,6 +402,33 @@ mod tests {
         let mut playback = oxide_kit::playback::Playback::load(record).unwrap();
         playback.seek(restored.state.current_tick());
         assert_eq!(playback.state.hash(), restored.state.hash());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_lan_match_leaves_only_a_watch_only_recording() {
+        let dir = scratch("lan-match");
+        let mut duel = oxide_sim::Scenario::skirmish();
+        for player in &mut duel.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
+        let mut game = Game::networked(
+            duel,
+            oxide_sim::PlayerId(0),
+            crate::game::network::NetRole::Host,
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .unwrap();
+        game.issue(oxide_sim::Command::Train {
+            building: oxide_sim::BuildingId(0),
+            kind: oxide_sim::UnitKind::Harvester,
+        });
+        let Ok(SaveOutcome::Wrote(path)) = write_record(&mut game, &dir) else {
+            panic!("an undecided LAN match still records its history")
+        };
+        let record = oxide_kit::load_replay(&path).unwrap();
+        assert_eq!(record.meta.kind.as_deref(), Some("match"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

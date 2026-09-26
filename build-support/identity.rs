@@ -31,6 +31,10 @@ fn inputs(host: &str) -> Vec<String> {
     .map(str::to_owned)
     .collect();
     paths.extend(["chassis", "sim", "bot", "protocol", "kit", host].map(str::to_owned));
+    // Only the shell links the multiplayer crate.
+    if host == "shell" {
+        paths.push("net".to_owned());
+    }
     paths
 }
 
@@ -106,7 +110,7 @@ mod tests {
             let repo = Self(path);
             repo.run(&["init", "-q"]);
             for package in [
-                "chassis", "sim", "bot", "protocol", "kit", "shell", "driver",
+                "chassis", "sim", "bot", "protocol", "kit", "net", "shell", "driver",
             ] {
                 fs::create_dir_all(repo.0.join(package).join("src")).unwrap();
                 fs::write(
@@ -170,6 +174,14 @@ mod tests {
         assert_eq!(identity(&repo.0, &paths), committed);
         fs::remove_file(repo.0.join("sim/src/lib.rs")).unwrap();
         assert_eq!(identity(&repo.0, &paths).1, "true");
+    }
+
+    #[test]
+    fn multiplayer_sources_mark_only_the_shell_dirty() {
+        let repo = Repository::new();
+        fs::write(repo.0.join("net/src/lib.rs"), "// changed transport").unwrap();
+        assert_eq!(identity(&repo.0, &inputs("shell")).1, "true");
+        assert_eq!(identity(&repo.0, &inputs("driver")).1, "false");
     }
 
     #[test]

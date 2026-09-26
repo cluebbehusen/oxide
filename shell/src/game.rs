@@ -142,8 +142,11 @@ pub struct Game {
     /// is skipped entirely instead of accumulated-then-discarded — a
     /// million-tick advance must not buffer a million battles.
     suppress_presentation: bool,
-    /// Ticks come from supplied batches rather than `do_tick`.
-    networked: bool,
+    /// This machine's side of a lockstep session, whose ticks come from
+    /// supplied batches rather than `do_tick`.
+    net: Option<network::NetRole>,
+    /// Staged orders not yet handed to the session host.
+    outbox: Vec<Command>,
     pub(crate) presentation: Presentation,
 }
 
@@ -270,7 +273,8 @@ impl Game {
             concede_stats: None,
             demo: crate::tutorial::Demo::default(),
             suppress_presentation: false,
-            networked: false,
+            net: None,
+            outbox: Vec::new(),
             presentation,
         })
     }
@@ -399,8 +403,11 @@ impl Game {
             .and_then(|recorder| recorder.span(phase, self.state.current_tick()))
     }
 
+    /// Starts the crash-recovery journal when a root is configured. A
+    /// networked session never journals: its batches come from the host.
     pub(crate) fn start_recovery(&mut self) {
-        if self.recovery.is_none()
+        if self.net.is_none()
+            && self.recovery.is_none()
             && !self.recovery_warned
             && let Some(root) = &self.recovery_root
         {
@@ -473,7 +480,7 @@ impl Game {
     /// only authoritative state transition.
     pub fn do_tick(&mut self) -> oxide_sim::TickReport {
         assert!(
-            !self.networked,
+            self.net.is_none(),
             "networked sessions execute supplied batches"
         );
         self.start_recovery();
@@ -636,29 +643,39 @@ impl Game {
         if self.presentation.paused {
             return false;
         }
-        self.presentation.accum += dt * self.presentation.speed as f32;
-        let mut ran = 0;
-        while self.presentation.accum >= TICK_DT
-            && ran < MAX_TICKS_PER_FRAME
-            && stop_tick.is_none_or(|tick| self.state.current_tick() < tick)
-        {
-            self.presentation.accum -= TICK_DT;
-            self.do_tick();
-            ran += 1;
-        }
-        if stop_tick.is_some_and(|tick| self.state.current_tick() >= tick) {
+        let stopped = |game: &Self| stop_tick.is_some_and(|tick| game.state.current_tick() >= tick);
+        self.pace(dt * self.presentation.speed as f32, |game| {
+            if stopped(game) {
+                return false;
+            }
+            game.do_tick();
+            true
+        });
+        if stopped(self) {
             self.presentation.accum = 0.0;
             return true;
-        }
-        // Behind by more than a frame's worth of ticks? Drop the debt
-        // rather than spiraling.
-        if ran == MAX_TICKS_PER_FRAME {
-            self.presentation.accum = self.presentation.accum.min(TICK_DT);
         }
         if self.presentation.accum < TICK_DT {
             self.prepare_bot_decision();
         }
         false
+    }
+
+    /// Runs `tick` once for each whole tick of accumulated time, up to a
+    /// frame's cap. A declined tick or the cap drops the remaining debt
+    /// rather than spiraling, leaving the render fraction at one full tick.
+    fn pace(&mut self, dt: f32, mut tick: impl FnMut(&mut Self) -> bool) {
+        self.presentation.accum += dt;
+        let mut ran = 0;
+        while self.presentation.accum >= TICK_DT && ran < MAX_TICKS_PER_FRAME {
+            self.presentation.accum -= TICK_DT;
+            if !tick(self) {
+                self.presentation.accum += TICK_DT;
+                break;
+            }
+            ran += 1;
+        }
+        self.presentation.accum = self.presentation.accum.min(TICK_DT);
     }
 
     fn prepare_bot_decision(&mut self) {
@@ -714,7 +731,16 @@ impl Game {
     }
 
     /// Stages an already attributed command from the debug input surface.
+    /// A networked session also queues it for the session host; such a
+    /// session stages only its bound seat's orders.
     pub(crate) fn stage(&mut self, command: PlayerCommand) {
+        if self.net.is_some() {
+            assert_eq!(
+                command.player, self.presentation.human,
+                "a networked session stages only its bound seat's orders"
+            );
+            self.outbox.push(command.command.clone());
+        }
         self.pending.0.push(command);
     }
 

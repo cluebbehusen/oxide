@@ -1,18 +1,16 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the multiplayer shell modes are its first callers"
-    )
-)]
 //! Lockstep sessions: a `Game` bound to one human seat that executes
 //! batches assembled by the session host instead of draining its own
 //! staged commands.
 
-use super::Game;
+use super::{Game, MAX_TICKS_PER_FRAME, TICK_DT};
 use anyhow::{Result, ensure};
 use macroquad::prelude::Vec2;
-use oxide_sim::{PlayerCommand, PlayerId, Scenario, TickReport};
+use oxide_net::{ClientSession, HostSession};
+use oxide_sim::{Command, PlayerCommand, PlayerId, Scenario, TickReport};
+use std::time::Duration;
+
+/// Batches a client keeps queued to absorb jitter while connected.
+pub(crate) const CLIENT_BUFFER: usize = 2;
 
 /// Which side of a lockstep session this machine plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +36,67 @@ impl Game {
             "{seat:?} is not a human seat"
         );
         let mut game = Self::assemble(scenario, viewport, seat, role == NetRole::Host)?;
-        game.networked = true;
+        game.net = Some(role);
         Ok(game)
+    }
+
+    /// This machine's side of a lockstep session, if any.
+    pub(crate) fn net_role(&self) -> Option<NetRole> {
+        self.net
+    }
+
+    /// Orders staged since the last call, to hand to the session host.
+    pub(crate) fn take_outbox(&mut self) -> Vec<Command> {
+        std::mem::take(&mut self.outbox)
+    }
+
+    /// One frame of the host's match at 1x speed: mirrors the host's pause
+    /// into the session, then seals, completes, publishes, and runs each due
+    /// tick. The gate or a decided match declines a tick without building
+    /// debt.
+    pub(crate) fn host_frame(&mut self, session: &mut HostSession, dt: f32, now: Duration) {
+        session.set_paused(self.presentation.paused);
+        if self.presentation.paused {
+            return;
+        }
+        self.pace(dt, |game| {
+            if game.state.result().is_some() {
+                return false;
+            }
+            let Some(mut batch) = session.seal(now) else {
+                return false;
+            };
+            batch.extend(game.bot_commands());
+            session.publish(&batch);
+            game.run_batch(&batch);
+            let state = &game.state;
+            session.executed(|| state.hash());
+            true
+        });
+        if self.presentation.accum < TICK_DT {
+            self.prepare_bot_decision();
+        }
+    }
+
+    /// One frame of a client's match at 1x speed: runs each due batch that
+    /// has arrived, then catches up until at most `keep` batches wait. The
+    /// host's pause reaches a client only as batches that stop arriving.
+    pub(crate) fn client_frame(&mut self, session: &mut ClientSession, dt: f32, keep: usize) {
+        self.pace(dt, |game| game.run_next(session));
+        let mut extra = 0;
+        while session.backlog() > keep && extra < MAX_TICKS_PER_FRAME && self.run_next(session) {
+            extra += 1;
+        }
+    }
+
+    fn run_next(&mut self, session: &mut ClientSession) -> bool {
+        let Some(batch) = session.next_batch() else {
+            return false;
+        };
+        self.run_batch(&batch);
+        let state = &self.state;
+        session.executed(|| state.hash());
+        true
     }
 
     /// Executes one complete batch from the session host.
@@ -50,7 +107,7 @@ impl Game {
     /// front of `pending` as the batch carries for the bound seat; the rest
     /// stay projected until their own batch arrives.
     pub(crate) fn run_batch(&mut self, batch: &[PlayerCommand]) -> TickReport {
-        assert!(self.networked, "local sessions tick through do_tick");
+        assert!(self.net.is_some(), "local sessions tick through do_tick");
         assert!(
             self.bot_decision.is_none(),
             "collect bot commands before running a batch"
@@ -233,5 +290,157 @@ mod tests {
         Game::with_viewport(Scenario::skirmish(), viewport())
             .unwrap()
             .run_batch(&[]);
+    }
+
+    /// Skirmish with both seats human, for a host on seat 0 and a client on
+    /// seat 1.
+    fn duel() -> Scenario {
+        let mut duel = Scenario::skirmish();
+        for player in &mut duel.players {
+            player.bot = false;
+            player.bot_config = None;
+            player.scrap = 500;
+        }
+        duel
+    }
+
+    fn resting(game: &Game) -> bool {
+        (game.presentation.accum - TICK_DT).abs() < 1e-6
+    }
+
+    #[test]
+    fn a_networked_session_never_journals() {
+        let mut host = Game::networked(duel(), PlayerId(0), NetRole::Host, viewport()).unwrap();
+        host.recovery_root = Some(std::env::temp_dir().join("oxide-lan-never-journals"));
+        host.start_recovery();
+        host.configure_diagnostics(true);
+        assert!(host.recovery.is_none());
+        assert!(host.diagnostics.is_none());
+    }
+
+    #[test]
+    fn a_networked_session_queues_staged_orders_for_the_host() {
+        let mut local = Game::with_viewport(duel(), viewport()).unwrap();
+        local.issue(train(&local, PlayerId(0), UnitKind::Harvester));
+        assert!(
+            local.take_outbox().is_empty(),
+            "local sessions send nothing"
+        );
+
+        let seat = PlayerId(1);
+        let mut client = Game::networked(duel(), seat, NetRole::Client, viewport()).unwrap();
+        assert_eq!(client.net_role(), Some(NetRole::Client));
+        let order = train(&client, seat, UnitKind::Harvester);
+        client.issue(order.clone());
+        assert_eq!(client.take_outbox(), vec![order]);
+        assert!(client.take_outbox().is_empty());
+        assert_eq!(client.pending.len(), 1, "the order stays projected");
+    }
+
+    #[test]
+    #[should_panic(expected = "stages only its bound seat's orders")]
+    fn a_networked_session_refuses_another_seats_order() {
+        let mut client = Game::networked(duel(), PlayerId(1), NetRole::Client, viewport()).unwrap();
+        client.stage(PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Surrender,
+        });
+    }
+
+    #[test]
+    fn the_host_frame_paces_ticks_and_rests_at_the_lead_cap() {
+        let (host_seat, client_seat) = (PlayerId(0), PlayerId(1));
+        let mut host = Game::networked(duel(), host_seat, NetRole::Host, viewport()).unwrap();
+        let mut session = HostSession::new(host_seat, &[client_seat], Duration::ZERO);
+        let now = Duration::ZERO;
+
+        host.host_frame(&mut session, TICK_DT * 0.5, now);
+        assert_eq!(host.state.current_tick(), 0, "half a tick is not due");
+        host.host_frame(&mut session, TICK_DT * 0.75, now);
+        assert_eq!(host.state.current_tick(), 1);
+        assert!(
+            session.take_outgoing().len() == 1,
+            "the batch went to the client"
+        );
+
+        host.presentation.paused = true;
+        host.host_frame(&mut session, TICK_DT * 4.0, now);
+        assert_eq!(host.state.current_tick(), 1, "a paused host seals nothing");
+        host.presentation.paused = false;
+
+        for _ in 0..10 {
+            host.host_frame(&mut session, TICK_DT * 10.0, now);
+        }
+        assert_eq!(
+            host.state.current_tick(),
+            oxide_net::LEAD_CAP,
+            "the silent client holds the host at the lead cap"
+        );
+        assert!(resting(&host), "no debt builds while blocked");
+        assert_eq!(host.presentation.render_alpha(), 1.0);
+    }
+
+    #[test]
+    fn the_host_frame_stops_once_the_match_is_decided() {
+        let host_seat = PlayerId(0);
+        let mut host = Game::networked(duel(), host_seat, NetRole::Host, viewport()).unwrap();
+        let mut session = HostSession::new(host_seat, &[], Duration::ZERO);
+        for order in {
+            host.issue(Command::Surrender);
+            host.take_outbox()
+        } {
+            session.submit(order);
+        }
+        host.host_frame(&mut session, TICK_DT * 5.0, Duration::ZERO);
+        assert!(
+            host.state.result().is_some(),
+            "the concession decided the duel"
+        );
+        let decided = host.state.current_tick();
+        host.host_frame(&mut session, TICK_DT * 5.0, Duration::ZERO);
+        assert_eq!(host.state.current_tick(), decided);
+        assert!(host.pending.is_empty(), "the executed surrender retired");
+    }
+
+    #[test]
+    fn the_client_frame_paces_waits_and_catches_up() {
+        let mut client = Game::networked(duel(), PlayerId(1), NetRole::Client, viewport()).unwrap();
+        let mut session = ClientSession::new(Duration::ZERO);
+        let batch = |tick| {
+            oxide_net::HostMessage::Batch {
+                tick,
+                commands: Vec::new(),
+            }
+            .encode()
+        };
+
+        client.client_frame(&mut session, TICK_DT * 3.0, CLIENT_BUFFER);
+        assert_eq!(client.state.current_tick(), 0, "nothing has arrived");
+        assert!(resting(&client), "waiting builds no debt");
+
+        for tick in 0..10 {
+            session.receive(&batch(tick), Duration::ZERO).unwrap();
+        }
+        client.client_frame(&mut session, TICK_DT, CLIENT_BUFFER);
+        assert_eq!(session.backlog(), CLIENT_BUFFER, "caught up to the buffer");
+        assert_eq!(client.state.current_tick(), 8);
+
+        client.client_frame(&mut session, 0.0, CLIENT_BUFFER);
+        assert_eq!(
+            client.state.current_tick(),
+            8,
+            "the buffer waits for its time"
+        );
+        client.client_frame(&mut session, 0.0, 0);
+        assert_eq!(
+            client.state.current_tick(),
+            10,
+            "a closed link drains everything"
+        );
+        assert_eq!(
+            session.take_outgoing().len(),
+            10,
+            "every batch was acknowledged"
+        );
     }
 }
