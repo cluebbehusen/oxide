@@ -3371,39 +3371,32 @@ impl StrategicPlanner {
     ) -> Option<&'a BuildingContact> {
         let AirEvidence {
             profile,
-            tuning,
             obs,
             intel,
-            home,
             public_map,
             ..
         } = ev;
         if intel.observed_at() != Some(obs.tick) {
             return None;
         }
-        let active = if let Some(active) = self.air.as_ref() {
-            if active.op.phase() != AirOperationPhase::Recon || active.op.assault_admitted() {
-                return None;
+        let ActiveAirOperation { mut op, plan } = match &self.air {
+            Some(active)
+                if active.op.phase() == AirOperationPhase::Recon
+                    && !active.op.assault_admitted() =>
+            {
+                active.clone()
             }
-            active.clone()
-        } else {
-            if obs.tick < self.cooldown_until || !strategic_admission_tick(obs.tick) {
-                return None;
+            // Target selection is skipped when nothing could begin anyway.
+            None if strategic_admission_tick(obs.tick) => {
+                let AirAdmission::Begin(selected) = self.admission(ev, true, lift_support) else {
+                    return None;
+                };
+                let mut standby = self.standby.clone();
+                standby.prune(obs);
+                fresh_air_operation(profile, obs, ProducerLanes::empty(), selected, standby)
             }
-            let selected = select_fresh_air_target(
-                profile,
-                tuning,
-                obs,
-                intel,
-                home,
-                lift_support,
-                public_map,
-            )?;
-            let mut standby = self.standby.clone();
-            standby.prune(obs);
-            fresh_air_operation(profile, obs, ProducerLanes::empty(), selected, standby)
+            Some(_) | None => return None,
         };
-        let ActiveAirOperation { mut op, plan } = active;
         refresh_target(&mut op, &plan, intel);
         let target = intel.buildings().iter().find(|target| {
             target.player == op.target_player
@@ -3414,23 +3407,158 @@ impl StrategicPlanner {
             return None;
         }
         let owned = reservations(&op, &plan, obs);
-        let unavailable = excluding_owned(unavailable, &owned);
-        op.scout = remembered_recon_scout(&op, obs, &unavailable);
-        let landing_sites: Vec<_> = lift_support
-            .filter(|request| request.player == op.target_player && request.target == op.target)
-            .map_or_else(Vec::new, |request| request.planned_drops.clone());
-        remembered_recon_route_is_viable(
+        op.scout = remembered_recon_scout(&op, obs, &excluding_owned(unavailable, &owned));
+        reachable_scout_goal(
             &op,
             &plan,
             obs,
             intel,
-            &landing_sites,
+            &landing_sites(lift_support, &op),
             connected_public_map(&plan, public_map),
         )
-        .then_some(target)
+        .map(|_| target)
     }
 
     fn think(&mut self, ev: AirEvidence<'_>, inputs: ThinkInputs<'_>) -> StrategicDecision {
+        let AirEvidence {
+            profile,
+            obs,
+            intel,
+            home,
+            public_map,
+            ..
+        } = ev;
+        let mut active = match self.begin_or_resume(ev, &inputs) {
+            Ok(active) => active,
+            Err(idle) => return idle,
+        };
+        let objective_gone = self.watch_outcomes(obs, intel, &active);
+        let ActiveAirOperation { op, plan } = &mut active;
+        if let Some(screen) = plan.screen_mut() {
+            screen.retain(|id| {
+                unit(obs, *id)
+                    .is_some_and(|member| member.kind == Role::AirGround.unit_for(obs.faction))
+            });
+        }
+        let owned = reservations(op, plan, obs);
+        if owned.iter().any(|id| inputs.claimed_elsewhere.contains(id)) {
+            self.air = Some(active);
+            return StrategicDecision {
+                reservations: owned,
+                ..Default::default()
+            };
+        }
+        let began_in_recovery = op.phase() == AirOperationPhase::Recover;
+        refresh_target(op, plan, intel);
+        if !op.assault_admitted()
+            && strategic_admission_tick(obs.tick)
+            && let Some(current_target) = current_target_contact(op, intel)
+        {
+            let admitted_at = plan.admitted_at();
+            if wealthy_island_target(profile, obs, home, current_target, public_map) {
+                let mut admitted = IslandPlan::new(profile, obs, inputs.lanes);
+                op.admit_assault(obs.tick);
+                admitted.admitted_at = admitted_at;
+                *plan = AirPlan::Island(admitted);
+            }
+        }
+        if op.assault_admitted()
+            && op.phase() <= AirOperationPhase::Assemble
+            && let AirPlan::Connected(connected) = plan
+        {
+            connected.refocus(intel);
+        }
+        if !began_in_recovery && op.phase() != AirOperationPhase::Recover {
+            abort_if_needed(op, plan, profile, obs, intel);
+        }
+
+        let mut out = StrategicDecision::default();
+        let landing_sites = landing_sites(inputs.lift_support, op);
+        let owned = reservations(op, plan, obs);
+        let mut enlisted = excluding_owned(inputs.unavailable, &owned);
+        if inputs.owned_only {
+            enlisted.extend(
+                obs.my_units
+                    .iter()
+                    .filter_map(|unit| (!owned.contains(&unit.id)).then_some(unit.id)),
+            );
+            enlisted.sort_unstable();
+            enlisted.dedup();
+        }
+        let context = planning_context(ev, &inputs, op, plan, &landing_sites, &enlisted);
+        let staged = match op.stage {
+            AirStage::Watching => remembered_recon(op, plan, &context, &mut out),
+            AirStage::Recon => recon(op, plan, &context, &mut out),
+            AirStage::Assemble => assemble(op, plan, &context, &mut out),
+            AirStage::SuppressAa => suppress(op, plan, &context, &mut out),
+            AirStage::Verify => verify(op, plan, &context, &mut out),
+            AirStage::Strike => strike(op, plan, &context, &mut out),
+            AirStage::Recover { .. } => Ok(()),
+        };
+        let end = self.finish_stage(
+            ev,
+            &inputs,
+            began_in_recovery,
+            staged,
+            &mut active,
+            &mut out,
+        );
+        if let Some(reason) = active.op.recovery_reason() {
+            let (outcome, reason, confidence, doctrine) =
+                recovery_outcome(reason, objective_gone, &active.op, &self.outcomes, obs);
+            self.outcomes
+                .finish(obs, outcome, reason, confidence, doctrine);
+        }
+        self.store(active, end, &out, obs);
+        out
+    }
+
+    /// The operation this observation continues or begins, or the idle
+    /// decision when there is none.
+    fn begin_or_resume(
+        &mut self,
+        ev: AirEvidence<'_>,
+        inputs: &ThinkInputs<'_>,
+    ) -> Result<ActiveAirOperation, StrategicDecision> {
+        self.terminal_outcome = None;
+        self.standby.prune(ev.obs);
+        let holding = |standby: &AirStandby| StrategicDecision {
+            reservations: standby.reservations(),
+            ..StrategicDecision::default()
+        };
+        if ev.intel.observed_at() != Some(ev.obs.tick) {
+            return Err(holding(&self.standby));
+        }
+        if let Some(active) = self.air.take() {
+            return Ok(active);
+        }
+        match self.admission(ev, inputs.allow_new_operation, inputs.lift_support) {
+            AirAdmission::Hold => Err(holding(&self.standby)),
+            AirAdmission::NoTarget => {
+                self.standby = AirStandby::default();
+                Err(StrategicDecision::default())
+            }
+            AirAdmission::Begin(selected) => {
+                let standby = core::mem::take(&mut self.standby);
+                Ok(fresh_air_operation(
+                    ev.profile,
+                    ev.obs,
+                    inputs.lanes,
+                    selected,
+                    standby,
+                ))
+            }
+        }
+    }
+
+    /// Whether a fresh operation may begin on this observation. Reads only
+    /// planner state, so the carrier preview and the lifecycle share it.
+    fn admission<'i>(
+        &self,
+        ev: AirEvidence<'i>,
+        allow_new_operation: bool,
+        lift_support: Option<&LiftSupportRequest>,
+    ) -> AirAdmission<'i> {
         let AirEvidence {
             profile,
             tuning,
@@ -3438,67 +3566,32 @@ impl StrategicPlanner {
             intel,
             home,
             public_map,
-            orientation,
+            ..
         } = ev;
-        let ThinkInputs {
-            planning,
-            unavailable: enlisted,
-            claimed_elsewhere,
-            lift_support,
-            allow_new_operation,
-            owned_only,
-            reserve,
-            lanes,
-            paid_exclusions,
-        } = inputs;
-        self.terminal_outcome = None;
-        self.standby.prune(obs);
-        if intel.observed_at() != Some(obs.tick) {
-            return StrategicDecision {
-                reservations: self.standby.reservations(),
-                ..StrategicDecision::default()
-            };
+        if !allow_new_operation || obs.tick < self.cooldown_until {
+            return AirAdmission::Hold;
         }
-        if self.air.is_none() {
-            if !allow_new_operation {
-                return StrategicDecision {
-                    reservations: self.standby.reservations(),
-                    ..StrategicDecision::default()
-                };
-            }
-            if obs.tick < self.cooldown_until {
-                return StrategicDecision {
-                    reservations: self.standby.reservations(),
-                    ..StrategicDecision::default()
-                };
-            }
-            let Some(selected) = select_fresh_air_target(
-                profile,
-                tuning,
-                obs,
-                intel,
-                home,
-                lift_support,
-                public_map,
-            ) else {
-                self.standby = AirStandby::default();
-                return StrategicDecision::default();
-            };
-            if !strategic_admission_tick(obs.tick) {
-                return StrategicDecision {
-                    reservations: self.standby.reservations(),
-                    ..StrategicDecision::default()
-                };
-            }
-            let standby = core::mem::take(&mut self.standby);
-            self.air = Some(fresh_air_operation(profile, obs, lanes, selected, standby));
-        }
-        let Some(ActiveAirOperation { mut op, mut plan }) = self.air.take() else {
-            return StrategicDecision::default();
+        let Some(selected) =
+            select_fresh_air_target(profile, tuning, obs, intel, home, lift_support, public_map)
+        else {
+            return AirAdmission::NoTarget;
         };
+        if !strategic_admission_tick(obs.tick) {
+            return AirAdmission::Hold;
+        }
+        AirAdmission::Begin(selected)
+    }
+
+    /// Opens or continues the journal episode and reports whether current
+    /// sight confirms the objective gone.
+    fn watch_outcomes(
+        &mut self,
+        obs: &Observation,
+        intel: &StrategicIntelligence,
+        ActiveAirOperation { op, plan }: &ActiveAirOperation,
+    ) -> bool {
         use super::experience::{
-            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject, Outcome,
-            OutcomeReason,
+            Doctrine, EpisodeId, EpisodeOwner, ExperienceKey, ExperienceSubject,
         };
         let members: Vec<_> = op.members().chain(plan.screen().iter().copied()).collect();
         self.outcomes.watch(
@@ -3516,7 +3609,7 @@ impl StrategicPlanner {
             &members,
             op.phase() as u8,
         );
-        let objective_gone = match &plan {
+        match plan {
             AirPlan::Connected(connected) => {
                 let commitment = &connected.commitment;
                 let live_anchors: Vec<_> = commitment
@@ -3535,120 +3628,44 @@ impl StrategicPlanner {
             AirPlan::Reacquire(_) | AirPlan::Island(_) => op
                 .target_id
                 .is_some_and(|id| self.outcomes.observe_objective(obs, id)),
-        };
-        if let Some(screen) = plan.screen_mut() {
-            screen.retain(|id| {
-                unit(obs, *id)
-                    .is_some_and(|member| member.kind == Role::AirGround.unit_for(obs.faction))
-            });
         }
-        if reservations(&op, &plan, obs)
-            .iter()
-            .any(|id| claimed_elsewhere.contains(id))
-        {
-            let decision = StrategicDecision {
-                reservations: reservations(&op, &plan, obs),
-                ..Default::default()
-            };
-            self.air = Some(ActiveAirOperation { op, plan });
-            return decision;
-        }
-        let began_in_recovery = op.phase() == AirOperationPhase::Recover;
-        refresh_target(&mut op, &plan, intel);
-        if !op.assault_admitted()
-            && strategic_admission_tick(obs.tick)
-            && let Some(current_target) = current_target_contact(&op, intel)
-        {
-            let admitted_at = plan.admitted_at();
-            if wealthy_island_target(profile, obs, home, current_target, public_map) {
-                let mut admitted = IslandPlan::new(profile, obs, lanes);
-                op.admit_assault(obs.tick);
-                admitted.admitted_at = admitted_at;
-                plan = AirPlan::Island(admitted);
-            }
-        }
-        if op.assault_admitted()
-            && op.phase() <= AirOperationPhase::Assemble
-            && let AirPlan::Connected(connected) = &mut plan
-        {
-            connected.refocus(intel);
-        }
-        if !began_in_recovery && op.phase() != AirOperationPhase::Recover {
-            abort_if_needed(&mut op, &plan, profile, obs, intel);
-        }
+    }
 
-        let mut out = StrategicDecision::default();
-        let landing_sites: Vec<_> = lift_support
-            .filter(|request| request.player == op.target_player && request.target == op.target)
-            .map_or_else(Vec::new, |request| request.planned_drops.clone());
-        let owned = reservations(&op, &plan, obs);
-        let mut external_enlisted = excluding_owned(enlisted, &owned);
-        if owned_only {
-            external_enlisted.extend(
-                obs.my_units
-                    .iter()
-                    .filter_map(|unit| (!owned.contains(&unit.id)).then_some(unit.id)),
-            );
-            external_enlisted.sort_unstable();
-            external_enlisted.dedup();
-        }
-        let connected_resources = plan
-            .connected()
-            .filter(|_| op.phase() <= AirOperationPhase::Assemble)
-            .map(|connected| {
-                ConnectedProductionResources::from_package_snapshot_after_current_reserve(
-                    obs,
-                    connected.commitment.player,
-                    &connected.package,
-                    ConnectedRouteContext::new(
-                        intel,
-                        public_map,
-                        orientation,
-                        home,
-                        connected.focus,
-                    )
-                    .excluding_paid(paid_exclusions),
-                    &ResourceSnapshot::from_observation(obs),
-                    reserve.current,
-                )
-            });
-        let context = AirPlanningContext {
-            landing_sites: &landing_sites,
-            connected_resources,
-            ..AirPlanningContext::new(
-                ev,
-                planning,
-                allow_new_operation,
-                reserve,
-                lanes,
-                paid_exclusions,
-                &external_enlisted,
-            )
-        };
-        let staged = match op.stage {
-            AirStage::Watching => remembered_recon(&mut op, &plan, &context, &mut out),
-            AirStage::Recon => recon(&mut op, &mut plan, &context, &mut out),
-            AirStage::Assemble => assemble(&mut op, &mut plan, &context, &mut out),
-            AirStage::SuppressAa => suppress(&mut op, &mut plan, &context, &mut out),
-            AirStage::Verify => verify(&mut op, &mut plan, &context, &mut out),
-            AirStage::Strike => strike(&mut op, &mut plan, &context, &mut out),
-            AirStage::Recover { .. } => Ok(()),
-        };
+    /// Applies the stage verdict, the preparation deadline, and closed
+    /// funding, then issues the one return order when recovery begins.
+    fn finish_stage(
+        &mut self,
+        ev: AirEvidence<'_>,
+        inputs: &ThinkInputs<'_>,
+        began_in_recovery: bool,
+        staged: Result<(), AirRecoveryReason>,
+        ActiveAirOperation { op, plan }: &mut ActiveAirOperation,
+        out: &mut StrategicDecision,
+    ) -> OperationEnd {
+        let AirEvidence {
+            profile,
+            tuning,
+            obs,
+            home,
+            public_map,
+            orientation,
+            ..
+        } = ev;
         if let Err(reason) = staged {
             out.intents.clear();
-            recover(&mut op, reason, obs.tick);
+            recover(op, reason, obs.tick);
         }
         let preparation_expired = plan.package().is_some_and(|package| {
             op.phase() <= AirOperationPhase::Assemble
                 && obs.tick >= package.preparation_deadline
-                && !assembly_complete(&op, &plan)
+                && !assembly_complete(op, plan)
         });
         if preparation_expired {
             out.intents.clear();
             out.reserved_scrap = 0;
-            recover(&mut op, AirRecoveryReason::Timeout, obs.tick);
+            recover(op, AirRecoveryReason::Timeout, obs.tick);
         }
-        if !allow_new_operation {
+        if !inputs.allow_new_operation {
             out.intents
                 .retain(|intent| !matches!(intent, Intent::TrainAt { .. }));
             out.reserved_scrap = 0;
@@ -3660,8 +3677,8 @@ impl StrategicPlanner {
                 self.cooldown_until = obs.tick.saturating_add(cooldown(profile, tuning));
             }
             reconcile_recovery_return(
-                &mut op,
-                &mut plan,
+                op,
+                plan,
                 RecoveryReturnContext {
                     obs,
                     home,
@@ -3669,10 +3686,10 @@ impl StrategicPlanner {
                     orientation,
                     issue_order: recovery_entered_this_tick,
                 },
-                &mut out,
+                out,
             );
         }
-        out.reservations = reservations(&op, &plan, obs);
+        out.reservations = reservations(op, plan, obs);
         // Lowering fans a mixed-domain group over distinct snapped goals, and
         // bounded-turn aircraft may stop within their movement acceptance
         // radius. Once a previously dispatched return has become terminal for
@@ -3685,64 +3702,162 @@ impl StrategicPlanner {
                 .reservations
                 .iter()
                 .all(|id| unit(obs, *id).is_some_and(|member| member.idle));
-        let recovered = op.phase() == AirOperationPhase::Recover
-            && (out.reservations.is_empty()
-                || settled
-                || elapsed(op.phase_started_at, obs.tick) >= 500);
-        if let Some(reason) = op.recovery_reason() {
-            let (outcome, reason, confidence, doctrine) = match reason {
-                AirRecoveryReason::Complete if objective_gone => (
-                    Outcome::Complete,
-                    OutcomeReason::ObjectiveObservedGone,
-                    750,
-                    false,
-                ),
-                AirRecoveryReason::RequiredUnitLost => (
-                    Outcome::Ineffective,
-                    OutcomeReason::RequiredUnitLost,
-                    1000,
-                    op.membership_frozen_at.is_some(),
-                ),
-                AirRecoveryReason::NewAirDefense => (
-                    Outcome::Aborted,
-                    OutcomeReason::ObservedCounter,
-                    1000,
-                    false,
-                ),
-                AirRecoveryReason::Timeout
-                    if op.membership_frozen_at.is_none()
-                        && !self.outcomes.has_progress()
-                        && self.outcomes.own_lost_value(obs) == 0 =>
-                {
-                    (Outcome::Aborted, OutcomeReason::Deadline, 1000, false)
-                }
-                AirRecoveryReason::Timeout => {
-                    (Outcome::Ineffective, OutcomeReason::Deadline, 750, false)
-                }
-                AirRecoveryReason::Complete
-                | AirRecoveryReason::ObjectiveLost
-                | AirRecoveryReason::StaleIntelligence => {
-                    (Outcome::Inconclusive, OutcomeReason::LostContact, 0, false)
-                }
-                AirRecoveryReason::UnreachableStaging | AirRecoveryReason::UnreachableAirRoute => {
-                    (Outcome::Aborted, OutcomeReason::BlockedRoute, 1000, false)
-                }
-                AirRecoveryReason::PreparationInfeasible => {
-                    (Outcome::Invalidated, OutcomeReason::Preempted, 1000, false)
-                }
-            };
-            self.outcomes
-                .finish(obs, outcome, reason, confidence, doctrine);
-        }
-        if settled && !out.reservations.is_empty() && reusable_survivors(op.recovery_reason()) {
-            self.standby = AirStandby::from_operation(&op, obs);
-            self.terminal_outcome = Some(air_operation_outcome(&op));
-        } else if recovered {
-            self.terminal_outcome = Some(air_operation_outcome(&op));
+        if settled {
+            OperationEnd::Settled
+        } else if op.phase() == AirOperationPhase::Recover
+            && (out.reservations.is_empty() || elapsed(op.phase_started_at, obs.tick) >= 500)
+        {
+            OperationEnd::Released
         } else {
-            self.air = Some(ActiveAirOperation { op, plan });
+            OperationEnd::Continue
         }
-        out
+    }
+
+    fn store(
+        &mut self,
+        active: ActiveAirOperation,
+        end: OperationEnd,
+        out: &StrategicDecision,
+        obs: &Observation,
+    ) {
+        match end {
+            OperationEnd::Settled
+                if !out.reservations.is_empty()
+                    && reusable_survivors(active.op.recovery_reason()) =>
+            {
+                self.standby = AirStandby::from_operation(&active.op, obs);
+                self.terminal_outcome = Some(air_operation_outcome(&active.op));
+            }
+            OperationEnd::Settled | OperationEnd::Released => {
+                self.terminal_outcome = Some(air_operation_outcome(&active.op));
+            }
+            OperationEnd::Continue => self.air = Some(active),
+        }
+    }
+}
+
+/// Whether the lifecycle may begin a fresh operation this observation.
+enum AirAdmission<'i> {
+    /// Nothing may begin now; standby members stay reserved.
+    Hold,
+    /// No target justifies an operation, so standby members are released.
+    NoTarget,
+    Begin(FreshAirTarget<'i>),
+}
+
+/// How one lifecycle pass leaves the active operation.
+#[derive(Clone, Copy)]
+enum OperationEnd {
+    Continue,
+    /// Recovery finished: every survivor was lost or released, or it ran out
+    /// of time.
+    Released,
+    /// Every survivor of a dispatched return has come to rest.
+    Settled,
+}
+
+/// Journal verdict for an operation that entered recovery for `reason`.
+fn recovery_outcome(
+    reason: AirRecoveryReason,
+    objective_gone: bool,
+    op: &AirOperation,
+    journal: &super::experience::OutcomeJournal,
+    obs: &Observation,
+) -> (
+    super::experience::Outcome,
+    super::experience::OutcomeReason,
+    u16,
+    bool,
+) {
+    use super::experience::{Outcome, OutcomeReason};
+    match reason {
+        AirRecoveryReason::Complete if objective_gone => (
+            Outcome::Complete,
+            OutcomeReason::ObjectiveObservedGone,
+            750,
+            false,
+        ),
+        AirRecoveryReason::RequiredUnitLost => (
+            Outcome::Ineffective,
+            OutcomeReason::RequiredUnitLost,
+            1000,
+            op.membership_frozen_at.is_some(),
+        ),
+        AirRecoveryReason::NewAirDefense => (
+            Outcome::Aborted,
+            OutcomeReason::ObservedCounter,
+            1000,
+            false,
+        ),
+        AirRecoveryReason::Timeout
+            if op.membership_frozen_at.is_none()
+                && !journal.has_progress()
+                && journal.own_lost_value(obs) == 0 =>
+        {
+            (Outcome::Aborted, OutcomeReason::Deadline, 1000, false)
+        }
+        AirRecoveryReason::Timeout => (Outcome::Ineffective, OutcomeReason::Deadline, 750, false),
+        AirRecoveryReason::Complete
+        | AirRecoveryReason::ObjectiveLost
+        | AirRecoveryReason::StaleIntelligence => {
+            (Outcome::Inconclusive, OutcomeReason::LostContact, 0, false)
+        }
+        AirRecoveryReason::UnreachableStaging | AirRecoveryReason::UnreachableAirRoute => {
+            (Outcome::Aborted, OutcomeReason::BlockedRoute, 1000, false)
+        }
+        AirRecoveryReason::PreparationInfeasible => {
+            (Outcome::Invalidated, OutcomeReason::Preempted, 1000, false)
+        }
+    }
+}
+
+/// Planned drops of a Lift waiting on this operation's exact objective.
+fn landing_sites(lift_support: Option<&LiftSupportRequest>, op: &AirOperation) -> Vec<TilePos> {
+    lift_support
+        .filter(|request| request.player == op.target_player && request.target == op.target)
+        .map_or_else(Vec::new, |request| request.planned_drops.clone())
+}
+
+fn planning_context<'c>(
+    ev: AirEvidence<'c>,
+    inputs: &ThinkInputs<'c>,
+    op: &AirOperation,
+    plan: &AirPlan,
+    landing_sites: &'c [TilePos],
+    enlisted: &'c [UnitId],
+) -> AirPlanningContext<'c> {
+    let connected_resources = plan
+        .connected()
+        .filter(|_| op.phase() <= AirOperationPhase::Assemble)
+        .map(|connected| {
+            ConnectedProductionResources::from_package_snapshot_after_current_reserve(
+                ev.obs,
+                connected.commitment.player,
+                &connected.package,
+                ConnectedRouteContext::new(
+                    ev.intel,
+                    ev.public_map,
+                    ev.orientation,
+                    ev.home,
+                    connected.focus,
+                )
+                .excluding_paid(inputs.paid_exclusions),
+                &ResourceSnapshot::from_observation(ev.obs),
+                inputs.reserve.current,
+            )
+        });
+    AirPlanningContext {
+        landing_sites,
+        connected_resources,
+        ..AirPlanningContext::new(
+            ev,
+            inputs.planning,
+            inputs.allow_new_operation,
+            inputs.reserve,
+            inputs.lanes,
+            inputs.paid_exclusions,
+            enlisted,
+        )
     }
 }
 
@@ -4049,18 +4164,6 @@ fn remembered_recon_scout(
     op.scout
         .filter(|id| unit(obs, *id).is_some())
         .or_else(|| available(obs, enlisted, |kind| kind == scout_kind).next())
-}
-
-fn remembered_recon_route_is_viable(
-    op: &AirOperation,
-    plan: &AirPlan,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    landing_sites: &[TilePos],
-    public_map: Option<&PublicMapBriefing>,
-) -> bool {
-    scout_dispatch_goal(op, plan, obs, intel, landing_sites, public_map)
-        .is_some_and(|goal| scout_dispatch_is_viable(op, obs, goal, public_map))
 }
 
 fn reconcile_preparation_members(
@@ -6451,10 +6554,23 @@ fn dispatch_scout(
     public_map: Option<&PublicMapBriefing>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let Some(goal) = scout_dispatch_goal(op, plan, obs, intel, landing_sites, public_map) else {
-        return Err(AirRecoveryReason::UnreachableAirRoute);
-    };
-    dispatch_scout_to(op, obs, goal, public_map, out)
+    let goal = reachable_scout_goal(op, plan, obs, intel, landing_sites, public_map)
+        .ok_or(AirRecoveryReason::UnreachableAirRoute)?;
+    issue_scout_dispatch(op, obs, goal, out);
+    Ok(())
+}
+
+/// The scout's next objective, when a known air route still reaches it.
+fn reachable_scout_goal(
+    op: &AirOperation,
+    plan: &AirPlan,
+    obs: &Observation,
+    intel: &StrategicIntelligence,
+    landing_sites: &[TilePos],
+    public_map: Option<&PublicMapBriefing>,
+) -> Option<TilePos> {
+    scout_dispatch_goal(op, plan, obs, intel, landing_sites, public_map)
+        .filter(|goal| scout_dispatch_is_viable(op, obs, *goal, public_map))
 }
 
 fn scout_dispatch_goal(
@@ -6506,12 +6622,22 @@ fn dispatch_scout_to(
     if !scout_dispatch_is_viable(op, obs, goal, public_map) {
         return Err(AirRecoveryReason::UnreachableAirRoute);
     }
+    issue_scout_dispatch(op, obs, goal, out);
+    Ok(())
+}
+
+fn issue_scout_dispatch(
+    op: &mut AirOperation,
+    obs: &Observation,
+    goal: TilePos,
+    out: &mut StrategicDecision,
+) {
     let Some(scout) = op.scout else {
-        return Ok(());
+        return;
     };
     let member = unit(obs, scout).expect("a viable scout dispatch retains its live unit");
     if op.scout_dispatch == Some((scout, goal)) {
-        return Ok(());
+        return;
     }
     op.scout_dispatch = Some((scout, goal));
     if !member.idle || member.tile.chebyshev(goal) > 1 {
@@ -6520,7 +6646,6 @@ fn dispatch_scout_to(
             goal,
         });
     }
-    Ok(())
 }
 
 fn scout_dispatch_is_viable(
