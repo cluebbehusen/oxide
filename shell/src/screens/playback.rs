@@ -2,6 +2,7 @@
 //! borrows it for rendering, interpolation, effects, and audio.
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context as InputContext};
+use crate::frame_time::FrameTime;
 use crate::game::{self, GameReplay, Presentation, Scene};
 use crate::press::{Fed, Press};
 use crate::render;
@@ -666,7 +667,10 @@ impl PlaybackSession {
     }
 
     /// Advances replay time and presentation after input has been handled.
-    pub fn advance_frame(&mut self, dt: f32, viewport: Vec2) {
+    /// Replay time follows the unclamped frame time, capped by its own
+    /// catch-up; effects and the camera follow the clamped time, like
+    /// live play.
+    pub fn advance_frame(&mut self, time: FrameTime, viewport: Vec2) {
         if let Some(target) = self.seeking {
             // Budgeted: a slice per frame keeps a long first jump from
             // hitching the render thread; sim ticks run thousands per
@@ -679,7 +683,7 @@ impl PlaybackSession {
             // drawing motion from the prior timeline while seeking.
             self.presentation.reset_after_jump(&self.engine.state);
         } else if !self.paused && !self.engine.at_end() {
-            self.accum += dt * self.speed;
+            self.accum += time.raw * self.speed;
             let ticks = (self.accum / game::TICK_DT) as u64;
             if ticks > 0 {
                 self.accum -= ticks as f32 * game::TICK_DT;
@@ -705,9 +709,9 @@ impl PlaybackSession {
         self.sync_render_clock();
         self.presentation.paused = self.paused;
         self.presentation
-            .update_wall_clock_fx(&self.engine.state, dt);
+            .update_wall_clock_fx(&self.engine.state, time.presentation);
         self.presentation.camera.set_viewport(viewport);
-        self.presentation.camera.update(dt);
+        self.presentation.camera.update(time.presentation);
     }
 
     #[cfg(test)]
@@ -720,9 +724,17 @@ impl PlaybackSession {
         pan_speed: f32,
         mouse: &mut Vec2,
     ) -> bool {
-        let leave = self.apply_input(events, dt, viewport, zoom_inverted, pan_speed, mouse);
+        let time = FrameTime::measure(dt);
+        let leave = self.apply_input(
+            events,
+            time.presentation,
+            viewport,
+            zoom_inverted,
+            pan_speed,
+            mouse,
+        );
         if !leave {
-            self.advance_frame(dt, viewport);
+            self.advance_frame(time, viewport);
         }
         leave
     }
@@ -927,7 +939,7 @@ mod tests {
         ));
         assert_eq!(pb.engine.position(), 0);
         assert_eq!(pb.seeking, Some(60));
-        pb.advance_frame(1.0, viewport);
+        pb.advance_frame(FrameTime::measure(1.0), viewport);
         assert_eq!(pb.engine.position(), 60);
         assert_eq!(pb.engine.state.current_tick(), 60);
 
@@ -939,12 +951,31 @@ mod tests {
             1.0,
             &mut mouse,
         ));
-        pb.advance_frame(0.0, viewport);
+        pb.advance_frame(FrameTime::measure(0.0), viewport);
         assert_eq!(pb.engine.position(), 0);
         assert!(!pb.apply_input(&[], 0.1, viewport, false, 1.0, &mut mouse));
         assert_eq!(pb.engine.position(), 0);
-        pb.advance_frame(0.1, viewport);
+        pb.advance_frame(FrameTime::measure(0.1), viewport);
         assert_eq!(pb.engine.position(), 2);
+    }
+
+    #[test]
+    fn a_suspension_length_frame_ages_effects_by_at_most_a_quarter_second() {
+        let mut pb = session();
+        let viewport = vec2(1280.0, 800.0);
+        pb.presentation.toast("seek complete");
+        pb.advance_frame(FrameTime::measure(60.0), viewport);
+        assert!(
+            pb.engine.position() > 0,
+            "the replay clock still catches up on the unclamped time"
+        );
+        let toast = pb
+            .presentation
+            .toasts
+            .iter()
+            .find(|toast| toast.text == "seek complete")
+            .expect("a toast outlives a long frame");
+        assert_eq!(toast.age, 0.25);
     }
 
     #[test]

@@ -16,6 +16,7 @@ mod debug_server;
 mod diagnostic_report;
 mod entity_lod;
 mod frame_profile;
+mod frame_time;
 mod game;
 mod input;
 mod layout;

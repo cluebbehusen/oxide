@@ -603,7 +603,7 @@ fn playback_frame(
             PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
         }
     } else {
-        pb.advance_frame(time.raw, vec2(screen_width(), screen_height()));
+        pb.advance_frame(time, vec2(screen_width(), screen_height()));
         render::draw_with_performance(
             &pb.view(),
             &app.sprites,
