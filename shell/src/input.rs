@@ -1171,9 +1171,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 now - t < 0.35 && p.distance(release) <= 12.0 * input.ui
                             });
                         if double {
-                            select_all_of_kind_on_screen(game, release, input.ui);
+                            select_all_of_kind_on_screen(game, release, input.ui, Pointer::Mouse);
                         } else {
-                            click_select(game, release, additive, input.ui);
+                            click_select(game, release, additive, input.ui, Pointer::Mouse);
                         }
                         input.last_click = Some((now, release));
                     } else {

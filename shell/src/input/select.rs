@@ -6,6 +6,7 @@
 //! every command under own-gating). Fog and ownership rules for
 //! *orders* live in `orders`.
 
+use super::Pointer;
 use crate::game::Game;
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
@@ -51,9 +52,57 @@ pub(super) fn cycle_idle_worker(game: &mut Game) {
 }
 
 /// World-space pick radius around a unit: generous when zoomed out so
-/// units never need tweezers (at least 10 logical px on screen).
-fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind) -> f32 {
-    (10.0 * ui / game.presentation.camera.zoom).max(super::unit_pick_radius(kind))
+/// units never need tweezers (at least 10 logical px on screen, 22 for a
+/// fingertip, which covers what it aims at).
+fn pick_radius(game: &Game, ui: f32, kind: oxide_sim::UnitKind, pointer: Pointer) -> f32 {
+    let reach = match pointer {
+        Pointer::Mouse => 10.0,
+        Pointer::Touch => 22.0,
+    };
+    (reach * ui / game.presentation.camera.zoom).max(super::unit_pick_radius(kind))
+}
+
+/// What a press would select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Picked {
+    Unit(UnitId, oxide_sim::PlayerId),
+    Building(oxide_sim::BuildingId, oxide_sim::PlayerId),
+}
+
+/// The entity a press at `screen` picks: the nearest selectable unit in
+/// reach (own units outrank foreign ones, so a scrum never steals the
+/// press from the machine you command), else a selectable building
+/// under it.
+pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Option<Picked> {
+    let world = game.presentation.camera.to_world(screen);
+    let unit = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| selectable(game, u))
+        .filter_map(|u| {
+            let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+            let distance = p.distance(world);
+            (distance <= pick_radius(game, ui, u.kind, pointer)).then_some((
+                u.player != game.presentation.human,
+                distance,
+                u.id,
+                u.player,
+            ))
+        })
+        .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
+    if let Some((_, _, id, owner)) = unit {
+        return Some(Picked::Unit(id, owner));
+    }
+    // Only the HUMAN'S OWN buildings skip the sight check: built ally
+    // buildings are always inside shared team sight anyway, but ally
+    // SITES are blind until built, and a blind press selecting one
+    // through fog would leak its live kind and hp through the panel.
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    game.state
+        .buildings_at(tile)
+        .find(|b| selectable_building(game, b))
+        .map(|b| Picked::Building(b.id, b.player))
 }
 
 /// HUD chrome that swallows clicks: the top bar always; the bottom panel
@@ -85,31 +134,18 @@ fn selectable_building(game: &Game, building: &oxide_sim::Building) -> bool {
                 .building_apparent(game.presentation.human, building))
 }
 
-pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
-    let world = game.presentation.camera.to_world(screen);
+pub(super) fn click_select(
+    game: &mut Game,
+    screen: Vec2,
+    additive: bool,
+    ui: f32,
+    pointer: Pointer,
+) {
+    let picked = pick(game, screen, ui, pointer);
     if !additive {
         game.presentation.selection.buildings.clear();
     }
-    // Nearest visible unit of any owner within pick range wins; own
-    // units outrank foreign ones inside the radius so a scrum never
-    // steals the click from the machine you can actually command.
-    let picked = game
-        .state
-        .units()
-        .iter()
-        .filter(|u| selectable(game, u))
-        .filter_map(|u| {
-            let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            let distance = p.distance(world);
-            (distance <= pick_radius(game, ui, u.kind)).then_some((
-                u.player != game.presentation.human,
-                distance,
-                u.id,
-                u.player,
-            ))
-        })
-        .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
-    if let Some((_, _, id, owner)) = picked {
+    if let Some(Picked::Unit(id, owner)) = picked {
         game.presentation.selection.buildings.clear();
         let current_owner = game
             .presentation
@@ -139,16 +175,7 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
         return;
     }
     // …then a building under the cursor (any owner whose ground shows).
-    // Only the HUMAN'S OWN buildings skip the sight check: built ally
-    // buildings are always inside shared team sight anyway, but ally
-    // SITES are blind until built, and a blind-click selecting one
-    // through fog would leak its live kind and hp through the panel.
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    let picked = game
-        .state
-        .buildings_at(tile)
-        .find(|b| selectable_building(game, b));
-    if let Some(building) = picked {
+    if let Some(Picked::Building(id, owner)) = picked {
         game.presentation.selection.units.clear();
         let current_owner = game
             .presentation
@@ -157,21 +184,21 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
             .first()
             .and_then(|id| game.state.building(*id))
             .map(|selected| selected.player);
-        if additive && current_owner == Some(building.player) {
+        if additive && current_owner == Some(owner) {
             if let Some(index) = game
                 .presentation
                 .selection
                 .buildings
                 .iter()
-                .position(|id| *id == building.id)
+                .position(|selected| *selected == id)
             {
                 game.presentation.selection.buildings.remove(index);
             } else {
-                game.presentation.selection.buildings.push(building.id);
+                game.presentation.selection.buildings.push(id);
                 game.presentation.selection.buildings.sort_unstable();
             }
         } else {
-            game.presentation.selection.buildings = vec![building.id];
+            game.presentation.selection.buildings = vec![id];
         }
         return;
     }
@@ -344,7 +371,12 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
 }
 
 /// Double-click: visible entities of the picked kind and owner on screen.
-pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
+pub(super) fn select_all_of_kind_on_screen(
+    game: &mut Game,
+    screen: Vec2,
+    ui: f32,
+    pointer: Pointer,
+) {
     let world = game.presentation.camera.to_world(screen);
     // The sweep stays within the PICKED unit's owner: double-clicking
     // an ally harvester gathers that ally's harvesters on screen, never
@@ -358,7 +390,7 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
         .filter_map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             let distance = p.distance(world);
-            (distance <= pick_radius(game, ui, u.kind)).then_some((
+            (distance <= pick_radius(game, ui, u.kind, pointer)).then_some((
                 u.player != game.presentation.human,
                 distance,
                 u.kind,
