@@ -1418,6 +1418,7 @@ mod tests {
             kind: EffectKind::Ping {
                 at: macroquad::prelude::Vec2::ZERO,
                 kind: PingKind::Move,
+                queued: false,
             },
             age: 0.0,
         });
@@ -1457,6 +1458,7 @@ mod tests {
             kind: EffectKind::Ping {
                 at: macroquad::prelude::Vec2::ZERO,
                 kind: PingKind::Move,
+                queued: false,
             },
             age: 0.0,
         });

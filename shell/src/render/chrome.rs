@@ -334,6 +334,7 @@ fn draw_queue_chip(rect: Rect, on: bool, s: f32) {
 /// absent).
 fn draw_ribbon_row(
     game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
     input: &InputState,
     regions: &[Rect; 2],
     minimap: Rect,
@@ -345,17 +346,24 @@ fn draw_ribbon_row(
     let s = ui_scale();
     let viewport = vec2(screen_width(), screen_height());
     let with_queue = crate::platform::TOUCH_ONLY;
-    let label = input
-        .armed_mode()
-        .map(|mode| format!("MODE  |  {}", mode.label()));
-    let size = 15.0 * s;
-    let ribbon_w = label.as_deref().map(|label| {
-        ribbon_width(
-            viewport,
-            s,
-            measure_text(label, None, size as u16, 1.0).width,
-        )
+    let mode = input.armed_mode();
+    let building = match mode {
+        Some(crate::input::ArmedMode::Build(kind)) => Some(kind),
+        _ => None,
+    };
+    let label = mode.map(crate::input::ArmedMode::label);
+    let cost = building
+        .and_then(|kind| kind.base_stats().construction)
+        .map(|construction| construction.cost.to_string());
+    let (label_size, cost_size) = (18.0 * s, 16.0 * s);
+    let icon_w = if building.is_some() { 40.0 * s } else { 0.0 };
+    let label_w = label
+        .as_deref()
+        .map(|label| measure_text(label, None, label_size as u16, 1.0).width);
+    let cost_w = cost.as_deref().map_or(0.0, |cost| {
+        12.0 * s + measure_text(cost, None, cost_size as u16, 1.0).width
     });
+    let ribbon_w = label_w.map(|w| ribbon_width(viewport, s, icon_w + w + cost_w));
     // The row sits above whichever panel region lies under it.
     let open = ribbon_row_geometry(viewport, s, f32::INFINITY, with_queue, ribbon_w, minimap);
     let x1 = open
@@ -379,22 +387,55 @@ fn draw_ribbon_row(
     };
     fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
     stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
-    draw_rectangle(ribbon.x, ribbon.y, 4.0 * s, ribbon.h, SCRAP_COLOR);
-    draw_text(
-        &label,
-        ribbon.x + 14.0 * s,
-        ribbon.y + ribbon.h * 0.62,
-        size,
-        TEXT_PRIMARY,
-    );
+    let mut x = ribbon.x + 10.0 * s;
+    if let Some(kind) = building {
+        let faction = game.state.player(game.presentation.human).faction;
+        let mut layers = vec![(sprites.building_tiered(kind, 0, faction), WHITE)];
+        if let Some(mount) = sprites.defense_mount(kind, 0, faction) {
+            layers.push((mount, WHITE));
+        }
+        let icon = Rect::new(
+            x,
+            ribbon.y + (ribbon.h - 32.0 * s) * 0.5,
+            32.0 * s,
+            32.0 * s,
+        );
+        sprites.draw_portrait(icon, &layers);
+        x += icon_w;
+    }
+    let baseline = ribbon.y + ribbon.h * 0.64;
+    draw_text(&label, x, baseline, label_size, TEXT_PRIMARY);
+    if let (Some(cost), Some(label_w)) = (cost, label_w) {
+        draw_text(
+            &cost,
+            x + label_w + 12.0 * s,
+            baseline,
+            cost_size,
+            SCRAP_COLOR,
+        );
+    }
     (ribbon, row.neutral, row.queue.unwrap_or(zero))
 }
 
-fn toast_origin(viewport: Vec2, scale: f32, panel_top: f32, orders: Rect, index: usize) -> Vec2 {
+fn toast_origin(
+    viewport: Vec2,
+    scale: f32,
+    panel_top: f32,
+    orders: Rect,
+    row: Rect,
+    index: usize,
+) -> Vec2 {
     let x = if orders.w > 0.0 {
         orders.x + orders.w + 12.0 * scale
     } else {
         12.0 * scale
+    };
+    // Toasts stack above the ribbon row when it shows, so neither hides
+    // the other.
+    let panel_top = if row.w > 0.0 {
+        panel_top.min(row.y)
+    } else {
+        panel_top
     };
     let newest = if panel_top.is_finite() {
         panel_top - 12.0 * scale
@@ -545,7 +586,7 @@ pub(crate) fn draw_hud(
         }
     }
     let (mode_ribbon, neutral, queue_toggle) =
-        draw_ribbon_row(game, input, &panel_regions, minimap);
+        draw_ribbon_row(game, sprites, input, &panel_regions, minimap);
     // Publish the frame's chrome geometry — the model hit-testing reads.
     let mut layout = crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
@@ -589,6 +630,7 @@ pub(crate) fn draw_hud(
                 screen_height()
             },
             Rect::new(0.0, 0.0, orders_dock.w.max(panel_regions[0].w), 0.0),
+            neutral,
             i,
         );
         let mut size = 20.0 * s;
@@ -770,10 +812,28 @@ mod tests {
         let panel_top = 128.0;
         let orders = Rect::new(0.0, 52.0, 400.0, 76.0);
         for index in 0..3 {
-            let origin = toast_origin(viewport, 1.0, panel_top, orders, index);
+            let origin = toast_origin(viewport, 1.0, panel_top, orders, Rect::default(), index);
             assert!(origin.x > orders.x + orders.w);
             assert!(origin.y < panel_top);
             assert!(origin.y >= crate::layout::TOP_BAR_H + 18.0);
+        }
+    }
+
+    #[test]
+    fn toasts_stack_above_the_ribbon_row() {
+        let viewport = vec2(1280.0, 800.0);
+        let panel_top = 640.0;
+        let row = ribbon_row_geometry(viewport, 1.0, panel_top, true, Some(240.0), Rect::default());
+        for index in 0..3 {
+            let origin = toast_origin(
+                viewport,
+                1.0,
+                panel_top,
+                Rect::default(),
+                row.neutral,
+                index,
+            );
+            assert!(origin.y < row.neutral.y, "toast {index} clears the row");
         }
     }
 }

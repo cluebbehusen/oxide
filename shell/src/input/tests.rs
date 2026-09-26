@@ -674,7 +674,7 @@ fn every_tile_of_a_known_extractor_frame_places_the_same_site() {
             assert!(
                 game.presentation.fx.iter().any(|effect| matches!(
                     effect.kind,
-                    crate::game::EffectKind::Ping { at, kind: crate::game::PingKind::Rally }
+                    crate::game::EffectKind::Ping { at, kind: crate::game::PingKind::Rally, .. }
                         if (at - vec2(8.0, 5.0)).length_squared() < f32::EPSILON
                 )),
                 "the acknowledgment stays centered on the snapped frame"
@@ -1087,25 +1087,25 @@ fn touch_armed_toasts_only_name_their_target() {
 fn every_targeting_mode_has_persistent_human_copy() {
     let mut input = InputState::new();
     input.placing = Some(oxide_sim::BuildingKind::Bastion);
-    assert_eq!(input.armed_mode().unwrap().label(), "BUILD Bastion");
+    assert_eq!(input.armed_mode().unwrap().label(), "Bastion");
     input.disarm_click_verbs();
     input.rallying = vec![oxide_sim::BuildingId(0)];
-    assert_eq!(input.armed_mode().unwrap().label(), "SET RALLY");
+    assert_eq!(input.armed_mode().unwrap().label(), "Set rally");
     input.disarm_click_verbs();
     input.salvaging = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "SALVAGE");
+    assert_eq!(input.armed_mode().unwrap().label(), "Salvage");
     input.disarm_click_verbs();
     input.repairing = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "WELD UNIT");
+    assert_eq!(input.armed_mode().unwrap().label(), "Weld");
     input.disarm_click_verbs();
     input.running = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "RUN");
+    assert_eq!(input.armed_mode().unwrap().label(), "Run");
     input.disarm_click_verbs();
     input.attacking = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "ATTACK-MOVE");
+    assert_eq!(input.armed_mode().unwrap().label(), "Attack-move");
     input.disarm_click_verbs();
     input.patrol_route = Some(vec![TilePos::new(1, 1), TilePos::new(2, 2)]);
-    assert_eq!(input.armed_mode().unwrap().label(), "PATROL | 2 WAYPOINTS");
+    assert_eq!(input.armed_mode().unwrap().label(), "Patrol \u{b7} 2");
     assert!(input.cancel_armed_mode());
     assert_eq!(input.armed_mode(), None);
 }
@@ -3178,6 +3178,16 @@ fn a_tap_on_open_ground_moves_own_units() {
     let mut input = InputState::new();
     let (fighter, at) = own_fighter(&game);
     game.presentation.selection.units = vec![fighter];
+    let last_ping_queued = |game: &Game| {
+        game.presentation
+            .fx
+            .iter()
+            .rev()
+            .find_map(|fx| match fx.kind {
+                crate::game::EffectKind::Ping { queued, .. } => Some(queued),
+                _ => None,
+            })
+    };
     tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
     assert!(
         game.pending
@@ -3186,6 +3196,7 @@ fn a_tap_on_open_ground_moves_own_units() {
         "the tap ordered: {:?}",
         game.pending
     );
+    assert_eq!(last_ping_queued(&game), Some(false));
     assert_eq!(
         game.presentation.selection.units,
         vec![fighter],
@@ -3201,6 +3212,7 @@ fn a_tap_on_open_ground_moves_own_units() {
             .any(|c| matches!(c.command, Command::Advance { queue: true, .. })),
         "QUEUE queues the tap's order"
     );
+    assert_eq!(last_ping_queued(&game), Some(true), "and its ping says so");
 }
 
 #[test]

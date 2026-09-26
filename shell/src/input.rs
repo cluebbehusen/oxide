@@ -93,14 +93,14 @@ impl ArmedMode {
     /// Compact persistent label; detailed coaching remains in the toast.
     pub(crate) fn label(self) -> String {
         match self {
-            Self::Build(kind) => format!("BUILD {}", crate::typography::entity_name(kind.name())),
-            Self::Rally => "SET RALLY".to_string(),
-            Self::Salvage => "SALVAGE".to_string(),
-            Self::Weld => "WELD UNIT".to_string(),
-            Self::Run => "RUN".to_string(),
-            Self::AttackMove => "ATTACK-MOVE".to_string(),
-            Self::Patrol(0) => "PATROL | ADD WAYPOINTS".to_string(),
-            Self::Patrol(count) => format!("PATROL | {count} WAYPOINTS"),
+            Self::Build(kind) => crate::typography::entity_name(kind.name()),
+            Self::Rally => "Set rally".to_string(),
+            Self::Salvage => "Salvage".to_string(),
+            Self::Weld => "Weld".to_string(),
+            Self::Run => "Run".to_string(),
+            Self::AttackMove => "Attack-move".to_string(),
+            Self::Patrol(0) => "Patrol".to_string(),
+            Self::Patrol(count) => format!("Patrol \u{b7} {count}"),
         }
     }
 }
@@ -1093,8 +1093,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // stamp defers or founds on its own ground.
                             defer: build_defer_needed(&game.view(), kind, anchor),
                         });
-                        game.presentation
-                            .ping(placement_ping(kind, anchor), PingKind::Rally);
+                        game.presentation.ping_order(
+                            placement_ping(kind, anchor),
+                            PingKind::Rally,
+                            true,
+                        );
                         stroke.anchors.push(anchor);
                     }
                 }
@@ -1224,8 +1227,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 goal: tile,
                                 queue,
                             });
-                            game.presentation
-                                .ping(vec2(world.x, world.y), PingKind::Move);
+                            game.presentation.ping_order(
+                                vec2(world.x, world.y),
+                                PingKind::Move,
+                                queue,
+                            );
                         } else if units.is_empty() {
                             rally_selected_producers(game, tile, world);
                         }
@@ -1547,7 +1553,7 @@ fn place_at(
         defer: build_defer_needed(&game.view(), kind, anchor),
     });
     game.presentation
-        .ping(placement_ping(kind, anchor), PingKind::Rally);
+        .ping_order(placement_ping(kind, anchor), PingKind::Rally, queue);
     true
 }
 
@@ -1583,7 +1589,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 building,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Harvest);
+            game.presentation
+                .ping_order(world, PingKind::Harvest, input.queue_held());
             if !input.queue_held() {
                 input.salvaging = false;
             }
@@ -1645,7 +1652,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 target,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Harvest);
+            game.presentation
+                .ping_order(world, PingKind::Harvest, input.queue_held());
             if !input.queue_held() {
                 input.repairing = false;
             }
@@ -1667,7 +1675,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 goal,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Move);
+            game.presentation
+                .ping_order(world, PingKind::Move, input.queue_held());
             if !input.queue_held() {
                 input.running = false;
             }
@@ -1689,7 +1698,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 goal,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Attack);
+            game.presentation
+                .ping_order(world, PingKind::Attack, input.queue_held());
             if !input.queue_held() {
                 input.attacking = false;
             }

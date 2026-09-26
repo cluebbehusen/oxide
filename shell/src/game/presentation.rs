@@ -243,11 +243,17 @@ impl Presentation {
 
     /// Drops an order-acknowledgment ping at a world point.
     pub fn ping(&mut self, at: Vec2, kind: PingKind) {
+        self.ping_order(at, kind, false);
+    }
+
+    /// Drops an order-acknowledgment ping; a `queued` order's ping says
+    /// it joined the program rather than replacing it.
+    pub fn ping_order(&mut self, at: Vec2, kind: PingKind, queued: bool) {
         // An order the sim accepted deserves an answer in the ear as
         // well as the eye (the mixer rate-limits volley spam).
         self.sounds_pending.push((SoundKind::Ack, None));
         self.fx.push(Effect {
-            kind: EffectKind::Ping { at, kind },
+            kind: EffectKind::Ping { at, kind, queued },
             age: 0.0,
         });
     }

@@ -46,6 +46,18 @@ pub(crate) fn draw_placement_ghost(
             ..Default::default()
         },
     );
+    if ok && input.queue_held() {
+        let corner = screen + vec2(dest.x, 0.0);
+        fill_circle(corner, 9.0, Color::new(0.08, 0.08, 0.1, 0.85));
+        draw_queued_mark(corner, 5.0, BONE);
+    }
+}
+
+/// The plus a queued order wears, on its ping and on the placement ghost:
+/// it joins the program rather than replacing it.
+fn draw_queued_mark(center: Vec2, arm: f32, color: Color) {
+    line_between(center - vec2(arm, 0.0), center + vec2(arm, 0.0), 2.0, color);
+    line_between(center - vec2(0.0, arm), center + vec2(0.0, arm), 2.0, color);
 }
 
 /// Paid provisional scaffolds remain faint amber footprints until their
@@ -2428,7 +2440,7 @@ pub(crate) fn draw_range_rings(game: &crate::game::Scene<'_>, input: &InputState
 
 pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
     for fx in &game.presentation.fx {
-        let EffectKind::Ping { at, kind } = fx.kind else {
+        let EffectKind::Ping { at, kind, queued } = fx.kind else {
             continue;
         };
         let center = game.presentation.camera.to_screen(at);
@@ -2449,6 +2461,9 @@ pub(crate) fn draw_pings(game: &crate::game::Scene<'_>) {
         };
         let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
         stroke_circle(center, radius, 2.5, color);
+        if queued {
+            draw_queued_mark(center, 5.0, color);
+        }
     }
 }
 
