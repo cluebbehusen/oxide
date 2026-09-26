@@ -51,7 +51,8 @@ impl std::ops::DerefMut for ReadOnlyState {
     }
 }
 
-/// Commands waiting for the next recorded tick.
+/// Commands waiting for the next recorded tick. A networked session keeps
+/// its bound seat's orders here from sending until their batch executes.
 #[derive(Debug, Default)]
 pub(crate) struct PendingCommands(Vec<PlayerCommand>);
 
@@ -87,6 +88,7 @@ mod fx;
 mod presentation;
 pub(crate) use presentation::{Presentation, Scene};
 pub(crate) mod checkpoint;
+pub(crate) mod network;
 mod projectiles;
 pub(crate) use projectiles::LaunchPose;
 
@@ -140,6 +142,8 @@ pub struct Game {
     /// is skipped entirely instead of accumulated-then-discarded — a
     /// million-tick advance must not buffer a million battles.
     suppress_presentation: bool,
+    /// Ticks come from supplied batches rather than `do_tick`.
+    networked: bool,
     pub(crate) presentation: Presentation,
 }
 
@@ -219,7 +223,7 @@ impl Game {
     /// because it never touches macroquad.
     pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
         let human = Self::local_seat(&scenario);
-        Self::assemble(scenario, viewport, human)
+        Self::assemble(scenario, viewport, human, true)
     }
 
     fn local_seat(scenario: &Scenario) -> PlayerId {
@@ -232,10 +236,19 @@ impl Game {
         )
     }
 
-    fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
+    fn assemble(
+        scenario: Scenario,
+        viewport: Vec2,
+        human: PlayerId,
+        run_bots: bool,
+    ) -> Result<Self> {
         let state = scenario.build()?;
         let live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
-        let bots = seat_bots(&scenario)?;
+        let bots = if run_bots {
+            seat_bots(&scenario)?
+        } else {
+            Vec::new()
+        };
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let presentation = Presentation::new(&state, human, viewport);
         Ok(Self {
@@ -257,6 +270,7 @@ impl Game {
             concede_stats: None,
             demo: crate::tutorial::Demo::default(),
             suppress_presentation: false,
+            networked: false,
             presentation,
         })
     }
@@ -454,10 +468,39 @@ impl Game {
     }
 
     /// Runs exactly one tick: bots think, staged commands drain, everything
-    /// is recorded, and presentation caches update. This owns the live world's
+    /// is recorded, and presentation caches update. Outside networked
+    /// sessions, which execute supplied batches, this owns the live world's
     /// only authoritative state transition.
     pub fn do_tick(&mut self) -> oxide_sim::TickReport {
+        assert!(
+            !self.networked,
+            "networked sessions execute supplied batches"
+        );
         self.start_recovery();
+        let mut commands = std::mem::take(&mut self.pending.0);
+        let staged = commands.len();
+        commands.extend(self.bot_commands());
+        self.execute(&commands, staged)
+    }
+
+    /// This tick's bot commands, joining any background decision.
+    fn bot_commands(&mut self) -> Vec<PlayerCommand> {
+        let _bot_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Bots);
+        let observer = self
+            .diagnostics
+            .as_deref()
+            .filter(|recorder| recorder.enabled());
+        if let Some(decision) = self.bot_decision.take() {
+            decision.finish(&self.state.0, &mut self.bots, observer)
+        } else {
+            oxide_kit::bot_execution::commands_observed(&self.state, &mut self.bots, observer)
+        }
+    }
+
+    /// Records and executes one complete batch, then updates statistics,
+    /// tutorial evidence, and presentation. Only the first `graded` commands
+    /// can grade the tutorial, so bot orders for a bot-bound seat never do.
+    fn execute(&mut self, commands: &[PlayerCommand], graded: usize) -> oxide_sim::TickReport {
         // New ticks make any earlier autosave stale.
         self.autosave_done = false;
         // Interpolation cache; pointless during suppressed bulk advances
@@ -465,35 +508,17 @@ impl Game {
         if !self.suppress_presentation {
             self.presentation.remember_previous_tick(&self.state);
         }
-
-        let mut commands = std::mem::take(&mut self.pending.0);
-        let human_commands: Vec<Command> = commands
-            .iter()
-            .filter(|pc| pc.player == self.presentation.human)
-            .map(|pc| pc.command.clone())
-            .collect();
-        let bot_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Bots);
-        let observer = self
-            .diagnostics
-            .as_deref()
-            .filter(|recorder| recorder.enabled());
-        commands.extend(if let Some(decision) = self.bot_decision.take() {
-            decision.finish(&self.state.0, &mut self.bots, observer)
-        } else {
-            oxide_kit::bot_execution::commands_observed(&self.state, &mut self.bots, observer)
-        });
-        drop(bot_scope);
-        for command in &commands {
+        for command in commands {
             self.recorder
                 .record(self.state.current_tick(), command.clone());
         }
         if let Some(recovery) = &self.recovery {
-            recovery.prepared(self.state.current_tick(), &commands);
+            recovery.prepared(self.state.current_tick(), commands);
         }
         let sim_scope = self.diagnostic_span(oxide_kit::diagnostics::Phase::Simulation);
         let report = Arc::get_mut(&mut self.state.0)
             .expect("bot decision retained the world after collection")
-            .tick(&commands);
+            .tick(commands);
         drop(sim_scope);
         if let Some(recovery) = &self.recovery {
             recovery.completed(self.state.current_tick());
@@ -544,7 +569,12 @@ impl Game {
             .iter()
             .any(|e| matches!(e, Event::CommandRejected { player, .. } if *player == self.presentation.human));
         if !human_rejected {
-            for command in &human_commands {
+            let human = self.presentation.human;
+            for command in commands[..graded]
+                .iter()
+                .filter(|pc| pc.player == human)
+                .map(|pc| &pc.command)
+            {
                 match command {
                     Command::Train { kind, .. } => {
                         self.demo.trained = true;
