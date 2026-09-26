@@ -489,3 +489,18 @@ pub(super) fn connected_artillery_staging_goal(
     let routes = route_projection(obs, Domain::Ground, public_map);
     artillery_staging_with_routes(obs, home, target, public_map, &routes)
 }
+
+pub(super) fn suppression_targets_reachable(
+    routes: &RouteProjection<'_>,
+    obs: &Observation,
+    origin: SuppressionOrigin,
+    targets: &[Target],
+    intel: &StrategicIntelligence,
+    public_map: Option<&PublicMapBriefing>,
+) -> bool {
+    targets.iter().all(|target| {
+        legal_suppression_stands(obs, origin, *target, intel, public_map)
+            .into_iter()
+            .any(|stand| routes.ground_command_reaches(origin.tile, stand))
+    })
+}
