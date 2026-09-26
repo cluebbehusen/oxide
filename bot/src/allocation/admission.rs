@@ -361,7 +361,7 @@ pub(crate) fn admit_decision(
         || (strategy
             .air_operation()
             .is_some_and(|op| op.assault_admitted())
-            && strategy.connected_package_diagnostics().is_some());
+            && strategy.connected_deadline().is_some());
     let mut utility_reservations = policy.state.reconnaissance.reservations();
     utility_reservations.extend(policy.support_reservations());
     utility_reservations.sort_unstable();

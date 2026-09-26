@@ -10,6 +10,8 @@ use serde::Serialize;
 use super::observation::Observation;
 
 const EPISODE_LIMIT: usize = 64;
+/// Committed target clusters lie within one small tactical radius.
+const CLUSTER_MEMBER_LIMIT: usize = 64;
 const CONTEXT_LIMIT: usize = 128;
 const SCORE_LIMIT: i32 = 1024;
 const EPISODE_WEIGHT: i32 = 256;
@@ -562,12 +564,26 @@ struct ObjectiveWatch {
     deadline: Tick,
 }
 
+/// One committed cluster member tracked from its first current sighting.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct ClusterMemberWatch {
+    id: BuildingId,
+    kind: BuildingKind,
+    anchor: chassis::grid::TilePos,
+    baseline_hp: u32,
+    damage: u32,
+    gone: bool,
+}
+
 /// Owners explicitly open and finish episodes; disappearance is not a verdict.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OutcomeJournal {
     watch: Option<EpisodeWatch>,
     #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, EPISODE_LIMIT>")]
     follow_through: Vec<ObjectiveWatch>,
+    /// Members of the open episode's committed target cluster.
+    #[serde(deserialize_with = "crate::checkpoint::bounded_vec::<_, _, CLUSTER_MEMBER_LIMIT>")]
+    cluster: Vec<ClusterMemberWatch>,
     pub(crate) pending: Vec<EpisodeReport>,
 }
 
@@ -834,6 +850,7 @@ impl OutcomeJournal {
                 1000,
                 false,
             );
+            self.cluster.clear();
             self.watch = Some(EpisodeWatch {
                 report: EpisodeReport {
                     id,
@@ -946,15 +963,19 @@ impl OutcomeJournal {
                 .objective
                 .get_or_insert_with(|| super::executive::ArmyObjective::from_building(current));
             let baseline = watch.objective.get_or_insert_with(|| current.clone());
-            watch.report.observed_progress = watch
-                .report
-                .observed_progress
-                .max(baseline.hp.saturating_sub(current.hp));
+            // A baseline captured for a different building, such as a
+            // replacement at the same site, says nothing about damage to
+            // this one.
+            if baseline.id == id {
+                watch.report.observed_progress = watch
+                    .report
+                    .observed_progress
+                    .max(baseline.hp.saturating_sub(current.hp));
+            }
             return false;
         }
         watch.objective.as_ref().is_some_and(|baseline| {
-            let size = baseline.kind.base_stats().size;
-            (0..size.1).all(|dy| (0..size.0).all(|dx| obs.visible(baseline.anchor.offset(dx, dy))))
+            footprint_visible(obs, baseline.anchor, baseline.kind)
                 && !obs
                     .enemy_buildings
                     .iter()
@@ -962,11 +983,76 @@ impl OutcomeJournal {
         })
     }
 
+    /// Tracks every member of a committed target cluster from its first
+    /// current sighting and credits their combined observed damage as
+    /// progress. A member is gone once its anchor leaves `live_anchors`, the
+    /// same strategic memory that decides whether the cluster is cleared, and
+    /// stays gone. Returns whether every tracked member is gone.
+    pub(crate) fn observe_cluster(
+        &mut self,
+        obs: &Observation,
+        player: oxide_sim::ids::PlayerId,
+        anchors: &[chassis::grid::TilePos],
+        live_anchors: &[chassis::grid::TilePos],
+    ) -> bool {
+        let Some(watch) = self.watch.as_mut().filter(|watch| !watch.finished) else {
+            return false;
+        };
+        for building in obs.enemy_buildings.iter().filter(|building| {
+            building.seen && building.player == player && anchors.contains(&building.anchor)
+        }) {
+            if let Some(member) = self
+                .cluster
+                .iter_mut()
+                .find(|member| member.id == building.id)
+            {
+                member.damage = member
+                    .damage
+                    .max(member.baseline_hp.saturating_sub(building.hp));
+            } else if self.cluster.len() < CLUSTER_MEMBER_LIMIT
+                && !self
+                    .cluster
+                    .iter()
+                    .any(|member| member.anchor == building.anchor)
+            {
+                self.cluster.push(ClusterMemberWatch {
+                    id: building.id,
+                    kind: building.kind,
+                    anchor: building.anchor,
+                    baseline_hp: building.hp,
+                    damage: 0,
+                    gone: false,
+                });
+            }
+        }
+        for member in self.cluster.iter_mut().filter(|member| !member.gone) {
+            member.gone = !live_anchors.contains(&member.anchor);
+            if member.gone {
+                member.damage = member.baseline_hp;
+            }
+        }
+        let progress = self
+            .cluster
+            .iter()
+            .fold(0_u32, |total, member| total.saturating_add(member.damage));
+        watch.report.observed_progress = watch.report.observed_progress.max(progress);
+        !self.cluster.is_empty() && self.cluster.iter().all(|member| member.gone)
+    }
+
     pub(crate) fn bind_objective(&mut self, objective: super::executive::ArmyObjective) {
         if let Some(watch) = self.watch.as_mut().filter(|watch| !watch.finished) {
             watch.report.objective.get_or_insert(objective);
         }
     }
+}
+
+fn footprint_visible(
+    obs: &Observation,
+    anchor: chassis::grid::TilePos,
+    kind: BuildingKind,
+) -> bool {
+    let (width, height) = kind.base_stats().size;
+    (0..height).all(|dy| (0..width).all(|dx| obs.visible(anchor.offset(dx, dy))))
 }
 
 #[cfg(test)]
@@ -1801,5 +1887,140 @@ mod tests {
         assert!(!journal.observe_objective(&obs, BuildingId(1)));
         obs.visible[6 * 20 + 6] = true;
         assert!(journal.observe_objective(&obs, BuildingId(1)));
+    }
+
+    #[test]
+    fn objective_progress_ignores_a_baseline_for_another_building() {
+        use super::super::observation::BuildingObs;
+        use chassis::grid::TilePos;
+        use oxide_sim::{BuildingId, BuildingKind, PlayerId};
+        let mut obs = Observation::from_data(ObservationData {
+            tick: 100,
+            map_width: 20,
+            map_height: 20,
+            visible: vec![true; 400],
+            enemy_buildings: vec![BuildingObs {
+                hp: 1000,
+                ..crate::test_support::building(
+                    1,
+                    PlayerId(1),
+                    BuildingKind::Foundry,
+                    TilePos::new(5, 5),
+                )
+            }],
+            ..crate::test_support::observation_data()
+        });
+        let mut journal = OutcomeJournal::default();
+        let episode = report(1);
+        journal.watch(&obs, episode.id, episode.context, &[], 1);
+        assert!(!journal.observe_objective(&obs, BuildingId(1)));
+        obs.enemy_buildings[0].id = BuildingId(2);
+        obs.enemy_buildings[0].hp = 400;
+        assert!(!journal.observe_objective(&obs, BuildingId(2)));
+        assert_eq!(
+            journal.watch.as_ref().unwrap().report.observed_progress,
+            0,
+            "a replacement at the same site is not damage to the baseline"
+        );
+    }
+
+    fn cluster_member(
+        id: u32,
+        anchor: chassis::grid::TilePos,
+    ) -> super::super::observation::BuildingObs {
+        super::super::observation::BuildingObs {
+            hp: 500,
+            ..crate::test_support::building(
+                id,
+                oxide_sim::PlayerId(1),
+                oxide_sim::BuildingKind::Airworks,
+                anchor,
+            )
+        }
+    }
+
+    #[test]
+    fn a_cluster_is_gone_once_memory_drops_every_tracked_member() {
+        use chassis::grid::TilePos;
+        let first = TilePos::new(5, 5);
+        let second = TilePos::new(9, 5);
+        let stray = TilePos::new(5, 12);
+        let anchors = [first, second];
+        let mut obs = Observation::from_data(ObservationData {
+            tick: 100,
+            map_width: 20,
+            map_height: 20,
+            visible: vec![true; 400],
+            enemy_buildings: vec![
+                cluster_member(1, first),
+                cluster_member(2, second),
+                cluster_member(3, stray),
+            ],
+            ..crate::test_support::observation_data()
+        });
+        let mut journal = OutcomeJournal::default();
+        let episode = report(1);
+        journal.watch(&obs, episode.id, episode.context, &[], 1);
+        let player = oxide_sim::PlayerId(1);
+        assert!(!journal.observe_cluster(&obs, player, &anchors, &anchors));
+        assert_eq!(
+            journal.cluster.len(),
+            2,
+            "only committed anchors are tracked"
+        );
+
+        obs.enemy_buildings[0].hp = 300;
+        obs.enemy_buildings[1].hp = 450;
+        assert!(!journal.observe_cluster(&obs, player, &anchors, &anchors));
+        assert_eq!(
+            journal.watch.as_ref().unwrap().report.observed_progress,
+            250,
+            "damage accumulates across members"
+        );
+
+        obs.enemy_buildings.remove(0);
+        assert!(
+            !journal.observe_cluster(&obs, player, &anchors, &[second]),
+            "one member left memory while the other stands"
+        );
+        obs.enemy_buildings.remove(0);
+        assert!(
+            !journal.observe_cluster(&obs, player, &anchors, &[second]),
+            "a remembered member out of sight is not gone"
+        );
+        assert!(
+            !journal.observe_cluster(&obs, player, &anchors, &anchors),
+            "a member that reappears at its anchor keeps the cluster standing"
+        );
+        assert!(journal.cluster[0].gone, "a member gone once stays gone");
+        assert!(journal.observe_cluster(&obs, player, &anchors, &[]));
+        assert_eq!(
+            journal.watch.as_ref().unwrap().report.observed_progress,
+            1_000
+        );
+    }
+
+    #[test]
+    fn restored_cluster_watch_respects_its_storage_bound() {
+        use chassis::grid::TilePos;
+        let obs = Observation::from_data(ObservationData {
+            tick: 100,
+            map_width: 20,
+            map_height: 20,
+            visible: vec![true; 400],
+            enemy_buildings: vec![cluster_member(1, TilePos::new(5, 5))],
+            ..crate::test_support::observation_data()
+        });
+        let mut journal = OutcomeJournal::default();
+        let episode = report(1);
+        journal.watch(&obs, episode.id, episode.context, &[], 1);
+        let anchors = [TilePos::new(5, 5)];
+        journal.observe_cluster(&obs, oxide_sim::PlayerId(1), &anchors, &anchors);
+        let mut wire = serde_json::to_value(&journal).unwrap();
+        let member = wire["cluster"][0].clone();
+        wire["cluster"] = serde_json::json!(vec![member.clone(); CLUSTER_MEMBER_LIMIT]);
+        assert!(serde_json::from_value::<OutcomeJournal>(wire.clone()).is_ok());
+        wire["cluster"].as_array_mut().unwrap().push(member);
+        assert!(serde_json::from_value::<OutcomeJournal>(wire).is_err());
     }
 }

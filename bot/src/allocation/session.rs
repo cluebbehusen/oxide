@@ -3901,10 +3901,30 @@ mod tests {
         producer_work: StrategicDecision,
         trace: Option<&mut AllocationTrace>,
     ) -> AllocationSessionOutcome {
+        run_connected_session_with_knowledge(
+            observation,
+            &StrategicIntelligence::new(),
+            policy,
+            strategy,
+            producer_work,
+            trace,
+        )
+    }
+
+    /// Runs the session with `prior` controller memory updated through
+    /// `observation`.
+    fn run_connected_session_with_knowledge(
+        observation: &Observation,
+        prior: &StrategicIntelligence,
+        policy: &mut UtilityPolicy,
+        strategy: &mut StrategicPlanner,
+        producer_work: StrategicDecision,
+        trace: Option<&mut AllocationTrace>,
+    ) -> AllocationSessionOutcome {
         const HOME: TilePos = TilePos::new(3, 10);
         let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(observation);
-        let mut intelligence = StrategicIntelligence::new();
+        let mut intelligence = prior.clone();
         intelligence.update(observation);
         let mut lifts = LiftPlanner::new();
         let mut team = TeamReliefPlanner::new();
@@ -5095,6 +5115,288 @@ mod tests {
         }
     }
 
+    const CLUSTER_PRIMARY: TilePos = TilePos::new(24, 10);
+    const CLUSTER_AIRWORKS: TilePos = TilePos::new(27, 10);
+    const CLUSTER_FABRICATOR: TilePos = TilePos::new(24, 13);
+    const CLUSTER: [TilePos; 3] = [CLUSTER_PRIMARY, CLUSTER_AIRWORKS, CLUSTER_FABRICATOR];
+
+    /// The connected fixture's Crucible with an Airworks and a Fabricator
+    /// inside its tactical radius.
+    fn clustered_connected_observation(tick: Tick, scrap: u32) -> Observation {
+        let mut observation = connected_observation(tick, scrap);
+        observation.enemy_buildings.extend([
+            observed_building(81, 1, BuildingKind::Airworks, CLUSTER_AIRWORKS),
+            observed_building(82, 1, BuildingKind::Fabricator, CLUSTER_FABRICATOR),
+        ]);
+        observation
+            .enemy_buildings
+            .sort_unstable_by_key(|building| building.id);
+        observation
+    }
+
+    fn next_decision(previous: &Observation) -> Observation {
+        let mut next = previous.clone();
+        next.tick += 12;
+        next
+    }
+
+    fn hide_footprint(observation: &mut Observation, anchor: TilePos, kind: BuildingKind) {
+        observation
+            .enemy_buildings
+            .retain(|building| building.anchor != anchor);
+        let (width, height) = kind.base_stats().size;
+        for dy in 0..height {
+            for dx in 0..width {
+                let tile = anchor.offset(dx, dy);
+                let index = usize::try_from(tile.y * observation.map_width + tile.x).unwrap();
+                observation.visible[index] = false;
+            }
+        }
+    }
+
+    fn intelligence_through(observations: &[&Observation]) -> StrategicIntelligence {
+        let mut intelligence = StrategicIntelligence::new();
+        for observation in observations {
+            intelligence.update(observation);
+        }
+        intelligence
+    }
+
+    /// Identity, admitted anchors, focus, and live anchors of the operation.
+    fn committed_cluster(
+        strategy: &StrategicPlanner,
+        intelligence: &StrategicIntelligence,
+    ) -> (
+        crate::strategy::ConnectedOffenseIdentity,
+        Vec<TilePos>,
+        TilePos,
+        Vec<TilePos>,
+    ) {
+        let package = strategy
+            .connected_package_diagnostics(intelligence)
+            .expect("the connected operation keeps its commitment");
+        (
+            strategy
+                .connected_identity()
+                .expect("the connected operation keeps its identity"),
+            package.admitted_anchors,
+            package.focus,
+            package.live_anchors,
+        )
+    }
+
+    fn sorted(mut anchors: Vec<TilePos>) -> Vec<TilePos> {
+        anchors.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+        anchors
+    }
+
+    #[test]
+    fn connected_admission_freezes_the_cluster_its_identity_and_its_deadline() {
+        let observation = clustered_connected_observation(120, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let intelligence = intelligence_through(&[&observation]);
+        let admitted =
+            crate::strategy::ConnectedOffenseIdentity::new(BuildingId(80), CLUSTER_PRIMARY);
+        let (identity, anchors, focus, live) = committed_cluster(&strategy, &intelligence);
+        assert_eq!(identity, admitted);
+        assert_eq!(anchors, sorted(CLUSTER.to_vec()));
+        assert_eq!(focus, CLUSTER_PRIMARY);
+        assert_eq!(live, anchors);
+        let deadline = strategy.connected_deadline();
+        assert_eq!(
+            deadline,
+            Some(120 + crate::strategy::connected_preparation_horizon())
+        );
+        let operation = strategy.air_operation().expect("the operation is admitted");
+        assert_eq!(
+            (
+                operation.target_player,
+                operation.target,
+                operation.target_id,
+                operation.target_kind
+            ),
+            (
+                PlayerId(1),
+                CLUSTER_PRIMARY,
+                Some(BuildingId(80)),
+                BuildingKind::Crucible
+            )
+        );
+
+        let revised = next_decision(&observation);
+        let outcome = run_connected_session(&revised, &mut UtilityPolicy::new(), &mut strategy);
+        assert!(outcome.allocation_ok);
+        let intelligence = intelligence_through(&[&observation, &revised]);
+        assert_eq!(committed_cluster(&strategy, &intelligence).0, admitted);
+        assert_eq!(committed_cluster(&strategy, &intelligence).1, anchors);
+        assert_eq!(strategy.connected_deadline(), deadline);
+        assert_eq!(
+            connected_obligation(&mut strategy, &revised).identity(),
+            admitted
+        );
+    }
+
+    #[test]
+    fn a_member_out_of_sight_stays_committed_and_still_sizes_the_revision() {
+        let observation = clustered_connected_observation(120, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let mut hidden = next_decision(&observation);
+        hide_footprint(&mut hidden, CLUSTER_FABRICATOR, BuildingKind::Fabricator);
+        let outcome = run_connected_session_with_knowledge(
+            &hidden,
+            &intelligence_through(&[&observation]),
+            &mut UtilityPolicy::new(),
+            &mut strategy,
+            StrategicDecision::default(),
+            None,
+        );
+        assert!(outcome.allocation_ok);
+
+        let intelligence = intelligence_through(&[&observation, &hidden]);
+        let (_, anchors, _, live) = committed_cluster(&strategy, &intelligence);
+        assert_eq!(anchors, sorted(CLUSTER.to_vec()));
+        assert_eq!(live, anchors, "a member out of sight is not a member lost");
+        let package = strategy
+            .connected_package_diagnostics(&intelligence)
+            .expect("the operation keeps a package");
+        assert_eq!(package.derived_at, hidden.tick, "the operation was revised");
+        assert!(
+            package.target_anchors.contains(&CLUSTER_FABRICATOR),
+            "a remembered member of positive confidence still sizes the revision"
+        );
+    }
+
+    #[test]
+    fn observed_destruction_of_the_primary_moves_the_focus_but_not_the_identity() {
+        let observation = clustered_connected_observation(120, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let admitted = connected_obligation(&mut strategy, &observation).identity();
+        let support = lift_air_support(strategy.air_operation(), strategy.terminal_outcome());
+
+        let mut destroyed = next_decision(&observation);
+        destroyed
+            .enemy_buildings
+            .retain(|building| building.anchor != CLUSTER_PRIMARY);
+        let outcome = run_connected_session(&destroyed, &mut UtilityPolicy::new(), &mut strategy);
+        assert!(outcome.allocation_ok);
+        let _ = advance_connected_after_allocation(&destroyed, &mut strategy, &outcome);
+
+        let intelligence = intelligence_through(&[&observation, &destroyed]);
+        let (identity, anchors, focus, live) = committed_cluster(&strategy, &intelligence);
+        assert_eq!(identity, admitted);
+        assert_eq!(anchors, sorted(CLUSTER.to_vec()));
+        assert_eq!(live, sorted(vec![CLUSTER_AIRWORKS, CLUSTER_FABRICATOR]));
+        assert_eq!(
+            focus, CLUSTER_AIRWORKS,
+            "the focus moves to the best surviving member"
+        );
+        let operation = strategy
+            .air_operation()
+            .expect("survivors keep the operation");
+        assert_eq!(operation.recovery_reason(), None);
+        assert_eq!(
+            (operation.target, operation.target_id),
+            (CLUSTER_PRIMARY, Some(BuildingId(80)))
+        );
+        assert_eq!(
+            connected_obligation(&mut strategy, &destroyed).identity(),
+            admitted,
+            "the persistent obligation keeps one owner, so production search resumes"
+        );
+        assert_eq!(
+            lift_air_support(strategy.air_operation(), strategy.terminal_outcome()),
+            support,
+            "a coordinated lift keeps matching the same enclave"
+        );
+    }
+
+    #[test]
+    fn a_new_building_near_a_survivor_never_joins_the_commitment() {
+        let observation = clustered_connected_observation(120, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let newcomer = CLUSTER_PRIMARY.offset(-3, 0);
+        let mut grown = next_decision(&observation);
+        grown
+            .enemy_buildings
+            .push(observed_building(90, 1, BuildingKind::Foundry, newcomer));
+        grown
+            .enemy_buildings
+            .sort_unstable_by_key(|building| building.id);
+        let outcome = run_connected_session(&grown, &mut UtilityPolicy::new(), &mut strategy);
+        assert!(outcome.allocation_ok);
+
+        let intelligence = intelligence_through(&[&observation, &grown]);
+        let (_, anchors, _, _) = committed_cluster(&strategy, &intelligence);
+        assert_eq!(anchors, sorted(CLUSTER.to_vec()));
+        let package = strategy
+            .connected_package_diagnostics(&intelligence)
+            .expect("the operation keeps a package");
+        assert_eq!(package.derived_at, grown.tick, "the operation was revised");
+        assert!(!package.target_anchors.contains(&newcomer));
+    }
+
+    #[test]
+    fn paid_connected_purchases_survive_a_revision_without_being_bought_again() {
+        let observation = clustered_connected_observation(120, 10_000);
+        let (mut strategy, _) = current_connected_planner(&observation);
+        let mut policy = UtilityPolicy::new();
+        let admission = run_connected_session(&observation, &mut policy, &mut strategy);
+        assert!(admission.allocation_ok);
+        let paid = strategy.paid_connected_production(&observation);
+        assert!(!paid.is_empty(), "the unfunded package buys providers");
+
+        let mut revised = next_decision(&observation);
+        for purchase in &paid {
+            let index = revised
+                .my_buildings
+                .iter()
+                .position(|building| building.id == purchase.producer())
+                .expect("the purchase names a completed producer");
+            revised.my_queues[index].push(purchase.kind());
+            revised.my_queue_progress[index] = 12;
+            revised.scrap -= purchase.kind().stats().cost;
+        }
+        revised
+            .enemy_buildings
+            .retain(|building| building.anchor != CLUSTER_PRIMARY);
+        let outcome = run_connected_session(&revised, &mut policy, &mut strategy);
+        assert!(outcome.allocation_ok);
+        let ledger = strategy.paid_connected_production(&revised);
+        assert!(
+            paid.iter().all(|purchase| ledger.contains(purchase)),
+            "the revision keeps every paid purchase: {paid:?} -> {ledger:?}"
+        );
+
+        let intelligence = intelligence_through(&[&observation, &revised]);
+        let package = strategy
+            .connected_package_diagnostics(&intelligence)
+            .expect("the operation keeps a package");
+        assert_eq!(
+            package.derived_at, revised.tick,
+            "the operation was revised"
+        );
+        for (kind, demand) in package
+            .recon
+            .iter()
+            .chain(&package.suppression)
+            .chain(&package.strike)
+        {
+            let live = revised
+                .my_units
+                .iter()
+                .filter(|unit| unit.kind == *kind)
+                .count();
+            let owned = ledger
+                .iter()
+                .filter(|purchase| purchase.kind() == *kind)
+                .count();
+            assert!(
+                live + owned <= (*demand).max(live),
+                "{kind:?}: {live} live and {owned} paid providers exceed demand {demand}"
+            );
+        }
+    }
+
     #[test]
     fn lost_forecast_source_recovers_instead_of_spending_unbacked_credit() {
         let mut observation = connected_observation(1_200, 10_000);
@@ -5707,8 +6009,8 @@ mod tests {
         })
         .into_active_revision_fixture();
         let key = ConnectedOffenseKey {
-            objective: proposal.objective(),
-            anchor: proposal.anchor(),
+            objective: proposal.identity().objective(),
+            anchor: proposal.identity().anchor(),
         };
 
         let setup = SessionProfile::new(prime_profile());
@@ -6084,8 +6386,8 @@ mod tests {
             );
             assert_eq!(demands, first.1);
             let key = ConnectedOffenseKey {
-                objective: proposal.objective(),
-                anchor: proposal.anchor(),
+                objective: proposal.identity().objective(),
+                anchor: proposal.identity().anchor(),
             };
             let expected = (!revision)
                 .then_some(ConnectedPortfolioContext::Absent)

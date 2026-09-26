@@ -143,9 +143,10 @@ impl OwnershipContexts {
         if !proposal.revises_active_operation() {
             plan.push(ConnectedPortfolioContext::Absent, base_exclusions, &[]);
         }
+        let identity = proposal.identity();
         let key = ConnectedOffenseKey {
-            objective: proposal.objective(),
-            anchor: proposal.anchor(),
+            objective: identity.objective(),
+            anchor: identity.anchor(),
         };
         let mut units = base_exclusions.to_vec();
         let mut production = Vec::new();

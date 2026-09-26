@@ -395,6 +395,7 @@ fn shared_forecast_defers_without_rejecting_and_resumes_the_minimum() {
             ConnectedTargetEvidence {
                 primary: target,
                 cluster: &[target],
+                committed: None,
             },
             ProductionEvidence::with_planning(
                 &resources,
@@ -457,6 +458,7 @@ fn runtime_composition_leaves_admission_work_and_only_offers_funded_rosters() {
             ConnectedTargetEvidence {
                 primary: &target,
                 cluster: &intel.buildings().iter().collect::<Vec<_>>(),
+                committed: None,
             },
             ProductionEvidence::with_planning(&resources, &all_producers(&resources), Some(&work)),
             &[],
@@ -490,6 +492,7 @@ fn investment_witness_only_derives_a_complete_minimum() {
         ConnectedTargetEvidence {
             primary: &target,
             cluster: &[&target],
+            committed: None,
         },
         ProductionEvidence::with_planning(
             &resources,
@@ -598,6 +601,7 @@ fn derive_settled(
             ConnectedTargetEvidence {
                 primary: target,
                 cluster: &cluster,
+                committed: None,
             },
             ProductionEvidence::with_planning(&resources, &access, Some(&planning)),
             unavailable,
@@ -2306,6 +2310,7 @@ fn late_funded_preference_cannot_hide_a_feasible_composition() {
             ConnectedTargetEvidence {
                 primary: target,
                 cluster: &[target],
+                committed: None,
             },
             ProductionEvidence::with_planning(&resources, &access, Some(&planning)),
             &[],
@@ -3237,6 +3242,7 @@ fn every_marginal_variant_preserves_earlier_provider_identity_and_funding() {
                 ConnectedTargetEvidence {
                     primary: &target,
                     cluster: &cluster,
+                    committed: None,
                 },
                 ProductionEvidence::with_planning(
                     &resources,
@@ -3710,6 +3716,7 @@ fn dense_portfolio_reaches_a_proved_alternative_across_checkpoint_boundaries() {
                     ConnectedTargetEvidence {
                         primary: target,
                         cluster: &cluster,
+                        committed: None,
                     },
                     ProductionEvidence::with_planning(&resources, &access, Some(work)),
                     &[],

@@ -761,7 +761,7 @@ fn active_lift_and_island_share_the_last_shallow_airworks_slot_without_starvatio
     assert!(strategy.air_operation().is_some_and(|operation| {
         operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
     }));
-    assert!(strategy.connected_package_diagnostics().is_none());
+    assert!(strategy.connected_deadline().is_none());
     let island_airwork = strategy.remaining_airwork_ticks(&observed, None);
     assert!(island_airwork > 0);
 
@@ -972,7 +972,7 @@ fn admitted_island_air_trains_before_a_fresh_foundry_without_being_thought_twice
     assert!(planner.air_operation().is_some_and(|operation| {
         operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
     }));
-    assert!(planner.connected_package_diagnostics().is_none());
+    assert!(planner.connected_deadline().is_none());
     assert!(admission.decision.intents.iter().any(|intent| matches!(
         intent,
         Intent::TrainAt {

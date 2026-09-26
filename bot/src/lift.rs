@@ -461,11 +461,11 @@ impl FreshLift {
 }
 
 impl LiftPlanner {
+    /// Matches the enclave the way support directives do, by owner and anchor.
     pub(crate) fn shares_air_objective(&self, air: &super::strategy::AirOperation) -> bool {
         self.support_latched
             && self.operation.as_ref().is_some_and(|operation| {
-                Some(operation.target_id) == air.target_id
-                    && operation.target_player == air.target_player
+                operation.target_player == air.target_player && operation.target == air.target
             })
     }
     /// Creates an idle lift planner.
