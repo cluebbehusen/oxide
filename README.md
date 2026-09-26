@@ -94,7 +94,9 @@ you out. Existing custom bindings are preserved when upgrading.
 On a touchscreen, tap to select, drag to pan, pinch to zoom, and long-press for
 the contextual order. Two fingers drag a selection box, and a double tap selects
 every unit of that kind on screen. The cards, the ≡ menu button, and the clock
-(tap to pause) cover the rest.
+(tap to pause) cover the rest. A ring fills while a long-press charges. Rest a
+finger on a card to read its details, then lift to use it or slide off to
+cancel. Tapping or clicking a disabled card says why it is unavailable.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;
