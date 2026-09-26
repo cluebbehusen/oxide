@@ -50,13 +50,14 @@ pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
 }
 
 /// The instruction toast shown when a mode arms the next pointer press,
-/// e.g. "weld: click a damaged own unit, Esc to cancel".
+/// e.g. "weld: click a damaged own unit, Esc to cancel". On touch the
+/// ribbon and the X are the way out, so the toast only names the target.
 fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> String {
-    format!(
-        "{mode}: {} {target}, {}",
-        crate::platform::tap_or_click(touch_only),
-        crate::platform::cancel_hint(back_key, touch_only)
-    )
+    if touch_only {
+        format!("{mode}: tap {target}")
+    } else {
+        format!("{mode}: click {target}, {back_key} to cancel")
+    }
 }
 
 /// World-unit pick radius around a unit's center.
@@ -592,6 +593,19 @@ impl InputState {
         self.queue_toggle || self.resolver.shift_held()
     }
 
+    /// The X: back to neutral in one press, with no armed mode, QUEUE
+    /// off, and nothing selected.
+    pub(crate) fn go_neutral(&mut self, game: &mut Game) {
+        self.close_construction();
+        self.queue_toggle = false;
+        self.last_tap = None;
+        game.presentation.selection.units.clear();
+        game.presentation.selection.buildings.clear();
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Click, None));
+    }
+
     /// Flips the QUEUE toggle, explaining it the first time it turns
     /// on in a session.
     pub(crate) fn toggle_queue(&mut self, game: &mut Game) {
@@ -973,6 +987,11 @@ pub(crate) use touch::{
 /// chrome, the arrow otherwise. Pure — the loop applies it.
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
+    let layout = game.presentation.layout.get();
+    let row = [layout.neutral, layout.queue_toggle, layout.mode_ribbon];
+    if row.iter().any(|r| r.w > 0.0 && r.contains(input.mouse)) {
+        return CursorIcon::Pointer;
+    }
     if input.placing.is_some()
         || input.patrol_route.is_some()
         || input.salvaging
@@ -1091,7 +1110,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                if armed_click(game, input, vec2(x, y), Pointer::Mouse) {
+                if ribbon_row_press(game, input, vec2(x, y), Pointer::Mouse)
+                    || armed_click(game, input, vec2(x, y), Pointer::Mouse)
+                {
                     continue;
                 }
                 // Panel cards are buttons: each carries the exact action
@@ -1114,10 +1135,6 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 }
                 if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
                     dispatch_action(game, input, Action::TogglePause);
-                    continue;
-                }
-                if layout.queue_toggle.w > 0.0 && layout.queue_toggle.contains(vec2(x, y)) {
-                    input.toggle_queue(game);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -1271,17 +1288,42 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
-fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
-    let cancel = game.presentation.layout.get().mode_cancel;
-    if cancel.w > 0.0 && crate::layout::touch_pad(cancel, input.ui).contains(p) {
+/// A press on the ribbon row: the X returns to neutral, QUEUE toggles,
+/// and the ribbon cancels its mode but keeps the selection. It runs
+/// before every other target, for mouse and touch alike.
+pub(super) fn ribbon_row_press(
+    game: &mut Game,
+    input: &mut InputState,
+    p: Vec2,
+    pointer: Pointer,
+) -> bool {
+    let layout = game.presentation.layout.get();
+    let ui = input.ui;
+    let hits = |rect: macroquad::math::Rect| {
+        rect.w > 0.0
+            && match pointer {
+                Pointer::Mouse => rect.contains(p),
+                Pointer::Touch => crate::layout::touch_pad(rect, ui).contains(p),
+            }
+    };
+    if hits(layout.neutral) {
+        input.go_neutral(game);
+    } else if hits(layout.queue_toggle) {
+        input.toggle_queue(game);
+    } else if hits(layout.mode_ribbon) {
         if input.cancel_armed_mode() {
             game.presentation.toast("command mode cancelled");
             game.presentation
                 .sounds_pending
                 .push((crate::game::SoundKind::Click, None));
         }
-        return true;
+    } else {
+        return false;
     }
+    true
+}
+
+fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
     if click_on_hud(game, p) && crate::render::minimap_world_at(&game.view(), p).is_none() {
         return false;
     }
@@ -1319,6 +1361,9 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
             if pointer == Pointer::Touch {
                 // A tap never builds on its own: it drops the ghost (or
                 // moves it here), and only a tap on the ghost confirms.
+                if input.touch_ghost.is_none() {
+                    game.presentation.toast("tap the ghost to build it");
+                }
                 input.touch_ghost = Some(PlacementGhost {
                     anchor: ghost_anchor_under(&game.view(), kind, world),
                     grab: None,

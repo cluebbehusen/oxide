@@ -416,7 +416,9 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 // A tap is an atomic click — no drag can
                 // follow, so the stroke closes here and
                 // Shift decides the mode, like MouseUp.
-                if armed_click(game, input, p, super::Pointer::Touch) {
+                if super::ribbon_row_press(game, input, p, super::Pointer::Touch)
+                    || armed_click(game, input, p, super::Pointer::Touch)
+                {
                     input.last_tap = None;
                     return;
                 }
@@ -460,10 +462,6 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     && crate::layout::touch_pad(layout.pause_status, input.ui).contains(p)
                 {
                     dispatch_action(game, input, Action::TogglePause);
-                } else if layout.queue_toggle.w > 0.0
-                    && crate::layout::touch_pad(layout.queue_toggle, input.ui).contains(p)
-                {
-                    input.toggle_queue(game);
                 } else if click_on_hud(game, p) {
                     // Bare chrome: the tap is swallowed.
                 } else if double && !input.queue_held() {

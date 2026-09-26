@@ -41,12 +41,13 @@ pub struct LayoutModel {
     /// pause like the pause key. Zero-sized while spectating.
     pub pause_status: Rect,
     /// Persistent armed-command ribbon. It is chrome even away from
-    /// the command band, so a tap on its label never leaks to the map.
+    /// the command band, and a press anywhere on it cancels the mode.
     pub mode_ribbon: Rect,
-    /// Touchable cancel action inside the armed-command ribbon.
-    pub mode_cancel: Rect,
     /// The QUEUE toggle beside the ribbon, on touch-only builds.
     pub queue_toggle: Rect,
+    /// The back-to-neutral X that leads the ribbon row: cancels any
+    /// armed mode, turns QUEUE off, and clears the selection.
+    pub neutral: Rect,
     /// Mixed-selection roster filters, separate from command cards.
     pub roster_slots: [(Rect, CardAction); 8],
     /// How many roster filters are live this frame.
@@ -76,8 +77,8 @@ impl Default for LayoutModel {
             menu_button: Rect::new(0.0, 0.0, 0.0, 0.0),
             pause_status: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
-            mode_cancel: Rect::new(0.0, 0.0, 0.0, 0.0),
             queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
+            neutral: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
             roster_count: 0,
             cards: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16],
@@ -176,7 +177,6 @@ impl LayoutModel {
         menu_button: Rect,
         pause_status: Rect,
         mode_ribbon: Rect,
-        mode_cancel: Rect,
         roster_slots: [(Rect, CardAction); 8],
         roster_count: usize,
         cards: [(Rect, CardAction); 16],
@@ -204,8 +204,8 @@ impl LayoutModel {
             menu_button,
             pause_status,
             mode_ribbon,
-            mode_cancel,
             queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
+            neutral: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots,
             roster_count,
             cards,
@@ -228,6 +228,7 @@ impl LayoutModel {
             || (self.orders.w > 0.0 && self.orders.contains(p))
             || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))
             || (self.queue_toggle.w > 0.0 && self.queue_toggle.contains(p))
+            || (self.neutral.w > 0.0 && self.neutral.contains(p))
     }
 }
 
@@ -348,7 +349,6 @@ mod tests {
             zero,
             zero,
             zero,
-            zero,
             [(zero, CardAction::None); 8],
             0,
             [(zero, CardAction::None); 16],
@@ -401,8 +401,9 @@ mod tests {
     fn an_armed_mode_ribbon_owns_its_world_pixels() {
         let mut m = compute_at(f32::INFINITY, 1.0);
         m.mode_ribbon = Rect::new(220.0, 640.0, 280.0, MIN_TOUCH_TARGET);
-        m.mode_cancel = Rect::new(456.0, 640.0, MIN_TOUCH_TARGET, MIN_TOUCH_TARGET);
+        m.neutral = Rect::new(160.0, 640.0, MIN_TOUCH_TARGET, MIN_TOUCH_TARGET);
         assert!(m.chrome_owns(m.mode_ribbon.center()));
+        assert!(m.chrome_owns(m.neutral.center()), "the X is chrome too");
         assert!(
             !m.chrome_owns(vec2(219.0, 660.0)),
             "beside the ribbon remains battlefield"

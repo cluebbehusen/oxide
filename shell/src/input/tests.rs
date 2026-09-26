@@ -68,7 +68,6 @@ fn bare_layout(panel_top: f32, panel_right: f32) -> crate::layout::LayoutModel {
         zero,
         zero,
         zero,
-        zero,
         [none; 8],
         0,
         [none; 16],
@@ -998,25 +997,90 @@ fn the_rally_card_arms_a_touchable_world_target() {
 }
 
 #[test]
-fn the_armed_mode_ribbon_cancel_is_a_real_touch_action() {
+fn a_ribbon_tap_cancels_the_mode_and_keeps_the_selection() {
     let mut game = headless_game();
     let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.presentation.selection.units = vec![fighter];
     input.attacking = true;
     let ribbon = macroquad::math::Rect::new(220.0, 620.0, 280.0, 44.0);
-    let cancel = macroquad::math::Rect::new(456.0, 620.0, 44.0, 44.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
     layout.mode_ribbon = ribbon;
-    layout.mode_cancel = cancel;
     game.presentation.layout.set(layout);
-    let at = cancel.center();
-    input.now = 1.0;
+    tap(&mut game, &mut input, ribbon.center());
+    assert_eq!(input.armed_mode(), None);
+    assert_eq!(game.presentation.selection.units, vec![fighter]);
+    assert!(game.pending.is_empty(), "cancel emits no gameplay command");
+
+    input.running = true;
     apply_events(
         &mut game,
         &mut input,
-        &[touch_down(11, at), touch_up(11, at)],
+        &click(ribbon.x + 20.0, ribbon.center().y),
     );
-    assert_eq!(input.armed_mode(), None);
-    assert!(game.pending.is_empty(), "cancel emits no gameplay command");
+    assert_eq!(input.armed_mode(), None, "a click cancels too");
+}
+
+#[test]
+fn the_x_returns_to_neutral_by_tap_or_click() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    let x = macroquad::math::Rect::new(160.0, 620.0, 44.0, 44.0);
+    let mut layout = bare_layout(f32::INFINITY, 0.0);
+    layout.neutral = x;
+    game.presentation.layout.set(layout);
+    for touch in [true, false] {
+        game.presentation.selection.units = vec![fighter];
+        input.attacking = true;
+        input.queue_toggle = true;
+        input.build_menu = true;
+        if touch {
+            tap(&mut game, &mut input, x.center());
+        } else {
+            apply_events(&mut game, &mut input, &click(x.center().x, x.center().y));
+        }
+        assert_eq!(input.armed_mode(), None);
+        assert!(!input.queue_toggle, "QUEUE is off");
+        assert!(!input.build_menu, "the palette is closed");
+        assert!(
+            game.presentation.selection.units.is_empty(),
+            "nothing selected"
+        );
+        assert!(game.pending.is_empty());
+    }
+
+    // Resting on the X never charges a battlefield order.
+    game.presentation.selection.units = vec![fighter];
+    input.now += 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(3, x.center())]);
+    input.now += 2.0;
+    update_touch(&mut game, &mut input);
+    assert!(
+        game.pending.is_empty(),
+        "a long-press on the X orders nothing"
+    );
+}
+
+#[test]
+fn touch_armed_toasts_only_name_their_target() {
+    assert_eq!(
+        armed_toast("weld", "a damaged own unit", "Esc", false),
+        "weld: click a damaged own unit, Esc to cancel"
+    );
+    crate::platform::assert_touch_copy(&armed_toast("weld", "a damaged own unit", "Esc", true));
 }
 
 #[test]
