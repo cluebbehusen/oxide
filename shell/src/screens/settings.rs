@@ -248,6 +248,15 @@ impl Row {
     }
 }
 
+/// The settings face's coaching line.
+fn settings_hint(touch_only: bool) -> &'static str {
+    if touch_only {
+        "tap a row to change it - changes stick immediately"
+    } else {
+        "{confirm} cycles a value - changes stick immediately"
+    }
+}
+
 /// The rows this build offers, in menu order.
 fn rows(touch_only: bool) -> Vec<Row> {
     Row::ALL
@@ -382,7 +391,7 @@ impl SettingsScreen {
     /// The face's coaching line.
     pub fn hint(&self) -> &'static str {
         match self.face {
-            Face::Settings => "{confirm} cycles a value - changes stick immediately",
+            Face::Settings => settings_hint(crate::platform::TOUCH_ONLY),
             Face::Controls { rebinding: Some(_) } => {
                 "press the new chord (modifiers held count) - Escape cancels"
             }
@@ -639,6 +648,12 @@ impl SettingsScreen {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn the_settings_hint_speaks_touch_on_touch_only_builds() {
+        assert!(settings_hint(false).contains("{confirm}"));
+        crate::platform::assert_touch_copy(settings_hint(true));
+    }
 
     #[test]
     fn a_touch_only_build_hides_rows_it_cannot_use() {

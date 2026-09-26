@@ -49,6 +49,16 @@ pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
     }
 }
 
+/// The instruction toast shown when a mode arms the next pointer press,
+/// e.g. "weld: click a damaged own unit, Esc to cancel".
+fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> String {
+    format!(
+        "{mode}: {} {target}, {}",
+        crate::platform::tap_or_click(touch_only),
+        crate::platform::cancel_hint(back_key, touch_only)
+    )
+}
+
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 
@@ -1709,9 +1719,11 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             }
             input.disarm_click_verbs();
             input.rallying = buildings;
-            game.presentation.toast(format!(
-                "set rally: click the battlefield or minimap, {} to cancel",
-                input.bindings.label(Action::Back)
+            game.presentation.toast(armed_toast(
+                "set rally",
+                "the battlefield or minimap",
+                &input.bindings.label(Action::Back),
+                crate::platform::TOUCH_ONLY,
             ));
         }
         crate::panel::CardAction::CancelProduction(kind) => {

@@ -19,6 +19,24 @@ fn paused_status(key: &str, touch_only: bool) -> String {
     }
 }
 
+/// The idle badge names its key where one exists.
+fn idle_badge_text(idle: usize, key: &str, touch_only: bool) -> String {
+    if touch_only {
+        format!("{idle} idle")
+    } else {
+        format!("{idle} idle [{key}]")
+    }
+}
+
+/// The concede banner's way to the menu.
+fn concede_hint(touch_only: bool) -> &'static str {
+    if touch_only {
+        "your team fights on | tap the menu button for options"
+    } else {
+        "your team fights on | {back} for options"
+    }
+}
+
 /// Three bars on the badge fill: the glyph needs no font coverage or
 /// atlas entry, and whole-rect fills stay crisp at any scale.
 fn draw_menu_button(rect: Rect, s: f32) {
@@ -303,7 +321,11 @@ pub(crate) fn draw_hud(
         crate::typography::draw(&units_text, count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
         let idle = crate::input::idle_harvesters(game).len();
         if idle > 0 {
-            let text = format!("{idle} idle [{}]", label(Action::CycleIdleWorker));
+            let text = idle_badge_text(
+                idle,
+                &label(Action::CycleIdleWorker),
+                crate::platform::TOUCH_ONLY,
+            );
             let width = measure_text(&text, None, (15.0 * s) as u16, 1.0).width + 18.0 * s;
             let idle_x = count_x
                 + (crate::typography::measure(&units_text, 21.0 * s).width + 20.0 * s)
@@ -475,7 +497,7 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
         PANEL,
     );
     draw_text(text, x, y, size, DANGER);
-    let sub = crate::menu::binding_hint("your team fights on | {back} for options");
+    let sub = crate::menu::binding_hint(concede_hint(crate::platform::TOUCH_ONLY));
     let sub_dims = measure_text(&sub, None, (18.0 * s) as u16, 1.0);
     draw_text(
         &sub,
@@ -489,6 +511,14 @@ pub(crate) fn draw_result_overlay(game: &crate::game::Scene<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_copy_names_keys_only_on_desktop() {
+        assert_eq!(idle_badge_text(3, "F1", false), "3 idle [F1]");
+        crate::platform::assert_touch_copy(&idle_badge_text(3, "F1", true));
+        assert!(concede_hint(false).contains("{back}"));
+        crate::platform::assert_touch_copy(concede_hint(true));
+    }
 
     #[test]
     fn armed_mode_ribbon_and_cancel_fit_the_small_window_contract() {

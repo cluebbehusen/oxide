@@ -683,12 +683,17 @@ fn own_order_card(game: &Scene<'_>, order: &Order, active: bool) -> Card {
                 .is_some_and(|building| !building.built) =>
         {
             card.action = CardAction::CancelSite(*site);
-            card.desc
-                .push("Click to cancel the site and recover its remaining value.".into());
+            card.desc.push(format!(
+                "{} to cancel the site and recover its remaining value.",
+                crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+            ));
         }
         Order::Found { kind, anchor } => {
             card.action = CardAction::CancelFound(*kind, *anchor);
-            card.desc.push("Click to cancel this planned site.".into());
+            card.desc.push(format!(
+                "{} to cancel this planned site.",
+                crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+            ));
         }
         _ => {}
     }
@@ -767,7 +772,54 @@ pub(crate) fn build_for_input(game: &Scene<'_>, input: &crate::input::InputState
             };
         }
     }
+    if crate::platform::TOUCH_ONLY {
+        strip_hotkeys(&mut panel);
+    }
     Some(panel)
+}
+
+/// A touch-only build has no keys to name, so its cards carry none.
+fn strip_hotkeys(panel: &mut Panel) {
+    for card in panel
+        .roster
+        .iter_mut()
+        .chain(&mut panel.cards)
+        .chain(&mut panel.queue)
+    {
+        card.hotkey.clear();
+    }
+}
+
+/// How a roster tile narrows the selection. Ctrl has no touch
+/// equivalent, so touch offers only the keep-only filter.
+fn roster_filter_desc(touch_only: bool) -> Vec<String> {
+    if touch_only {
+        vec!["Tap: keep only this kind.".into()]
+    } else {
+        vec![
+            "Click: keep only this kind.".into(),
+            "Ctrl-click: drop this kind instead.".into(),
+        ]
+    }
+}
+
+/// How ground machines board a selected transport.
+fn transport_load_desc(touch_only: bool) -> &'static str {
+    if touch_only {
+        "Select ground machines, then long-press the transport to load them."
+    } else {
+        "Right-click ground machines onto the transport to load them."
+    }
+}
+
+/// The open construction palette's summary; the Back key closes it on
+/// desktop, and touch closes it with the palette's own card.
+fn construction_summary(back_key: &str, touch_only: bool) -> String {
+    if touch_only {
+        "Choose a building".to_string()
+    } else {
+        format!("Choose a building\n{back_key} to return")
+    }
 }
 
 fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
@@ -868,7 +920,10 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     action: CardAction::CancelQueue(building.id, i as u8),
                     enabled: true,
                     why: None,
-                    desc: vec!["Click to cancel; full refund.".into()],
+                    desc: vec![format!(
+                        "{} to cancel; full refund.",
+                        crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+                    )],
                     progress,
                 });
             }
@@ -979,10 +1034,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     action: CardAction::FilterKind(kind),
                     enabled: true,
                     why: None,
-                    desc: vec![
-                        "Click: keep only this kind.".into(),
-                        "Ctrl-click: drop this kind instead.".into(),
-                    ],
+                    desc: roster_filter_desc(crate::platform::TOUCH_ONLY),
                     progress: None,
                 });
             }
@@ -1108,7 +1160,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             why: (!loaded).then(|| "the sling is empty".to_string()),
             desc: vec![
                 "Sets every carried machine down on open ground around the airframe.".into(),
-                "Right-click ground machines onto the transport to load them.".into(),
+                transport_load_desc(crate::platform::TOUCH_ONLY).into(),
             ],
             progress: None,
         });
@@ -1120,10 +1172,8 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             panel.cards.clear();
             panel.roster.clear();
             panel.title = "CONSTRUCTION".into();
-            panel.summary = format!(
-                "Choose a building\n{} to return",
-                bindings.label(Action::Back)
-            );
+            panel.summary =
+                construction_summary(&bindings.label(Action::Back), crate::platform::TOUCH_ONLY);
             panel.portrait = CardIcon::Verb(VerbIcon::Build);
         } else {
             panel.cards.push(Card {
@@ -1199,6 +1249,38 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
 mod tests {
     use super::*;
     use crate::game::Game;
+
+    #[test]
+    fn touch_copy_drops_keys_and_mouse_buttons_from_cards() {
+        for line in roster_filter_desc(true) {
+            crate::platform::assert_touch_copy(&line);
+        }
+        crate::platform::assert_touch_copy(transport_load_desc(true));
+        crate::platform::assert_touch_copy(&construction_summary("Esc", true));
+        assert_eq!(roster_filter_desc(false).len(), 2);
+        assert_eq!(
+            construction_summary("Esc", false),
+            "Choose a building\nEsc to return"
+        );
+    }
+
+    #[test]
+    fn stripping_hotkeys_clears_every_card_row() {
+        let mut game = game();
+        game.presentation.selection.buildings = vec![human_foundry(&game)];
+        let mut panel =
+            build_for_palette(&game.view(), &BindingMap::classic(), false).expect("hq panel");
+        assert!(panel.cards.iter().any(|card| !card.hotkey.is_empty()));
+        strip_hotkeys(&mut panel);
+        for card in panel.roster.iter().chain(&panel.cards).chain(&panel.queue) {
+            assert!(
+                card.hotkey.is_empty(),
+                "{} keeps {}",
+                card.title,
+                card.hotkey
+            );
+        }
+    }
 
     fn stat<'a>(panel: &'a Panel, label: &str) -> &'a info::StatRow {
         panel

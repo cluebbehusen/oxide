@@ -437,6 +437,26 @@ fn catalog_geometry(
     (band, slots, grouped)
 }
 
+/// A construction category's header: its name, a marker while open,
+/// and on desktop the keys that reach it.
+fn category_label(
+    label: &str,
+    open: bool,
+    key: &str,
+    palette_key: Option<&str>,
+    touch_only: bool,
+) -> String {
+    if open {
+        format!("{label} *")
+    } else if touch_only {
+        label.to_string()
+    } else if let Some(palette_key) = palette_key {
+        format!("{label} [{palette_key} > {key}]")
+    } else {
+        format!("{label} [{key}]")
+    }
+}
+
 fn draw_catalog(
     panel: &crate::panel::Panel,
     input: &InputState,
@@ -472,23 +492,22 @@ fn draw_catalog(
         .into_iter()
         .enumerate()
         {
-            let label = if input.build_category == Some(category as u8) {
-                format!("{label} *")
-            } else {
-                let key = input
-                    .bindings
-                    .label(crate::action::Action::BuildCategory(category as u8));
-                if input.build_category.is_some() {
-                    format!(
-                        "{label} [{} > {key}]",
-                        input
-                            .bindings
-                            .label(crate::action::Action::ToggleBuildPalette)
-                    )
-                } else {
-                    format!("{label} [{key}]")
-                }
-            };
+            let key = input
+                .bindings
+                .label(crate::action::Action::BuildCategory(category as u8));
+            let palette_key = input
+                .bindings
+                .label(crate::action::Action::ToggleBuildPalette);
+            let label = category_label(
+                label,
+                input.build_category == Some(category as u8),
+                &key,
+                input
+                    .build_category
+                    .is_some()
+                    .then_some(palette_key.as_str()),
+                crate::platform::TOUCH_ONLY,
+            );
             crate::typography::draw(
                 &label,
                 slots[index].x + 5.0 * s,
@@ -1416,6 +1435,28 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
 mod tests {
     use super::*;
     use crate::game::Game;
+
+    #[test]
+    fn category_labels_name_keys_only_where_keys_exist() {
+        assert_eq!(
+            category_label("DEFENSE", false, "3", None, false),
+            "DEFENSE [3]"
+        );
+        assert_eq!(
+            category_label("DEFENSE", false, "3", Some("B"), false),
+            "DEFENSE [B > 3]"
+        );
+        for touch_only in [false, true] {
+            assert_eq!(
+                category_label("DEFENSE", true, "3", Some("B"), touch_only),
+                "DEFENSE *"
+            );
+        }
+        for palette_key in [None, Some("B")] {
+            let label = category_label("DEFENSE", false, "3", palette_key, true);
+            crate::platform::assert_touch_copy(&label);
+        }
+    }
 
     #[test]
     fn collective_queue_keeps_every_kind_visible_in_narrow_windows() {
