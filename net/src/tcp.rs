@@ -14,8 +14,9 @@ use std::time::Duration;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Received lines waiting for the game loop. When they fill up, the reader
-/// stops reading and TCP pushes back on the peer.
-const INCOMING_LINES: usize = 1024;
+/// stops reading and TCP pushes back on the peer, so a small queue loses
+/// nothing and keeps a stalled loop's memory cost bounded.
+const INCOMING_LINES: usize = 64;
 
 /// The connection has ended: the peer closed it, a read or write failed, or
 /// the peer sent an oversized or non-UTF-8 line.
@@ -89,7 +90,11 @@ impl Connection {
             .spawn(move || read_lines(reader, read))?;
         let writer = thread::Builder::new()
             .name("oxide-net-write".into())
-            .spawn(move || write_lines(writer, to_write))?;
+            .spawn(move || write_lines(writer, to_write))
+            .inspect_err(|_| {
+                // Wake the reader so it exits instead of outliving the error.
+                let _ = socket.shutdown(Shutdown::Both);
+            })?;
         Ok(Self {
             socket,
             outgoing: Some(outgoing),
