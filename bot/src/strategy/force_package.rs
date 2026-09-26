@@ -456,7 +456,12 @@ pub(super) struct ConnectedForcePackageOptions {
 /// minimum repertoire. Forecast-funded work starts only on a later real bot
 /// decision cadence. The returned counts are revisable kind totals; the owning
 /// planner schedules only currently open queue positions and freezes exact unit
-/// ids when it commits to suppression.
+/// ids when it commits to suppression. With `minimum_only`, no marginal
+/// variant is derived.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the derivation boundary takes each independent evidence source"
+)]
 pub(super) fn derive_connected_force_package_options_for_cluster(
     profile: &ResolvedProfile,
     observation: &Observation,
@@ -465,49 +470,10 @@ pub(super) fn derive_connected_force_package_options_for_cluster(
     production: ProductionEvidence<'_>,
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
-) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
-    derive_package_options::<false>(
-        profile,
-        observation,
-        intelligence,
-        targets,
-        production,
-        unavailable,
-        constraints,
-    )
-}
-
-pub(super) fn derive_connected_minimum_for_cluster(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    targets: ConnectedTargetEvidence<'_>,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
-) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
-    derive_package_options::<true>(
-        profile,
-        observation,
-        intelligence,
-        targets,
-        production,
-        unavailable,
-        constraints,
-    )
-}
-
-fn derive_package_options<const MINIMUM_ONLY: bool>(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    targets: ConnectedTargetEvidence<'_>,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
+    minimum_only: bool,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
     let deferred = Cell::new(false);
-    let result = derive_package_options_inner::<MINIMUM_ONLY>(
+    let result = derive_package_options_inner(
         profile,
         observation,
         intelligence,
@@ -515,6 +481,7 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
         production,
         unavailable,
         constraints,
+        minimum_only,
         &deferred,
     );
     if result.is_err() && deferred.get() {
@@ -528,7 +495,7 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
     clippy::too_many_arguments,
     reason = "one derivation shares a deferred verdict across composition alternatives"
 )]
-fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
+fn derive_package_options_inner(
     profile: &ResolvedProfile,
     observation: &Observation,
     intelligence: &StrategicIntelligence,
@@ -536,6 +503,7 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
     production: ProductionEvidence<'_>,
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
+    minimum_only: bool,
     deferred: &Cell<bool>,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
     let ConnectedTargetEvidence {
@@ -733,17 +701,9 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
             deadline: preparation_deadline,
         });
     }
-    let builders = if MINIMUM_ONLY {
-        let mut candidates = minimum_candidates;
-        candidates.sort_by_key(|candidate| {
-            Reverse(package_candidate_score(
-                profile,
-                minimum_capability,
-                0,
-                candidate,
-            ))
-        });
-        vec![candidates.remove(0)]
+    let builders = if minimum_only {
+        minimum_candidates.truncate(1);
+        minimum_candidates
     } else {
         best_complete_portfolio_path(
             profile,
@@ -1840,15 +1800,11 @@ pub(super) fn current_operational_aa_source(
     }
 }
 
+/// Baseline-first provider order, the reverse of [`new_provider_order`].
 fn preservation_order(family: ForceFamily, faction: oxide_sim::state::Faction) -> Vec<UnitKind> {
-    match family {
-        ForceFamily::Recon => vec![Role::Scout.unit_for(faction)],
-        ForceFamily::Suppression => vec![UnitKind::Bombard, UnitKind::Avalanche],
-        ForceFamily::Strike => vec![
-            Role::AirGround.unit_for(faction),
-            Role::Bomber.unit_for(faction),
-        ],
-    }
+    let mut order = new_provider_order(family, faction);
+    order.reverse();
+    order
 }
 
 fn new_provider_order(family: ForceFamily, faction: oxide_sim::state::Faction) -> Vec<UnitKind> {
@@ -1881,12 +1837,10 @@ fn provider_capability(
     if family == ForceFamily::Recon {
         return NORMALIZED_PROVIDER;
     }
-    let baseline = match family {
-        ForceFamily::Recon => unreachable!("recon returned above"),
-        ForceFamily::Suppression => UnitKind::Bombard,
-        ForceFamily::Strike => Role::AirGround.unit_for(faction),
-    };
-    normalized_ratio(ground_firepower(kind), ground_firepower(baseline))
+    normalized_ratio(
+        ground_firepower(kind),
+        ground_firepower(baseline_provider(family, faction)),
+    )
 }
 
 pub(super) fn suppression_capability(kind: UnitKind, faction: oxide_sim::state::Faction) -> u64 {

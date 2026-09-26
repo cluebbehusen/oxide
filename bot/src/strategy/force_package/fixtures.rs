@@ -343,6 +343,7 @@ pub(super) fn derive_connected_force_package(
         production,
         unavailable,
         constraints,
+        false,
     )
     .map(ConnectedForcePackageOptions::into_largest)
 }

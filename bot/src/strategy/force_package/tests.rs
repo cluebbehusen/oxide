@@ -390,7 +390,7 @@ fn shared_forecast_defers_without_rejecting_and_resumes_the_minimum() {
             .find(|contact| contact.kind == BuildingKind::Crucible)
             .unwrap();
         let resources = ResourceSnapshot::from_observation(obs);
-        derive_connected_minimum_for_cluster(
+        derive_connected_force_package_options_for_cluster(
             &profile(50, 50),
             obs,
             intel,
@@ -406,6 +406,7 @@ fn shared_forecast_defers_without_rejecting_and_resumes_the_minimum() {
             ),
             &[],
             constraints(2_500, 0),
+            true,
         )
     };
     for _ in 0..2 {
@@ -465,6 +466,7 @@ fn runtime_composition_leaves_admission_work_and_only_offers_funded_rosters() {
             ProductionEvidence::with_planning(&resources, &all_producers(&resources), Some(&work)),
             &[],
             constraints(2500, 0),
+            false,
         )
         .expect("the completed production base admits a funded package");
         offered_growth |= !options.marginal.is_empty();
@@ -487,7 +489,7 @@ fn investment_witness_only_derives_a_complete_minimum() {
     add_complete_tech(&mut observation);
     let (intelligence, target) = intelligence_with_target(&mut observation, 4);
     let resources = ResourceSnapshot::from_observation(&observation);
-    let minimum = derive_connected_minimum_for_cluster(
+    let minimum = derive_connected_force_package_options_for_cluster(
         &profile(50, 50),
         &observation,
         &intelligence,
@@ -503,6 +505,7 @@ fn investment_witness_only_derives_a_complete_minimum() {
         ),
         &[],
         constraints(2_500, 0),
+        true,
     )
     .expect("a funded minimum is available");
     assert!(minimum.marginal.is_empty());
@@ -608,6 +611,7 @@ fn derive_settled(
             ProductionEvidence::with_planning(&resources, &access, Some(&planning)),
             unavailable,
             constraints(deadline, 0),
+            false,
         )?;
         if !options.refinement_pending {
             return Ok(options.into_largest());
@@ -2317,6 +2321,7 @@ fn late_funded_preference_cannot_hide_a_feasible_composition() {
             ProductionEvidence::with_planning(&resources, &access, Some(&planning)),
             &[],
             constraints(2_500, 0),
+            false,
         )
         .unwrap();
         assert!(!options.refinement_pending);
@@ -3253,6 +3258,7 @@ fn every_marginal_variant_preserves_earlier_provider_identity_and_funding() {
                 ),
                 &[],
                 constraints(5_000, 0),
+                false,
             ) else {
                 continue;
             };
@@ -3723,6 +3729,7 @@ fn dense_portfolio_reaches_a_proved_alternative_across_checkpoint_boundaries() {
                     ProductionEvidence::with_planning(&resources, &access, Some(work)),
                     &[],
                     constraints(if rolling { obs.tick + 1320 } else { 1344 }, 0),
+                    false,
                 )
             };
             let options = derive(&planning);

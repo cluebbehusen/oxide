@@ -743,12 +743,7 @@ fn derive_connected_package_options_for_targets(
     );
     let cluster =
         sized_target_contacts_at_anchors(intel, target.player, &targets.target_anchors, obs.tick);
-    let derive = if context.minimum_only {
-        force_package::derive_connected_minimum_for_cluster
-    } else {
-        derive_connected_force_package_options_for_cluster
-    };
-    let mut packages = derive(
+    let mut packages = derive_connected_force_package_options_for_cluster(
         profile,
         obs,
         intel,
@@ -760,6 +755,7 @@ fn derive_connected_package_options_for_targets(
         ProductionEvidence::with_planning(&context.resources.snapshot, &access, context.planning),
         &unavailable,
         preparation,
+        context.minimum_only,
     )
     .map_err(|reason| ConnectedPlanRejection::Package {
         reason,
