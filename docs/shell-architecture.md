@@ -23,14 +23,18 @@ setting. World, minimap, and result rendering share those lookups; no per-entity
 player scan or mutable identity cache is needed. The table supports the scenario
 seat limit.
 
-`Game::do_tick` is the only live-shell path that advances state. It collects
-pending human/debug commands and bot commands, records them at the current tick,
-calls `State::tick`, then updates statistics and presentation from the result.
-Fast advancement can suppress intermediate presentation work but uses the same
-recorded tick path.
+`Game::do_tick` is the only local live-shell path that advances state. It
+collects pending human/debug commands and bot commands, records them at the
+current tick, calls `State::tick`, then updates statistics and presentation from
+the result. Fast advancement can suppress intermediate presentation work but
+uses the same recorded tick path. A networked session instead executes complete
+batches from the lockstep host through `Game::run_batch`, which shares the same
+record, tick, and update steps; only the host runs bots.
 
 Local input uses the first non-bot seat in scenario order, or seat zero for an
-all-bot scene. This choice does not change the configured controllers. Live
+all-bot scene. A networked session binds an explicit human seat instead, and its
+pending commands stay staged from sending until the batch that carries them
+executes. This choice does not change the configured controllers. Live
 scenarios, replay continuation and checkpoint restoration accept any valid bot
 roster, including no bots; the New Match wizard still authors one local seat.
 Sandbox completion rules belong to the simulation, so headless and native

@@ -276,6 +276,7 @@ impl RestoredGame {
             presentation,
             autosave_done: false,
             suppress_presentation: false,
+            networked: false,
             recovery_root: None,
             recovery,
             recovery_warned: false,
