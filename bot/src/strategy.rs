@@ -1453,8 +1453,9 @@ impl AirDispatch {
 }
 
 impl ConnectedPlan {
-    /// The package's demand drives per-provider job expansion, so its counts
-    /// are bounded by the map area rather than trusted from the checkpoint.
+    /// The package's demand drives per-provider job expansion and the paid
+    /// ledger is walked and cloned during planning, so both are bounded by the
+    /// map area rather than trusted from the checkpoint.
     fn valid_checkpoint(&self, op: &AirOperation, map: &PublicMapBriefing, tick: Tick) -> bool {
         let area = usize::try_from(map.map_width())
             .unwrap_or(0)
@@ -1486,6 +1487,7 @@ impl ConnectedPlan {
                 area,
             )
             && package.funded_providers.len() <= area
+            && self.paid_production.len() <= area
             && self.paid_production.iter().all(|purchase| {
                 purchase.issued_at <= purchase.ready_at && purchase.issued_at <= tick
             })

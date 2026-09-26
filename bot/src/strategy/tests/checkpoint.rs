@@ -326,10 +326,14 @@ fn checkpoint_rejects_a_connected_package_without_a_bounded_canonical_objective(
 }
 
 #[test]
-fn checkpoint_rejects_paid_production_issued_after_its_readiness_or_the_checkpoint() {
+fn checkpoint_rejects_an_oversized_or_misdated_paid_ledger() {
     assert_rejected(
         connected,
         &[
+            ("ledger larger than the map", |planner| {
+                let ledger = &mut active(planner).plan.connected_mut().paid_production;
+                *ledger = vec![ledger[0]; 32 * 20 + 1];
+            }),
             ("ready before issue", |planner| {
                 let purchase = &mut active(planner).plan.connected_mut().paid_production[0];
                 purchase.ready_at = purchase.issued_at - 1;
