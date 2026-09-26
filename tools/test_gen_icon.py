@@ -40,11 +40,22 @@ class IconGenerationTests(unittest.TestCase):
                 expected_names,
                 "the generator must neither omit nor invent packaged icon files",
             )
-            for name in expected_names:
-                with self.subTest(name=name):
-                    actual = output / "desktop" / name
-                    expected = committed / name
-                    if name.endswith(".png"):
+            self.assertEqual(
+                {path.name for path in (output / "ios").iterdir()},
+                {"oxide_1024.png"},
+            )
+            expected_files = {
+                Path("desktop") / name: committed / name for name in expected_names
+            }
+            expected_files[Path("ios/oxide_1024.png")] = (
+                gen_icon.IOS_OUT / "oxide_1024.png"
+            )
+            for name, expected in expected_files.items():
+                with self.subTest(name=str(name)):
+                    actual = output / name
+                    if name.suffix == ".png":
+                        # PNG compression can differ across platforms; the decoded
+                        # format and pixels are the reproducibility contract.
                         with (
                             Image.open(actual) as actual_image,
                             Image.open(expected) as expected_image,
@@ -62,15 +73,6 @@ class IconGenerationTests(unittest.TestCase):
                             expected.read_bytes(),
                             f"{name} no longer reproduces from tools/gen_icon.py",
                         )
-
-            self.assertEqual(
-                {path.name for path in (output / "ios").iterdir()},
-                {"oxide_1024.png"},
-            )
-            self.assertEqual(
-                (output / "ios" / "oxide_1024.png").read_bytes(),
-                (gen_icon.IOS_OUT / "oxide_1024.png").read_bytes(),
-            )
 
     def test_ios_catalog_uses_the_approved_opaque_master(self) -> None:
         catalog = json.loads((gen_icon.IOS_OUT / "Contents.json").read_text())
