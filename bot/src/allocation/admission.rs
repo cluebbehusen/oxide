@@ -36,7 +36,8 @@ use crate::{
     },
 };
 use chassis::grid::TilePos;
-use oxide_sim::ids::UnitId;
+use oxide_sim::ids::{BuildingId, UnitId};
+use oxide_sim::stats::UnitKind;
 
 pub(crate) struct DecisionContext<'a> {
     pub evidence: DecisionEvidence<'a>,
@@ -98,6 +99,41 @@ impl UtilityGrant {
         .with_foundry_handoff(self.foundry)
         .with_voluntary_scrap_guard(self.voluntary_guard)
         .with_producer_lane_reservations(&self.producer_lanes)
+    }
+}
+
+/// Lifecycle inputs once allocation has settled. A failed allocation begins
+/// nothing new, only a retained connected operation keeps procuring while
+/// voluntary operations are closed, and an operation whose members this
+/// allocation owns acts only through them.
+pub(crate) fn air_think_inputs<'a>(
+    outcome: &'a AllocationSessionOutcome,
+    bank: u32,
+    planning: &'a crate::planning::PlanningWork,
+    claimed_elsewhere: &'a [UnitId],
+    lift_support: Option<&'a LiftSupportRequest>,
+    paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+) -> ThinkInputs<'a> {
+    ThinkInputs {
+        planning,
+        unavailable: &outcome.planner_claims,
+        claimed_elsewhere,
+        lift_support,
+        allow_new_operation: outcome.allocation_ok
+            && (outcome.connected_continues || outcome.allow_new_voluntary_operations),
+        owned_only: !outcome.allocation_ok
+            || outcome.connected_continues
+            || outcome.island_allocated
+            || outcome.accepted_connected,
+        reserve: CapitalReserve {
+            current: bank.saturating_sub(outcome.budget.connected_spendable),
+            forecast: outcome.budget.connected_forecast_hold,
+        },
+        lanes: ProducerLanes {
+            prior_intents: &outcome.allocated_producer_intents,
+            reservations: &outcome.producer_lane_reservations,
+        },
+        paid_exclusions,
     }
 }
 
@@ -272,12 +308,24 @@ pub(crate) fn admit_decision(
     )
     .with_observer(observer)
     .run();
+    let mut air_external =
+        PlannerClaims::new(enlisted, &air, raids, lifts).without_air(&team.reservations());
+    air_external.extend(policy.state.reconnaissance.reservations());
+    air_external.extend(policy.support_reservations());
+    let air_decision = air.think(air_think_inputs(
+        &allocation_outcome,
+        oriented.scrap,
+        &policy.planning,
+        &air_external,
+        lift_support_request.as_ref(),
+        &air_paid_exclusions(policy, raids),
+    ));
     let AllocationSessionOutcome {
         opening_core,
         allow_new_voluntary_operations,
         team_decision,
         raid_decision,
-        planner_claims,
+        planner_claims: _,
         connected_continues,
         connected_accepted_at,
         rejected_connected_candidate,
@@ -300,7 +348,7 @@ pub(crate) fn admit_decision(
                 raw_residual_scrap,
                 residual_scrap,
                 connected_spendable,
-                connected_forecast_hold,
+                connected_forecast_hold: _,
                 utility_spendable: allocation_utility_spendable,
                 prior_operation_spendable,
                 voluntary_scrap_guard,
@@ -325,28 +373,6 @@ pub(crate) fn admit_decision(
         })
         .chain(policy.economic_saving().and_then(|saving| saving.builder))
         .collect::<Vec<_>>();
-    let mut air_external =
-        PlannerClaims::new(enlisted, &air, raids, lifts).without_air(&team.reservations());
-    air_external.extend(policy.state.reconnaissance.reservations());
-    air_external.extend(policy.support_reservations());
-    let air_decision = air.think(ThinkInputs {
-        planning: &policy.planning,
-        unavailable: &planner_claims,
-        claimed_elsewhere: &air_external,
-        lift_support: lift_support_request.as_ref(),
-        allow_new_operation: allocation_ok
-            && (connected_continues || allow_new_voluntary_operations),
-        owned_only: !allocation_ok || connected_continues || island_allocated || accepted_connected,
-        reserve: CapitalReserve {
-            current: oriented.scrap.saturating_sub(connected_spendable),
-            forecast: connected_forecast_hold,
-        },
-        lanes: ProducerLanes {
-            prior_intents: &allocated_producer_intents,
-            reservations: &producer_lane_reservations,
-        },
-        paid_exclusions: &air_paid_exclusions(policy, raids),
-    });
     let air_decision_for_trace = air_decision.clone();
     let mut strategic = air_decision.into();
     if island_allocated || connected_continues || accepted_connected {

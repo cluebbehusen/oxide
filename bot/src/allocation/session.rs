@@ -316,6 +316,7 @@ impl AllocationBudgetOutcome {
 }
 
 /// Selected work and residual resources after allocation.
+#[derive(Default)]
 pub(crate) struct AllocationSessionOutcome {
     pub(crate) opening_core: CombatCoreStatus,
     pub(crate) allow_new_voluntary_operations: bool,
@@ -2393,7 +2394,7 @@ fn active_air_units(planner: &StrategicPlanner, observation: &Observation) -> Ve
     units
 }
 
-const fn connected_production_conflict(conflict: &AllocationConflict) -> bool {
+pub(crate) const fn connected_production_conflict(conflict: &AllocationConflict) -> bool {
     matches!(
         conflict,
         AllocationConflict::UnknownProducer(_)
@@ -2584,6 +2585,31 @@ fn older_saved_foundry_deferrable_capital(
         .filter_map(|obligation| obligation.claims.deferrable_capital())
         .map(|capital| capital.amount)
         .fold(0, u32::saturating_add)
+}
+
+/// The revision's minimum as a retained obligation, refined against every
+/// other retained claim through its fixed deadline. `None` until refinement
+/// proves it.
+pub(crate) fn adopt_active_revision(
+    resources: &ResourceSnapshot,
+    other_obligations: &[ImportedObligation],
+    revision: &FreshConnectedProposal,
+    cadence: Tick,
+    planning: &crate::planning::PlanningWork,
+) -> Option<ImportedObligation> {
+    let horizon = obligation_horizon(other_obligations, revision.deadline());
+    let capacity = super::AllocationCapacity::from_snapshot(resources, horizon, cadence).ok()?;
+    match super::forecast::refine_obligation(
+        &capacity,
+        other_obligations,
+        active_connected_revision_obligation(revision),
+        planning,
+    ) {
+        crate::planning::Progress::Ready(refined) => Some(refined),
+        crate::planning::Progress::Deferred
+        | crate::planning::Progress::Exhausted
+        | crate::planning::Progress::ProvenInfeasible => None,
+    }
 }
 
 fn obligation_horizon(obligations: &[ImportedObligation], minimum: Tick) -> Tick {

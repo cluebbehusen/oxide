@@ -42,8 +42,8 @@ fn connected_air_plan(
 const HOME: TilePos = TilePos::new(3, 10);
 const TARGET: TilePos = TilePos::new(24, 10);
 
-// These fixtures advance one domain with no competing planners. Active revisions
-// receive their richest variant; controller admission is tested through Brain.
+// These fixtures run one production-order turn with no competing planners;
+// controller admission across domains is tested through Brain.
 impl StrategicPlanner {
     fn think_alone(
         &mut self,
@@ -55,163 +55,24 @@ impl StrategicPlanner {
         enlisted: &[UnitId],
     ) -> StrategicDecision {
         let fixture_planning = crate::planning::PlanningWork::default();
-
-        self.think_alone_with(
-            profile,
-            tuning,
-            obs,
-            intel,
-            home,
-            Coordination {
-                planning: Some(&fixture_planning),
-                enlisted,
-                lift_support: None,
-                allow_new_operation: true,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: Orientation::for_home(obs, home),
-            },
-        )
-        .decision
-    }
-
-    fn think_alone_with(
-        &mut self,
-        profile: &ResolvedProfile,
-        tuning: DifficultyTuning,
-        obs: &Observation,
-        intel: &StrategicIntelligence,
-        home: TilePos,
-        coordination: Coordination<'_>,
-    ) -> ThinkOutcome {
-        let resources = ResourceSnapshot::from_observation(obs);
-        let planning = coordination
-            .planning
-            .expect("strategy fixtures supply planning work");
         let ev = AirEvidence {
             profile,
             tuning,
             obs,
             intel,
             home,
-            public_map: coordination.public_map,
-            orientation: coordination.orientation,
+            public_map: None,
+            orientation: Orientation::for_home(obs, home),
         };
-        let reserve = CapitalReserve {
-            current: coordination.protected_current_scrap,
-            forecast: coordination.protected_forecast_scrap,
-        };
-        let inputs = ConnectedInputs {
-            planning,
-            resources: &resources,
-            unavailable: coordination.enlisted,
-            paid_exclusions: &[],
-            reserve,
-        };
-        let rejected_connected_candidate = match self.unobserved_turn(ev).connected_revision(inputs)
-        {
-            Ok(Some(mut proposal)) => {
-                if let Some(richest) = proposal.marginal_variants().last().cloned() {
-                    assert!(proposal.select_marginal(&richest));
-                }
-                commit_test_connected_proposal(self, proposal);
-                None
-            }
-            Err(rejected) => {
-                if !rejected.reason.is_deferred() {
-                    self.unobserved_turn(ev)
-                        .recover_connected(rejected.reason.recovery_reason());
-                }
-                Some(rejected)
-            }
-            Ok(None) if coordination.allow_new_operation && coordination.lift_support.is_none() => {
-                match self
-                    .unobserved_turn(ev)
-                    .fresh_connected(&crate::experience::Experience::default(), inputs)
-                {
-                    Ok(Some(proposal)) => {
-                        commit_test_connected_proposal(self, proposal);
-                        None
-                    }
-                    Ok(None) => None,
-                    Err(rejected) => Some(rejected),
-                }
-            }
-            Ok(None) => None,
-        };
-        let settlement = allocate_connected_in_test(self, ev, inputs);
-        let lanes = settlement
-            .as_ref()
-            .map_or_else(ProducerLaneReservations::default, |settlement| {
-                settlement.producer_lane_reservations().clone()
-            });
-        let mut intents = Vec::new();
-        if let Some(settlement) = &settlement {
-            self.record_connected_purchases(settlement.producer_schedule(), obs.tick);
-            intents.extend(
-                settlement
-                    .producer_schedule()
-                    .iter()
-                    .filter(|job| job.enqueued_at == obs.tick)
-                    .map(|job| Intent::TrainAt {
-                        building: job.producer,
-                        kind: job.kind,
-                    }),
-            );
-        }
-        let mut decision = self.think(
-            ev,
-            ThinkInputs {
-                planning,
-                unavailable: coordination.enlisted,
-                claimed_elsewhere: &[],
-                lift_support: coordination.lift_support,
-                allow_new_operation: coordination.allow_new_operation,
-                owned_only: false,
-                reserve,
-                lanes: ProducerLanes {
-                    prior_intents: &intents,
-                    reservations: &lanes,
-                },
-                paid_exclusions: &[],
+        turn(
+            self,
+            &TurnFixture {
+                unavailable: enlisted,
+                ..TurnFixture::new(ev, &fixture_planning)
             },
-        );
-        decision.intents.extend(intents);
-        if let Some(settlement) = &settlement {
-            decision.reserved_scrap = decision.reserved_scrap.saturating_add(
-                settlement
-                    .producer_schedule()
-                    .iter()
-                    .filter(|job| job.enqueued_at > obs.tick)
-                    .map(|job| job.current_scrap)
-                    .sum(),
-            );
-        }
-        ThinkOutcome {
-            decision,
-            rejected_connected_candidate,
-        }
+        )
+        .decision
     }
-}
-
-/// The retired coordination shape the single-domain harness still accepts.
-#[derive(Clone, Copy)]
-struct Coordination<'a> {
-    planning: Option<&'a crate::planning::PlanningWork>,
-    enlisted: &'a [UnitId],
-    lift_support: Option<&'a LiftSupportRequest>,
-    allow_new_operation: bool,
-    protected_current_scrap: u32,
-    protected_forecast_scrap: u32,
-    public_map: Option<&'a PublicMapBriefing>,
-    orientation: Orientation,
-}
-
-#[derive(Debug)]
-struct ThinkOutcome {
-    decision: StrategicDecision,
-    rejected_connected_candidate: Option<RejectedConnectedCandidate>,
 }
 
 /// Prime evidence around `HOME` without a public map.
@@ -726,22 +587,6 @@ fn think(
     )
 }
 
-fn coordination<'a>(
-    fixture_planning: &'a crate::planning::PlanningWork,
-    lift_support: Option<&'a LiftSupportRequest>,
-) -> Coordination<'a> {
-    Coordination {
-        planning: Some(fixture_planning),
-        enlisted: &[],
-        lift_support,
-        allow_new_operation: true,
-        protected_current_scrap: 0,
-        protected_forecast_scrap: 0,
-        public_map: None,
-        orientation: test_orientation(),
-    }
-}
-
 #[test]
 fn active_revision_invalidates_orders_for_every_reassigned_provider_role() {
     let mut operation = operation(AirOperationPhase::Recon, 120);
@@ -792,77 +637,6 @@ fn active_revision_preserves_orders_when_provider_membership_is_unchanged() {
     assert_eq!(operation.strike_hold, strike_hold);
 }
 
-fn commit_test_connected_proposal(
-    planner: &mut StrategicPlanner,
-    proposal: FreshConnectedProposal,
-) {
-    planner.commit_connected(proposal);
-}
-
-fn allocate_connected_in_test(
-    planner: &mut StrategicPlanner,
-    ev: AirEvidence<'_>,
-    inputs: ConnectedInputs<'_>,
-) -> Option<crate::allocation::CrossDomainSettlement> {
-    use crate::allocation::{
-        AllocationPersonality, CrossDomainAllocation, active_connected_obligation,
-    };
-    let active = planner.unobserved_turn(ev).retained_obligation(inputs)?;
-    let resources = inputs
-        .resources
-        .after_current_reserve(inputs.reserve.current);
-    let mut allocation =
-        CrossDomainAllocation::new(&resources, active.deadline(), ev.tuning.cadence).ok()?;
-    allocation.import(active_connected_obligation(&active));
-    allocation
-        .resolve(AllocationPersonality::default(), None)
-        .ok()
-}
-
-fn procure_connected_in_test(
-    op: &AirOperation,
-    plan: &AirPlan,
-    identity: &ResolvedProfile,
-    context: &AirPlanningContext<'_>,
-    out: &mut StrategicDecision,
-) {
-    let mut planner = StrategicPlanner::new();
-    planner.air = Some(ActiveAirOperation {
-        op: op.clone(),
-        plan: plan.clone(),
-    });
-    let resources = ResourceSnapshot::from_observation(context.ev.obs);
-    let ev = AirEvidence {
-        profile: identity,
-        ..context.ev
-    };
-    let inputs = ConnectedInputs {
-        planning: context.planning,
-        resources: &resources,
-        unavailable: context.enlisted,
-        paid_exclusions: &[],
-        reserve: context.reserve,
-    };
-    if let Some(settlement) = allocate_connected_in_test(&mut planner, ev, inputs) {
-        out.reserved_scrap = settlement
-            .producer_schedule()
-            .iter()
-            .filter(|job| job.enqueued_at > context.ev.obs.tick)
-            .map(|job| job.current_scrap)
-            .sum();
-        out.intents.extend(
-            settlement
-                .producer_schedule()
-                .iter()
-                .filter(|job| job.enqueued_at == context.ev.obs.tick)
-                .map(|job| Intent::TrainAt {
-                    building: job.producer,
-                    kind: job.kind,
-                }),
-        );
-    }
-}
-
 fn active_obligation(
     planner: &mut StrategicPlanner,
     obs: &Observation,
@@ -874,24 +648,6 @@ fn active_obligation(
     planner
         .unobserved_turn(evidence(&profile(), obs, &intel))
         .retained_obligation(connected_inputs(&fixture_planning, &resources))
-}
-
-fn settle_active(
-    planner: &mut StrategicPlanner,
-    obs: &Observation,
-) -> Vec<crate::allocation::ScheduledProducerJob> {
-    use crate::allocation::{
-        AllocationPersonality, CrossDomainAllocation, active_connected_obligation,
-    };
-    let obligation = active_obligation(planner, obs).unwrap();
-    let resources = ResourceSnapshot::from_observation(obs);
-    let mut allocation = CrossDomainAllocation::new(&resources, obligation.deadline(), 12).unwrap();
-    allocation.import(active_connected_obligation(&obligation));
-    allocation
-        .resolve(AllocationPersonality::default(), None)
-        .unwrap()
-        .producer_schedule()
-        .to_vec()
 }
 
 #[test]
@@ -997,7 +753,17 @@ fn unpaid_connected_demand_reassigns_factory_without_extending_deadline() {
         .unwrap();
     let deadline = proposal.deadline();
     planner.commit_connected(proposal);
-    let initial = settle_active(&mut planner, &obs);
+    // A quote is a turn whose commit is discarded, with no retained search.
+    let quote = |planner: &StrategicPlanner, obs: &Observation| {
+        let intel = knowledge(obs);
+        let planning = crate::planning::PlanningWork::default();
+        turn(
+            &mut planner.clone(),
+            &TurnFixture::new(evidence(&profile(), obs, &intel), &planning),
+        )
+        .schedule
+    };
+    let initial = quote(&planner, &obs);
     let lost = initial
         .iter()
         .find(|job| job.kind.stats().domain == Domain::Air)
@@ -1011,7 +777,7 @@ fn unpaid_connected_demand_reassigns_factory_without_extending_deadline() {
     obs.my_buildings.remove(index);
     obs.my_queues.remove(index);
     obs.tick += 12;
-    let replacement = settle_active(&mut planner, &obs);
+    let replacement = quote(&planner, &obs);
     assert!(!replacement.is_empty());
     assert!(replacement.iter().all(|job| job.producer != lost
         && job.ready_before == deadline
@@ -1035,13 +801,23 @@ fn unpaid_connected_demand_can_buy_earlier_and_does_not_expire_after_rollback() 
         .unwrap()
         .unwrap();
     planner.commit_connected(proposal);
+    // A quote is a turn whose commit is discarded, with no retained search.
+    let quote = |planner: &StrategicPlanner, obs: &Observation| {
+        let intel = knowledge(obs);
+        let planning = crate::planning::PlanningWork::default();
+        turn(
+            &mut planner.clone(),
+            &TurnFixture::new(evidence(&profile(), obs, &intel), &planning),
+        )
+        .schedule
+    };
     let bank = obs.scrap;
-    let rich = settle_active(&mut planner, &obs);
+    let rich = quote(&planner, &obs);
     obs.scrap = rich.iter().map(|job| job.kind.stats().cost).sum::<u32>() - 1;
-    let forecast = settle_active(&mut planner, &obs);
+    let forecast = quote(&planner, &obs);
     assert!(forecast.iter().any(|job| job.enqueued_at > obs.tick));
     obs.scrap = bank;
-    let initial = settle_active(&mut planner, &obs);
+    let initial = quote(&planner, &obs);
     assert!(
         initial
             .iter()
@@ -1053,15 +829,26 @@ fn unpaid_connected_demand_can_buy_earlier_and_does_not_expire_after_rollback() 
         "quotations create no paid ownership"
     );
     obs.tick += 12;
-    let retry = settle_active(&mut planner, &obs);
+    let intel = knowledge(&obs);
+    let retry = turn(
+        &mut planner,
+        &TurnFixture::new(evidence(&profile(), &obs, &intel), &fixture_planning),
+    )
+    .schedule;
     assert!(retry.iter().any(|job| job.enqueued_at == obs.tick));
-    assert_eq!(initial.len(), retry.len());
+    let mut retained: Vec<_> = retry.iter().map(|job| job.kind).collect();
+    for job in &initial {
+        let index = retained
+            .iter()
+            .position(|kind| *kind == job.kind)
+            .expect("the revised retry still schedules every unpaid provider");
+        retained.swap_remove(index);
+    }
     assert!(
         retry
             .iter()
             .all(|job| job.ready_before == initial[0].ready_before)
     );
-    planner.record_connected_purchases(&retry, obs.tick);
     assert_eq!(
         planner.settle_paid_production(&obs).len(),
         retry
@@ -1088,8 +875,11 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
         .unwrap();
     let deadline = proposal.deadline();
     planner.commit_connected(proposal);
-    let schedule = settle_active(&mut planner, &obs);
-    planner.record_connected_purchases(&schedule, obs.tick);
+    let intel = knowledge(&obs);
+    turn(
+        &mut planner,
+        &TurnFixture::new(evidence(&identity, &obs, &intel), &fixture_planning),
+    );
     let paid = planner.settle_paid_production(&obs);
     assert!(!paid.is_empty());
     for purchase in &paid {
@@ -1302,20 +1092,17 @@ fn active_operation_keeps_members_already_claimed_by_the_coordinator() {
         .map(|active| reservations(&active.op, &active.plan, &observation))
         .expect("the fixture has an active operation");
 
-    let decision = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
-                enlisted: &owned,
-                ..coordination(&fixture_planning, None)
-            },
-        )
-        .decision;
+    let decision = turn(
+        &mut planner,
+        &TurnFixture {
+            unavailable: &owned,
+            ..TurnFixture::new(
+                evidence(&profile(), &observation, &intelligence),
+                &fixture_planning,
+            )
+        },
+    )
+    .decision;
 
     let operation = planner
         .air_operation()
@@ -1333,7 +1120,7 @@ fn active_operation_keeps_members_already_claimed_by_the_coordinator() {
 }
 
 #[test]
-fn provider_visible_on_the_deadline_can_complete_assembly() {
+fn provider_first_visible_on_the_deadline_misses_assembly() {
     let fixture_planning = crate::planning::PlanningWork::default();
 
     let mut observation = obs(2_500);
@@ -1355,32 +1142,31 @@ fn provider_visible_on_the_deadline_can_complete_assembly() {
     active.op.started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
     active.op.phase_started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
 
-    let decision = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination(&fixture_planning, None),
-        )
-        .decision;
+    let decision = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
+    // The revision that would enlist the provider has no allocation horizon
+    // left on the deadline tick, so the incomplete package times out.
     let operation = planner
         .air_operation()
-        .expect("the complete package crosses the commitment boundary");
-    assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
-    assert_eq!(operation.membership_frozen_at, Some(observation.tick));
-    assert_eq!(operation.strike_aircraft, [UnitId(3), UnitId(4)]);
-    assert_ne!(
+        .expect("the incomplete package recovers at its deadline");
+    assert_eq!(
         operation.recovery_reason(),
         Some(AirRecoveryReason::Timeout)
     );
-    assert!(decision.reservations.contains(&UnitId(4)));
+    assert_eq!(operation.membership_frozen_at, None);
+    assert_eq!(operation.strike_aircraft, [UnitId(3)]);
+    assert!(!decision.reservations.contains(&UnitId(4)));
 }
 
 #[test]
-fn provider_first_visible_on_the_deadline_survives_the_recon_transition() {
+fn provider_first_visible_on_the_deadline_misses_the_recon_transition() {
     let fixture_planning = crate::planning::PlanningWork::default();
 
     let mut observation = obs(2_500);
@@ -1402,47 +1188,43 @@ fn provider_first_visible_on_the_deadline_survives_the_recon_transition() {
     active.op.started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
     active.op.phase_started_at = observation.tick - CONNECTED_PREPARATION_HORIZON;
 
-    let deadline_decision = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination(&fixture_planning, None),
-        )
-        .decision;
+    let deadline_decision = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
+    // As on the assembly deadline, the provider cannot be enlisted in time.
     let operation = planner
         .air_operation()
-        .expect("a complete deadline roster is retained after reconnaissance");
-    assert_eq!(operation.phase(), AirOperationPhase::Assemble);
-    assert_eq!(operation.strike_aircraft, [UnitId(3), UnitId(4)]);
-    assert_ne!(
+        .expect("the incomplete reconnaissance roster recovers at its deadline");
+    assert_eq!(
         operation.recovery_reason(),
         Some(AirRecoveryReason::Timeout)
     );
-    assert!(deadline_decision.reservations.contains(&UnitId(4)));
+    assert_eq!(operation.strike_aircraft, [UnitId(3)]);
+    assert!(!deadline_decision.reservations.contains(&UnitId(4)));
 
     observation.tick += DifficultyTuning::for_level(BotDifficulty::Prime).cadence;
     intelligence.update(&observation);
-    let committed = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination(&fixture_planning, None),
-        )
-        .decision;
+    let committed = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
-    let operation = planner
-        .air_operation()
-        .expect("the ready roster crosses commitment on the next decision boundary");
-    assert_eq!(operation.phase(), AirOperationPhase::SuppressAa);
-    assert_eq!(operation.membership_frozen_at, Some(observation.tick));
-    assert!(committed.reservations.contains(&UnitId(4)));
+    assert!(
+        planner
+            .air_operation()
+            .is_none_or(|operation| operation.phase() == AirOperationPhase::Recover)
+    );
+    assert!(!committed.reservations.contains(&UnitId(4)));
 }
 
 #[test]
@@ -1472,25 +1254,17 @@ fn closed_admission_blocks_a_new_air_plan_but_an_active_plan_reaches_strike() {
     let mut blocked = StrategicPlanner::new();
 
     assert_eq!(
-        blocked
-            .think_alone_with(
-                &profile(),
-                DifficultyTuning::for_level(BotDifficulty::Prime),
-                &eligible,
-                &eligible_intelligence,
-                HOME,
-                Coordination {
-                    planning: Some(&fixture_planning),
-                    enlisted: &[],
-                    lift_support: None,
-                    allow_new_operation: false,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
-                    public_map: None,
-                    orientation: test_orientation(),
-                },
-            )
-            .decision,
+        turn(
+            &mut blocked,
+            &TurnFixture {
+                voluntary: false,
+                ..TurnFixture::new(
+                    evidence(&profile(), &eligible, &eligible_intelligence),
+                    &fixture_planning
+                )
+            }
+        )
+        .decision,
         StrategicDecision::default()
     );
     assert!(blocked.air_operation().is_none());
@@ -1500,25 +1274,17 @@ fn closed_admission_blocks_a_new_air_plan_but_an_active_plan_reaches_strike() {
     see_building_footprint(&mut battle, TARGET, BuildingKind::Crucible);
     let intelligence = knowledge(&battle);
     let mut active = with_operation(AirOperationPhase::Verify, battle.tick);
-    let continued = active
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intelligence,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: false,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: test_orientation(),
-            },
-        )
-        .decision;
+    let continued = turn(
+        &mut active,
+        &TurnFixture {
+            voluntary: false,
+            ..TurnFixture::new(
+                evidence(&profile(), &battle, &intelligence),
+                &fixture_planning,
+            )
+        },
+    )
+    .decision;
 
     assert_eq!(
         active.air_operation().map(|operation| operation.phase()),
@@ -1547,25 +1313,18 @@ fn closed_admission_blocks_a_new_air_plan_but_an_active_plan_reaches_strike() {
     see_approach(&mut incomplete);
     let incomplete_intelligence = knowledge(&incomplete);
     let mut assembling = with_operation(AirOperationPhase::Assemble, incomplete.tick);
-    let held = assembling
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &incomplete,
-            &incomplete_intelligence,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: false,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: test_orientation(),
-            },
-        )
-        .decision;
+    let held = turn(
+        &mut assembling,
+        &TurnFixture {
+            voluntary: false,
+            frozen: true,
+            ..TurnFixture::new(
+                evidence(&profile(), &incomplete, &incomplete_intelligence),
+                &fixture_planning,
+            )
+        },
+    )
+    .decision;
     assert_eq!(held.committed_scrap(), 0);
     assert!(
         held.intents
@@ -1581,25 +1340,18 @@ fn closed_admission_blocks_a_new_air_plan_but_an_active_plan_reaches_strike() {
         .retain(|unit| !matches!(unit.id, UnitId(3) | UnitId(4)));
     let damaged_intelligence = knowledge(&damaged);
     let mut recovering = with_operation(AirOperationPhase::SuppressAa, damaged.tick);
-    let retreat = recovering
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &damaged,
-            &damaged_intelligence,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: false,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: None,
-                orientation: test_orientation(),
-            },
-        )
-        .decision;
+    let retreat = turn(
+        &mut recovering,
+        &TurnFixture {
+            voluntary: false,
+            frozen: true,
+            ..TurnFixture::new(
+                evidence(&profile(), &damaged, &damaged_intelligence),
+                &fixture_planning,
+            )
+        },
+    )
+    .decision;
     assert!(
         retreat
             .intents
@@ -2232,20 +1984,19 @@ fn current_sight_cannot_skip_recon_while_the_required_scout_trains() {
         .idle = false;
     intelligence.update(&reacquired);
 
-    let reacquired_result = planner.think_alone_with(
-        &profile(),
-        tuning,
-        &reacquired,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let reacquired_result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &reacquired, &intelligence),
+            &fixture_planning,
+        ),
     );
 
     assert_eq!(
         planner.air_operation().unwrap().phase(),
         AirOperationPhase::Assemble,
         "Prime may react immediately only after the required scout has a real dispatch; rejection={:?}",
-        reacquired_result.rejected_connected_candidate,
+        reacquired_result.rejected,
     );
 }
 
@@ -2539,14 +2290,11 @@ fn shared_procurement_spreads_work_and_refuses_an_unfundable_package() {
     let intelligence = knowledge(&obs);
     let full = UnitKind::Bombard.stats().cost + UnitKind::Condor.stats().cost * 2;
     obs.scrap = full;
-    let mut out = StrategicDecision::default();
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &obs, &intelligence),
-        &mut out,
-    );
+    let out = turn(
+        &mut planner_with_operation(operation.clone(), plan.clone()),
+        &TurnFixture::new(evidence(&identity, &obs, &intelligence), &fixture_planning),
+    )
+    .decision;
     assert_eq!(out.committed_scrap(), full, "{out:?}");
     let bomber_factories: Vec<_> = out
         .intents
@@ -2562,18 +2310,25 @@ fn shared_procurement_spreads_work_and_refuses_an_unfundable_package() {
     assert_eq!(bomber_factories, [BuildingId(12), BuildingId(13)]);
 
     obs.scrap = UnitKind::Bombard.stats().cost + 17;
-    let mut partial = StrategicDecision::default();
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &obs, &intelligence),
-        &mut partial,
-    );
+    let mut unfundable = planner_with_operation(operation.clone(), plan.clone());
+    let partial = turn(
+        &mut unfundable,
+        &TurnFixture::new(evidence(&identity, &obs, &intelligence), &fixture_planning),
+    )
+    .decision;
     assert_eq!(partial.committed_scrap(), 0);
     assert!(
-        partial.intents.is_empty(),
+        !partial
+            .intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::TrainAt { .. })),
         "an infeasible retained package must be revised or recovered before buying a fragment"
+    );
+    assert_eq!(
+        unfundable
+            .air_operation()
+            .and_then(AirOperation::recovery_reason),
+        Some(AirRecoveryReason::PreparationInfeasible)
     );
 }
 
@@ -2601,18 +2356,20 @@ fn a_full_operation_queue_holds_the_next_provider_cost_until_a_slot_opens() {
     operation.artillery.clear();
     let identity = profile();
     let intelligence = knowledge(&observation);
-    let mut decision = StrategicDecision::default();
-
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &observation, &intelligence),
-        &mut decision,
-    );
+    let decision = turn(
+        &mut planner_with_operation(operation.clone(), plan.clone()),
+        &TurnFixture::new(
+            evidence(&identity, &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     assert!(
-        decision.intents.is_empty(),
+        !decision
+            .intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::TrainAt { .. })),
         "a future slot is feasibility evidence, not a current append"
     );
     assert_eq!(
@@ -2671,18 +2428,21 @@ fn shared_procurement_protects_capital_for_the_complete_blocked_package() {
     operation.strike_aircraft.clear();
     let identity = profile();
     let intelligence = knowledge(&observation);
-    let mut decision = StrategicDecision::default();
-
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &observation, &intelligence),
-        &mut decision,
-    );
+    let mut unfundable = planner_with_operation(operation.clone(), plan.clone());
+    let decision = turn(
+        &mut unfundable,
+        &TurnFixture::new(
+            evidence(&identity, &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     assert!(
-        decision.intents.is_empty(),
+        !decision
+            .intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::TrainAt { .. })),
         "the later open Airworks cannot spend capital assigned to the next Bombard"
     );
     assert_eq!(
@@ -2690,19 +2450,25 @@ fn shared_procurement_protects_capital_for_the_complete_blocked_package() {
         0,
         "without income the whole package is unfundable"
     );
+    assert_eq!(
+        unfundable
+            .air_operation()
+            .and_then(AirOperation::recovery_reason),
+        Some(AirRecoveryReason::PreparationInfeasible)
+    );
 
     observation.scrap = UnitKind::Bombard
         .stats()
         .cost
         .saturating_add(UnitKind::Buzzard.stats().cost);
-    let mut parallel = StrategicDecision::default();
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &observation, &intelligence),
-        &mut parallel,
-    );
+    let parallel = turn(
+        &mut planner_with_operation(operation.clone(), plan.clone()),
+        &TurnFixture::new(
+            evidence(&identity, &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     assert!(
         parallel.intents.iter().all(|intent| matches!(
@@ -2816,14 +2582,14 @@ fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
     operation.scout = None;
     operation.artillery.clear();
     operation.strike_aircraft.clear();
-    let mut decision = StrategicDecision::default();
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &observation, &intelligence),
-        &mut decision,
-    );
+    let decision = turn(
+        &mut planner_with_operation(operation.clone(), plan.clone()),
+        &TurnFixture::new(
+            evidence(&identity, &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     let scheduled: Vec<_> = decision
         .intents
@@ -3906,20 +3672,17 @@ fn connected_strike_refuses_an_air_route_blocked_only_in_the_public_briefing() {
     )));
 
     let mut guarded = with_operation(AirOperationPhase::Strike, observation.tick);
-    let guarded_decision = guarded
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
+    let guarded_decision = turn(
+        &mut guarded,
+        &TurnFixture::new(
+            AirEvidence {
                 public_map: Some(&public_map),
-                ..coordination(&fixture_planning, None)
+                ..evidence(&profile(), &observation, &intelligence)
             },
-        )
-        .decision;
+            &fixture_planning,
+        ),
+    )
+    .decision;
     let operation = guarded
         .air_operation()
         .expect("the refused strike remains observable during recovery");
@@ -4144,20 +3907,18 @@ fn connected_recovery_releases_a_survivor_stranded_by_public_peaks() {
     let identity = profile();
     let mut planner = with_operation(AirOperationPhase::Recover, battle.tick);
 
-    let decision = planner
-        .think_alone_with(
-            &identity,
-            DifficultyTuning::for_level(identity.difficulty),
-            &battle,
-            &intel,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
+    let decision = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                tuning: DifficultyTuning::for_level(identity.difficulty),
                 public_map: Some(&public_map),
-                ..coordination(&fixture_planning, None)
+                ..evidence(&identity, &battle, &intel)
             },
-        )
-        .decision;
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     assert!(!decision.reservations.contains(&UnitId(1)));
     assert!(decision.intents.iter().all(|intent| !matches!(
@@ -4377,24 +4138,23 @@ fn connected_admission_tries_a_reachable_current_target_after_the_best_is_cut_of
     );
 
     let mut planner = StrategicPlanner::new();
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &battle,
-        &intelligence,
-        HOME,
-        Coordination {
-            planning: Some(&fixture_planning),
-            public_map: Some(&public_map),
-            ..coordination(&fixture_planning, None)
-        },
+    let result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &battle, &intelligence)
+            },
+            &fixture_planning,
+        ),
     );
 
     assert_eq!(
         planner.air_operation().map(|operation| operation.target),
         Some(reachable)
     );
-    assert!(result.rejected_connected_candidate.is_none());
+    assert!(result.accepted);
+    assert!(result.rejected.is_none());
 }
 
 #[test]
@@ -5025,21 +4785,19 @@ fn connected_admission_reports_the_best_current_target_when_every_candidate_is_r
     let intelligence = knowledge(&battle);
     let mut planner = StrategicPlanner::new();
 
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &battle,
-        &intelligence,
-        HOME,
-        Coordination {
-            planning: Some(&fixture_planning),
-            public_map: Some(&public_map),
-            ..coordination(&fixture_planning, None)
-        },
+    let result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &battle, &intelligence)
+            },
+            &fixture_planning,
+        ),
     );
 
     let rejected = result
-        .rejected_connected_candidate
+        .rejected
         .expect("the best rejected candidate remains diagnostic evidence");
     assert_eq!(rejected.target.anchor, TARGET);
     assert_eq!(
@@ -5060,18 +4818,17 @@ fn current_connected_candidate_reports_the_standing_force_gate_only_at_admission
     let intelligence = knowledge(&on_boundary);
     let mut planner = StrategicPlanner::new();
 
-    let rejected = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &on_boundary,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let rejected = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &on_boundary, &intelligence),
+            &fixture_planning,
+        ),
     );
 
     assert_eq!(rejected.decision, StrategicDecision::default());
     assert_eq!(
-        rejected.rejected_connected_candidate,
+        rejected.rejected,
         Some(RejectedConnectedCandidate {
             target: intelligence.buildings()[0].clone(),
             reason: ConnectedPlanRejection::InsufficientStandingForce {
@@ -5086,15 +4843,14 @@ fn current_connected_candidate_reports_the_standing_force_gate_only_at_admission
     off_boundary.tick = 121;
     let intelligence = knowledge(&off_boundary);
     let mut planner = StrategicPlanner::new();
-    let not_considered = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &off_boundary,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let not_considered = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &off_boundary, &intelligence),
+            &fixture_planning,
+        ),
     );
-    assert!(not_considered.rejected_connected_candidate.is_none());
+    assert!(not_considered.rejected.is_none());
     assert!(planner.air_operation().is_none());
 }
 
@@ -5107,17 +4863,16 @@ fn no_target_is_idle_without_fabricating_a_connected_rejection() {
     let intelligence = knowledge(&observation);
     let mut planner = StrategicPlanner::new();
 
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &observation,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &observation, &intelligence),
+            &fixture_planning,
+        ),
     );
 
     assert_eq!(result.decision, StrategicDecision::default());
-    assert_eq!(result.rejected_connected_candidate, None);
+    assert_eq!(result.rejected, None);
     assert!(planner.air_operation().is_none());
 }
 
@@ -5133,17 +4888,16 @@ fn current_connected_candidate_reports_a_disconnected_ground_route() {
     let target = intelligence.buildings()[0].clone();
     let mut planner = StrategicPlanner::new();
 
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &observation,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &observation, &intelligence),
+            &fixture_planning,
+        ),
     );
 
     assert_eq!(
-        result.rejected_connected_candidate,
+        result.rejected,
         Some(RejectedConnectedCandidate {
             target,
             reason: ConnectedPlanRejection::DisconnectedGroundRoute,
@@ -5164,21 +4918,19 @@ fn current_connected_candidate_reports_a_missing_completed_provider() {
     let mut planner = StrategicPlanner::new();
     let enlisted = [UnitId(1), UnitId(2), UnitId(3), UnitId(4)];
 
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &observation,
-        &intelligence,
-        HOME,
-        Coordination {
-            planning: Some(&fixture_planning),
-            enlisted: &enlisted,
-            ..coordination(&fixture_planning, None)
+    let result = turn(
+        &mut planner,
+        &TurnFixture {
+            unavailable: &enlisted,
+            ..TurnFixture::new(
+                evidence(&profile(), &observation, &intelligence),
+                &fixture_planning,
+            )
         },
     );
 
     assert_eq!(
-        result.rejected_connected_candidate,
+        result.rejected,
         Some(RejectedConnectedCandidate {
             target,
             reason: ConnectedPlanRejection::Package {
@@ -5597,15 +5349,14 @@ fn connected_package_uses_only_producers_that_can_reach_the_operation() {
     .expect("the reachable Fabricator can field the suppression provider");
     let mut operation = operation(AirOperationPhase::Assemble, observation.tick);
     operation.artillery.clear();
-    let mut decision = StrategicDecision::default();
-
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &observation, &intelligence),
-        &mut decision,
-    );
+    let decision = turn(
+        &mut planner_with_operation(operation.clone(), plan.clone()),
+        &TurnFixture::new(
+            evidence(&identity, &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     assert!(
         decision.intents.contains(&Intent::TrainAt {
@@ -6284,18 +6035,17 @@ fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
     let mut planner = with_operation(AirOperationPhase::SuppressAa, observation.tick);
     let active = planner.air.as_mut().expect("active operation");
     commit_to_cluster(&mut active.plan, &active.op, vec![TARGET]);
-    let mut coordination = coordination(&fixture_planning, None);
-    coordination.public_map = Some(&public_map);
-    let positioning = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination,
-        )
-        .decision;
+    let positioning = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &observation, &intelligence)
+            },
+            &fixture_planning,
+        ),
+    )
+    .decision;
     let firing_stand = positioning
         .intents
         .iter()
@@ -6334,16 +6084,17 @@ fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
         .expect("fixture scout")
         .idle = false;
     intelligence.update(&observation);
-    let attack = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &observation,
-            &intelligence,
-            HOME,
-            coordination,
-        )
-        .decision;
+    let attack = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &observation, &intelligence)
+            },
+            &fixture_planning,
+        ),
+    )
+    .decision;
     assert!(
         attack.intents.contains(&Intent::AttackUnits {
             units: vec![UnitId(2)],
@@ -6744,18 +6495,17 @@ fn precommit_rederivation_reports_and_recovers_from_untargetable_air_defense() {
     let intelligence = knowledge(&battle);
     let mut planner = with_operation(AirOperationPhase::Assemble, 300);
 
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &battle,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &battle, &intelligence),
+            &fixture_planning,
+        ),
     );
 
     assert!(
         matches!(
-            result.rejected_connected_candidate,
+            result.rejected,
             Some(RejectedConnectedCandidate {
                 reason: ConnectedPlanRejection::Package {
                     reason: ForcePackageRejection::UntargetableCurrentAirDefense { .. },
@@ -6765,7 +6515,7 @@ fn precommit_rederivation_reports_and_recovers_from_untargetable_air_defense() {
             })
         ),
         "unexpected rejection: {:?}",
-        result.rejected_connected_candidate
+        result.rejected
     );
     assert_eq!(
         planner
@@ -6800,18 +6550,17 @@ fn current_air_defense_first_seen_on_the_deadline_prevents_stale_force_freeze() 
     package.preparation_deadline = battle.tick;
     active.plan.connected_mut().commitment.deadline = battle.tick;
 
-    let result = planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &battle,
-        &intelligence,
-        HOME,
-        coordination(&fixture_planning, None),
+    let result = turn(
+        &mut planner,
+        &TurnFixture::new(
+            evidence(&profile(), &battle, &intelligence),
+            &fixture_planning,
+        ),
     );
 
     assert!(
         matches!(
-            result.rejected_connected_candidate,
+            result.rejected,
             Some(RejectedConnectedCandidate {
                 reason: ConnectedPlanRejection::Package {
                     reason: ForcePackageRejection::UntargetableCurrentAirDefense { .. },
@@ -6821,7 +6570,7 @@ fn current_air_defense_first_seen_on_the_deadline_prevents_stale_force_freeze() 
             })
         ),
         "deadline evidence did not reject the stale package: {:?}",
-        result.rejected_connected_candidate
+        result.rejected
     );
     let operation = planner
         .air_operation()
@@ -7580,13 +7329,9 @@ fn a_wealthy_scattering_like_bot_starts_airborne_bombers_without_lift_support() 
     identity.traits.siege = 20;
     let mut planner = StrategicPlanner::new();
 
-    planner.think_alone_with(
-        &identity,
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &observation,
-        &intel,
-        HOME,
-        coordination(&fixture_planning, None),
+    turn(
+        &mut planner,
+        &TurnFixture::new(evidence(&identity, &observation, &intel), &fixture_planning),
     );
 
     assert_eq!(
@@ -7658,13 +7403,15 @@ fn a_preexisting_lift_makes_the_second_starting_air_operation_inherit_its_exact_
     };
     let mut planner = StrategicPlanner::new();
 
-    planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &observation,
-        &intel,
-        HOME,
-        coordination(&fixture_planning, Some(&request)),
+    turn(
+        &mut planner,
+        &TurnFixture {
+            lift_support: Some(&request),
+            ..TurnFixture::new(
+                evidence(&profile(), &observation, &intel),
+                &fixture_planning,
+            )
+        },
     );
 
     let operation = planner
@@ -7789,17 +7536,15 @@ fn an_unexplored_remembered_target_on_the_public_home_landmass_uses_connected_re
     let public_map = public_map_with_terrain(&hidden, []);
     let mut planner = StrategicPlanner::new();
 
-    planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &hidden,
-        &intel,
-        HOME,
-        Coordination {
-            planning: Some(&fixture_planning),
-            public_map: Some(&public_map),
-            ..coordination(&fixture_planning, None)
-        },
+    turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &hidden, &intel)
+            },
+            &fixture_planning,
+        ),
     );
 
     let operation = planner
@@ -8232,20 +7977,18 @@ fn remembered_connected_recon_respects_publicly_known_peaks_before_sighting_them
     let identity = profile();
     let mut planner = StrategicPlanner::new();
 
-    let decision = planner
-        .think_alone_with(
-            &identity,
-            DifficultyTuning::for_level(identity.difficulty),
-            &ghost,
-            &intel,
-            HOME,
-            Coordination {
-                planning: Some(&fixture_planning),
+    let decision = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                tuning: DifficultyTuning::for_level(identity.difficulty),
                 public_map: Some(&public_map),
-                ..coordination(&fixture_planning, None)
+                ..evidence(&identity, &ghost, &intel)
             },
-        )
-        .decision;
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     let operation = planner
         .air_operation()
@@ -9286,16 +9029,14 @@ fn shared_air_support_clears_and_reconnoiters_the_frozen_drop_envelope_before_re
         "the same flak does cover the transport's actual drop envelope"
     );
 
-    let suppression = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination(&fixture_planning, Some(&request)),
-        )
-        .decision;
+    let suppression = turn(
+        &mut planner,
+        &TurnFixture {
+            lift_support: Some(&request),
+            ..TurnFixture::new(evidence(&profile(), &battle, &intel), &fixture_planning)
+        },
+    )
+    .decision;
     assert_eq!(
         planner.air_operation().unwrap().phase(),
         AirOperationPhase::SuppressAa
@@ -9324,16 +9065,14 @@ fn shared_air_support_clears_and_reconnoiters_the_frozen_drop_envelope_before_re
         .enemy_buildings
         .retain(|building| building.id != BuildingId(81));
     intel.update(&battle);
-    let searching = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination(&fixture_planning, Some(&request)),
-        )
-        .decision;
+    let searching = turn(
+        &mut planner,
+        &TurnFixture {
+            lift_support: Some(&request),
+            ..TurnFixture::new(evidence(&profile(), &battle, &intel), &fixture_planning)
+        },
+    )
+    .decision;
     assert_eq!(
         planner.air_operation().unwrap().phase(),
         AirOperationPhase::SuppressAa,
@@ -9358,13 +9097,12 @@ fn shared_air_support_clears_and_reconnoiters_the_frozen_drop_envelope_before_re
     battle.explored[flak_index] = true;
     battle.tick += 1;
     intel.update(&battle);
-    planner.think_alone_with(
-        &profile(),
-        DifficultyTuning::for_level(BotDifficulty::Prime),
-        &battle,
-        &intel,
-        HOME,
-        coordination(&fixture_planning, Some(&request)),
+    turn(
+        &mut planner,
+        &TurnFixture {
+            lift_support: Some(&request),
+            ..TurnFixture::new(evidence(&profile(), &battle, &intel), &fixture_planning)
+        },
     );
     assert_eq!(
         planner.air_operation().unwrap().phase(),
@@ -9378,16 +9116,14 @@ fn shared_air_support_clears_and_reconnoiters_the_frozen_drop_envelope_before_re
         .saturating_add(tuning.reaction_delay)
         .saturating_add(tuning.commitment_hesitation);
     intel.update(&battle);
-    let released = planner
-        .think_alone_with(
-            &profile(),
-            tuning,
-            &battle,
-            &intel,
-            HOME,
-            coordination(&fixture_planning, Some(&request)),
-        )
-        .decision;
+    let released = turn(
+        &mut planner,
+        &TurnFixture {
+            lift_support: Some(&request),
+            ..TurnFixture::new(evidence(&profile(), &battle, &intel), &fixture_planning)
+        },
+    )
+    .decision;
     assert_eq!(
         planner.air_operation().unwrap().phase(),
         AirOperationPhase::Strike
@@ -9561,16 +9297,14 @@ fn an_opportunistic_strike_does_not_move_the_shared_coordination_anchor() {
     };
     let intel = knowledge(&battle);
 
-    let decision = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination(&fixture_planning, Some(&request)),
-        )
-        .decision;
+    let decision = turn(
+        &mut planner,
+        &TurnFixture {
+            lift_support: Some(&request),
+            ..TurnFixture::new(evidence(&profile(), &battle, &intel), &fixture_planning)
+        },
+    )
+    .decision;
 
     assert!(decision.intents.contains(&Intent::AttackUnits {
         units: vec![UnitId(3), UnitId(4)],
@@ -9606,19 +9340,18 @@ fn an_exact_strike_validates_the_selected_cluster_target_not_the_operation_ancho
         live_strike_target(&active.op, &active.plan, &intel).map(|target| target.anchor),
         Some(secondary)
     );
-    let mut coordination = coordination(&fixture_planning, None);
-    coordination.public_map = Some(&public_map);
 
-    let decision = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination,
-        )
-        .decision;
+    let decision = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &battle, &intel)
+            },
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     let operation = planner
         .air_operation()
@@ -10192,19 +9925,18 @@ fn connected_selection_excludes_secondary_aa_sealed_by_peaks() {
     active.op.target = primary;
     active.op.target_id = Some(BuildingId(80));
     commit_to_cluster(&mut active.plan, &active.op, selection.target_anchors);
-    let mut coordination = coordination(&fixture_planning, None);
-    coordination.public_map = Some(&public_map);
 
-    let decision = planner
-        .think_alone_with(
-            &profile(),
-            DifficultyTuning::for_level(BotDifficulty::Prime),
-            &battle,
-            &intel,
-            HOME,
-            coordination,
-        )
-        .decision;
+    let decision = turn(
+        &mut planner,
+        &TurnFixture::new(
+            AirEvidence {
+                public_map: Some(&public_map),
+                ..evidence(&profile(), &battle, &intel)
+            },
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     let operation = planner.air_operation().expect("operation remains active");
     assert_ne!(operation.phase(), AirOperationPhase::Recover);
@@ -10677,16 +10409,15 @@ fn a_siege_identity_trains_available_avalanches_for_its_operation() {
         .expect("the completed Crucible can supply the package");
     let mut operation = operation(AirOperationPhase::Assemble, observation.tick);
     operation.artillery.clear();
-    let mut decision = StrategicDecision::default();
     let intelligence = knowledge(&observation);
-
-    procure_connected_in_test(
-        &operation,
-        &plan,
-        &identity,
-        &planning_context(&fixture_planning, &identity, &observation, &intelligence),
-        &mut decision,
-    );
+    let decision = turn(
+        &mut planner_with_operation(operation.clone(), plan.clone()),
+        &TurnFixture::new(
+            evidence(&identity, &observation, &intelligence),
+            &fixture_planning,
+        ),
+    )
+    .decision;
 
     assert!(decision.intents.contains(&Intent::TrainAt {
         building: BuildingId(30),

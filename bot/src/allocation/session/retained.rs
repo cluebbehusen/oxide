@@ -1221,26 +1221,14 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         match revision {
             Ok(None) => ActiveRevisionPreparation::default(),
             Ok(Some(proposal)) => {
-                let horizon = obligation_horizon(&other_obligations, deadline);
-                let Ok(capacity) = super::super::AllocationCapacity::from_snapshot(
+                let Some(adapted) = adopt_active_revision(
                     &obligations.resources,
-                    horizon,
+                    &other_obligations,
+                    &proposal,
                     self.context.dials.cadence,
+                    &self.participants.policy.planning,
                 ) else {
                     return ActiveRevisionPreparation::default();
-                };
-                let adapted = match super::super::forecast::refine_obligation(
-                    &capacity,
-                    &other_obligations,
-                    active_connected_revision_obligation(&proposal),
-                    &self.participants.policy.planning,
-                ) {
-                    crate::planning::Progress::Ready(refined) => refined,
-                    crate::planning::Progress::Deferred
-                    | crate::planning::Progress::Exhausted
-                    | crate::planning::Progress::ProvenInfeasible => {
-                        return ActiveRevisionPreparation::default();
-                    }
                 };
                 remove_active_connected_obligation(&mut obligations.obligations);
                 obligations.obligations.push(adapted);
