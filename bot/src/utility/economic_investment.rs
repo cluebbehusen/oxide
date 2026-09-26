@@ -964,7 +964,7 @@ mod tests {
         obs.enemy_buildings[0].seen = false;
         assert!(
             air_quotes(&obs, &map, &profile, &[]).is_empty(),
-            "remembered targets require new reconnaissance before this investment"
+            "a structure missing from current sight cannot justify the investment"
         );
         obs.enemy_buildings[0].seen = true;
         obs.my_buildings
@@ -974,6 +974,134 @@ mod tests {
         assert!(
             air_quotes(&obs, &map, &profile, &[]).is_empty(),
             "bootstrap value cannot buy redundant factories"
+        );
+    }
+
+    #[test]
+    fn first_airworks_values_remembered_targets_by_confidence() {
+        use crate::intelligence::{BuildingContact, ContactEvidence};
+        let (mut obs, map, profile) = fixture();
+        obs.tick = 4_008;
+        obs.scrap = 1200;
+        obs.my_buildings.extend([
+            building(2, BuildingKind::Fabricator, TilePos::new(8, 5)),
+            building(3, BuildingKind::Crucible, TilePos::new(12, 5)),
+        ]);
+        {
+            let obs = &mut *obs;
+            obs.my_queues.resize(obs.my_buildings.len(), Vec::new());
+            obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        }
+        let anchor = TilePos::new(30, 12);
+        let mut target = building(90, BuildingKind::Foundry, anchor);
+        target.player = PlayerId(1);
+        obs.enemy_buildings.push(target.clone());
+        let current = air_quotes(&obs, &map, &profile, &[]);
+        let current_benefit = current
+            .first()
+            .expect("a visible target justifies the first Airworks")
+            .benefit;
+
+        let (width, height) = BuildingKind::Foundry.base_stats().size;
+        for y in anchor.y..anchor.y + height {
+            for x in anchor.x..anchor.x + width {
+                obs.visible[(y * 40 + x) as usize] = false;
+            }
+        }
+        obs.enemy_buildings[0].seen = false;
+        assert!(
+            air_quotes(&obs, &map, &profile, &[]).is_empty(),
+            "a fog ghost this controller never saw carries no confidence"
+        );
+        let remembered = |last_seen| BuildingContact {
+            id: Some(target.id),
+            player: target.player,
+            kind: target.kind,
+            anchor,
+            hp: target.hp,
+            built: true,
+            tier: 0,
+            last_seen: Some(last_seen),
+            evidence: ContactEvidence::Remembered,
+        };
+        let recent = remembered(obs.tick - 600);
+        let quotes = air_quotes_with_memory(
+            &obs,
+            &map,
+            &profile,
+            &[],
+            &[],
+            std::slice::from_ref(&recent),
+        );
+        let quote = quotes
+            .first()
+            .expect("a recently remembered target still justifies the first Airworks");
+        assert_eq!(
+            quote.benefit,
+            current_benefit * u64::from(recent.confidence_at(obs.tick))
+                / u64::from(crate::intelligence::MAX_CONFIDENCE),
+            "remembered value is discounted by confidence"
+        );
+        assert!(
+            air_quotes_with_memory(&obs, &map, &profile, &[], &[], &[remembered(0)]).is_empty(),
+            "an expired memory cannot justify the investment"
+        );
+    }
+
+    #[test]
+    fn first_airworks_saving_waits_for_completed_income() {
+        use crate::allocation::{
+            ClaimBundle, ForecastClaim, ImportedObligation, ObligationClass, ObligationKey,
+        };
+        let (mut obs, map, profile) = fixture();
+        let cost = BuildingKind::Airworks
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost;
+        obs.scrap = cost - 50;
+        obs.my_buildings.extend([
+            building(2, BuildingKind::Fabricator, TilePos::new(8, 5)),
+            building(3, BuildingKind::Crucible, TilePos::new(12, 5)),
+            building(4, BuildingKind::Reclaimer, TilePos::new(2, 23)),
+            building(5, BuildingKind::Reclaimer, TilePos::new(6, 23)),
+        ]);
+        {
+            let obs = &mut *obs;
+            obs.my_queues.resize(obs.my_buildings.len(), vec![]);
+            obs.my_queue_progress.resize(obs.my_buildings.len(), 0);
+        }
+        let mut target = building(90, BuildingKind::Foundry, TilePos::new(30, 12));
+        target.player = PlayerId(1);
+        obs.enemy_buildings.push(target);
+        let quotes = air_quotes(&obs, &map, &profile, &[]);
+        let quote = quotes
+            .first()
+            .expect("completed income can fund the first Airworks after it is saved for");
+        assert!(quote.fund_by > quote.observed_at);
+        assert_eq!(quote.current_capital, cost - 50);
+
+        let resources = ResourceSnapshot::from_observation(&obs);
+        let future = ImportedObligation {
+            class: ObligationClass::PersistentPlan,
+            accepted_at: obs.tick,
+            key: ObligationKey::OpeningCore { sequence: 0 },
+            claims: ClaimBundle::new(
+                0,
+                vec![ForecastClaim {
+                    through: quote.deadline,
+                    amount: resources.forecast().income_through(quote.deadline).amount(),
+                }],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+            )
+            .unwrap(),
+        };
+        assert!(
+            air_quotes_with_obligations(&obs, &map, &profile, &[], &[future]).is_empty(),
+            "income already promised elsewhere cannot fund the factory"
         );
     }
 
@@ -1975,6 +2103,17 @@ mod tests {
         work: &[AirCapacityDemand],
         obligations: &[crate::allocation::ImportedObligation],
     ) -> Vec<EconomicInvestment> {
+        air_quotes_with_memory(obs, map, profile, work, obligations, &[])
+    }
+
+    fn air_quotes_with_memory(
+        obs: &Observation,
+        map: &PublicMapBriefing,
+        profile: &ResolvedProfile,
+        work: &[AirCapacityDemand],
+        obligations: &[crate::allocation::ImportedObligation],
+        building_contacts: &[crate::intelligence::BuildingContact],
+    ) -> Vec<EconomicInvestment> {
         let resources = ResourceSnapshot::from_observation(obs);
         UtilityPolicy::new()
             .economic_quotes(EconomicInvestmentContext {
@@ -1988,7 +2127,7 @@ mod tests {
                 unavailable: &[],
                 demands: &[],
                 unit_contacts: &[],
-                building_contacts: &[],
+                building_contacts,
                 cadence: 12,
                 protected_scrap: 0,
                 air_work: work,
