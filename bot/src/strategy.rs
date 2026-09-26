@@ -42,8 +42,8 @@ use campaign_routes::CampaignRoutes;
 use force_package::{
     ConnectedForcePackage, ConnectedForcePackageOptions, ConnectedTargetEvidence, ForceFamily,
     ForcePackageRejection, NormalizedCapability, PreparationConstraints, ProductionEvidence,
-    ProviderDemand, ProviderDemandTranche, building_value, current_target_cluster,
-    derive_connected_force_package_options_for_cluster, eligible_producers,
+    ProviderDemand, ProviderDemandTranche, building_value, current_aa_contact,
+    current_target_cluster, derive_connected_force_package_options_for_cluster, eligible_producers,
     refine_provider_demands, strike_capability, suppression_capability, target_cluster_air_defense,
 };
 
@@ -4982,19 +4982,13 @@ fn prosecutable_cluster_air_defense_target(
     public_map: Option<&PublicMapBriefing>,
     orientation: Orientation,
 ) -> Option<SuppressionEngagement> {
-    let mut targets = Vec::new();
     let cluster = operation_target_cluster(op, plan, intel);
-    for source in target_cluster_air_defense(intel, &cluster).sources {
-        if source.evidence == ContactEvidence::Current
-            && let Some(target) = current_air_defense_target(intel, source.source)
-        {
-            targets.push((source.source, target));
-        }
-    }
-    targets.sort_unstable_by_key(|(source, _)| *source);
-    targets.dedup_by_key(|(source, _)| *source);
-
-    targets.into_iter().find_map(|(_, target)| {
+    let mut targets = target_cluster_air_defense(intel, &cluster)
+        .sources
+        .into_iter()
+        .filter(|source| source.evidence == ContactEvidence::Current)
+        .filter_map(|source| current_aa_contact(intel, source.source)?.suppression_target());
+    targets.find_map(|target| {
         artillery_firing_assignments(obs, intel, &op.artillery, target, public_map, orientation)
             .map(|firing_stands| SuppressionEngagement {
                 target,
@@ -5157,19 +5151,15 @@ fn cluster_air_defense(
     let assessment = target_cluster_air_defense(intel, &cluster);
     let mut current_coverage = false;
     let mut remembered_coverage = false;
-    let mut targetable = Vec::new();
+    let mut targetable = None;
 
     for source in assessment.sources {
         match source.evidence {
             ContactEvidence::Current => {
-                let Some(target) = current_air_defense_target(intel, source.source) else {
-                    if force_package::current_operational_aa_source(intel, source.source) {
-                        current_coverage = true;
-                    }
-                    continue;
-                };
-                current_coverage = true;
-                targetable.push((source.source, target));
+                if let Some(contact) = current_aa_contact(intel, source.source) {
+                    current_coverage = true;
+                    targetable = targetable.or_else(|| contact.suppression_target());
+                }
             }
             ContactEvidence::Remembered if source.confidence > 0 => {
                 remembered_coverage = true;
@@ -5178,8 +5168,6 @@ fn cluster_air_defense(
         }
     }
 
-    targetable.sort_unstable_by_key(|(source, _)| *source);
-    targetable.dedup_by_key(|(source, _)| *source);
     let evidence = if current_coverage {
         AirDefenseEvidence::CurrentCoverage
     } else if remembered_coverage {
@@ -5192,7 +5180,7 @@ fn cluster_air_defense(
 
     ClusterAirDefense {
         has_targets,
-        targetable: targetable.first().map(|(_, target)| *target),
+        targetable,
         evidence,
     }
 }
@@ -5289,44 +5277,6 @@ fn operation_objective_cleared(
         return target_visible(op, obs) && !target_is_current;
     };
     connected.commitment.live_members(intel).is_empty()
-}
-
-fn current_air_defense_target(
-    intel: &StrategicIntelligence,
-    source: AirDefenseSource,
-) -> Option<Target> {
-    match source {
-        AirDefenseSource::Unit { id, kind, tile } => intel
-            .units()
-            .iter()
-            .find(|contact| {
-                contact.id == id
-                    && contact.kind == kind
-                    && contact.tile == tile
-                    && contact.evidence == ContactEvidence::Current
-                    && contact.hp > 0
-            })
-            .filter(|contact| contact.body_domain() == Domain::Ground)
-            .map(|_| Target::Unit(id)),
-        AirDefenseSource::Building {
-            id: Some(id),
-            player,
-            kind,
-            anchor,
-        } if intel.buildings().iter().any(|contact| {
-            contact.id == Some(id)
-                && contact.player == player
-                && contact.kind == kind
-                && contact.anchor == anchor
-                && contact.evidence == ContactEvidence::Current
-                && contact.built
-                && contact.hp > 0
-        }) =>
-        {
-            Some(Target::Building(id))
-        }
-        AirDefenseSource::Building { .. } => None,
-    }
 }
 
 fn targetable_flak(aa: &AirDefenseAssessment) -> Option<BuildingId> {
@@ -5767,15 +5717,15 @@ fn current_cluster_suppression_needs(
 ) -> CurrentSuppressionNeeds {
     let mut needs = CurrentSuppressionNeeds::default();
     for source in target_cluster_air_defense(intel, cluster).sources {
-        if source.evidence != ContactEvidence::Current
-            || !force_package::current_operational_aa_source(intel, source.source)
-        {
+        if source.evidence != ContactEvidence::Current {
             continue;
         }
-        if let Some(target) = current_air_defense_target(intel, source.source) {
-            needs.targets.push(target);
-        } else {
-            needs.has_untargetable_current = true;
+        let Some(contact) = current_aa_contact(intel, source.source) else {
+            continue;
+        };
+        match contact.suppression_target() {
+            Some(target) => needs.targets.push(target),
+            None => needs.has_untargetable_current = true,
         }
     }
     needs.targets.sort_unstable();

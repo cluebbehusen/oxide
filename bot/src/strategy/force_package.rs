@@ -9,6 +9,7 @@
 use super::super::executive::weapon_burst_dps100;
 use super::super::intelligence::{
     AirDefenseContact, AirDefenseSource, BuildingContact, ContactEvidence, StrategicIntelligence,
+    UnitContact,
 };
 use super::super::observation::Observation;
 use super::super::profile::ResolvedProfile;
@@ -21,7 +22,7 @@ use crate::planning::{PlanningWork, Progress};
 use chassis::Tick;
 use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::TilePos;
-use oxide_sim::ids::{BuildingId, PlayerId, UnitId};
+use oxide_sim::ids::{BuildingId, PlayerId, Target, UnitId};
 use oxide_sim::stats::{BOMB_SALVO_SPACING, BuildingKind, Domain, Role, UnitKind, WeaponStats};
 use std::cell::Cell;
 use std::cmp::Reverse;
@@ -1708,68 +1709,38 @@ fn current_air_defense(
     intelligence: &StrategicIntelligence,
     cluster: &[&BuildingContact],
 ) -> CurrentAirDefense {
-    let sources: BTreeMap<_, _> = target_cluster_air_defense(intelligence, cluster)
+    let sources: Vec<_> = target_cluster_air_defense(intelligence, cluster)
         .sources
         .into_iter()
-        .filter(|source| {
-            source.evidence == ContactEvidence::Current
-                && current_operational_aa_source(intelligence, source.source)
+        .filter(|source| source.evidence == ContactEvidence::Current)
+        .filter_map(|source| {
+            let contact = current_aa_contact(intelligence, source.source)?;
+            Some((u64::from(source.firepower_per_100_ticks), contact))
         })
-        .map(|source| (source.source, source.firepower_per_100_ticks))
         .collect();
-    let total_firepower = sources.values().fold(0_u64, |total, value| {
-        total.saturating_add(u64::from(*value))
+    let total_firepower = sources.iter().fold(0_u64, |total, (firepower, _)| {
+        total.saturating_add(*firepower)
     });
     let mut suppressible_firepower = 0_u64;
     let mut suppressible_hp = 0_u64;
     let mut suppressible_mobile_units = BTreeSet::new();
     let mut untargetable_air_firepower = 0_u64;
     let mut untargetable_air_hp = 0_u64;
-    for (source, source_firepower) in &sources {
-        match source {
-            AirDefenseSource::Unit { id, kind, tile } => {
-                let Some(contact) = intelligence.units().iter().find(|contact| {
-                    contact.id == *id
-                        && contact.kind == *kind
-                        && contact.tile == *tile
-                        && contact.evidence == ContactEvidence::Current
-                        && contact.hp > 0
-                }) else {
-                    continue;
-                };
-                if contact.body_domain() == Domain::Ground {
-                    suppressible_firepower =
-                        suppressible_firepower.saturating_add(u64::from(*source_firepower));
-                    suppressible_hp = suppressible_hp.saturating_add(u64::from(contact.hp));
-                    suppressible_mobile_units.insert(contact.id);
-                } else {
-                    untargetable_air_firepower =
-                        untargetable_air_firepower.saturating_add(u64::from(*source_firepower));
-                    untargetable_air_hp = untargetable_air_hp.saturating_add(u64::from(contact.hp));
-                }
+    for (firepower, contact) in sources {
+        match contact {
+            CurrentAaContact::Unit(contact) if contact.body_domain() == Domain::Ground => {
+                suppressible_firepower = suppressible_firepower.saturating_add(firepower);
+                suppressible_hp = suppressible_hp.saturating_add(u64::from(contact.hp));
+                suppressible_mobile_units.insert(contact.id);
             }
-            AirDefenseSource::Building {
-                id: Some(id),
-                player,
-                kind,
-                anchor,
-            } => {
-                let Some(contact) = intelligence.buildings().iter().find(|contact| {
-                    contact.id == Some(*id)
-                        && contact.player == *player
-                        && contact.kind == *kind
-                        && contact.anchor == *anchor
-                        && contact.evidence == ContactEvidence::Current
-                        && contact.built
-                        && contact.hp > 0
-                }) else {
-                    continue;
-                };
-                suppressible_firepower =
-                    suppressible_firepower.saturating_add(u64::from(*source_firepower));
+            CurrentAaContact::Unit(contact) => {
+                untargetable_air_firepower = untargetable_air_firepower.saturating_add(firepower);
+                untargetable_air_hp = untargetable_air_hp.saturating_add(u64::from(contact.hp));
+            }
+            CurrentAaContact::Building(contact) => {
+                suppressible_firepower = suppressible_firepower.saturating_add(firepower);
                 suppressible_hp = suppressible_hp.saturating_add(u64::from(contact.hp));
             }
-            AirDefenseSource::Building { id: None, .. } => {}
         }
     }
     CurrentAirDefense {
@@ -1782,33 +1753,61 @@ fn current_air_defense(
     }
 }
 
-pub(super) fn current_operational_aa_source(
+/// The live, currently observed contact behind an anti-air source.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CurrentAaContact<'a> {
+    Unit(&'a UnitContact),
+    Building(&'a BuildingContact),
+}
+
+impl CurrentAaContact<'_> {
+    /// Target a ground suppression force can attack: every building and every
+    /// ground-domain unit.
+    pub(super) fn suppression_target(self) -> Option<Target> {
+        match self {
+            Self::Unit(contact) => {
+                (contact.body_domain() == Domain::Ground).then_some(Target::Unit(contact.id))
+            }
+            Self::Building(contact) => contact.id.map(Target::Building),
+        }
+    }
+}
+
+pub(super) fn current_aa_contact(
     intelligence: &StrategicIntelligence,
     source: AirDefenseSource,
-) -> bool {
+) -> Option<CurrentAaContact<'_>> {
     match source {
-        AirDefenseSource::Unit { id, kind, tile } => intelligence.units().iter().any(|contact| {
-            contact.id == id
-                && contact.kind == kind
-                && contact.tile == tile
-                && contact.hp > 0
-                && contact.evidence == ContactEvidence::Current
-        }),
+        AirDefenseSource::Unit { id, kind, tile } => intelligence
+            .units()
+            .iter()
+            .find(|contact| {
+                contact.id == id
+                    && contact.kind == kind
+                    && contact.tile == tile
+                    && contact.hp > 0
+                    && contact.evidence == ContactEvidence::Current
+            })
+            .map(CurrentAaContact::Unit),
         AirDefenseSource::Building {
             id: Some(id),
             player,
             kind,
             anchor,
-        } => intelligence.buildings().iter().any(|contact| {
-            contact.id == Some(id)
-                && contact.player == player
-                && contact.kind == kind
-                && contact.anchor == anchor
-                && contact.hp > 0
-                && contact.built
-                && contact.evidence == ContactEvidence::Current
-        }),
-        AirDefenseSource::Building { id: None, .. } => false,
+        } => intelligence
+            .buildings()
+            .iter()
+            .find(|contact| {
+                contact.id == Some(id)
+                    && contact.player == player
+                    && contact.kind == kind
+                    && contact.anchor == anchor
+                    && contact.hp > 0
+                    && contact.built
+                    && contact.evidence == ContactEvidence::Current
+            })
+            .map(CurrentAaContact::Building),
+        AirDefenseSource::Building { id: None, .. } => None,
     }
 }
 
