@@ -2328,6 +2328,49 @@ fn a_finger_that_leaves_its_card_activates_nothing() {
 }
 
 #[test]
+fn a_disabled_card_explains_itself_to_a_tap_or_a_click() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.presentation.human)
+        .expect("human Foundry")
+        .id;
+    game.presentation.selection.buildings = vec![foundry];
+    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a Foundry panel");
+    let (index, why) = panel
+        .cards
+        .iter()
+        .enumerate()
+        .find_map(|(i, card)| (!card.enabled).then(|| card.why.clone().map(|why| (i, why))))
+        .flatten()
+        .expect("premise: an opening Foundry has a locked card with a reason");
+    *game.presentation.panel_model.borrow_mut() = Some(panel);
+    let rect = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[index] = (rect, crate::panel::CardAction::Refused);
+    layout.card_count = index + 1;
+    game.presentation.layout.set(layout);
+    let toasted = |game: &Game| game.presentation.toasts.iter().any(|t| t.text == why);
+
+    tap(&mut game, &mut input, rect.center());
+    assert!(toasted(&game), "the tap names the reason");
+    assert!(game.pending.is_empty(), "a refusal stages nothing");
+
+    game.presentation.toasts.clear();
+    apply_events(
+        &mut game,
+        &mut input,
+        &click(rect.center().x, rect.center().y),
+    );
+    assert!(toasted(&game), "the click names the reason");
+    assert!(game.pending.is_empty());
+    assert_eq!(input.drag_origin, None, "the click never reaches the world");
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.

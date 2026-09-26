@@ -457,6 +457,16 @@ fn category_label(
     }
 }
 
+/// What pressing a drawn card does: its own action while enabled, an
+/// explanation while disabled.
+fn published_action(card: &crate::panel::Card) -> crate::panel::CardAction {
+    if card.enabled {
+        card.action
+    } else {
+        crate::panel::CardAction::Refused
+    }
+}
+
 fn draw_catalog(
     panel: &crate::panel::Panel,
     input: &InputState,
@@ -590,14 +600,7 @@ fn draw_catalog(
             11.0 * s,
             TEXT_SECONDARY,
         );
-        cards[i] = (
-            rect,
-            if card.enabled {
-                card.action
-            } else {
-                CardAction::None
-            },
-        );
+        cards[i] = (rect, published_action(card));
     }
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     PanelGeometry {
@@ -963,14 +966,7 @@ pub(crate) fn draw_panel(
         };
         if matches!(card.action, CardAction::ArmRally | CardAction::ClearRally) {
             draw_rally_control(card, rect, s);
-            cards[card_count] = (
-                rect,
-                if card.enabled {
-                    card.action
-                } else {
-                    CardAction::None
-                },
-            );
+            cards[card_count] = (rect, published_action(card));
             card_count += 1;
             continue;
         }
@@ -1083,14 +1079,7 @@ pub(crate) fn draw_panel(
                 },
             );
         }
-        cards[card_count] = (
-            rect,
-            if card.enabled {
-                card.action
-            } else {
-                CardAction::None
-            },
-        );
+        cards[card_count] = (rect, published_action(card));
         card_count += 1;
     }
 
@@ -1301,28 +1290,19 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     // The hovered RECT is the anchor, not just the index: the orders
     // dock stacks upward from the band, so a tooltip pinned to the
     // band's top edge described chip 1 beside chip 8.
-    let r = hit.rect;
-    let hovered = match hit.row {
-        crate::layout::CardRow::Roster => panel
-            .roster
-            .get(hit.index)
-            .map(|c| (c, r, TooltipSide::Above)),
-        crate::layout::CardRow::Cards => panel
-            .cards
-            .get(hit.index)
-            .map(|c| (c, r, TooltipSide::Above)),
-        crate::layout::CardRow::Queue => {
-            // Anchored across the dock's full width so the box
-            // clears the strip cleanly at any chip inset.
-            let row = Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h);
-            panel
-                .queue
-                .get(hit.index)
-                .map(|c| (c, row, TooltipSide::RightOf))
-        }
-    };
-    let Some((card, anchor, side)) = hovered else {
+    let Some(card) = panel.card(hit.row, hit.index) else {
         return;
+    };
+    let r = hit.rect;
+    let (anchor, side) = if hit.row == crate::layout::CardRow::Queue {
+        // Anchored across the dock's full width so the box clears the
+        // strip cleanly at any chip inset.
+        (
+            Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h),
+            TooltipSide::RightOf,
+        )
+    } else {
+        (r, TooltipSide::Above)
     };
     let mut lines: Vec<(String, Color)> = Vec::new();
     let header = if card.hotkey.is_empty() {

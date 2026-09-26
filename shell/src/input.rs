@@ -1051,10 +1051,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // Panel cards are buttons: each carries the exact action
                 // its click performs — the same action its hotkey routes.
                 let layout = game.presentation.layout.get();
-                let card_hit =
-                    crate::layout::card_under(&layout, vec2(x, y), None).map(|hit| hit.action);
-                if let Some(action) = card_hit {
-                    activate_card(game, input, action);
+                if let Some(hit) = crate::layout::card_under(&layout, vec2(x, y), None) {
+                    press_card(game, input, hit);
                     continue;
                 }
                 // The idle badge cycles workers on click.
@@ -1379,7 +1377,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                     Some(input.ui),
                                 );
                                 if origin == Some(hit) {
-                                    activate_card(game, input, hit.action);
+                                    press_card(game, input, hit);
                                 }
                             } else if badge.w > 0.0
                                 && crate::layout::touch_pad(badge, input.ui).contains(p)
@@ -1798,7 +1796,26 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                     .is_some_and(|u| (u.kind == kind) == keep)
             });
         }
-        crate::panel::CardAction::None => {}
+        crate::panel::CardAction::None | crate::panel::CardAction::Refused => {}
+    }
+}
+
+/// A pointer press on a drawn card: an enabled card acts, and a
+/// disabled one explains itself the way its hotkey does.
+fn press_card(game: &mut Game, input: &mut InputState, hit: crate::layout::CardHit) {
+    if hit.action != crate::panel::CardAction::Refused {
+        activate_card(game, input, hit.action);
+        return;
+    }
+    let why = game
+        .presentation
+        .panel_model
+        .borrow()
+        .as_ref()
+        .and_then(|panel| panel.card(hit.row, hit.index))
+        .and_then(|card| card.why.clone());
+    if let Some(why) = why {
+        game.presentation.toast(why);
     }
 }
 

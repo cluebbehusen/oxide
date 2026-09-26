@@ -111,6 +111,8 @@ pub enum CardAction {
     FilterKind(UnitKind),
     /// Display only.
     None,
+    /// A disabled card: pressing it explains why instead of acting.
+    Refused,
 }
 
 impl CardAction {
@@ -198,6 +200,17 @@ pub struct Panel {
     /// program it shows ("orders - Harvester"), because the dock draws
     /// one unit's story while breadcrumbs draw many.
     pub queue_label: String,
+}
+
+impl Panel {
+    /// The card drawn in `row` at `index`.
+    pub(crate) fn card(&self, row: crate::layout::CardRow, index: usize) -> Option<&Card> {
+        match row {
+            crate::layout::CardRow::Roster => self.roster.get(index),
+            crate::layout::CardRow::Cards => self.cards.get(index),
+            crate::layout::CardRow::Queue => self.queue.get(index),
+        }
+    }
 }
 
 /// The selection's SUBJECT: the unit whose program the dock, the
