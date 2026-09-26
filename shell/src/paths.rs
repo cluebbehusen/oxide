@@ -3,11 +3,13 @@
 //! share. Path policy lives here so no feature grows its own `#[cfg]`
 //! block again.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Platform config directory for Oxide, created on save, never on load.
 pub fn config_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    // An iOS app's HOME is its sandbox container, which keeps the same
+    // Library layout as a Mac home.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/Oxide"))
     }
@@ -15,7 +17,7 @@ pub fn config_dir() -> Option<PathBuf> {
     {
         std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Oxide"))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
     {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -26,7 +28,7 @@ pub fn config_dir() -> Option<PathBuf> {
 
 /// Platform data root (autosaves, explicit saves), if resolvable.
 pub fn data_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/Oxide"))
     }
@@ -34,7 +36,7 @@ pub fn data_dir() -> Option<PathBuf> {
     {
         std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Oxide"))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
     {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -73,21 +75,55 @@ pub fn replays_dir() -> PathBuf {
     PathBuf::from("replays")
 }
 
-/// Whether this executable runs from a packaged bundle — the writable
-/// half of the probe `assets::resource_root` uses for resources.
+/// Whether this executable runs from a packaged bundle.
 fn bundled() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            exe.parent()
-                .map(|dir| dir.join("../Resources/assets/sprites/atlas.png").exists())
-        })
-        .unwrap_or(false)
+    bundle_resources().is_some()
+}
+
+/// Where a packaged bundle keeps its read-only resources, if this
+/// executable runs from one: `Contents/Resources` beside
+/// `Contents/MacOS/<exe>` in a macOS .app, or the flat iOS app
+/// directory that holds the executable itself. Found by probing for
+/// the atlas, the one file no build ships without.
+pub fn bundle_resources() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    bundle_resources_beside(exe.parent()?)
+}
+
+fn bundle_resources_beside(exe_dir: &Path) -> Option<PathBuf> {
+    [exe_dir.join("../Resources"), exe_dir.to_path_buf()]
+        .into_iter()
+        .find(|root| root.join("assets/sprites/atlas.png").exists())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_probe_finds_mac_and_flat_ios_layouts() {
+        let root = std::env::temp_dir().join(format!("oxide-bundle-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let atlas = |dir: &Path| {
+            let sprites = dir.join("assets/sprites");
+            std::fs::create_dir_all(&sprites).unwrap();
+            std::fs::write(sprites.join("atlas.png"), b"").unwrap();
+        };
+        let mac = root.join("Oxide.app/Contents");
+        std::fs::create_dir_all(mac.join("MacOS")).unwrap();
+        atlas(&mac.join("Resources"));
+        let found = bundle_resources_beside(&mac.join("MacOS")).expect("mac bundle");
+        assert!(found.ends_with("MacOS/../Resources"));
+
+        let ios = root.join("Oxide-ios.app");
+        atlas(&ios);
+        assert_eq!(bundle_resources_beside(&ios), Some(ios.clone()));
+
+        let workspace = root.join("target/debug");
+        std::fs::create_dir_all(&workspace).unwrap();
+        assert_eq!(bundle_resources_beside(&workspace), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn derived_dirs_hang_off_the_one_data_root() {

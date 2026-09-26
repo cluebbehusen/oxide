@@ -19,6 +19,7 @@ mod screen_flow;
 
 use crate::debug_server::IncomingRequest;
 use crate::frame_profile::{FrameObservation, FrameProfiler};
+use crate::frame_time::FrameTime;
 use crate::game::{Game, SoundKind};
 use crate::menu::{Menu, PreviewCache};
 use crate::screens::codex::CodexScreen;
@@ -157,6 +158,11 @@ struct App {
     persistence_result: Option<Result<persistence::Output>>,
     catalog_id: Option<u64>,
     catalog_delete: Option<std::path::PathBuf>,
+    /// Presented frames in a row spent in live play; the suspension
+    /// pause reads it to tell a stalled match from a heavy transition.
+    live_streak: u8,
+    /// Whether this app last asked for the on-screen keyboard.
+    soft_keyboard: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -695,8 +701,14 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         catalog_id: None,
         catalog_delete: None,
         performance: crate::performance::Performance::default(),
+        live_streak: 0,
+        soft_keyboard: false,
     };
     let mut ui_view = capture_ui(&screen, &app);
+    // A rerun pass re-enters the loop inside the same presented frame;
+    // the frame's starting screen is the one recorded before it.
+    let mut rerun_pass = false;
+    let mut began_playing = false;
 
     loop {
         if let Some(result) = app.report_job.poll() {
@@ -748,7 +760,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let input_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
         app.game.poll_recovery();
-        let dt = get_frame_time();
+        let time = FrameTime::measure(get_frame_time());
+        if !rerun_pass {
+            began_playing = matches!(screen, Screen::Playing);
+        }
+        rerun_pass = false;
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
                 // An injected event is consumed by the NEXT frame; any
@@ -791,7 +807,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             .camera
             .set_viewport(vec2(screen_width(), screen_height()));
         render::set_viewport(screen_width(), screen_height());
-        app.game.presentation.camera.update(dt);
+        app.game.presentation.camera.update(time.presentation);
 
         let input_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::Input);
@@ -838,7 +854,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             &mut app,
             screen,
             events,
-            dt,
+            time,
             ctrl_at_frame_start,
             shift_at_frame_start,
         )?;
@@ -856,6 +872,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 frame_tick_start,
                 frame_started,
             );
+            rerun_pass = true;
             continue;
         }
 
@@ -889,6 +906,18 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
         if std::mem::discriminant(&screen) != screen_before {
             app.input.reset_transient();
+        }
+        // A touch-only player types through the on-screen keyboard, which
+        // follows the name field: every way out of naming hides it, and a
+        // tap on the field brings back one the player dismissed.
+        let refocus = match &mut screen {
+            Screen::Pause(pause) => pause.take_keyboard_request(),
+            _ => false,
+        };
+        let wanted = keyboard_wanted(&screen);
+        if crate::platform::TOUCH_ONLY && (wanted != app.soft_keyboard || (wanted && refocus)) {
+            macroquad::miniquad::window::show_keyboard(wanted);
+            app.soft_keyboard = wanted;
         }
         ui_view = capture_ui(&screen, &app);
 
@@ -936,7 +965,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             soundtrack.update(
                 soundtrack_scene(&screen, &app.game),
                 combat_impulse,
-                dt,
+                time.presentation,
                 app.config.volumes,
             );
             soundtrack.apply(&app.sounds);
@@ -1024,6 +1053,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
         drop(screen_diagnostic_scope);
         drop(frame_diagnostic_scope);
+        app.live_streak = next_live_streak(
+            app.live_streak,
+            began_playing,
+            matches!(screen, Screen::Playing),
+        );
         let wait_diagnostic_scope =
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::FrameWait);
         next_frame().await;
@@ -1183,6 +1217,26 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh
 }
 
+/// Whether the screen wants text input: only the save-name field does.
+fn keyboard_wanted(screen: &Screen) -> bool {
+    matches!(screen, Screen::Pause(pause) if pause.naming())
+}
+
+/// Consecutive presented frames that began and ended in live play.
+fn next_live_streak(streak: u8, began_playing: bool, ended_playing: bool) -> u8 {
+    if began_playing && ended_playing {
+        streak.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+/// A top-bar control's rect for the automation surface: reported only
+/// during live play, and only while the bar draws it.
+fn live_rect(screen: &Screen, rect: Rect) -> Option<[f32; 4]> {
+    (matches!(screen, Screen::Playing) && rect.w > 0.0).then_some([rect.x, rect.y, rect.w, rect.h])
+}
+
 fn capture_ui(screen: &Screen, app: &App) -> UiView {
     let (mode_name, menu): (&str, Option<&Menu>) = match screen {
         Screen::Home(home) => ("home", Some(&home.menu)),
@@ -1206,6 +1260,8 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 hover: w.ui_hover(),
                 chrome: None,
                 panel_regions: None,
+                menu_button: None,
+                pause_status: None,
             };
         }
         Screen::Playing => ("playing", None),
@@ -1221,6 +1277,8 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 hover: results.hover(),
                 chrome: None,
                 panel_regions: None,
+                menu_button: None,
+                pause_status: None,
             };
         }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
@@ -1245,6 +1303,8 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
         visible_range: menu.map(Menu::visible_range),
         hover: menu.and_then(Menu::hover),
+        menu_button: live_rect(screen, app.game.presentation.layout.get().menu_button),
+        pause_status: live_rect(screen, app.game.presentation.layout.get().pause_status),
         panel_regions: matches!(screen, Screen::Playing).then(|| {
             app.game
                 .presentation
@@ -1615,6 +1675,29 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_is_wanted_only_while_naming() {
+        let mut pause = PauseScreen::open(false, true);
+        assert!(!keyboard_wanted(&Screen::Pause(PauseScreen::open(
+            false, true
+        ))));
+        pause.begin_naming("Skirmish | t40".to_string());
+        assert!(keyboard_wanted(&Screen::Pause(pause)));
+        assert!(!keyboard_wanted(&Screen::Playing));
+    }
+
+    #[test]
+    fn the_live_streak_counts_only_unbroken_live_frames() {
+        let mut streak = 0;
+        for _ in 0..3 {
+            streak = next_live_streak(streak, true, true);
+        }
+        assert_eq!(streak, 3);
+        assert_eq!(next_live_streak(streak, true, false), 0, "leaving play");
+        assert_eq!(next_live_streak(streak, false, true), 0, "arriving in play");
+        assert_eq!(next_live_streak(u8::MAX, true, true), u8::MAX);
+    }
 
     #[test]
     fn diagnostics_follow_playback_speed_instead_of_the_hidden_live_clock() {

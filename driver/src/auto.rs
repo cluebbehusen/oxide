@@ -272,6 +272,8 @@ mod tests {
             hover: None,
             chrome: None,
             panel_regions: None,
+            menu_button: None,
+            pause_status: None,
         }
     }
 

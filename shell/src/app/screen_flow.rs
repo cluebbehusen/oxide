@@ -38,6 +38,47 @@ fn playing_escape_opens_pause(
     escape_pressed && (!had_selection || decided || conceded_banner)
 }
 
+/// Why the pause menu opened over a live match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseCause {
+    /// Escape or the menu button.
+    Player,
+    /// The app stopped presenting frames for a while (a suspended iPad
+    /// app, a sleeping Mac) and would otherwise resume live.
+    Suspension,
+}
+
+/// A frame this long means the app was not running rather than merely
+/// slow: no ordinary hitch comes close.
+const SUSPENSION_GAP_SECS: f32 = 2.0;
+
+/// Whether this frame's wall time is a suspension that should land on
+/// the pause menu. Frame time is reported one frame late, so the live
+/// streak must cover both the frame that measured the gap and the one
+/// before it; that keeps startup, match launches, and loads (heavy
+/// frames on other screens) from reading as suspensions. Debug-server
+/// sessions are exempt because an agent may stall the loop on purpose.
+fn gap_opens_pause(raw_dt: f32, live_streak: u8, running: bool, exempt: bool) -> bool {
+    raw_dt >= SUSPENSION_GAP_SECS && live_streak >= 2 && running && !exempt
+}
+
+/// Freezes the live match under the pause menu. Opening the menu
+/// dismisses the concede overlay for good, so Resume from here is clean
+/// spectating. Only a player's choice teaches the tutorial's pause
+/// lesson.
+fn open_pause(game: &mut Game, cause: PauseCause) -> Screen {
+    game.presentation.conceded_banner = false;
+    game.presentation.paused = true;
+    let pause = PauseScreen::open(game.state.result().is_some(), can_surrender(game));
+    Screen::Pause(match cause {
+        PauseCause::Player => {
+            game.demo.paused_menu = true;
+            pause
+        }
+        PauseCause::Suspension => pause.with_notice("paused after an interruption"),
+    })
+}
+
 /// Resolves the wizard's semantic outcome and owns the one seed-consumption
 /// boundary. A failed launch leaves the current window available for retry;
 /// successful construction consumes exactly one window before the game is
@@ -70,7 +111,7 @@ pub(super) fn update_and_draw(
     app: &mut App,
     mut screen: Screen,
     mut events: Vec<RawEvent>,
-    dt: f32,
+    time: FrameTime,
     ctrl_at_frame_start: bool,
     shift_at_frame_start: bool,
 ) -> Result<ScreenFrame> {
@@ -100,13 +141,13 @@ pub(super) fn update_and_draw(
     // pause-menu path stays frozen. Playing and Playback advance their
     // own clocks below, while Pause deliberately advances neither.
     if backdrop_fx_advances(&screen) {
-        app.game.update_fx(dt);
+        app.game.update_fx(time.presentation);
     }
     // A `rerun` transition re-enters the loop under the new screen before
     // presenting, so the frame shows the destination.
     let mut rerun = false;
     screen = match screen {
-        Screen::Home(home) => home_frame(app, home, &events, dt)?,
+        Screen::Home(home) => home_frame(app, home, &events, time.presentation)?,
         Screen::Settings { screen: sc, back } => settings_frame(
             app,
             sc,
@@ -123,14 +164,16 @@ pub(super) fn update_and_draw(
         Screen::Playing => playing_frame(
             app,
             &mut events,
-            dt,
+            time,
             &mut rerun,
             &mut profile_frame_active,
             ctrl_at_frame_start,
             shift_at_frame_start,
         ),
-        Screen::Playback(pb) => playback_frame(app, pb, &events, dt, &mut rerun),
-        Screen::FinalMap(final_map) => final_map_frame(app, final_map, &events, dt, &mut rerun),
+        Screen::Playback(pb) => playback_frame(app, pb, &events, time, &mut rerun),
+        Screen::FinalMap(final_map) => {
+            final_map_frame(app, final_map, &events, time.presentation, &mut rerun)
+        }
         Screen::Results(results) => results_frame(app, results, &events, &mut rerun)?,
         Screen::Replays(shelf) => replays_frame(app, shelf, &events, &mut rerun),
         Screen::Pause(ps) => pause_frame(app, ps, &events)?,
@@ -382,6 +425,7 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
             WizardStep::Map => w.browser.draw(&w.entries, &mut app.previews),
             WizardStep::Setup => w.draw_setup(&app.draft, &mut app.previews),
         }
+        w.draw_back(app.input.mouse);
         Screen::Wizard(w)
     }
 }
@@ -389,7 +433,7 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
 fn playing_frame(
     app: &mut App,
     events: &mut Vec<RawEvent>,
-    dt: f32,
+    time: FrameTime,
     rerun: &mut bool,
     profile_frame_active: &mut bool,
     ctrl_at_frame_start: bool,
@@ -451,8 +495,9 @@ fn playing_frame(
     app.input.camera_prefs = app.config.camera;
     app.input.touch_prefs = app.config.touch;
     input::apply_events(&mut app.game, &mut app.input, events);
-    input::update_held(&mut app.game, &app.input, dt);
+    input::update_held(&mut app.game, &app.input, time.presentation);
     input::update_touch(&mut app.game, &mut app.input);
+    let menu_pressed = app.input.take_menu_request();
     // The cursor telegraphs the verb: crosshair while
     // placing or plotting, pointer over chrome.
     macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&app.game, &app.input));
@@ -460,22 +505,24 @@ fn playing_frame(
     // except over a decided match (or the concede overlay),
     // where the banner promises 'Press Esc to continue' and
     // must mean it even with a selection still alive.
+    // The menu button skips that walk: it names the menu outright.
     let mut next: Option<Screen> = None;
-    if playing_escape_opens_pause(
-        escape_pressed,
-        had_selection,
-        app.game.state.result().is_some(),
-        app.game.presentation.conceded_banner,
-    ) {
-        // Opening the menu dismisses the concede overlay for
-        // good — Resume from here is clean spectating.
-        app.game.presentation.conceded_banner = false;
-        app.game.presentation.paused = true;
-        app.game.demo.paused_menu = true;
-        next = Some(Screen::Pause(PauseScreen::open(
+    if menu_pressed
+        || playing_escape_opens_pause(
+            escape_pressed,
+            had_selection,
             app.game.state.result().is_some(),
-            can_surrender(&app.game),
-        )));
+            app.game.presentation.conceded_banner,
+        )
+    {
+        next = Some(open_pause(&mut app.game, PauseCause::Player));
+    } else if gap_opens_pause(
+        time.raw,
+        app.live_streak,
+        !app.game.presentation.paused && app.game.state.result().is_none(),
+        app.args.automation || app.args.debug_server,
+    ) {
+        next = Some(open_pause(&mut app.game, PauseCause::Suspension));
     }
     if let Some(t) = app.tutorial.as_mut() {
         if !t.advance(&app.game.demo) {
@@ -499,8 +546,8 @@ fn playing_frame(
     } else {
         let stopped = app
             .game
-            .advance_wall_clock(dt, app.frame_profiler.stop_tick());
-        app.game.update_wall_clock_fx(dt);
+            .advance_wall_clock(time.raw, app.frame_profiler.stop_tick());
+        app.game.update_wall_clock_fx(time.presentation);
         stopped
     };
     if profile_stopped {
@@ -528,7 +575,7 @@ fn playback_frame(
     app: &mut App,
     mut pb: Box<PlaybackSession>,
     events: &[RawEvent],
-    dt: f32,
+    time: FrameTime,
     rerun: &mut bool,
 ) -> Screen {
     pb.bindings.clone_from(&app.input.bindings);
@@ -537,7 +584,7 @@ fn playback_frame(
     });
     let leave = pb.apply_input(
         events,
-        dt,
+        time.presentation,
         vec2(screen_width(), screen_height()),
         app.config.camera.zoom_inverted,
         app.config.camera.pan_speed,
@@ -556,14 +603,18 @@ fn playback_frame(
             PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
         }
     } else {
-        pb.advance_frame(dt, vec2(screen_width(), screen_height()));
+        pb.advance_frame(time, vec2(screen_width(), screen_height()));
         render::draw_with_performance(
             &pb.view(),
             &app.sprites,
             &app.input,
             Some(app.performance.view()),
         );
-        screens::playback::playback_hud(&pb, vec2(screen_width(), screen_height()));
+        screens::playback::playback_hud(
+            &pb,
+            vec2(screen_width(), screen_height()),
+            app.input.mouse,
+        );
         Screen::Playback(pb)
     }
 }
@@ -594,7 +645,7 @@ fn final_map_frame(
         &app.input,
         Some(app.performance.view()),
     );
-    final_map.draw_hud();
+    final_map.draw_hud(app.input.mouse);
     if leave {
         app.game.presentation.spectate = false;
         *rerun = true;
@@ -720,7 +771,7 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
     drop(input_scope);
     render::draw(&app.game.view(), &app.sprites, &app.input);
     veil();
-    ps.menu.draw(ps.subtitle(&app.game.scenario.name));
+    ps.draw(&app.game.scenario.name, app.input.mouse);
     Ok(match out {
         screens::pause::Out::Stay => Screen::Pause(ps),
         screens::pause::Out::Resume => {
@@ -852,6 +903,54 @@ mod tests {
         assert!(!playing_escape_opens_pause(true, true, false, false));
         assert!(playing_escape_opens_pause(true, true, true, false));
         assert!(playing_escape_opens_pause(true, true, false, true));
+    }
+
+    #[test]
+    fn opening_pause_freezes_play_and_ends_the_concede_banner() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+        game.presentation.conceded_banner = true;
+        let screen = open_pause(&mut game, PauseCause::Player);
+        assert!(matches!(screen, Screen::Pause(_)));
+        assert!(game.presentation.paused);
+        assert!(!game.presentation.conceded_banner);
+        assert!(
+            game.demo.paused_menu,
+            "the menu button teaches the tutorial's pause lesson like Escape"
+        );
+    }
+
+    #[test]
+    fn a_suspension_gap_pauses_only_a_running_live_match() {
+        // (raw_dt, live_streak, running, exempt) -> pauses
+        let cases = [
+            ((SUSPENSION_GAP_SECS, 2, true, false), true),
+            ((60.0, 9, true, false), true),
+            ((SUSPENSION_GAP_SECS - 0.01, 9, true, false), false),
+            ((60.0, 1, true, false), false),
+            ((60.0, 0, true, false), false),
+            ((60.0, 9, false, false), false),
+            ((60.0, 9, true, true), false),
+        ];
+        for ((dt, streak, running, exempt), pauses) in cases {
+            assert_eq!(
+                gap_opens_pause(dt, streak, running, exempt),
+                pauses,
+                "dt {dt}, streak {streak}, running {running}, exempt {exempt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_suspension_pause_explains_itself_without_teaching_the_lesson() {
+        let mut game =
+            Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0)).unwrap();
+        let Screen::Pause(pause) = open_pause(&mut game, PauseCause::Suspension) else {
+            panic!("a suspension opens the pause menu");
+        };
+        assert!(game.presentation.paused);
+        assert!(!game.demo.paused_menu);
+        assert_eq!(pause.subtitle("Skirmish"), "paused after an interruption");
     }
 
     #[test]

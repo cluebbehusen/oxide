@@ -11,7 +11,7 @@
 use crate::bot_label::{difficulty_name, stance_name};
 use crate::game::SoundKind;
 use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
-use crate::press::Press;
+use crate::press::{Fed, Press};
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
 use macroquad::prelude::{
@@ -247,6 +247,9 @@ pub struct Wizard {
     /// release inside the same zone. Rows after Start are compact-page
     /// navigation controls.
     setup_press: Press<(usize, usize)>,
+    /// The map grid's corner Back button. Setup routes its own Back
+    /// through `setup_press` as one more zone.
+    back_press: Press<()>,
     /// Compact setup page. Full-height layouts always clamp this to zero.
     setup_page: usize,
 }
@@ -691,6 +694,7 @@ impl Wizard {
             setup_sel: 0,
             setup_cell: 0,
             setup_press: Press::default(),
+            back_press: Press::default(),
             setup_page: 0,
         }
     }
@@ -706,6 +710,7 @@ impl Wizard {
 
     fn goto(&mut self, step: Step, draft: &NewMatchDraft) {
         self.step = step;
+        self.back_press.cancel();
         match step {
             Step::Map => {
                 self.entries = discover_scenarios();
@@ -735,20 +740,39 @@ impl Wizard {
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Result<Out> {
         match self.step {
-            Step::Map => match self.browser.handle(&self.entries, events, mouse) {
-                BrowserOut::Back => return Ok(Out::Home),
-                BrowserOut::Pick(entry) => {
-                    sounds.push((SoundKind::Click, None));
-                    let scenario = match &self.entries[entry].path {
-                        Some(path) => Scenario::load(path)
-                            .with_context(|| format!("loading {}", path.display()))?,
-                        None => Scenario::skirmish(),
-                    };
-                    draft.set_scenario(scenario, self.entries[entry].path.clone());
-                    self.goto(Step::Setup, draft);
+            Step::Map => {
+                // The corner Back button sees the pointer first; the grid
+                // only gets the events it leaves alone.
+                let back = crate::button::corner_slot(0, crate::render::ui_scale());
+                let mut grid_events = Vec::with_capacity(events.len());
+                for event in events {
+                    match self
+                        .back_press
+                        .feed(event, |p, _| back.contains(p).then_some(()))
+                    {
+                        Fed::Activated(()) => {
+                            sounds.push((SoundKind::Click, None));
+                            return Ok(Out::Home);
+                        }
+                        Fed::Held => {}
+                        Fed::Ignored => grid_events.push(*event),
+                    }
                 }
-                BrowserOut::Stay => {}
-            },
+                match self.browser.handle(&self.entries, &grid_events, mouse) {
+                    BrowserOut::Back => return Ok(Out::Home),
+                    BrowserOut::Pick(entry) => {
+                        sounds.push((SoundKind::Click, None));
+                        let scenario = match &self.entries[entry].path {
+                            Some(path) => Scenario::load(path)
+                                .with_context(|| format!("loading {}", path.display()))?,
+                            None => Scenario::skirmish(),
+                        };
+                        draft.set_scenario(scenario, self.entries[entry].path.clone());
+                        self.goto(Step::Setup, draft);
+                    }
+                    BrowserOut::Stay => {}
+                }
+            }
             Step::Setup => {
                 if let Some(out) = self.update_setup(events, mouse, draft, sounds) {
                     return Ok(out);
@@ -777,6 +801,8 @@ impl Wizard {
         let start_index = order.len();
         let previous_page_index = start_index + 1;
         let next_page_index = start_index + 2;
+        let back_index = start_index + 3;
+        let back = crate::button::corner_slot(0, crate::render::ui_scale());
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         self.setup_page = self.setup_sel.min(start_index) / COMPACT_PAGE_ITEMS;
@@ -791,6 +817,9 @@ impl Wizard {
                 }
         };
         let zone_at = |p: Vec2, touch: bool| -> Option<(usize, usize)> {
+            if back.contains(p) {
+                return Some((back_index, 0));
+            }
             for row in 0..layout.cells.len() {
                 for cell in 0..5 {
                     let rect = if touch {
@@ -919,6 +948,11 @@ impl Wizard {
         }
         if let Some((row, cell)) = activate {
             self.setup_press.cancel();
+            if row == back_index {
+                sounds.push((SoundKind::Click, None));
+                self.goto(Step::Map, draft);
+                return None;
+            }
             if row == previous_page_index {
                 self.setup_page = self.setup_page.saturating_sub(1);
                 self.setup_sel = self.setup_page * COMPACT_PAGE_ITEMS;
@@ -973,6 +1007,13 @@ impl Wizard {
             }
         }
         None
+    }
+
+    /// Draws the corner Back button both steps share.
+    pub fn draw_back(&self, mouse: Vec2) {
+        let s = crate::render::ui_scale();
+        let rect = crate::button::corner_slot(0, s);
+        crate::button::draw(rect, "BACK", rect.contains(mouse), s);
     }
 
     /// Draws the setup screen: team-grouped seat cards, the Start
@@ -1683,6 +1724,126 @@ mod tests {
             Out::Launch,
             "freeing one seat re-arms Start"
         );
+    }
+
+    fn tap_at(w: &mut Wizard, draft: &mut NewMatchDraft, from: Vec2, to: Vec2) -> Out {
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+        let events = [
+            RawEvent::TouchDown {
+                id: 5,
+                x: from.x,
+                y: from.y,
+            },
+            RawEvent::TouchMove {
+                id: 5,
+                x: to.x,
+                y: to.y,
+            },
+            RawEvent::TouchUp {
+                id: 5,
+                x: to.x,
+                y: to.y,
+            },
+        ];
+        w.update(&events, &mut mouse, draft, &mut sounds)
+            .expect("update")
+    }
+
+    #[test]
+    fn the_corner_back_button_steps_back_like_escape_on_both_steps() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let back = crate::button::corner_slot(0, crate::render::ui_scale()).center();
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        assert_eq!(tap_at(&mut w, &mut draft, back, back), Out::Home);
+
+        let mut w = Wizard::open(&draft);
+        pick_first_map(&mut w, &mut draft);
+        assert_eq!(w.step, Step::Setup);
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+        let click = [
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: back.x,
+                y: back.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: back.x,
+                y: back.y,
+            },
+        ];
+        assert_eq!(
+            w.update(&click, &mut mouse, &mut draft, &mut sounds)
+                .expect("update"),
+            Out::Stay
+        );
+        assert_eq!(w.step, Step::Map, "Back walks one step, like Escape");
+        assert!(draft.scenario.is_some(), "the pick survives the step back");
+    }
+
+    #[test]
+    fn a_back_press_that_slides_off_does_nothing() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let back = crate::button::corner_slot(0, crate::render::ui_scale());
+        let off = vec2(back.x + back.w + 40.0, back.center().y);
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        assert_eq!(tap_at(&mut w, &mut draft, back.center(), off), Out::Stay);
+        assert_eq!(w.step, Step::Map);
+        pick_first_map(&mut w, &mut draft);
+        assert_eq!(tap_at(&mut w, &mut draft, back.center(), off), Out::Stay);
+        assert_eq!(w.step, Step::Setup);
+    }
+
+    #[test]
+    fn the_back_button_clears_grid_and_setup_content() {
+        let draft = NewMatchDraft::default();
+        let w = Wizard::open(&draft);
+        let path = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scenarios/trident-plateau.json"
+        ));
+        let team_map = Scenario::load(&path).expect("shipped team map");
+        let sizes = [
+            (vec2(640.0, 400.0), 1.0),
+            (vec2(1133.0, 744.0), 1.0),
+            (vec2(1194.0, 834.0), 1.0),
+            (vec2(1280.0, 800.0), 1.0),
+            (vec2(1280.0, 800.0), 1.25),
+            (vec2(1920.0, 1080.0), 1.5),
+        ];
+        for (view, ui) in sizes {
+            let back = crate::button::corner_slot(0, ui);
+            let grid = w.browser.layout(&w.entries, view, ui);
+            let grid_rects = grid
+                .headings
+                .iter()
+                .map(|(_, rect)| *rect)
+                .chain(grid.cards.iter().map(|(_, rect)| *rect));
+            for rect in grid_rects {
+                assert!(
+                    !back.overlaps(&rect),
+                    "grid content under Back at {view} ui {ui}"
+                );
+            }
+            for scenario in [Scenario::skirmish(), team_map.clone()] {
+                let setup = setup_layout(&scenario, 0, view, ui);
+                let content = setup
+                    .seats
+                    .iter()
+                    .chain(setup.headings.iter().map(|(_, rect)| rect))
+                    .chain([&setup.start, &setup.preview]);
+                for rect in content {
+                    assert!(
+                        !back.overlaps(rect),
+                        "setup content under Back at {view} ui {ui}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

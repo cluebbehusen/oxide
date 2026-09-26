@@ -6,6 +6,35 @@
 use super::*;
 use crate::render::prim::{fill_rect, line_between, stroke_rect};
 
+/// Fill shared by the top bar's badges: the idle nag and the menu button.
+const TOP_BAR_BADGE: Color = color_u8!(57, 45, 30, 255);
+
+/// The paused status names the pause key where one exists. A
+/// touch-only build has no key to name, and an unbound key reads bare.
+fn paused_status(key: &str, touch_only: bool) -> String {
+    if touch_only || key.is_empty() {
+        "PAUSED".to_string()
+    } else {
+        format!("PAUSED [{key}]")
+    }
+}
+
+/// Three bars on the badge fill: the glyph needs no font coverage or
+/// atlas entry, and whole-rect fills stay crisp at any scale.
+fn draw_menu_button(rect: Rect, s: f32) {
+    fill_rect(rect, TOP_BAR_BADGE);
+    let bar_w = 16.0 * s;
+    let bar_h = (2.0 * s).max(1.0);
+    let x = rect.x + (rect.w - bar_w) * 0.5;
+    let middle = rect.y + rect.h * 0.5;
+    for offset in [-5.0, 0.0, 5.0] {
+        fill_rect(
+            Rect::new(x, middle + offset * s - bar_h * 0.5, bar_w, bar_h),
+            SCRAP_COLOR,
+        );
+    }
+}
+
 /// Hovered salvage says what it holds: live amounts on visible ground,
 /// remembered amounts under the dim — the same memory rule as every
 /// renderer, so the tooltip can't leak what fog took back.
@@ -222,6 +251,8 @@ pub(crate) fn draw_hud(
     // nag — the viewer's transport bar is its own chrome. The layout
     // still publishes below so the minimap stays clickable.
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut menu_button = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut pause_status = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut status_space = None;
     if !game.presentation.spectate {
         // Top bar.
@@ -278,13 +309,7 @@ pub(crate) fn draw_hud(
                 + (crate::typography::measure(&units_text, 21.0 * s).width + 20.0 * s)
                     .max(45.0 * s);
             idle_badge = Rect::new(idle_x, 3.0 * s, width, 34.0 * s);
-            draw_rectangle(
-                idle_badge.x,
-                idle_badge.y,
-                width,
-                idle_badge.h,
-                Color::from_rgba(57, 45, 30, 255),
-            );
+            fill_rect(idle_badge, TOP_BAR_BADGE);
             draw_text(
                 &text,
                 idle_badge.x + 9.0 * s,
@@ -293,8 +318,10 @@ pub(crate) fn draw_hud(
                 SCRAP_COLOR,
             );
         }
+        menu_button = crate::layout::menu_button_rect(screen_width(), s);
+        draw_menu_button(menu_button, s);
         let status = if game.presentation.paused {
-            format!("PAUSED [{}]", label(Action::TogglePause))
+            paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
         } else if (game.presentation.speed - 1.0).abs() > f64::EPSILON {
             format!("x{:.2}", game.presentation.speed)
         } else {
@@ -304,14 +331,12 @@ pub(crate) fn draw_hud(
         let width = crate::typography::measure(&status, 14.0 * s).width;
         let occupied_right = (count_x + crate::typography::measure(&units_text, 21.0 * s).width)
             .max(idle_badge.x + idle_badge.w);
-        status_space = Some((occupied_right, screen_width() - width - 12.0 * s));
-        crate::typography::draw(
-            &status,
-            screen_width() - width - 12.0 * s,
-            26.0 * s,
-            14.0 * s,
-            TEXT_PRIMARY,
-        );
+        let status_x = menu_button.x - 12.0 * s - width;
+        status_space = Some((occupied_right, status_x));
+        crate::typography::draw(&status, status_x, 26.0 * s, 14.0 * s, TEXT_PRIMARY);
+        // The status toggles pause; its target spans the bar's badge
+        // band so the short clock text is still easy to hit.
+        pause_status = Rect::new(status_x - 6.0 * s, 3.0 * s, width + 12.0 * s, 34.0 * s);
     }
 
     *game.presentation.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);
@@ -358,6 +383,8 @@ pub(crate) fn draw_hud(
         orders_dock,
         minimap,
         idle_badge,
+        menu_button,
+        pause_status,
         mode_ribbon,
         mode_cancel,
         roster_slots,
@@ -474,6 +501,13 @@ mod tests {
             assert_eq!(cancel.w, crate::layout::MIN_TOUCH_TARGET);
             assert!(ribbon.contains(cancel.center()));
         }
+    }
+
+    #[test]
+    fn the_paused_status_names_a_key_only_where_one_exists() {
+        assert_eq!(paused_status("P", false), "PAUSED [P]");
+        assert_eq!(paused_status("P", true), "PAUSED");
+        assert_eq!(paused_status("", false), "PAUSED");
     }
 
     #[test]

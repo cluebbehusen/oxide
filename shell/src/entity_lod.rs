@@ -95,9 +95,9 @@ impl EntityLod {
             } else {
                 format!("atlas_{index}.png")
             };
-            originals.push(
-                load_image(&crate::assets::resource(&format!("assets/sprites/{name}"))).await?,
-            );
+            originals.push(crate::assets::load_resource_image(&format!(
+                "assets/sprites/{name}"
+            ))?);
         }
         let mut packer = Packer::new();
         let mut sprites = HashMap::new();

@@ -4,8 +4,75 @@
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
-use macroquad::prelude::Vec2;
+use crate::press::{Fed, Press};
+use macroquad::prelude::{
+    Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text, measure_text,
+};
 use oxide_protocol::{Key, RawEvent};
+
+/// The name field's pointer targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameZone {
+    Field,
+    Save,
+    Cancel,
+}
+
+/// Where the name field's face sits. It hugs the top of the window: an
+/// on-screen keyboard covers roughly the bottom half in landscape, and
+/// the platform does not resize the canvas around it.
+#[derive(Debug, Clone, Copy)]
+struct NamingLayout {
+    title_y: f32,
+    hint_y: f32,
+    field: Rect,
+    cancel: Rect,
+    save: Rect,
+}
+
+impl NamingLayout {
+    fn zone_at(&self, p: Vec2) -> Option<NameZone> {
+        [
+            (self.field, NameZone::Field),
+            (self.save, NameZone::Save),
+            (self.cancel, NameZone::Cancel),
+        ]
+        .into_iter()
+        .find(|(rect, _)| rect.contains(p))
+        .map(|(_, zone)| zone)
+    }
+}
+
+fn naming_layout(view: Vec2, s: f32) -> NamingLayout {
+    let width = (420.0 * s).min(view.x - 32.0 * s);
+    let x = (view.x - width) * 0.5;
+    let field = Rect::new(x, 92.0 * s, width, crate::layout::MIN_TOUCH_TARGET * s);
+    let gap = 12.0 * s;
+    let button_w = (width - gap) * 0.5;
+    let buttons_y = field.y + field.h + gap;
+    NamingLayout {
+        title_y: 56.0 * s,
+        hint_y: 80.0 * s,
+        field,
+        cancel: Rect::new(x, buttons_y, button_w, crate::layout::MIN_TOUCH_TARGET * s),
+        save: Rect::new(
+            x + button_w + gap,
+            buttons_y,
+            button_w,
+            crate::layout::MIN_TOUCH_TARGET * s,
+        ),
+    }
+}
+
+/// The name field's coaching line; a touch-only build has no keys to
+/// name.
+fn naming_hint(touch_only: bool) -> &'static str {
+    if touch_only {
+        "type a name"
+    } else {
+        "type a name | Enter saves | Esc cancels"
+    }
+}
 
 /// One pause row. The row set is conditional (Watch Replay only once
 /// the match is decided), so rows are values, not indices — the
@@ -55,8 +122,9 @@ impl Row {
 /// Replay belongs to decided matches; Save Game and Surrender to
 /// running ones, with Surrender further limited to a seat that still
 /// has a voice — a resigned or eliminated spectator is shown no verb
-/// the sim would only reject.
-fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
+/// the sim would only reject. Quit is left out where the platform, not
+/// the app, closes apps.
+fn rows(finished: bool, can_surrender: bool, quit: bool) -> Vec<Row> {
     let mut rows = vec![Row::Resume];
     if finished {
         rows.push(Row::WatchReplay);
@@ -68,7 +136,10 @@ fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
     if !finished && can_surrender {
         rows.push(Row::Surrender);
     }
-    rows.extend([Row::Restart, Row::MainMenu, Row::Quit]);
+    rows.extend([Row::Restart, Row::MainMenu]);
+    if quit {
+        rows.push(Row::Quit);
+    }
     rows
 }
 
@@ -138,6 +209,11 @@ pub struct PauseScreen {
     /// do Text events mean anything; letters stay semantic everywhere
     /// else.
     naming: Option<String>,
+    /// The name field's Save, Cancel, and field press.
+    name_press: Press<NameZone>,
+    /// A tap on the name field asked for the on-screen keyboard again
+    /// (the player may have dismissed it); the frame loop takes this.
+    keyboard_request: bool,
     /// A one-line verdict from the last explicit save (success or
     /// failure), shown as the subtitle until the next activation.
     notice: Option<String>,
@@ -175,7 +251,7 @@ fn confirm_menu(row: Row) -> Menu {
 impl PauseScreen {
     /// Opens on the pause rows.
     pub fn open(finished: bool, can_surrender: bool) -> Self {
-        let rows = rows(finished, can_surrender);
+        let rows = rows(finished, can_surrender, !crate::platform::TOUCH_ONLY);
         let items: Vec<String> = rows.iter().map(|r| r.label().to_string()).collect();
         Self {
             menu: Menu::new("PAUSED", items),
@@ -183,10 +259,80 @@ impl PauseScreen {
             confirming: None,
             save_failed: None,
             naming: None,
+            name_press: Press::default(),
+            keyboard_request: false,
             notice: None,
             finished,
             can_surrender,
         }
+    }
+
+    /// Consumes a request to raise the on-screen keyboard again.
+    pub fn take_keyboard_request(&mut self) -> bool {
+        std::mem::take(&mut self.keyboard_request)
+    }
+
+    /// Draws the current face: the menu, or the name field with its
+    /// Save and Cancel buttons.
+    pub fn draw(&self, scenario_name: &str, mouse: Vec2) {
+        let Some(value) = &self.naming else {
+            self.menu.draw(self.subtitle(scenario_name));
+            return;
+        };
+        let s = crate::render::ui_scale();
+        let view = crate::render::viewport();
+        let layout = naming_layout(view, s);
+        let title = "SAVE GAME";
+        let title_size = 48.0 * s;
+        let dims = measure_text(title, None, title_size as u16, 1.0);
+        draw_text(
+            title,
+            (view.x - dims.width) * 0.5,
+            layout.title_y,
+            title_size,
+            crate::theme::TEXT_TITLE,
+        );
+        let hint = naming_hint(crate::platform::TOUCH_ONLY);
+        let hint_size = 18.0 * s;
+        let dims = measure_text(hint, None, hint_size as u16, 1.0);
+        draw_text(
+            hint,
+            (view.x - dims.width) * 0.5,
+            layout.hint_y,
+            hint_size,
+            crate::theme::TEXT_SECONDARY,
+        );
+        let field = layout.field;
+        draw_rectangle(
+            field.x,
+            field.y,
+            field.w,
+            field.h,
+            crate::theme::SURFACE_CARD,
+        );
+        draw_rectangle_lines(
+            field.x,
+            field.y,
+            field.w,
+            field.h,
+            2.0 * s,
+            crate::theme::TEXT_ACCENT,
+        );
+        draw_text(
+            format!("{value}_"),
+            field.x + 12.0 * s,
+            field.y + field.h * 0.66,
+            22.0 * s,
+            crate::theme::TEXT_PRIMARY,
+        );
+        crate::button::draw(layout.cancel, "CANCEL", layout.cancel.contains(mouse), s);
+        crate::button::draw(layout.save, "SAVE", layout.save.contains(mouse), s);
+    }
+
+    /// Shows `notice` as the subtitle until the next activation.
+    pub fn with_notice(mut self, notice: impl Into<String>) -> Self {
+        self.notice = Some(notice.into());
+        self
     }
 
     /// Longest save name the field accepts — what the shelf row can
@@ -278,7 +424,7 @@ impl PauseScreen {
         if let Some(dialog) = &self.save_failed {
             &dialog.line
         } else if self.naming.is_some() {
-            "type a name | Enter saves | Esc cancels"
+            naming_hint(crate::platform::TOUCH_ONLY)
         } else if let Some(row) = self.confirming {
             match row {
                 Row::Surrender => "this concedes the match",
@@ -308,9 +454,20 @@ impl PauseScreen {
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
         if let Some(value) = self.naming.as_mut() {
             // The name field owns the frame: typed characters edit,
-            // Backspace deletes, Enter commits, Escape abandons. The
-            // menu widget is display only here — its navigation would
-            // fight the caret.
+            // Backspace deletes, Enter or Save commits, Escape or Cancel
+            // abandons. The menu widget is display only here — its
+            // navigation would fight the caret.
+            let layout = naming_layout(crate::render::viewport(), crate::render::ui_scale());
+            let mut pressed = None;
+            for event in events {
+                if let Fed::Activated(zone) = self.name_press.feed(event, |p, _| layout.zone_at(p))
+                {
+                    pressed = Some(zone);
+                }
+            }
+            if pressed == Some(NameZone::Field) {
+                self.keyboard_request = true;
+            }
             let mut edited = false;
             for event in events {
                 match *event {
@@ -329,9 +486,10 @@ impl PauseScreen {
                     _ => {}
                 }
             }
-            let committed = events
-                .iter()
-                .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Enter }));
+            let committed = pressed == Some(NameZone::Save)
+                || events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Enter }));
             if committed {
                 let name = value.trim().to_string();
                 if name.is_empty() {
@@ -340,8 +498,9 @@ impl PauseScreen {
                     return Out::Save(name);
                 }
             }
-            if escaped {
+            if escaped || pressed == Some(NameZone::Cancel) {
                 self.naming = None;
+                self.name_press.cancel();
                 self.menu = Self::open(self.finished, self.can_surrender).menu;
                 let display = self
                     .rows
@@ -457,6 +616,31 @@ mod tests {
             drive(p, Key::Up);
         }
         drive(p, Key::Enter)
+    }
+
+    #[test]
+    fn a_touch_only_pause_menu_offers_no_quit() {
+        for finished in [false, true] {
+            let touch = rows(finished, true, false);
+            assert!(!touch.contains(&Row::Quit));
+            assert_eq!(touch.last(), Some(&Row::MainMenu));
+            assert!(rows(finished, true, true).contains(&Row::Quit));
+        }
+    }
+
+    #[test]
+    fn a_notice_reads_as_the_subtitle_until_a_row_is_picked() {
+        let mut p = PauseScreen::open(false, true).with_notice("paused after an interruption");
+        assert_eq!(p.subtitle("Skirmish"), "paused after an interruption");
+        drive(&mut p, Key::Down);
+        assert_eq!(
+            p.subtitle("Skirmish"),
+            "paused after an interruption",
+            "moving the cursor is not an activation"
+        );
+        activate(&mut p, "Restart");
+        drive(&mut p, Key::Enter);
+        assert_eq!(p.subtitle("Skirmish"), "Skirmish");
     }
 
     #[test]
@@ -592,6 +776,127 @@ mod tests {
         let mut sounds = Vec::new();
         let events: Vec<RawEvent> = text.chars().map(|ch| RawEvent::Text { ch }).collect();
         p.update(&events, &mut mouse, &mut sounds);
+    }
+
+    fn naming_at_1280(suggested: &str) -> (PauseScreen, NamingLayout) {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut p = PauseScreen::open(false, true);
+        p.begin_naming(suggested.to_string());
+        let layout = naming_layout(vec2(1280.0, 800.0), crate::render::ui_scale());
+        (p, layout)
+    }
+
+    fn pointer(p: &mut PauseScreen, events: &[RawEvent]) -> (Out, Vec<SoundKind>) {
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+        let out = p.update(events, &mut mouse, &mut sounds);
+        (out, sounds.into_iter().map(|(kind, _)| kind).collect())
+    }
+
+    fn tap(at: Vec2) -> [RawEvent; 2] {
+        [
+            RawEvent::TouchDown {
+                id: 1,
+                x: at.x,
+                y: at.y,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: at.x,
+                y: at.y,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_save_button_commits_like_enter_and_refuses_a_blank_name() {
+        let (mut p, layout) = naming_at_1280("Skirmish | t40");
+        assert_eq!(
+            pointer(&mut p, &tap(layout.save.center())).0,
+            Out::Save("Skirmish | t40".to_string())
+        );
+        let (mut p, layout) = naming_at_1280("");
+        let click = [
+            RawEvent::MouseDown {
+                button: oxide_protocol::MouseButton::Left,
+                x: layout.save.center().x,
+                y: layout.save.center().y,
+            },
+            RawEvent::MouseUp {
+                button: oxide_protocol::MouseButton::Left,
+                x: layout.save.center().x,
+                y: layout.save.center().y,
+            },
+        ];
+        let (out, sounds) = pointer(&mut p, &click);
+        assert_eq!(out, Out::Stay);
+        assert!(sounds.contains(&SoundKind::Denied));
+        assert!(p.naming(), "a blank name keeps the field open");
+    }
+
+    #[test]
+    fn the_cancel_button_abandons_like_escape() {
+        let (mut p, layout) = naming_at_1280("Skirmish | t40");
+        assert_eq!(pointer(&mut p, &tap(layout.cancel.center())).0, Out::Stay);
+        assert!(!p.naming());
+        assert_eq!(p.menu.items[p.menu.selected], "Save Game");
+    }
+
+    #[test]
+    fn a_save_press_released_elsewhere_keeps_naming() {
+        let (mut p, layout) = naming_at_1280("Skirmish | t40");
+        let from = layout.save.center();
+        let events = [
+            RawEvent::TouchDown {
+                id: 1,
+                x: from.x,
+                y: from.y,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: from.x,
+                y: from.y + 300.0,
+            },
+        ];
+        assert_eq!(pointer(&mut p, &events).0, Out::Stay);
+        assert!(p.naming());
+    }
+
+    #[test]
+    fn tapping_the_field_requests_the_keyboard_once() {
+        let (mut p, layout) = naming_at_1280("Skirmish | t40");
+        assert!(!p.take_keyboard_request());
+        pointer(&mut p, &tap(layout.field.center()));
+        assert!(p.take_keyboard_request());
+        assert!(!p.take_keyboard_request());
+    }
+
+    #[test]
+    fn the_naming_face_stays_above_an_ipad_keyboard() {
+        for view in [
+            vec2(1133.0, 744.0),
+            vec2(1180.0, 820.0),
+            vec2(1194.0, 834.0),
+            vec2(1366.0, 1024.0),
+        ] {
+            for s in [1.0, 1.25, 1.5] {
+                let layout = naming_layout(view, s);
+                for rect in [layout.field, layout.cancel, layout.save] {
+                    assert!(
+                        rect.y + rect.h <= view.y * 0.45,
+                        "{rect:?} reaches the keyboard at {view} ui {s}"
+                    );
+                }
+            }
+        }
+        let small = vec2(640.0, 400.0);
+        let layout = naming_layout(small, 1.0);
+        for rect in [layout.field, layout.cancel, layout.save] {
+            assert!(rect.x >= 0.0 && rect.x + rect.w <= small.x);
+            assert!(rect.y >= layout.hint_y && rect.y + rect.h <= small.y);
+        }
+        assert!(!layout.cancel.overlaps(&layout.save));
+        assert!(!layout.field.overlaps(&layout.save));
     }
 
     #[test]

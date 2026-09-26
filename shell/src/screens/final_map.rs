@@ -2,6 +2,7 @@
 
 use crate::action::{Action, ActionEvent, ActionResolver, BindingMap, Context};
 use crate::game::Game;
+use crate::press::{Fed, Press};
 use crate::{render, theme};
 use macroquad::prelude::*;
 #[cfg(test)]
@@ -15,6 +16,26 @@ pub struct FinalMapScreen {
     resolver: ActionResolver,
     middle_anchor: Option<Vec2>,
     minimap_drag: bool,
+    /// The corner Back button's press.
+    back_press: Press<()>,
+    /// The finger steering the camera from the minimap.
+    minimap_finger: Option<u64>,
+    /// Pan and pinch for fingers on the battlefield.
+    viewer_touch: crate::viewer_touch::ViewerTouch,
+}
+
+/// A held minimap press keeps steering, clamped so sliding off the edge
+/// doesn't stall the pan.
+fn steer_minimap(game: &mut Game, p: Vec2) {
+    let rect = render::minimap_rect(&game.view());
+    let clamped = vec2(
+        p.x.clamp(rect.x, rect.x + rect.w - 1.0),
+        p.y.clamp(rect.y, rect.y + rect.h - 1.0),
+    );
+    if let Some(world) = render::minimap_world_at(&game.view(), clamped) {
+        game.presentation.camera.center = world;
+        game.presentation.camera.pan(Vec2::ZERO);
+    }
 }
 
 impl FinalMapScreen {
@@ -33,7 +54,19 @@ impl FinalMapScreen {
         mouse: &mut Vec2,
         game: &mut Game,
     ) -> bool {
+        let ui = render::ui_scale();
+        let back = crate::button::corner_slot(0, ui);
         for event in events {
+            if !matches!(event, RawEvent::KeyDown { .. } | RawEvent::KeyUp { .. }) {
+                match self
+                    .back_press
+                    .feed(event, |p, _| back.contains(p).then_some(()))
+                {
+                    Fed::Activated(()) => return true,
+                    Fed::Held => continue,
+                    Fed::Ignored => {}
+                }
+            }
             match event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(*x, *y);
@@ -44,15 +77,38 @@ impl FinalMapScreen {
                         self.middle_anchor = Some(*mouse);
                     }
                     if self.minimap_drag {
-                        let rect = render::minimap_rect(&game.view());
-                        let clamped = vec2(
-                            x.clamp(rect.x, rect.x + rect.w - 1.0),
-                            y.clamp(rect.y, rect.y + rect.h - 1.0),
-                        );
-                        if let Some(world) = render::minimap_world_at(&game.view(), clamped) {
-                            game.presentation.camera.center = world;
-                            game.presentation.camera.pan(Vec2::ZERO);
-                        }
+                        steer_minimap(game, *mouse);
+                    }
+                }
+                RawEvent::TouchDown { id, x, y } => {
+                    let p = vec2(*x, *y);
+                    if self.minimap_finger == Some(*id) {
+                        // A platform's repeat report of the steering finger.
+                    } else if self.minimap_finger.is_none()
+                        && let Some(world) = render::minimap_world_at(&game.view(), p)
+                    {
+                        self.minimap_finger = Some(*id);
+                        game.presentation.camera.center = world;
+                        game.presentation.camera.pan(Vec2::ZERO);
+                    } else {
+                        self.viewer_touch
+                            .apply(event, &mut game.presentation.camera, ui);
+                    }
+                }
+                RawEvent::TouchMove { id, x, y } => {
+                    if self.minimap_finger == Some(*id) {
+                        steer_minimap(game, vec2(*x, *y));
+                    } else {
+                        self.viewer_touch
+                            .apply(event, &mut game.presentation.camera, ui);
+                    }
+                }
+                RawEvent::TouchUp { id, .. } => {
+                    if self.minimap_finger == Some(*id) {
+                        self.minimap_finger = None;
+                    } else {
+                        self.viewer_touch
+                            .apply(event, &mut game.presentation.camera, ui);
                     }
                 }
                 RawEvent::MouseDown {
@@ -121,15 +177,22 @@ impl FinalMapScreen {
         false
     }
 
-    /// Draws the compact camera-help strip over the battlefield.
-    pub fn draw_hud(&self) {
+    /// Draws the Back button and the compact camera-help strip over the
+    /// battlefield.
+    pub fn draw_hud(&self, mouse: Vec2) {
         let scale = render::ui_scale();
+        let back = crate::button::corner_slot(0, scale);
+        crate::button::draw(back, "BACK", back.contains(mouse), scale);
         let size = 17.0 * scale;
-        let line = format!(
-            "FINAL BATTLEFIELD | {} pan up / minimap / middle drag | wheel zoom | {} report",
-            self.bindings.labels(Action::PanUp),
-            self.bindings.label(Action::Back)
-        );
+        let line = if crate::platform::TOUCH_ONLY {
+            "FINAL BATTLEFIELD | drag to pan | pinch to zoom".to_string()
+        } else {
+            format!(
+                "FINAL BATTLEFIELD | {} pan up / minimap / middle drag | wheel zoom | {} report",
+                self.bindings.labels(Action::PanUp),
+                self.bindings.label(Action::Back)
+            )
+        };
         let width = measure_text(&line, None, size as u16, 1.0).width;
         let x = (screen_width() - width) * 0.5;
         let y = screen_height() - 14.0 * scale;
@@ -178,6 +241,80 @@ mod tests {
             0,
             "camera input never ticks the sim"
         );
+    }
+
+    #[test]
+    fn the_back_button_returns_to_the_report_by_click_and_by_tap() {
+        let viewport = vec2(1280.0, 800.0);
+        let mut game = Game::with_viewport(Scenario::skirmish(), viewport).expect("game");
+        let back = crate::button::corner_slot(0, render::ui_scale()).center();
+        let prefs = crate::config::CameraPrefs::default();
+        let mut mouse = Vec2::ZERO;
+        let tap = [
+            RawEvent::TouchDown {
+                id: 1,
+                x: back.x,
+                y: back.y,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: back.x,
+                y: back.y,
+            },
+        ];
+        let mut screen = FinalMapScreen::open();
+        assert!(screen.update(&tap, 0.0, viewport, prefs, &mut mouse, &mut game));
+        let click = [
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: back.x,
+                y: back.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: back.x,
+                y: back.y,
+            },
+        ];
+        let mut screen = FinalMapScreen::open();
+        assert!(screen.update(&click, 0.0, viewport, prefs, &mut mouse, &mut game));
+    }
+
+    #[test]
+    fn touch_camera_gestures_never_tick_the_sim() {
+        let viewport = vec2(1280.0, 800.0);
+        let mut game = Game::with_viewport(Scenario::skirmish(), viewport).expect("game");
+        let mut screen = FinalMapScreen::open();
+        let mut mouse = Vec2::ZERO;
+        let before = game.presentation.camera.center;
+        let drag = [
+            RawEvent::TouchDown {
+                id: 1,
+                x: 640.0,
+                y: 300.0,
+            },
+            RawEvent::TouchMove {
+                id: 1,
+                x: 540.0,
+                y: 300.0,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: 540.0,
+                y: 300.0,
+            },
+        ];
+        assert!(!screen.update(
+            &drag,
+            0.0,
+            viewport,
+            crate::config::CameraPrefs::default(),
+            &mut mouse,
+            &mut game,
+        ));
+        assert!(game.presentation.camera.center.x > before.x);
+        assert_eq!(game.state.current_tick(), 0);
+        assert!(game.pending.is_empty());
     }
 
     #[test]

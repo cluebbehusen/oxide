@@ -67,6 +67,8 @@ fn bare_layout(panel_top: f32, panel_right: f32) -> crate::layout::LayoutModel {
         zero,
         zero,
         zero,
+        zero,
+        zero,
         [none; 8],
         0,
         [none; 16],
@@ -2505,6 +2507,30 @@ fn hardware_touch_phases_speak_the_funnel_vocabulary() {
 }
 
 #[test]
+fn hardware_touches_arrive_once_in_order_and_in_logical_pixels() {
+    use macroquad::miniquad::{EventHandler, TouchPhase};
+    let mut stream = PointerStream::new(2.0, false);
+    stream.touch_event(TouchPhase::Started, 7, 200.0, 100.0);
+    stream.touch_event(TouchPhase::Ended, 7, 202.0, 100.0);
+    assert_eq!(
+        stream.events,
+        vec![
+            RawEvent::TouchDown {
+                id: 7,
+                x: 100.0,
+                y: 50.0
+            },
+            RawEvent::TouchUp {
+                id: 7,
+                x: 101.0,
+                y: 50.0
+            },
+        ],
+        "a tap inside one frame keeps both edges, divided out of backing pixels"
+    );
+}
+
+#[test]
 fn chrome_born_touches_never_drive_world_gestures() {
     let mut game = headless_game();
     let mut input = InputState::new();
@@ -2595,6 +2621,139 @@ fn a_tap_on_the_idle_badge_cycles_workers() {
         !game.presentation.selection.units.is_empty() || game.presentation.camera.center != before,
         "the badge answers a tap like it answers a click"
     );
+}
+
+/// Live-play chrome with the menu button and a status target where the
+/// top bar draws them at 1280 px wide.
+fn top_bar_layout() -> crate::layout::LayoutModel {
+    let mut layout = bare_layout(f32::INFINITY, 0.0);
+    layout.menu_button = crate::layout::menu_button_rect(1280.0, 1.0);
+    layout.pause_status = macroquad::math::Rect::new(1180.0, 3.0, 46.0, 34.0);
+    layout
+}
+
+fn tap(game: &mut Game, input: &mut InputState, p: Vec2) {
+    input.now += 1.0;
+    apply_events(game, input, &[touch_down(1, p)]);
+    input.now += 0.05;
+    apply_events(game, input, &[touch_up(1, p)]);
+}
+
+#[test]
+fn a_click_on_the_menu_button_requests_the_pause_menu() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.presentation.layout.set(top_bar_layout());
+    let menu = game.presentation.layout.get().menu_button;
+    apply_events(
+        &mut game,
+        &mut input,
+        &click(menu.center().x, menu.center().y),
+    );
+    assert!(input.take_menu_request());
+    assert!(
+        !input.take_menu_request(),
+        "the request is one-shot: taking it clears it"
+    );
+    input.menu_requested = true;
+    input.reset_transient();
+    assert!(
+        !input.take_menu_request(),
+        "a screen change drops a request nobody took"
+    );
+}
+
+#[test]
+fn a_tap_in_the_menu_buttons_touch_pad_requests_the_pause_menu() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.presentation.layout.set(top_bar_layout());
+    let menu = game.presentation.layout.get().menu_button;
+    // Left of the drawn square but inside its 44 px fingertip target.
+    let p = vec2(menu.x - 3.0, menu.center().y);
+    assert!(!menu.contains(p));
+    tap(&mut game, &mut input, p);
+    assert!(input.take_menu_request());
+}
+
+#[test]
+fn a_bar_without_a_menu_button_ignores_its_corner() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.presentation
+        .layout
+        .set(bare_layout(f32::INFINITY, 0.0));
+    let corner = crate::layout::menu_button_rect(1280.0, 1.0).center();
+    apply_events(&mut game, &mut input, &click(corner.x, corner.y));
+    tap(&mut game, &mut input, corner);
+    assert!(
+        !input.take_menu_request(),
+        "a spectator's bar publishes no button, so its corner stays inert"
+    );
+}
+
+#[test]
+fn an_armed_mode_never_eats_the_menu_button() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.presentation.layout.set(top_bar_layout());
+    input.placing = Some(oxide_sim::BuildingKind::Fabricator);
+    let menu = game.presentation.layout.get().menu_button.center();
+    apply_events(&mut game, &mut input, &click(menu.x, menu.y));
+    assert!(input.take_menu_request());
+    assert!(game.pending.is_empty(), "no build is staged under the bar");
+    tap(&mut game, &mut input, menu);
+    assert!(input.take_menu_request());
+    assert!(game.pending.is_empty());
+}
+
+#[test]
+fn a_drag_born_on_the_menu_button_neither_pans_nor_requests() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.presentation.layout.set(top_bar_layout());
+    let menu = game.presentation.layout.get().menu_button.center();
+    let before = game.presentation.camera.center;
+    input.now = 3.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, menu)]);
+    let end = vec2(900.0, 400.0);
+    apply_events(&mut game, &mut input, &[touch_move(1, end)]);
+    input.now = 3.2;
+    apply_events(&mut game, &mut input, &[touch_up(1, end)]);
+    assert!(!input.take_menu_request());
+    assert_eq!(game.presentation.camera.center, before);
+}
+
+#[test]
+fn the_status_toggles_pause_by_click_and_by_tap() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.presentation.layout.set(top_bar_layout());
+    let status = game.presentation.layout.get().pause_status.center();
+    apply_events(&mut game, &mut input, &click(status.x, status.y));
+    assert!(game.presentation.paused);
+    apply_events(&mut game, &mut input, &click(status.x, status.y));
+    assert!(!game.presentation.paused);
+    tap(&mut game, &mut input, status);
+    assert!(game.presentation.paused, "a fingertip pauses like the key");
+    tap(&mut game, &mut input, status);
+    assert!(!game.presentation.paused);
+    assert!(!input.take_menu_request());
+}
+
+#[test]
+fn where_padded_targets_overlap_the_menu_wins() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let mut layout = top_bar_layout();
+    // A short clock whose widened fingertip target reaches the menu's.
+    layout.pause_status = macroquad::math::Rect::new(1206.0, 3.0, 20.0, 34.0);
+    game.presentation.layout.set(layout);
+    let p = vec2(1236.0, 20.0);
+    assert!(crate::layout::touch_pad(layout.pause_status, 1.0).contains(p));
+    tap(&mut game, &mut input, p);
+    assert!(input.take_menu_request());
+    assert!(!game.presentation.paused);
 }
 
 #[test]

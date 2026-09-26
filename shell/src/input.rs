@@ -183,6 +183,9 @@ pub struct InputState {
     /// CUMULATIVE change against this, so a slow pinch (under a pixel
     /// per event) still reads as one instead of committing a box.
     pub(crate) pair_dist: Option<f32>,
+    /// The menu button was pressed this frame. Input cannot switch
+    /// screens itself, so the frame loop takes this one-shot request.
+    pub(crate) menu_requested: bool,
     /// The active binding profile.
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
@@ -396,6 +399,7 @@ impl InputState {
             last_tap: None,
             pinching: false,
             pair_dist: None,
+            menu_requested: false,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
@@ -516,6 +520,12 @@ impl InputState {
         self.last_tap = None;
         self.pinching = false;
         self.pair_dist = None;
+        self.menu_requested = false;
+    }
+
+    /// Consumes this frame's menu-button press, if any.
+    pub(crate) fn take_menu_request(&mut self) -> bool {
+        std::mem::take(&mut self.menu_requested)
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -689,9 +699,15 @@ impl macroquad::miniquad::EventHandler for PointerStream {
 
     /// A fingertip must arrive ONCE, as a touch: the trait's DEFAULT
     /// `touch_event` emulates mouse clicks, which would give every
-    /// finger a second life as a press. Touches come from `touches()`
-    /// below.
-    fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
+    /// finger a second life as a press. The stream keeps each phase in
+    /// order, where the polled `touches()` snapshot keeps only a
+    /// finger's last phase per frame and would lose a tap that lands
+    /// and lifts inside one frame.
+    fn touch_event(&mut self, phase: macroquad::miniquad::TouchPhase, id: u64, x: f32, y: f32) {
+        let (x, y) = self.logical(x, y);
+        if let Some(event) = touch_event(phase.into(), id, x, y) {
+            self.events.push(event);
+        }
     }
 
     /// The polled keyboard surface exposes the initial edge but drops OS
@@ -756,13 +772,8 @@ pub fn arm_hardware() {
 pub fn poll_events(accept_backspace_repeat: bool) -> Vec<RawEvent> {
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
-    for touch in mq::touches() {
-        if let Some(event) = touch_event(touch.phase, touch.id, touch.position.x, touch.position.y)
-        {
-            events.push(event);
-        }
-    }
-    // Pointer events in true arrival order, each with its own position.
+    // Pointer and touch events in true arrival order, each with its own
+    // position.
     let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
     static FIRST_POLL: std::sync::Once = std::sync::Once::new();
     FIRST_POLL.call_once(|| {
@@ -1008,9 +1019,18 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     continue;
                 }
                 // The idle badge cycles workers on click.
-                let badge = game.presentation.layout.get().idle_badge;
+                let layout = game.presentation.layout.get();
+                let badge = layout.idle_badge;
                 if badge.w > 0.0 && badge.contains(vec2(x, y)) {
                     cycle_idle_worker(game);
+                    continue;
+                }
+                if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
+                    input.menu_requested = true;
+                    continue;
+                }
+                if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
+                    dispatch_action(game, input, Action::TogglePause);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -1218,7 +1238,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
                         if !input.pinching
                             && let Some(start) = input.pair_dist
-                            && (new_dist - start).abs() > 24.0 * input.ui
+                            && (new_dist - start).abs()
+                                > crate::viewer_touch::PINCH_START_PX * input.ui
                         {
                             input.pinching = true;
                         }
@@ -1228,7 +1249,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             let spread = new_dist - old;
                             if spread != 0.0 {
                                 let mid = (input.touches[0].1.at + input.touches[1].1.at) * 0.5;
-                                game.presentation.camera.zoom_at(mid, spread * 0.02);
+                                game.presentation.camera.zoom_at(
+                                    mid,
+                                    spread * crate::viewer_touch::PINCH_NOTCHES_PER_PX,
+                                );
                             }
                         }
                     }
@@ -1325,6 +1349,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 // bar, which the bare-chrome swallow
                                 // below would otherwise eat.
                                 cycle_idle_worker(game);
+                            } else if layout.menu_button.w > 0.0
+                                && crate::layout::touch_pad(layout.menu_button, input.ui)
+                                    .contains(p)
+                            {
+                                // Checked before the status so the
+                                // menu wins where the padded targets
+                                // overlap.
+                                input.menu_requested = true;
+                            } else if layout.pause_status.w > 0.0
+                                && crate::layout::touch_pad(layout.pause_status, input.ui)
+                                    .contains(p)
+                            {
+                                dispatch_action(game, input, Action::TogglePause);
                             } else if click_on_hud(game, p) {
                                 // Bare chrome: the tap is swallowed.
                             } else if double {

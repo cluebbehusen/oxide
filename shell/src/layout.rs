@@ -34,6 +34,12 @@ pub struct LayoutModel {
     /// The idle-worker badge in the top bar; zero-sized when nobody
     /// idles. Clicking it cycles idle harvesters.
     pub idle_badge: Rect,
+    /// The menu button at the top bar's right edge; it opens the pause
+    /// menu. Zero-sized while spectating.
+    pub menu_button: Rect,
+    /// The clock or PAUSED status beside the menu button; it toggles
+    /// pause like the pause key. Zero-sized while spectating.
+    pub pause_status: Rect,
     /// Persistent armed-command ribbon. It is chrome even away from
     /// the command band, so a tap on its label never leaks to the map.
     pub mode_ribbon: Rect,
@@ -65,6 +71,8 @@ impl Default for LayoutModel {
             orders: Rect::new(0.0, 0.0, 0.0, 0.0),
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
+            menu_button: Rect::new(0.0, 0.0, 0.0, 0.0),
+            pause_status: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_cancel: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
@@ -100,6 +108,13 @@ pub fn touch_pad(rect: Rect, ui: f32) -> Rect {
         rect.w + grow_w,
         rect.h + grow_h,
     )
+}
+
+/// The top bar's menu button: a badge-height square held off the right
+/// edge, inside the bar so its padded touch target stays mostly chrome.
+pub fn menu_button_rect(viewport_w: f32, ui: f32) -> Rect {
+    let size = 34.0 * ui;
+    Rect::new(viewport_w - size - 8.0 * ui, 3.0 * ui, size, size)
 }
 
 /// Which side of the rect it describes a tooltip prefers.
@@ -155,6 +170,8 @@ impl LayoutModel {
         orders: Rect,
         minimap: Rect,
         idle_badge: Rect,
+        menu_button: Rect,
+        pause_status: Rect,
         mode_ribbon: Rect,
         mode_cancel: Rect,
         roster_slots: [(Rect, CardAction); 8],
@@ -181,6 +198,8 @@ impl LayoutModel {
             orders,
             minimap,
             idle_badge,
+            menu_button,
+            pause_status,
             mode_ribbon,
             mode_cancel,
             roster_slots,
@@ -238,6 +257,8 @@ mod tests {
             ui,
             panel_top,
             1280.0,
+            zero,
+            zero,
             zero,
             zero,
             zero,
@@ -301,6 +322,25 @@ mod tests {
             !m.chrome_owns(vec2(219.0, 660.0)),
             "beside the ribbon remains battlefield"
         );
+    }
+
+    #[test]
+    fn the_menu_button_sits_in_the_top_bar_with_a_full_touch_target() {
+        for ui in [0.75, 1.0, 1.25, 1.5] {
+            for width in [640.0, 1133.0, 1280.0, 1920.0] {
+                let button = menu_button_rect(width, ui);
+                assert!(
+                    button.y >= 0.0 && button.y + button.h <= TOP_BAR_H * ui,
+                    "the drawn button stays inside the bar at {width}px, ui {ui}"
+                );
+                let pad = touch_pad(button, ui);
+                assert!(pad.w >= MIN_TOUCH_TARGET * ui && pad.h >= MIN_TOUCH_TARGET * ui);
+                assert!(
+                    pad.x + pad.w <= width,
+                    "the fingertip target stays on screen at {width}px, ui {ui}"
+                );
+            }
+        }
     }
 
     const VIEW: Vec2 = Vec2::new(1280.0, 800.0);

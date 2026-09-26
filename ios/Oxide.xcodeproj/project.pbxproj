@@ -1,0 +1,183 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0A1B00000000000000000011 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B00000000000000000021 /* assets */; };
+		0A1B00000000000000000012 /* scenarios in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B00000000000000000022 /* scenarios */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0A1B00000000000000000020 /* Oxide.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Oxide.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0A1B00000000000000000021 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; name = assets; path = ../assets; sourceTree = "<group>"; };
+		0A1B00000000000000000022 /* scenarios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = scenarios; path = ../scenarios; sourceTree = "<group>"; };
+		0A1B00000000000000000023 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Oxide/Info.plist; sourceTree = "<group>"; };
+		0A1B00000000000000000024 /* Oxide.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Oxide.xcconfig; sourceTree = "<group>"; };
+		0A1B00000000000000000025 /* build_rust.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = build_rust.sh; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0A1B00000000000000000030 = {
+			isa = PBXGroup;
+			children = (
+				0A1B00000000000000000024 /* Oxide.xcconfig */,
+				0A1B00000000000000000025 /* build_rust.sh */,
+				0A1B00000000000000000023 /* Info.plist */,
+				0A1B00000000000000000021 /* assets */,
+				0A1B00000000000000000022 /* scenarios */,
+				0A1B00000000000000000031 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0A1B00000000000000000031 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0A1B00000000000000000020 /* Oxide.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0A1B00000000000000000040 /* Oxide */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0A1B00000000000000000061 /* Build configuration list for PBXNativeTarget "Oxide" */;
+			buildPhases = (
+				0A1B00000000000000000050 /* Build Rust */,
+				0A1B00000000000000000051 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Oxide;
+			productName = Oxide;
+			productReference = 0A1B00000000000000000020 /* Oxide.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0A1B00000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					0A1B00000000000000000040 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+				};
+			};
+			buildConfigurationList = 0A1B00000000000000000060 /* Build configuration list for PBXProject "Oxide" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0A1B00000000000000000030;
+			productRefGroup = 0A1B00000000000000000031 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0A1B00000000000000000040 /* Oxide */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0A1B00000000000000000051 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A1B00000000000000000011 /* assets in Resources */,
+				0A1B00000000000000000012 /* scenarios in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		0A1B00000000000000000050 /* Build Rust */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Build Rust";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec /bin/sh \"$SRCROOT/build_rust.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0A1B00000000000000000070 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		0A1B00000000000000000071 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SDKROOT = iphoneos;
+			};
+			name = Release;
+		};
+		0A1B00000000000000000072 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0A1B00000000000000000024 /* Oxide.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		0A1B00000000000000000073 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0A1B00000000000000000024 /* Oxide.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0A1B00000000000000000060 /* Build configuration list for PBXProject "Oxide" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A1B00000000000000000070 /* Debug */,
+				0A1B00000000000000000071 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0A1B00000000000000000061 /* Build configuration list for PBXNativeTarget "Oxide" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0A1B00000000000000000072 /* Debug */,
+				0A1B00000000000000000073 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0A1B00000000000000000001 /* Project object */;
+}
