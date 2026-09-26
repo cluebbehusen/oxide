@@ -152,8 +152,12 @@ impl HostSession {
     }
 
     /// Pausing stops sealing. Time spent paused never counts toward a
-    /// client's progress timeout.
+    /// client's progress timeout. Repeating the current state changes
+    /// nothing.
     pub fn set_paused(&mut self, paused: bool) {
+        if paused == self.paused {
+            return;
+        }
         self.paused = paused;
         for client in &mut self.clients {
             client.blocked_since = None;
@@ -561,6 +565,30 @@ mod tests {
         host.receive(A, &ClientMessage::Heartbeat.encode(), secs(40));
         assert_eq!(
             host.poll(secs(40)),
+            vec![HostEvent::Dropped {
+                seat: A,
+                reason: DropReason::Stalled
+            }]
+        );
+    }
+
+    #[test]
+    fn repeating_the_pause_state_keeps_the_progress_timer() {
+        let mut host = HostSession::new(HOST, &[A], secs(0));
+        for _ in 0..LEAD_CAP {
+            step(&mut host, secs(0), 0).unwrap();
+        }
+        assert!(step(&mut host, secs(1), 0).is_none());
+        for second in 2..11 {
+            host.set_paused(false);
+            host.receive(A, &ClientMessage::Heartbeat.encode(), secs(second));
+            assert!(step(&mut host, secs(second), 0).is_none());
+            assert!(host.poll(secs(second)).is_empty());
+        }
+        host.set_paused(false);
+        host.receive(A, &ClientMessage::Heartbeat.encode(), secs(11));
+        assert_eq!(
+            host.poll(secs(11)),
             vec![HostEvent::Dropped {
                 seat: A,
                 reason: DropReason::Stalled
