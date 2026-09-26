@@ -1224,3 +1224,362 @@ pub(super) fn combined_lifecycle_scenario() -> Scenario {
     scenario.units.push(unit_spec(0, UnitKind::Gnat, 31, 11));
     scenario
 }
+
+const CLUSTER_PRIMARY: TilePos = TilePos::new(30, 10);
+const CLUSTER_AIRWORKS: TilePos = TilePos::new(34, 10);
+const CLUSTER_FABRICATOR: TilePos = TilePos::new(30, 14);
+/// Sees the primary and Fabricator footprints and the primary's approach, but
+/// not the Airworks anchor.
+const WEST_SPOTTER: TilePos = TilePos::new(22, 12);
+/// Sees the primary and Airworks footprints and the Airworks approach.
+const NORTH_SPOTTER: TilePos = TilePos::new(33, 2);
+const SPOTTERS: [TilePos; 2] = [WEST_SPOTTER, NORTH_SPOTTER];
+const STAGED_AT: chassis::Tick = 1_200;
+
+/// A connected bot with its scout, one Bombard, and two Condors at home, and a
+/// three-member enemy cluster that only Kestrel spotters see. The spotters
+/// stand outside the cluster's own sight, so removing one never breaks the
+/// enemy's contact tracking.
+struct CommittedCluster {
+    state: State,
+    brain: SeatBot,
+    primary: oxide_sim::ids::BuildingId,
+    airworks: oxide_sim::ids::BuildingId,
+    scout: UnitId,
+    condors: Vec<UnitId>,
+}
+
+impl CommittedCluster {
+    fn staged(phase: AirOperationPhase, spotters: &[TilePos]) -> Self {
+        let config = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 4_242);
+        let width = 48usize;
+        let height = 24usize;
+        let mut rows = vec![vec!['.'; width]; height];
+        rows.first_mut().expect("map has a north edge").fill('#');
+        rows.last_mut().expect("map has a south edge").fill('#');
+        for row in &mut rows {
+            row[0] = '#';
+            row[width - 1] = '#';
+        }
+        rows[1][1] = '1';
+        rows[20][44] = '2';
+        let mut units: Vec<_> = (0..4)
+            .map(|index| unit_spec(0, UnitKind::Harvester, 5 + index, 11))
+            .collect();
+        units.extend(
+            (0..12).map(|index| unit_spec(0, UnitKind::Sentinel, 2 + index % 6, 13 + index / 6)),
+        );
+        units.extend([
+            unit_spec(0, UnitKind::Kestrel, 9, 18),
+            unit_spec(0, UnitKind::Bombard, 18, 5),
+            unit_spec(0, UnitKind::Condor, 4, 17),
+            unit_spec(0, UnitKind::Condor, 5, 17),
+        ]);
+        units.extend(
+            spotters
+                .iter()
+                .map(|tile| unit_spec(0, UnitKind::Kestrel, tile.x, tile.y)),
+        );
+        let mut west = player_spec("West Ferrous", Faction::Ferrous, 0, None);
+        west.bot = true;
+        west.bot_config = Some(config);
+        let scenario = Scenario {
+            mode: Default::default(),
+            name: "committed connected cluster".into(),
+            seed: 4_242,
+            map: rows
+                .into_iter()
+                .map(|row| row.into_iter().collect())
+                .collect(),
+            players: vec![west, player_spec("East Cupric", Faction::Cupric, 0, None)],
+            units,
+            buildings: vec![
+                building_spec(0, BuildingKind::Fabricator, 5, 2),
+                building_spec(0, BuildingKind::Airworks, 1, 6),
+                building_spec(0, BuildingKind::Crucible, 5, 6),
+                building_spec(0, BuildingKind::Foundry, 11, 1),
+                building_spec(
+                    1,
+                    BuildingKind::Crucible,
+                    CLUSTER_PRIMARY.x,
+                    CLUSTER_PRIMARY.y,
+                ),
+                building_spec(
+                    1,
+                    BuildingKind::Airworks,
+                    CLUSTER_AIRWORKS.x,
+                    CLUSTER_AIRWORKS.y,
+                ),
+                building_spec(
+                    1,
+                    BuildingKind::Fabricator,
+                    CLUSTER_FABRICATOR.x,
+                    CLUSTER_FABRICATOR.y,
+                ),
+                building_spec(1, BuildingKind::Foundry, 40, 19),
+            ],
+            meta: None,
+        };
+        let mut state = scenario
+            .build()
+            .expect("the committed cluster scenario builds");
+        crate::test_support::set_tick(&mut state, STAGED_AT);
+        let own = |kind: UnitKind| -> Vec<UnitId> {
+            let mut ids: Vec<_> = state
+                .units()
+                .iter()
+                .filter(|unit| unit.player == PlayerId(0) && unit.kind == kind)
+                .map(|unit| unit.id)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        let enemy = |anchor: TilePos| {
+            state
+                .buildings()
+                .iter()
+                .find(|building| building.player == PlayerId(1) && building.anchor == anchor)
+                .expect("the cluster member stands")
+                .id
+        };
+        let primary = enemy(CLUSTER_PRIMARY);
+        let airworks = enemy(CLUSTER_AIRWORKS);
+        let condors = own(UnitKind::Condor);
+        let scout = state
+            .units()
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Kestrel && unit.tile() == TilePos::new(9, 18))
+            .expect("the operation scout waits at home")
+            .id;
+        let strategy =
+            StrategicPlanner::committed_cluster_fixture(crate::strategy::CommittedClusterFixture {
+                faction: Faction::Ferrous,
+                primary: (primary, BuildingKind::Crucible, CLUSTER_PRIMARY),
+                members: vec![CLUSTER_PRIMARY, CLUSTER_AIRWORKS, CLUSTER_FABRICATOR],
+                phase,
+                tick: STAGED_AT,
+                scout,
+                artillery: own(UnitKind::Bombard),
+                strike_aircraft: condors.clone(),
+            });
+        let brain = scripted_brain(&scenario, PlayerId(0), config)
+            .restore_with_strategy(strategy, &scenario, &state)
+            .expect("the staged operation is a valid controller checkpoint");
+        Self {
+            state,
+            brain,
+            primary,
+            airworks,
+            scout,
+            condors,
+        }
+    }
+
+    /// Sends the operation scout away from the cluster. The fixture never
+    /// executes the bot's own dispatch, and an idle scout still far from an
+    /// unchanged goal would read as an unreachable route.
+    fn keep_scout_moving(&mut self) {
+        let report = self.state.tick(&[oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Move {
+                units: vec![self.scout],
+                goal: TilePos::new(2, 1),
+                queue: false,
+            },
+        }]);
+        assert_commands_accepted(&report, PlayerId(0));
+    }
+
+    fn remove_buildings(&mut self, anchors: &[TilePos]) {
+        crate::test_support::edit_buildings(&mut self.state, |buildings| {
+            buildings.retain(|building| {
+                building.player != PlayerId(1) || !anchors.contains(&building.anchor)
+            });
+        });
+    }
+
+    fn remove_spotters(&mut self, tiles: &[TilePos]) {
+        crate::test_support::edit_units(&mut self.state, |units| {
+            units.retain(|unit| unit.kind != UnitKind::Kestrel || !tiles.contains(&unit.tile()));
+        });
+    }
+
+    /// Advances the unchanged world to the next decision, which refreshes
+    /// fog after an edit, and acts there.
+    fn act_next(&mut self) -> Vec<oxide_sim::PlayerCommand> {
+        self.state.tick(&[]);
+        while !self
+            .state
+            .current_tick()
+            .is_multiple_of(self.brain.dials.cadence)
+        {
+            self.state.tick(&[]);
+        }
+        self.brain.act(&self.state)
+    }
+
+    fn operation(&self) -> &crate::strategy::AirOperation {
+        (self.brain.mind().strategy)
+            .air_operation()
+            .expect("the committed operation remains observable")
+    }
+
+    fn live_anchors(&self) -> Vec<TilePos> {
+        (self.brain.mind().strategy)
+            .connected_package_diagnostics(&self.brain.mind().intelligence)
+            .expect("the operation keeps its commitment")
+            .live_anchors
+    }
+
+    fn identity_and_anchors(&self) -> (crate::strategy::ConnectedOffenseIdentity, Vec<TilePos>) {
+        let strategy = &self.brain.mind().strategy;
+        (
+            strategy
+                .connected_identity()
+                .expect("the operation keeps its identity"),
+            strategy
+                .connected_package_diagnostics(&self.brain.mind().intelligence)
+                .expect("the operation keeps its commitment")
+                .admitted_anchors,
+        )
+    }
+}
+
+#[test]
+fn committed_cluster_is_lost_once_every_member_was_seen_gone_even_out_of_sight() {
+    let mut battle = CommittedCluster::staged(AirOperationPhase::Assemble, &SPOTTERS);
+    battle.keep_scout_moving();
+    battle.act_next();
+    let admitted = battle.identity_and_anchors();
+    assert_eq!(
+        battle.live_anchors(),
+        [CLUSTER_PRIMARY, CLUSTER_AIRWORKS, CLUSTER_FABRICATOR]
+    );
+    assert_eq!(admitted.1, battle.live_anchors());
+
+    battle.remove_buildings(&[CLUSTER_AIRWORKS]);
+    battle.act_next();
+    assert!(
+        battle.operation().phase() < AirOperationPhase::Strike,
+        "{:?}",
+        battle.operation()
+    );
+    assert_eq!(battle.operation().recovery_reason(), None);
+    assert_eq!(battle.live_anchors(), [CLUSTER_PRIMARY, CLUSTER_FABRICATOR]);
+    assert_eq!(battle.identity_and_anchors(), admitted);
+
+    // The Airworks anchor leaves sight while the remaining members are seen
+    // destroyed. Its earlier observed loss still counts.
+    battle.remove_spotters(&[NORTH_SPOTTER]);
+    battle.remove_buildings(&[CLUSTER_PRIMARY, CLUSTER_FABRICATOR]);
+    battle.act_next();
+    let visible = Observation::fog_honest(&battle.state, PlayerId(0));
+    assert!(!visible.visible(CLUSTER_AIRWORKS));
+    assert_eq!(
+        battle.operation().recovery_reason(),
+        Some(AirRecoveryReason::ObjectiveLost)
+    );
+}
+
+#[test]
+fn committed_cluster_out_of_sight_goes_stale_before_the_strike() {
+    let mut battle = CommittedCluster::staged(AirOperationPhase::Assemble, &SPOTTERS);
+    battle.brain.act(&battle.state);
+    battle.remove_spotters(&SPOTTERS);
+    battle.act_next();
+    assert_eq!(battle.operation().recovery_reason(), None);
+    assert_eq!(
+        battle.live_anchors(),
+        [CLUSTER_PRIMARY, CLUSTER_AIRWORKS, CLUSTER_FABRICATOR],
+        "members out of sight stay live on their remembered contacts"
+    );
+
+    let stale = STAGED_AT + 552;
+    crate::test_support::set_tick(&mut battle.state, stale);
+    battle.brain.act(&battle.state);
+    assert_eq!(
+        battle.operation().recovery_reason(),
+        Some(AirRecoveryReason::StaleIntelligence)
+    );
+}
+
+#[test]
+fn committed_strike_attacks_a_surviving_member_and_reacquires_a_remembered_one() {
+    let mut battle = CommittedCluster::staged(AirOperationPhase::Strike, &SPOTTERS);
+    battle.remove_buildings(&[CLUSTER_PRIMARY]);
+    let commands = battle.act_next();
+    let airworks = battle.airworks;
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Attack { units, target, .. }
+                if *target == Target::Building(airworks).into()
+                    && battle.condors.iter().all(|id| units.contains(id))
+        )),
+        "the strike takes the best surviving member: {commands:?}"
+    );
+    assert_eq!(
+        (battle.operation().target, battle.operation().target_id),
+        (CLUSTER_PRIMARY, Some(battle.primary)),
+        "the representative identity stays frozen"
+    );
+
+    battle.remove_spotters(&SPOTTERS);
+    let commands = battle.act_next();
+    assert_eq!(battle.operation().phase(), AirOperationPhase::Strike);
+    assert!(
+        commands.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, goal, .. }
+                if goal.chebyshev(CLUSTER_AIRWORKS) <= 2
+                    && battle.condors.iter().all(|id| units.contains(id))
+        )),
+        "with every member out of sight the strike reacquires the best remembered one: \
+         {commands:?}"
+    );
+}
+
+#[test]
+fn committed_strike_records_the_objective_gone_only_once_the_cluster_is_gone() {
+    use crate::experience::{Outcome, OutcomeReason};
+    let mut battle = CommittedCluster::staged(AirOperationPhase::Strike, &SPOTTERS);
+    battle.brain.act(&battle.state);
+    assert!(battle.operation().strike_issued_at.is_some());
+
+    battle.remove_buildings(&[CLUSTER_PRIMARY]);
+    battle.act_next();
+    assert_eq!(battle.operation().phase(), AirOperationPhase::Strike);
+    assert!(
+        (battle.brain.mind().strategy).outcomes.pending.is_empty(),
+        "losing the primary does not complete a cluster with live members"
+    );
+
+    battle.remove_buildings(&[CLUSTER_AIRWORKS, CLUSTER_FABRICATOR]);
+    battle.act_next();
+    assert_eq!(battle.live_anchors(), Vec::<TilePos>::new());
+    battle.remove_spotters(&SPOTTERS);
+    battle.state.tick(&[]);
+    let settled = battle.state.current_tick()
+        + battle.brain.dials.cadence
+            * DifficultyTuning::for_level(BotDifficulty::Standard)
+                .reaction_delay
+                .div_ceil(battle.brain.dials.cadence)
+        - 1;
+    crate::test_support::set_tick(&mut battle.state, settled);
+    battle.brain.act(&battle.state);
+    let visible = Observation::fog_honest(&battle.state, PlayerId(0));
+    assert!(!visible.visible(CLUSTER_PRIMARY));
+    assert_eq!(
+        battle.operation().recovery_reason(),
+        Some(AirRecoveryReason::Complete)
+    );
+    let report = (battle.brain.mind().strategy)
+        .outcomes
+        .pending
+        .last()
+        .expect("completion reports the episode");
+    assert_eq!(
+        (report.outcome, report.reason),
+        (Outcome::Complete, OutcomeReason::ObjectiveObservedGone)
+    );
+}

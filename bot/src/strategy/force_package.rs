@@ -109,6 +109,10 @@ impl<'a> ProductionEvidence<'a> {
 pub(super) struct ConnectedTargetEvidence<'a> {
     pub(super) primary: &'a BuildingContact,
     pub(super) cluster: &'a [&'a BuildingContact],
+    /// Frozen identity of an admitted operation being revised. Its remembered
+    /// members of positive confidence still count toward target durability
+    /// and value; anti-air evidence remains current-only.
+    pub(super) committed: Option<ConnectedOffenseKey>,
 }
 
 /// Why a current connected opportunity cannot admit its minimum package.
@@ -152,8 +156,8 @@ pub(super) struct ConnectedForcePackage {
     pub(super) derived_at: Tick,
     /// Absolute tick by which every newly requested provider must be ready.
     pub(super) preparation_deadline: Tick,
-    /// Canonical current targets whose value and defenses sized this package.
-    /// Tactical selection remains inside this admitted set.
+    /// Canonical targets whose value and defenses sized this package. A
+    /// revision sizes only members of the operation's committed cluster.
     pub(super) target_anchors: Vec<TilePos>,
     pub(super) recon: Vec<ProviderDemand>,
     pub(super) suppression: Vec<ProviderDemand>,
@@ -793,6 +797,7 @@ pub(super) fn derive_connected_force_package(
         ConnectedTargetEvidence {
             primary: target,
             cluster: &cluster,
+            committed: None,
         },
         production,
         unavailable,
@@ -928,6 +933,7 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
     let ConnectedTargetEvidence {
         primary: target,
         cluster,
+        committed,
     } = targets;
     let ProductionEvidence {
         resources,
@@ -956,7 +962,8 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
         .copied()
         .filter(|contact| {
             contact.player == target.player
-                && contact.evidence == ContactEvidence::Current
+                && (contact.evidence == ContactEvidence::Current
+                    || (committed.is_some() && contact.confidence_at(observation.tick) > 0))
                 && contact.built
                 && contact.hp > 0
                 && building_value(contact.kind) > 0
@@ -1033,10 +1040,10 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
             .map(|(planning, capacity)| PackageRefinement {
                 planning,
                 capacity,
-                key: ConnectedOffenseKey {
+                key: committed.unwrap_or(ConnectedOffenseKey {
                     objective: target.id.expect("current target checked"),
                     anchor: target.anchor,
-                },
+                }),
             });
     let mut builder = PackageBuilder {
         faction: observation.faction,
@@ -1905,9 +1912,14 @@ pub(super) fn current_target_cluster(
                 && contact.built
                 && contact.hp > 0
                 && building_value(contact.kind) > 0
-                && manhattan(contact.anchor, original_anchor) <= TARGET_CLUSTER_RADIUS
+                && within_target_cluster(original_anchor, contact.anchor)
         })
         .collect()
+}
+
+/// Whether `anchor` can belong to the tactical cluster around `original`.
+pub(super) fn within_target_cluster(original: TilePos, anchor: TilePos) -> bool {
+    manhattan(anchor, original) <= TARGET_CLUSTER_RADIUS
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

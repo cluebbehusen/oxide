@@ -143,6 +143,21 @@ pub fn seat_bots(
 }
 
 #[cfg(test)]
+impl SeatBot {
+    /// Stages `strategy` through a validated checkpoint restore.
+    pub(crate) fn restore_with_strategy(
+        &self,
+        strategy: crate::strategy::StrategicPlanner,
+        scenario: &oxide_sim::Scenario,
+        state: &oxide_sim::State,
+    ) -> Result<Self, String> {
+        self.0
+            .restore_with_strategy(strategy, scenario, state)
+            .map(|brain| Self(Box::new(brain)))
+    }
+}
+
+#[cfg(test)]
 impl std::ops::Deref for SeatBot {
     type Target = Brain;
     fn deref(&self) -> &Brain {

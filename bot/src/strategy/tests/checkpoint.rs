@@ -42,9 +42,15 @@ fn island() -> StrategicPlanner {
     planner_with_operation(op, plan)
 }
 
+/// A sibling member inside the connected fixture's cluster radius.
+const SIBLING: TilePos = TilePos::new(TARGET.x - 2, TARGET.y);
+
 fn connected() -> StrategicPlanner {
+    let op = operation(AirOperationPhase::SuppressAa, TICK);
     let mut plan = connected_test_plan(&obs(ADMITTED));
+    commit_to_cluster(&mut plan, &op, vec![SIBLING, TARGET]);
     let connected = plan.connected_mut();
+    connected.focus = SIBLING;
     connected.paid_production = vec![ConnectedPurchase {
         producer: BuildingId(12),
         kind: UnitKind::Bombard,
@@ -56,7 +62,33 @@ fn connected() -> StrategicPlanner {
         target: Target::Building(BuildingId(81)),
         assignments: vec![(UnitId(2), TilePos::new(18, 10))],
     });
-    planner_with_operation(operation(AirOperationPhase::SuppressAa, TICK), plan)
+    let mut planner = planner_with_operation(op, plan);
+    let mut sighting = obs(TICK);
+    sighting
+        .enemy_buildings
+        .push(building(81, 1, BuildingKind::Airworks, SIBLING, true));
+    planner.outcomes.watch(
+        &sighting,
+        crate::experience::EpisodeId {
+            owner: crate::experience::EpisodeOwner::Air,
+            serial: ADMITTED,
+        },
+        crate::experience::ExperienceKey {
+            doctrine: crate::experience::Doctrine::Air,
+            y: TARGET.y,
+            x: TARGET.x,
+            subject: crate::experience::ExperienceSubject::Building(Some(BuildingId(80))),
+        },
+        &[UnitId(1), UnitId(2), UnitId(3), UnitId(4)],
+        AirOperationPhase::SuppressAa as u8,
+    );
+    let members = [SIBLING, TARGET];
+    assert!(
+        !planner
+            .outcomes
+            .observe_cluster(&sighting, PlayerId(1), &members, &members)
+    );
+    planner
 }
 
 fn standing_by() -> StrategicPlanner {
@@ -113,7 +145,7 @@ fn checkpoint_rejects_operation_clocks_out_of_order_or_in_the_future() {
         connected,
         &[
             ("admission after start", |planner| {
-                active(planner).plan.connected_mut().admitted_at = ADMITTED + 1;
+                active(planner).plan.connected_mut().commitment.admitted_at = ADMITTED + 1;
             }),
             ("start after phase", |planner| {
                 active(planner).op.started_at = ADMITTED + 1;
@@ -242,7 +274,9 @@ fn checkpoint_rejects_stored_tiles_off_the_map() {
                     });
             }),
             ("scope", |planner| {
-                active(planner).plan.connected_mut().scope = TilePos::new(32, 10);
+                let active = active(planner);
+                active.plan.connected_mut().commitment.scope = TilePos::new(32, 10);
+                active.op.target = TilePos::new(32, 10);
             }),
         ],
     );
@@ -280,9 +314,9 @@ fn checkpoint_rejects_a_connected_package_without_a_bounded_canonical_objective(
             ("duplicate anchors", |planner| {
                 active(planner).plan.connected_mut().package.target_anchors = vec![TARGET, TARGET];
             }),
-            ("objective outside anchors", |planner| {
+            ("sized anchor outside the commitment", |planner| {
                 active(planner).plan.connected_mut().package.target_anchors =
-                    vec![TARGET.offset(-2, 0)];
+                    vec![TARGET.offset(-3, 0)];
             }),
             ("future derivation", |planner| {
                 let package = &mut active(planner).plan.connected_mut().package;
@@ -320,6 +354,83 @@ fn checkpoint_rejects_a_connected_package_without_a_bounded_canonical_objective(
                     };
                     32 * 20 + 1
                 ];
+            }),
+        ],
+    );
+}
+
+#[test]
+fn checkpoint_rejects_a_commitment_that_is_not_one_bounded_canonical_cluster() {
+    assert_rejected(
+        connected,
+        &[
+            ("no committed anchors", |planner| {
+                active(planner)
+                    .plan
+                    .connected_mut()
+                    .commitment
+                    .anchors
+                    .clear();
+            }),
+            ("unsorted committed anchors", |planner| {
+                active(planner)
+                    .plan
+                    .connected_mut()
+                    .commitment
+                    .anchors
+                    .reverse();
+            }),
+            ("duplicate committed anchors", |planner| {
+                active(planner).plan.connected_mut().commitment.anchors =
+                    vec![SIBLING, TARGET, TARGET];
+            }),
+            ("committed anchor beyond the cluster radius", |planner| {
+                active(planner).plan.connected_mut().commitment.anchors =
+                    vec![SIBLING, TARGET, TARGET.offset(5, 0)];
+            }),
+            ("scope outside the committed anchors", |planner| {
+                let active = active(planner);
+                active.plan.connected_mut().commitment.scope = TARGET.offset(0, 1);
+                active.op.target = TARGET.offset(0, 1);
+            }),
+            ("focus outside the committed anchors", |planner| {
+                active(planner).plan.connected_mut().focus = TARGET.offset(1, 0);
+            }),
+        ],
+    );
+}
+
+#[test]
+fn checkpoint_rejects_a_package_or_operation_that_drifts_from_its_commitment() {
+    assert_rejected(
+        connected,
+        &[
+            ("package deadline", |planner| {
+                active(planner)
+                    .plan
+                    .connected_mut()
+                    .package
+                    .preparation_deadline -= 1;
+            }),
+            ("package minimum", |planner| {
+                active(planner)
+                    .plan
+                    .connected_mut()
+                    .package
+                    .minimum_capability
+                    .strike += 1;
+            }),
+            ("representative owner", |planner| {
+                active(planner).op.target_player = PlayerId(2);
+            }),
+            ("representative anchor", |planner| {
+                active(planner).op.target = SIBLING;
+            }),
+            ("representative id", |planner| {
+                active(planner).op.target_id = Some(BuildingId(81));
+            }),
+            ("representative kind", |planner| {
+                active(planner).op.target_kind = BuildingKind::Airworks;
             }),
         ],
     );

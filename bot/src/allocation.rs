@@ -81,9 +81,9 @@ impl PartialOrd for FoundryExpansionKey {
 /// Stable identity of one connected-offense opportunity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ConnectedOffenseKey {
-    /// Current primary building that anchors the admitted target cluster.
+    /// Primary building of the target cluster, frozen at admission.
     pub(crate) objective: BuildingId,
-    /// Current row-major anchor of the primary objective.
+    /// Anchor of that primary at admission.
     pub(crate) anchor: TilePos,
 }
 
@@ -1231,7 +1231,8 @@ pub(crate) enum ObligationKey {
     Reconnaissance(crate::utility::ReconQuestionKey),
     /// Exact retained screen or anti-air deployment.
     SupportDeployment(crate::utility::ProtectionKey),
-    /// One already-active connected operation.
+    /// One already-active connected operation, keyed by the identity it was
+    /// admitted under.
     ConnectedOffense {
         /// Exact primary objective when admitted.
         objective: BuildingId,

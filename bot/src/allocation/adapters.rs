@@ -246,10 +246,11 @@ pub(crate) fn connected_investment_proposal(
     proposal: FreshConnectedProposal,
 ) -> DomainInvestmentProposal {
     let claims = connected_claim_bundle(proposal.minimum_claims());
+    let identity = proposal.identity();
     InvestmentProposal::retained(
         ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
-            objective: proposal.objective(),
-            anchor: proposal.anchor(),
+            objective: identity.objective(),
+            anchor: identity.anchor(),
         }),
         proposal.case().into(),
         proposal.accepted_at(),
@@ -435,10 +436,11 @@ pub(crate) fn active_connected_revision_investment_proposal(
     proposal: FreshConnectedProposal,
 ) -> DomainInvestmentProposal {
     debug_assert!(proposal.revises_active_operation());
+    let identity = proposal.identity();
     InvestmentProposal::retained(
         ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
-            objective: proposal.objective(),
-            anchor: proposal.anchor(),
+            objective: identity.objective(),
+            anchor: identity.anchor(),
         }),
         proposal.case().into(),
         proposal.accepted_at(),

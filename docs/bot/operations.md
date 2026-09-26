@@ -95,11 +95,20 @@ operation and its exact orders.
 
 Current connected targets are ranked canonically and admitted only with a
 complete package. A route-feasible optional member of its bounded current
-cluster is retained only when the complete revised package still fits the same
-producer access, queues, funds, and fixed preparation deadline. The package
-stores and traces the canonical anchors it actually admitted. During Recon and
-Verify, negative anti-air evidence requires current visibility over every
-footprint tile of every surviving admitted target; the scout focuses the first
+cluster is retained only when the complete package still fits the same producer
+access, queues, funds, and fixed preparation deadline. Admission commits the
+operation to that cluster. Its owner, primary building, primary anchor,
+canonical member anchors, minimum capability, admission tick, and preparation
+deadline are frozen. The primary and its anchor identify the operation to
+allocation, paid purchases, production search, and experience; its owner and
+anchor identify it to a coordinated lift. The member set never grows. A member
+leaves the operation only when current sight finds it gone; out of sight, it
+stays live on its remembered contact. Traces report the admitted anchors, the
+live anchors, and the anchors that sized the current package. Staging and the
+strike prefer a sticky focus member, which moves during preparation only after
+it leaves current sight; the scout covers every live member's unseen footprint.
+During Recon and Verify, negative anti-air evidence requires current visibility
+over every footprint tile of every live member; the scout focuses the first
 unknown tile before the operation may commit.
 
 Forecast income is proposal evidence, not command credit. Providers, producer
@@ -117,14 +126,26 @@ Each production command still spends only the spendable current bank, uses an
 exact completed producer, and must fit that producer's conservative queue and
 egress bound.
 
-Current target value, current operational anti-air, available resources, and
-uncommitted providers may revise a connected package during Recon and Assemble,
-but revision never extends its preparation deadline. The operation freezes its
-exact assigned ids on entering SuppressAa. Later suppression- and strike-cohort
-losses are measured against the package's shared capability minimum; the
-required scout remains an exact-identity requirement. Missing the preparation
-deadline enters bounded recovery instead of extending or replacing the cohort
-indefinitely.
+During Recon and Assemble, a live member in current sight lets available
+resources and uncommitted providers revise the package against the committed
+members only. Members in current sight and remembered members of positive
+confidence count toward target durability and value; anti-air evidence remains
+current-only. Revision never changes the commitment or extends its preparation
+deadline. The operation freezes its exact assigned ids on entering SuppressAa.
+Later suppression- and strike-cohort losses are measured against the committed
+capability minimum; the required scout remains an exact-identity requirement.
+Missing the preparation deadline enters bounded recovery instead of extending or
+replacing the cohort indefinitely.
+
+The strike attacks the best live member in current sight, preferring the focus.
+When every live member has left sight, it attack-moves toward the best
+remembered member if no known anti-air covers the route or approach; known
+anti-air there recovers the operation as new air defense. Once current sight has
+found every admitted member gone, the operation ends even if those anchors have
+since left sight: before Strike, as a lost objective; after a settled strike, as
+complete, with the whole cluster recorded as observed gone. Before Strike, live
+members that have all been out of sight beyond the active-operation memory end
+the operation as stale intelligence.
 
 ## Air and lift operations
 
@@ -168,10 +189,14 @@ state and records the actual hold exactly once.
 The operations choose and execute objectives independently. When both select the
 same target, they exchange an explicit target-specific hold, release, or abort
 signal so a lift can follow air-defense suppression without depending on it.
-Only targetless or safely staged Executive armies can transfer into a lift;
-units holding a currently contested objective remain enlisted. Carrier
-production and extra Airworks use the same ordinary queues, costs,
-prerequisites, and deterministic capital ledger as all other bot production.
+Signals and shared experience credit match the target by owner and anchor. A
+connected operation keeps signaling its admitted primary anchor while its
+tactics focus another member, and an operation whose survivors move to standby
+still ends with a release or abort signal. Only targetless or safely staged
+Executive armies can transfer into a lift; units holding a currently contested
+objective remain enlisted. Carrier production and extra Airworks use the same
+ordinary queues, costs, prerequisites, and deterministic capital ledger as all
+other bot production.
 
 An undispatched scout slot may still be filled or trained while an air operation
 prepares. Once the operation has sent its exact scout, losing that unit during

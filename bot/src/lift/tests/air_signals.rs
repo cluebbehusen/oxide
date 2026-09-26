@@ -86,3 +86,33 @@ fn boarding_complete_lift() -> (Observation, LiftPlanner, crate::lift::LiftManif
     obs.tick += 1;
     (obs, planner, manifest)
 }
+
+#[test]
+fn a_shared_air_objective_matches_the_enclave_by_owner_and_anchor() {
+    let mut planner = recovering_empty_lift();
+    planner.support_latched = true;
+    let lift = planner.operation().expect("the fixture has a lift").clone();
+    let mut air = crate::strategy::AirOperation {
+        target_player: lift.target_player,
+        target_kind: oxide_sim::stats::BuildingKind::Foundry,
+        target: lift.target,
+        target_id: Some(BuildingId(lift.target_id.0 + 1)),
+        stage: crate::strategy::AirStage::Recon,
+        started_at: 0,
+        phase_started_at: 0,
+        scout: None,
+        scout_dispatch: None,
+        strike_hold: None,
+        artillery_staging: None,
+        artillery: Vec::new(),
+        strike_aircraft: Vec::new(),
+        strike_issued_at: None,
+        membership_frozen_at: None,
+    };
+    assert!(
+        planner.shares_air_objective(&air),
+        "support directives match by owner and anchor, so credit sharing does too"
+    );
+    air.target = air.target.offset(1, 0);
+    assert!(!planner.shares_air_objective(&air));
+}

@@ -172,6 +172,31 @@ impl Brain {
     }
 }
 
+#[cfg(test)]
+impl Brain {
+    /// Stages `strategy` through a checkpoint restore, so a staged planner
+    /// must pass the same validation as a saved session.
+    pub(crate) fn restore_with_strategy(
+        &self,
+        strategy: StrategicPlanner,
+        scenario: &oxide_sim::Scenario,
+        state: &oxide_sim::State,
+    ) -> Result<Self, String> {
+        let checkpoint = self.checkpoint()?;
+        let mut wire: BrainV1 = ciborium::from_reader(checkpoint.payload.as_slice())
+            .map_err(|error| error.to_string())?;
+        wire.mind.strategy = strategy;
+        Self::from_checkpoint(
+            &BotCheckpoint {
+                version: checkpoint.version,
+                payload: encode(&wire)?,
+            },
+            scenario,
+            state,
+        )
+    }
+}
+
 fn encode(wire: &impl Serialize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     ciborium::into_writer(wire, &mut bytes).map_err(|error| error.to_string())?;

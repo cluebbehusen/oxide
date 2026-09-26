@@ -1219,8 +1219,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let deadline = self
             .participants
             .strategy
-            .connected_package_diagnostics()
-            .map(|diagnostics| diagnostics.preparation_deadline)
+            .connected_deadline()
             .unwrap_or_else(|| {
                 self.context
                     .observation

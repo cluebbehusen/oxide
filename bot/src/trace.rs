@@ -603,7 +603,13 @@ pub struct ConnectedPackageTrace {
     pub derived_at: Tick,
     /// Fixed latest tick at which the package may finish preparation.
     pub preparation_deadline: Tick,
-    /// Canonical footprint anchors admitted as the operation's target cluster.
+    /// Canonical footprint anchors the operation committed to at admission.
+    pub admitted_anchors: Vec<TilePos>,
+    /// Admitted anchors whose members have not been observed gone.
+    pub live_anchors: Vec<TilePos>,
+    /// Member the operation stages, scouts, and strikes first.
+    pub focus: TilePos,
+    /// Canonical footprint anchors whose members sized the current package.
     pub target_anchors: Vec<TilePos>,
     /// Strategic value of the target cluster at the current derivation.
     pub target_value: u64,
@@ -2840,7 +2846,7 @@ pub(super) fn connected_force_trace(
 ) -> ConnectedForceTrace {
     let operation = planner.air_operation();
     let package = planner
-        .connected_package_diagnostics()
+        .connected_package_diagnostics(intelligence)
         .map(ConnectedPackageTrace::from_diagnostics);
     let status = match (planner.terminal_outcome(), operation) {
         (Some(AirOperationOutcome::Released { .. }), _) => ConnectedForceStatus::Released,
@@ -3029,14 +3035,19 @@ fn package_rejection_trace(
 
 impl ConnectedPackageTrace {
     fn from_diagnostics(diagnostics: ConnectedPackageDiagnostics) -> Self {
-        let mut target_anchors = diagnostics.target_anchors;
-        target_anchors.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
-        target_anchors.dedup();
+        let canonical = |mut anchors: Vec<TilePos>| {
+            anchors.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+            anchors.dedup();
+            anchors
+        };
         Self {
             admitted_at: diagnostics.admitted_at,
             derived_at: diagnostics.derived_at,
             preparation_deadline: diagnostics.preparation_deadline,
-            target_anchors,
+            admitted_anchors: canonical(diagnostics.admitted_anchors),
+            live_anchors: canonical(diagnostics.live_anchors),
+            focus: diagnostics.focus,
+            target_anchors: canonical(diagnostics.target_anchors),
             target_value: diagnostics.target_value,
             current_scrap: diagnostics.current_scrap,
             forecast_scrap: diagnostics.forecast_scrap,
@@ -3157,6 +3168,9 @@ mod tests {
             admitted_at: 10,
             derived_at: 20,
             preparation_deadline: 30,
+            admitted_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7), TilePos::new(10, 7)],
+            live_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
+            focus: TilePos::new(9, 8),
             target_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
             target_value: 40,
             current_scrap: 50,
@@ -3185,6 +3199,14 @@ mod tests {
         assert_eq!(package.chosen_bombing, 11);
         assert_eq!(
             package.target_anchors,
+            [TilePos::new(12, 7), TilePos::new(9, 8)]
+        );
+        assert_eq!(
+            package.admitted_anchors,
+            [TilePos::new(10, 7), TilePos::new(12, 7), TilePos::new(9, 8)]
+        );
+        assert_eq!(
+            package.live_anchors,
             [TilePos::new(12, 7), TilePos::new(9, 8)]
         );
         assert_eq!(
@@ -3338,6 +3360,9 @@ mod tests {
             admitted_at: 10,
             derived_at: 20,
             preparation_deadline: 30,
+            admitted_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
+            live_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
+            focus: TilePos::new(9, 8),
             target_anchors: vec![TilePos::new(9, 8), TilePos::new(12, 7)],
             target_value: 40,
             current_scrap: 50,
@@ -4320,6 +4345,9 @@ mod tests {
                 admitted_at: 100,
                 derived_at: 112,
                 preparation_deadline: 2_500,
+                admitted_anchors: vec![TilePos::new(12, 7), TilePos::new(15, 7)],
+                live_anchors: vec![TilePos::new(12, 7), TilePos::new(15, 7)],
+                focus: TilePos::new(12, 7),
                 target_anchors: vec![TilePos::new(12, 7), TilePos::new(15, 7)],
                 target_value: 12_000,
                 current_scrap: 900,
@@ -4698,13 +4726,16 @@ mod tests {
         assert_eq!(
             package.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             BTreeSet::from([
+                "admitted_anchors",
                 "admitted_at",
                 "chosen_bombing",
                 "chosen_capability",
                 "current_scrap",
                 "demands",
                 "derived_at",
+                "focus",
                 "forecast_scrap",
+                "live_anchors",
                 "minimum_capability",
                 "observed_aa_firepower",
                 "preparation_deadline",
