@@ -100,8 +100,13 @@ to pause) cover the rest. Rest a finger on a card to read its details, then lift
 to use it or slide off to cancel. Tapping or clicking a disabled card says why
 it is unavailable. To build, tap open ground to drop a ghost, drag it into
 place, and tap it to confirm. While Patrol is armed, taps (or left-clicks) add
-waypoints. The QUEUE toggle beside the command ribbon stands in for Shift: taps
-add to the selection, orders queue, and armed commands stay armed.
+waypoints. With units selected, a tap on open ground moves them (a setting on
+touch). The QUEUE toggle beside the command ribbon stands in for Shift: taps add
+to the selection, orders queue, and armed commands stay armed. The X at the
+front of that row returns to neutral: it cancels the armed command, turns QUEUE
+off, and clears the selection; tapping the ribbon itself cancels only the
+command. Resting a finger on a scrap pile shows what it holds. Key help and
+gesture hints stay hidden until a screen has sat idle for about 15 seconds.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;

@@ -241,6 +241,22 @@ long-presses; other armed verbs stand down for a long-press as they do for a
 right-click. `InputState::queue_held` merges Shift with the sticky QUEUE chip
 that touch-only builds show beside the mode ribbon.
 
+The ribbon row is `[X] [QUEUE] [ribbon]`, published as `LayoutModel.neutral`,
+`queue_toggle`, and `mode_ribbon`, and shown while a mode is armed, the human
+owns part of the selection, or QUEUE is on. `ribbon_row_press` hit-tests it
+before every other target: the X runs `InputState::go_neutral` (no armed mode,
+QUEUE off, nothing selected) and the ribbon cancels its mode. With own units
+selected and `TouchPrefs::tap_to_move` on, a tap whose `select::pick` finds
+nothing issues the context order; `pick` gives a fingertip a wider reach than a
+cursor. `readout_point` puts the pile readout under a resting battlefield finger
+or the mouse, never at a stale mouse point on a touch device.
+
+Coaching text waits for a stuck player. `hints::HintClock`, fed each frame's
+screen mode and presses, fades coaching in after about 15 seconds without a
+press and keeps it until the screen changes; draw code reads `hints::alpha`.
+Menu footers carry the coaching (`Menu::draw_with_coaching`), and screens that
+mix information with key help show only the information until then.
+
 Touch-only builds hide rows they cannot use: Controls and the left-handed preset
 (key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no
 file manager), and Quit (the platform closes apps). A match the platform
