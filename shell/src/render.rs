@@ -1104,10 +1104,10 @@ const DECOR_CAP: usize = 12;
 pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
     let s = ui_scale();
     let w = 460.0 * s;
-    let x = (screen_width() - w) * 0.5;
+    let x = (viewport().x - w) * 0.5;
     let lines = (crate::tutorial::STEPS
         .get(t.step)
-        .map(|step| step.body.len())
+        .map(|step| step.body(crate::platform::TOUCH_ONLY).len())
         .unwrap_or(0)
         + usize::from(t.coach_active())) as f32;
     Rect::new(x, 36.0 * s, w, 34.0 * s + lines * 18.0 * s + 10.0 * s)
@@ -1117,7 +1117,7 @@ pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
 pub fn tutorial_dismiss_rect() -> Rect {
     let s = ui_scale();
     let w = 460.0 * s;
-    let x = (screen_width() - w) * 0.5;
+    let x = (viewport().x - w) * 0.5;
     Rect::new(x + w - 26.0 * s, 40.0 * s, 22.0 * s, 22.0 * s)
 }
 
@@ -1132,6 +1132,7 @@ pub fn draw_tutorial(
     let Some(step) = crate::tutorial::STEPS.get(t.step) else {
         return;
     };
+    let body = step.body(crate::platform::TOUCH_ONLY);
     let s = ui_scale();
     let rect = tutorial_card_rect(t);
     let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
@@ -1150,7 +1151,7 @@ pub fn draw_tutorial(
         18.0 * s,
         SCRAP_COLOR,
     );
-    for (i, line) in step.body.iter().enumerate() {
+    for (i, line) in body.iter().enumerate() {
         let line = line
             .replace(
                 "{train}",
@@ -1185,7 +1186,7 @@ pub fn draw_tutorial(
         draw_text(
             coach.text(),
             x + 10.0 * s,
-            y + 42.0 * s + step.body.len() as f32 * line_h,
+            y + 42.0 * s + body.len() as f32 * line_h,
             15.0 * s,
             color,
         );

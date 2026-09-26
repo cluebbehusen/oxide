@@ -430,6 +430,48 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
     }
 }
 
+/// What the tutorial card did with a frame's pointer events.
+#[derive(Debug, Default, PartialEq)]
+struct TutorialPointer {
+    /// A press landed on the dismiss box.
+    dismissed: bool,
+    /// A mouse release landed on the card and was removed.
+    swallowed_release: bool,
+}
+
+/// The tutorial card is chrome: presses on it never reach the world or
+/// consume an armed gameplay action, and a press on its dismiss box
+/// ends the tutorial. A finger landing on the card is dropped before
+/// the gesture funnel sees it, so its later moves and lift belong to no
+/// touch; the dismiss box takes the padded touch target.
+fn filter_tutorial_pointer(
+    events: &mut Vec<RawEvent>,
+    card: macroquad::math::Rect,
+    dismiss: macroquad::math::Rect,
+    ui: f32,
+) -> TutorialPointer {
+    let touch_dismiss = crate::layout::touch_pad(dismiss, ui);
+    let mut filtered = TutorialPointer::default();
+    events.retain(|e| match *e {
+        RawEvent::MouseDown { button, x, y } if card.contains(vec2(x, y)) => {
+            filtered.dismissed |= button == MouseButton::Left && dismiss.contains(vec2(x, y));
+            false
+        }
+        RawEvent::MouseUp { x, y, .. } if card.contains(vec2(x, y)) => {
+            filtered.swallowed_release = true;
+            false
+        }
+        RawEvent::TouchDown { x, y, .. }
+            if card.contains(vec2(x, y)) || touch_dismiss.contains(vec2(x, y)) =>
+        {
+            filtered.dismissed |= touch_dismiss.contains(vec2(x, y));
+            false
+        }
+        _ => true,
+    });
+    filtered
+}
+
 fn playing_frame(
     app: &mut App,
     events: &mut Vec<RawEvent>,
@@ -442,29 +484,19 @@ fn playing_frame(
     let input_scope = app
         .game
         .diagnostic_span(oxide_kit::diagnostics::Phase::Input);
-    // The tutorial card is chrome; clicks on it must not reach the
-    // world or consume an armed gameplay action.
     if let Some(t) = &app.tutorial {
-        let dismiss = render::tutorial_dismiss_rect();
-        let card = render::tutorial_card_rect(t);
-        if events.iter().any(|e| {
-            matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
-                if dismiss.contains(vec2(*x, *y)))
-        }) {
+        let filtered = filter_tutorial_pointer(
+            events,
+            render::tutorial_card_rect(t),
+            render::tutorial_dismiss_rect(),
+            render::ui_scale(),
+        );
+        if filtered.dismissed {
             app.tutorial = None;
         }
         // Swallowing a release whose press began in the world must
         // also end that drag, or a later release completes it.
-        let swallowed_up = events.iter().any(|e| {
-            matches!(e, RawEvent::MouseUp { x, y, .. }
-                if card.contains(vec2(*x, *y)))
-        });
-        events.retain(|e| {
-            !matches!(e,
-                RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
-                    if card.contains(vec2(*x, *y)))
-        });
-        if swallowed_up {
+        if filtered.swallowed_release {
             app.input.drag_origin = None;
         }
     }
@@ -524,19 +556,10 @@ fn playing_frame(
     ) {
         next = Some(open_pause(&mut app.game, PauseCause::Suspension));
     }
-    if let Some(t) = app.tutorial.as_mut() {
-        if !t.advance(&app.game.demo) {
-            app.tutorial = None;
-        } else {
-            // A click on the card's dismiss box ends school.
-            let dismiss = render::tutorial_dismiss_rect();
-            if events.iter().any(|e| {
-                matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
-                    if dismiss.contains(vec2(*x, *y)))
-            }) {
-                app.tutorial = None;
-            }
-        }
+    if let Some(t) = app.tutorial.as_mut()
+        && !t.advance(&app.game.demo)
+    {
+        app.tutorial = None;
     }
     drop(input_scope);
     let profile_barrier = !app.game.presentation.paused && app.frame_profiler.take_start_barrier();
@@ -866,6 +889,85 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tutorial_card_keeps_its_presses_and_a_tap_dismisses_it() {
+        let card = macroquad::math::Rect::new(400.0, 36.0, 460.0, 120.0);
+        let dismiss = macroquad::math::Rect::new(834.0, 40.0, 22.0, 22.0);
+        let on_card = vec2(500.0, 100.0);
+        let world = vec2(500.0, 400.0);
+
+        let mut events = vec![
+            RawEvent::TouchDown {
+                id: 1,
+                x: on_card.x,
+                y: on_card.y,
+            },
+            RawEvent::TouchDown {
+                id: 2,
+                x: world.x,
+                y: world.y,
+            },
+            RawEvent::TouchUp {
+                id: 2,
+                x: world.x,
+                y: world.y,
+            },
+        ];
+        let filtered = filter_tutorial_pointer(&mut events, card, dismiss, 1.0);
+        assert_eq!(filtered, TutorialPointer::default());
+        assert_eq!(
+            events,
+            vec![
+                RawEvent::TouchDown {
+                    id: 2,
+                    x: world.x,
+                    y: world.y,
+                },
+                RawEvent::TouchUp {
+                    id: 2,
+                    x: world.x,
+                    y: world.y,
+                },
+            ],
+            "the card eats its finger and leaves the world's alone"
+        );
+
+        // A fingertip just outside the drawn box still reaches it.
+        let near = vec2(dismiss.right() + 6.0, dismiss.y + 4.0);
+        assert!(!dismiss.contains(near));
+        let mut events = vec![RawEvent::TouchDown {
+            id: 3,
+            x: near.x,
+            y: near.y,
+        }];
+        let filtered = filter_tutorial_pointer(&mut events, card, dismiss, 1.0);
+        assert!(filtered.dismissed);
+        assert!(events.is_empty());
+
+        let center = dismiss.center();
+        let mut events = vec![
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: center.x,
+                y: center.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: on_card.x,
+                y: on_card.y,
+            },
+        ];
+        let filtered = filter_tutorial_pointer(&mut events, card, dismiss, 1.0);
+        assert_eq!(
+            filtered,
+            TutorialPointer {
+                dismissed: true,
+                swallowed_release: true,
+            }
+        );
+        assert!(events.is_empty());
+    }
 
     fn configured_new_match_draft() -> NewMatchDraft {
         let mut draft = NewMatchDraft::default();

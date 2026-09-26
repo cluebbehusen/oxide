@@ -30,39 +30,68 @@ pub struct Demo {
 pub struct Step {
     /// Card headline.
     pub title: &'static str,
-    /// Body lines.
-    pub body: &'static [&'static str],
+    /// Body lines for mouse and keyboard.
+    desktop: &'static [&'static str],
+    /// Body lines for a touch-only build, which has no keys, right
+    /// button, or Shift.
+    touch: &'static [&'static str],
+}
+
+impl Step {
+    /// The body lines this build's player can follow.
+    pub fn body(&self, touch_only: bool) -> &'static [&'static str] {
+        if touch_only { self.touch } else { self.desktop }
+    }
 }
 
 /// The six demonstrations, in teaching order.
 pub const STEPS: [Step; 6] = [
     Step {
         title: "Train a Harvester",
-        body: &[
+        desktop: &[
             "Click your Foundry, then the Harvester card (or press {train}).",
+            "Harvesters are your economy: they haul scrap, build, and weld.",
+        ],
+        touch: &[
+            "Tap your Foundry, then the Harvester card.",
             "Harvesters are your economy: they haul scrap, build, and weld.",
         ],
     },
     Step {
         title: "Gather scrap",
-        body: &[
+        desktop: &[
             "Select a Harvester and right-click a scrap pile.",
             "Wait for its first load to reach your Foundry.",
             "The red IDLE count shows available Harvesters; press {idle} to select one.",
         ],
+        touch: &[
+            "Select a Harvester and long-press a scrap pile.",
+            "Wait for its first load to reach your Foundry.",
+            "The red IDLE count shows available Harvesters; tap it to select one.",
+        ],
     },
     Step {
         title: "Build a structure",
-        body: &[
+        desktop: &[
             "Select a second Harvester and leave the first one mining.",
             "Open construction ({build}), choose a category and building,",
             "then click open ground. Red tint means you can't build there.",
             "Hold Shift to chain: keep placing, and each build queues up.",
         ],
+        touch: &[
+            "Select a second Harvester and leave the first one mining.",
+            "Tap Build, then a building, then open ground.",
+            "Red tint means you can't build there.",
+        ],
     },
     Step {
         title: "Train a combat unit",
-        body: &[
+        desktop: &[
+            "Train a Sentinel at the Foundry.",
+            "Build a Fabricator to unlock advanced units and aircraft.",
+            "Select any visible unit to see its damage, range, and valid targets.",
+        ],
+        touch: &[
             "Train a Sentinel at the Foundry.",
             "Build a Fabricator to unlock advanced units and aircraft.",
             "Select any visible unit to see its damage, range, and valid targets.",
@@ -70,16 +99,25 @@ pub const STEPS: [Step; 6] = [
     },
     Step {
         title: "Advance under fire",
-        body: &[
+        desktop: &[
             "Right-click ground with a combat unit selected.",
             "Units keep moving and fire at enemies already in range.",
             "Press {attack} for attack-move when you want them to stop and chase.",
         ],
+        touch: &[
+            "Long-press ground with a combat unit selected.",
+            "Units keep moving and fire at enemies already in range.",
+            "Tap Attack-move first when you want them to stop and chase.",
+        ],
     },
     Step {
         title: "Win the match",
-        body: &[
+        desktop: &[
             "Press {back} to cancel, deselect, then open the pause menu.",
+            "Destroy all enemy Foundries to win.",
+        ],
+        touch: &[
+            "Tap the menu button at the top right to open the pause menu.",
             "Destroy all enemy Foundries to win.",
         ],
     },
@@ -192,13 +230,21 @@ impl Tutorial {
             .count();
         if bank < cost && hauling == 0 {
             return Some(CoachLine::Recovery(
-                "Out of scrap: use the idle badge to grab a harvester, then right-click a scrap pile."
-                    .to_string(),
+                recovery_line(crate::platform::TOUCH_ONLY).to_string(),
             ));
         }
         Some(CoachLine::Status(format!(
             "next: {cost} scrap | you have {bank} | {hauling} hauling"
         )))
+    }
+}
+
+/// The out-of-scrap nudge, in the order gesture this build has.
+fn recovery_line(touch_only: bool) -> &'static str {
+    if touch_only {
+        "Out of scrap: use the idle badge to grab a harvester, then long-press a scrap pile."
+    } else {
+        "Out of scrap: use the idle badge to grab a harvester, then right-click a scrap pile."
     }
 }
 
@@ -276,9 +322,21 @@ mod tests {
     fn every_card_string_is_ascii() {
         // The bundled font cannot be trusted to cover typographic punctuation.
         for step in &STEPS {
-            for line in std::iter::once(&step.title).chain(step.body) {
-                assert!(line.is_ascii(), "non-ASCII in card text: {line}");
+            for touch_only in [false, true] {
+                for line in std::iter::once(&step.title).chain(step.body(touch_only)) {
+                    assert!(line.is_ascii(), "non-ASCII in card text: {line}");
+                }
             }
         }
+    }
+
+    #[test]
+    fn touch_lessons_name_no_keys_or_mouse_buttons() {
+        for step in &STEPS {
+            for line in step.body(true) {
+                crate::platform::assert_touch_copy(line);
+            }
+        }
+        crate::platform::assert_touch_copy(recovery_line(true));
     }
 }
