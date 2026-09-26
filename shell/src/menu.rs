@@ -11,7 +11,9 @@ use oxide_sim::Scenario;
 use std::path::PathBuf;
 
 use crate::press::Press;
-use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{
+    SURFACE_MENU, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
+};
 
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
@@ -451,6 +453,16 @@ impl Menu {
     /// standard key help. The footer is coaching either way: it fades in
     /// only when the player seems stuck.
     pub fn draw_with_coaching(&self, subtitle: &str, coaching: Option<&str>) {
+        self.draw_face(subtitle, coaching, false);
+    }
+
+    /// Draws the menu while work it started runs: every row dimmed and
+    /// inert-looking, `subtitle` saying what is happening, no footer.
+    pub fn draw_busy(&self, subtitle: &str) {
+        self.draw_face(subtitle, None, true);
+    }
+
+    fn draw_face(&self, subtitle: &str, coaching: Option<&str>, busy: bool) {
         let subtitle = binding_hint(subtitle);
         let s = ui();
         let title_size = 96.0 * s;
@@ -497,15 +509,19 @@ impl Menu {
                 );
                 continue;
             }
-            let selected = index == self.selected;
-            let hovered = self.hover == Some(index);
+            let selected = index == self.selected && !busy;
+            let hovered = self.hover == Some(index) && !busy;
             if selected {
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TEXT_TITLE);
             } else if hovered {
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, TEXT_SECONDARY);
             }
-            let color = if selected { TEXT_PRIMARY } else { TEXT_BODY };
+            let color = match (busy, selected) {
+                (true, _) => TEXT_DISABLED,
+                (false, true) => TEXT_PRIMARY,
+                (false, false) => TEXT_BODY,
+            };
             if self.title == "CONTROLS"
                 && let Some((name, keys)) = label.rsplit_once(": ")
                 && let Some((primary, secondary)) = keys.split_once(" | ")
@@ -551,7 +567,7 @@ impl Menu {
             );
         }
 
-        if self.items.is_empty() {
+        if self.items.is_empty() || busy {
             return;
         }
 

@@ -272,6 +272,12 @@ impl PauseScreen {
         std::mem::take(&mut self.keyboard_request)
     }
 
+    /// Draws the menu while a save this screen asked for runs: the same
+    /// dialog, dimmed, saying so, so leaving never flashes another screen.
+    pub fn draw_saving(&self, line: &str) {
+        self.menu.draw_busy(line);
+    }
+
     /// Draws the current face: the menu, or the name field with its
     /// Save and Cancel buttons.
     pub fn draw(&self, scenario_name: &str, mouse: Vec2) {

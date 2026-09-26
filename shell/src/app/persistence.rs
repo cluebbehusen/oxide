@@ -264,15 +264,18 @@ pub(super) fn frame(app: &mut App, mut busy: Box<Busy>, events: &[RawEvent]) -> 
         1 => "..",
         _ => "...",
     };
-    busy.menu.draw(&format!(
-        "{}{}",
-        if loading {
-            "Loading game"
-        } else {
-            "Saving game"
-        },
-        dots
-    ));
+    match &*busy.back {
+        Screen::Pause(pause) if !loading => pause.draw_saving(&format!("Saving{dots}")),
+        _ => busy.menu.draw(&format!(
+            "{}{}",
+            if loading {
+                "Loading game"
+            } else {
+                "Saving game"
+            },
+            dots
+        )),
+    }
     if loading
         && app.persistence_result.is_none()
         && (busy.menu.handle(events, &mut app.input.mouse).is_some()
