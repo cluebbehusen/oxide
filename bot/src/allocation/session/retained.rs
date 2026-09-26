@@ -487,16 +487,16 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             }
         }
 
-        let active_connected = self.participants.strategy.active_connected_obligation(
-            self.context.air_evidence(),
-            ConnectedInputs {
+        let active_connected = self
+            .participants
+            .strategy
+            .retained_obligation(ConnectedInputs {
                 planning: &self.participants.policy.planning,
                 resources: &resources,
                 unavailable: &claims.planner_claims,
                 paid_exclusions,
                 reserve: CapitalReserve::default(),
-            },
-        );
+            });
         let active_lift = self.participants.lifts.active_production_obligation();
         let mut connected_import = active_connected.as_ref().map(active_connected_obligation);
         let mut lift_import = active_lift.as_ref().map(active_lift_production_obligation);
@@ -515,7 +515,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                         .strategy
                         .air_admitted_at()
                         .unwrap_or(self.context.observation.tick),
-                    active_air_units(self.participants.strategy, self.context.observation),
+                    active_air_units(&self.participants.strategy, self.context.observation),
                 )
             })
         };
@@ -742,11 +742,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         if !allocation_possible || !claims.opening_core.ready {
             return 0;
         }
-        let Some(target) = self.participants.strategy.prospective_recon_target(
-            self.context.air_evidence(),
-            &claims.planner_claims,
-            self.context.lift_support,
-        ) else {
+        let Some(target) = self
+            .participants
+            .strategy
+            .prospective_recon_target(&claims.planner_claims, self.context.lift_support)
+        else {
             return 0;
         };
         {
@@ -1111,26 +1111,23 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             // prove the air operation itself infeasible.
             return;
         };
-        let Some(result) = self.participants.strategy.prepare_active_island(
-            self.context.air_evidence(),
-            IslandInputs {
-                connected: ConnectedInputs {
-                    planning: &self.participants.policy.planning,
-                    resources: &obligations.resources,
-                    unavailable: &claims.planner_claims,
-                    paid_exclusions,
-                    reserve: CapitalReserve {
-                        current: protected_current_scrap,
-                        forecast: protected_forecast_scrap,
-                    },
+        let Some(result) = self.participants.strategy.island_preparation(IslandInputs {
+            connected: ConnectedInputs {
+                planning: &self.participants.policy.planning,
+                resources: &obligations.resources,
+                unavailable: &claims.planner_claims,
+                paid_exclusions,
+                reserve: CapitalReserve {
+                    current: protected_current_scrap,
+                    forecast: protected_forecast_scrap,
                 },
-                lanes: ProducerLanes {
-                    prior_intents: &prior_producer_intents,
-                    reservations: &producer_lane_reservations,
-                },
-                allow_procurement: claims.opening_core.ready,
             },
-        ) else {
+            lanes: ProducerLanes {
+                prior_intents: &prior_producer_intents,
+                reservations: &producer_lane_reservations,
+            },
+            allow_procurement: claims.opening_core.ready,
+        }) else {
             return;
         };
         let accepted_at = accepted_at.expect("a staged island operation has an admission tick");
@@ -1211,19 +1208,16 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let revision = self
             .participants
             .strategy
-            .active_connected_revision_proposal(
-                self.context.air_evidence(),
-                ConnectedInputs {
-                    planning: &self.participants.policy.planning,
-                    resources: &obligations.resources,
-                    unavailable: &external_claims,
-                    paid_exclusions,
-                    reserve: CapitalReserve {
-                        current: protected_current_scrap,
-                        forecast: protected_forecast_scrap,
-                    },
+            .connected_revision(ConnectedInputs {
+                planning: &self.participants.policy.planning,
+                resources: &obligations.resources,
+                unavailable: &external_claims,
+                paid_exclusions,
+                reserve: CapitalReserve {
+                    current: protected_current_scrap,
+                    forecast: protected_forecast_scrap,
                 },
-            );
+            });
         match revision {
             Ok(None) => ActiveRevisionPreparation::default(),
             Ok(Some(proposal)) => {
@@ -1263,12 +1257,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             },
             Err(rejected) => {
                 let retained_units =
-                    active_air_units(self.participants.strategy, self.context.observation);
+                    active_air_units(&self.participants.strategy, self.context.observation);
                 remove_active_connected_obligation(&mut obligations.obligations);
-                self.participants.strategy.reject_active_connected_revision(
-                    rejected.reason,
-                    self.context.observation.tick,
-                );
+                self.participants
+                    .strategy
+                    .recover_connected(rejected.reason.recovery_reason());
                 retain_first_coordinator_failure(
                     &mut obligations.coordinator_failure,
                     AllocationCoordinatorStageTrace::ObligationCollection,
@@ -1339,7 +1332,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         );
         self.participants
             .strategy
-            .recover_unfundable_active_connected(self.context.observation.tick);
+            .recover_connected(AirRecoveryReason::PreparationInfeasible);
         obligations.active_connected = None;
     }
 
@@ -1510,7 +1503,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
     ) {
         let refreshed = PlannerClaims::new(
             self.context.enlisted,
-            self.participants.strategy,
+            &self.participants.strategy,
             self.participants.raids,
             self.participants.lifts,
         );
@@ -1547,7 +1540,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
     ) {
         let mut planner_owned = PlannerClaims::new(
             self.context.enlisted,
-            self.participants.strategy,
+            &self.participants.strategy,
             self.participants.raids,
             self.participants.lifts,
         )
@@ -1618,13 +1611,14 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         ) {
             return false;
         }
-        let retained_units = active_air_units(self.participants.strategy, self.context.observation);
+        let retained_units =
+            active_air_units(&self.participants.strategy, self.context.observation);
         obligations
             .obligations
             .retain(|obligation| obligation.owner() != owner);
         self.participants
             .strategy
-            .recover_unfundable_active_connected(self.context.observation.tick);
+            .recover_connected(AirRecoveryReason::PreparationInfeasible);
         retain_first_coordinator_failure(
             &mut obligations.coordinator_failure,
             AllocationCoordinatorStageTrace::ObligationCollection,

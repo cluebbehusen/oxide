@@ -1025,6 +1025,27 @@ pub(super) enum ConnectedPlanRejection {
 }
 
 impl ConnectedPlanRejection {
+    /// The recovery an admitted operation enters when its revision fails
+    /// this way.
+    pub(crate) fn recovery_reason(self) -> AirRecoveryReason {
+        match self {
+            Self::DisconnectedGroundRoute | Self::UnreachableGroupStaging { .. } => {
+                AirRecoveryReason::UnreachableStaging
+            }
+            Self::Package {
+                reason: ForcePackageRejection::UntargetableCurrentAirDefense { .. },
+                ..
+            } => AirRecoveryReason::NewAirDefense,
+            Self::Package {
+                reason: ForcePackageRejection::TargetNotActionable,
+                ..
+            } => AirRecoveryReason::ObjectiveLost,
+            Self::InsufficientStandingForce { .. } | Self::Package { .. } => {
+                AirRecoveryReason::PreparationInfeasible
+            }
+        }
+    }
+
     pub(crate) fn is_deferred(self) -> bool {
         matches!(
             self,
@@ -1040,25 +1061,6 @@ impl ConnectedPlanRejection {
 pub(super) struct RejectedConnectedCandidate {
     pub(super) target: BuildingContact,
     pub(super) reason: ConnectedPlanRejection,
-}
-
-fn recovery_for_rejection(rejection: ConnectedPlanRejection) -> AirRecoveryReason {
-    match rejection {
-        ConnectedPlanRejection::DisconnectedGroundRoute
-        | ConnectedPlanRejection::UnreachableGroupStaging { .. } => {
-            AirRecoveryReason::UnreachableStaging
-        }
-        ConnectedPlanRejection::Package {
-            reason: ForcePackageRejection::UntargetableCurrentAirDefense { .. },
-            ..
-        } => AirRecoveryReason::NewAirDefense,
-        ConnectedPlanRejection::Package {
-            reason: ForcePackageRejection::TargetNotActionable,
-            ..
-        } => AirRecoveryReason::ObjectiveLost,
-        ConnectedPlanRejection::InsufficientStandingForce { .. }
-        | ConnectedPlanRejection::Package { .. } => AirRecoveryReason::PreparationInfeasible,
-    }
 }
 
 /// One-think terminal signal for a coordinated lift targeting the same base.
@@ -2633,12 +2635,16 @@ impl StrategicPlanner {
             .chain(AirRoster::from(&self.standby).members())
     }
 
-    pub(crate) fn observe_operation(
-        &mut self,
-        profile: &ResolvedProfile,
-        obs: &Observation,
-        intel: &StrategicIntelligence,
-    ) {
+    /// Begins one decision's turn: releases dead standby members, refreshes
+    /// the operation's target, aborts on current evidence, and settles the
+    /// paid ledger. Every later read in the decision sees this state.
+    pub(crate) fn observe<'a>(&'a mut self, ev: AirEvidence<'a>) -> AirTurn<'a> {
+        let AirEvidence {
+            profile,
+            obs,
+            intel,
+            ..
+        } = ev;
         self.standby.prune(obs);
         if let Some(active) = &mut self.air {
             refresh_target(&mut active.op, &active.plan, intel);
@@ -2647,9 +2653,10 @@ impl StrategicPlanner {
             }
         }
         self.prune_paid_production(obs);
+        AirTurn { planner: self, ev }
     }
 
-    pub(crate) fn apply_membership(&mut self, membership: AirMembership, now: Tick) {
+    fn apply_membership(&mut self, membership: AirMembership, now: Tick) {
         let active = self
             .air
             .as_mut()
@@ -2683,7 +2690,7 @@ impl StrategicPlanner {
         })
     }
 
-    pub(crate) fn prepare_active_island(
+    fn island_preparation(
         &self,
         ev: AirEvidence<'_>,
         inputs: IslandInputs<'_>,
@@ -2745,10 +2752,10 @@ impl StrategicPlanner {
     /// Proposes one exact common-minimum connected assault without mutating
     /// planner state. Island admission and an already-admitted assault remain
     /// on the ordinary lifecycle path.
-    pub(crate) fn fresh_connected_minimum_proposal(
+    fn fresh_connected(
         &self,
-        experience: &super::experience::Experience,
         ev: AirEvidence<'_>,
+        experience: &super::experience::Experience,
         inputs: ConnectedInputs<'_>,
     ) -> Result<Option<FreshConnectedProposal>, RejectedConnectedCandidate> {
         let AirEvidence {
@@ -2879,7 +2886,7 @@ impl StrategicPlanner {
     /// its membership remains revisable. The fixed preparation deadline and
     /// the committed identity and target set are retained; the package is
     /// sized against the committed members only.
-    pub(crate) fn active_connected_revision_proposal(
+    fn connected_revision(
         &self,
         ev: AirEvidence<'_>,
         inputs: ConnectedInputs<'_>,
@@ -2964,31 +2971,10 @@ impl StrategicPlanner {
         Ok(Some(proposal))
     }
 
-    /// Moves an admitted connected operation into bounded recovery after its
-    /// current revision can no longer field the shared minimum.
-    pub(crate) fn reject_active_connected_revision(
-        &mut self,
-        rejection: ConnectedPlanRejection,
-        observed_at: Tick,
-    ) {
-        if rejection.is_deferred() {
-            return;
-        }
-        let active = self
-            .air
-            .as_mut()
-            .expect("a rejected active revision belongs to an admitted operation");
-        recover(
-            &mut active.op,
-            recovery_for_rejection(rejection),
-            observed_at,
-        );
-    }
-
     /// Installs the exact proposal selected by cross-domain adjudication. No
     /// observation is accepted here, so commitment cannot rerank its target,
     /// rebuild its package, or change its producer basis.
-    pub(crate) fn commit_connected(&mut self, proposal: FreshConnectedProposal) {
+    fn commit_connected(&mut self, proposal: FreshConnectedProposal) {
         let revises_active = proposal.revises_active_operation();
         let paid = match &proposal.origin {
             ConnectedProposalOrigin::Active { plan, .. } => plan.paid_production.clone(),
@@ -3008,7 +2994,7 @@ impl StrategicPlanner {
     }
 
     /// Reconstructs unpaid demand from the retained package and current inventory.
-    pub(crate) fn active_connected_obligation(
+    fn retained_obligation(
         &self,
         ev: AirEvidence<'_>,
         inputs: ConnectedInputs<'_>,
@@ -3262,25 +3248,8 @@ impl StrategicPlanner {
         Some(out)
     }
 
-    /// Enters recovery when shared allocation can no longer retain an active
-    /// connected schedule. The Brain's post-allocation strategy pass observes
-    /// this same tick and owns the one return-home order.
-    pub(crate) fn recover_unfundable_active_connected(&mut self, observed_at: Tick) {
-        let active = self
-            .air
-            .as_mut()
-            .expect("an active connected obligation can only come from its planner");
-        debug_assert!(active.op.assault_admitted());
-        debug_assert!(matches!(active.plan, AirPlan::Connected(_)));
-        recover(
-            &mut active.op,
-            AirRecoveryReason::PreparationInfeasible,
-            observed_at,
-        );
-    }
-
     /// Only purchases emitted now cross from forecast evidence into ownership.
-    pub(crate) fn record_connected_purchases(
+    fn record_connected_purchases(
         &mut self,
         schedule: &[crate::allocation::ScheduledProducerJob],
         observed_at: Tick,
@@ -3394,7 +3363,7 @@ impl StrategicPlanner {
     /// post-allocation lifecycle will retain or admit on this observation.
     /// This preview is read-only so shared allocation can preserve capital
     /// needed by the immediately following Lift handoff.
-    pub(crate) fn prospective_recon_target<'a>(
+    fn prospective_recon_target<'a>(
         &self,
         ev: AirEvidence<'a>,
         unavailable: &[UnitId],
@@ -3461,14 +3430,7 @@ impl StrategicPlanner {
         .then_some(target)
     }
 
-    /// Runs the ordinary tactical lifecycle after the coordinator has already
-    /// accepted or rejected the fresh connected-offense proposal for this
-    /// observation. Island and remembered reconnaissance behavior is unchanged.
-    pub(crate) fn think(
-        &mut self,
-        ev: AirEvidence<'_>,
-        inputs: ThinkInputs<'_>,
-    ) -> StrategicDecision {
+    fn think(&mut self, ev: AirEvidence<'_>, inputs: ThinkInputs<'_>) -> StrategicDecision {
         let AirEvidence {
             profile,
             tuning,
@@ -3781,6 +3743,132 @@ impl StrategicPlanner {
             self.air = Some(ActiveAirOperation { op, plan });
         }
         out
+    }
+}
+
+/// One decision's exclusive access to the air planner, bound to the evidence
+/// it observed. Proposals read the planner; only the named transitions change
+/// it, in the order allocation reaches them.
+pub(crate) struct AirTurn<'a> {
+    planner: &'a mut StrategicPlanner,
+    ev: AirEvidence<'a>,
+}
+
+impl core::ops::Deref for AirTurn<'_> {
+    type Target = StrategicPlanner;
+
+    fn deref(&self) -> &StrategicPlanner {
+        self.planner
+    }
+}
+
+/// What the accepted allocation settles for the air planner.
+pub(crate) enum AirAdjudication {
+    Unchanged,
+    /// Retained membership the allocation validated.
+    Members(AirMembership),
+    /// The accepted fresh proposal or active revision.
+    Connected(Box<FreshConnectedProposal>),
+}
+
+/// The accepted connected proposal, otherwise the membership of the retained
+/// connected or island operation the allocation imported.
+pub(crate) fn air_adjudication(
+    connected: Option<FreshConnectedProposal>,
+    active_connected: Option<&ActiveConnectedObligation>,
+    island: Option<&IslandPreparation>,
+) -> AirAdjudication {
+    if let Some(proposal) = connected {
+        return AirAdjudication::Connected(Box::new(proposal));
+    }
+    active_connected
+        .map(|active| &active.membership)
+        .or_else(|| island.map(|island| &island.membership))
+        .map_or(AirAdjudication::Unchanged, |membership| {
+            AirAdjudication::Members(membership.clone())
+        })
+}
+
+impl<'a> AirTurn<'a> {
+    /// Lends this turn to a shorter-lived owner such as one allocation pass.
+    pub(crate) fn reborrow(&mut self) -> AirTurn<'_> {
+        AirTurn {
+            planner: self.planner,
+            ev: self.ev,
+        }
+    }
+
+    pub(crate) fn retained_obligation(
+        &self,
+        inputs: ConnectedInputs<'_>,
+    ) -> Option<ActiveConnectedObligation> {
+        self.planner.retained_obligation(self.ev, inputs)
+    }
+
+    pub(crate) fn island_preparation(&self, inputs: IslandInputs<'_>) -> Option<IslandPreparation> {
+        self.planner.island_preparation(self.ev, inputs)
+    }
+
+    pub(crate) fn connected_revision(
+        &self,
+        inputs: ConnectedInputs<'_>,
+    ) -> Result<Option<FreshConnectedProposal>, RejectedConnectedCandidate> {
+        self.planner.connected_revision(self.ev, inputs)
+    }
+
+    pub(crate) fn fresh_connected(
+        &self,
+        experience: &super::experience::Experience,
+        inputs: ConnectedInputs<'_>,
+    ) -> Result<Option<FreshConnectedProposal>, RejectedConnectedCandidate> {
+        self.planner.fresh_connected(self.ev, experience, inputs)
+    }
+
+    pub(crate) fn prospective_recon_target(
+        &self,
+        unavailable: &[UnitId],
+        lift_support: Option<&LiftSupportRequest>,
+    ) -> Option<&'a BuildingContact> {
+        self.planner
+            .prospective_recon_target(self.ev, unavailable, lift_support)
+    }
+
+    /// Moves the admitted connected operation into bounded recovery as soon as
+    /// preparation proves it cannot continue, so every later read in this
+    /// allocation sees the recovery phase. The post-allocation think owns the
+    /// one return-home order.
+    pub(crate) fn recover_connected(&mut self, reason: AirRecoveryReason) {
+        let active = self
+            .planner
+            .air
+            .as_mut()
+            .expect("an active connected obligation can only come from its planner");
+        debug_assert!(active.op.assault_admitted());
+        debug_assert!(matches!(active.plan, AirPlan::Connected(_)));
+        recover(&mut active.op, reason, self.ev.obs.tick);
+    }
+
+    /// Installs the accepted allocation's verdict. Only purchases emitted now
+    /// cross from forecast evidence into the connected ledger.
+    pub(crate) fn apply(
+        &mut self,
+        verdict: AirAdjudication,
+        schedule: &[crate::allocation::ScheduledProducerJob],
+    ) {
+        let now = self.ev.obs.tick;
+        match verdict {
+            AirAdjudication::Unchanged => {}
+            AirAdjudication::Members(membership) => self.planner.apply_membership(membership, now),
+            AirAdjudication::Connected(proposal) => self.planner.commit_connected(*proposal),
+        }
+        self.planner.record_connected_purchases(schedule, now);
+    }
+
+    /// Runs the ordinary tactical lifecycle after the coordinator has already
+    /// accepted or rejected the fresh connected-offense proposal for this
+    /// observation. Island and remembered reconnaissance behavior is unchanged.
+    pub(crate) fn think(&mut self, inputs: ThinkInputs<'_>) -> StrategicDecision {
+        self.planner.think(self.ev, inputs)
     }
 }
 

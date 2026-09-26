@@ -51,6 +51,15 @@ pub(crate) struct DecisionContext<'a> {
     pub enlisted: &'a [UnitId],
 }
 
+/// Owners one decision admits work for, before the air planner observes it.
+pub(crate) struct DecisionParticipants<'a> {
+    pub(crate) policy: &'a mut UtilityPolicy,
+    pub(crate) strategy: &'a mut StrategicPlanner,
+    pub(crate) lifts: &'a mut LiftPlanner,
+    pub(crate) team: &'a mut TeamReliefPlanner,
+    pub(crate) raids: &'a mut RaidPlanner,
+}
+
 pub(crate) struct AdmittedWork {
     pub intents: Vec<Intent>,
     pub reservations: Vec<UnitId>,
@@ -94,7 +103,7 @@ impl UtilityGrant {
 
 pub(crate) fn admit_decision(
     context: DecisionContext<'_>,
-    participants: AllocationParticipants<'_>,
+    participants: DecisionParticipants<'_>,
     intelligence: &mut StrategicIntelligence,
     mut recorder: Option<&mut DecisionTraceRecorder>,
     observer: Option<&dyn PhaseObserver>,
@@ -111,7 +120,7 @@ pub(crate) fn admit_decision(
         armies,
         enlisted,
     } = context;
-    let AllocationParticipants {
+    let DecisionParticipants {
         policy,
         strategy,
         lifts,
@@ -157,7 +166,16 @@ pub(crate) fn admit_decision(
     );
 
     intelligence.update(oriented);
-    strategy.observe_operation(profile, oriented, intelligence);
+    let intelligence = &*intelligence;
+    let mut air = strategy.observe(AirEvidence {
+        profile,
+        tuning,
+        obs: oriented,
+        intel: intelligence,
+        home: oriented_home,
+        public_map: Some(oriented_public_map),
+        orientation,
+    });
     lifts.observe_operation(oriented);
     policy.refresh_allocation_worker_safety(
         oriented,
@@ -172,7 +190,7 @@ pub(crate) fn admit_decision(
             target: operation.target,
             planned_drops: operation.planned_drops.clone(),
         });
-    let claims_after_team = PlannerClaims::new(enlisted, strategy, raids, lifts);
+    let claims_after_team = PlannerClaims::new(enlisted, &air, raids, lifts);
     let team_claims = team.reservations();
     let mut prior_non_lift_claims = claims_after_team.without_lift(&team_claims);
     prior_non_lift_claims.extend(policy.state.reconnaissance.reservations());
@@ -192,7 +210,7 @@ pub(crate) fn admit_decision(
         u64::from(dials.minimum_core_equivalents),
     );
     let mut raid_exclusions =
-        PlannerClaims::new(enlisted, strategy, raids, lifts).without_raid(&team_claims);
+        PlannerClaims::new(enlisted, &air, raids, lifts).without_raid(&team_claims);
     raid_exclusions.extend(policy.state.reconnaissance.reservations());
     raid_exclusions.extend(policy.support_reservations());
     raid_exclusions.sort_unstable();
@@ -215,7 +233,7 @@ pub(crate) fn admit_decision(
 
     let connected_force_before = recorder
         .is_some()
-        .then(|| connected_force_trace(strategy, intelligence, None));
+        .then(|| connected_force_trace(&air, intelligence, None));
     let allocation_outcome = AllocationSession::new(
         AllocationSessionContext {
             evidence,
@@ -232,7 +250,7 @@ pub(crate) fn admit_decision(
         },
         AllocationParticipants {
             policy,
-            strategy,
+            strategy: air.reborrow(),
             lifts,
             team,
             raids,
@@ -308,41 +326,27 @@ pub(crate) fn admit_decision(
         .chain(policy.economic_saving().and_then(|saving| saving.builder))
         .collect::<Vec<_>>();
     let mut air_external =
-        PlannerClaims::new(enlisted, strategy, raids, lifts).without_air(&team.reservations());
+        PlannerClaims::new(enlisted, &air, raids, lifts).without_air(&team.reservations());
     air_external.extend(policy.state.reconnaissance.reservations());
     air_external.extend(policy.support_reservations());
-    let air_decision = strategy.think(
-        AirEvidence {
-            profile,
-            tuning,
-            obs: oriented,
-            intel: intelligence,
-            home: oriented_home,
-            public_map: Some(oriented_public_map),
-            orientation,
+    let air_decision = air.think(ThinkInputs {
+        planning: &policy.planning,
+        unavailable: &planner_claims,
+        claimed_elsewhere: &air_external,
+        lift_support: lift_support_request.as_ref(),
+        allow_new_operation: allocation_ok
+            && (connected_continues || allow_new_voluntary_operations),
+        owned_only: !allocation_ok || connected_continues || island_allocated || accepted_connected,
+        reserve: CapitalReserve {
+            current: oriented.scrap.saturating_sub(connected_spendable),
+            forecast: connected_forecast_hold,
         },
-        ThinkInputs {
-            planning: &policy.planning,
-            unavailable: &planner_claims,
-            claimed_elsewhere: &air_external,
-            lift_support: lift_support_request.as_ref(),
-            allow_new_operation: allocation_ok
-                && (connected_continues || allow_new_voluntary_operations),
-            owned_only: !allocation_ok
-                || connected_continues
-                || island_allocated
-                || accepted_connected,
-            reserve: CapitalReserve {
-                current: oriented.scrap.saturating_sub(connected_spendable),
-                forecast: connected_forecast_hold,
-            },
-            lanes: ProducerLanes {
-                prior_intents: &allocated_producer_intents,
-                reservations: &producer_lane_reservations,
-            },
-            paid_exclusions: &air_paid_exclusions(policy, raids),
+        lanes: ProducerLanes {
+            prior_intents: &allocated_producer_intents,
+            reservations: &producer_lane_reservations,
         },
-    );
+        paid_exclusions: &air_paid_exclusions(policy, raids),
+    });
     let air_decision_for_trace = air_decision.clone();
     let mut strategic = air_decision.into();
     if island_allocated || connected_continues || accepted_connected {

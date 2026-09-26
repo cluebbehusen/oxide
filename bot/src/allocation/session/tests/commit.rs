@@ -40,11 +40,12 @@ fn rejected_repair_renewal_keeps_the_original_funding_deadline() {
         let mut raids = RaidPlanner::new();
 
         let intelligence = StrategicIntelligence::new();
+        let session_context = setup.context(&obs, home, &map, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&obs, home, &map, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,

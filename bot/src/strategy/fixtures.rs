@@ -470,6 +470,19 @@ impl StrategicPlanner {
         &self.outcomes
     }
 
+    /// A planner that has just committed `proposal` and bought nothing.
+    pub(crate) fn committed(proposal: FreshConnectedProposal) -> Self {
+        let mut planner = Self::new();
+        planner.commit_connected(proposal);
+        planner
+    }
+
+    /// A turn over the current state that skips observation, for fixtures
+    /// that stage the observed state themselves.
+    pub(crate) fn unobserved_turn<'a>(&'a mut self, ev: AirEvidence<'a>) -> AirTurn<'a> {
+        AirTurn { planner: self, ev }
+    }
+
     /// Prunes the paid ledger against `obs` and returns what remains.
     pub(crate) fn settle_paid_production(&mut self, obs: &Observation) -> Vec<ConnectedPurchase> {
         self.prune_paid_production(obs);

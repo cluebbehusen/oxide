@@ -2633,7 +2633,7 @@ mod tests {
         lifts: &mut LiftPlanner,
         strategy: &mut crate::strategy::StrategicPlanner,
     ) -> crate::allocation::AdmittedWork {
-        use crate::allocation::{AllocationParticipants, DecisionContext, admit_decision};
+        use crate::allocation::{DecisionContext, DecisionParticipants, admit_decision};
         use crate::utility::{Dials, UtilityPolicy};
         let mut obs = obs.clone();
         for (id, anchor) in [(800, HOME.offset(10, 10)), (801, HOME.offset(11, 10))] {
@@ -2675,7 +2675,7 @@ mod tests {
                 armies: &[],
                 enlisted: &[],
             },
-            AllocationParticipants {
+            DecisionParticipants {
                 policy: &mut UtilityPolicy::new(),
                 strategy,
                 lifts,
@@ -2824,18 +2824,18 @@ mod tests {
         let mut air = StrategicPlanner::new();
         let mut intel = crate::intelligence::StrategicIntelligence::new();
         intel.update(&obs);
-        air.think(
-            AirEvidence {
-                profile: &profile,
-                tuning,
-                obs: &obs,
-                intel: &intel,
-                home: HOME,
-                public_map: None,
-                orientation: crate::orient::Orientation::for_home(&obs, HOME),
-            },
-            ThinkInputs::fixture(&crate::planning::PlanningWork::default()),
-        );
+        air.observe(AirEvidence {
+            profile: &profile,
+            tuning,
+            obs: &obs,
+            intel: &intel,
+            home: HOME,
+            public_map: None,
+            orientation: crate::orient::Orientation::for_home(&obs, HOME),
+        })
+        .think(ThinkInputs::fixture(
+            &crate::planning::PlanningWork::default(),
+        ));
         assert_eq!(air.air_operation().unwrap().scout, Some(UnitId(1000)));
         assert!(air.air_operation().unwrap().scout_dispatch.is_some());
         planner.operation.as_mut().unwrap().phase = LiftPhase::AwaitSupport;

@@ -732,8 +732,8 @@ fn active_lift_and_island_share_the_last_shallow_airworks_slot_without_starvatio
     intelligence.update(&observed);
 
     let mut strategy = StrategicPlanner::new();
-    let island_admission = strategy.think(
-        AirEvidence {
+    let island_admission = strategy
+        .observe(AirEvidence {
             profile: &profile,
             tuning,
             obs: &observed,
@@ -741,9 +741,10 @@ fn active_lift_and_island_share_the_last_shallow_airworks_slot_without_starvatio
             home,
             public_map: Some(&public_map),
             orientation,
-        },
-        ThinkInputs::fixture(&crate::planning::PlanningWork::default()),
-    );
+        })
+        .think(ThinkInputs::fixture(
+            &crate::planning::PlanningWork::default(),
+        ));
     let island_train = island_admission
         .intents
         .iter()
@@ -946,8 +947,8 @@ fn admitted_island_air_trains_before_a_fresh_foundry_without_being_thought_twice
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observed);
     let mut planner = StrategicPlanner::new();
-    let admission = planner.think(
-        AirEvidence {
+    let admission = planner
+        .observe(AirEvidence {
             profile: &profile,
             tuning,
             obs: &observed,
@@ -955,9 +956,10 @@ fn admitted_island_air_trains_before_a_fresh_foundry_without_being_thought_twice
             home,
             public_map: Some(&public_map),
             orientation,
-        },
-        ThinkInputs::fixture(&crate::planning::PlanningWork::default()),
-    );
+        })
+        .think(ThinkInputs::fixture(
+            &crate::planning::PlanningWork::default(),
+        ));
     assert!(planner.air_operation().is_some_and(|operation| {
         operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
     }));

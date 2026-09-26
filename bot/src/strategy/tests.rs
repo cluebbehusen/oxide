@@ -109,8 +109,7 @@ impl StrategicPlanner {
             paid_exclusions: &[],
             reserve,
         };
-        let rejected_connected_candidate = match self.active_connected_revision_proposal(ev, inputs)
-        {
+        let rejected_connected_candidate = match self.connected_revision(ev, inputs) {
             Ok(Some(mut proposal)) => {
                 if let Some(richest) = proposal.marginal_variants().last().cloned() {
                     assert!(proposal.select_marginal(&richest));
@@ -119,15 +118,14 @@ impl StrategicPlanner {
                 None
             }
             Err(rejected) => {
-                self.reject_active_connected_revision(rejected.reason, obs.tick);
+                if !rejected.reason.is_deferred() {
+                    self.unobserved_turn(ev)
+                        .recover_connected(rejected.reason.recovery_reason());
+                }
                 Some(rejected)
             }
             Ok(None) if coordination.allow_new_operation && coordination.lift_support.is_none() => {
-                match self.fresh_connected_minimum_proposal(
-                    &crate::experience::Experience::default(),
-                    ev,
-                    inputs,
-                ) {
+                match self.fresh_connected(ev, &crate::experience::Experience::default(), inputs) {
                     Ok(Some(proposal)) => {
                         commit_test_connected_proposal(self, proposal);
                         None
@@ -807,7 +805,7 @@ fn allocate_connected_in_test(
     use crate::allocation::{
         AllocationPersonality, CrossDomainAllocation, active_connected_obligation,
     };
-    let active = planner.active_connected_obligation(ev, inputs)?;
+    let active = planner.retained_obligation(ev, inputs)?;
     let resources = inputs
         .resources
         .after_current_reserve(inputs.reserve.current);
@@ -876,7 +874,7 @@ fn active_obligation(
 
     let resources = ResourceSnapshot::from_observation(obs);
     let intel = knowledge(obs);
-    planner.active_connected_obligation(
+    planner.retained_obligation(
         evidence(&profile(), obs, &intel),
         connected_inputs(&fixture_planning, &resources),
     )
@@ -994,9 +992,9 @@ fn unpaid_connected_demand_reassigns_factory_without_extending_deadline() {
     obs.my_queues.push(Vec::new());
     let mut planner = StrategicPlanner::new();
     let proposal = planner
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &obs, &knowledge(&obs)),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &ResourceSnapshot::from_observation(&obs)),
         )
         .unwrap()
@@ -1033,9 +1031,9 @@ fn unpaid_connected_demand_can_buy_earlier_and_does_not_expire_after_rollback() 
     add_renewable_economy(&mut obs, 1);
     let mut planner = StrategicPlanner::new();
     let proposal = planner
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &obs, &knowledge(&obs)),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &ResourceSnapshot::from_observation(&obs)),
         )
         .unwrap()
@@ -1085,9 +1083,9 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
     let identity = profile();
     let tuning = DifficultyTuning::for_level(BotDifficulty::Prime);
     let proposal = planner
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&identity, &obs, &knowledge(&obs)),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &ResourceSnapshot::from_observation(&obs)),
         )
         .unwrap()
@@ -1115,7 +1113,7 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
         .collect();
     assert_eq!(planner.settle_paid_production(&obs), paid);
     let revision = planner
-        .active_connected_revision_proposal(
+        .connected_revision(
             evidence(&identity, &obs, &knowledge(&obs)),
             connected_inputs(&fixture_planning, &ResourceSnapshot::from_observation(&obs)),
         )
@@ -1174,9 +1172,9 @@ fn unpaid_connected_operation(obs: &Observation) -> (StrategicPlanner, Vec<Conne
 
     let mut planner = StrategicPlanner::new();
     let proposal = planner
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), obs, &knowledge(obs)),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &ResourceSnapshot::from_observation(obs)),
         )
         .unwrap()
@@ -4425,9 +4423,9 @@ fn losing_the_primary_keeps_the_committed_identity_and_moves_the_focus() {
     let mut intelligence = knowledge(&initial);
     let resources = ResourceSnapshot::from_observation(&initial);
     let mut proposal = StrategicPlanner::new()
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &initial, &intelligence),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &resources),
         )
         .expect("the complete current cluster is admissible")
@@ -4516,7 +4514,7 @@ fn losing_the_primary_keeps_the_committed_identity_and_moves_the_focus() {
     )));
 
     let revision = planner
-        .active_connected_revision_proposal(
+        .connected_revision(
             evidence(&profile(), &after_destruction, &intelligence),
             connected_inputs(
                 &fixture_planning,
@@ -4553,9 +4551,9 @@ fn fresh_connected_proposal_is_pure_repeatable_and_keeps_one_minimum_basis() {
     let before = planner.clone();
     let propose = || {
         planner
-            .fresh_connected_minimum_proposal(
-                &crate::experience::Experience::default(),
+            .fresh_connected(
                 evidence(&profile(), &battle, &intelligence),
+                &crate::experience::Experience::default(),
                 connected_inputs(&fixture_planning, &resources),
             )
             .expect("the current connected opportunity is admissible")
@@ -4648,9 +4646,9 @@ fn reacquired_remembered_target_requires_fresh_connected_adjudication() {
     let resources = ResourceSnapshot::from_observation(&current);
     let before_proposal = planner.clone();
     let proposal = planner
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&identity, &current, &intelligence),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &resources),
         )
         .expect("the reacquired connected objective is admissible")
@@ -4691,9 +4689,9 @@ fn fresh_connected_proposal_uses_the_coordinators_exact_resource_snapshot() {
     unfunded_evidence.scrap = 0;
     let resources = ResourceSnapshot::from_observation(&unfunded_evidence);
 
-    let result = StrategicPlanner::new().fresh_connected_minimum_proposal(
-        &crate::experience::Experience::default(),
+    let result = StrategicPlanner::new().fresh_connected(
         evidence(&profile(), &battle, &intelligence),
+        &crate::experience::Experience::default(),
         connected_inputs(&fixture_planning, &resources),
     );
 
@@ -4721,9 +4719,9 @@ fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
     let intelligence = knowledge(&battle);
     let resources = ResourceSnapshot::from_observation(&battle);
     let proposal = StrategicPlanner::new()
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &battle, &intelligence),
+            &crate::experience::Experience::default(),
             ConnectedInputs {
                 paid_exclusions: &[(producer, UnitKind::Kestrel, 0)],
                 ..connected_inputs(&fixture_planning, &resources)
@@ -4780,9 +4778,9 @@ fn connected_package_funds_a_scout_when_reconnaissance_holds_the_only_queued_one
     let intelligence = knowledge(&battle);
     let resources = ResourceSnapshot::from_observation(&battle);
     let proposal = StrategicPlanner::new()
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &battle, &intelligence),
+            &crate::experience::Experience::default(),
             ConnectedInputs {
                 paid_exclusions: &[(producer, UnitKind::Kestrel, 0)],
                 ..connected_inputs(&fixture_planning, &resources)
@@ -4827,12 +4825,12 @@ fn fresh_connected_proposal_falls_back_without_committing_the_rejected_target() 
     let before = planner.clone();
 
     let proposal = planner
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             AirEvidence {
                 public_map: Some(&public_map),
                 ..evidence(&profile(), &battle, &intelligence)
             },
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &resources),
         )
         .expect("the lower-ranked reachable target remains admissible")
@@ -4857,9 +4855,9 @@ fn connected_proposal_uses_completed_income_without_double_counting_provider_cos
     let intelligence = knowledge(&battle);
     let resources = ResourceSnapshot::from_observation(&battle);
     let proposal = StrategicPlanner::new()
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &battle, &intelligence),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &resources),
         )
         .expect("completed Extractors make the minimum forecast-feasible")
@@ -4921,9 +4919,9 @@ fn connected_claims_retain_only_the_paid_queue_occurrences_the_package_uses() {
     let resources = ResourceSnapshot::from_observation(&battle);
 
     let proposal = StrategicPlanner::new()
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &battle, &intelligence),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &resources),
         )
         .expect("the paid Bombard makes the minimum feasible")
@@ -4962,9 +4960,9 @@ fn protected_current_scrap_monotonically_reduces_connected_scaling() {
     let intelligence = knowledge(&rich);
     let rich_resources = ResourceSnapshot::from_observation(&rich);
     let rich_proposal = StrategicPlanner::new()
-        .fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        .fresh_connected(
             evidence(&profile(), &rich, &intelligence),
+            &crate::experience::Experience::default(),
             connected_inputs(&fixture_planning, &rich_resources),
         )
         .expect("the rich opportunity is admissible")
@@ -4989,9 +4987,9 @@ fn protected_current_scrap_monotonically_reduces_connected_scaling() {
     rich.scrap = richest_cost;
     let exact_resources = ResourceSnapshot::from_observation(&rich);
     let derive_with_reserve = |reserve| {
-        StrategicPlanner::new().fresh_connected_minimum_proposal(
-            &crate::experience::Experience::default(),
+        StrategicPlanner::new().fresh_connected(
             evidence(&profile(), &rich, &intelligence),
+            &crate::experience::Experience::default(),
             ConnectedInputs {
                 reserve: CapitalReserve {
                     current: reserve,
@@ -6166,7 +6164,7 @@ fn a_revision_that_cannot_size_every_live_committed_member_keeps_the_package() {
         let connected = plan.connected_mut();
         connected.package.preparation_deadline = observation.tick + 400;
         connected.commitment.deadline = observation.tick + 400;
-        planner_with_operation(op, plan).active_connected_revision_proposal(
+        planner_with_operation(op, plan).connected_revision(
             AirEvidence {
                 public_map: Some(&public_map),
                 ..evidence(&profile(), observation, &intelligence)

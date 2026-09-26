@@ -27,7 +27,7 @@ mod production_bounds;
 mod production_search;
 pub(crate) mod production_work;
 mod session;
-pub(crate) use admission::{AdmittedWork, DecisionContext, admit_decision};
+pub(crate) use admission::{AdmittedWork, DecisionContext, DecisionParticipants, admit_decision};
 #[cfg(test)]
 pub(crate) use session::test_allocate_policy;
 mod witness;

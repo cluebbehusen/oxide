@@ -41,9 +41,10 @@ use crate::standing_force::{
     derive_standing_force_with_demand,
 };
 use crate::strategy::{
-    ActiveConnectedObligation, AirEvidence, AirOperation, AirOperationOutcome, AirOperationPhase,
-    CapitalReserve, ConnectedInputs, FreshConnectedProposal, IslandInputs, LiftSupportRequest,
-    ProducerLanes, RejectedConnectedCandidate, StrategicDecision, StrategicPlanner,
+    ActiveConnectedObligation, AirAdjudication, AirOperation, AirOperationOutcome,
+    AirOperationPhase, AirRecoveryReason, AirTurn, CapitalReserve, ConnectedInputs,
+    FreshConnectedProposal, IslandInputs, LiftSupportRequest, ProducerLanes,
+    RejectedConnectedCandidate, StrategicDecision, StrategicPlanner, air_adjudication,
     connected_preparation_horizon,
 };
 use crate::team::TeamReliefPlanner;
@@ -249,6 +250,7 @@ pub(crate) struct RetainedOperationWork {
 }
 
 /// Immutable evidence shared by every phase of one allocation pass.
+#[derive(Clone, Copy)]
 pub(crate) struct AllocationSessionContext<'a> {
     pub(crate) evidence: crate::utility::DecisionEvidence<'a>,
     pub(crate) dials: &'a Dials,
@@ -261,20 +263,6 @@ pub(crate) struct AllocationSessionContext<'a> {
     pub(crate) intelligence: &'a StrategicIntelligence,
     pub(crate) enlisted: &'a [UnitId],
     pub(crate) lift_support: Option<&'a LiftSupportRequest>,
-}
-
-impl<'a> AllocationSessionContext<'a> {
-    fn air_evidence(&self) -> AirEvidence<'a> {
-        AirEvidence {
-            profile: self.profile,
-            tuning: self.tuning,
-            obs: self.observation,
-            intel: self.intelligence,
-            home: self.home,
-            public_map: Some(self.public_map),
-            orientation: self.orientation,
-        }
-    }
 }
 
 struct OperationClaim<'a> {
@@ -294,7 +282,7 @@ struct OperationClaim<'a> {
 /// Owners whose selected changes share one allocation verdict.
 pub(crate) struct AllocationParticipants<'a> {
     pub(crate) policy: &'a mut UtilityPolicy,
-    pub(crate) strategy: &'a mut StrategicPlanner,
+    pub(crate) strategy: AirTurn<'a>,
     pub(crate) lifts: &'a mut LiftPlanner,
     pub(crate) team: &'a mut TeamReliefPlanner,
     pub(crate) raids: &'a mut RaidPlanner,
@@ -798,9 +786,8 @@ impl<'a> AllocationSession<'a> {
         let connected_candidate = if active_revision.proposal.is_some() {
             active_revision.proposal
         } else if admission_tick && obligations.island_preparation.is_none() {
-            match self.participants.strategy.fresh_connected_minimum_proposal(
+            match self.participants.strategy.fresh_connected(
                 self.context.evidence.experience,
-                self.context.air_evidence(),
                 ConnectedInputs {
                     planning: &self.participants.policy.planning,
                     resources: &obligations.resources,
@@ -1425,9 +1412,9 @@ impl<'a> AllocationSession<'a> {
         if revises_active {
             remove_active_connected_obligation(&mut prepared.obligations);
             prepared.active_connected = {
-                self.participants.strategy.active_connected_obligation(
-                    self.context.air_evidence(),
-                    ConnectedInputs {
+                self.participants
+                    .strategy
+                    .retained_obligation(ConnectedInputs {
                         planning: &self.participants.policy.planning,
                         resources: &prepared.resources,
                         unavailable: &prepared.planner_claims,
@@ -1436,8 +1423,7 @@ impl<'a> AllocationSession<'a> {
                             self.participants.raids,
                         ),
                         reserve: CapitalReserve::default(),
-                    },
-                )
+                    })
             };
             if let Some(active) = &prepared.active_connected {
                 prepared
@@ -1593,21 +1579,11 @@ impl<'a> AllocationSession<'a> {
         bind_saved_foundry_funding(prepared, &settlement);
         dispatch_ready_saved_foundry(prepared, &mut effects);
         let mut payloads = settlement.into_payloads();
-        let connected = payloads.take_connected();
-        let air_membership = if connected.is_none() {
-            prepared
-                .active_connected
-                .as_ref()
-                .map(|active| active.membership.clone())
-                .or_else(|| {
-                    prepared
-                        .island_preparation
-                        .as_ref()
-                        .map(|island| island.membership.clone())
-                })
-        } else {
-            None
-        };
+        let air = air_adjudication(
+            payloads.take_connected(),
+            prepared.active_connected.as_ref(),
+            prepared.island_preparation.as_ref(),
+        );
         let standing_force = payloads.take_standing_force();
         let raid = standing_force
             .as_ref()
@@ -1662,22 +1638,12 @@ impl<'a> AllocationSession<'a> {
             self.context.observation.tick,
         );
         self.commit_emergency_defense(prepared, &mut effects);
-        if let Some(membership) = air_membership {
-            self.participants
-                .strategy
-                .apply_membership(membership, self.context.observation.tick);
-        }
         self.commit_lift(prepared, &producer_schedule);
         if let Some(membership) = prepared.lift_membership.take() {
             membership.apply(self.participants.lifts);
         }
-        if let Some(proposal) = connected {
-            self.participants.strategy.commit_connected(proposal);
-            effects.accepted_connected = true;
-        }
-        self.participants
-            .strategy
-            .record_connected_purchases(&producer_schedule, self.context.observation.tick);
+        effects.accepted_connected = matches!(air, AirAdjudication::Connected(_));
+        self.participants.strategy.apply(air, &producer_schedule);
         if let Some(foundry) = payloads.take_foundry() {
             if prepared
                 .connected_accepted_at
@@ -1856,7 +1822,7 @@ impl<'a> AllocationSession<'a> {
         let island_allocated = allocation_ok && prepared.island_preparation.is_some();
         let committed = PlannerClaims::new(
             self.context.enlisted,
-            self.participants.strategy,
+            &self.participants.strategy,
             self.participants.raids,
             self.participants.lifts,
         );
@@ -1898,7 +1864,7 @@ fn snapshot_claims(
 ) -> ClaimSnapshot {
     let claims = PlannerClaims::new(
         context.enlisted,
-        participants.strategy,
+        &participants.strategy,
         participants.raids,
         participants.lifts,
     );
@@ -3034,6 +3000,19 @@ fn available_allocation_builders(
 }
 
 #[cfg(test)]
+fn air_evidence<'a>(context: &AllocationSessionContext<'a>) -> crate::strategy::AirEvidence<'a> {
+    crate::strategy::AirEvidence {
+        profile: context.profile,
+        tuning: context.tuning,
+        obs: context.observation,
+        intel: context.intelligence,
+        home: context.home,
+        public_map: Some(context.public_map),
+        orientation: context.orientation,
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn test_allocate_policy(
     policy: &mut UtilityPolicy,
     dials: &Dials,
@@ -3062,23 +3041,24 @@ pub(crate) fn test_allocate_policy(
     let mut raids = RaidPlanner::new();
 
     let mut trace = AllocationTrace::default();
+    let session_context = AllocationSessionContext {
+        evidence: Default::default(),
+        dials,
+        profile: &profile,
+        tuning,
+        observation,
+        home,
+        public_map,
+        orientation: Orientation::for_home(observation, home),
+        intelligence: &intelligence,
+        enlisted,
+        lift_support: None,
+    };
     let outcome = AllocationSession::new(
-        AllocationSessionContext {
-            evidence: Default::default(),
-            dials,
-            profile: &profile,
-            tuning,
-            observation,
-            home,
-            public_map,
-            orientation: Orientation::for_home(observation, home),
-            intelligence: &intelligence,
-            enlisted,
-            lift_support: None,
-        },
+        session_context,
         AllocationParticipants {
             policy,
-            strategy: &mut strategy,
+            strategy: strategy.observe(air_evidence(&session_context)),
             lifts: &mut lifts,
             team: &mut team,
             raids: &mut raids,
@@ -3161,9 +3141,9 @@ mod tests {
     use crate::standing_force::{StandingForceFixture, StandingForceProposal, StandingForceReason};
     use crate::strategy::fixtures::FreshConnectedProposalFixture;
     use crate::strategy::{
-        AirRecoveryReason, ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
-        ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
-        ConnectedTimeToImpact, ConnectedUrgency, ThinkInputs,
+        AirEvidence, AirRecoveryReason, ConnectedConfidence, ConnectedExecutionSafety,
+        ConnectedOffenseClaims, ConnectedOpportunityCase, ConnectedProviderJob,
+        ConnectedStrategicValue, ConnectedTimeToImpact, ConnectedUrgency, ThinkInputs,
     };
     use crate::trace::{AllocationConflictTrace, ProposalDispositionTrace, ProposalKeyTrace};
     use crate::utility::{
@@ -3336,11 +3316,12 @@ mod tests {
             advanced.lift_started_at = operation.started_at;
         }
         let mut trace = AllocationTrace::default();
+        let session_context = setup.context(observation, HOME, &public_map, &intelligence);
         let outcome = AllocationSession::new(
-            setup.context(observation, HOME, &public_map, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -3583,17 +3564,17 @@ mod tests {
         intelligence.update(observation);
         let resources = ResourceSnapshot::from_observation(observation);
         StrategicPlanner::new()
-            .fresh_connected_minimum_proposal(
+            .unobserved_turn(AirEvidence {
+                profile: &profile,
+                tuning,
+                obs: observation,
+                intel: &intelligence,
+                home: HOME,
+                public_map: Some(&briefing),
+                orientation: Orientation::for_home(observation, HOME),
+            })
+            .fresh_connected(
                 &crate::experience::Experience::default(),
-                AirEvidence {
-                    profile: &profile,
-                    tuning,
-                    obs: observation,
-                    intel: &intelligence,
-                    home: HOME,
-                    public_map: Some(&briefing),
-                    orientation: Orientation::for_home(observation, HOME),
-                },
                 ConnectedInputs::fixture(&crate::planning::PlanningWork::default(), &resources),
             )
             .expect("the current connected opportunity is feasible")
@@ -3625,9 +3606,7 @@ mod tests {
     ) -> (StrategicPlanner, Vec<ConnectedProviderJob>) {
         let proposal = current_connected_proposal(observation);
         let jobs = proposal.minimum_claims().provider_jobs().to_vec();
-        let mut planner = StrategicPlanner::new();
-        planner.commit_connected(proposal);
-        (planner, jobs)
+        (StrategicPlanner::committed(proposal), jobs)
     }
 
     fn connected_obligation(
@@ -3639,21 +3618,19 @@ mod tests {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(observation);
         planner
-            .active_connected_obligation(
-                AirEvidence {
-                    profile: &profile,
-                    tuning: DifficultyTuning::for_level(profile.difficulty),
-                    obs: observation,
-                    intel: &intelligence,
-                    home: TilePos::new(3, 10),
-                    public_map: Some(&briefing),
-                    orientation: Orientation::for_home(observation, TilePos::new(3, 10)),
-                },
-                ConnectedInputs::fixture(
-                    &crate::planning::PlanningWork::default(),
-                    &ResourceSnapshot::from_observation(observation),
-                ),
-            )
+            .unobserved_turn(AirEvidence {
+                profile: &profile,
+                tuning: DifficultyTuning::for_level(profile.difficulty),
+                obs: observation,
+                intel: &intelligence,
+                home: TilePos::new(3, 10),
+                public_map: Some(&briefing),
+                orientation: Orientation::for_home(observation, TilePos::new(3, 10)),
+            })
+            .retained_obligation(ConnectedInputs::fixture(
+                &crate::planning::PlanningWork::default(),
+                &ResourceSnapshot::from_observation(observation),
+            ))
             .expect("an admitted connected operation retains demand")
     }
 
@@ -3817,14 +3794,15 @@ mod tests {
             let mut team = TeamReliefPlanner::new();
             let mut raids = raid;
 
+            let session_context = AllocationSessionContext {
+                orientation,
+                ..setup.context(&obs, HOME, &map, &intelligence)
+            };
             let mut session = AllocationSession::new(
-                AllocationSessionContext {
-                    orientation,
-                    ..setup.context(&obs, HOME, &map, &intelligence)
-                },
+                session_context,
                 AllocationParticipants {
                     policy: &mut policy,
-                    strategy: &mut strategy,
+                    strategy: strategy.observe(air_evidence(&session_context)),
                     lifts: &mut lifts,
                     team: &mut team,
                     raids: &mut raids,
@@ -3921,11 +3899,12 @@ mod tests {
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
 
+        let session_context = setup.context(observation, HOME, &briefing, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(observation, HOME, &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy,
-                strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -3971,8 +3950,8 @@ mod tests {
         let briefing = connected_briefing(observation);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(observation);
-        strategy.think(
-            AirEvidence {
+        strategy
+            .unobserved_turn(AirEvidence {
                 profile: &profile,
                 tuning,
                 obs: observation,
@@ -3980,8 +3959,8 @@ mod tests {
                 home: HOME,
                 public_map: Some(&briefing),
                 orientation: Orientation::for_home(observation, HOME),
-            },
-            ThinkInputs {
+            })
+            .think(ThinkInputs {
                 unavailable: &outcome.planner_claims,
                 allow_new_operation: outcome.connected_continues
                     || outcome.allow_new_voluntary_operations,
@@ -3990,8 +3969,7 @@ mod tests {
                     ..CapitalReserve::default()
                 },
                 ..ThinkInputs::fixture(&crate::planning::PlanningWork::default())
-            },
-        )
+            })
     }
 
     fn assert_connected_enters_bounded_recovery(
@@ -4342,11 +4320,12 @@ mod tests {
         let mut work = advanced();
         work.lift_was_active = true;
         work.lift_started_at = operation.started_at;
+        let session_context = setup.context(&observation, HOME, &public_map, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, HOME, &public_map, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -4607,11 +4586,13 @@ mod tests {
         let mut raids = RaidPlanner::new();
 
         let mut trace = AllocationTrace::default();
+        let session_context =
+            setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence);
         let outcome = AllocationSession::new(
-            setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 team: &mut team,
                 lifts: &mut lifts,
                 raids: &mut raids,
@@ -4662,11 +4643,13 @@ mod tests {
             .expect("the empty resource projection is valid")
             .resolve(AllocationPersonality::default(), None)
             .expect("an empty portfolio is feasible");
+        let session_context =
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence);
         let session = AllocationSession::new(
-            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -4787,11 +4770,13 @@ mod tests {
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
 
+        let session_context =
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence);
         let session = AllocationSession::new(
-            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -4863,11 +4848,13 @@ mod tests {
         let mut lifts = LiftPlanner::new();
         let original_raids = RaidPlanner::new();
         let mut raids = RaidPlanner::new();
+        let session_context =
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -4991,11 +4978,13 @@ mod tests {
         let mut raids = RaidPlanner::new();
 
         let work = advanced();
+        let session_context =
+            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, TilePos::new(0, 0), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -5436,8 +5425,7 @@ mod tests {
         let observation = connected_observation(1_200, 10_000);
         let proposal = current_connected_proposal(&observation);
         let revision = revising.then(|| proposal.clone().into_active_revision_fixture());
-        let mut planner = StrategicPlanner::new();
-        planner.commit_connected(proposal);
+        let mut planner = StrategicPlanner::committed(proposal);
         let active = connected_obligation(&mut planner, &observation);
         let setup = SessionProfile::new(prime_profile());
         let public_map = connected_briefing(&observation);
@@ -5484,16 +5472,17 @@ mod tests {
         ));
         input.fresh_lift_producer_jobs = 1;
         let mut trace = AllocationTrace::default();
+        let session_context = setup.context(
+            &observation,
+            TilePos::new(3, 10),
+            &public_map,
+            &intelligence,
+        );
         let mut session = AllocationSession::new(
-            setup.context(
-                &observation,
-                TilePos::new(3, 10),
-                &public_map,
-                &intelligence,
-            ),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -5575,11 +5564,12 @@ mod tests {
             UnitKind::Sentinel.stats().cost,
         )];
         let mut trace = AllocationTrace::default();
+        let session_context = setup.context(&observation, HOME, &public_map, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, HOME, &public_map, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -5847,11 +5837,12 @@ mod tests {
             ),
         ];
         let mut trace = AllocationTrace::default();
+        let session_context = setup.context(&observation, HOME, &public_map, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, HOME, &public_map, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -6037,11 +6028,12 @@ mod tests {
         ]);
         input.voluntary_scrap_guard = guard;
         input.allocation_horizon = deadline;
+        let session_context = setup.context(&observation, HOME, &briefing, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, HOME, &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -6124,11 +6116,13 @@ mod tests {
         input.fresh_connected = Some(fixture_connected_proposal(deadline, Vec::new()));
         input.allocation_horizon = deadline;
         input.voluntary_scrap_guard = UnitKind::Sentinel.stats().cost;
+        let session_context =
+            setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -6193,8 +6187,7 @@ mod tests {
                 .unwrap();
             let connected_assignments = settlement.producer_schedule().to_vec();
             let mut payloads = settlement.into_payloads();
-            let mut strategy = StrategicPlanner::new();
-            strategy.commit_connected(payloads.take_connected().unwrap());
+            let mut strategy = StrategicPlanner::committed(payloads.take_connected().unwrap());
             let shift = 24;
             let airworks = BuildingId(12);
             let lift_starts_at = connected_assignments
@@ -6262,11 +6255,12 @@ mod tests {
             work.lift_was_active = true;
             work.lift_started_at = lift_operation.started_at;
             let mut trace = AllocationTrace::default();
+            let session_context = setup.context(&observation, HOME, &briefing, &intelligence);
             let outcome = AllocationSession::new(
-                setup.context(&observation, HOME, &briefing, &intelligence),
+                session_context,
                 AllocationParticipants {
                     policy: &mut policy,
-                    strategy: &mut strategy,
+                    strategy: strategy.observe(air_evidence(&session_context)),
                     lifts: &mut lifts,
                     team: &mut team,
                     raids: &mut raids,
