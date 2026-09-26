@@ -29,9 +29,10 @@ impl ConnectedProductionResources {
         unavailable: &[UnitId],
         route: ConnectedRouteContext<'_>,
     ) -> Self {
-        Self::from_snapshot_after_current_reserve(
+        Self::from_candidates(
             obs,
             target,
+            current_target_cluster(route.intel, target.player, target.anchor),
             unavailable,
             route,
             &ResourceSnapshot::from_observation(obs),

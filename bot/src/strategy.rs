@@ -215,49 +215,6 @@ enum SuppressionDispatch {
 }
 
 impl ConnectedProductionResources {
-    fn from_snapshot_after_current_reserve(
-        obs: &Observation,
-        target: &BuildingContact,
-        unavailable: &[UnitId],
-        route: ConnectedRouteContext<'_>,
-        snapshot: &ResourceSnapshot,
-        current_reserve: u32,
-    ) -> Self {
-        let candidates = current_target_cluster(route.intel, target.player, target.anchor);
-        Self::from_candidates(
-            obs,
-            target,
-            candidates,
-            unavailable,
-            route,
-            snapshot,
-            current_reserve,
-        )
-    }
-
-    /// Revision candidates are the admitted cluster's sized members only; a
-    /// revision never searches the radius around its current primary again.
-    fn from_commitment_snapshot_after_current_reserve(
-        obs: &Observation,
-        target: &BuildingContact,
-        commitment: &ConnectedCommitment,
-        unavailable: &[UnitId],
-        route: ConnectedRouteContext<'_>,
-        snapshot: &ResourceSnapshot,
-        current_reserve: u32,
-    ) -> Self {
-        let candidates = commitment.sized_members(route.intel, obs.tick);
-        Self::from_candidates(
-            obs,
-            target,
-            candidates,
-            unavailable,
-            route,
-            snapshot,
-            current_reserve,
-        )
-    }
-
     fn from_candidates(
         obs: &Observation,
         target: &BuildingContact,
@@ -275,24 +232,6 @@ impl ConnectedProductionResources {
             access,
             targets,
         }
-    }
-
-    fn from_package_after_current_reserve(
-        obs: &Observation,
-        target_player: PlayerId,
-        package: &ConnectedForcePackage,
-        route: ConnectedRouteContext<'_>,
-        current_reserve: u32,
-    ) -> Self {
-        let snapshot = ResourceSnapshot::from_observation(obs);
-        Self::from_package_snapshot_after_current_reserve(
-            obs,
-            target_player,
-            package,
-            route,
-            &snapshot,
-            current_reserve,
-        )
     }
 
     fn from_package_snapshot_after_current_reserve(
@@ -2394,9 +2333,10 @@ pub(crate) fn prospective_airworks_package_value(
             .unwrap();
         #[cfg(test)]
         AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
-        let initial = ConnectedProductionResources::from_snapshot_after_current_reserve(
+        let initial = ConnectedProductionResources::from_candidates(
             &prospective,
             target,
+            current_target_cluster(&intel, target.player, target.anchor),
             &unavailable,
             context.route(target.anchor),
             &resources,
@@ -2454,9 +2394,10 @@ fn derive_fresh_connected_proposal(
     target: &BuildingContact,
     origin: ConnectedProposalOrigin,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
-    let initial_resources = ConnectedProductionResources::from_snapshot_after_current_reserve(
+    let initial_resources = ConnectedProductionResources::from_candidates(
         context.obs,
         target,
+        current_target_cluster(context.intel, target.player, target.anchor),
         context.unavailable,
         context.route(target.anchor),
         context.resource_snapshot,
@@ -3109,16 +3050,17 @@ impl StrategicPlanner {
             unavailable: &unavailable,
             preferred_artillery: &active.op.artillery,
         };
-        let initial_resources =
-            ConnectedProductionResources::from_commitment_snapshot_after_current_reserve(
-                obs,
-                target,
-                &connected.commitment,
-                &unavailable,
-                context.route(target.anchor),
-                resource_snapshot,
-                coordination.protected_current_scrap,
-            );
+        // A revision sizes the admitted members only; it never searches the
+        // radius around its current primary again.
+        let initial_resources = ConnectedProductionResources::from_candidates(
+            obs,
+            target,
+            connected.commitment.sized_members(intel, obs.tick),
+            &unavailable,
+            context.route(target.anchor),
+            resource_snapshot,
+            coordination.protected_current_scrap,
+        );
         let proposal = derive_connected_proposal_with_resources(
             context,
             target,
@@ -3832,7 +3774,7 @@ impl StrategicPlanner {
             .connected()
             .filter(|_| op.phase() <= AirOperationPhase::Assemble)
             .map(|connected| {
-                ConnectedProductionResources::from_package_after_current_reserve(
+                ConnectedProductionResources::from_package_snapshot_after_current_reserve(
                     obs,
                     connected.commitment.player,
                     &connected.package,
@@ -3844,6 +3786,7 @@ impl StrategicPlanner {
                         connected.focus,
                     )
                     .excluding_paid(production.unavailable_paid),
+                    &ResourceSnapshot::from_observation(obs),
                     protected_current_scrap,
                 )
             });
