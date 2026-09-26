@@ -2,9 +2,9 @@
 //! lands here exactly once, whether it came from a key, a panel card,
 //! or an injected event.
 
-use super::InputState;
 use super::orders::digit_action;
 use super::select::{cycle_idle_worker, idle_harvesters};
+use super::{InputState, armed_toast};
 use crate::action::Action;
 use crate::game::Game;
 use macroquad::prelude::{Vec2, vec2};
@@ -273,9 +273,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_worker {
                 input.disarm_click_verbs();
                 input.salvaging = true;
-                game.presentation.toast(format!(
-                    "salvage: click an own building to strip it, {} to cancel",
-                    input.bindings.label(Action::Back)
+                game.presentation.toast(armed_toast(
+                    "salvage",
+                    "an own building to strip it",
+                    &input.bindings.label(Action::Back),
+                    crate::platform::TOUCH_ONLY,
                 ));
             } else {
                 game.presentation.toast("no worker to salvage with");
@@ -296,9 +298,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_welder {
                 input.disarm_click_verbs();
                 input.repairing = true;
-                game.presentation.toast(format!(
-                    "weld: click a damaged own unit, {} to cancel",
-                    input.bindings.label(Action::Back)
+                game.presentation.toast(armed_toast(
+                    "weld",
+                    "a damaged own unit",
+                    &input.bindings.label(Action::Back),
+                    crate::platform::TOUCH_ONLY,
                 ));
             } else {
                 game.presentation.toast("no welder in hand");
@@ -319,9 +323,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_own_unit {
                 input.disarm_click_verbs();
                 input.running = true;
-                game.presentation.toast(format!(
-                    "run: click ground to move without engaging, {} to cancel",
-                    input.bindings.label(Action::Back)
+                game.presentation.toast(armed_toast(
+                    "run",
+                    "ground to move without engaging",
+                    &input.bindings.label(Action::Back),
+                    crate::platform::TOUCH_ONLY,
                 ));
             } else {
                 game.presentation.toast("no machines selected to run");
@@ -341,9 +347,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_own_unit {
                 input.disarm_click_verbs();
                 input.attacking = true;
-                game.presentation.toast(format!(
-                    "attack-move: click ground to engage and chase, {} to cancel",
-                    input.bindings.label(Action::Back)
+                game.presentation.toast(armed_toast(
+                    "attack-move",
+                    "ground to engage and chase",
+                    &input.bindings.label(Action::Back),
+                    crate::platform::TOUCH_ONLY,
                 ));
             } else {
                 game.presentation

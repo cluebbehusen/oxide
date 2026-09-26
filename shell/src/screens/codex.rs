@@ -82,10 +82,11 @@ fn sections() -> Vec<(&'static str, Vec<Entry>)> {
 
 /// The codex screen: the list and what each row opens.
 pub struct CodexScreen {
-    /// The live list: section headers, one row per kind, and Back.
+    /// The live list: section headers and one row per kind.
     pub menu: Menu,
-    /// The page behind each row (`None` for headers and Back).
+    /// The page behind each row (`None` for headers).
     entries: Vec<Option<Entry>>,
+    back: crate::button::BackButton,
 }
 
 impl CodexScreen {
@@ -108,12 +109,14 @@ impl CodexScreen {
                 entries.push(Some(entry));
             }
         }
-        items.push("Back".to_string());
-        entries.push(None);
         // The list shifts left to make room for the page beside it.
         let mut menu = Menu::with_headers("ROSTER", items, headers);
         menu.shift = -0.24;
-        Self { menu, entries }
+        Self {
+            menu,
+            entries,
+            back: crate::button::BackButton::default(),
+        }
     }
 
     /// The debug protocol's stable mode name.
@@ -127,24 +130,26 @@ impl CodexScreen {
     }
 
     /// Applies a frame's events. Rows are pages, not verbs: moving the
-    /// cursor turns the page, and only Back (or Escape) acts.
+    /// cursor turns the page, and only the BACK button or Escape acts.
     pub fn update(
         &mut self,
         events: &[RawEvent],
         mouse: &mut Vec2,
         sounds: &mut Vec<(SoundKind, Option<Vec2>)>,
     ) -> Out {
+        let (back, events) = self.back.route(events);
+        if back {
+            sounds.push((SoundKind::Click, None));
+            return Out::Leave;
+        }
         if events
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }))
         {
             return Out::Leave;
         }
-        if let Some(row) = self.menu.handle(events, mouse) {
+        if self.menu.handle(&events, mouse).is_some() {
             sounds.push((SoundKind::Click, None));
-            if self.entries[row].is_none() {
-                return Out::Leave;
-            }
         }
         Out::Stay
     }
@@ -476,13 +481,22 @@ mod tests {
     }
 
     #[test]
-    fn back_is_the_last_row_and_leaves() {
+    fn the_back_button_leaves_and_no_row_does() {
         let mut screen = CodexScreen::open();
+        assert!(!screen.menu.items.iter().any(|item| item == "Back"));
         let last = screen.menu.items.len() - 1;
-        assert_eq!(screen.menu.items[last], "Back");
         screen.menu.select(last);
-        assert_eq!(screen.selected_entry(), None);
-        assert_eq!(drive(&mut screen, Key::Enter), Out::Leave);
+        assert!(screen.selected_entry().is_some(), "the last row is a page");
+        assert_eq!(drive(&mut screen, Key::Enter), Out::Stay);
+        for touch in [false, true] {
+            let mut mouse = vec2(0.0, 0.0);
+            let out = screen.update(
+                &crate::button::press_back(touch),
+                &mut mouse,
+                &mut Vec::new(),
+            );
+            assert_eq!(out, Out::Leave);
+        }
     }
 
     #[test]

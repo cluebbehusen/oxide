@@ -196,12 +196,23 @@ and test on every platform.
 Every screen offers a pointer path for what Escape does, on every platform. The
 top bar ends in a menu button that opens the pause menu, and its clock or PAUSED
 status toggles pause; both are `LayoutModel` chrome that `UiView` reports. The
-New Match steps, replay playback, and the final map draw corner Back buttons,
+New Match steps, replay playback, the final map, Settings and Controls, the
+roster, and the replay shelf draw a top-left BACK button instead of a Back row,
 and playback adds Play/Pause. These ride `Press::feed`, which also tells the
-screen when a button claimed an event. Menu lists scroll by touch drag, and the
+screen when a button claimed an event; the menus share `button::BackButton`,
+which acts as Escape does on each face. Menu lists scroll by touch drag, and the
 read-only viewers pan and pinch through `ViewerTouch`. The save-name field has
 Save and Cancel; on touch-only builds the frame loop raises and hides the
 on-screen keyboard to follow it.
+
+Hints, toasts, card descriptions, and the tutorial speak touch on touch-only
+builds, and panel cards drop their hotkeys. A finger resting on chrome for
+`TOUCH_REST_MS` previews the card beneath it with the hover tooltip; chrome
+touches never fire a long-press, so lifting in place still activates the card,
+and a finger that lands on one card and lifts on another activates neither. A
+world-born finger draws a filling ring from the same rest threshold until its
+long-press fires. Disabled cards publish `CardAction::Refused`, so a tap or
+click toasts the reason their hotkey gives.
 
 Touch-only builds hide rows they cannot use: Controls and the left-handed preset
 (key rebinding), edge pan (no hovering pointer), Open diagnostics folder (no

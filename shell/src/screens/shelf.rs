@@ -37,8 +37,6 @@ enum RowKind {
     Header,
     /// A record, by index into `entries`.
     Entry(usize),
-    /// The exit row.
-    Back,
 }
 
 /// The shelf screen: discovered records, their sectioned menu, and the
@@ -48,15 +46,15 @@ pub struct Shelf {
     /// within its section.
     pub entries: Vec<ReplayEntry>,
     pub(crate) catalog_ready: bool,
-    /// The rows: section headers, one row per entry, plus Back —
-    /// always plus Back, which is the 0.9 regression this construction
-    /// pins (a delete-refresh once dropped it and stranded mouse-only
-    /// players in an exitless menu).
+    /// The rows: section headers and one row per entry. The exit is the
+    /// BACK button outside the rows, so no delete-refresh can drop it
+    /// and strand a mouse-only player in an exitless menu.
     pub menu: Menu,
     /// What each menu row stands for, parallel to `menu.items`.
     rows: Vec<RowKind>,
     /// Menu row armed for deletion; X on the same row confirms.
     pub arming: Option<usize>,
+    back: crate::button::BackButton,
 }
 
 impl Shelf {
@@ -72,26 +70,24 @@ impl Shelf {
             RowKind::Entry(i) => Some(self.entries[*i].path.clone()),
             _ => None,
         });
-        let was_empty = self.entries.is_empty();
         let mut fresh = Self::from_entries(entries);
-        if let Some(path) = selected {
-            if let Some(row) = fresh
+        if let Some(path) = selected
+            && let Some(row) = fresh
                 .rows
                 .iter()
                 .position(|row| matches!(row, RowKind::Entry(i) if fresh.entries[*i].path == path))
-            {
-                fresh.menu.select(row);
-            }
-        } else if !was_empty {
-            fresh.menu.select(fresh.menu.items.len() - 1);
+        {
+            fresh.menu.select(row);
         }
         fresh.catalog_ready = true;
+        // A refresh landing mid-press must not drop the BACK gesture.
+        fresh.back = std::mem::take(&mut self.back);
         *self = fresh;
     }
 
     /// Builds the shelf over the given records (tests inject their own).
     /// Sections appear only when they have rows; an empty shelf is just
-    /// Back under the empty-state subtitle.
+    /// the empty-state subtitle.
     pub fn from_entries(entries: Vec<ReplayEntry>) -> Self {
         let mut items: Vec<String> = Vec::new();
         let mut rows: Vec<RowKind> = Vec::new();
@@ -114,14 +110,13 @@ impl Shelf {
                 rows.push(RowKind::Entry(i));
             }
         }
-        items.push("Back".to_string());
-        rows.push(RowKind::Back);
         Self {
             entries,
             catalog_ready: true,
             menu: Menu::with_headers("SAVES & REPLAYS", items, headers),
             rows,
             arming: None,
+            back: crate::button::BackButton::default(),
         }
     }
 
@@ -140,7 +135,12 @@ impl Shelf {
         let x_pressed = events
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }));
-        let picked = self.menu.handle(events, mouse);
+        let (back, events) = self.back.route(events);
+        if back {
+            sounds.push((SoundKind::Click, None));
+            return Out::Home;
+        }
+        let picked = self.menu.handle(&events, mouse);
         if escaped {
             return Out::Home;
         }
@@ -148,8 +148,7 @@ impl Shelf {
             sounds.push((SoundKind::Click, None));
             let entry = match self.rows.get(row) {
                 Some(RowKind::Entry(i)) => self.entries.get(*i),
-                Some(RowKind::Header) => return Out::Stay,
-                _ => return Out::Home,
+                _ => return Out::Stay,
             };
             return match entry {
                 Some(entry) if entry.compatible && entry.kind.resumable() => {
@@ -248,13 +247,27 @@ mod tests {
     }
 
     #[test]
-    fn the_back_row_exists_even_after_every_record_is_deleted() {
+    fn the_back_button_leaves_even_after_every_record_is_deleted() {
         // The 0.9 regression, pinned structurally: however the shelf is
-        // built — first open or post-delete rebuild — Back is a row.
-        let empty = Shelf::from_entries(Vec::new());
-        assert_eq!(empty.menu.items.last().map(String::as_str), Some("Back"));
-        let mut shelf = empty;
-        assert_eq!(drive(&mut shelf, Key::Enter), Out::Home, "Back activates");
+        // built — first open or post-delete rebuild — it has an exit.
+        let mut shelf = Shelf::from_entries(vec![entry(
+            "done",
+            true,
+            RecordKind::Match,
+            "/nowhere/m.json".into(),
+        )]);
+        shelf.set_catalog(Vec::new());
+        assert!(shelf.menu.items.is_empty());
+        assert_eq!(drive(&mut shelf, Key::Enter), Out::Stay);
+        for touch in [false, true] {
+            let mut mouse = vec2(0.0, 0.0);
+            let out = shelf.update(
+                &crate::button::press_back(touch),
+                &mut mouse,
+                &mut Vec::new(),
+            );
+            assert_eq!(out, Out::Home);
+        }
     }
 
     #[test]
@@ -266,8 +279,8 @@ mod tests {
         ]);
         assert_eq!(
             shelf.menu.items,
-            vec!["SAVES", "live", "named", "REPLAYS", "done", "Back"],
-            "saves first, replays after, Back always last"
+            vec!["SAVES", "live", "named", "REPLAYS", "done"],
+            "saves first, replays after"
         );
         assert!(shelf.menu.is_header(0) && shelf.menu.is_header(3));
         assert_eq!(shelf.menu.selected, 1, "the cursor opens on a real row");

@@ -49,6 +49,39 @@ pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
     }
 }
 
+/// The instruction toast shown when a mode arms the next pointer press,
+/// e.g. "weld: click a damaged own unit, Esc to cancel".
+fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> String {
+    format!(
+        "{mode}: {} {target}, {}",
+        crate::platform::tap_or_click(touch_only),
+        crate::platform::cancel_hint(back_key, touch_only)
+    )
+}
+
+/// How long a finger must rest before it reads as deliberate rather
+/// than the start of a tap, so feedback never flashes under quick taps.
+pub(crate) const TOUCH_REST_MS: f64 = 120.0;
+
+/// Where a battlefield long-press is charging and how full it is, from
+/// zero once the finger has rested to one as the order fires. Only a
+/// lone world-born finger that has neither moved nor fired charges.
+pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
+    let [(_, finger)] = input.touches.as_slice() else {
+        return None;
+    };
+    if finger.moved || finger.fired || finger.chrome {
+        return None;
+    }
+    let held_ms = (input.now - finger.down_at) * 1000.0;
+    if held_ms < TOUCH_REST_MS {
+        return None;
+    }
+    let charge_ms = (f64::from(input.touch_prefs.long_press_ms) - TOUCH_REST_MS).max(1.0);
+    let progress = ((held_ms - TOUCH_REST_MS) / charge_ms).min(1.0);
+    Some((finger.at, progress as f32))
+}
+
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 
@@ -78,6 +111,31 @@ pub(crate) struct TouchPoint {
     pub chrome: bool,
     /// Whether its long-press already fired (fire once per touch).
     pub fired: bool,
+    /// The card it landed on, as it stood then.
+    pub card: Option<PressedCard>,
+}
+
+/// A card as a finger found it: its slot, its action, and its face. A
+/// resting finger lets the match change the panel under it (a queue
+/// shifts, a disabled card enables), so a lift activates only if it
+/// finds this same card, not merely the same slot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PressedCard {
+    hit: crate::layout::CardHit,
+    icon: Option<crate::panel::CardIcon>,
+}
+
+/// The card under a fingertip at `p`, if any.
+fn pressed_card(game: &Game, p: Vec2, ui: f32) -> Option<PressedCard> {
+    let hit = crate::layout::card_under(&game.presentation.layout.get(), p, Some(ui))?;
+    let icon = game
+        .presentation
+        .panel_model
+        .borrow()
+        .as_ref()
+        .and_then(|panel| panel.card(hit.row, hit.index))
+        .map(|card| card.icon);
+    Some(PressedCard { hit, icon })
 }
 
 /// The one persistent world-targeting mode currently armed.
@@ -521,6 +579,16 @@ impl InputState {
         self.pinching = false;
         self.pair_dist = None;
         self.menu_requested = false;
+    }
+
+    /// Where a lone finger has rested on chrome long enough to preview
+    /// the card under it.
+    pub(crate) fn touch_preview(&self) -> Option<Vec2> {
+        let [(_, finger)] = self.touches.as_slice() else {
+            return None;
+        };
+        let rested = (self.now - finger.down_at) * 1000.0 >= TOUCH_REST_MS;
+        (finger.chrome && !finger.moved && rested).then_some(finger.at)
     }
 
     /// Consumes this frame's menu-button press, if any.
@@ -1008,14 +1076,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // Panel cards are buttons: each carries the exact action
                 // its click performs — the same action its hotkey routes.
                 let layout = game.presentation.layout.get();
-                let card_hit = layout.roster_slots[..layout.roster_count]
-                    .iter()
-                    .chain(layout.cards[..layout.card_count].iter())
-                    .chain(layout.queue_slots[..layout.queue_count].iter())
-                    .find(|(r, _)| r.w > 0.0 && r.contains(vec2(x, y)))
-                    .map(|(_, a)| *a);
-                if let Some(action) = card_hit {
-                    activate_card(game, input, action);
+                if let Some(hit) = crate::layout::card_under(&layout, vec2(x, y), None) {
+                    press_card(game, input, hit);
                     continue;
                 }
                 // The idle badge cycles workers on click.
@@ -1192,6 +1254,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         moved: false,
                         fired: false,
                         chrome,
+                        card: pressed_card(game, p, input.ui),
                     },
                 ));
                 if input.touches.len() > 2 {
@@ -1328,19 +1391,15 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             }
                             // Chrome next, through the touch pad: a
                             // fingertip needs 44 logical px even where
-                            // the drawn card is smaller.
+                            // the drawn card is smaller. A finger that
+                            // landed on another card activates nothing.
                             let layout = game.presentation.layout.get();
-                            let card = layout.roster_slots[..layout.roster_count]
-                                .iter()
-                                .chain(layout.cards[..layout.card_count].iter())
-                                .chain(layout.queue_slots[..layout.queue_count].iter())
-                                .find(|(r, _)| {
-                                    r.w > 0.0 && crate::layout::touch_pad(*r, input.ui).contains(p)
-                                })
-                                .map(|(_, a)| *a);
+                            let card = pressed_card(game, p, input.ui);
                             let badge = layout.idle_badge;
-                            if let Some(action) = card {
-                                activate_card(game, input, action);
+                            if let Some(card) = card {
+                                if lifted.card == Some(card) {
+                                    press_card(game, input, card.hit);
+                                }
                             } else if badge.w > 0.0
                                 && crate::layout::touch_pad(badge, input.ui).contains(p)
                             {
@@ -1709,9 +1768,11 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             }
             input.disarm_click_verbs();
             input.rallying = buildings;
-            game.presentation.toast(format!(
-                "set rally: click the battlefield or minimap, {} to cancel",
-                input.bindings.label(Action::Back)
+            game.presentation.toast(armed_toast(
+                "set rally",
+                "the battlefield or minimap",
+                &input.bindings.label(Action::Back),
+                crate::platform::TOUCH_ONLY,
             ));
         }
         crate::panel::CardAction::CancelProduction(kind) => {
@@ -1756,7 +1817,26 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                     .is_some_and(|u| (u.kind == kind) == keep)
             });
         }
-        crate::panel::CardAction::None => {}
+        crate::panel::CardAction::None | crate::panel::CardAction::Refused => {}
+    }
+}
+
+/// A pointer press on a drawn card: an enabled card acts, and a
+/// disabled one explains itself the way its hotkey does.
+fn press_card(game: &mut Game, input: &mut InputState, hit: crate::layout::CardHit) {
+    if hit.action != crate::panel::CardAction::Refused {
+        activate_card(game, input, hit.action);
+        return;
+    }
+    let why = game
+        .presentation
+        .panel_model
+        .borrow()
+        .as_ref()
+        .and_then(|panel| panel.card(hit.row, hit.index))
+        .and_then(|card| card.why.clone());
+    if let Some(why) = why {
+        game.presentation.toast(why);
     }
 }
 
@@ -1776,13 +1856,14 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     if (input.now - tp.down_at) * 1000.0 < f64::from(input.touch_prefs.long_press_ms) {
         return;
     }
-    input.touches[0].1.fired = true;
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world
-    // point hiding under the HUD.
+    // point hiding under the HUD. The finger stays unfired, so lifting
+    // it after reading a card's preview still activates the card.
     if crate::render::minimap_world_at(&game.view(), tp.at).is_some() || click_on_hud(game, tp.at) {
         return;
     }
+    input.touches[0].1.fired = true;
     let world = game.presentation.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     // Only entities the viewer can actually SEE steer the gesture — an

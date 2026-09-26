@@ -166,6 +166,15 @@ fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     (band_x, band_w, card_w, card_h, heading_h, top, bottom)
 }
 
+/// The map grid's coaching line.
+fn browser_hint(touch_only: bool) -> &'static str {
+    if touch_only {
+        "tap a map to select it - tap it again to play"
+    } else {
+        "{up}/{down} or click select - {confirm} or click again plays - {back} back"
+    }
+}
+
 impl Default for Browser {
     fn default() -> Self {
         Self::new()
@@ -612,9 +621,7 @@ impl Browser {
                 TEXT_PRIMARY,
             );
         }
-        let hint = crate::menu::binding_hint(
-            "{up}/{down} or click select - {confirm} or click again plays - {back} back",
-        );
+        let hint = crate::menu::binding_hint(browser_hint(crate::platform::TOUCH_ONLY));
         let dims = measure_text(&hint, None, (16.0 * ui) as u16, 1.0);
         draw_text(
             &hint,
@@ -629,6 +636,12 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_map_hint_speaks_touch_on_touch_only_builds() {
+        assert!(browser_hint(false).contains("{confirm}"));
+        crate::platform::assert_touch_copy(browser_hint(true));
+    }
 
     fn entry(label: &str, seats: usize) -> ScenarioEntry {
         ScenarioEntry {

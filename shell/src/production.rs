@@ -243,7 +243,10 @@ impl Production {
                 .min();
             let mut desc = vec![
                 format!("{active} building; {} waiting.", count - active),
-                "Click to cancel one; waiting units first. Full refund.".into(),
+                format!(
+                    "{} to cancel one; waiting units first. Full refund.",
+                    crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
+                ),
                 "Select one factory to inspect its exact queue.".into(),
             ];
             if let Some(ticks) = next_ticks {

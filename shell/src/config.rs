@@ -109,8 +109,8 @@ pub struct TouchPrefs {
 impl Default for TouchPrefs {
     fn default() -> Self {
         Self {
-            double_tap_ms: 350,
-            long_press_ms: 400,
+            double_tap_ms: 300,
+            long_press_ms: 350,
         }
     }
 }

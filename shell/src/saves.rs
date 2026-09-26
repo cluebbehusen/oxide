@@ -59,6 +59,25 @@ pub struct ReplayEntry {
     pub kind: RecordKind,
 }
 
+/// What activating a shelf row does. Deleting takes a key, so a
+/// touch-only build leaves the delete clause out.
+fn activate_clause(action: &str, touch_action: &str, touch_only: bool) -> String {
+    if touch_only {
+        format!("tap to {touch_action}")
+    } else {
+        format!("{{confirm}} {action}{}", delete_clause(false))
+    }
+}
+
+/// The key-only delete clause.
+fn delete_clause(touch_only: bool) -> &'static str {
+    if touch_only {
+        ""
+    } else {
+        " | {delete} twice deletes"
+    }
+}
+
 /// Days-since-epoch to a civil date (Howard Hinnant's algorithm) —
 /// enough calendar for a browser row without pulling a time crate.
 fn civil_date(secs: u64) -> String {
@@ -153,23 +172,32 @@ fn scan_cancellable(
             Some(name) => format!("{} | {} | t{} | {}", elide(name), replay.map, ticks, date),
             None => format!("{} | t{} | {} | {}", replay.map, ticks, date, elide(stem)),
         };
+        let touch_only = crate::platform::TOUCH_ONLY;
         let blurb = if let Some(problem) = replay.problem {
-            format!("unavailable: {problem} | {{delete}} twice deletes")
+            format!("unavailable: {problem}{}", delete_clause(touch_only))
         } else if kind.resumable() {
             let what = match kind {
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            let action = if replay.legacy {
-                "reconstructs and loads paused"
+            let (action, touch_action) = if replay.legacy {
+                (
+                    "reconstructs and loads paused",
+                    "reconstruct and load paused",
+                )
             } else {
-                "loads paused"
+                ("loads paused", "load paused")
             };
-            format!("{what} | {{confirm}} {action} | {{delete}} twice deletes")
+            format!(
+                "{what} | {}",
+                activate_clause(action, touch_action, touch_only)
+            )
         } else {
             format!(
-                "{} seats | sim v{} | {{confirm}} watches | {{delete}} twice deletes",
-                replay.seats, replay.meta.sim_version
+                "{} seats | sim v{} | {}",
+                replay.seats,
+                replay.meta.sim_version,
+                activate_clause("watches", "watch", touch_only)
             )
         };
         out.push((
@@ -209,6 +237,25 @@ fn newest_first(mut found: Vec<(RecordTime, ReplayEntry)>) -> Vec<ReplayEntry> {
 mod tests {
     use super::*;
     use crate::game::GameReplay;
+
+    #[test]
+    fn shelf_blurbs_offer_only_the_gestures_the_build_has() {
+        assert_eq!(
+            activate_clause("watches", "watch", false),
+            "{confirm} watches | {delete} twice deletes"
+        );
+        for (action, touch_action) in [
+            ("watches", "watch"),
+            ("loads paused", "load paused"),
+            (
+                "reconstructs and loads paused",
+                "reconstruct and load paused",
+            ),
+        ] {
+            crate::platform::assert_touch_copy(&activate_clause(action, touch_action, true));
+        }
+        assert_eq!(delete_clause(true), "");
+    }
 
     #[test]
     fn the_shelf_badge_compares_versions_and_never_guesses() {

@@ -548,16 +548,7 @@ impl Menu {
             return;
         }
 
-        // ASCII on purpose: the default font has no glyphs for arrows.
-        let hint = MENU_BINDINGS.with(|bindings| {
-            let bindings = bindings.borrow();
-            format!(
-                "{}/{} select - {} confirm - or click",
-                bindings.label(crate::action::Action::MenuUp),
-                bindings.label(crate::action::Action::MenuDown),
-                bindings.label(crate::action::Action::Confirm)
-            )
-        });
+        let hint = menu_footer(crate::platform::TOUCH_ONLY);
         let hint_dims = measure_text(&hint, None, (18.0 * s) as u16, 1.0);
         draw_text(
             &hint,
@@ -567,6 +558,24 @@ impl Menu {
             TEXT_SECONDARY,
         );
     }
+}
+
+/// The line under every menu: its keys and clicks on desktop, taps and
+/// drags on a touch-only build. ASCII on purpose: the default font has
+/// no glyphs for arrows.
+fn menu_footer(touch_only: bool) -> String {
+    if touch_only {
+        return "tap to choose - drag to scroll".to_string();
+    }
+    MENU_BINDINGS.with(|bindings| {
+        let bindings = bindings.borrow();
+        format!(
+            "{}/{} select - {} confirm - or click",
+            bindings.label(crate::action::Action::MenuUp),
+            bindings.label(crate::action::Action::MenuDown),
+            bindings.label(crate::action::Action::Confirm)
+        )
+    })
 }
 
 /// Fog-free map previews, one per scenario. The driver's software
@@ -734,6 +743,17 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     // key the remembered pick by PATH, so re-sorting can't move it.
     entries.sort_by_key(|e| (e.seats, e.label.to_lowercase()));
     entries
+}
+
+#[cfg(test)]
+mod footer_tests {
+    use super::*;
+
+    #[test]
+    fn the_footer_speaks_touch_on_touch_only_builds() {
+        assert!(menu_footer(false).ends_with("confirm - or click"));
+        crate::platform::assert_touch_copy(&menu_footer(true));
+    }
 }
 
 #[cfg(test)]

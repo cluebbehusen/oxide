@@ -2171,6 +2171,279 @@ fn one_finger_drags_the_camera_and_two_box_select() {
 }
 
 #[test]
+fn a_resting_world_finger_charges_the_long_press_ring() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let ground = vec2(400.0, 300.0);
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, ground)]);
+    assert_eq!(
+        long_press_progress(&input),
+        None,
+        "a fresh touch may be a tap"
+    );
+    input.now = 5.0 + (TOUCH_REST_MS - 10.0) / 1000.0;
+    assert_eq!(long_press_progress(&input), None, "quick taps never flash");
+
+    let charge = f64::from(input.touch_prefs.long_press_ms) - TOUCH_REST_MS;
+    input.now = 5.0 + (TOUCH_REST_MS + charge * 0.5) / 1000.0;
+    let (at, half) = long_press_progress(&input).expect("a resting finger charges");
+    assert_eq!(at, ground);
+    assert!(
+        (half - 0.5).abs() < 0.01,
+        "halfway through the hold: {half}"
+    );
+
+    input.now = 5.0 + f64::from(input.touch_prefs.long_press_ms) / 1000.0 + 0.01;
+    update_touch(&mut game, &mut input);
+    assert_eq!(long_press_progress(&input), None, "a fired press is spent");
+    apply_events(&mut game, &mut input, &[touch_up(1, ground)]);
+
+    // A finger that pans, a second finger, or chrome ground never charges.
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, ground)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, ground + vec2(80.0, 0.0))],
+    );
+    input.now = 10.3;
+    assert_eq!(long_press_progress(&input), None, "a pan is not a hold");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(2, ground + vec2(80.0, 0.0))],
+    );
+
+    input.now = 20.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            touch_down(3, ground),
+            touch_down(4, ground + vec2(200.0, 0.0)),
+        ],
+    );
+    input.now = 20.3;
+    assert_eq!(long_press_progress(&input), None, "a pair is not a hold");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(3, ground), touch_up(4, ground + vec2(200.0, 0.0))],
+    );
+
+    game.presentation.layout.set(top_bar_layout());
+    let menu = game.presentation.layout.get().menu_button.center();
+    input.now = 30.0;
+    apply_events(&mut game, &mut input, &[touch_down(5, menu)]);
+    input.now = 30.3;
+    assert_eq!(long_press_progress(&input), None, "chrome owns its ground");
+}
+
+/// Attack-move and Run side by side in the command band, with a fighter
+/// selected so either card arms its verb.
+fn two_card_band() -> (Game, macroquad::math::Rect, macroquad::math::Rect) {
+    let mut game = headless_game();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.presentation.selection.units = vec![fighter];
+    let attack = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let run = macroquad::math::Rect::new(362.0, 700.0, 60.0, 60.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[0] = (
+        attack,
+        crate::panel::CardAction::Dispatch(Action::AttackMove),
+    );
+    layout.cards[1] = (run, crate::panel::CardAction::Dispatch(Action::Run));
+    layout.card_count = 2;
+    game.presentation.layout.set(layout);
+    (game, attack, run)
+}
+
+#[test]
+fn a_resting_finger_previews_a_card_and_lifting_in_place_activates_it() {
+    let (mut game, attack, _) = two_card_band();
+    let mut input = InputState::new();
+    let at = attack.center();
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, at)]);
+    assert_eq!(input.touch_preview(), None, "a fresh touch may be a tap");
+    input.now = 2.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
+    assert_eq!(input.touch_preview(), Some(at), "a resting finger previews");
+
+    // Reading past the long-press window neither orders nor spends the tap.
+    input.now = 4.0;
+    update_touch(&mut game, &mut input);
+    assert!(game.pending.is_empty(), "a held card orders nothing");
+    assert_eq!(
+        input.touch_preview(),
+        Some(at),
+        "the preview outlasts the long-press"
+    );
+    apply_events(&mut game, &mut input, &[touch_up(1, at)]);
+    assert!(input.attacking, "lifting in place activates the card");
+
+    // World ground never previews.
+    let ground = vec2(400.0, 300.0);
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, ground)]);
+    input.now = 10.2;
+    assert_eq!(input.touch_preview(), None, "the battlefield has no cards");
+}
+
+#[test]
+fn a_finger_that_leaves_its_card_activates_nothing() {
+    let (mut game, attack, run) = two_card_band();
+    let mut input = InputState::new();
+
+    // Sliding off past the slop cancels, and the preview ends with it.
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, attack.center())]);
+    input.now = 2.5;
+    let away = attack.center() - vec2(0.0, 120.0);
+    apply_events(&mut game, &mut input, &[touch_move(1, away)]);
+    assert_eq!(input.touch_preview(), None);
+    apply_events(&mut game, &mut input, &[touch_up(1, away)]);
+
+    // Landing on one card and lifting on its neighbor, inside the slop.
+    let edge = vec2(attack.right() - 4.0, attack.center().y);
+    let over = vec2(run.x + 4.0, run.center().y);
+    assert!(edge.distance(over) < 2.0 * 12.0, "premise: still a tap");
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, edge)]);
+    input.now = 5.05;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, over), touch_up(2, over)],
+    );
+
+    assert!(!input.attacking && !input.running, "neither card arms");
+    assert!(game.pending.is_empty());
+}
+
+#[test]
+fn a_disabled_card_explains_itself_to_a_tap_or_a_click() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.presentation.human)
+        .expect("human Foundry")
+        .id;
+    game.presentation.selection.buildings = vec![foundry];
+    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a Foundry panel");
+    let (index, why) = panel
+        .cards
+        .iter()
+        .enumerate()
+        .find_map(|(i, card)| (!card.enabled).then(|| card.why.clone().map(|why| (i, why))))
+        .flatten()
+        .expect("premise: an opening Foundry has a locked card with a reason");
+    *game.presentation.panel_model.borrow_mut() = Some(panel);
+    let rect = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[index] = (rect, crate::panel::CardAction::Refused);
+    layout.card_count = index + 1;
+    game.presentation.layout.set(layout);
+    let toasted = |game: &Game| game.presentation.toasts.iter().any(|t| t.text == why);
+
+    tap(&mut game, &mut input, rect.center());
+    assert!(toasted(&game), "the tap names the reason");
+    assert!(game.pending.is_empty(), "a refusal stages nothing");
+
+    game.presentation.toasts.clear();
+    apply_events(
+        &mut game,
+        &mut input,
+        &click(rect.center().x, rect.center().y),
+    );
+    assert!(toasted(&game), "the click names the reason");
+    assert!(game.pending.is_empty());
+    assert_eq!(input.drag_origin, None, "the click never reaches the world");
+}
+
+#[test]
+fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
+    // A disabled card that enables while the finger rests on it.
+    let (mut game, attack, _) = two_card_band();
+    let mut input = InputState::new();
+    let mut layout = game.presentation.layout.get();
+    layout.cards[0] = (attack, crate::panel::CardAction::Refused);
+    game.presentation.layout.set(layout);
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, attack.center())]);
+    layout.cards[0] = (
+        attack,
+        crate::panel::CardAction::Dispatch(Action::AttackMove),
+    );
+    game.presentation.layout.set(layout);
+    input.now = 4.0;
+    apply_events(&mut game, &mut input, &[touch_up(1, attack.center())]);
+    assert!(
+        !input.attacking,
+        "the lift never arms what the press never saw"
+    );
+
+    // A production queue that shifts while the finger reads its chip:
+    // slot 0 keeps its action but now holds a different unit.
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.presentation.human)
+        .expect("own Foundry")
+        .id;
+    game.presentation.selection.units.clear();
+    game.presentation.selection.buildings = vec![foundry];
+    let chip = |kind: UnitKind, index: u8| crate::panel::Card {
+        icon: crate::panel::CardIcon::Unit(kind),
+        title: format!("{kind:?}"),
+        cost: None,
+        hotkey: String::new(),
+        action: crate::panel::CardAction::CancelQueue(foundry, index),
+        enabled: true,
+        why: None,
+        desc: Vec::new(),
+        progress: None,
+    };
+    let slot = macroquad::math::Rect::new(20.0, 600.0, 48.0, 48.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.queue_slots[0] = (slot, crate::panel::CardAction::CancelQueue(foundry, 0));
+    layout.queue_count = 1;
+    game.presentation.layout.set(layout);
+    for shifts in [false, true] {
+        let mut panel =
+            crate::panel::build_for_input(&game.view(), &input).expect("a Foundry panel");
+        panel.queue = vec![chip(UnitKind::Harvester, 0), chip(UnitKind::Sentinel, 1)];
+        *game.presentation.panel_model.borrow_mut() = Some(panel);
+        game.pending.clear();
+        input.now += 1.0;
+        apply_events(&mut game, &mut input, &[touch_down(2, slot.center())]);
+        if shifts {
+            let mut model = game.presentation.panel_model.borrow_mut();
+            let queue = &mut model.as_mut().expect("the published panel").queue;
+            queue.remove(0);
+            queue[0].action = crate::panel::CardAction::CancelQueue(foundry, 0);
+        }
+        input.now += 2.0;
+        apply_events(&mut game, &mut input, &[touch_up(2, slot.center())]);
+        let cancelled = game
+            .pending
+            .iter()
+            .any(|c| matches!(c.command, Command::CancelTrain { index: 0, .. }));
+        assert_eq!(cancelled, !shifts, "shifted: {shifts}");
+    }
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.
@@ -3906,6 +4179,149 @@ fn the_tutorial_survives_its_own_literal_instructions() {
 
     // Lesson 6 is the pause menu, a frame-loop act outside the
     // command stream; its flag flips in main.rs.
+    game.demo.paused_menu = true;
+    assert!(!t.advance(&game.demo), "school is out");
+}
+
+/// Publishes the live panel's card whose action `pick` accepts at one
+/// fixed rect and taps it, the way a finger meets the drawn panel.
+fn tap_panel_card(
+    game: &mut Game,
+    input: &mut InputState,
+    pick: impl Fn(&crate::panel::Card) -> bool,
+) {
+    let panel = crate::panel::build_for_input(&game.view(), input).expect("a panel");
+    let card = panel
+        .cards
+        .iter()
+        .find(|card| pick(card))
+        .unwrap_or_else(|| {
+            let titles: Vec<_> = panel.cards.iter().map(|card| &card.title).collect();
+            panic!("no such card among {titles:?}")
+        });
+    let rect = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.cards[0] = (rect, card.action);
+    layout.card_count = 1;
+    game.presentation.layout.set(layout);
+    tap(game, input, rect.center());
+}
+
+fn tap_world(game: &mut Game, input: &mut InputState, world: Vec2) {
+    let p = game.presentation.camera.to_screen(world);
+    tap(game, input, p);
+}
+
+fn long_press_world(game: &mut Game, input: &mut InputState, world: Vec2) {
+    let p = game.presentation.camera.to_screen(world);
+    input.now += 1.0;
+    apply_events(game, input, &[touch_down(1, p)]);
+    input.now += f64::from(input.touch_prefs.long_press_ms) / 1000.0 + 0.05;
+    update_touch(game, input);
+    apply_events(game, input, &[touch_up(1, p)]);
+}
+
+#[test]
+fn the_tutorial_survives_its_own_touch_instructions() {
+    // The touch twin of the literal playthrough: every lesson played
+    // exactly as its touch card words it, with taps, long-presses, and
+    // panel cards, and nothing a touch-only build lacks.
+    use crate::tutorial::{STEPS, Tutorial, tutorial_scenario};
+
+    let mut game =
+        Game::with_viewport(tutorial_scenario(), vec2(1280.0, 800.0)).expect("tutorial builds");
+    let mut input = InputState::new();
+    let mut t = Tutorial::new();
+    game.presentation.camera.center = vec2(8.0, 5.0);
+    game.presentation.layout.set(bare_layout(680.0, 500.0));
+    let own_unit = |game: &Game, kind: UnitKind, idle: bool| {
+        game.state
+            .units()
+            .iter()
+            .find(|u| {
+                u.player == game.presentation.human
+                    && u.kind == kind
+                    && (!idle || matches!(u.order, oxide_sim::Order::Idle))
+            })
+            .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+            .expect("an own machine of that kind")
+    };
+    let home = |game: &Game| {
+        let c = game.home_foundry().unwrap().center();
+        vec2(c.x.to_num::<f32>(), c.y.to_num::<f32>())
+    };
+
+    // "Tap your Foundry, then the Harvester card."
+    assert!(t.advance(&game.demo));
+    assert!(STEPS[0].body(true)[0].contains("Harvester card"));
+    let world = home(&game);
+    tap_world(&mut game, &mut input, world);
+    tap_panel_card(&mut game, &mut input, |card| card.title == "Harvester");
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 1, "training graduates lesson 1");
+
+    // "Select a Harvester and long-press a scrap pile."
+    let (hauler, at) = own_unit(&game, UnitKind::Harvester, false);
+    tap_world(&mut game, &mut input, at);
+    assert_eq!(game.presentation.selection.units, vec![hauler]);
+    long_press_world(&mut game, &mut input, vec2(7.5, 2.5));
+    game.do_tick();
+    assert!(game.demo.harvested, "the long-press ordered the harvest");
+    for _ in 0..1500 {
+        if game.demo.deposited {
+            break;
+        }
+        game.do_tick();
+    }
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 2, "income graduates the mining lesson");
+
+    // "Tap Build, then a building, then open ground."
+    let (_, at) = own_unit(&game, UnitKind::Harvester, true);
+    tap_world(&mut game, &mut input, at);
+    tap_panel_card(&mut game, &mut input, |card| card.title == "Build");
+    assert!(
+        input.construction_open(),
+        "the Build card opens construction"
+    );
+    tap_panel_card(&mut game, &mut input, |card| {
+        card.action == crate::panel::CardAction::ArmBuild(oxide_sim::BuildingKind::Turret)
+    });
+    tap_world(&mut game, &mut input, vec2(10.5, 4.5));
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Build { kind, .. } if *kind == oxide_sim::BuildingKind::Turret
+        )),
+        "Build, a building, and a ground tap staged the site: {:?}",
+        game.pending
+    );
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 3, "the site graduates the building lesson");
+
+    // "Train a Sentinel at the Foundry."
+    let world = home(&game);
+    tap_world(&mut game, &mut input, world);
+    tap_panel_card(&mut game, &mut input, |card| card.title == "Sentinel");
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
+
+    // "Long-press ground with a combat unit selected."
+    let (_, at) = own_unit(&game, UnitKind::Sentinel, false);
+    tap_world(&mut game, &mut input, at);
+    long_press_world(&mut game, &mut input, vec2(12.5, 9.5));
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 5, "advance graduates the march lesson");
+
+    // "Tap the menu button at the top right to open the pause menu."
+    game.presentation.layout.set(top_bar_layout());
+    let menu = game.presentation.layout.get().menu_button.center();
+    tap(&mut game, &mut input, menu);
+    assert!(input.take_menu_request(), "the menu button asks for pause");
     game.demo.paused_menu = true;
     assert!(!t.advance(&game.demo), "school is out");
 }

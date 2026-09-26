@@ -2,7 +2,7 @@
 //! `Rect` or `Vec2` back into its fields. These take the value whole.
 
 use macroquad::prelude::{
-    Color, Rect, Vec2, draw_circle, draw_circle_lines, draw_line, draw_rectangle,
+    Color, Rect, Vec2, draw_arc, draw_circle, draw_circle_lines, draw_line, draw_rectangle,
     draw_rectangle_lines,
 };
 
@@ -24,4 +24,11 @@ pub(crate) fn fill_circle(center: Vec2, radius: f32, color: Color) {
 
 pub(crate) fn stroke_circle(center: Vec2, radius: f32, thickness: f32, color: Color) {
     draw_circle_lines(center.x, center.y, radius, thickness, color);
+}
+
+/// A clockwise arc starting at twelve o'clock and sweeping `degrees`.
+pub(crate) fn stroke_arc(center: Vec2, radius: f32, thickness: f32, degrees: f32, color: Color) {
+    draw_arc(
+        center.x, center.y, 48, radius, -90.0, thickness, degrees, color,
+    );
 }

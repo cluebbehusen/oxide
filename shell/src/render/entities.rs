@@ -2496,6 +2496,19 @@ pub(crate) fn draw_rally_marker(game: &crate::game::Scene<'_>) {
     }
 }
 
+/// A ring that fills around a resting finger until its long-press
+/// order fires, so the hold reads as progress rather than a stall.
+pub(crate) fn draw_long_press_ring(input: &InputState) {
+    let Some((at, progress)) = crate::input::long_press_progress(input) else {
+        return;
+    };
+    let s = ui_scale();
+    let radius = 32.0 * s;
+    let thickness = 3.5 * s;
+    stroke_circle(at, radius, 1.5 * s, Color::new(0.9, 0.88, 0.84, 0.3));
+    crate::render::prim::stroke_arc(at, radius, thickness, progress * 360.0, BONE);
+}
+
 pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) {
     let Some(origin) = input.drag_origin else {
         return;

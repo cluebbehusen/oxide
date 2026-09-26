@@ -437,6 +437,36 @@ fn catalog_geometry(
     (band, slots, grouped)
 }
 
+/// A construction category's header: its name, a marker while open,
+/// and on desktop the keys that reach it.
+fn category_label(
+    label: &str,
+    open: bool,
+    key: &str,
+    palette_key: Option<&str>,
+    touch_only: bool,
+) -> String {
+    if open {
+        format!("{label} *")
+    } else if touch_only {
+        label.to_string()
+    } else if let Some(palette_key) = palette_key {
+        format!("{label} [{palette_key} > {key}]")
+    } else {
+        format!("{label} [{key}]")
+    }
+}
+
+/// What pressing a drawn card does: its own action while enabled, an
+/// explanation while disabled.
+fn published_action(card: &crate::panel::Card) -> crate::panel::CardAction {
+    if card.enabled {
+        card.action
+    } else {
+        crate::panel::CardAction::Refused
+    }
+}
+
 fn draw_catalog(
     panel: &crate::panel::Panel,
     input: &InputState,
@@ -472,23 +502,22 @@ fn draw_catalog(
         .into_iter()
         .enumerate()
         {
-            let label = if input.build_category == Some(category as u8) {
-                format!("{label} *")
-            } else {
-                let key = input
-                    .bindings
-                    .label(crate::action::Action::BuildCategory(category as u8));
-                if input.build_category.is_some() {
-                    format!(
-                        "{label} [{} > {key}]",
-                        input
-                            .bindings
-                            .label(crate::action::Action::ToggleBuildPalette)
-                    )
-                } else {
-                    format!("{label} [{key}]")
-                }
-            };
+            let key = input
+                .bindings
+                .label(crate::action::Action::BuildCategory(category as u8));
+            let palette_key = input
+                .bindings
+                .label(crate::action::Action::ToggleBuildPalette);
+            let label = category_label(
+                label,
+                input.build_category == Some(category as u8),
+                &key,
+                input
+                    .build_category
+                    .is_some()
+                    .then_some(palette_key.as_str()),
+                crate::platform::TOUCH_ONLY,
+            );
             crate::typography::draw(
                 &label,
                 slots[index].x + 5.0 * s,
@@ -571,14 +600,7 @@ fn draw_catalog(
             11.0 * s,
             TEXT_SECONDARY,
         );
-        cards[i] = (
-            rect,
-            if card.enabled {
-                card.action
-            } else {
-                CardAction::None
-            },
-        );
+        cards[i] = (rect, published_action(card));
     }
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     PanelGeometry {
@@ -944,14 +966,7 @@ pub(crate) fn draw_panel(
         };
         if matches!(card.action, CardAction::ArmRally | CardAction::ClearRally) {
             draw_rally_control(card, rect, s);
-            cards[card_count] = (
-                rect,
-                if card.enabled {
-                    card.action
-                } else {
-                    CardAction::None
-                },
-            );
+            cards[card_count] = (rect, published_action(card));
             card_count += 1;
             continue;
         }
@@ -1064,14 +1079,7 @@ pub(crate) fn draw_panel(
                 },
             );
         }
-        cards[card_count] = (
-            rect,
-            if card.enabled {
-                card.action
-            } else {
-                CardAction::None
-            },
-        );
+        cards[card_count] = (rect, published_action(card));
         card_count += 1;
     }
 
@@ -1268,35 +1276,33 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
     }
     use crate::layout::TooltipSide;
     let s = ui_scale();
+    // A resting finger previews the card it covers; a touch-only build
+    // has no hover, so its stale mouse point never does.
+    let pointer = match input.touch_preview() {
+        Some(p) => Some((p, Some(s))),
+        None => (!crate::platform::TOUCH_ONLY).then_some((input.mouse, None)),
+    };
+    let Some(hit) =
+        pointer.and_then(|(p, touch_ui)| crate::layout::card_under(&layout, p, touch_ui))
+    else {
+        return;
+    };
     // The hovered RECT is the anchor, not just the index: the orders
     // dock stacks upward from the band, so a tooltip pinned to the
     // band's top edge described chip 1 beside chip 8.
-    let hovered = layout.roster_slots[..layout.roster_count]
-        .iter()
-        .enumerate()
-        .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-        .and_then(|(i, (r, _))| panel.roster.get(i).map(|c| (c, *r, TooltipSide::Above)))
-        .or_else(|| {
-            layout.cards[..layout.card_count]
-                .iter()
-                .enumerate()
-                .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-                .and_then(|(i, (r, _))| panel.cards.get(i).map(|c| (c, *r, TooltipSide::Above)))
-        })
-        .or_else(|| {
-            layout.queue_slots[..layout.queue_count]
-                .iter()
-                .enumerate()
-                .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-                .and_then(|(i, (r, _))| {
-                    // Anchored across the dock's full width so the box
-                    // clears the strip cleanly at any chip inset.
-                    let row = Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h);
-                    panel.queue.get(i).map(|c| (c, row, TooltipSide::RightOf))
-                })
-        });
-    let Some((card, anchor, side)) = hovered else {
+    let Some(card) = panel.card(hit.row, hit.index) else {
         return;
+    };
+    let r = hit.rect;
+    let (anchor, side) = if hit.row == crate::layout::CardRow::Queue {
+        // Anchored across the dock's full width so the box clears the
+        // strip cleanly at any chip inset.
+        (
+            Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h),
+            TooltipSide::RightOf,
+        )
+    } else {
+        (r, TooltipSide::Above)
     };
     let mut lines: Vec<(String, Color)> = Vec::new();
     let header = if card.hotkey.is_empty() {
@@ -1416,6 +1422,28 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
 mod tests {
     use super::*;
     use crate::game::Game;
+
+    #[test]
+    fn category_labels_name_keys_only_where_keys_exist() {
+        assert_eq!(
+            category_label("DEFENSE", false, "3", None, false),
+            "DEFENSE [3]"
+        );
+        assert_eq!(
+            category_label("DEFENSE", false, "3", Some("B"), false),
+            "DEFENSE [B > 3]"
+        );
+        for touch_only in [false, true] {
+            assert_eq!(
+                category_label("DEFENSE", true, "3", Some("B"), touch_only),
+                "DEFENSE *"
+            );
+        }
+        for palette_key in [None, Some("B")] {
+            let label = category_label("DEFENSE", false, "3", palette_key, true);
+            crate::platform::assert_touch_copy(&label);
+        }
+    }
 
     #[test]
     fn collective_queue_keeps_every_kind_visible_in_narrow_windows() {

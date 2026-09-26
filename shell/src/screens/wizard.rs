@@ -206,6 +206,29 @@ const FACTION_CHIP_ITEMS: [&str; 3] = ["Auto", "Ferrous", "Cupric"];
 const MIN_TOUCH_TARGET: f32 = 44.0;
 const COMPACT_PAGE_ITEMS: usize = 5;
 
+/// The setup screen's coaching line. The keyboard hint follows the
+/// cursor; taps move the cursor anyway, so the touch hint is one line.
+fn setup_hint(one_team: bool, on_start: bool, cell: usize, touch_only: bool) -> &'static str {
+    match (touch_only, one_team) {
+        (true, true) => "every seat is on one team, nobody to fight - tap a TEAM chip to regroup",
+        (true, false) => {
+            "tap a seat to take it - tap a chip to change it - tap Start match to begin"
+        }
+        (false, true) => {
+            "every seat is on one team, nobody to fight - regroup a TEAM chip - {back} back"
+        }
+        (false, false) if on_start => "{confirm} starts the match - {back} back",
+        (false, false) => match cell {
+            1 => "{confirm} cycles difficulty - {left}/{right} move - {back} back",
+            2 => "{confirm} cycles stance - {left}/{right} move - {back} back",
+            3.. => "{confirm} cycles the chip - {left}/{right} move - {back} back",
+            _ => {
+                "{confirm} takes this seat - {left}/{right} reach difficulty, stance, faction, and team - {back} back"
+            }
+        },
+    }
+}
+
 /// Which wizard screen is up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
@@ -1011,9 +1034,7 @@ impl Wizard {
 
     /// Draws the corner Back button both steps share.
     pub fn draw_back(&self, mouse: Vec2) {
-        let s = crate::render::ui_scale();
-        let rect = crate::button::corner_slot(0, s);
-        crate::button::draw(rect, "BACK", rect.contains(mouse), s);
+        crate::button::draw_back(mouse);
     }
 
     /// Draws the setup screen: team-grouped seat cards, the Start
@@ -1347,19 +1368,12 @@ impl Wizard {
         }
 
         if !compact {
-            let hint = if one_team {
-                "every seat is on one team, nobody to fight - regroup a TEAM chip - {back} back"
-            } else if self.setup_sel == order.len() {
-                "{confirm} starts the match - {back} back"
-            } else if self.setup_cell == 1 {
-                "{confirm} cycles difficulty - {left}/{right} move - {back} back"
-            } else if self.setup_cell == 2 {
-                "{confirm} cycles stance - {left}/{right} move - {back} back"
-            } else if self.setup_cell > 2 {
-                "{confirm} cycles the chip - {left}/{right} move - {back} back"
-            } else {
-                "{confirm} takes this seat - {left}/{right} reach difficulty, stance, faction, and team - {back} back"
-            };
+            let hint = setup_hint(
+                one_team,
+                self.setup_sel == order.len(),
+                self.setup_cell,
+                crate::platform::TOUCH_ONLY,
+            );
             let hint = crate::menu::binding_hint(hint);
             let hdims = measure_text(&hint, None, (16.0 * ui) as u16, 1.0);
             draw_text(
@@ -1476,6 +1490,22 @@ impl Wizard {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn the_setup_hint_speaks_touch_on_touch_only_builds() {
+        assert_eq!(
+            setup_hint(false, true, 0, false),
+            "{confirm} starts the match - {back} back"
+        );
+        for one_team in [false, true] {
+            for on_start in [false, true] {
+                for cell in 0..5 {
+                    crate::platform::assert_touch_copy(setup_hint(one_team, on_start, cell, true));
+                    assert!(setup_hint(one_team, on_start, cell, false).contains("{back}"));
+                }
+            }
+        }
+    }
 
     fn press(key: Key) -> Vec<RawEvent> {
         vec![RawEvent::KeyDown { key }, RawEvent::KeyUp { key }]
