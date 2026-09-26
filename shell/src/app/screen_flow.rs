@@ -771,7 +771,7 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
     drop(input_scope);
     render::draw(&app.game.view(), &app.sprites, &app.input);
     veil();
-    ps.menu.draw(ps.subtitle(&app.game.scenario.name));
+    ps.draw(&app.game.scenario.name, app.input.mouse);
     Ok(match out {
         screens::pause::Out::Stay => Screen::Pause(ps),
         screens::pause::Out::Resume => {

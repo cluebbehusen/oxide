@@ -160,6 +160,8 @@ struct App {
     /// Presented frames in a row spent in live play; the suspension
     /// pause reads it to tell a stalled match from a heavy transition.
     live_streak: u8,
+    /// Whether this app last asked for the on-screen keyboard.
+    soft_keyboard: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -699,6 +701,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         catalog_delete: None,
         performance: crate::performance::Performance::default(),
         live_streak: 0,
+        soft_keyboard: false,
     };
     let mut ui_view = capture_ui(&screen, &app);
     // A rerun pass re-enters the loop inside the same presented frame;
@@ -902,6 +905,18 @@ pub(crate) async fn run(args: Args) -> Result<()> {
 
         if std::mem::discriminant(&screen) != screen_before {
             app.input.reset_transient();
+        }
+        // A touch-only player types through the on-screen keyboard, which
+        // follows the name field: every way out of naming hides it, and a
+        // tap on the field brings back one the player dismissed.
+        let refocus = match &mut screen {
+            Screen::Pause(pause) => pause.take_keyboard_request(),
+            _ => false,
+        };
+        let wanted = keyboard_wanted(&screen);
+        if crate::platform::TOUCH_ONLY && (wanted != app.soft_keyboard || (wanted && refocus)) {
+            macroquad::miniquad::window::show_keyboard(wanted);
+            app.soft_keyboard = wanted;
         }
         ui_view = capture_ui(&screen, &app);
 
@@ -1229,6 +1244,11 @@ impl FrameTime {
             raw,
         }
     }
+}
+
+/// Whether the screen wants text input: only the save-name field does.
+fn keyboard_wanted(screen: &Screen) -> bool {
+    matches!(screen, Screen::Pause(pause) if pause.naming())
 }
 
 /// Consecutive presented frames that began and ended in live play.
@@ -1705,6 +1725,17 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn keyboard_is_wanted_only_while_naming() {
+        let mut pause = PauseScreen::open(false, true);
+        assert!(!keyboard_wanted(&Screen::Pause(PauseScreen::open(
+            false, true
+        ))));
+        pause.begin_naming("Skirmish | t40".to_string());
+        assert!(keyboard_wanted(&Screen::Pause(pause)));
+        assert!(!keyboard_wanted(&Screen::Playing));
     }
 
     #[test]
