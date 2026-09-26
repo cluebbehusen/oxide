@@ -164,6 +164,10 @@ pub struct InputState {
     pub(crate) touches: Vec<(u64, TouchPoint)>,
     /// Wall-clock stamp of the last completed tap, for double-taps.
     pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
+    /// The QUEUE toggle: touch's sticky stand-in for a held Shift.
+    pub(crate) queue_toggle: bool,
+    /// Whether this session already explained the QUEUE toggle.
+    queue_explained: bool,
     /// The live two-finger gesture, if two fingers are down.
     pub(crate) pair: Option<Pair>,
     /// Pair fingers the platform reported lifted, newest last.
@@ -218,7 +222,7 @@ pub(crate) fn available_construction_scrap(
     game: &crate::game::Scene<'_>,
     input: &InputState,
 ) -> u32 {
-    let replaced = replaced_build_units(game, input.resolver.shift_held());
+    let replaced = replaced_build_units(game, input.queue_held());
     if game.pending.is_empty() {
         return game
             .state
@@ -382,6 +386,8 @@ impl InputState {
             touch_prefs: crate::config::TouchPrefs::default(),
             touches: Vec::new(),
             last_tap: None,
+            queue_toggle: false,
+            queue_explained: false,
             pair: None,
             lifted_pair: Vec::new(),
             menu_requested: false,
@@ -503,6 +509,7 @@ impl InputState {
         self.build_category = None;
         self.touches.clear();
         self.last_tap = None;
+        self.queue_toggle = false;
         self.pair = None;
         self.lifted_pair.clear();
         self.menu_requested = false;
@@ -519,6 +526,24 @@ impl InputState {
             .then_some(finger.at)
     }
 
+    /// Whether a press should queue its order, add to the selection, or
+    /// keep an armed mode for another target: a held Shift on a
+    /// keyboard, the sticky QUEUE toggle on touch.
+    pub(crate) fn queue_held(&self) -> bool {
+        self.queue_toggle || self.resolver.shift_held()
+    }
+
+    /// Flips the QUEUE toggle, explaining it the first time it turns
+    /// on in a session.
+    pub(crate) fn toggle_queue(&mut self, game: &mut Game) {
+        self.queue_toggle = !self.queue_toggle;
+        if self.queue_toggle && !self.queue_explained {
+            self.queue_explained = true;
+            game.presentation
+                .toast("queue on: taps add to the selection, orders queue, and modes stay armed");
+        }
+    }
+
     /// Consumes this frame's menu-button press, if any.
     pub(crate) fn take_menu_request(&mut self) -> bool {
         std::mem::take(&mut self.menu_requested)
@@ -531,6 +556,7 @@ impl InputState {
     /// would resolve to unrelated units in the new world.
     pub fn reset_session(&mut self) {
         self.reset_transient();
+        self.queue_explained = false;
         self.groups = Default::default();
         self.bookmarks = [None; 4];
         self.last_click = None;
@@ -1024,6 +1050,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     dispatch_action(game, input, Action::TogglePause);
                     continue;
                 }
+                if layout.queue_toggle.w > 0.0 && layout.queue_toggle.contains(vec2(x, y)) {
+                    input.toggle_queue(game);
+                    continue;
+                }
                 // The minimap owns clicks landing on it: jump the camera,
                 // never start a drag-select there. HUD chrome swallows
                 // clicks outright.
@@ -1045,12 +1075,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // The placement stroke ends at release; Shift decides
                 // whether the MODE stays armed, exactly as the old
                 // one-click-per-wall rule did.
-                if input.placing_stroke.take().is_some() && !input.resolver.shift_held() {
+                if input.placing_stroke.take().is_some() && !input.queue_held() {
                     input.placing = None;
                 }
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
-                    let additive = input.resolver.shift_held();
+                    let additive = input.queue_held();
                     if origin.distance(release) <= click_slop(input.ui) {
                         let now = input.now;
                         let double = !additive
@@ -1092,7 +1122,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
-                let queue = input.resolver.shift_held();
+                let queue = input.queue_held();
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
@@ -1240,7 +1270,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             let world = game.presentation.camera.to_world(p);
             let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
             let anchor = placement_anchor(&game.view(), kind, clicked);
-            let queue = input.resolver.shift_held();
+            let queue = input.queue_held();
             let projection = pending_build_projection(&game.view(), kind, anchor, queue);
             // The ghost already showed red; a misclick must not throw
             // away the armed mode on top of it. The toast names the
@@ -1350,10 +1380,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::Salvage {
                 units,
                 building,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Harvest);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.salvaging = false;
             }
         }
@@ -1412,10 +1442,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::RepairUnit {
                 units,
                 target,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Harvest);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.repairing = false;
             }
         }
@@ -1434,10 +1464,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::Move {
                 units,
                 goal,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Move);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.running = false;
             }
         }
@@ -1456,10 +1486,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.issue(Command::AttackMove {
                 units,
                 goal,
-                queue: input.resolver.shift_held(),
+                queue: input.queue_held(),
             });
             game.presentation.ping(world, PingKind::Attack);
-            if !input.resolver.shift_held() {
+            if !input.queue_held() {
                 input.attacking = false;
             }
         }

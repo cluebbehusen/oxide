@@ -22,7 +22,7 @@ pub(crate) fn draw_placement_ghost(
     let anchor = crate::input::placement_anchor(game, kind, clicked);
     let zoom = game.presentation.camera.zoom;
     let (w, h) = kind.base_stats().size;
-    let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
+    let queue = input.placing_stroke.is_some() || input.queue_held();
     let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
         .presentation

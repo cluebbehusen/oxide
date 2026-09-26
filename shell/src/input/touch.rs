@@ -364,7 +364,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 .pair
                 .is_some_and(|pair| matches!(pair.state, PairState::Undecided | PairState::Box))
             {
-                box_select(game, survivor.at, p, false);
+                box_select(game, survivor.at, p, input.queue_held());
             }
             // The survivor is spent EITHER way: after a box
             // or a pinch, its own still release must not
@@ -391,7 +391,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 // follow, so the stroke closes here and
                 // Shift decides the mode, like MouseUp.
                 if armed_click(game, input, p) {
-                    if input.placing_stroke.take().is_some() && !input.resolver.shift_held() {
+                    if input.placing_stroke.take().is_some() && !input.queue_held() {
                         input.placing = None;
                     }
                     input.last_tap = None;
@@ -437,13 +437,17 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     && crate::layout::touch_pad(layout.pause_status, input.ui).contains(p)
                 {
                     dispatch_action(game, input, Action::TogglePause);
+                } else if layout.queue_toggle.w > 0.0
+                    && crate::layout::touch_pad(layout.queue_toggle, input.ui).contains(p)
+                {
+                    input.toggle_queue(game);
                 } else if click_on_hud(game, p) {
                     // Bare chrome: the tap is swallowed.
-                } else if double {
+                } else if double && !input.queue_held() {
                     select_all_of_kind_on_screen(game, p, input.ui);
                     input.last_tap = None;
                 } else {
-                    click_select(game, p, false, input.ui);
+                    click_select(game, p, input.queue_held(), input.ui);
                     input.last_tap = Some((input.now, p));
                 }
             }
@@ -497,6 +501,6 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     if on_entity && game.presentation.selection.units.is_empty() {
         select::click_select(game, tp.at, false, input.ui);
     } else {
-        orders::context_order(game, tp.at, false);
+        orders::context_order(game, tp.at, input.queue_held());
     }
 }

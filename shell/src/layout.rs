@@ -45,6 +45,8 @@ pub struct LayoutModel {
     pub mode_ribbon: Rect,
     /// Touchable cancel action inside the armed-command ribbon.
     pub mode_cancel: Rect,
+    /// The QUEUE toggle beside the ribbon, on touch-only builds.
+    pub queue_toggle: Rect,
     /// Mixed-selection roster filters, separate from command cards.
     pub roster_slots: [(Rect, CardAction); 8],
     /// How many roster filters are live this frame.
@@ -75,6 +77,7 @@ impl Default for LayoutModel {
             pause_status: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_cancel: Rect::new(0.0, 0.0, 0.0, 0.0),
+            queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
             roster_count: 0,
             cards: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16],
@@ -202,6 +205,7 @@ impl LayoutModel {
             pause_status,
             mode_ribbon,
             mode_cancel,
+            queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots,
             roster_count,
             cards,
@@ -223,6 +227,7 @@ impl LayoutModel {
                 .any(|rect| rect.w > 0.0 && rect.contains(p))
             || (self.orders.w > 0.0 && self.orders.contains(p))
             || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))
+            || (self.queue_toggle.w > 0.0 && self.queue_toggle.contains(p))
     }
 }
 

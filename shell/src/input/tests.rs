@@ -2708,6 +2708,85 @@ fn a_pair_formed_mid_pan_or_while_armed_never_boxes() {
 }
 
 #[test]
+fn the_queue_toggle_makes_touch_queue_and_add() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let own: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.presentation.human)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .take(2)
+        .collect();
+    let [(first, first_at), (second, second_at)] = own[..] else {
+        panic!("two own units");
+    };
+    input.queue_toggle = true;
+    tap_world(&mut game, &mut input, first_at);
+    tap_world(&mut game, &mut input, second_at);
+    let mut picked = game.presentation.selection.units.clone();
+    picked.sort();
+    let mut both = vec![first, second];
+    both.sort();
+    assert_eq!(picked, both, "a queued tap adds to the selection");
+
+    // A quick second tap on the same unit toggles it rather than
+    // sweeping every unit of its kind.
+    input.now += 1.0;
+    let p = game.presentation.camera.to_screen(first_at);
+    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
+    input.now += 0.1;
+    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
+    assert!(
+        game.presentation.selection.units.len() <= 2,
+        "no kind sweep"
+    );
+
+    game.presentation.selection.units = vec![first];
+    long_press_world(&mut game, &mut input, first_at + vec2(4.0, 2.0));
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { queue: true, .. })),
+        "a queued long-press appends the order: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn the_queue_chip_flips_by_tap_and_click() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let chip = macroquad::math::Rect::new(500.0, 620.0, 96.0, 44.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.queue_toggle = chip;
+    game.presentation.layout.set(layout);
+    tap(&mut game, &mut input, chip.center());
+    assert!(input.queue_held());
+    assert!(
+        game.presentation
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("queue on")),
+        "the first switch explains itself"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &click(chip.center().x, chip.center().y),
+    );
+    assert!(!input.queue_held());
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "the chip is chrome"
+    );
+    input.queue_toggle = true;
+    input.reset_transient();
+    assert!(!input.queue_held(), "leaving the screen drops it");
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.
