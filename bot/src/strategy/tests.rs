@@ -1788,30 +1788,36 @@ fn scout_dispatch_retargets_only_when_its_safe_goal_changes() {
     let plan = AirPlan::remembered_connected(&observation);
 
     let mut first = StrategicDecision::default();
-    assert!(dispatch_scout(
-        &mut operation,
-        &plan,
-        &observation,
-        &intel,
-        &[],
-        None,
-        &mut first
-    ));
+    assert_eq!(
+        Ok(()),
+        dispatch_scout(
+            &mut operation,
+            &plan,
+            &observation,
+            &intel,
+            &[],
+            None,
+            &mut first
+        )
+    );
     let first_goal = match first.intents.as_slice() {
         [Intent::MoveUnits { units, goal }] if units == &[UnitId(1)] => *goal,
         intents => panic!("expected one scout dispatch, got {intents:?}"),
     };
 
     let mut repeated = StrategicDecision::default();
-    assert!(dispatch_scout(
-        &mut operation,
-        &plan,
-        &observation,
-        &intel,
-        &[],
-        None,
-        &mut repeated
-    ));
+    assert_eq!(
+        Ok(()),
+        dispatch_scout(
+            &mut operation,
+            &plan,
+            &observation,
+            &intel,
+            &[],
+            None,
+            &mut repeated
+        )
+    );
     assert!(
         repeated.intents.is_empty(),
         "an identical in-flight order remains authoritative"
@@ -1819,15 +1825,18 @@ fn scout_dispatch_retargets_only_when_its_safe_goal_changes() {
 
     operation.target = TilePos::new(24, 16);
     let mut changed = StrategicDecision::default();
-    assert!(dispatch_scout(
-        &mut operation,
-        &plan,
-        &observation,
-        &intel,
-        &[],
-        None,
-        &mut changed
-    ));
+    assert_eq!(
+        Ok(()),
+        dispatch_scout(
+            &mut operation,
+            &plan,
+            &observation,
+            &intel,
+            &[],
+            None,
+            &mut changed
+        )
+    );
     assert!(matches!(
         changed.intents.as_slice(),
         [Intent::MoveUnits { units, goal }]
@@ -2029,7 +2038,10 @@ fn artillery_staging_is_dispatched_once_until_the_goal_or_mission_changes() {
         protected_current_scrap: 0,
         protected_forecast_scrap: 0,
     };
-    suppress(&mut operation, &mut plan, &context, &mut suppression);
+    assert_eq!(
+        Ok(()),
+        suppress(&mut operation, &mut plan, &context, &mut suppression)
+    );
     assert!(suppression.intents.iter().any(|intent| matches!(
         intent,
         Intent::AttackUnits {
@@ -6490,26 +6502,29 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
 
     let identity = profile();
     let mut decision = StrategicDecision::default();
-    verify(
-        &mut operation,
-        &mut plan,
-        &AirPlanningContext {
-            allow_procurement: true,
-            planning: Some(&fixture_planning),
-            tuning: DifficultyTuning::for_level(identity.difficulty),
-            obs: &hidden,
-            intel: &intelligence,
-            home: HOME,
-            orientation: test_orientation(),
-            public_map: None,
-            enlisted: &[],
-            landing_sites: &[],
-            connected_resources: None,
-            production: StrategicProductionContext::empty(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
-        },
-        &mut decision,
+    assert_eq!(
+        Ok(()),
+        verify(
+            &mut operation,
+            &mut plan,
+            &AirPlanningContext {
+                allow_procurement: true,
+                planning: Some(&fixture_planning),
+                tuning: DifficultyTuning::for_level(identity.difficulty),
+                obs: &hidden,
+                intel: &intelligence,
+                home: HOME,
+                orientation: test_orientation(),
+                public_map: None,
+                enlisted: &[],
+                landing_sites: &[],
+                connected_resources: None,
+                production: StrategicProductionContext::empty(),
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+            },
+            &mut decision,
+        )
     );
     assert_eq!(operation.phase(), AirOperationPhase::Verify);
     assert!(operation.scout_dispatch.is_some());
@@ -6532,26 +6547,29 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
     );
 
     let mut decision = StrategicDecision::default();
-    verify(
-        &mut operation,
-        &mut plan,
-        &AirPlanningContext {
-            allow_procurement: true,
-            planning: Some(&fixture_planning),
-            tuning: DifficultyTuning::for_level(identity.difficulty),
-            obs: &cleared,
-            intel: &intelligence,
-            home: HOME,
-            orientation: test_orientation(),
-            public_map: None,
-            enlisted: &[],
-            landing_sites: &[],
-            connected_resources: None,
-            production: StrategicProductionContext::empty(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
-        },
-        &mut decision,
+    assert_eq!(
+        Ok(()),
+        verify(
+            &mut operation,
+            &mut plan,
+            &AirPlanningContext {
+                allow_procurement: true,
+                planning: Some(&fixture_planning),
+                tuning: DifficultyTuning::for_level(identity.difficulty),
+                obs: &cleared,
+                intel: &intelligence,
+                home: HOME,
+                orientation: test_orientation(),
+                public_map: None,
+                enlisted: &[],
+                landing_sites: &[],
+                connected_resources: None,
+                production: StrategicProductionContext::empty(),
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+            },
+            &mut decision,
+        )
     );
     assert_eq!(operation.phase(), AirOperationPhase::Strike);
 }
@@ -6596,7 +6614,10 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     };
     let mut decision = StrategicDecision::default();
 
-    verify(&mut operation, &mut plan, &context, &mut decision);
+    assert_eq!(
+        Ok(()),
+        verify(&mut operation, &mut plan, &context, &mut decision)
+    );
 
     assert_eq!(
         connected_scout_focus(&operation, &plan, &observation, &intelligence),
@@ -6635,7 +6656,10 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
         protected_forecast_scrap: 0,
     };
     let mut cleared = StrategicDecision::default();
-    verify(&mut operation, &mut plan, &context, &mut cleared);
+    assert_eq!(
+        Ok(()),
+        verify(&mut operation, &mut plan, &context, &mut cleared)
+    );
 
     assert_eq!(operation.phase(), AirOperationPhase::Strike);
 }
@@ -6682,7 +6706,10 @@ fn connected_verify_checks_the_selected_secondary_approach_before_striking() {
         protected_forecast_scrap: 0,
     };
     let mut decision = StrategicDecision::default();
-    verify(&mut operation, &mut plan, &context, &mut decision);
+    assert_eq!(
+        Ok(()),
+        verify(&mut operation, &mut plan, &context, &mut decision)
+    );
 
     assert_eq!(operation.phase(), AirOperationPhase::Verify);
     assert!(decision.intents.iter().all(|intent| !matches!(

@@ -3795,14 +3795,18 @@ impl StrategicPlanner {
             connected_resources,
             ..AirPlanningContext::new(context, &external_enlisted)
         };
-        match op.stage {
+        let staged = match op.stage {
             AirStage::Watching => remembered_recon(&mut op, &plan, &context, &mut out),
             AirStage::Recon => recon(&mut op, &mut plan, &context, &mut out),
             AirStage::Assemble => assemble(&mut op, &mut plan, &context, &mut out),
             AirStage::SuppressAa => suppress(&mut op, &mut plan, &context, &mut out),
             AirStage::Verify => verify(&mut op, &mut plan, &context, &mut out),
             AirStage::Strike => strike(&mut op, &mut plan, &context, &mut out),
-            AirStage::Recover { .. } => {}
+            AirStage::Recover { .. } => Ok(()),
+        };
+        if let Err(reason) = staged {
+            out.intents.clear();
+            recover(&mut op, reason, obs.tick);
         }
         let preparation_expired = plan.package().is_some_and(|package| {
             op.phase() <= AirOperationPhase::Assemble
@@ -4020,7 +4024,7 @@ fn remembered_recon(
     plan: &AirPlan,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
-) {
+) -> Result<(), AirRecoveryReason> {
     let obs = context.obs;
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let previous_scout = op.scout;
@@ -4031,7 +4035,7 @@ fn remembered_recon(
             op.phase_started_at = obs.tick;
         }
     }
-    if !dispatch_scout(
+    dispatch_scout(
         op,
         plan,
         obs,
@@ -4039,10 +4043,7 @@ fn remembered_recon(
         context.landing_sites,
         connected_public_map(plan, context.public_map),
         out,
-    ) {
-        recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-        return;
-    }
+    )?;
     schedule(
         context,
         &[(
@@ -4052,6 +4053,7 @@ fn remembered_recon(
         )],
     )
     .append_to(out);
+    Ok(())
 }
 
 fn unowned_queued_scouts(context: &AirPlanningContext<'_>, scout: UnitKind) -> usize {
@@ -4099,7 +4101,7 @@ fn reconcile_preparation_members(
     op: &mut AirOperation,
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
-) -> bool {
+) -> Result<(), AirRecoveryReason> {
     let obs = context.obs;
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let route_unavailable = if let Some(resources) = context.connected_resources.as_ref() {
@@ -4148,16 +4150,14 @@ fn reconcile_preparation_members(
             .any(|id| unit(obs, *id).is_some() && route_unavailable.binary_search(id).is_ok())
             && op.strike_aircraft.len() < plan.desired_strike_aircraft()
     {
-        recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-        return false;
+        return Err(AirRecoveryReason::UnreachableAirRoute);
     }
     if previous_artillery
         .iter()
         .any(|id| unit(obs, *id).is_some() && route_unavailable.binary_search(id).is_ok())
         && op.artillery.len() < plan.desired_artillery()
     {
-        recover(op, AirRecoveryReason::UnreachableStaging, obs.tick);
-        return false;
+        return Err(AirRecoveryReason::UnreachableStaging);
     }
     let screen_kind = Role::AirGround.unit_for(obs.faction);
     let desired_screen = plan.desired_screen();
@@ -4167,10 +4167,9 @@ fn reconcile_preparation_members(
         });
     }
     if connected_package_is_proven_infeasible(op, plan, context) {
-        recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
-        return false;
+        return Err(AirRecoveryReason::PreparationInfeasible);
     }
-    true
+    Ok(())
 }
 
 fn recon(
@@ -4178,7 +4177,7 @@ fn recon(
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
-) {
+) -> Result<(), AirRecoveryReason> {
     let AirPlanningContext {
         tuning,
         obs,
@@ -4188,13 +4187,8 @@ fn recon(
     } = context;
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let public_map = connected_public_map(plan, context.public_map);
-    if !reconcile_preparation_members(op, plan, context) {
-        return;
-    }
-    if !dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out) {
-        recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-        return;
-    }
+    reconcile_preparation_members(op, plan, context)?;
+    dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)?;
     schedule_missing_members(op, plan, context, scout_kind, out);
     if matches!(plan, AirPlan::Connected(_)) {
         hold_strike_aircraft(op, obs, context.home, out);
@@ -4205,6 +4199,7 @@ fn recon(
     {
         enter(op, AirStage::Assemble, obs.tick);
     }
+    Ok(())
 }
 
 fn assemble(
@@ -4212,7 +4207,7 @@ fn assemble(
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
-) {
+) -> Result<(), AirRecoveryReason> {
     let AirPlanningContext {
         obs,
         intel,
@@ -4222,9 +4217,7 @@ fn assemble(
     } = context;
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let public_map = connected_public_map(plan, context.public_map);
-    if !reconcile_preparation_members(op, plan, context) {
-        return;
-    }
+    reconcile_preparation_members(op, plan, context)?;
     schedule_missing_members(op, plan, context, scout_kind, out);
     let complete = assembly_complete(op, plan);
     if matches!(plan, AirPlan::Connected(_)) && !complete {
@@ -4232,45 +4225,34 @@ fn assemble(
     }
     if complete {
         if plan.airborne() {
-            if !dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out) {
-                recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                return;
-            }
+            dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)?;
             enter(op, AirStage::SuppressAa, obs.tick);
             hold_air_strike(op, plan, obs, *home, out);
-            return;
+            return Ok(());
         }
         let objective = operation_objective_anchor(op, plan, intel);
-        let Some(staging) = artillery_staging(
+        let staging = match artillery_staging(
             op,
             obs,
             *home,
             objective,
             context.public_map,
             context.orientation,
-        ) else {
-            recover(op, AirRecoveryReason::UnreachableStaging, obs.tick);
-            return;
-        };
-        let staging = match staging {
-            ArtilleryStaging::NeedsRecon(goal) => {
-                if !dispatch_scout_to(op, obs, goal, public_map, out) {
-                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                    return;
-                }
+        ) {
+            None => return Err(AirRecoveryReason::UnreachableStaging),
+            Some(ArtilleryStaging::NeedsRecon(goal)) => {
+                dispatch_scout_to(op, obs, goal, public_map, out)?;
                 hold_strike_aircraft(op, obs, *home, out);
-                return;
+                return Ok(());
             }
-            ArtilleryStaging::Ready(staging) => staging,
+            Some(ArtilleryStaging::Ready(staging)) => staging,
         };
-        if !dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out) {
-            recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-            return;
-        }
+        dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)?;
         enter(op, AirStage::SuppressAa, obs.tick);
         stage_artillery(op, staging, out);
         hold_strike_aircraft(op, obs, *home, out);
     }
+    Ok(())
 }
 
 fn assembly_complete(op: &AirOperation, plan: &AirPlan) -> bool {
@@ -4285,7 +4267,7 @@ fn suppress(
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
-) {
+) -> Result<(), AirRecoveryReason> {
     let tuning = context.tuning;
     let obs = context.obs;
     let intel = context.intel;
@@ -4372,61 +4354,40 @@ fn suppress(
                 plan.set_suppression_dispatch(Some(dispatch));
             }
         }
-        let scouting = if plan.airborne() {
+        if plan.airborne() {
             dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)
         } else {
             scout_and_hold(op, plan, context, &[], out)
-        };
-        if !scouting {
-            out.intents.clear();
-            recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
         }
     } else {
         plan.set_suppression_dispatch(None);
         if plan.airborne() {
-            match airborne_corridor_status(op, plan, obs, intel, home, landing_sites) {
-                AirborneCorridorStatus::Defended => {
-                    recover(op, AirRecoveryReason::NewAirDefense, obs.tick);
-                }
+            return match airborne_corridor_status(op, plan, obs, intel, home, landing_sites) {
+                AirborneCorridorStatus::Defended => Err(AirRecoveryReason::NewAirDefense),
                 AirborneCorridorStatus::Clear => {
                     enter(op, AirStage::Verify, obs.tick);
-                    if !scout_and_hold(op, plan, context, landing_sites, out) {
-                        out.intents.clear();
-                        recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                    }
+                    scout_and_hold(op, plan, context, landing_sites, out)
                 }
                 AirborneCorridorStatus::NeedsRecon => {
-                    if !scout_and_hold(op, plan, context, landing_sites, out) {
-                        out.intents.clear();
-                        recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                    }
+                    scout_and_hold(op, plan, context, landing_sites, out)
                 }
-            }
-            return;
+            };
         }
         match cluster_aa
             .expect("connected suppression has a cluster assessment")
             .evidence
         {
-            AirDefenseEvidence::CurrentCoverage => {
-                recover(op, AirRecoveryReason::NewAirDefense, obs.tick)
-            }
+            AirDefenseEvidence::CurrentCoverage => Err(AirRecoveryReason::NewAirDefense),
             AirDefenseEvidence::VisibleWithoutKnownCoverage
                 if corridor_clear(intel, home, connected_strike_anchor(op, plan, intel), &[]) =>
             {
                 enter(op, AirStage::Verify, obs.tick);
-                if !scout_and_hold(op, plan, context, &[], out) {
-                    out.intents.clear();
-                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                }
+                scout_and_hold(op, plan, context, &[], out)
             }
             AirDefenseEvidence::RememberedCoverage
             | AirDefenseEvidence::Unknown
             | AirDefenseEvidence::VisibleWithoutKnownCoverage => {
-                if !scout_and_hold(op, plan, context, &[], out) {
-                    out.intents.clear();
-                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                }
+                scout_and_hold(op, plan, context, &[], out)
             }
         }
     }
@@ -4437,7 +4398,7 @@ fn verify(
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
-) {
+) -> Result<(), AirRecoveryReason> {
     let tuning = context.tuning;
     let obs = context.obs;
     let intel = context.intel;
@@ -4451,14 +4412,11 @@ fn verify(
     };
     if air_defense.is_some() {
         enter(op, AirStage::SuppressAa, obs.tick);
-        suppress(op, plan, context, out);
-        return;
+        return suppress(op, plan, context, out);
     }
     if plan.airborne() {
-        match airborne_corridor_status(op, plan, obs, intel, home, landing_sites) {
-            AirborneCorridorStatus::Defended => {
-                recover(op, AirRecoveryReason::NewAirDefense, obs.tick);
-            }
+        return match airborne_corridor_status(op, plan, obs, intel, home, landing_sites) {
+            AirborneCorridorStatus::Defended => Err(AirRecoveryReason::NewAirDefense),
             AirborneCorridorStatus::Clear
                 if elapsed(op.phase_started_at, obs.tick)
                     >= tuning
@@ -4466,24 +4424,18 @@ fn verify(
                         .saturating_add(tuning.commitment_hesitation) =>
             {
                 enter(op, AirStage::Strike, obs.tick);
-                strike(op, plan, context, out);
+                strike(op, plan, context, out)
             }
             AirborneCorridorStatus::Clear | AirborneCorridorStatus::NeedsRecon => {
-                if !scout_and_hold(op, plan, context, landing_sites, out) {
-                    out.intents.clear();
-                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                }
+                scout_and_hold(op, plan, context, landing_sites, out)
             }
-        }
-        return;
+        };
     }
     match cluster_aa
         .expect("connected verification has a cluster assessment")
         .evidence
     {
-        AirDefenseEvidence::CurrentCoverage => {
-            recover(op, AirRecoveryReason::NewAirDefense, obs.tick)
-        }
+        AirDefenseEvidence::CurrentCoverage => Err(AirRecoveryReason::NewAirDefense),
         AirDefenseEvidence::VisibleWithoutKnownCoverage
             if corridor_clear(intel, home, connected_strike_anchor(op, plan, intel), &[])
                 && elapsed(op.phase_started_at, obs.tick)
@@ -4492,15 +4444,12 @@ fn verify(
                         .saturating_add(tuning.commitment_hesitation) =>
         {
             enter(op, AirStage::Strike, obs.tick);
-            strike(op, plan, context, out);
+            strike(op, plan, context, out)
         }
         AirDefenseEvidence::RememberedCoverage
         | AirDefenseEvidence::Unknown
         | AirDefenseEvidence::VisibleWithoutKnownCoverage => {
-            if !scout_and_hold(op, plan, context, &[], out) {
-                out.intents.clear();
-                recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-            }
+            scout_and_hold(op, plan, context, &[], out)
         }
     }
 }
@@ -4510,7 +4459,7 @@ fn strike(
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
-) {
+) -> Result<(), AirRecoveryReason> {
     let tuning = context.tuning;
     let obs = context.obs;
     let intel = context.intel;
@@ -4528,8 +4477,7 @@ fn strike(
     });
     if air_defense.is_some() || connected_cluster_needs_clearance {
         enter(op, AirStage::SuppressAa, obs.tick);
-        suppress(op, plan, context, out);
-        return;
+        return suppress(op, plan, context, out);
     }
     let strike_settled = op
         .strike_issued_at
@@ -4540,8 +4488,7 @@ fn strike(
     {
         // Every admitted member was observed gone, so completion needs no
         // renewed sight of their anchors or approach.
-        recover(op, AirRecoveryReason::Complete, obs.tick);
-        return;
+        return Err(AirRecoveryReason::Complete);
     }
     let live_target = live_strike_target(op, plan, intel);
     let remembered_target = live_target
@@ -4552,27 +4499,21 @@ fn strike(
     let staging = if plan.airborne() {
         None
     } else {
-        let Some(staging) = artillery_staging(
+        match artillery_staging(
             op,
             obs,
             home,
             strike_anchor,
             context.public_map,
             context.orientation,
-        ) else {
-            recover(op, AirRecoveryReason::UnreachableStaging, obs.tick);
-            return;
-        };
-        match staging {
-            ArtilleryStaging::NeedsRecon(goal) => {
-                if !dispatch_scout_to(op, obs, goal, public_map, out) {
-                    recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                    return;
-                }
+        ) {
+            None => return Err(AirRecoveryReason::UnreachableStaging),
+            Some(ArtilleryStaging::NeedsRecon(goal)) => {
+                dispatch_scout_to(op, obs, goal, public_map, out)?;
                 hold_strike_aircraft(op, obs, home, out);
-                return;
+                return Ok(());
             }
-            ArtilleryStaging::Ready(staging) => Some(staging),
+            Some(ArtilleryStaging::Ready(staging)) => Some(staging),
         }
     };
     let corridor_clear = if plan.airborne() {
@@ -4586,8 +4527,7 @@ fn strike(
         corridor_clear(intel, home, strike_anchor, landing_sites)
     };
     if !corridor_clear {
-        recover(op, AirRecoveryReason::NewAirDefense, obs.tick);
-        return;
+        return Err(AirRecoveryReason::NewAirDefense);
     }
     let attackers = air_strike_members(op, plan, obs);
     if let Some(target) = live_target {
@@ -4595,8 +4535,7 @@ fn strike(
             let mut air_routes =
                 operation_route_projection(plan, obs, Domain::Air, public_map, context.orientation);
             if !exact_attack_group_reaches(&mut air_routes, obs, &attackers, target.anchor) {
-                recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-                return;
+                return Err(AirRecoveryReason::UnreachableAirRoute);
             }
             dispatch_air_strike(
                 plan,
@@ -4612,15 +4551,13 @@ fn strike(
         op.strike_issued_at.get_or_insert(obs.tick);
     } else if operation_objective_cleared(op, plan, obs, intel) {
         if strike_settled {
-            recover(op, AirRecoveryReason::Complete, obs.tick);
-            return;
+            return Err(AirRecoveryReason::Complete);
         }
         let air_routes =
             operation_route_projection(plan, obs, Domain::Air, public_map, context.orientation);
         let cleared_anchor = last_strike_anchor(plan).unwrap_or(strike_anchor);
         if !air_routes.group_reaches_command_goal(&attackers, cleared_anchor) {
-            recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-            return;
+            return Err(AirRecoveryReason::UnreachableAirRoute);
         }
         dispatch_air_strike(
             plan,
@@ -4636,8 +4573,7 @@ fn strike(
         let air_routes =
             operation_route_projection(plan, obs, Domain::Air, public_map, context.orientation);
         if !air_routes.group_reaches_command_goal(&attackers, remembered.anchor) {
-            recover(op, AirRecoveryReason::UnreachableAirRoute, obs.tick);
-            return;
+            return Err(AirRecoveryReason::UnreachableAirRoute);
         }
         dispatch_air_strike(
             plan,
@@ -4651,6 +4587,7 @@ fn strike(
     if let Some(staging) = staging {
         stage_artillery(op, staging, out);
     }
+    Ok(())
 }
 
 fn dispatch_air_strike(
@@ -6588,14 +6525,14 @@ fn scout_and_hold(
     context: &AirPlanningContext<'_>,
     landing_sites: &[TilePos],
     out: &mut StrategicDecision,
-) -> bool {
+) -> Result<(), AirRecoveryReason> {
     let public_map = connected_public_map(plan, context.public_map);
     let focus = if matches!(plan, AirPlan::Connected(_)) {
         connected_scout_focus(op, plan, context.obs, context.intel)
     } else {
         op.target
     };
-    if !dispatch_scout_toward(
+    dispatch_scout_toward(
         op,
         context.obs,
         context.intel,
@@ -6603,13 +6540,13 @@ fn scout_and_hold(
         landing_sites,
         public_map,
         out,
-    ) {
-        return false;
-    }
+    )?;
     hold_air_strike(op, plan, context.obs, context.home, out);
-    true
+    Ok(())
 }
 
+/// Moves the scout toward its next objective, failing when no air route
+/// reaches it.
 fn dispatch_scout(
     op: &mut AirOperation,
     plan: &AirPlan,
@@ -6618,9 +6555,9 @@ fn dispatch_scout(
     landing_sites: &[TilePos],
     public_map: Option<&PublicMapBriefing>,
     out: &mut StrategicDecision,
-) -> bool {
+) -> Result<(), AirRecoveryReason> {
     let Some(goal) = scout_dispatch_goal(op, plan, obs, intel, landing_sites, public_map) else {
-        return false;
+        return Err(AirRecoveryReason::UnreachableAirRoute);
     };
     dispatch_scout_to(op, obs, goal, public_map, out)
 }
@@ -6676,9 +6613,9 @@ fn dispatch_scout_toward(
     landing_sites: &[TilePos],
     public_map: Option<&PublicMapBriefing>,
     out: &mut StrategicDecision,
-) -> bool {
+) -> Result<(), AirRecoveryReason> {
     let Some(goal) = scout_goal(op, obs, intel, target, landing_sites, public_map) else {
-        return false;
+        return Err(AirRecoveryReason::UnreachableAirRoute);
     };
     dispatch_scout_to(op, obs, goal, public_map, out)
 }
@@ -6689,16 +6626,16 @@ fn dispatch_scout_to(
     goal: TilePos,
     public_map: Option<&PublicMapBriefing>,
     out: &mut StrategicDecision,
-) -> bool {
+) -> Result<(), AirRecoveryReason> {
     if !scout_dispatch_is_viable(op, obs, goal, public_map) {
-        return false;
+        return Err(AirRecoveryReason::UnreachableAirRoute);
     }
     let Some(scout) = op.scout else {
-        return true;
+        return Ok(());
     };
     let member = unit(obs, scout).expect("a viable scout dispatch retains its live unit");
     if op.scout_dispatch == Some((scout, goal)) {
-        return true;
+        return Ok(());
     }
     op.scout_dispatch = Some((scout, goal));
     if !member.idle || member.tile.chebyshev(goal) > 1 {
@@ -6707,7 +6644,7 @@ fn dispatch_scout_to(
             goal,
         });
     }
-    true
+    Ok(())
 }
 
 fn scout_dispatch_is_viable(
