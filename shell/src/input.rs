@@ -699,9 +699,15 @@ impl macroquad::miniquad::EventHandler for PointerStream {
 
     /// A fingertip must arrive ONCE, as a touch: the trait's DEFAULT
     /// `touch_event` emulates mouse clicks, which would give every
-    /// finger a second life as a press. Touches come from `touches()`
-    /// below.
-    fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
+    /// finger a second life as a press. The stream keeps each phase in
+    /// order, where the polled `touches()` snapshot keeps only a
+    /// finger's last phase per frame and would lose a tap that lands
+    /// and lifts inside one frame.
+    fn touch_event(&mut self, phase: macroquad::miniquad::TouchPhase, id: u64, x: f32, y: f32) {
+        let (x, y) = self.logical(x, y);
+        if let Some(event) = touch_event(phase.into(), id, x, y) {
+            self.events.push(event);
+        }
     }
 
     /// The polled keyboard surface exposes the initial edge but drops OS
@@ -766,13 +772,8 @@ pub fn arm_hardware() {
 pub fn poll_events(accept_backspace_repeat: bool) -> Vec<RawEvent> {
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
-    for touch in mq::touches() {
-        if let Some(event) = touch_event(touch.phase, touch.id, touch.position.x, touch.position.y)
-        {
-            events.push(event);
-        }
-    }
-    // Pointer events in true arrival order, each with its own position.
+    // Pointer and touch events in true arrival order, each with its own
+    // position.
     let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
     static FIRST_POLL: std::sync::Once = std::sync::Once::new();
     FIRST_POLL.call_once(|| {

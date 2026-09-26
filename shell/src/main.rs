@@ -188,7 +188,7 @@ fn window_conf() -> Conf {
     // The window is created before `main()` ever sees clap's output, so
     // the size/DPI flags are parsed here too — clap is idempotent and
     // errors surface identically on the second parse in `main()`.
-    let args = Args::parse();
+    let args = cli_args();
     if trace_startup_enabled(&args) {
         trace_mark("window_conf enter");
     }
@@ -212,9 +212,19 @@ fn window_conf() -> Conf {
     }
 }
 
+/// The command line. A touch-only build has none worth reading: a
+/// launcher's own arguments must not trip the parser into exiting.
+fn cli_args() -> Args {
+    if platform::TOUCH_ONLY {
+        Args::parse_from(["Oxide"])
+    } else {
+        Args::parse()
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
-    if let Err(err) = app::run(Args::parse()).await {
+    if let Err(err) = app::run(cli_args()).await {
         eprintln!("fatal: {err:#}");
         std::process::exit(1);
     }
@@ -231,6 +241,14 @@ fn build_identity() -> oxide_kit::recovery::BuildIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_touch_build_argv_parses_to_ordinary_defaults() {
+        let args = Args::parse_from(["Oxide"]);
+        assert!(!args.debug_server && !args.automation && !args.paused);
+        assert!(args.scenario.is_none() && args.replay.is_none() && args.watch.is_none());
+        assert_eq!(args.speed, 1.0);
+    }
 
     #[test]
     fn automation_requires_debug_server() {

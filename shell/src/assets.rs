@@ -2,9 +2,9 @@
 //! `tools/gen_sprites.py` — regenerate there, never edit PNGs.
 
 use anyhow::{Context, Result};
-use macroquad::audio::{Sound, load_sound};
+use macroquad::audio::{Sound, load_sound_from_bytes};
 use macroquad::prelude::{
-    Color, DrawTextureParams, FilterMode, Rect, Texture2D, draw_texture_ex, load_texture,
+    Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, draw_texture_ex,
 };
 use oxide_sim::{BuildingKind, Faction, UnitKind};
 
@@ -801,10 +801,9 @@ fn atlas_keys() -> Vec<String> {
     keys
 }
 
-/// Where game data lives. A macOS .app bundle keeps it in
-/// Contents/Resources beside `Contents/MacOS/<exe>`; development runs
-/// from the workspace root. Resolved once by probing for the atlas —
-/// the one file no build ships without.
+/// Where game data lives: inside a packaged bundle (see
+/// [`crate::paths::bundle_resources`]), or the workspace root for
+/// development runs.
 pub fn resource_root() -> std::path::PathBuf {
     // Native automation runs from an isolated writable directory so
     // local replays and screenshots cannot perturb a golden walk. It
@@ -812,20 +811,21 @@ pub fn resource_root() -> std::path::PathBuf {
     if let Some(root) = std::env::var_os("OXIDE_RESOURCE_ROOT") {
         return root.into();
     }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let bundled = dir.join("../Resources");
-        if bundled.join("assets/sprites/atlas.png").exists() {
-            return bundled;
-        }
-    }
-    std::path::PathBuf::from(".")
+    crate::paths::bundle_resources().unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// A resource path as a string macroquad's loaders accept.
-pub fn resource(rel: &str) -> String {
-    resource_root().join(rel).to_string_lossy().into_owned()
+/// Reads one bundled resource. Resources load as bytes through the
+/// filesystem because macroquad's own loaders resolve paths through
+/// the app bundle's resource lookup on iOS, which rejects absolute
+/// paths.
+fn read_resource(path: &std::path::Path) -> Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| format!("reading {}", path.display()))
+}
+
+/// Reads and decodes a bundled image.
+pub(crate) fn load_resource_image(rel: &str) -> Result<Image> {
+    let bytes = read_resource(&resource_root().join(rel))?;
+    Image::from_file_with_format(&bytes, None).with_context(|| format!("decoding {rel}"))
 }
 
 fn atlas_page(mut source: Rect, page_height: f32) -> (usize, Rect) {
@@ -838,12 +838,14 @@ impl Sprites {
     /// Loads the atlas up front; a missing or incomplete atlas is a
     /// startup error, not a mid-game pop.
     pub async fn load() -> Result<Self> {
-        let texture = load_texture(&resource("assets/sprites/atlas.png"))
-            .await
-            .context("loading assets/sprites/atlas.png (run from the workspace root)")?;
-        let manifest = macroquad::file::load_string(&resource("assets/sprites/atlas.json"))
-            .await
-            .context("loading assets/sprites/atlas.json")?;
+        let texture = Texture2D::from_image(
+            &load_resource_image("assets/sprites/atlas.png")
+                .context("loading assets/sprites/atlas.png (run from the workspace root)")?,
+        );
+        let manifest = String::from_utf8(read_resource(
+            &resource_root().join("assets/sprites/atlas.json"),
+        )?)
+        .context("loading assets/sprites/atlas.json")?;
         let rects: Manifest = serde_json::from_str(&manifest).context("parsing atlas manifest")?;
         let page_height = texture.height();
         let page_count = rects
@@ -855,9 +857,9 @@ impl Sprites {
         let mut textures = vec![texture];
         for page in 1..page_count {
             let name = format!("assets/sprites/atlas_{page}.png");
-            let texture = load_texture(&resource(&name))
-                .await
-                .with_context(|| format!("loading {name}"))?;
+            let texture = Texture2D::from_image(
+                &load_resource_image(&name).with_context(|| format!("loading {name}"))?,
+            );
             texture.set_filter(FilterMode::Nearest);
             textures.push(texture);
         }
@@ -1541,13 +1543,12 @@ async fn clip(name: &str) -> Result<Sound> {
         .ok()
         .map(|root| std::path::PathBuf::from(root).join(format!("{name}.wav")))
         .filter(|path| path.is_file());
-    let path = candidate.map_or_else(
-        || resource(&format!("assets/sounds/{name}.wav")),
-        |path| path.to_string_lossy().into_owned(),
-    );
-    load_sound(&path)
+    let path =
+        candidate.unwrap_or_else(|| resource_root().join(format!("assets/sounds/{name}.wav")));
+    let bytes = read_resource(&path).context("loading a sound (run from the workspace root)")?;
+    load_sound_from_bytes(&bytes)
         .await
-        .with_context(|| format!("loading {path} (run from the workspace root)"))
+        .with_context(|| format!("decoding {}", path.display()))
 }
 
 impl Sounds {

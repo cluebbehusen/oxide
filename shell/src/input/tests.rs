@@ -2507,6 +2507,30 @@ fn hardware_touch_phases_speak_the_funnel_vocabulary() {
 }
 
 #[test]
+fn hardware_touches_arrive_once_in_order_and_in_logical_pixels() {
+    use macroquad::miniquad::{EventHandler, TouchPhase};
+    let mut stream = PointerStream::new(2.0, false);
+    stream.touch_event(TouchPhase::Started, 7, 200.0, 100.0);
+    stream.touch_event(TouchPhase::Ended, 7, 202.0, 100.0);
+    assert_eq!(
+        stream.events,
+        vec![
+            RawEvent::TouchDown {
+                id: 7,
+                x: 100.0,
+                y: 50.0
+            },
+            RawEvent::TouchUp {
+                id: 7,
+                x: 101.0,
+                y: 50.0
+            },
+        ],
+        "a tap inside one frame keeps both edges, divided out of backing pixels"
+    );
+}
+
+#[test]
 fn chrome_born_touches_never_drive_world_gestures() {
     let mut game = headless_game();
     let mut input = InputState::new();
