@@ -241,14 +241,14 @@ long-presses; other armed verbs stand down for a long-press as they do for a
 right-click. `InputState::queue_held` merges Shift with the sticky QUEUE chip
 that touch-only builds show beside the mode ribbon.
 
-The ribbon row is `[X] [QUEUE] [ribbon]`, published as `LayoutModel.neutral`,
-`queue_toggle`, and `mode_ribbon`, and shown while a mode is armed, the human
-owns part of the selection, or QUEUE is on. `ribbon_row_press` hit-tests it
-before every other target: the X runs `InputState::go_neutral` (no armed mode,
-QUEUE off, nothing selected) and the ribbon cancels its mode. Taps and clicks
-select through `select::pick`, which gives a fingertip a wider reach than a
-cursor. `readout_point` puts the pile readout under a resting battlefield finger
-or the mouse, never at a stale mouse point on a touch device.
+The ribbon row is `[QUEUE] [ribbon]`, published as `LayoutModel.queue_toggle`
+and `mode_ribbon`. The ribbon shows while a mode is armed; the QUEUE chip shows
+on touch-only builds while the human commands a selected unit or QUEUE is on.
+`ribbon_row_press` hit-tests the row before every other target: the chip toggles
+QUEUE and the ribbon cancels its mode. Taps and clicks select through
+`select::pick`, which gives a fingertip a wider reach than a cursor.
+`readout_point` puts the pile readout under a resting battlefield finger or the
+mouse, never at a stale mouse point on a touch device.
 
 Coaching text waits for a stuck player. `hints::HintClock`, fed each frame's
 screen mode and presses, fades coaching in after about 15 seconds without a

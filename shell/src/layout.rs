@@ -45,9 +45,6 @@ pub struct LayoutModel {
     pub mode_ribbon: Rect,
     /// The QUEUE toggle beside the ribbon, on touch-only builds.
     pub queue_toggle: Rect,
-    /// The back-to-neutral X that leads the ribbon row: cancels any
-    /// armed mode, turns QUEUE off, and clears the selection.
-    pub neutral: Rect,
     /// Mixed-selection roster filters, separate from command cards.
     pub roster_slots: [(Rect, CardAction); 8],
     /// How many roster filters are live this frame.
@@ -78,7 +75,6 @@ impl Default for LayoutModel {
             pause_status: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
             queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
-            neutral: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
             roster_count: 0,
             cards: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16],
@@ -205,7 +201,6 @@ impl LayoutModel {
             pause_status,
             mode_ribbon,
             queue_toggle: Rect::new(0.0, 0.0, 0.0, 0.0),
-            neutral: Rect::new(0.0, 0.0, 0.0, 0.0),
             roster_slots,
             roster_count,
             cards,
@@ -228,7 +223,6 @@ impl LayoutModel {
             || (self.orders.w > 0.0 && self.orders.contains(p))
             || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))
             || (self.queue_toggle.w > 0.0 && self.queue_toggle.contains(p))
-            || (self.neutral.w > 0.0 && self.neutral.contains(p))
     }
 }
 
@@ -401,9 +395,12 @@ mod tests {
     fn an_armed_mode_ribbon_owns_its_world_pixels() {
         let mut m = compute_at(f32::INFINITY, 1.0);
         m.mode_ribbon = Rect::new(220.0, 640.0, 280.0, MIN_TOUCH_TARGET);
-        m.neutral = Rect::new(160.0, 640.0, MIN_TOUCH_TARGET, MIN_TOUCH_TARGET);
+        m.queue_toggle = Rect::new(116.0, 640.0, 96.0, MIN_TOUCH_TARGET);
         assert!(m.chrome_owns(m.mode_ribbon.center()));
-        assert!(m.chrome_owns(m.neutral.center()), "the X is chrome too");
+        assert!(
+            m.chrome_owns(m.queue_toggle.center()),
+            "QUEUE is chrome too"
+        );
         assert!(
             !m.chrome_owns(vec2(219.0, 660.0)),
             "beside the ribbon remains battlefield"

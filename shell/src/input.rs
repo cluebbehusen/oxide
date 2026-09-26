@@ -596,19 +596,6 @@ impl InputState {
         self.queue_toggle || self.resolver.shift_held()
     }
 
-    /// The X: back to neutral in one press, with no armed mode, QUEUE
-    /// off, and nothing selected.
-    pub(crate) fn go_neutral(&mut self, game: &mut Game) {
-        self.close_construction();
-        self.queue_toggle = false;
-        self.last_tap = None;
-        game.presentation.selection.units.clear();
-        game.presentation.selection.buildings.clear();
-        game.presentation
-            .sounds_pending
-            .push((crate::game::SoundKind::Click, None));
-    }
-
     /// Flips the QUEUE toggle, explaining it the first time it turns
     /// on in a session.
     pub(crate) fn toggle_queue(&mut self, game: &mut Game) {
@@ -991,7 +978,7 @@ pub(crate) use touch::{
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
     let layout = game.presentation.layout.get();
-    let row = [layout.neutral, layout.queue_toggle, layout.mode_ribbon];
+    let row = [layout.queue_toggle, layout.mode_ribbon];
     if row.iter().any(|r| r.w > 0.0 && r.contains(input.mouse)) {
         return CursorIcon::Pointer;
     }
@@ -1297,9 +1284,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
-/// A press on the ribbon row: the X returns to neutral, QUEUE toggles,
-/// and the ribbon cancels its mode but keeps the selection. It runs
-/// before every other target, for mouse and touch alike.
+/// A press on the ribbon row: QUEUE toggles, and the ribbon cancels its
+/// mode but keeps the selection. It runs before every other target, for
+/// mouse and touch alike.
 pub(super) fn ribbon_row_press(
     game: &mut Game,
     input: &mut InputState,
@@ -1315,9 +1302,7 @@ pub(super) fn ribbon_row_press(
                 Pointer::Touch => crate::layout::touch_pad(rect, ui).contains(p),
             }
     };
-    if hits(layout.neutral) {
-        input.go_neutral(game);
-    } else if hits(layout.queue_toggle) {
+    if hits(layout.queue_toggle) {
         input.toggle_queue(game);
     } else if hits(layout.mode_ribbon) {
         if input.cancel_armed_mode() {

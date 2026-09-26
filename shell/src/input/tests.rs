@@ -1028,49 +1028,38 @@ fn a_ribbon_tap_cancels_the_mode_and_keeps_the_selection() {
 }
 
 #[test]
-fn the_x_returns_to_neutral_by_tap_or_click() {
+fn a_lit_queue_turns_off_with_a_tap_so_the_next_ground_tap_clears() {
     let mut game = headless_game();
     let mut input = InputState::new();
-    let fighter = game
-        .state
-        .units()
-        .iter()
-        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
-        .expect("a starting combat unit")
-        .id;
-    let x = macroquad::math::Rect::new(160.0, 620.0, 44.0, 44.0);
+    let (fighter, at) = own_fighter(&game);
+    let chip = macroquad::math::Rect::new(160.0, 620.0, 96.0, 44.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
-    layout.neutral = x;
+    layout.queue_toggle = chip;
     game.presentation.layout.set(layout);
-    for touch in [true, false] {
-        game.presentation.selection.units = vec![fighter];
-        input.attacking = true;
-        input.queue_toggle = true;
-        input.build_menu = true;
-        if touch {
-            tap(&mut game, &mut input, x.center());
-        } else {
-            apply_events(&mut game, &mut input, &click(x.center().x, x.center().y));
-        }
-        assert_eq!(input.armed_mode(), None);
-        assert!(!input.queue_toggle, "QUEUE is off");
-        assert!(!input.build_menu, "the palette is closed");
-        assert!(
-            game.presentation.selection.units.is_empty(),
-            "nothing selected"
-        );
-        assert!(game.pending.is_empty());
-    }
+    game.presentation.selection.units = vec![fighter];
+    input.queue_toggle = true;
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert_eq!(
+        game.presentation.selection.units,
+        vec![fighter],
+        "with QUEUE on a ground tap only adds"
+    );
 
-    // Resting on the X never charges a battlefield order.
+    input.now += 1.0;
+    tap(&mut game, &mut input, chip.center());
+    assert!(!input.queue_toggle, "one tap on the lit chip turns it off");
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(game.presentation.selection.units.is_empty());
+
+    // Resting on the chip never charges a battlefield order.
     game.presentation.selection.units = vec![fighter];
     input.now += 1.0;
-    apply_events(&mut game, &mut input, &[touch_down(3, x.center())]);
+    apply_events(&mut game, &mut input, &[touch_down(3, chip.center())]);
     input.now += 2.0;
     update_touch(&mut game, &mut input);
     assert!(
         game.pending.is_empty(),
-        "a long-press on the X orders nothing"
+        "a long-press on QUEUE orders nothing"
     );
 }
 

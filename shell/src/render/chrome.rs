@@ -190,8 +190,6 @@ const RIBBON_MIN_W: f32 = 210.0;
 const QUEUE_CHIP_W: f32 = 96.0;
 /// The gap between the QUEUE chip and the ribbon.
 const RIBBON_ROW_GAP: f32 = 8.0;
-/// The gap after the X, wider than the rest: the X discards work.
-const NEUTRAL_GAP: f32 = 16.0;
 
 /// The top of the ribbon row: just above the panel band, or above the
 /// window's bottom edge, and never under the top bar.
@@ -213,19 +211,18 @@ fn ribbon_width(viewport: Vec2, scale: f32, label_width: f32) -> f32 {
         .min((viewport.x - 24.0 * scale).max(RIBBON_MIN_W * scale))
 }
 
-/// Where the ribbon row's pieces sit: the X, the QUEUE chip on
-/// touch-only builds, and the ribbon while a mode is armed.
+/// Where the ribbon row's pieces sit: the QUEUE chip on touch-only
+/// builds, and the ribbon while a mode is armed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RibbonRow {
-    neutral: Rect,
     queue: Option<Rect>,
     ribbon: Option<Rect>,
 }
 
-/// Lays out `[X] [QUEUE] [ribbon]`. The leading group keeps a fixed slot,
-/// centered as if the ribbon had its minimum width, so the X and QUEUE
-/// never move while modes come and go; only a ribbon that would run off
-/// the window or into the minimap slides the row left.
+/// Lays out `[QUEUE] [ribbon]`. The chip keeps a fixed slot, centered as
+/// if the ribbon had its minimum width, so it never moves while modes
+/// come and go; only a ribbon that would run off the window or into the
+/// minimap slides the row left.
 fn ribbon_row_geometry(
     viewport: Vec2,
     scale: f32,
@@ -235,15 +232,12 @@ fn ribbon_row_geometry(
     minimap: Rect,
 ) -> RibbonRow {
     let height = crate::layout::MIN_TOUCH_TARGET * scale;
-    let neutral_w = crate::layout::MIN_TOUCH_TARGET * scale;
     let queue_w = QUEUE_CHIP_W * scale;
-    let lead = neutral_w
-        + NEUTRAL_GAP * scale
-        + if with_queue {
-            queue_w + RIBBON_ROW_GAP * scale
-        } else {
-            0.0
-        };
+    let lead = if with_queue {
+        queue_w + RIBBON_ROW_GAP * scale
+    } else {
+        0.0
+    };
     let y = ribbon_row_y(viewport, scale, panel_top, height);
     let blocks_row = minimap.w > 0.0 && minimap.y < y + height && minimap.y + minimap.h > y;
     let right = if blocks_row {
@@ -256,58 +250,23 @@ fn ribbon_row_geometry(
         .min(right - lead - ribbon_w.unwrap_or(0.0))
         .max(12.0 * scale);
     RibbonRow {
-        neutral: Rect::new(x, y, neutral_w, height),
-        queue: with_queue
-            .then(|| Rect::new(x + neutral_w + NEUTRAL_GAP * scale, y, queue_w, height)),
+        queue: with_queue.then(|| Rect::new(x, y, queue_w, height)),
         ribbon: ribbon_w.map(|w| Rect::new(x + lead, y, w, height)),
     }
 }
 
-/// Whether the ribbon row shows: while there is a mode to cancel, a
-/// selection to clear, or QUEUE to turn off, and never while spectating.
-pub(crate) fn ribbon_row_shown(game: &crate::game::Scene<'_>, input: &InputState) -> bool {
-    !game.presentation.spectate
-        && (input.armed_mode().is_some() || owns_selection(game) || input.queue_toggle)
-}
-
-/// Whether the human commands anything in the current selection.
-fn owns_selection(game: &crate::game::Scene<'_>) -> bool {
+/// Whether a touch-only build offers the QUEUE chip: while the human
+/// commands a selected unit, or while QUEUE is on so it can be turned
+/// off. Buildings queue nothing, and a spectator commands nothing.
+fn queue_chip_shown(game: &crate::game::Scene<'_>, input: &InputState, touch_only: bool) -> bool {
     let human = game.presentation.human;
-    game.presentation
+    let commands_units = game
+        .presentation
         .selection
         .units
         .iter()
-        .any(|id| game.state.unit(*id).is_some_and(|u| u.player == human))
-        || game
-            .presentation
-            .selection
-            .buildings
-            .iter()
-            .any(|id| game.state.building(*id).is_some_and(|b| b.player == human))
-}
-
-/// The X: two drawn strokes, since the font has no glyph for it.
-fn draw_neutral(rect: Rect, hovered: bool, s: f32) {
-    fill_rect(rect, Color::from_rgba(20, 20, 24, 248));
-    stroke_rect(
-        rect,
-        if hovered { 2.0 * s } else { 1.5 * s },
-        if hovered { TEXT_ACCENT } else { TEXT_DISABLED },
-    );
-    let c = rect.center();
-    let arm = 8.0 * s;
-    line_between(
-        c - vec2(arm, arm),
-        c + vec2(arm, arm),
-        2.5 * s,
-        TEXT_PRIMARY,
-    );
-    line_between(
-        c + vec2(-arm, arm),
-        c + vec2(arm, -arm),
-        2.5 * s,
-        TEXT_PRIMARY,
-    );
+        .any(|id| game.state.unit(*id).is_some_and(|u| u.player == human));
+    touch_only && !game.presentation.spectate && (commands_units || input.queue_toggle)
 }
 
 /// The QUEUE chip: filled while queueing, so the mode can't hide.
@@ -329,8 +288,8 @@ fn draw_queue_chip(rect: Rect, on: bool, s: f32) {
     );
 }
 
-/// The ribbon row: the X, the QUEUE chip on touch-only builds, and the
-/// armed-mode ribbon. Returns the ribbon, X, and chip rects (zero when
+/// The ribbon row: the QUEUE chip on touch-only builds and the
+/// armed-mode ribbon. Returns the ribbon and chip rects (zero when
 /// absent).
 fn draw_ribbon_row(
     game: &crate::game::Scene<'_>,
@@ -338,15 +297,15 @@ fn draw_ribbon_row(
     input: &InputState,
     regions: &[Rect; 2],
     minimap: Rect,
-) -> (Rect, Rect, Rect) {
+) -> (Rect, Rect) {
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    if !ribbon_row_shown(game, input) {
-        return (zero, zero, zero);
+    let with_queue = queue_chip_shown(game, input, crate::platform::TOUCH_ONLY);
+    let mode = input.armed_mode();
+    if !with_queue && mode.is_none() {
+        return (zero, zero);
     }
     let s = ui_scale();
     let viewport = vec2(screen_width(), screen_height());
-    let with_queue = crate::platform::TOUCH_ONLY;
-    let mode = input.armed_mode();
     let building = match mode {
         Some(crate::input::ArmedMode::Build(kind)) => Some(kind),
         _ => None,
@@ -366,24 +325,22 @@ fn draw_ribbon_row(
     let ribbon_w = label_w.map(|w| ribbon_width(viewport, s, icon_w + w + cost_w));
     // The row sits above whichever panel region lies under it.
     let open = ribbon_row_geometry(viewport, s, f32::INFINITY, with_queue, ribbon_w, minimap);
-    let x1 = open
-        .ribbon
-        .or(open.queue)
-        .map_or(open.neutral.x + open.neutral.w, |r| r.x + r.w);
+    let (x0, x1) = match (open.queue, open.ribbon) {
+        (Some(q), Some(r)) => (q.x, r.x + r.w),
+        (Some(r), None) | (None, Some(r)) => (r.x, r.x + r.w),
+        (None, None) => return (zero, zero),
+    };
     let panel_top = regions
         .iter()
-        .filter(|r| r.w > 0.0 && r.x < x1 && r.x + r.w > open.neutral.x)
+        .filter(|r| r.w > 0.0 && r.x < x1 && r.x + r.w > x0)
         .map(|r| r.y)
         .fold(f32::INFINITY, f32::min);
     let row = ribbon_row_geometry(viewport, s, panel_top, with_queue, ribbon_w, minimap);
-    let hovered =
-        input.last_pointer == crate::input::Pointer::Mouse && row.neutral.contains(input.mouse);
-    draw_neutral(row.neutral, hovered, s);
     if let Some(chip) = row.queue {
         draw_queue_chip(chip, input.queue_toggle, s);
     }
     let (Some(ribbon), Some(label)) = (row.ribbon, label) else {
-        return (zero, row.neutral, row.queue.unwrap_or(zero));
+        return (zero, row.queue.unwrap_or(zero));
     };
     fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
     stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
@@ -414,7 +371,7 @@ fn draw_ribbon_row(
             SCRAP_COLOR,
         );
     }
-    (ribbon, row.neutral, row.queue.unwrap_or(zero))
+    (ribbon, row.queue.unwrap_or(zero))
 }
 
 fn toast_origin(
@@ -585,8 +542,13 @@ pub(crate) fn draw_hud(
             minimap = zero;
         }
     }
-    let (mode_ribbon, neutral, queue_toggle) =
+    let (mode_ribbon, queue_toggle) =
         draw_ribbon_row(game, sprites, input, &panel_regions, minimap);
+    let ribbon_row = if queue_toggle.w > 0.0 {
+        queue_toggle
+    } else {
+        mode_ribbon
+    };
     // Publish the frame's chrome geometry — the model hit-testing reads.
     let mut layout = crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
@@ -608,7 +570,6 @@ pub(crate) fn draw_hud(
     );
     layout.panel_regions = panel_regions;
     layout.queue_toggle = queue_toggle;
-    layout.neutral = neutral;
     game.presentation.layout.set(layout);
 
     if let Some(view) = performance {
@@ -630,7 +591,7 @@ pub(crate) fn draw_hud(
                 screen_height()
             },
             Rect::new(0.0, 0.0, orders_dock.w.max(panel_regions[0].w), 0.0),
-            neutral,
+            ribbon_row,
             i,
         );
         let mut size = 20.0 * s;
@@ -726,9 +687,10 @@ mod tests {
                 for with_queue in [false, true] {
                     let bare =
                         ribbon_row_geometry(viewport, scale, panel_top, with_queue, None, zero);
-                    assert_eq!(bare.neutral.w, crate::layout::MIN_TOUCH_TARGET * scale);
-                    assert!(bare.neutral.y >= crate::layout::TOP_BAR_H * scale);
-                    assert!(bare.neutral.y + bare.neutral.h <= panel_top.min(viewport.y));
+                    if let Some(chip) = bare.queue {
+                        assert!(chip.y >= crate::layout::TOP_BAR_H * scale);
+                        assert!(chip.y + chip.h <= panel_top.min(viewport.y));
+                    }
                     for label in [60.0, 180.0, 320.0] {
                         let w = ribbon_width(viewport, scale, label * scale);
                         let row = ribbon_row_geometry(
@@ -740,16 +702,19 @@ mod tests {
                             zero,
                         );
                         if label == 60.0 {
-                            assert_eq!(row.neutral, bare.neutral, "a mode never moves the X");
+                            assert_eq!(row.queue, bare.queue, "a mode never moves QUEUE");
                         }
                         let ribbon = row.ribbon.expect("an armed ribbon");
-                        let lead_end = row
-                            .queue
-                            .map_or(row.neutral.x + row.neutral.w, |q| q.x + q.w);
-                        assert!(ribbon.x >= lead_end, "{viewport} @{scale}: no overlap");
+                        if let Some(chip) = row.queue {
+                            assert!(
+                                ribbon.x >= chip.x + chip.w,
+                                "{viewport} @{scale}: no overlap"
+                            );
+                            assert!(chip.x >= 0.0);
+                            assert_eq!(ribbon.y, chip.y, "one row");
+                        }
+                        assert!(ribbon.x >= 0.0);
                         assert!(ribbon.x + ribbon.w <= viewport.x);
-                        assert!(row.neutral.x >= 0.0);
-                        assert_eq!(ribbon.y, row.neutral.y, "one row");
                     }
                 }
             }
@@ -757,18 +722,25 @@ mod tests {
     }
 
     #[test]
-    fn the_ribbon_row_shows_while_there_is_anything_to_leave() {
+    fn queue_is_offered_only_to_units_or_while_on() {
         let mut game =
             crate::game::Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
                 .expect("skirmish builds");
         let mut input = InputState::new();
-        assert!(!ribbon_row_shown(&game.view(), &input), "nothing to leave");
-        input.queue_toggle = true;
-        assert!(
-            ribbon_row_shown(&game.view(), &input),
-            "QUEUE on with nothing selected still offers the way out"
-        );
-        input.queue_toggle = false;
+        let shown = |game: &crate::game::Game, input: &InputState| {
+            queue_chip_shown(&game.view(), input, true)
+        };
+        assert!(!shown(&game, &input), "nothing selected");
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.presentation.human)
+            .expect("an own Foundry")
+            .id;
+        game.presentation.selection.buildings = vec![foundry];
+        assert!(!shown(&game, &input), "buildings queue nothing");
+        game.presentation.selection.buildings.clear();
         let own = game
             .state
             .units()
@@ -777,12 +749,16 @@ mod tests {
             .expect("an own unit")
             .id;
         game.presentation.selection.units = vec![own];
-        assert!(ribbon_row_shown(&game.view(), &input), "an own selection");
-        game.presentation.spectate = true;
+        assert!(shown(&game, &input), "an own unit");
         assert!(
-            !ribbon_row_shown(&game.view(), &input),
-            "never while spectating"
+            !queue_chip_shown(&game.view(), &input, false),
+            "desktop has Shift"
         );
+        game.presentation.selection.units.clear();
+        input.queue_toggle = true;
+        assert!(shown(&game, &input), "QUEUE on can always be turned off");
+        game.presentation.spectate = true;
+        assert!(!shown(&game, &input), "never while spectating");
     }
 
     #[test]
@@ -825,15 +801,9 @@ mod tests {
         let panel_top = 640.0;
         let row = ribbon_row_geometry(viewport, 1.0, panel_top, true, Some(240.0), Rect::default());
         for index in 0..3 {
-            let origin = toast_origin(
-                viewport,
-                1.0,
-                panel_top,
-                Rect::default(),
-                row.neutral,
-                index,
-            );
-            assert!(origin.y < row.neutral.y, "toast {index} clears the row");
+            let chip = row.queue.expect("the QUEUE chip");
+            let origin = toast_origin(viewport, 1.0, panel_top, Rect::default(), chip, index);
+            assert!(origin.y < chip.y, "toast {index} clears the row");
         }
     }
 }
