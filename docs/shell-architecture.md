@@ -238,13 +238,15 @@ never the anchor. `stop_placing` is the one way placement ends, so no ghost
 outlives its mode. The mouse's hover preview draws only while the mouse is the
 last pointer. While placement or a patrol route is armed, a world finger never
 long-presses; other armed verbs stand down for a long-press as they do for a
-right-click. `InputState::queue_held` merges Shift with the sticky QUEUE chip
-that touch-only builds show beside the mode ribbon.
+right-click. `InputState::queue_held` merges Shift with the sticky QUEUE toggle
+that touch-only builds show.
 
-The ribbon row is `[QUEUE] [ribbon]`, published as `LayoutModel.queue_toggle`
-and `mode_ribbon`. The ribbon shows while a mode is armed; the QUEUE chip shows
-on touch-only builds while the human commands a selected unit or QUEUE is on.
-`ribbon_row_press` hit-tests the row before every other target: the chip toggles
+The mode ribbon (`LayoutModel.mode_ribbon`) shows while a mode is armed,
+centered above the panel band. The QUEUE toggle (`LayoutModel.queue_toggle`)
+shows on touch-only builds while the human commands a selected unit or QUEUE is
+on. It sits over the panel's left corner in the orders dock's column, and the
+dock rises to stack above it, so queueing orders never moves the toggle.
+`ribbon_row_press` hit-tests both before every other target: the toggle flips
 QUEUE and the ribbon cancels its mode. Taps and clicks select through
 `select::pick`, which gives a fingertip a wider reach than a cursor. A press
 that picks nothing on a tile with known salvage selects that tile as

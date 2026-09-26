@@ -100,7 +100,7 @@ to pause) cover the rest. Rest a finger on a card to read its details, then lift
 to use it or slide off to cancel. Tapping or clicking a disabled card says why
 it is unavailable. To build, tap open ground to drop a ghost, drag it into
 place, and tap it to confirm. While Patrol is armed, taps (or left-clicks) add
-waypoints. With units selected, the QUEUE toggle beside the command ribbon
+waypoints. With units selected, the QUEUE toggle above the panel's left corner
 stands in for Shift: taps add to the selection, orders queue, and armed commands
 stay armed. It stays lit while on, and one tap turns it off. Tapping the ribbon
 cancels its command. Tapping a scrap pile selects it, and its panel shows the

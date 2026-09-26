@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::render::prim::{fill_rect, line_between, stroke_rect};
-use crate::theme::{SURFACE_PANEL, TEXT_ACCENT};
+use crate::theme::TEXT_ACCENT;
 
 /// Fill shared by the top bar's badges: the idle nag and the menu button.
 const TOP_BAR_BADGE: Color = color_u8!(57, 45, 30, 255);
@@ -167,12 +167,8 @@ pub(crate) fn draw_overlay_info(game: &crate::game::Scene<'_>) {
 
 /// The armed-mode ribbon's narrowest width, in logical px at 1x.
 const RIBBON_MIN_W: f32 = 210.0;
-/// The QUEUE chip's width, in logical px at 1x.
-const QUEUE_CHIP_W: f32 = 96.0;
-/// The gap between the QUEUE chip and the ribbon.
-const RIBBON_ROW_GAP: f32 = 8.0;
 
-/// The top of the ribbon row: just above the panel band, or above the
+/// The top of the ribbon: just above the panel band, or above the
 /// window's bottom edge, and never under the top bar.
 fn ribbon_row_y(viewport: Vec2, scale: f32, panel_top: f32, height: f32) -> f32 {
     let preferred_y = if panel_top.is_finite() {
@@ -192,33 +188,11 @@ fn ribbon_width(viewport: Vec2, scale: f32, label_width: f32) -> f32 {
         .min((viewport.x - 24.0 * scale).max(RIBBON_MIN_W * scale))
 }
 
-/// Where the ribbon row's pieces sit: the QUEUE chip on touch-only
-/// builds, and the ribbon while a mode is armed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct RibbonRow {
-    queue: Option<Rect>,
-    ribbon: Option<Rect>,
-}
-
-/// Lays out `[QUEUE] [ribbon]`. The chip keeps a fixed slot, centered as
-/// if the ribbon had its minimum width, so it never moves while modes
-/// come and go; only a ribbon that would run off the window or into the
-/// minimap slides the row left.
-fn ribbon_row_geometry(
-    viewport: Vec2,
-    scale: f32,
-    panel_top: f32,
-    with_queue: bool,
-    ribbon_w: Option<f32>,
-    minimap: Rect,
-) -> RibbonRow {
+/// Where the armed-mode ribbon sits: centered over the panel band,
+/// sliding left only when it would run off the window or into the
+/// minimap.
+fn ribbon_geometry(viewport: Vec2, scale: f32, panel_top: f32, width: f32, minimap: Rect) -> Rect {
     let height = crate::layout::MIN_TOUCH_TARGET * scale;
-    let queue_w = QUEUE_CHIP_W * scale;
-    let lead = if with_queue {
-        queue_w + RIBBON_ROW_GAP * scale
-    } else {
-        0.0
-    };
     let y = ribbon_row_y(viewport, scale, panel_top, height);
     let blocks_row = minimap.w > 0.0 && minimap.y < y + height && minimap.y + minimap.h > y;
     let right = if blocks_row {
@@ -226,20 +200,20 @@ fn ribbon_row_geometry(
     } else {
         viewport.x - 12.0 * scale
     };
-    let centered = (viewport.x - (lead + RIBBON_MIN_W * scale)) * 0.5;
-    let x = centered
-        .min(right - lead - ribbon_w.unwrap_or(0.0))
+    let x = ((viewport.x - width) * 0.5)
+        .min(right - width)
         .max(12.0 * scale);
-    RibbonRow {
-        queue: with_queue.then(|| Rect::new(x, y, queue_w, height)),
-        ribbon: ribbon_w.map(|w| Rect::new(x + lead, y, w, height)),
-    }
+    Rect::new(x, y, width, height)
 }
 
-/// Whether a touch-only build offers the QUEUE chip: while the human
+/// Whether a touch-only build offers the QUEUE toggle: while the human
 /// commands a selected unit, or while QUEUE is on so it can be turned
 /// off. Buildings queue nothing, and a spectator commands nothing.
-fn queue_chip_shown(game: &crate::game::Scene<'_>, input: &InputState, touch_only: bool) -> bool {
+pub(super) fn queue_toggle_shown(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+    touch_only: bool,
+) -> bool {
     let human = game.presentation.human;
     let commands_units = game
         .presentation
@@ -250,79 +224,86 @@ fn queue_chip_shown(game: &crate::game::Scene<'_>, input: &InputState, touch_onl
     touch_only && !game.presentation.spectate && (commands_units || input.queue_toggle)
 }
 
-/// The QUEUE chip: filled while queueing, so the mode can't hide.
-fn draw_queue_chip(rect: Rect, on: bool, s: f32) {
-    let size = 16.0 * s;
-    let dims = measure_text("QUEUE", None, size as u16, 1.0);
+/// Where the QUEUE toggle sits: over the panel's left corner, in the
+/// orders dock's column, so it never moves as orders queue up; the dock
+/// stacks above it instead.
+fn queue_toggle_rect(viewport: Vec2, scale: f32, regions: &[Rect; 2]) -> Rect {
+    let size = crate::layout::MIN_TOUCH_TARGET * scale;
+    let x = 8.0 * scale;
+    let floor = regions
+        .iter()
+        .filter(|r| r.w > 0.0 && r.x < x + size)
+        .map(|r| r.y)
+        .fold(viewport.y, f32::min);
+    Rect::new(x, floor - size - 8.0 * scale, size, size)
+}
+
+/// How far the orders dock rises to clear the QUEUE toggle.
+pub(super) fn queue_dock_lift(scale: f32) -> f32 {
+    (crate::layout::MIN_TOUCH_TARGET + 16.0) * scale
+}
+
+/// The QUEUE toggle: a chain of queued waypoints, lit while queueing so
+/// the mode can't hide, dark like the orders dock otherwise.
+fn draw_queue_toggle(rect: Rect, on: bool, s: f32) {
+    let glyph = if on { SURFACE_CARD } else { TEXT_BODY };
     if on {
         fill_rect(rect, TEXT_ACCENT);
     } else {
-        fill_rect(rect, SURFACE_PANEL);
-        stroke_rect(rect, 1.0 * s, TEXT_DISABLED);
+        fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
+        stroke_rect(rect, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
     }
-    draw_text(
-        "QUEUE",
-        rect.x + (rect.w - dims.width) * 0.5,
-        rect.y + rect.h * 0.62,
-        size,
-        if on { SURFACE_CARD } else { TEXT_BODY },
-    );
+    let c = rect.center();
+    let points = [
+        c + vec2(-11.0, 6.0) * s,
+        c + vec2(0.0, -6.0) * s,
+        c + vec2(11.0, 6.0) * s,
+    ];
+    line_between(points[0], points[1], 2.0 * s, glyph);
+    line_between(points[1], points[2], 2.0 * s, glyph);
+    for point in points {
+        crate::render::prim::fill_circle(point, 3.5 * s, glyph);
+    }
 }
 
-/// The ribbon row: the QUEUE chip on touch-only builds and the
-/// armed-mode ribbon. Returns the ribbon and chip rects (zero when
-/// absent).
-fn draw_ribbon_row(
+/// The armed-mode ribbon, while a mode is armed. Returns its rect (zero
+/// when absent).
+fn draw_mode_ribbon(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
     input: &InputState,
     regions: &[Rect; 2],
     minimap: Rect,
-) -> (Rect, Rect) {
+) -> Rect {
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let with_queue = queue_chip_shown(game, input, crate::platform::TOUCH_ONLY);
-    let mode = input.armed_mode();
-    if !with_queue && mode.is_none() {
-        return (zero, zero);
-    }
+    let Some(mode) = input.armed_mode() else {
+        return zero;
+    };
     let s = ui_scale();
     let viewport = vec2(screen_width(), screen_height());
     let building = match mode {
-        Some(crate::input::ArmedMode::Build(kind)) => Some(kind),
+        crate::input::ArmedMode::Build(kind) => Some(kind),
         _ => None,
     };
-    let label = mode.map(crate::input::ArmedMode::label);
+    let label = mode.label();
     let cost = building
         .and_then(|kind| kind.base_stats().construction)
         .map(|construction| construction.cost.to_string());
     let (label_size, cost_size) = (18.0 * s, 16.0 * s);
     let icon_w = if building.is_some() { 40.0 * s } else { 0.0 };
-    let label_w = label
-        .as_deref()
-        .map(|label| measure_text(label, None, label_size as u16, 1.0).width);
+    let label_w = measure_text(&label, None, label_size as u16, 1.0).width;
     let cost_w = cost.as_deref().map_or(0.0, |cost| {
         12.0 * s + measure_text(cost, None, cost_size as u16, 1.0).width
     });
-    let ribbon_w = label_w.map(|w| ribbon_width(viewport, s, icon_w + w + cost_w));
-    // The row sits above whichever panel region lies under it.
-    let open = ribbon_row_geometry(viewport, s, f32::INFINITY, with_queue, ribbon_w, minimap);
-    let (x0, x1) = match (open.queue, open.ribbon) {
-        (Some(q), Some(r)) => (q.x, r.x + r.w),
-        (Some(r), None) | (None, Some(r)) => (r.x, r.x + r.w),
-        (None, None) => return (zero, zero),
-    };
+    let width = ribbon_width(viewport, s, icon_w + label_w + cost_w);
+    // The ribbon sits above whichever panel region lies under it.
+    let open = ribbon_geometry(viewport, s, f32::INFINITY, width, minimap);
     let panel_top = regions
         .iter()
-        .filter(|r| r.w > 0.0 && r.x < x1 && r.x + r.w > x0)
+        .filter(|r| r.w > 0.0 && r.x < open.x + open.w && r.x + r.w > open.x)
         .map(|r| r.y)
         .fold(f32::INFINITY, f32::min);
-    let row = ribbon_row_geometry(viewport, s, panel_top, with_queue, ribbon_w, minimap);
-    if let Some(chip) = row.queue {
-        draw_queue_chip(chip, input.queue_toggle, s);
-    }
-    let (Some(ribbon), Some(label)) = (row.ribbon, label) else {
-        return (zero, row.queue.unwrap_or(zero));
-    };
+    let ribbon = ribbon_geometry(viewport, s, panel_top, width, minimap);
     fill_rect(ribbon, Color::from_rgba(20, 20, 24, 248));
     stroke_rect(ribbon, 1.5 * s, SCRAP_COLOR);
     let mut x = ribbon.x + 10.0 * s;
@@ -343,7 +324,7 @@ fn draw_ribbon_row(
     }
     let baseline = ribbon.y + ribbon.h * 0.64;
     draw_text(&label, x, baseline, label_size, TEXT_PRIMARY);
-    if let (Some(cost), Some(label_w)) = (cost, label_w) {
+    if let Some(cost) = cost {
         draw_text(
             &cost,
             x + label_w + 12.0 * s,
@@ -352,7 +333,7 @@ fn draw_ribbon_row(
             SCRAP_COLOR,
         );
     }
-    (ribbon, row.queue.unwrap_or(zero))
+    ribbon
 }
 
 fn toast_origin(
@@ -523,12 +504,13 @@ pub(crate) fn draw_hud(
             minimap = zero;
         }
     }
-    let (mode_ribbon, queue_toggle) =
-        draw_ribbon_row(game, sprites, input, &panel_regions, minimap);
-    let ribbon_row = if queue_toggle.w > 0.0 {
-        queue_toggle
+    let mode_ribbon = draw_mode_ribbon(game, sprites, input, &panel_regions, minimap);
+    let queue_toggle = if queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY) {
+        let rect = queue_toggle_rect(vec2(screen_width(), screen_height()), s, &panel_regions);
+        draw_queue_toggle(rect, input.queue_toggle, s);
+        rect
     } else {
-        mode_ribbon
+        zero
     };
     // Publish the frame's chrome geometry — the model hit-testing reads.
     let mut layout = crate::layout::LayoutModel::compute(
@@ -571,8 +553,16 @@ pub(crate) fn draw_hud(
             } else {
                 screen_height()
             },
-            Rect::new(0.0, 0.0, orders_dock.w.max(panel_regions[0].w), 0.0),
-            ribbon_row,
+            Rect::new(
+                0.0,
+                0.0,
+                orders_dock
+                    .w
+                    .max(panel_regions[0].w)
+                    .max(queue_toggle.x + queue_toggle.w),
+                0.0,
+            ),
+            mode_ribbon,
             i,
         );
         let mut size = 20.0 * s;
@@ -656,8 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ribbon_row_keeps_its_lead_and_stays_on_screen() {
-        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    fn the_ribbon_stays_on_screen_above_the_panel() {
         for (viewport, scale) in [
             (vec2(1024.0, 768.0), 1.5),
             (vec2(1194.0, 834.0), 1.0),
@@ -665,40 +654,37 @@ mod tests {
             (vec2(640.0, 400.0), 1.0),
         ] {
             for panel_top in [f32::INFINITY, viewport.y - 120.0 * scale] {
-                for with_queue in [false, true] {
-                    let bare =
-                        ribbon_row_geometry(viewport, scale, panel_top, with_queue, None, zero);
-                    if let Some(chip) = bare.queue {
-                        assert!(chip.y >= crate::layout::TOP_BAR_H * scale);
-                        assert!(chip.y + chip.h <= panel_top.min(viewport.y));
-                    }
-                    for label in [60.0, 180.0, 320.0] {
-                        let w = ribbon_width(viewport, scale, label * scale);
-                        let row = ribbon_row_geometry(
-                            viewport,
-                            scale,
-                            panel_top,
-                            with_queue,
-                            Some(w),
-                            zero,
-                        );
-                        if label == 60.0 {
-                            assert_eq!(row.queue, bare.queue, "a mode never moves QUEUE");
-                        }
-                        let ribbon = row.ribbon.expect("an armed ribbon");
-                        if let Some(chip) = row.queue {
-                            assert!(
-                                ribbon.x >= chip.x + chip.w,
-                                "{viewport} @{scale}: no overlap"
-                            );
-                            assert!(chip.x >= 0.0);
-                            assert_eq!(ribbon.y, chip.y, "one row");
-                        }
-                        assert!(ribbon.x >= 0.0);
-                        assert!(ribbon.x + ribbon.w <= viewport.x);
-                    }
+                for label in [60.0, 180.0, 320.0] {
+                    let w = ribbon_width(viewport, scale, label * scale);
+                    let ribbon = ribbon_geometry(viewport, scale, panel_top, w, Rect::default());
+                    assert!(ribbon.x >= 0.0, "{viewport} @{scale}");
+                    assert!(ribbon.x + ribbon.w <= viewport.x);
+                    assert!(ribbon.y >= crate::layout::TOP_BAR_H * scale);
+                    assert!(ribbon.y + ribbon.h <= panel_top.min(viewport.y));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_queue_toggle_sits_over_the_panel_corner_under_the_dock() {
+        let viewport = vec2(1194.0, 834.0);
+        for scale in [1.0, 1.25] {
+            let info = Rect::new(0.0, 600.0, 300.0 * scale, 234.0);
+            let actions = Rect::new(320.0 * scale, 650.0, 600.0, 184.0);
+            let toggle = queue_toggle_rect(viewport, scale, &[info, actions]);
+            assert!(toggle.x >= 0.0);
+            assert!(toggle.y + toggle.h <= info.y, "above the panel it rests on");
+            let dock_bottom = info.y - queue_dock_lift(scale);
+            assert!(
+                dock_bottom <= toggle.y - 8.0 * scale + 0.001,
+                "the lifted dock clears it"
+            );
+            assert_eq!(
+                toggle,
+                queue_toggle_rect(viewport, scale, &[info, Rect::default()]),
+                "the actions band never moves it"
+            );
         }
     }
 
@@ -709,7 +695,7 @@ mod tests {
                 .expect("skirmish builds");
         let mut input = InputState::new();
         let shown = |game: &crate::game::Game, input: &InputState| {
-            queue_chip_shown(&game.view(), input, true)
+            queue_toggle_shown(&game.view(), input, true)
         };
         assert!(!shown(&game, &input), "nothing selected");
         let foundry = game
@@ -732,7 +718,7 @@ mod tests {
         game.presentation.selection.units = vec![own];
         assert!(shown(&game, &input), "an own unit");
         assert!(
-            !queue_chip_shown(&game.view(), &input, false),
+            !queue_toggle_shown(&game.view(), &input, false),
             "desktop has Shift"
         );
         game.presentation.selection.units.clear();
@@ -748,8 +734,7 @@ mod tests {
         let scale = 1.5;
         let minimap = Rect::new(676.0, 520.0, 330.0, 230.0);
         let w = ribbon_width(viewport, scale, 200.0);
-        let row = ribbon_row_geometry(viewport, scale, f32::INFINITY, true, Some(w), minimap);
-        let ribbon = row.ribbon.expect("an armed ribbon");
+        let ribbon = ribbon_geometry(viewport, scale, f32::INFINITY, w, minimap);
         assert!(
             ribbon.x + ribbon.w <= minimap.x,
             "the row stops short of the minimap"
@@ -790,11 +775,10 @@ mod tests {
     fn toasts_stack_above_the_ribbon_row() {
         let viewport = vec2(1280.0, 800.0);
         let panel_top = 640.0;
-        let row = ribbon_row_geometry(viewport, 1.0, panel_top, true, Some(240.0), Rect::default());
+        let ribbon = ribbon_geometry(viewport, 1.0, panel_top, 240.0, Rect::default());
         for index in 0..3 {
-            let chip = row.queue.expect("the QUEUE chip");
-            let origin = toast_origin(viewport, 1.0, panel_top, Rect::default(), chip, index);
-            assert!(origin.y < chip.y, "toast {index} clears the row");
+            let origin = toast_origin(viewport, 1.0, panel_top, Rect::default(), ribbon, index);
+            assert!(origin.y < ribbon.y, "toast {index} clears the row");
         }
     }
 }

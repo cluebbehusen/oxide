@@ -1101,10 +1101,15 @@ pub(crate) fn draw_panel(
     let mut queue_count = 0;
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
-        let (mut grid_dock, grid_slots, n) = if panel.queue_groups.is_empty() {
-            queue_grid(panel.queue.len(), top, s)
+        let floor = if super::chrome::queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY) {
+            top - super::chrome::queue_dock_lift(s)
         } else {
-            collective_queue_grid(panel.queue.len(), top, s, viewport.x)
+            top
+        };
+        let (mut grid_dock, grid_slots, n) = if panel.queue_groups.is_empty() {
+            queue_grid(panel.queue.len(), floor, s)
+        } else {
+            collective_queue_grid(panel.queue.len(), floor, s, viewport.x)
         };
         let queue_label_width = queue_label_width(panel, |text| {
             measure_text(text, None, (13.0 * s) as u16, 1.0).width
