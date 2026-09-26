@@ -300,7 +300,7 @@ impl PauseScreen {
             (view.x - dims.width) * 0.5,
             layout.hint_y,
             hint_size,
-            crate::theme::TEXT_SECONDARY,
+            crate::hints::fade(crate::theme::TEXT_SECONDARY),
         );
         let field = layout.field;
         draw_rectangle(

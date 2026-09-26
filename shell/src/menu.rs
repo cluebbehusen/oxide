@@ -444,6 +444,13 @@ impl Menu {
 
     /// Draws the menu (over whatever the caller already drew).
     pub fn draw(&self, subtitle: &str) {
+        self.draw_with_coaching(subtitle, None);
+    }
+
+    /// Draws the menu with `coaching` in the footer line in place of the
+    /// standard key help. The footer is coaching either way: it fades in
+    /// only when the player seems stuck.
+    pub fn draw_with_coaching(&self, subtitle: &str, coaching: Option<&str>) {
         let subtitle = binding_hint(subtitle);
         let s = ui();
         let title_size = 96.0 * s;
@@ -548,14 +555,22 @@ impl Menu {
             return;
         }
 
-        let hint = menu_footer(crate::platform::TOUCH_ONLY);
-        let hint_dims = measure_text(&hint, None, (18.0 * s) as u16, 1.0);
+        let hint = coaching
+            .map(binding_hint)
+            .unwrap_or_else(|| menu_footer(crate::platform::TOUCH_ONLY));
+        let mut hint_size = 18.0 * s;
+        let mut hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
+        let max_width = view_w() - 32.0 * s;
+        if hint_dims.width > max_width {
+            hint_size = (hint_size * max_width / hint_dims.width).max(12.0 * s);
+            hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
+        }
         draw_text(
             &hint,
             (view_w() - hint_dims.width) * 0.5,
             view_h() - 24.0 * s,
-            18.0 * s,
-            TEXT_SECONDARY,
+            hint_size,
+            crate::hints::fade(TEXT_SECONDARY),
         );
     }
 }

@@ -115,6 +115,14 @@ pub(super) fn update_and_draw(
     ctrl_at_frame_start: bool,
     shift_at_frame_start: bool,
 ) -> Result<ScreenFrame> {
+    // Coaching waits until the player seems stuck on this screen.
+    let pressed = events.iter().any(crate::hints::is_press);
+    crate::hints::set_alpha(app.hint_clock.observe(
+        super::screen_mode(&screen),
+        pressed,
+        time.presentation,
+        render::reduced_motion(),
+    ));
     // Controls capture and text editing keep their conventional recovery keys.
     let fixed_editor = matches!(&screen, Screen::Settings { screen, .. } if matches!(screen.face, screens::settings::Face::Controls { .. }))
         || matches!(&screen, Screen::Pause(pause) if pause.naming());
@@ -779,7 +787,9 @@ fn replays_frame(app: &mut App, mut shelf: Shelf, events: &[RawEvent], rerun: &m
     } else {
         render::draw(&app.game.view(), &app.sprites, &app.input);
         veil();
-        shelf.menu.draw(&shelf.subtitle());
+        shelf
+            .menu
+            .draw_with_coaching(&shelf.subtitle(), shelf.coaching().as_deref());
         crate::button::draw_back(app.input.mouse);
         Screen::Replays(shelf)
     }

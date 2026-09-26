@@ -399,20 +399,27 @@ impl SettingsScreen {
         }
     }
 
-    /// The face's coaching line.
-    pub fn hint(&self) -> &'static str {
+    /// The face's subtitle: the rebind prompt while a capture is armed,
+    /// since it is the only sign the next key is being listened for.
+    fn subtitle(&self) -> &'static str {
         match self.face {
-            Face::Settings => settings_hint(crate::platform::TOUCH_ONLY),
             Face::Controls { rebinding: Some(_) } => {
                 "press the new chord (modifiers held count) - Escape cancels"
             }
-            Face::Controls { rebinding: None } => {
-                if self.binding_slot == 0 {
-                    "PRIMARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"
-                } else {
-                    "SECONDARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"
-                }
-            }
+            _ => "",
+        }
+    }
+
+    /// The face's coaching line, in the footer.
+    fn coaching(&self) -> Option<&'static str> {
+        match self.face {
+            Face::Settings => Some(settings_hint(crate::platform::TOUCH_ONLY)),
+            Face::Controls { rebinding: Some(_) } => None,
+            Face::Controls { rebinding: None } => Some(if self.binding_slot == 0 {
+                "PRIMARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"
+            } else {
+                "SECONDARY selected | Left/Right chooses column | Enter remaps | X clears | Esc back"
+            }),
         }
     }
 
@@ -434,7 +441,8 @@ impl SettingsScreen {
     /// Draws the face's menu and the screen-owned notice — the caller
     /// draws the veil first, so both land above it.
     pub fn draw(&self) {
-        self.menu.draw(self.hint());
+        self.menu
+            .draw_with_coaching(self.subtitle(), self.coaching());
         if let Some(notice) = &self.notice {
             let s = render::ui_scale();
             let size = 16.0 * s;
@@ -674,6 +682,25 @@ impl SettingsScreen {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn a_capture_prompt_is_information_and_key_help_is_coaching() {
+        let config = Config::default();
+        let mut screen = SettingsScreen::open(&config);
+        assert_eq!(screen.subtitle(), "");
+        assert!(
+            screen.coaching().is_some(),
+            "the settings help waits until stuck"
+        );
+        screen.goto_controls(&config, 1);
+        assert!(screen.coaching().is_some(), "the controls key help too");
+        screen.face = Face::Controls { rebinding: Some(1) };
+        assert!(
+            screen.subtitle().starts_with("press the new chord"),
+            "an armed capture always says it is listening"
+        );
+        assert_eq!(screen.coaching(), None);
+    }
 
     #[test]
     fn the_settings_hint_speaks_touch_on_touch_only_builds() {

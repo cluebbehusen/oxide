@@ -18,6 +18,7 @@ mod entity_lod;
 mod frame_profile;
 mod frame_time;
 mod game;
+mod hints;
 mod input;
 mod layout;
 mod menu;

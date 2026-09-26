@@ -179,7 +179,9 @@ impl FinalMapScreen {
         let back = crate::button::corner_slot(0, scale);
         crate::button::draw(back, "BACK", back.contains(mouse), scale);
         let size = 17.0 * scale;
-        let line = if crate::platform::TOUCH_ONLY {
+        let line = if !crate::hints::showing() {
+            "FINAL BATTLEFIELD".to_string()
+        } else if crate::platform::TOUCH_ONLY {
             "FINAL BATTLEFIELD | drag to pan | pinch to zoom".to_string()
         } else {
             format!(

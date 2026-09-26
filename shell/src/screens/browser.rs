@@ -628,7 +628,7 @@ impl Browser {
             (view.x - dims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,
-            TEXT_SECONDARY,
+            crate::hints::fade(TEXT_SECONDARY),
         );
     }
 }
