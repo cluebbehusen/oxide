@@ -8,6 +8,7 @@ use crate::client::Client;
 use anyhow::{Context, Result, bail};
 use oxide_protocol::{Key, RawEvent, Request, UiView};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// A shell child killed on drop, so a failing walk never strands a
 /// window holding the port.
@@ -210,6 +211,52 @@ pub fn assert_mode(client: &mut Client, expected: &str, at: &str) -> Result<()> 
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ModeWait {
+    Arrived,
+    Transitional,
+    Unexpected,
+}
+
+fn classify_mode(mode: &str, expected: &str, transitional: &[&str]) -> ModeWait {
+    if mode == expected {
+        ModeWait::Arrived
+    } else if transitional.contains(&mode) {
+        ModeWait::Transitional
+    } else {
+        ModeWait::Unexpected
+    }
+}
+
+/// Like [`assert_mode`], but rides out the named `transitional` screens
+/// a step legitimately passes through while background work finishes,
+/// such as the saving screen that holds a leave until its autosave
+/// lands. Any other screen fails at once; a transitional screen fails
+/// only if it outlasts a bounded wait.
+pub fn wait_for_mode(
+    client: &mut Client,
+    expected: &str,
+    transitional: &[&str],
+    at: &str,
+) -> Result<()> {
+    const TIMEOUT: Duration = Duration::from_secs(10);
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let mode = ui(client)?.mode;
+        match classify_mode(&mode, expected, transitional) {
+            ModeWait::Arrived => return Ok(()),
+            ModeWait::Unexpected => {
+                bail!("after {at}: expected mode '{expected}', shell reports '{mode}'")
+            }
+            ModeWait::Transitional if Instant::now() >= deadline => bail!(
+                "after {at}: expected mode '{expected}', shell still reports '{mode}' after {}s",
+                TIMEOUT.as_secs()
+            ),
+            ModeWait::Transitional => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +356,22 @@ not json
             error.to_string(),
             "no row containing 'credits' in [\"PLAY\", \"SETTINGS\"]"
         );
+    }
+
+    #[test]
+    fn mode_waits_ride_out_only_named_transitional_screens() {
+        assert_eq!(
+            classify_mode("home", "home", &["saving"]),
+            ModeWait::Arrived
+        );
+        assert_eq!(
+            classify_mode("saving", "home", &["saving"]),
+            ModeWait::Transitional
+        );
+        assert_eq!(
+            classify_mode("pause_menu", "home", &["saving"]),
+            ModeWait::Unexpected
+        );
+        assert_eq!(classify_mode("saving", "home", &[]), ModeWait::Unexpected);
     }
 }
