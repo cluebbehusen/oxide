@@ -6526,19 +6526,13 @@ fn scout_and_hold(
     landing_sites: &[TilePos],
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let public_map = connected_public_map(plan, context.public_map);
-    let focus = if matches!(plan, AirPlan::Connected(_)) {
-        connected_scout_focus(op, plan, context.obs, context.intel)
-    } else {
-        op.target
-    };
-    dispatch_scout_toward(
+    dispatch_scout(
         op,
+        plan,
         context.obs,
         context.intel,
-        focus,
         landing_sites,
-        public_map,
+        connected_public_map(plan, context.public_map),
         out,
     )?;
     hold_air_strike(op, plan, context.obs, context.home, out);
@@ -6570,11 +6564,7 @@ fn scout_dispatch_goal(
     landing_sites: &[TilePos],
     public_map: Option<&PublicMapBriefing>,
 ) -> Option<TilePos> {
-    let target = if matches!(plan, AirPlan::Connected(_)) {
-        connected_scout_focus(op, plan, obs, intel)
-    } else {
-        op.target
-    };
+    let target = connected_scout_focus(op, plan, obs, intel);
     scout_goal(op, obs, intel, target, landing_sites, public_map)
 }
 
@@ -6603,21 +6593,6 @@ fn connected_scout_focus(
         }
     }
     operation_objective_anchor(op, plan, intel)
-}
-
-fn dispatch_scout_toward(
-    op: &mut AirOperation,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    target: TilePos,
-    landing_sites: &[TilePos],
-    public_map: Option<&PublicMapBriefing>,
-    out: &mut StrategicDecision,
-) -> Result<(), AirRecoveryReason> {
-    let Some(goal) = scout_goal(op, obs, intel, target, landing_sites, public_map) else {
-        return Err(AirRecoveryReason::UnreachableAirRoute);
-    };
-    dispatch_scout_to(op, obs, goal, public_map, out)
 }
 
 fn dispatch_scout_to(
