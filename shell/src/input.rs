@@ -166,6 +166,8 @@ pub struct InputState {
     pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
     /// The live two-finger gesture, if two fingers are down.
     pub(crate) pair: Option<Pair>,
+    /// Pair fingers the platform reported lifted, newest last.
+    pub(crate) lifted_pair: Vec<touch::LiftedFinger>,
     /// The menu button was pressed this frame. Input cannot switch
     /// screens itself, so the frame loop takes this one-shot request.
     pub(crate) menu_requested: bool,
@@ -381,6 +383,7 @@ impl InputState {
             touches: Vec::new(),
             last_tap: None,
             pair: None,
+            lifted_pair: Vec::new(),
             menu_requested: false,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
@@ -501,6 +504,7 @@ impl InputState {
         self.touches.clear();
         self.last_tap = None;
         self.pair = None;
+        self.lifted_pair.clear();
         self.menu_requested = false;
     }
 

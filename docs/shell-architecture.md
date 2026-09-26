@@ -153,10 +153,13 @@ rectangles and panel bounds share the same separator and inset calculations.
 
 Coordinates are logical throughout the input/layout pipeline; the hardware
 adapter applies DPI conversion once. Touches arrive through the same ordered
-input stream as mouse events, one event per phase. Drawing publishes a shared
-`LayoutModel` whose rectangles also drive hit testing. The HUD's supported
-layout floor is 1280×800 at default UI scale. Smaller windows are overflow
-stress cases.
+input stream as mouse events. miniquad's iOS backend reports every live finger
+whenever one changes, so a landing re-reports the others as landing and a lift
+reports them all lifted. Gesture code treats a repeated landing as the same
+finger and picks up a falsely lifted pair finger on its next move. Drawing
+publishes a shared `LayoutModel` whose rectangles also drive hit testing. The
+HUD's supported layout floor is 1280×800 at default UI scale. Smaller windows
+are overflow stress cases.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated

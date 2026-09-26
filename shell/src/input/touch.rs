@@ -36,6 +36,8 @@ pub(crate) struct TouchPoint {
     /// Whether it already did its one job: its long-press fired, or it
     /// outlived its pair. A spent finger never taps or long-presses.
     pub spent: bool,
+    /// Whether it ever belonged to a two-finger pair.
+    pub paired: bool,
     /// The card it landed on, as it stood then.
     pub card: Option<PressedCard>,
 }
@@ -62,6 +64,19 @@ fn pressed_card(game: &Game, p: Vec2, ui: f32) -> Option<PressedCard> {
         .map(|card| card.icon);
     Some(PressedCard { hit, icon })
 }
+
+/// A pair finger the platform reported lifted. iOS reports every live
+/// finger lifted when any one of them lifts, so a finger remembered
+/// here may still be on the glass; its next move picks it back up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LiftedFinger {
+    id: u64,
+    born: TouchBorn,
+    moved: bool,
+}
+
+/// How many lifted pair fingers are remembered: a pair has two.
+const LIFTED_MEMORY: usize = 2;
 
 impl TouchPoint {
     /// A still, unspent finger: its lift may still be a tap, and on the
@@ -130,7 +145,16 @@ pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
 
 /// A finger landed.
 pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
-    input.touches.retain(|(tid, _)| *tid != id);
+    // iOS re-reports every live finger as landing when another lands.
+    // A repeat is the same finger, not a fresh one: it keeps where it
+    // was born, what it has done, and the pair it belongs to.
+    if let Some((_, finger)) = input.touches.iter_mut().find(|(tid, _)| *tid == id) {
+        finger.at = p;
+        return;
+    }
+    // A genuine landing reuses no memory, even if the platform reused
+    // the id of a finger lifted earlier.
+    input.lifted_pair.retain(|lifted| lifted.id != id);
     let born = born_at(game, p);
     input.touches.push((
         id,
@@ -142,6 +166,7 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             moved: false,
             spent: false,
             card: pressed_card(game, p, input.ui),
+            paired: false,
         },
     ));
     if input.touches.len() > 2 {
@@ -154,10 +179,48 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         start_dist: (input.touches[0].1.at - input.touches[1].1.at).length(),
         state: PairState::Undecided,
     });
+    if input.pair.is_some() {
+        for (_, finger) in &mut input.touches {
+            finger.paired = true;
+        }
+    }
+}
+
+/// Picks back up a pair finger the platform reported lifted while it
+/// stayed down. It returns spent, keeping where it was born, so it can
+/// pan or steer again but never tap or long-press.
+fn readopt(input: &mut InputState, id: u64, p: Vec2) -> bool {
+    if input.touches.len() >= 2 {
+        return false;
+    }
+    let Some(index) = input.lifted_pair.iter().position(|lifted| lifted.id == id) else {
+        return false;
+    };
+    let lifted = input.lifted_pair.remove(index);
+    input.touches.push((
+        id,
+        TouchPoint {
+            origin: p,
+            at: p,
+            down_at: input.now,
+            born: lifted.born,
+            moved: lifted.moved,
+            spent: true,
+            paired: false,
+            card: None,
+        },
+    ));
+    true
 }
 
 /// A finger moved.
 pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
+    // A move from a finger nobody is tracking belongs to a gesture this
+    // screen never owned (the tutorial card swallowed its landing), or
+    // to a pair finger iOS falsely reported lifted.
+    if !input.touches.iter().any(|(tid, _)| *tid == id) && !readopt(input, id, p) {
+        return;
+    }
     let slop = click_slop(input.ui) * 2.0;
     let two = input.touches.len() == 2;
     let old_dist = two.then(|| (input.touches[0].1.at - input.touches[1].1.at).length());
@@ -210,9 +273,21 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 /// A finger lifted.
 pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
+        // The real lift of a finger already reported lifted.
+        input.lifted_pair.retain(|lifted| lifted.id != id);
         return;
     };
     let (_, lifted) = input.touches.remove(pos);
+    if lifted.paired {
+        if input.lifted_pair.len() == LIFTED_MEMORY {
+            input.lifted_pair.remove(0);
+        }
+        input.lifted_pair.push(LiftedFinger {
+            id,
+            born: lifted.born,
+            moved: lifted.moved,
+        });
+    }
     match input.touches.len() {
         // Second finger of a pair released: a pair that
         // never pinched commits the box between the fingers

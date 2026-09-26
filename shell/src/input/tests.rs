@@ -2444,6 +2444,148 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
 }
 
 #[test]
+fn a_re_reported_landing_is_the_same_finger() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let start = vec2(400.0, 300.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, start)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(1, start - vec2(60.0, 0.0))],
+    );
+    let panned = game.presentation.camera.center;
+    // iOS repeats the landing of a finger already down; the pan must
+    // carry on without a fresh slop circle.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_down(1, start - vec2(60.0, 0.0))],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(1, start - vec2(65.0, 0.0))],
+    );
+    assert_ne!(game.presentation.camera.center, panned, "the pan continues");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(1, start - vec2(65.0, 0.0))],
+    );
+
+    // A re-reported still finger is still a tap.
+    let unit = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .expect("an own unit");
+    let p = game.presentation.camera.to_screen(unit.1);
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, p), touch_down(2, p)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, p)]);
+    assert_eq!(game.presentation.selection.units, vec![unit.0]);
+}
+
+#[test]
+fn a_pair_finger_falsely_reported_lifted_keeps_panning() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = vec2(400.0, 300.0);
+    let b = vec2(600.0, 360.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b), touch_down(1, a)]);
+    // Finger 2 lifts, and iOS reports both lifted, survivor first.
+    apply_events(&mut game, &mut input, &[touch_up(1, a), touch_up(2, b)]);
+    assert!(input.touches.is_empty(), "premise: both reported lifted");
+    let before = game.presentation.camera.center;
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(4.0, 0.0))]);
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "no pan inside the slop"
+    );
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(80.0, 0.0))]);
+    assert_ne!(game.presentation.camera.center, before, "the survivor pans");
+    let units = game.presentation.selection.units.clone();
+    let buildings = game.presentation.selection.buildings.clone();
+    apply_events(&mut game, &mut input, &[touch_up(1, a - vec2(80.0, 0.0))]);
+    assert_eq!(game.presentation.selection.units, units, "and never taps");
+    assert_eq!(game.presentation.selection.buildings, buildings);
+    // The real lift forgets it: that id never moves the camera again.
+    let after = game.presentation.camera.center;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(1, a - vec2(200.0, 0.0))],
+    );
+    assert_eq!(game.presentation.camera.center, after);
+}
+
+#[test]
+fn a_falsely_lifted_minimap_finger_never_pans_the_world() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    publish_minimap(&game);
+    let on_map = vec2(1100.0, 650.0);
+    let world = vec2(400.0, 300.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, on_map)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, world)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(2, world), touch_up(1, on_map)],
+    );
+    let before = game.presentation.camera.center;
+    for x in [900.0, 700.0, 500.0] {
+        apply_events(&mut game, &mut input, &[touch_move(1, vec2(x, 400.0))]);
+    }
+    assert_eq!(game.presentation.camera.center, before);
+}
+
+#[test]
+fn a_move_from_an_unknown_finger_does_nothing() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let before = game.presentation.camera.center;
+    // The tutorial card swallowed this finger's landing.
+    for x in [400.0, 480.0, 560.0] {
+        apply_events(&mut game, &mut input, &[touch_move(7, vec2(x, 300.0))]);
+    }
+    apply_events(&mut game, &mut input, &[touch_up(7, vec2(560.0, 300.0))]);
+    assert_eq!(game.presentation.camera.center, before);
+    assert!(input.touches.is_empty());
+}
+
+#[test]
+fn a_box_survivor_pans_only_past_the_slop() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, b)]);
+    assert!(
+        !game.presentation.selection.units.is_empty(),
+        "the box landed"
+    );
+    let before = game.presentation.camera.center;
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(5.0, 0.0))]);
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "jitter is not a pan"
+    );
+    apply_events(&mut game, &mut input, &[touch_move(1, a - vec2(80.0, 0.0))]);
+    assert_ne!(game.presentation.camera.center, before);
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.
