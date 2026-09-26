@@ -661,6 +661,7 @@ dependencies = [
  "clap",
  "oxide-bot",
  "oxide-kit",
+ "oxide-net",
  "oxide-protocol",
  "oxide-sim",
  "serde",
@@ -680,6 +681,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny-skia",
+]
+
+[[package]]
+name = "oxide-net"
+version = "0.17.0"
+dependencies = [
+ "oxide-sim",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

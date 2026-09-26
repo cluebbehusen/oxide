@@ -8,15 +8,16 @@ a harness that can inspect the same game headlessly or through the real window.
 
 Read the README for the crate you are changing:
 
-| Crate                                  | Responsibility                                                                |
-| -------------------------------------- | ----------------------------------------------------------------------------- |
-| [`chassis`](chassis/README.md)         | Reusable deterministic primitives. No game rules or engine dependencies.      |
-| [`oxide-sim`](sim/README.md)           | Game rules and player-knowledge projection.                                   |
-| [`oxide-bot`](bot/README.md)           | Observation-driven opponent policy and command production.                    |
-| [`oxide-protocol`](protocol/README.md) | Debug wire types, framing, input events, and state views.                     |
-| [`oxide-kit`](kit/README.md)           | Shared replay, statistics, fixture, and CPU-rendering services.               |
-| [`oxide-shell`](shell/README.md)       | Macroquad input, UI, rendering, audio, persistence, and live session.         |
-| [`oxide-driver`](driver/README.md)     | Headless runner, inspectors, map audit, live client, profiling, and smoke QA. |
+| Crate                                  | Responsibility                                                                   |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| [`chassis`](chassis/README.md)         | Reusable deterministic primitives. No game rules or engine dependencies.         |
+| [`oxide-sim`](sim/README.md)           | Game rules and player-knowledge projection.                                      |
+| [`oxide-bot`](bot/README.md)           | Observation-driven opponent policy and command production.                       |
+| [`oxide-protocol`](protocol/README.md) | Debug wire types, framing, input events, and state views.                        |
+| [`oxide-kit`](kit/README.md)           | Shared replay, statistics, fixture, and CPU-rendering services.                  |
+| [`oxide-net`](net/README.md)           | Lockstep multiplayer session core: wire messages, tick scheduling, and liveness. |
+| [`oxide-shell`](shell/README.md)       | Macroquad input, UI, rendering, audio, persistence, and live session.            |
+| [`oxide-driver`](driver/README.md)     | Headless runner, inspectors, map audit, live client, profiling, and smoke QA.    |
 
 Implementation contracts live in `docs/simulation-architecture.md`,
 `docs/shell-architecture.md`, and `docs/bot-architecture.md`. Keep those

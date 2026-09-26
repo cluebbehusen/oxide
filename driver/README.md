@@ -94,6 +94,13 @@ and reconstruction of the recorded command stream are checked throughout.
 `tests/goldens/state-hashes.json` is shared by the existing cross-platform
 matrix.
 
+`tests/lockstep.rs` runs an `oxide-net` host and two clients in one process over
+delayed links on a virtual clock. Each human seat's orders come from a scripted
+controller on that seat's own machine and cross the wire. It checks that every
+machine executes identical batches under latency and jitter, and covers a
+stalled client, a stuck client, a closed connection, a silent host, and a
+diverged client.
+
 `tests/player_facing_hashes.rs` checks exact recovery funding and repeated
 nearby harvest deliveries through the maintained controller. Behavioral
 assertions precede short state and tick-stamped command hashes. Independent
