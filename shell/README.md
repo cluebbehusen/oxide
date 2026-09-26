@@ -69,7 +69,9 @@ with `assets/` and `scenarios/` copied in. It needs full Xcode (not only the
 Command Line Tools), the `aarch64-apple-ios` Rust target (plus
 `aarch64-apple-ios-sim` for the simulator), and an iPad with Developer Mode on.
 Set your signing team in the ignored `ios/Local.xcconfig`, never in Xcode's
-Signing pane, which writes it into the shared project file:
+Signing pane, which writes it into the shared project file. If you sign with
+your own team, also set a bundle ID you control there (the example file shows
+how) and launch with that ID instead of `dev.luebbehusen.oxide`:
 
 ```sh
 rustup target add aarch64-apple-ios

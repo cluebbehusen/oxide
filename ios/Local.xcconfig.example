@@ -1,3 +1,7 @@
 // Copy to Local.xcconfig, which git ignores, and set your Apple team ID:
 // the 10-character code under Xcode > Settings > Accounts.
 DEVELOPMENT_TEAM = XXXXXXXXXX
+
+// Signing with your own team? Give the app a bundle ID you control, in
+// your own reverse-DNS namespace; dev.luebbehusen.oxide is the maintainer's.
+// PRODUCT_BUNDLE_IDENTIFIER = com.example.oxide
