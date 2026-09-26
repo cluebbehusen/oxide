@@ -105,11 +105,13 @@ up to 12,000 ticks each, covering an open duel, team play, and constrained
 terrain. It seats Standard/Balanced bots with personality seed zero and checks
 state validity and serialization, including the initial and final states. It
 stops after validating a terminal result without requiring a winner, activity
-quotas, or a historical command stream. The exhaustive all-map sweep is ignored
-by default and uses the same checks, extending large, vast, and grand maps to
-24,000 ticks. Cheap map gates and small rule-hash fixtures retain their scope.
-The opening image and renderer showcase cover drawing without depending on an
-autonomous midgame.
+quotas, or a historical command stream. With `OXIDE_SOAK_TRACE_DIR` set, each
+run also writes a state hash every 20 ticks and its replay into that directory;
+CI compares those hash files across operating systems without a checked-in
+golden. The exhaustive all-map sweep is ignored by default and uses the same
+checks, extending large, vast, and grand maps to 24,000 ticks. Cheap map gates
+and small rule-hash fixtures retain their scope. The opening image and renderer
+showcase cover drawing without depending on an autonomous midgame.
 
 Run the exhaustive sweep explicitly:
 
