@@ -245,6 +245,17 @@ fn mode_ribbon_geometry(
     (ribbon, cancel)
 }
 
+/// The armed-mode ribbon's text. Once a touch ghost is down, Build
+/// says how to finish, since the hand covers the ghost.
+fn ribbon_label(mode: crate::input::ArmedMode, ghost_down: bool, touch_only: bool) -> String {
+    match mode {
+        crate::input::ArmedMode::Build(_) if ghost_down && touch_only => {
+            format!("MODE  |  {} | TAP IT TO BUILD", mode.label())
+        }
+        _ => format!("MODE  |  {}", mode.label()),
+    }
+}
+
 /// Whether the human commands anything in the current selection.
 fn owns_selection(game: &crate::game::Scene<'_>) -> bool {
     let human = game.presentation.human;
@@ -278,7 +289,13 @@ fn draw_ribbon_row(
     }
     let s = ui_scale();
     let viewport = vec2(screen_width(), screen_height());
-    let label = mode.map(|mode| format!("MODE  |  {}", mode.label()));
+    let label = mode.map(|mode| {
+        ribbon_label(
+            mode,
+            input.ghost_anchor().is_some(),
+            crate::platform::TOUCH_ONLY,
+        )
+    });
     let size = 15.0 * s;
     let width = label.as_deref().map_or(0.0, |label| {
         measure_text(label, None, size as u16, 1.0).width
@@ -661,6 +678,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_dropped_ghost_teaches_its_confirm_on_touch() {
+        let build = crate::input::ArmedMode::Build(oxide_sim::BuildingKind::Turret);
+        assert_eq!(ribbon_label(build, false, true), "MODE  |  BUILD Turret");
+        assert_eq!(
+            ribbon_label(build, true, true),
+            "MODE  |  BUILD Turret | TAP IT TO BUILD"
+        );
+        assert_eq!(ribbon_label(build, true, false), "MODE  |  BUILD Turret");
+        crate::platform::assert_touch_copy(&ribbon_label(build, true, true));
     }
 
     #[test]

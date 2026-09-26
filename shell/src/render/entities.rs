@@ -16,10 +16,9 @@ pub(crate) fn draw_placement_ghost(
     sprites: &Sprites,
     input: &InputState,
 ) {
-    let Some(kind) = input.placing else { return };
-    let world = game.presentation.camera.to_world(input.mouse);
-    let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    let anchor = crate::input::placement_anchor(game, kind, clicked);
+    let Some((kind, anchor)) = crate::input::placement_preview_anchor(game, input) else {
+        return;
+    };
     let zoom = game.presentation.camera.zoom;
     let (w, h) = kind.base_stats().size;
     let queue = input.placing_stroke.is_some() || input.queue_held();
@@ -2112,10 +2111,7 @@ fn visit_active_building_ranges(
             &mut visit,
         );
     }
-    if let Some(kind) = input.placing {
-        let world = game.presentation.camera.to_world(input.mouse);
-        let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-        let anchor = crate::input::placement_anchor(game, kind, clicked);
+    if let Some((kind, anchor)) = crate::input::placement_preview_anchor(game, input) {
         visit_building_ranges(vec2(anchor.x as f32, anchor.y as f32), kind, 0, visit);
     }
 }

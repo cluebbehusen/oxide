@@ -2052,8 +2052,8 @@ fn touch_taps_select_and_a_still_hold_orders() {
     assert_eq!(game.pending.len(), staged, "a long-press fires once");
 }
 
-#[test]
-fn an_armed_build_completes_on_a_tap() {
+/// A game with one own harvester selected and `kind` armed for placement.
+fn armed_placement(kind: oxide_sim::BuildingKind) -> (Game, InputState, oxide_sim::UnitId) {
     let mut game = headless_game();
     let mut input = InputState::new();
     let harvester = game
@@ -2064,31 +2064,222 @@ fn an_armed_build_completes_on_a_tap() {
         .unwrap()
         .id;
     game.presentation.selection.units = vec![harvester];
+    input.placing = Some(kind);
+    input.build_menu = true;
+    (game, input, harvester)
+}
+
+fn staged_anchors(game: &Game) -> Vec<TilePos> {
+    game.pending
+        .iter()
+        .filter_map(|c| match c.command {
+            Command::Build { anchor, .. } => Some(anchor),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_touch_placement_drops_a_ghost_then_builds_where_it_is_drawn() {
+    let kind = oxide_sim::BuildingKind::Turret;
+    let (mut game, mut input, harvester) = armed_placement(kind);
+    let foundry = game.state.buildings()[0].anchor;
+    let open = vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5);
+    tap_world(&mut game, &mut input, open);
+    assert!(
+        staged_anchors(&game).is_empty(),
+        "the first tap only drops a ghost"
+    );
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    let (w, h) = kind.base_stats().size;
+    let center = vec2(
+        ghost.x as f32 + w as f32 * 0.5,
+        ghost.y as f32 + h as f32 * 0.5,
+    );
+    assert!(
+        center.distance(open) <= 0.75,
+        "the ghost centers under the finger"
+    );
+
+    // A confirming tap anywhere on the ghost builds where it is drawn,
+    // never where the fingertip happened to land.
+    let corner = vec2(
+        ghost.x as f32 + w as f32 - 0.1,
+        ghost.y as f32 + h as f32 - 0.1,
+    );
+    tap_world(&mut game, &mut input, corner);
+    assert_eq!(staged_anchors(&game), vec![ghost]);
+    assert!(input.placing.is_none(), "a plain confirm disarms");
+    assert!(input.ghost_anchor().is_none());
+    assert_eq!(game.presentation.selection.units, vec![harvester]);
+}
+
+#[test]
+fn dragging_the_ghost_moves_it_by_whole_tiles_without_panning() {
+    let kind = oxide_sim::BuildingKind::Turret;
+    let (mut game, mut input, _) = armed_placement(kind);
+    let foundry = game.state.buildings()[0].anchor;
+    tap_world(
+        &mut game,
+        &mut input,
+        vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5),
+    );
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    let grab = game
+        .presentation
+        .camera
+        .to_screen(vec2(ghost.x as f32 + 0.5, ghost.y as f32 + 0.5));
+    let camera = game.presentation.camera.center;
+    let zoom = game.presentation.camera.zoom;
+    input.now += 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, grab)]);
+    for step in 1..=6 {
+        let p = grab + vec2(step as f32 * 0.5 * zoom, zoom);
+        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
+    }
+    input.now += 2.0;
+    update_touch(&mut game, &mut input);
+    let dropped = grab + vec2(3.0 * zoom, zoom);
+    apply_events(&mut game, &mut input, &[touch_up(1, dropped)]);
+    assert_eq!(input.ghost_anchor(), Some(ghost.offset(3, 1)));
+    assert_eq!(
+        game.presentation.camera.center, camera,
+        "a ghost drag never pans"
+    );
+    assert!(game.pending.is_empty(), "dropping the ghost builds nothing");
+}
+
+#[test]
+fn a_refused_confirm_keeps_the_ghost_and_the_mode() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].center();
+    let on_foundry = vec2(foundry.x.to_num::<f32>(), foundry.y.to_num::<f32>());
+    tap_world(&mut game, &mut input, on_foundry);
+    let ghost = input.ghost_anchor().expect("a ghost is down");
+    tap_world(&mut game, &mut input, on_foundry);
+    assert!(staged_anchors(&game).is_empty());
+    assert_eq!(input.ghost_anchor(), Some(ghost));
+    assert!(
+        game.presentation
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("can't build there")),
+        "the refusal says why"
+    );
+}
+
+#[test]
+fn queue_keeps_placement_armed_after_a_confirm() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    input.queue_toggle = true;
+    let foundry = game.state.buildings()[0].anchor;
+    let open = vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5);
+    tap_world(&mut game, &mut input, open);
+    tap_world(&mut game, &mut input, open);
+    assert_eq!(staged_anchors(&game).len(), 1);
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Build { queue: true, .. }))
+    );
+    assert_eq!(
+        input.placing,
+        Some(oxide_sim::BuildingKind::Turret),
+        "still armed"
+    );
+    assert!(
+        input.ghost_anchor().is_none(),
+        "the next tap drops a fresh ghost"
+    );
+}
+
+#[test]
+fn leaving_placement_leaves_no_ghost() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].anchor;
+    let open = vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5);
+    tap_world(&mut game, &mut input, open);
+    dispatch_action(&mut game, &mut input, Action::Back);
+    assert!(
+        input.placing.is_none() && input.touch_ghost.is_none(),
+        "Back"
+    );
     input.placing = Some(oxide_sim::BuildingKind::Turret);
+    tap_world(&mut game, &mut input, open);
+    assert!(input.cancel_armed_mode());
+    assert!(input.touch_ghost.is_none(), "CANCEL");
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    tap_world(&mut game, &mut input, open);
+    input.placing = Some(oxide_sim::BuildingKind::Bastion);
+    input.disarm_click_verbs();
+    assert!(input.touch_ghost.is_none(), "switching kinds");
+}
+
+#[test]
+fn a_long_press_while_placing_charges_nothing_and_orders_nothing() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].anchor;
+    let ground = game
+        .presentation
+        .camera
+        .to_screen(vec2(foundry.x as f32 + 4.5, foundry.y as f32 + 2.5));
+    input.now = 3.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, ground)]);
+    input.now = 3.25;
+    assert_eq!(long_press_progress(&input), None, "no ring while placing");
+    input.now = 4.0;
+    update_touch(&mut game, &mut input);
+    assert!(game.pending.is_empty(), "no context order");
+    apply_events(&mut game, &mut input, &[touch_up(1, ground)]);
+    assert!(
+        input.ghost_anchor().is_some(),
+        "the long rest still dropped a ghost"
+    );
+}
+
+#[test]
+fn an_extractor_ghost_snaps_to_its_frame() {
+    let frame = TilePos::new(7, 4);
+    let mut game = extractor_input_game();
+    let mut input = InputState::new();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player == game.presentation.human)
+        .expect("fixture worker")
+        .id;
+    game.presentation.selection.units = vec![worker];
+    input.placing = Some(oxide_sim::BuildingKind::Extractor);
+    tap_world(&mut game, &mut input, vec2(8.5, 5.5));
+    assert_eq!(input.ghost_anchor(), Some(frame));
+    tap_world(&mut game, &mut input, vec2(7.5, 4.5));
+    assert_eq!(staged_anchors(&game), vec![frame]);
+}
+
+#[test]
+fn a_touch_device_never_previews_placement_at_a_stale_mouse_point() {
+    let (mut game, mut input, _) = armed_placement(oxide_sim::BuildingKind::Turret);
+    input.mouse = vec2(400.0, 300.0);
+    assert!(
+        placement_preview_anchor(&game.view(), &input).is_some(),
+        "the mouse previews"
+    );
     let foundry = game.state.buildings()[0].anchor;
     let open = game
         .presentation
         .camera
         .to_screen(vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5));
-    input.now = 5.0;
+    input.now += 1.0;
     apply_events(&mut game, &mut input, &[touch_down(1, open)]);
-    input.now = 5.1;
+    assert!(
+        placement_preview_anchor(&game.view(), &input).is_none(),
+        "no ghost yet"
+    );
     apply_events(&mut game, &mut input, &[touch_up(1, open)]);
-    assert!(
-        game.pending
-            .iter()
-            .any(|c| matches!(c.command, Command::Build { .. })),
-        "the tap after an armed card places the site, not a select: {:?}",
-        game.pending
-    );
-    assert!(
-        input.placing.is_none(),
-        "an unmodified tap disarms like a plain click"
-    );
     assert_eq!(
-        game.presentation.selection.units,
-        vec![harvester],
-        "the armed tap never re-selected under the fingertip"
+        placement_preview_anchor(&game.view(), &input).map(|(_, anchor)| anchor),
+        input.ghost_anchor()
     );
 }
 
@@ -4707,12 +4898,14 @@ fn the_tutorial_survives_its_own_touch_instructions() {
         card.action == crate::panel::CardAction::ArmBuild(oxide_sim::BuildingKind::Turret)
     });
     tap_world(&mut game, &mut input, vec2(10.5, 4.5));
+    assert!(game.pending.is_empty(), "open ground only drops the ghost");
+    tap_world(&mut game, &mut input, vec2(10.5, 4.5));
     assert!(
         game.pending.iter().any(|c| matches!(
             &c.command,
             Command::Build { kind, .. } if *kind == oxide_sim::BuildingKind::Turret
         )),
-        "Build, a building, and a ground tap staged the site: {:?}",
+        "Build, a building, open ground, and the ghost staged the site: {:?}",
         game.pending
     );
     game.do_tick();

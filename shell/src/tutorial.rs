@@ -80,8 +80,8 @@ pub const STEPS: [Step; 6] = [
         ],
         touch: &[
             "Select a second Harvester and leave the first one mining.",
-            "Tap Build, then a building, then open ground.",
-            "Red tint means you can't build there.",
+            "Tap Build, then a building, then open ground to place a ghost.",
+            "Tap the ghost to build it. Red tint means you can't build there.",
         ],
     },
     Step {

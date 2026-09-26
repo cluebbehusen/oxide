@@ -17,6 +17,9 @@ pub(crate) enum TouchBorn {
     Minimap,
     /// Any other HUD chrome.
     Chrome,
+    /// The touch placement's ghost: dragging moves it, a still lift
+    /// builds it.
+    Ghost,
 }
 
 /// One live finger on the screen.
@@ -132,12 +135,14 @@ pub(crate) fn touch_box(input: &InputState) -> Option<(Vec2, Vec2, bool)> {
     }
 }
 
-/// The lone finger that may charge a battlefield long-press.
+/// The lone finger that may charge a battlefield long-press. Placement
+/// claims every world press for its ghost, so nothing charges then.
 fn world_hold(input: &InputState) -> Option<TouchPoint> {
     let [(_, finger)] = input.touches.as_slice() else {
         return None;
     };
-    (finger.born == TouchBorn::World && finger.still()).then_some(*finger)
+    (finger.born == TouchBorn::World && finger.still() && input.placing.is_none())
+        .then_some(*finger)
 }
 
 /// Whether an armed mode takes a minimap tap as its target (a rally
@@ -155,11 +160,13 @@ fn steer_minimap(game: &mut Game, p: Vec2) {
 }
 
 /// Where a finger landing at `p` was born.
-fn born_at(game: &Game, p: Vec2) -> TouchBorn {
+fn born_at(game: &Game, input: &InputState, p: Vec2) -> TouchBorn {
     if crate::render::minimap_world_at(&game.view(), p).is_some() {
         TouchBorn::Minimap
     } else if click_on_hud(game, p) {
         TouchBorn::Chrome
+    } else if super::ghost_touch_rect(&game.view(), input).is_some_and(|rect| rect.contains(p)) {
+        TouchBorn::Ghost
     } else {
         TouchBorn::World
     }
@@ -195,7 +202,10 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     // A genuine landing reuses no memory, even if the platform reused
     // the id of a finger lifted earlier.
     input.lifted_pair.retain(|lifted| lifted.id != id);
-    let born = born_at(game, p);
+    let born = born_at(game, input, p);
+    if born == TouchBorn::Ghost {
+        super::grab_ghost(&game.view(), input, p);
+    }
     input.touches.push((
         id,
         TouchPoint {
@@ -297,6 +307,12 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         }
         return;
     }
+    if born == TouchBorn::Ghost {
+        if input.touches.len() == 1 && input.touches[0].1.moved {
+            super::drag_ghost(&game.view(), input, p);
+        }
+        return;
+    }
     match input.touches.len() {
         // One moved finger drags the world under the hand —
         // unless it landed on chrome, whose ground it keeps.
@@ -375,6 +391,15 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         }
         0 => {
             input.pair = None;
+            if lifted.born == TouchBorn::Ghost {
+                // A still lift on the ghost builds it; a drag already
+                // moved it and leaves it there.
+                if lifted.still() {
+                    super::confirm_ghost(game, input);
+                }
+                input.last_tap = None;
+                return;
+            }
             if lifted.still() {
                 // A short still touch is a tap: select. Two
                 // taps inside the window sweep the kind,
@@ -390,10 +415,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 // A tap is an atomic click — no drag can
                 // follow, so the stroke closes here and
                 // Shift decides the mode, like MouseUp.
-                if armed_click(game, input, p) {
-                    if input.placing_stroke.take().is_some() && !input.queue_held() {
-                        input.placing = None;
-                    }
+                if armed_click(game, input, p, super::Pointer::Touch) {
                     input.last_tap = None;
                     return;
                 }

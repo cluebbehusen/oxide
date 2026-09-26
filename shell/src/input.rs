@@ -104,6 +104,42 @@ impl ArmedMode {
     }
 }
 
+/// Where the placement preview sits: the touch ghost when one is down,
+/// otherwise under the mouse, but only while the mouse is the pointer in
+/// use (a stale mouse point on a touch device would draw a stray ghost).
+pub(crate) fn placement_preview_anchor(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+) -> Option<(oxide_sim::BuildingKind, TilePos)> {
+    let kind = input.placing?;
+    if let Some(anchor) = input.ghost_anchor() {
+        return Some((kind, anchor));
+    }
+    (input.last_pointer == Pointer::Mouse).then(|| {
+        let world = game.presentation.camera.to_world(input.mouse);
+        let hovered = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        (kind, placement_anchor(game, kind, hovered))
+    })
+}
+
+/// Which pointer produced a press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pointer {
+    Mouse,
+    Touch,
+}
+
+/// Where a touch placement's ghost sits until a tap on it confirms.
+/// Touch has no hover, so the ghost stands in for the mouse's preview:
+/// dropped where the finger lands, dragged into place, and built only
+/// where it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlacementGhost {
+    pub(crate) anchor: TilePos,
+    /// While a finger drags it: the anchor and the world point at grab.
+    grab: Option<(TilePos, Vec2)>,
+}
+
 /// Cross-frame input state (cursor, held keys, drag origin).
 pub struct InputState {
     /// Last known cursor position, window pixels.
@@ -131,6 +167,11 @@ pub struct InputState {
     /// The live drag-to-place stroke, while the button stays down.
     /// `None` when no stroke is live.
     pub(crate) placing_stroke: Option<PlacingStroke>,
+    /// The touch placement's ghost, once a tap has dropped one.
+    pub(crate) touch_ghost: Option<PlacementGhost>,
+    /// The pointer that pressed last: the mouse's hover preview only
+    /// means something while the mouse is the one in use.
+    pub(crate) last_pointer: Pointer,
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
@@ -373,6 +414,12 @@ impl InputState {
             patrol_route: None,
             placing: None,
             placing_stroke: None,
+            touch_ghost: None,
+            last_pointer: if crate::platform::TOUCH_ONLY {
+                Pointer::Touch
+            } else {
+                Pointer::Mouse
+            },
             salvaging: false,
             repairing: false,
             running: false,
@@ -458,13 +505,25 @@ impl InputState {
     /// promised — press M while placing and the click would still stamp
     /// a building.
     pub(crate) fn disarm_click_verbs(&mut self) {
-        self.placing = None;
-        self.placing_stroke = None;
+        self.stop_placing();
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
         self.attacking = false;
         self.rallying.clear();
+    }
+
+    /// Drops placement: the armed kind, its stroke, and its ghost. The
+    /// one way placement ends, so no ghost outlives its mode.
+    pub(crate) fn stop_placing(&mut self) {
+        self.placing = None;
+        self.placing_stroke = None;
+        self.touch_ghost = None;
+    }
+
+    /// The touch ghost's anchor, while placement is armed.
+    pub(crate) fn ghost_anchor(&self) -> Option<TilePos> {
+        self.placing.and(self.touch_ghost).map(|ghost| ghost.anchor)
     }
 
     /// Current persistent mode, in the same priority order the world
@@ -498,8 +557,7 @@ impl InputState {
         self.minimap_drag = false;
         self.mmb_anchor = None;
         self.patrol_route = None;
-        self.placing = None;
-        self.placing_stroke = None;
+        self.stop_placing();
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
@@ -939,6 +997,13 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
 pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
     for event in events {
         match *event {
+            RawEvent::MouseDown { .. } | RawEvent::MouseMove { .. } => {
+                input.last_pointer = Pointer::Mouse;
+            }
+            RawEvent::TouchDown { .. } => input.last_pointer = Pointer::Touch,
+            _ => {}
+        }
+        match *event {
             RawEvent::MouseMove { x, y } => {
                 input.mouse = vec2(x, y);
                 // A held minimap press keeps steering: clamp the cursor
@@ -1025,7 +1090,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                if armed_click(game, input, vec2(x, y)) {
+                if armed_click(game, input, vec2(x, y), Pointer::Mouse) {
                     continue;
                 }
                 // Panel cards are buttons: each carries the exact action
@@ -1076,7 +1141,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // whether the MODE stays armed, exactly as the old
                 // one-click-per-wall rule did.
                 if input.placing_stroke.take().is_some() && !input.queue_held() {
-                    input.placing = None;
+                    input.stop_placing();
                 }
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
@@ -1223,7 +1288,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
-fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
+fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
     let cancel = game.presentation.layout.get().mode_cancel;
     if cancel.w > 0.0 && crate::layout::touch_pad(cancel, input.ui).contains(p) {
         if input.cancel_armed_mode() {
@@ -1268,91 +1333,196 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
             let world = game.presentation.camera.to_world(p);
+            if pointer == Pointer::Touch {
+                // A tap never builds on its own: it drops the ghost (or
+                // moves it here), and only a tap on the ghost confirms.
+                input.touch_ghost = Some(PlacementGhost {
+                    anchor: ghost_anchor_under(&game.view(), kind, world),
+                    grab: None,
+                });
+                return true;
+            }
             let clicked = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
             let anchor = placement_anchor(&game.view(), kind, clicked);
-            let queue = input.queue_held();
-            let projection = pending_build_projection(&game.view(), kind, anchor, queue);
-            // The ghost already showed red; a misclick must not throw
-            // away the armed mode on top of it. The toast names the
-            // actual blocker — "needs open ground" while your own
-            // harvester stands on the tile taught nobody anything.
-            // Explored-but-unseen ground is judged by the same intent
-            // predicate the ghost tints from — memory, never live
-            // state — so Fog here means genuinely unscouted.
-            if let Some(refusal) = projection.refusal {
-                use oxide_sim::PlaceRefusal;
-                game.presentation.toast(match refusal {
-                    PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
-                    PlaceRefusal::Terrain => "can't build there: impassable ground",
-                    PlaceRefusal::Building => "can't build there: something already stands there",
-                    PlaceRefusal::Unit => {
-                        "can't build there: an enemy machine is holding that ground"
-                    }
-                    PlaceRefusal::NotConstructible => "that can't be built",
-                    PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
-                    PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
-                    PlaceRefusal::FrameBlocked => {
-                        "can't build there: that ground belongs to a derelict frame"
-                    }
+            if place_at(game, input, kind, anchor) {
+                // The stroke opens: dragging stamps more of the same
+                // kind, queued. Whether the MODE survives the release
+                // is still Shift's call, decided at MouseUp.
+                input.placing_stroke = Some(PlacingStroke {
+                    anchors: vec![anchor],
                 });
-                game.presentation
-                    .sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
             }
-            // Judge the opening stamp after the exact pending command
-            // phase, with future prices held for surviving deferred
-            // claims. A broke click gets the honest toast, not an
-            // acknowledgment ping followed by a sim rejection.
-            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-            if projection.funds.available() < cost {
-                game.presentation.toast(format!(
-                    "not enough scrap for a {}",
-                    crate::typography::entity_name(kind.name())
-                ));
-                game.presentation
-                    .sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
-            }
-            // The opening stamp must also FIT the builder's program: a
-            // Shift click onto a crew already at the order-queue cap
-            // would ping and then die in the sim as QueueFull. Same
-            // honest refusal as the broke click, mode stays armed.
-            if !projection.queue_has_room {
-                game.presentation
-                    .toast("that builder's order queue is full");
-                game.presentation
-                    .sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
-            }
-            let units = game.presentation.selection.units.clone();
-            // Shift both keeps placing AND queues the build behind the
-            // builder's current program — chained construction in one
-            // gesture.
-            game.issue(Command::Build {
-                units,
-                kind,
-                anchor,
-                queue,
-                // Remembered ground defers the claim: the crew walks
-                // out and founds on arrival, paying then. Same click,
-                // two claim timings — the amber ghost already said
-                // which this stamp is.
-                defer: build_defer_needed(&game.view(), kind, anchor),
-            });
-            game.presentation
-                .ping(placement_ping(kind, anchor), PingKind::Rally);
-            // The stroke opens: dragging stamps more of the same kind,
-            // queued. Whether the MODE survives the release is still
-            // Shift's call, decided at MouseUp.
-            input.placing_stroke = Some(PlacingStroke {
-                anchors: vec![anchor],
-            });
         }
         return true;
     }
+    armed_verb_click(game, input, p)
+}
+
+/// The anchor that centers `kind`'s footprint on a finger at `world`,
+/// so the building lands under the finger rather than down and right of
+/// it. An Extractor snaps to the frame under the finger instead.
+fn ghost_anchor_under(
+    game: &crate::game::Scene<'_>,
+    kind: oxide_sim::BuildingKind,
+    world: Vec2,
+) -> TilePos {
+    if kind == oxide_sim::BuildingKind::Extractor {
+        let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+        return placement_anchor(game, kind, tile);
+    }
+    let (w, h) = kind.base_stats().size;
+    TilePos::new(
+        (world.x - w as f32 * 0.5).round() as i32,
+        (world.y - h as f32 * 0.5).round() as i32,
+    )
+}
+
+/// The ghost's footprint on screen, padded to a fingertip.
+pub(crate) fn ghost_touch_rect(
+    game: &crate::game::Scene<'_>,
+    input: &InputState,
+) -> Option<macroquad::math::Rect> {
+    let (kind, anchor) = (input.placing?, input.ghost_anchor()?);
+    let (w, h) = kind.base_stats().size;
+    let zoom = game.presentation.camera.zoom;
+    let corner = game
+        .presentation
+        .camera
+        .to_screen(vec2(anchor.x as f32, anchor.y as f32));
+    let rect = macroquad::math::Rect::new(corner.x, corner.y, w as f32 * zoom, h as f32 * zoom);
+    Some(crate::layout::touch_pad(rect, input.ui))
+}
+
+/// A finger landed on the ghost: it grabs it where it is.
+pub(crate) fn grab_ghost(game: &crate::game::Scene<'_>, input: &mut InputState, p: Vec2) {
+    let world = game.presentation.camera.to_world(p);
+    if let Some(ghost) = &mut input.touch_ghost {
+        ghost.grab = Some((ghost.anchor, world));
+    }
+}
+
+/// A grabbing finger moved: the ghost follows by whole tiles, keeping
+/// the offset where the finger took hold.
+pub(crate) fn drag_ghost(game: &crate::game::Scene<'_>, input: &mut InputState, p: Vec2) {
+    let Some(kind) = input.placing else {
+        return;
+    };
+    let world = game.presentation.camera.to_world(p);
+    if let Some(ghost) = &mut input.touch_ghost
+        && let Some((anchor, grabbed)) = ghost.grab
+    {
+        let shift = world - grabbed;
+        let moved = TilePos::new(
+            anchor.x + shift.x.round() as i32,
+            anchor.y + shift.y.round() as i32,
+        );
+        ghost.anchor = placement_anchor(game, kind, moved);
+    }
+}
+
+/// A still tap on the ghost: build exactly where it is drawn, judged
+/// afresh, since scrap, fog, and the selection may have changed since
+/// it was dropped. A refusal keeps the ghost; a success clears it and
+/// disarms, unless QUEUE keeps placement armed for the next one.
+pub(crate) fn confirm_ghost(game: &mut Game, input: &mut InputState) {
+    let (Some(kind), Some(anchor)) = (input.placing, input.ghost_anchor()) else {
+        return;
+    };
+    if place_at(game, input, kind, anchor) {
+        input.touch_ghost = None;
+        if !input.queue_held() {
+            input.stop_placing();
+        }
+    }
+}
+
+/// Stages `kind` at `anchor` for the selected builders, or says why
+/// not. Refusals toast and keep placement armed. Returns whether it
+/// placed.
+fn place_at(
+    game: &mut Game,
+    input: &InputState,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+) -> bool {
+    let queue = input.queue_held();
+    let projection = pending_build_projection(&game.view(), kind, anchor, queue);
+    // The ghost already showed red; a misclick must not throw
+    // away the armed mode on top of it. The toast names the
+    // actual blocker — "needs open ground" while your own
+    // harvester stands on the tile taught nobody anything.
+    // Explored-but-unseen ground is judged by the same intent
+    // predicate the ghost tints from — memory, never live
+    // state — so Fog here means genuinely unscouted.
+    if let Some(refusal) = projection.refusal {
+        use oxide_sim::PlaceRefusal;
+        game.presentation.toast(match refusal {
+            PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
+            PlaceRefusal::Terrain => "can't build there: impassable ground",
+            PlaceRefusal::Building => "can't build there: something already stands there",
+            PlaceRefusal::Unit => "can't build there: an enemy machine is holding that ground",
+            PlaceRefusal::NotConstructible => "that can't be built",
+            PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
+            PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
+            PlaceRefusal::FrameBlocked => {
+                "can't build there: that ground belongs to a derelict frame"
+            }
+        });
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Denied, None));
+        return false;
+    }
+    // Judge the opening stamp after the exact pending command
+    // phase, with future prices held for surviving deferred
+    // claims. A broke click gets the honest toast, not an
+    // acknowledgment ping followed by a sim rejection.
+    let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+    if projection.funds.available() < cost {
+        game.presentation.toast(format!(
+            "not enough scrap for a {}",
+            crate::typography::entity_name(kind.name())
+        ));
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Denied, None));
+        return false;
+    }
+    // The opening stamp must also FIT the builder's program: a
+    // Shift click onto a crew already at the order-queue cap
+    // would ping and then die in the sim as QueueFull. Same
+    // honest refusal as the broke click, mode stays armed.
+    if !projection.queue_has_room {
+        game.presentation
+            .toast("that builder's order queue is full");
+        game.presentation
+            .sounds_pending
+            .push((crate::game::SoundKind::Denied, None));
+        return false;
+    }
+    let units = game.presentation.selection.units.clone();
+    // A held queue (Shift, or QUEUE on touch) both keeps placing AND
+    // queues the build behind the builder's current program — chained
+    // construction in one gesture.
+    game.issue(Command::Build {
+        units,
+        kind,
+        anchor,
+        queue,
+        // Remembered ground defers the claim: the crew walks
+        // out and founds on arrival, paying then. Same click,
+        // two claim timings — the amber ghost already said
+        // which this stamp is.
+        defer: build_defer_needed(&game.view(), kind, anchor),
+    });
+    game.presentation
+        .ping(placement_ping(kind, anchor), PingKind::Rally);
+    true
+}
+
+/// The armed left-click verbs after placement: salvage, weld, run, and
+/// attack-move.
+fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     if input.salvaging {
         // The same manners placement keeps: minimap jumps the camera,
         // a misclick keeps the mode armed, and Shift chains teardowns

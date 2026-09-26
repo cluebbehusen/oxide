@@ -139,7 +139,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             });
             if has_builder {
                 input.build_menu = true;
-                input.placing = None;
+                input.stop_placing();
             } else {
                 // No builder in hand — the key still means "I want to
                 // build": grab the nearest own harvester (idle ones
@@ -167,7 +167,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     game.presentation.selection.units = vec![id];
                     game.presentation.selection.buildings.clear();
                     input.build_menu = true;
-                    input.placing = None;
+                    input.stop_placing();
                 } else {
                     game.presentation.toast("no harvester to build with");
                 }
@@ -201,8 +201,8 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         Action::ToggleOverlay => game.presentation.overlay = !game.presentation.overlay,
         Action::Back => {
             // Arming something? Escape abandons that first.
-            if input.placing.take().is_some() {
-                input.placing_stroke = None;
+            if input.placing.is_some() {
+                input.stop_placing();
                 input.build_menu = true;
                 game.presentation.toast("placement cancelled");
                 return;
