@@ -3318,6 +3318,69 @@ fn a_ground_tap_with_the_palette_open_only_closes_it() {
 }
 
 #[test]
+fn a_resting_finger_reads_the_pile_under_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let pile = game.presentation.camera.to_screen(vec2(7.5, 2.5));
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, pile)]);
+    assert_eq!(readout_point(&input), None, "a fresh touch may be a tap");
+    input.now = 1.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
+    assert_eq!(readout_point(&input), Some((pile, true)));
+    let text = crate::render::pile_readout(&game.view(), pile).expect("the home pile holds scrap");
+    let tile = TilePos::new(7, 2);
+    assert_eq!(text, format!("scrap {}", game.state.map().scrap_at(tile)));
+
+    // It keeps reading after the long-press fires...
+    input.now = 3.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(
+        readout_point(&input),
+        Some((pile, true)),
+        "fired, still resting"
+    );
+    apply_events(&mut game, &mut input, &[touch_up(1, pile)]);
+
+    // ...but a drag, or a finger that outlived its pair, reads nothing.
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, pile)]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_move(2, pile - vec2(60.0, 0.0))],
+    );
+    input.now = 11.0;
+    assert_eq!(readout_point(&input), None, "a drag");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_up(2, pile - vec2(60.0, 0.0))],
+    );
+
+    input.now = 20.0;
+    let other = pile + vec2(200.0, 100.0);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[touch_down(3, pile), touch_down(4, other)],
+    );
+    apply_events(&mut game, &mut input, &[touch_up(4, other)]);
+    input.now = 21.0;
+    assert_eq!(readout_point(&input), None, "a pair survivor");
+    apply_events(&mut game, &mut input, &[touch_up(3, pile)]);
+}
+
+#[test]
+fn a_touch_device_never_reads_at_a_stale_mouse_point() {
+    let mut input = InputState::new();
+    input.mouse = vec2(400.0, 300.0);
+    input.last_pointer = Pointer::Mouse;
+    assert_eq!(readout_point(&input), Some((vec2(400.0, 300.0), false)));
+    input.last_pointer = Pointer::Touch;
+    assert_eq!(readout_point(&input), None);
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.

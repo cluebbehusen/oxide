@@ -54,18 +54,18 @@ fn draw_menu_button(rect: Rect, s: f32) {
     }
 }
 
-/// Hovered salvage says what it holds: live amounts on visible ground,
+/// What the salvage at `screen` holds: live amounts on visible ground,
 /// remembered amounts under the dim — the same memory rule as every
-/// renderer, so the tooltip can't leak what fog took back.
-pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputState) {
-    if game.presentation.layout.get().chrome_owns(input.mouse) {
-        return;
+/// renderer, so the readout can't leak what fog took back.
+pub(crate) fn pile_readout(game: &crate::game::Scene<'_>, screen: Vec2) -> Option<String> {
+    if game.presentation.layout.get().chrome_owns(screen) {
+        return None;
     }
-    let world = game.presentation.camera.to_world(input.mouse);
+    let world = game.presentation.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let vision = game.my_vision();
     if !vision.explored(tile) && !game.presentation.all_seeing() {
-        return;
+        return None;
     }
     let (scrap, wreck) = if vision.visible(tile) || game.presentation.all_seeing() {
         (
@@ -75,14 +75,30 @@ pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputS
     } else {
         (vision.remembered_scrap(tile), vision.remembered_wreck(tile))
     };
-    let text = match (scrap > 0, wreck > 0) {
-        (true, _) => format!("scrap {scrap}"),
-        (_, true) => format!("wreck {wreck}"),
-        _ => return,
+    match (scrap > 0, wreck > 0) {
+        (true, _) => Some(format!("scrap {scrap}")),
+        (_, true) => Some(format!("wreck {wreck}")),
+        _ => None,
+    }
+}
+
+/// Salvage says what it holds: beside the cursor, or above a resting
+/// finger, clear of its long-press ring and the hand beneath it.
+pub(crate) fn draw_salvage_tooltip(game: &crate::game::Scene<'_>, input: &InputState) {
+    let Some((point, finger)) = crate::input::readout_point(input) else {
+        return;
+    };
+    let Some(text) = pile_readout(game, point) else {
+        return;
     };
     let s = ui_scale();
     let dims = measure_text(&text, None, (16.0 * s) as u16, 1.0);
-    let (x, y) = (input.mouse.x + 14.0 * s, input.mouse.y - 10.0 * s);
+    let (x, y) = if finger {
+        let top = crate::layout::TOP_BAR_H * s + 24.0 * s;
+        (point.x - dims.width * 0.5, (point.y - 48.0 * s).max(top))
+    } else {
+        (point.x + 14.0 * s, point.y - 10.0 * s)
+    };
     draw_rectangle(
         x - 4.0 * s,
         y - 14.0 * s,

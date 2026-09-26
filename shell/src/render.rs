@@ -76,6 +76,8 @@ mod pits;
 pub(crate) mod prim;
 mod support_brackets;
 mod world;
+#[cfg(test)]
+pub(crate) use chrome::pile_readout;
 use chrome::*;
 use entities::*;
 pub use minimap::*;
