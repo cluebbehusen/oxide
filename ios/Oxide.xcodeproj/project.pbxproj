@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0A1B00000000000000000011 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B00000000000000000021 /* assets */; };
 		0A1B00000000000000000012 /* scenarios in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B00000000000000000022 /* scenarios */; };
+		0A1B00000000000000000013 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B00000000000000000026 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -18,6 +19,7 @@
 		0A1B00000000000000000023 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Oxide/Info.plist; sourceTree = "<group>"; };
 		0A1B00000000000000000024 /* Oxide.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Oxide.xcconfig; sourceTree = "<group>"; };
 		0A1B00000000000000000025 /* build_rust.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = build_rust.sh; sourceTree = "<group>"; };
+		0A1B00000000000000000026 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Oxide/Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -27,6 +29,7 @@
 				0A1B00000000000000000024 /* Oxide.xcconfig */,
 				0A1B00000000000000000025 /* build_rust.sh */,
 				0A1B00000000000000000023 /* Info.plist */,
+				0A1B00000000000000000026 /* Assets.xcassets */,
 				0A1B00000000000000000021 /* assets */,
 				0A1B00000000000000000022 /* scenarios */,
 				0A1B00000000000000000031 /* Products */,
@@ -48,8 +51,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 0A1B00000000000000000061 /* Build configuration list for PBXNativeTarget "Oxide" */;
 			buildPhases = (
-				0A1B00000000000000000050 /* Build Rust */,
 				0A1B00000000000000000051 /* Resources */,
+				0A1B00000000000000000050 /* Build Rust */,
 			);
 			buildRules = (
 			);
@@ -98,6 +101,7 @@
 			files = (
 				0A1B00000000000000000011 /* assets in Resources */,
 				0A1B00000000000000000012 /* scenarios in Resources */,
+				0A1B00000000000000000013 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

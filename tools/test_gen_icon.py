@@ -1,5 +1,7 @@
 """Reproducibility and format contracts for the application icon."""
 
+import hashlib
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -17,6 +19,7 @@ class IconGenerationTests(unittest.TestCase):
         committed = Path(__file__).resolve().parent.parent / "assets" / "icon"
         expected_names = {
             "oxide_1024.png",
+            "oxide_desktop_1024.png",
             "oxide_256.png",
             "oxide_16.rgba",
             "oxide_32.rgba",
@@ -25,19 +28,34 @@ class IconGenerationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="oxide-icon-test-") as temp:
             output = Path(temp)
-            with patch.object(gen_icon, "OUT", output), redirect_stdout(StringIO()):
+            with (
+                patch.object(gen_icon, "OUT", output / "desktop"),
+                patch.object(gen_icon, "IOS_OUT", output / "ios"),
+                redirect_stdout(StringIO()),
+            ):
                 gen_icon.main()
 
             self.assertEqual(
-                {path.name for path in output.iterdir()},
+                {path.name for path in (output / "desktop").iterdir()},
                 expected_names,
                 "the generator must neither omit nor invent packaged icon files",
             )
-            for name in expected_names:
-                with self.subTest(name=name):
+            self.assertEqual(
+                {path.name for path in (output / "ios").iterdir()},
+                {"oxide_1024.png"},
+            )
+            expected_files = {
+                Path("desktop") / name: committed / name for name in expected_names
+            }
+            expected_files[Path("ios/oxide_1024.png")] = (
+                gen_icon.IOS_OUT / "oxide_1024.png"
+            )
+            for name, expected in expected_files.items():
+                with self.subTest(name=str(name)):
                     actual = output / name
-                    expected = committed / name
-                    if name.endswith(".png"):
+                    if name.suffix == ".png":
+                        # PNG compression can differ across platforms; the decoded
+                        # format and pixels are the reproducibility contract.
                         with (
                             Image.open(actual) as actual_image,
                             Image.open(expected) as expected_image,
@@ -56,15 +74,56 @@ class IconGenerationTests(unittest.TestCase):
                             f"{name} no longer reproduces from tools/gen_icon.py",
                         )
 
+    def test_ios_catalog_uses_the_approved_opaque_master(self) -> None:
+        catalog = json.loads((gen_icon.IOS_OUT / "Contents.json").read_text())
+        self.assertEqual(len(catalog["images"]), 1)
+        entry = catalog["images"][0]
+        self.assertEqual(entry["idiom"], "universal")
+        self.assertEqual(entry["platform"], "ios")
+        self.assertEqual(entry["size"], "1024x1024")
+        ios_icon = gen_icon.IOS_OUT / entry["filename"]
+        self.assertEqual(
+            ios_icon.read_bytes(), (gen_icon.OUT / "oxide_1024.png").read_bytes()
+        )
+        with Image.open(ios_icon) as image:
+            self.assertEqual(image.mode, "RGB")
+            self.assertEqual(image.size, (1024, 1024))
+            self.assertEqual(
+                hashlib.sha256(image.tobytes()).hexdigest(),
+                "a28bb9efbbd7d63bd633d9ac6d59d8c6124e42c71265a1d22813b1c4d987ad1f",
+                "the approved icon artwork must remain unchanged across exports",
+            )
+
+    def test_desktop_mask_only_removes_background(self) -> None:
+        with (
+            Image.open(gen_icon.OUT / "oxide_1024.png") as master,
+            Image.open(gen_icon.OUT / "oxide_desktop_1024.png") as desktop,
+        ):
+            self.assertEqual(desktop.mode, "RGBA")
+            self.assertEqual(desktop.size, master.size)
+            self.assertEqual(desktop.convert("RGB").tobytes(), master.tobytes())
+            removed_colors = {
+                rgb
+                for rgb, rgba in zip(
+                    master.get_flattened_data(), desktop.get_flattened_data()
+                )
+                if rgba[3] != 255
+            }
+            self.assertEqual(removed_colors, {(28, 28, 34)})
+
     def test_raw_window_icons_have_exact_rgba_dimensions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="oxide-icon-format-") as temp:
             output = Path(temp)
-            with patch.object(gen_icon, "OUT", output), redirect_stdout(StringIO()):
+            with (
+                patch.object(gen_icon, "OUT", output / "desktop"),
+                patch.object(gen_icon, "IOS_OUT", output / "ios"),
+                redirect_stdout(StringIO()),
+            ):
                 gen_icon.main()
 
             for size in (16, 32, 64):
                 with self.subTest(size=size):
-                    raw = (output / f"oxide_{size}.rgba").read_bytes()
+                    raw = (output / "desktop" / f"oxide_{size}.rgba").read_bytes()
                     self.assertEqual(len(raw), size * size * 4)
                     image = Image.frombytes("RGBA", (size, size), raw)
                     alpha = image.getchannel("A")
