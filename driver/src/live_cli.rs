@@ -11,6 +11,10 @@ use oxide_driver::client::Client;
 use oxide_protocol::{Key, RawEvent, Request, RequestEnvelope, StateFilter};
 use oxide_sim::{BuildingId, Command, PlayerId, Target, UnitId};
 
+/// The one finger injected touch gestures use; each gesture lifts it
+/// before the next begins.
+const INJECTED_FINGER: u64 = 1;
+
 #[derive(Subcommand)]
 pub(crate) enum LiveCmd {
     /// Tick, pause state, scenario, versions.
@@ -356,6 +360,25 @@ pub(crate) enum LiveCmd {
         /// "left", "right", or "middle".
         #[arg(long, default_value = "left")]
         button: String,
+    },
+    /// Inject a fingertip tap (touch down + up) at a window position.
+    InjectTap {
+        /// Window x.
+        x: f32,
+        /// Window y.
+        y: f32,
+    },
+    /// Drag one finger between two window positions over several frames.
+    InjectTouchDrag {
+        /// Start as "x,y" window coordinates.
+        #[arg(long)]
+        from: String,
+        /// End as "x,y" window coordinates.
+        #[arg(long)]
+        to: String,
+        /// Touch-move events between touch down and up (1-120).
+        #[arg(long, default_value_t = 6)]
+        steps: u32,
     },
     /// Capture the current frame to a PNG.
     Screenshot {
@@ -711,6 +734,59 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 },
             ]);
         }
+        LiveCmd::InjectTap { x, y } => {
+            // A tap is a pair, like a click; the lone down would read as a
+            // finger resting on the glass.
+            return Ok(vec![
+                Request::InjectEvent {
+                    event: RawEvent::TouchDown {
+                        id: INJECTED_FINGER,
+                        x,
+                        y,
+                    },
+                },
+                Request::InjectEvent {
+                    event: RawEvent::TouchUp {
+                        id: INJECTED_FINGER,
+                        x,
+                        y,
+                    },
+                },
+            ]);
+        }
+        LiveCmd::InjectTouchDrag { from, to, steps } => {
+            if !(1..=120).contains(&steps) {
+                bail!("drag steps must be within 1..=120");
+            }
+            let (from_x, from_y) = parse_point(&from)?;
+            let (to_x, to_y) = parse_point(&to)?;
+            let mut requests = Vec::with_capacity(steps as usize + 2);
+            requests.push(Request::InjectEvent {
+                event: RawEvent::TouchDown {
+                    id: INJECTED_FINGER,
+                    x: from_x,
+                    y: from_y,
+                },
+            });
+            for step in 1..=steps {
+                let t = step as f32 / steps as f32;
+                requests.push(Request::InjectEvent {
+                    event: RawEvent::TouchMove {
+                        id: INJECTED_FINGER,
+                        x: from_x + (to_x - from_x) * t,
+                        y: from_y + (to_y - from_y) * t,
+                    },
+                });
+            }
+            requests.push(Request::InjectEvent {
+                event: RawEvent::TouchUp {
+                    id: INJECTED_FINGER,
+                    x: to_x,
+                    y: to_y,
+                },
+            });
+            return Ok(requests);
+        }
         LiveCmd::InjectDrag {
             from,
             to,
@@ -978,6 +1054,55 @@ mod tests {
                     y: 50.0,
                 }
             }
+        );
+    }
+
+    #[test]
+    fn tap_and_touch_drag_expand_to_one_finger_gesture() {
+        let tap = live_requests(LiveCmd::InjectTap { x: 5.0, y: 6.0 }).unwrap();
+        assert_eq!(
+            tap,
+            vec![
+                Request::InjectEvent {
+                    event: RawEvent::TouchDown {
+                        id: INJECTED_FINGER,
+                        x: 5.0,
+                        y: 6.0,
+                    }
+                },
+                Request::InjectEvent {
+                    event: RawEvent::TouchUp {
+                        id: INJECTED_FINGER,
+                        x: 5.0,
+                        y: 6.0,
+                    }
+                },
+            ]
+        );
+        let drag = live_requests(LiveCmd::InjectTouchDrag {
+            from: "10,20".to_string(),
+            to: "40,50".to_string(),
+            steps: 3,
+        })
+        .unwrap();
+        assert_eq!(drag.len(), 5);
+        assert_eq!(
+            drag[2],
+            Request::InjectEvent {
+                event: RawEvent::TouchMove {
+                    id: INJECTED_FINGER,
+                    x: 30.0,
+                    y: 40.0,
+                }
+            }
+        );
+        assert!(
+            live_requests(LiveCmd::InjectTouchDrag {
+                from: "0,0".to_string(),
+                to: "1,1".to_string(),
+                steps: 0,
+            })
+            .is_err()
         );
     }
 
