@@ -43,11 +43,7 @@ impl ConnectedProductionResources {
 
 impl AirPlan {
     pub(super) fn island(profile: &ResolvedProfile, obs: &Observation) -> Self {
-        Self::Island(IslandPlan::new(
-            profile,
-            obs,
-            StrategicProductionContext::empty(),
-        ))
+        Self::Island(IslandPlan::new(profile, obs, ProducerLanes::empty()))
     }
 
     pub(super) fn island_mut(&mut self) -> &mut IslandPlan {
@@ -478,6 +474,39 @@ impl StrategicPlanner {
     pub(crate) fn settle_paid_production(&mut self, obs: &Observation) -> Vec<ConnectedPurchase> {
         self.prune_paid_production(obs);
         self.paid_connected_production().to_vec()
+    }
+}
+
+impl<'a> ConnectedInputs<'a> {
+    /// Inputs with no reserve, foreign claims, or paid exclusions.
+    pub(crate) fn fixture(
+        planning: &'a crate::planning::PlanningWork,
+        resources: &'a ResourceSnapshot,
+    ) -> Self {
+        Self {
+            planning,
+            resources,
+            unavailable: &[],
+            paid_exclusions: &[],
+            reserve: CapitalReserve::default(),
+        }
+    }
+}
+
+impl<'a> ThinkInputs<'a> {
+    /// An open allocation verdict with no foreign claims or accepted lanes.
+    pub(crate) fn fixture(planning: &'a crate::planning::PlanningWork) -> Self {
+        Self {
+            planning,
+            unavailable: &[],
+            claimed_elsewhere: &[],
+            lift_support: None,
+            allow_new_operation: true,
+            owned_only: false,
+            reserve: CapitalReserve::default(),
+            lanes: ProducerLanes::empty(),
+            paid_exclusions: &[],
+        }
     }
 }
 

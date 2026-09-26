@@ -2798,7 +2798,7 @@ mod tests {
 
     #[test]
     fn rejected_coordinator_uses_the_current_air_abort_for_loaded_lift_support() {
-        use crate::strategy::{StrategicCoordination, StrategicPlanner, StrategicThinkContext};
+        use crate::strategy::{AirEvidence, StrategicPlanner, ThinkInputs};
         let (mut obs, mut planner, manifest) = loaded_single_lift();
         let profile =
             crate::profile::ResolvedProfile::resolve(oxide_sim::scenario::BotConfig::scripted(
@@ -2824,23 +2824,18 @@ mod tests {
         let mut air = StrategicPlanner::new();
         let mut intel = crate::intelligence::StrategicIntelligence::new();
         intel.update(&obs);
-        air.think_after_connected_adjudication(StrategicThinkContext::new(
-            &profile,
-            tuning,
-            &obs,
-            &intel,
-            HOME,
-            StrategicCoordination {
-                planning: None,
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: true,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
+        air.think(
+            AirEvidence {
+                profile: &profile,
+                tuning,
+                obs: &obs,
+                intel: &intel,
+                home: HOME,
                 public_map: None,
                 orientation: crate::orient::Orientation::for_home(&obs, HOME),
             },
-        ));
+            ThinkInputs::fixture(&crate::planning::PlanningWork::default()),
+        );
         assert_eq!(air.air_operation().unwrap().scout, Some(UnitId(1000)));
         assert!(air.air_operation().unwrap().scout_dispatch.is_some());
         planner.operation.as_mut().unwrap().phase = LiftPhase::AwaitSupport;

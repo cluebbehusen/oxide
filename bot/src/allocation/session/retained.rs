@@ -495,32 +495,19 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         }
 
         let active_connected = self.participants.strategy.active_connected_obligation(
-            FreshConnectedProposalRequest::new(
-                self.context.profile,
-                self.context.tuning,
-                self.context.observation,
-                &resources,
-                self.context.intelligence,
-                self.context.home,
-                StrategicCoordination {
-                    planning: Some(&self.participants.policy.planning),
-                    enlisted: &claims.planner_claims,
-                    lift_support: None,
-                    allow_new_operation: false,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
-                    public_map: Some(self.context.public_map),
-                    orientation: self.context.orientation,
-                },
-            )
-            .with_paid_exclusions(
-                &self
+            self.context.air_evidence(),
+            ConnectedInputs {
+                planning: &self.participants.policy.planning,
+                resources: &resources,
+                unavailable: &claims.planner_claims,
+                paid_exclusions: &self
                     .participants
                     .policy
                     .state
                     .reconnaissance
                     .paid_exclusions(),
-            ),
+                reserve: CapitalReserve::default(),
+            },
         );
         let active_lift = self.participants.lifts.active_production_obligation();
         let mut connected_import = active_connected.as_ref().map(active_connected_obligation);
@@ -767,27 +754,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         if !allocation_possible || !claims.opening_core.ready {
             return 0;
         }
-        let Some(target) =
-            self.participants
-                .strategy
-                .prospective_recon_target(StrategicThinkContext::new(
-                    self.context.profile,
-                    self.context.tuning,
-                    self.context.observation,
-                    self.context.intelligence,
-                    self.context.home,
-                    StrategicCoordination {
-                        planning: Some(&self.participants.policy.planning),
-                        enlisted: &claims.planner_claims,
-                        lift_support: self.context.lift_support,
-                        allow_new_operation: true,
-                        protected_current_scrap: 0,
-                        protected_forecast_scrap: 0,
-                        public_map: Some(self.context.public_map),
-                        orientation: self.context.orientation,
-                    },
-                ))
-        else {
+        let Some(target) = self.participants.strategy.prospective_recon_target(
+            self.context.air_evidence(),
+            &claims.planner_claims,
+            self.context.lift_support,
+        ) else {
             return 0;
         };
         {
@@ -1153,25 +1124,24 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             return;
         };
         let Some(result) = self.participants.strategy.prepare_active_island(
-            StrategicThinkContext::new(
-                self.context.profile,
-                self.context.tuning,
-                self.context.observation,
-                self.context.intelligence,
-                self.context.home,
-                StrategicCoordination {
-                    planning: Some(&self.participants.policy.planning),
-                    enlisted: &claims.planner_claims,
-                    lift_support: self.context.lift_support,
-                    allow_new_operation: claims.opening_core.ready,
-                    protected_current_scrap,
-                    protected_forecast_scrap,
-                    public_map: Some(self.context.public_map),
-                    orientation: self.context.orientation,
+            self.context.air_evidence(),
+            IslandInputs {
+                connected: ConnectedInputs {
+                    planning: &self.participants.policy.planning,
+                    resources: &obligations.resources,
+                    unavailable: &claims.planner_claims,
+                    paid_exclusions: recon_paid_exclusions,
+                    reserve: CapitalReserve {
+                        current: protected_current_scrap,
+                        forecast: protected_forecast_scrap,
+                    },
                 },
-            )
-            .with_producer_lanes(&prior_producer_intents, &producer_lane_reservations)
-            .with_paid_exclusions(recon_paid_exclusions),
+                lanes: ProducerLanes {
+                    prior_intents: &prior_producer_intents,
+                    reservations: &producer_lane_reservations,
+                },
+                allow_procurement: claims.opening_core.ready,
+            },
         ) else {
             return;
         };
@@ -1250,29 +1220,22 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             .copied()
             .filter(|unit| proposed_members.binary_search(unit).is_err())
             .collect::<Vec<_>>();
-        let request = FreshConnectedProposalRequest::new(
-            self.context.profile,
-            self.context.tuning,
-            self.context.observation,
-            &obligations.resources,
-            self.context.intelligence,
-            self.context.home,
-            StrategicCoordination {
-                planning: Some(&self.participants.policy.planning),
-                enlisted: &external_claims,
-                lift_support: None,
-                allow_new_operation: true,
-                protected_current_scrap,
-                protected_forecast_scrap,
-                public_map: Some(self.context.public_map),
-                orientation: self.context.orientation,
-            },
-        );
-        let request = request.with_paid_exclusions(recon_paid_exclusions);
         let revision = self
             .participants
             .strategy
-            .active_connected_revision_proposal(request);
+            .active_connected_revision_proposal(
+                self.context.air_evidence(),
+                ConnectedInputs {
+                    planning: &self.participants.policy.planning,
+                    resources: &obligations.resources,
+                    unavailable: &external_claims,
+                    paid_exclusions: recon_paid_exclusions,
+                    reserve: CapitalReserve {
+                        current: protected_current_scrap,
+                        forecast: protected_forecast_scrap,
+                    },
+                },
+            );
         match revision {
             Ok(None) => ActiveRevisionPreparation::default(),
             Ok(Some(proposal)) => {

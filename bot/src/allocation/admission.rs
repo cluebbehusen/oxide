@@ -21,8 +21,8 @@ use crate::{
     raid::{RaidPlanner, RaidPlanningContext},
     resources::ProducerLaneReservations,
     strategy::{
-        AirOperationPhase, LiftSupportRequest, StrategicCoordination, StrategicDecision,
-        StrategicPlanner, StrategicThinkContext,
+        AirEvidence, AirOperationPhase, CapitalReserve, LiftSupportRequest, ProducerLanes,
+        StrategicDecision, StrategicPlanner, ThinkInputs,
     },
     team::TeamReliefPlanner,
     trace::{
@@ -262,7 +262,7 @@ pub(crate) fn admit_decision(
         planner_claims,
         connected_continues,
         connected_accepted_at,
-        mut rejected_connected_candidate,
+        rejected_connected_candidate,
         island_allocated,
         fresh_emergency_defense_intents,
         fresh_foundry_intents,
@@ -311,40 +311,40 @@ pub(crate) fn admit_decision(
         PlannerClaims::new(enlisted, strategy, raids, lifts).without_air(&team.reservations());
     air_external.extend(policy.state.reconnaissance.reservations());
     air_external.extend(policy.support_reservations());
-    let strategic_result = {
-        let continue_connected = connected_continues;
-        strategy.think_after_connected_adjudication(
-            StrategicThinkContext::new(
-                profile,
-                tuning,
-                oriented,
-                intelligence,
-                oriented_home,
-                StrategicCoordination {
-                    planning: Some(&policy.planning),
-                    enlisted: &planner_claims,
-                    lift_support: lift_support_request.as_ref(),
-                    allow_new_operation: allocation_ok
-                        && (continue_connected || allow_new_voluntary_operations),
-                    protected_current_scrap: oriented.scrap.saturating_sub(connected_spendable),
-                    protected_forecast_scrap: connected_forecast_hold,
-                    public_map: Some(oriented_public_map),
-                    orientation,
-                },
-            )
-            .with_external_claims(&air_external)
-            .with_owned_members(
-                !allocation_ok || connected_continues || island_allocated || accepted_connected,
-            )
-            .with_producer_lanes(&allocated_producer_intents, &producer_lane_reservations)
-            .with_paid_exclusions(&policy.state.reconnaissance.paid_exclusions()),
-        )
-    };
-    if rejected_connected_candidate.is_none() {
-        rejected_connected_candidate = strategic_result.rejected_connected_candidate;
-    }
-    let air_decision_for_trace = strategic_result.decision.clone();
-    let mut strategic = strategic_result.decision.into();
+    let air_decision = strategy.think(
+        AirEvidence {
+            profile,
+            tuning,
+            obs: oriented,
+            intel: intelligence,
+            home: oriented_home,
+            public_map: Some(oriented_public_map),
+            orientation,
+        },
+        ThinkInputs {
+            planning: &policy.planning,
+            unavailable: &planner_claims,
+            claimed_elsewhere: &air_external,
+            lift_support: lift_support_request.as_ref(),
+            allow_new_operation: allocation_ok
+                && (connected_continues || allow_new_voluntary_operations),
+            owned_only: !allocation_ok
+                || connected_continues
+                || island_allocated
+                || accepted_connected,
+            reserve: CapitalReserve {
+                current: oriented.scrap.saturating_sub(connected_spendable),
+                forecast: connected_forecast_hold,
+            },
+            lanes: ProducerLanes {
+                prior_intents: &allocated_producer_intents,
+                reservations: &producer_lane_reservations,
+            },
+            paid_exclusions: &policy.state.reconnaissance.paid_exclusions(),
+        },
+    );
+    let air_decision_for_trace = air_decision.clone();
+    let mut strategic = air_decision.into();
     if island_allocated || connected_continues || accepted_connected {
         remove_producer_intents(&mut strategic);
     }

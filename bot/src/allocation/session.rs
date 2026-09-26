@@ -41,10 +41,10 @@ use crate::standing_force::{
     derive_standing_force_with_demand,
 };
 use crate::strategy::{
-    ActiveConnectedObligation, AirOperation, AirOperationOutcome, AirOperationPhase,
-    FreshConnectedProposal, FreshConnectedProposalRequest, LiftSupportRequest,
-    RejectedConnectedCandidate, StrategicCoordination, StrategicDecision, StrategicPlanner,
-    StrategicThinkContext, connected_preparation_horizon,
+    ActiveConnectedObligation, AirEvidence, AirOperation, AirOperationOutcome, AirOperationPhase,
+    CapitalReserve, ConnectedInputs, FreshConnectedProposal, IslandInputs, LiftSupportRequest,
+    ProducerLanes, RejectedConnectedCandidate, StrategicDecision, StrategicPlanner,
+    connected_preparation_horizon,
 };
 use crate::team::TeamReliefPlanner;
 use crate::trace::{
@@ -243,6 +243,20 @@ pub(crate) struct AllocationSessionContext<'a> {
     pub(crate) intelligence: &'a StrategicIntelligence,
     pub(crate) enlisted: &'a [UnitId],
     pub(crate) lift_support: Option<&'a LiftSupportRequest>,
+}
+
+impl<'a> AllocationSessionContext<'a> {
+    fn air_evidence(&self) -> AirEvidence<'a> {
+        AirEvidence {
+            profile: self.profile,
+            tuning: self.tuning,
+            obs: self.observation,
+            intel: self.intelligence,
+            home: self.home,
+            public_map: Some(self.public_map),
+            orientation: self.orientation,
+        }
+    }
 }
 
 struct OperationClaim<'a> {
@@ -777,34 +791,26 @@ impl<'a> AllocationSession<'a> {
         } else if admission_tick && obligations.island_preparation.is_none() {
             match self.participants.strategy.fresh_connected_minimum_proposal(
                 self.context.evidence.experience,
-                FreshConnectedProposalRequest::new(
-                    self.context.profile,
-                    self.context.tuning,
-                    self.context.observation,
-                    &obligations.resources,
-                    self.context.intelligence,
-                    self.context.home,
-                    StrategicCoordination {
-                        planning: Some(&self.participants.policy.planning),
-                        enlisted: &claims.planner_claims,
-                        lift_support: None,
-                        allow_new_operation: true,
-                        protected_current_scrap: current_reserve_at(
+                self.context.air_evidence(),
+                ConnectedInputs {
+                    planning: &self.participants.policy.planning,
+                    resources: &obligations.resources,
+                    unavailable: &claims.planner_claims,
+                    paid_exclusions: recon_paid_exclusions,
+                    reserve: CapitalReserve {
+                        current: current_reserve_at(
                             &obligations.obligations,
                             self.context.observation.tick,
                         ),
-                        protected_forecast_scrap: forecast_reserve_through(
+                        forecast: forecast_reserve_through(
                             &obligations.obligations,
                             self.context
                                 .observation
                                 .tick
                                 .saturating_add(connected_preparation_horizon()),
                         ),
-                        public_map: Some(self.context.public_map),
-                        orientation: self.context.orientation,
                     },
-                )
-                .with_paid_exclusions(recon_paid_exclusions),
+                },
             ) {
                 Ok(proposal) => proposal,
                 Err(rejected) => {
@@ -1411,32 +1417,19 @@ impl<'a> AllocationSession<'a> {
             remove_active_connected_obligation(&mut prepared.obligations);
             prepared.active_connected = {
                 self.participants.strategy.active_connected_obligation(
-                    FreshConnectedProposalRequest::new(
-                        self.context.profile,
-                        self.context.tuning,
-                        self.context.observation,
-                        &prepared.resources,
-                        self.context.intelligence,
-                        self.context.home,
-                        StrategicCoordination {
-                            planning: Some(&self.participants.policy.planning),
-                            enlisted: &prepared.planner_claims,
-                            lift_support: None,
-                            allow_new_operation: false,
-                            protected_current_scrap: 0,
-                            protected_forecast_scrap: 0,
-                            public_map: Some(self.context.public_map),
-                            orientation: self.context.orientation,
-                        },
-                    )
-                    .with_paid_exclusions(
-                        &self
+                    self.context.air_evidence(),
+                    ConnectedInputs {
+                        planning: &self.participants.policy.planning,
+                        resources: &prepared.resources,
+                        unavailable: &prepared.planner_claims,
+                        paid_exclusions: &self
                             .participants
                             .policy
                             .state
                             .reconnaissance
                             .paid_exclusions(),
-                    ),
+                        reserve: CapitalReserve::default(),
+                    },
                 )
             };
             if let Some(active) = &prepared.active_connected {
@@ -3164,7 +3157,7 @@ mod tests {
     use crate::strategy::{
         AirRecoveryReason, ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
         ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
-        ConnectedTimeToImpact, ConnectedUrgency,
+        ConnectedTimeToImpact, ConnectedUrgency, ThinkInputs,
     };
     use crate::trace::{AllocationConflictTrace, ProposalDispositionTrace, ProposalKeyTrace};
     use crate::utility::{
@@ -3586,24 +3579,16 @@ mod tests {
         StrategicPlanner::new()
             .fresh_connected_minimum_proposal(
                 &crate::experience::Experience::default(),
-                FreshConnectedProposalRequest::new(
-                    &profile,
+                AirEvidence {
+                    profile: &profile,
                     tuning,
-                    observation,
-                    &resources,
-                    &intelligence,
-                    HOME,
-                    StrategicCoordination {
-                        planning: Some(&crate::planning::PlanningWork::default()),
-                        enlisted: &[],
-                        lift_support: None,
-                        allow_new_operation: true,
-                        protected_current_scrap: 0,
-                        protected_forecast_scrap: 0,
-                        public_map: Some(&briefing),
-                        orientation: Orientation::for_home(observation, HOME),
-                    },
-                ),
+                    obs: observation,
+                    intel: &intelligence,
+                    home: HOME,
+                    public_map: Some(&briefing),
+                    orientation: Orientation::for_home(observation, HOME),
+                },
+                ConnectedInputs::fixture(&crate::planning::PlanningWork::default(), &resources),
             )
             .expect("the current connected opportunity is feasible")
             .expect("the current connected opportunity needs a force package")
@@ -3648,24 +3633,21 @@ mod tests {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(observation);
         planner
-            .active_connected_obligation(FreshConnectedProposalRequest::new(
-                &profile,
-                DifficultyTuning::for_level(profile.difficulty),
-                observation,
-                &ResourceSnapshot::from_observation(observation),
-                &intelligence,
-                TilePos::new(3, 10),
-                StrategicCoordination {
-                    planning: Some(&crate::planning::PlanningWork::default()),
-                    enlisted: &[],
-                    lift_support: None,
-                    allow_new_operation: false,
-                    protected_current_scrap: 0,
-                    protected_forecast_scrap: 0,
+            .active_connected_obligation(
+                AirEvidence {
+                    profile: &profile,
+                    tuning: DifficultyTuning::for_level(profile.difficulty),
+                    obs: observation,
+                    intel: &intelligence,
+                    home: TilePos::new(3, 10),
                     public_map: Some(&briefing),
                     orientation: Orientation::for_home(observation, TilePos::new(3, 10)),
                 },
-            ))
+                ConnectedInputs::fixture(
+                    &crate::planning::PlanningWork::default(),
+                    &ResourceSnapshot::from_observation(observation),
+                ),
+            )
             .expect("an admitted connected operation retains demand")
     }
 
@@ -3976,31 +3958,34 @@ mod tests {
         observation: &Observation,
         strategy: &mut StrategicPlanner,
         outcome: &AllocationSessionOutcome,
-    ) -> crate::strategy::StrategicThinkResult {
+    ) -> StrategicDecision {
         const HOME: TilePos = TilePos::new(3, 10);
         let profile = prime_profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let briefing = connected_briefing(observation);
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(observation);
-        strategy.think_after_connected_adjudication(StrategicThinkContext::new(
-            &profile,
-            tuning,
-            observation,
-            &intelligence,
-            HOME,
-            StrategicCoordination {
-                planning: Some(&crate::planning::PlanningWork::default()),
-                enlisted: &outcome.planner_claims,
-                lift_support: None,
-                allow_new_operation: outcome.connected_continues
-                    || outcome.allow_new_voluntary_operations,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: outcome.budget.connected_forecast_hold,
+        strategy.think(
+            AirEvidence {
+                profile: &profile,
+                tuning,
+                obs: observation,
+                intel: &intelligence,
+                home: HOME,
                 public_map: Some(&briefing),
                 orientation: Orientation::for_home(observation, HOME),
             },
-        ))
+            ThinkInputs {
+                unavailable: &outcome.planner_claims,
+                allow_new_operation: outcome.connected_continues
+                    || outcome.allow_new_voluntary_operations,
+                reserve: CapitalReserve {
+                    forecast: outcome.budget.connected_forecast_hold,
+                    ..CapitalReserve::default()
+                },
+                ..ThinkInputs::fixture(&crate::planning::PlanningWork::default())
+            },
+        )
     }
 
     fn assert_connected_enters_bounded_recovery(
@@ -4041,7 +4026,7 @@ mod tests {
             "{context}"
         );
         assert!(
-            recovery.decision.intents.iter().any(
+            recovery.intents.iter().any(
                 |intent| matches!(intent, Intent::MoveUnits { units, .. } if !units.is_empty())
             ),
             "the recovery transition must issue its one return-home order: {context}"
