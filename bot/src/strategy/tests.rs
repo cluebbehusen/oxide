@@ -2,7 +2,9 @@ mod checkpoint;
 mod producer_reservations;
 use super::super::observation::BuildingObs;
 use super::super::profile::{PersonalityTraits, Specialty};
+use super::fixtures::*;
 use super::*;
+use crate::observation::ObservationData;
 use oxide_sim::map::Terrain;
 use oxide_sim::scenario::{BotConfig, BotDifficulty};
 use oxide_sim::state::Faction;
@@ -209,15 +211,7 @@ fn planning_context<'a>(
             observation,
             target,
             &[],
-            ConnectedRouteContext {
-                campaign_routes: None,
-                unavailable_paid: &[],
-                intel: intelligence,
-                home: HOME,
-                target: target.anchor,
-                public_map: None,
-                orientation: test_orientation(),
-            },
+            ConnectedRouteContext::new(intelligence, None, test_orientation(), HOME, target.anchor),
         )),
         production: StrategicProductionContext::empty(),
         protected_current_scrap: 0,
@@ -381,15 +375,7 @@ fn derived_connected_test_plan(
         observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: target.anchor,
-            public_map: None,
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, target.anchor),
     );
     connected_plan(
         identity,
@@ -402,7 +388,12 @@ fn derived_connected_test_plan(
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                observation,
+                &intelligence,
+                None,
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: None,
             resources: &resources,
@@ -1797,30 +1788,36 @@ fn scout_dispatch_retargets_only_when_its_safe_goal_changes() {
     let plan = AirPlan::remembered_connected(&observation);
 
     let mut first = StrategicDecision::default();
-    assert!(dispatch_scout(
-        &mut operation,
-        &plan,
-        &observation,
-        &intel,
-        &[],
-        None,
-        &mut first
-    ));
+    assert_eq!(
+        Ok(()),
+        dispatch_scout(
+            &mut operation,
+            &plan,
+            &observation,
+            &intel,
+            &[],
+            None,
+            &mut first
+        )
+    );
     let first_goal = match first.intents.as_slice() {
         [Intent::MoveUnits { units, goal }] if units == &[UnitId(1)] => *goal,
         intents => panic!("expected one scout dispatch, got {intents:?}"),
     };
 
     let mut repeated = StrategicDecision::default();
-    assert!(dispatch_scout(
-        &mut operation,
-        &plan,
-        &observation,
-        &intel,
-        &[],
-        None,
-        &mut repeated
-    ));
+    assert_eq!(
+        Ok(()),
+        dispatch_scout(
+            &mut operation,
+            &plan,
+            &observation,
+            &intel,
+            &[],
+            None,
+            &mut repeated
+        )
+    );
     assert!(
         repeated.intents.is_empty(),
         "an identical in-flight order remains authoritative"
@@ -1828,15 +1825,18 @@ fn scout_dispatch_retargets_only_when_its_safe_goal_changes() {
 
     operation.target = TilePos::new(24, 16);
     let mut changed = StrategicDecision::default();
-    assert!(dispatch_scout(
-        &mut operation,
-        &plan,
-        &observation,
-        &intel,
-        &[],
-        None,
-        &mut changed
-    ));
+    assert_eq!(
+        Ok(()),
+        dispatch_scout(
+            &mut operation,
+            &plan,
+            &observation,
+            &intel,
+            &[],
+            None,
+            &mut changed
+        )
+    );
     assert!(matches!(
         changed.intents.as_slice(),
         [Intent::MoveUnits { units, goal }]
@@ -2038,7 +2038,10 @@ fn artillery_staging_is_dispatched_once_until_the_goal_or_mission_changes() {
         protected_current_scrap: 0,
         protected_forecast_scrap: 0,
     };
-    suppress(&mut operation, &mut plan, &context, &mut suppression);
+    assert_eq!(
+        Ok(()),
+        suppress(&mut operation, &mut plan, &context, &mut suppression)
+    );
     assert!(suppression.intents.iter().any(|intent| matches!(
         intent,
         Intent::AttackUnits {
@@ -2731,15 +2734,7 @@ fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
         &observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: target.anchor,
-            public_map: None,
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, target.anchor),
     );
     let plan = connected_plan(
         &identity,
@@ -2752,7 +2747,12 @@ fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                &observation,
+                &intelligence,
+                None,
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: None,
             resources: &resources,
@@ -3266,15 +3266,8 @@ fn connected_admission_rejects_a_group_larger_than_the_reachable_staging_spread(
     let public_map = public_map_with_terrain(&observation, []);
     let orientation = Orientation::for_home(&observation, home);
     let intelligence = knowledge(&observation);
-    let route = ConnectedRouteContext {
-        campaign_routes: None,
-        unavailable_paid: &[],
-        intel: &intelligence,
-        home,
-        target,
-        public_map: Some(&public_map),
-        orientation,
-    };
+    let route =
+        ConnectedRouteContext::new(&intelligence, Some(&public_map), orientation, home, target);
 
     assert_eq!(
         connected_artillery_staging_goal(&observation, home, target, Some(&public_map)),
@@ -3333,15 +3326,14 @@ fn campaign_queries_share_navigation_across_targets_and_producers() {
             .buildings()
             .iter()
             .map(|target| {
-                let route = ConnectedRouteContext {
-                    campaign_routes: cache,
-                    unavailable_paid: &[],
-                    intel: &intel,
-                    home: HOME,
-                    target: target.anchor,
-                    public_map: Some(&map),
-                    orientation: test_orientation(),
-                };
+                let route = ConnectedRouteContext::new(
+                    &intel,
+                    Some(&map),
+                    test_orientation(),
+                    HOME,
+                    target.anchor,
+                )
+                .with_routes(cache);
                 let targets = fresh_target_selection(&observation, target, &[], route);
                 let access = connected_production_access(&observation, &targets, &resources, route);
                 let unavailable =
@@ -3502,15 +3494,8 @@ fn excluded_live_providers_require_no_route_work() {
     let mut expected = unavailable.clone();
     expected.sort_unstable();
     let ((actual, repeated), work) = crate::navigation::work::measure(|| {
-        let route = ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intel,
-            home: HOME,
-            target: TilePos::new(15, 7),
-            public_map: None,
-            orientation: test_orientation(),
-        };
+        let route =
+            ConnectedRouteContext::new(&intel, None, test_orientation(), HOME, TilePos::new(15, 7));
         let targets = ConnectedTargetSelection {
             target_anchors: vec![],
             suppression_targets: vec![],
@@ -3729,15 +3714,8 @@ fn connected_admission_uses_the_authoritative_spread_for_an_exact_live_group() {
     let public_map = public_map_with_terrain(&observation, []);
     let orientation = Orientation::for_home(&observation, home);
     let intelligence = knowledge(&observation);
-    let route = ConnectedRouteContext {
-        campaign_routes: None,
-        unavailable_paid: &[],
-        intel: &intelligence,
-        home,
-        target,
-        public_map: Some(&public_map),
-        orientation,
-    };
+    let route =
+        ConnectedRouteContext::new(&intelligence, Some(&public_map), orientation, home, target);
     let exact_ids = [UnitId(2), UnitId(5)];
     let routes = route_projection_with_orientation(
         &observation,
@@ -5354,15 +5332,7 @@ fn connected_production_rejects_a_route_beyond_the_movement_search_cap() {
         &observation,
         &targets,
         &resources,
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home,
-            target,
-            public_map: Some(&public_map),
-            orientation,
-        },
+        ConnectedRouteContext::new(&intelligence, Some(&public_map), orientation, home, target),
     );
 
     assert!(
@@ -5411,15 +5381,13 @@ fn connected_operation_excludes_live_artillery_beyond_the_movement_search_cap() 
             growth_order: Vec::new(),
         },
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
+        ConnectedRouteContext::new(
+            &intelligence,
+            Some(&public_map),
+            test_orientation(),
             home,
             target,
-            public_map: Some(&public_map),
-            orientation: test_orientation(),
-        },
+        ),
     );
 
     assert_eq!(
@@ -5506,15 +5474,13 @@ fn connected_cluster_rejects_suppression_whose_staging_route_exceeds_the_command
         &observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
+        ConnectedRouteContext::new(
+            &intelligence,
+            Some(&public_map),
+            test_orientation(),
             home,
-            target: primary,
-            public_map: Some(&public_map),
-            orientation: test_orientation(),
-        },
+            primary,
+        ),
     );
 
     assert_eq!(selection.target_anchors, vec![primary]);
@@ -5663,15 +5629,7 @@ fn connected_package_uses_only_producers_that_can_reach_the_operation() {
         &observation,
         &target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: target.anchor,
-            public_map: None,
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, target.anchor),
     );
     let plan = connected_plan(
         &identity,
@@ -5684,7 +5642,12 @@ fn connected_package_uses_only_producers_that_can_reach_the_operation() {
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                &observation,
+                &intelligence,
+                None,
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: None,
             resources: &connected_resources,
@@ -5768,15 +5731,8 @@ fn connected_package_excludes_publicly_stranded_units_and_producers() {
         .iter()
         .find(|contact| contact.anchor == TARGET)
         .expect("current target");
-    let optimistic_route = ConnectedRouteContext {
-        campaign_routes: None,
-        unavailable_paid: &[],
-        intel: &intelligence,
-        home: HOME,
-        target: TARGET,
-        public_map: None,
-        orientation: test_orientation(),
-    };
+    let optimistic_route =
+        ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, TARGET);
     let public_route = ConnectedRouteContext {
         campaign_routes: None,
         unavailable_paid: &[],
@@ -5859,15 +5815,13 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
         &observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: TARGET,
-            public_map: Some(&pit_map),
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(
+            &intelligence,
+            Some(&pit_map),
+            test_orientation(),
+            HOME,
+            TARGET,
+        ),
     );
     assert_eq!(pit_selection.target_anchors, vec![TARGET, secondary]);
 
@@ -5877,15 +5831,13 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
         &observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: TARGET,
-            public_map: Some(&peak_map),
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(
+            &intelligence,
+            Some(&peak_map),
+            test_orientation(),
+            HOME,
+            TARGET,
+        ),
     );
     assert_eq!(peak_selection.target_anchors, vec![TARGET]);
 
@@ -5893,15 +5845,13 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
         &observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: TARGET,
-            public_map: Some(&peak_map),
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(
+            &intelligence,
+            Some(&peak_map),
+            test_orientation(),
+            HOME,
+            TARGET,
+        ),
     );
     let peak_plan = connected_plan(
         &profile(),
@@ -5914,7 +5864,12 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                &observation,
+                &intelligence,
+                Some(&peak_map),
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: Some(&peak_map),
             resources: &peak_resources,
@@ -6102,15 +6057,7 @@ fn reserved_sole_suppression_provider_cannot_inflate_the_target_cluster() {
         .iter()
         .find(|contact| contact.anchor == primary)
         .expect("current primary target");
-    let route = ConnectedRouteContext {
-        campaign_routes: None,
-        unavailable_paid: &[],
-        intel: &intelligence,
-        home: HOME,
-        target: primary,
-        public_map: None,
-        orientation: test_orientation(),
-    };
+    let route = ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, primary);
 
     let available = fresh_target_selection(&battle, target, &[], route);
     assert_eq!(available.target_anchors, vec![primary, secondary]);
@@ -6174,15 +6121,13 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
         .iter()
         .find(|contact| contact.anchor == primary)
         .expect("current primary target");
-    let route = ConnectedRouteContext {
-        campaign_routes: None,
-        unavailable_paid: &[],
-        intel: &intelligence,
-        home: HOME,
-        target: primary,
-        public_map: Some(&public_map),
-        orientation: test_orientation(),
-    };
+    let route = ConnectedRouteContext::new(
+        &intelligence,
+        Some(&public_map),
+        test_orientation(),
+        HOME,
+        primary,
+    );
     let resources = ConnectedProductionResources::from_observation(&battle, target, &[], route);
     assert_eq!(resources.targets.target_anchors, vec![primary, secondary]);
 
@@ -6201,7 +6146,12 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                &open_lane,
+                &intelligence,
+                Some(&public_map),
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: Some(&public_map),
             resources: &open_resources,
@@ -6234,7 +6184,12 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                &battle,
+                &intelligence,
+                Some(&public_map),
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: Some(&public_map),
             resources: &resources,
@@ -6349,15 +6304,13 @@ fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
         &observation,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intelligence,
-            home: HOME,
-            target: TARGET,
-            public_map: Some(&public_map),
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(
+            &intelligence,
+            Some(&public_map),
+            test_orientation(),
+            HOME,
+            TARGET,
+        ),
     );
     assert_eq!(
         resources.targets.suppression_targets,
@@ -6379,7 +6332,12 @@ fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
             planning: Some(&fixture_planning),
             committed: None,
             minimum_only: false,
-            campaign_routes: None,
+            campaign_routes: &CampaignRoutes::new(
+                &observation,
+                &intelligence,
+                Some(&public_map),
+                test_orientation(),
+            ),
             orientation: test_orientation(),
             public_map: Some(&public_map),
             resources: &resources,
@@ -6544,26 +6502,29 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
 
     let identity = profile();
     let mut decision = StrategicDecision::default();
-    verify(
-        &mut operation,
-        &mut plan,
-        &AirPlanningContext {
-            allow_procurement: true,
-            planning: Some(&fixture_planning),
-            tuning: DifficultyTuning::for_level(identity.difficulty),
-            obs: &hidden,
-            intel: &intelligence,
-            home: HOME,
-            orientation: test_orientation(),
-            public_map: None,
-            enlisted: &[],
-            landing_sites: &[],
-            connected_resources: None,
-            production: StrategicProductionContext::empty(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
-        },
-        &mut decision,
+    assert_eq!(
+        Ok(()),
+        verify(
+            &mut operation,
+            &mut plan,
+            &AirPlanningContext {
+                allow_procurement: true,
+                planning: Some(&fixture_planning),
+                tuning: DifficultyTuning::for_level(identity.difficulty),
+                obs: &hidden,
+                intel: &intelligence,
+                home: HOME,
+                orientation: test_orientation(),
+                public_map: None,
+                enlisted: &[],
+                landing_sites: &[],
+                connected_resources: None,
+                production: StrategicProductionContext::empty(),
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+            },
+            &mut decision,
+        )
     );
     assert_eq!(operation.phase(), AirOperationPhase::Verify);
     assert!(operation.scout_dispatch.is_some());
@@ -6586,26 +6547,29 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
     );
 
     let mut decision = StrategicDecision::default();
-    verify(
-        &mut operation,
-        &mut plan,
-        &AirPlanningContext {
-            allow_procurement: true,
-            planning: Some(&fixture_planning),
-            tuning: DifficultyTuning::for_level(identity.difficulty),
-            obs: &cleared,
-            intel: &intelligence,
-            home: HOME,
-            orientation: test_orientation(),
-            public_map: None,
-            enlisted: &[],
-            landing_sites: &[],
-            connected_resources: None,
-            production: StrategicProductionContext::empty(),
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
-        },
-        &mut decision,
+    assert_eq!(
+        Ok(()),
+        verify(
+            &mut operation,
+            &mut plan,
+            &AirPlanningContext {
+                allow_procurement: true,
+                planning: Some(&fixture_planning),
+                tuning: DifficultyTuning::for_level(identity.difficulty),
+                obs: &cleared,
+                intel: &intelligence,
+                home: HOME,
+                orientation: test_orientation(),
+                public_map: None,
+                enlisted: &[],
+                landing_sites: &[],
+                connected_resources: None,
+                production: StrategicProductionContext::empty(),
+                protected_current_scrap: 0,
+                protected_forecast_scrap: 0,
+            },
+            &mut decision,
+        )
     );
     assert_eq!(operation.phase(), AirOperationPhase::Strike);
 }
@@ -6650,7 +6614,10 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     };
     let mut decision = StrategicDecision::default();
 
-    verify(&mut operation, &mut plan, &context, &mut decision);
+    assert_eq!(
+        Ok(()),
+        verify(&mut operation, &mut plan, &context, &mut decision)
+    );
 
     assert_eq!(
         connected_scout_focus(&operation, &plan, &observation, &intelligence),
@@ -6689,7 +6656,10 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
         protected_forecast_scrap: 0,
     };
     let mut cleared = StrategicDecision::default();
-    verify(&mut operation, &mut plan, &context, &mut cleared);
+    assert_eq!(
+        Ok(()),
+        verify(&mut operation, &mut plan, &context, &mut cleared)
+    );
 
     assert_eq!(operation.phase(), AirOperationPhase::Strike);
 }
@@ -6736,7 +6706,10 @@ fn connected_verify_checks_the_selected_secondary_approach_before_striking() {
         protected_forecast_scrap: 0,
     };
     let mut decision = StrategicDecision::default();
-    verify(&mut operation, &mut plan, &context, &mut decision);
+    assert_eq!(
+        Ok(()),
+        verify(&mut operation, &mut plan, &context, &mut decision)
+    );
 
     assert_eq!(operation.phase(), AirOperationPhase::Verify);
     assert!(decision.intents.iter().all(|intent| !matches!(
@@ -10343,15 +10316,7 @@ fn connected_selection_excludes_secondary_aa_sealed_by_peaks() {
         &battle,
         target,
         &[],
-        ConnectedRouteContext {
-            campaign_routes: None,
-            unavailable_paid: &[],
-            intel: &intel,
-            home: HOME,
-            target: primary,
-            public_map: Some(&public_map),
-            orientation: test_orientation(),
-        },
+        ConnectedRouteContext::new(&intel, Some(&public_map), test_orientation(), HOME, primary),
     );
     assert_eq!(selection.target_anchors, vec![primary]);
     let mut planner = with_operation(AirOperationPhase::SuppressAa, battle.tick);

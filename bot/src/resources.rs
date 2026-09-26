@@ -557,7 +557,6 @@ impl ProducerLane {
     }
 
     /// Unit kinds currently legal from this producer, in declaration order.
-    #[cfg(test)]
     pub(crate) fn trainable(&self) -> &[UnitKind] {
         &self.trainable
     }

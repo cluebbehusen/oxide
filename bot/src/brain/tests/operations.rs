@@ -1351,8 +1351,8 @@ impl CommittedCluster {
             .find(|unit| unit.kind == UnitKind::Kestrel && unit.tile() == TilePos::new(9, 18))
             .expect("the operation scout waits at home")
             .id;
-        let strategy =
-            StrategicPlanner::committed_cluster_fixture(crate::strategy::CommittedClusterFixture {
+        let strategy = StrategicPlanner::committed_cluster_fixture(
+            crate::strategy::fixtures::CommittedClusterFixture {
                 faction: Faction::Ferrous,
                 primary: (primary, BuildingKind::Crucible, CLUSTER_PRIMARY),
                 members: vec![CLUSTER_PRIMARY, CLUSTER_AIRWORKS, CLUSTER_FABRICATOR],
@@ -1361,7 +1361,8 @@ impl CommittedCluster {
                 scout,
                 artillery: own(UnitKind::Bombard),
                 strike_aircraft: condors.clone(),
-            });
+            },
+        );
         let brain = scripted_brain(&scenario, PlayerId(0), config)
             .restore_with_strategy(strategy, &scenario, &state)
             .expect("the staged operation is a valid controller checkpoint");

@@ -3158,10 +3158,11 @@ mod tests {
     use crate::observation::{BuildingObs, UnitObs};
     use crate::profile::Specialty;
     use crate::standing_force::{StandingForceFixture, StandingForceProposal, StandingForceReason};
+    use crate::strategy::fixtures::FreshConnectedProposalFixture;
     use crate::strategy::{
         AirRecoveryReason, ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
         ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
-        ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposalFixture,
+        ConnectedTimeToImpact, ConnectedUrgency,
     };
     use crate::trace::{AllocationConflictTrace, ProposalDispositionTrace, ProposalKeyTrace};
     use crate::utility::{
