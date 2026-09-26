@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["chassis", "sim", "bot", "protocol", "kit", "shell", "driver"]
+members = ["chassis", "sim", "bot", "protocol", "kit", "net", "shell", "driver"]
 
 [workspace.package]
 version = "0.17.0"
@@ -21,6 +21,7 @@ oxide-sim = { path = "sim" }
 oxide-bot = { path = "bot" }
 oxide-protocol = { path = "protocol" }
 oxide-kit = { path = "kit" }
+oxide-net = { path = "net" }
 
 # iPadOS 27 refuses to launch apps linked against its SDK unless they adopt
 # the UIScene lifecycle, and only unreleased miniquad master does. The pin
