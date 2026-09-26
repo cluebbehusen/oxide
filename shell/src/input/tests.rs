@@ -3009,11 +3009,8 @@ fn the_queue_chip_flips_by_tap_and_click() {
     tap(&mut game, &mut input, chip.center());
     assert!(input.queue_held());
     assert!(
-        game.presentation
-            .toasts
-            .iter()
-            .any(|t| t.text.starts_with("queue on")),
-        "the first switch explains itself"
+        game.presentation.toasts.is_empty(),
+        "the lit chip speaks for itself"
     );
     apply_events(
         &mut game,

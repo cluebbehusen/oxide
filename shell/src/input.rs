@@ -208,8 +208,6 @@ pub struct InputState {
     pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
     /// The QUEUE toggle: touch's sticky stand-in for a held Shift.
     pub(crate) queue_toggle: bool,
-    /// Whether this session already explained the QUEUE toggle.
-    queue_explained: bool,
     /// The live two-finger gesture, if two fingers are down.
     pub(crate) pair: Option<Pair>,
     /// Pair fingers the platform reported lifted, newest last.
@@ -435,7 +433,6 @@ impl InputState {
             touches: Vec::new(),
             last_tap: None,
             queue_toggle: false,
-            queue_explained: false,
             pair: None,
             lifted_pair: Vec::new(),
             menu_requested: false,
@@ -596,15 +593,9 @@ impl InputState {
         self.queue_toggle || self.resolver.shift_held()
     }
 
-    /// Flips the QUEUE toggle, explaining it the first time it turns
-    /// on in a session.
-    pub(crate) fn toggle_queue(&mut self, game: &mut Game) {
+    /// Flips the QUEUE toggle.
+    pub(crate) fn toggle_queue(&mut self) {
         self.queue_toggle = !self.queue_toggle;
-        if self.queue_toggle && !self.queue_explained {
-            self.queue_explained = true;
-            game.presentation
-                .toast("queue on: taps add to the selection, orders queue, and modes stay armed");
-        }
     }
 
     /// Consumes this frame's menu-button press, if any.
@@ -619,7 +610,6 @@ impl InputState {
     /// would resolve to unrelated units in the new world.
     pub fn reset_session(&mut self) {
         self.reset_transient();
-        self.queue_explained = false;
         self.groups = Default::default();
         self.bookmarks = [None; 4];
         self.last_click = None;
@@ -1303,7 +1293,7 @@ pub(super) fn ribbon_row_press(
             }
     };
     if hits(layout.queue_toggle) {
-        input.toggle_queue(game);
+        input.toggle_queue();
     } else if hits(layout.mode_ribbon) {
         if input.cancel_armed_mode() {
             game.presentation.toast("command mode cancelled");
@@ -1355,9 +1345,6 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
             if pointer == Pointer::Touch {
                 // A tap never builds on its own: it drops the ghost (or
                 // moves it here), and only a tap on the ghost confirms.
-                if input.touch_ghost.is_none() {
-                    game.presentation.toast("tap the ghost to build it");
-                }
                 input.touch_ghost = Some(PlacementGhost {
                     anchor: ghost_anchor_under(&game.view(), kind, world),
                     grab: None,
