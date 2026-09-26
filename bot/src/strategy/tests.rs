@@ -6124,10 +6124,9 @@ fn reserved_sole_suppression_provider_cannot_inflate_the_target_cluster() {
     assert!(reserved.suppression_targets.is_empty());
 }
 
-#[test]
-fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline() {
-    let fixture_planning = crate::planning::PlanningWork::default();
-
+/// A Crucible with an optional Turret beside it whose covering Flak only a new
+/// Bombard can suppress, while the Fabricator lane that trains one is full.
+fn blocked_optional_member_battle() -> (Observation, PublicMapBriefing) {
     let primary = TARGET;
     let secondary = TARGET.offset(4, 0);
     let flak = TARGET.offset(9, 0);
@@ -6159,6 +6158,16 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
         })
     });
     let public_map = public_map_with_terrain(&battle, terrain);
+    (battle, public_map)
+}
+
+#[test]
+fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline() {
+    let fixture_planning = crate::planning::PlanningWork::default();
+
+    let primary = TARGET;
+    let secondary = TARGET.offset(4, 0);
+    let (battle, public_map) = blocked_optional_member_battle();
     let intelligence = knowledge(&battle);
     let target = intelligence
         .buildings()
@@ -6243,6 +6252,53 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
         plan.package().expect("connected package").target_anchors,
         vec![primary],
         "a route-only optional target must not enlarge a package whose only covering producer cannot finish before the fixed deadline"
+    );
+}
+
+#[test]
+fn a_revision_that_cannot_size_every_live_committed_member_keeps_the_package() {
+    let fixture_planning = crate::planning::PlanningWork::default();
+    let secondary = TARGET.offset(4, 0);
+    let (battle, public_map) = blocked_optional_member_battle();
+    let intelligence = knowledge(&battle);
+    let revise = |observation: &Observation| {
+        let op = operation(AirOperationPhase::Assemble, observation.tick);
+        let mut plan = connected_test_plan(&obs(observation.tick - 12));
+        commit_to_cluster(&mut plan, &op, vec![TARGET, secondary]);
+        let connected = plan.connected_mut();
+        connected.package.preparation_deadline = observation.tick + 400;
+        connected.commitment.deadline = observation.tick + 400;
+        planner_with_operation(op, plan).active_connected_revision_proposal(
+            FreshConnectedProposalRequest::new(
+                &profile(),
+                DifficultyTuning::for_level(BotDifficulty::Prime),
+                observation,
+                &ResourceSnapshot::from_observation(observation),
+                &intelligence,
+                HOME,
+                StrategicCoordination {
+                    public_map: Some(&public_map),
+                    ..coordination(&fixture_planning, None)
+                },
+            ),
+        )
+    };
+
+    let mut open_lane = battle.clone();
+    open_lane.my_queues[0].clear();
+    let revision = revise(&open_lane)
+        .expect("an open Bombard lane sizes the whole committed cluster")
+        .expect("preparation remains revisable");
+    assert!(
+        revision
+            .variants
+            .iter()
+            .all(|variant| variant.plan.package.target_anchors == vec![TARGET, secondary])
+    );
+
+    assert!(
+        matches!(revise(&battle), Ok(None)),
+        "a revision that would drop a live committed member keeps the current package"
     );
 }
 

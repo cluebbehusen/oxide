@@ -3620,6 +3620,16 @@ impl StrategicPlanner {
             target: target.clone(),
             reason,
         })?;
+        // Tactics act on every live committed member, so a revision that could
+        // not size one of them keeps the current package instead.
+        let sized = connected.commitment.sized_members(intel, obs.tick);
+        if !proposal.variants.iter().all(|variant| {
+            sized
+                .iter()
+                .all(|member| variant.plan.package.target_anchors.contains(&member.anchor))
+        }) {
+            return Ok(None);
+        }
         Ok(Some(proposal))
     }
 
