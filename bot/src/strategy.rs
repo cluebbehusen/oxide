@@ -5564,9 +5564,7 @@ fn connected_production_access<'a>(
             else {
                 continue;
             };
-            let mut trainable = completed_producer_trainable_kinds(obs, producer);
-            trainable.sort_unstable();
-            trainable.dedup();
+            let trainable = lane.trainable();
             let mut paid = obs
                 .my_queues
                 .get(producer_index)
@@ -5574,7 +5572,7 @@ fn connected_production_access<'a>(
                 .unwrap_or_default();
             paid.sort_unstable();
             paid.dedup();
-            let mut candidates = trainable.clone();
+            let mut candidates = trainable.to_vec();
             candidates.extend_from_slice(&paid);
             candidates.sort_unstable();
             candidates.dedup();

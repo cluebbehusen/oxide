@@ -1445,32 +1445,13 @@ fn has_completed_provider_capability(
     production_access: &ProductionAccess,
     family: ForceFamily,
 ) -> bool {
-    let completed = |kind: BuildingKind| {
-        observation.my_buildings.iter().any(|building| {
-            building.player == observation.me
-                && building.kind == kind
-                && building.built
-                && building.hp > 0
-        })
-    };
     new_provider_order(family, observation.faction)
         .into_iter()
         .any(|unit_kind| {
-            unit_kind
-                .faction()
-                .is_none_or(|faction| faction == observation.faction)
-                && unit_kind.stats().requires.iter().copied().all(completed)
-                && resources.producers().iter().any(|lane| {
-                    production_access.allows(lane.producer, unit_kind)
-                        && observation.my_buildings.iter().any(|building| {
-                            building.id == lane.producer
-                                && building
-                                    .kind
-                                    .tier_stats(building.tier)
-                                    .produces
-                                    .contains(&unit_kind)
-                        })
-                })
+            resources.producers().iter().any(|lane| {
+                production_access.allows(lane.producer, unit_kind)
+                    && lane.trainable().contains(&unit_kind)
+            })
         })
 }
 
