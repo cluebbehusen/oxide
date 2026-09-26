@@ -24,9 +24,12 @@ oxide-kit = { path = "kit" }
 
 # iPadOS 27 refuses to launch apps linked against its SDK unless they adopt
 # the UIScene lifecycle, and only unreleased miniquad master does. The pin
-# also brings iOS dpi reporting. Drop it once a release carries both.
+# also brings iOS dpi reporting. It stops just before master's switch to
+# CADisplayLink-driven draws (39fdef68), which redraws only Metal views and
+# leaves the OpenGL view the shell renders with blank on iOS. Drop it once
+# a release carries scene support and draws OpenGL on iOS.
 [patch.crates-io]
-miniquad = { git = "https://github.com/not-fl3/miniquad", rev = "39c928fb7e09fd44e45f37fe9a98503968bca412" }
+miniquad = { git = "https://github.com/not-fl3/miniquad", rev = "c5b346eba4c4aa8e7ef639bc449e53c14628ea2e" }
 
 # `cargo run` is how the game is played day to day, and an unoptimized
 # `fixed`-point sim ticks ~25x slower than release — big battles would eat
