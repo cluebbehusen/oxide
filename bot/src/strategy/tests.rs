@@ -270,12 +270,10 @@ fn planning_context<'a>(
     AirPlanningContext {
         allow_procurement: true,
         planning: fixture_planning,
-        tuning: DifficultyTuning::for_level(identity.difficulty),
-        obs: observation,
-        intel: intelligence,
-        home: HOME,
-        orientation: test_orientation(),
-        public_map: None,
+        ev: AirEvidence {
+            tuning: DifficultyTuning::for_level(identity.difficulty),
+            ..evidence(identity, observation, intelligence)
+        },
         enlisted: &[],
         landing_sites: &[],
         connected_resources: Some(ConnectedProductionResources::from_observation(
@@ -833,15 +831,10 @@ fn procure_connected_in_test(
         op: op.clone(),
         plan: plan.clone(),
     });
-    let resources = ResourceSnapshot::from_observation(context.obs);
+    let resources = ResourceSnapshot::from_observation(context.ev.obs);
     let ev = AirEvidence {
         profile: identity,
-        tuning: context.tuning,
-        obs: context.obs,
-        intel: context.intel,
-        home: context.home,
-        public_map: context.public_map,
-        orientation: context.orientation,
+        ..context.ev
     };
     let inputs = ConnectedInputs {
         planning: context.planning,
@@ -854,14 +847,14 @@ fn procure_connected_in_test(
         out.reserved_scrap = settlement
             .producer_schedule()
             .iter()
-            .filter(|job| job.enqueued_at > context.obs.tick)
+            .filter(|job| job.enqueued_at > context.ev.obs.tick)
             .map(|job| job.current_scrap)
             .sum();
         out.intents.extend(
             settlement
                 .producer_schedule()
                 .iter()
-                .filter(|job| job.enqueued_at == context.obs.tick)
+                .filter(|job| job.enqueued_at == context.ev.obs.tick)
                 .map(|job| Intent::TrainAt {
                     building: job.producer,
                     kind: job.kind,
@@ -2054,15 +2047,11 @@ fn artillery_staging_is_dispatched_once_until_the_goal_or_mission_changes() {
     let intelligence = knowledge(&suppression_observation);
     let mut suppression = StrategicDecision::default();
     let mut plan = connected_test_plan(&suppression_observation);
+    let identity = profile();
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: &fixture_planning,
-        tuning: DifficultyTuning::for_level(BotDifficulty::Prime),
-        obs: &suppression_observation,
-        intel: &intelligence,
-        home: HOME,
-        orientation: test_orientation(),
-        public_map: None,
+        ev: evidence(&identity, &suppression_observation, &intelligence),
         enlisted: &[],
         landing_sites: &[],
         connected_resources: None,
@@ -6450,12 +6439,7 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
             &AirPlanningContext {
                 allow_procurement: true,
                 planning: &fixture_planning,
-                tuning: DifficultyTuning::for_level(identity.difficulty),
-                obs: &hidden,
-                intel: &intelligence,
-                home: HOME,
-                orientation: test_orientation(),
-                public_map: None,
+                ev: evidence(&identity, &hidden, &intelligence),
                 enlisted: &[],
                 landing_sites: &[],
                 connected_resources: None,
@@ -6495,12 +6479,7 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
             &AirPlanningContext {
                 allow_procurement: true,
                 planning: &fixture_planning,
-                tuning: DifficultyTuning::for_level(identity.difficulty),
-                obs: &cleared,
-                intel: &intelligence,
-                home: HOME,
-                orientation: test_orientation(),
-                public_map: None,
+                ev: evidence(&identity, &cleared, &intelligence),
                 enlisted: &[],
                 landing_sites: &[],
                 connected_resources: None,
@@ -6539,12 +6518,7 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: &fixture_planning,
-        tuning: DifficultyTuning::for_level(identity.difficulty),
-        obs: &observation,
-        intel: &intelligence,
-        home: HOME,
-        orientation: test_orientation(),
-        public_map: None,
+        ev: evidence(&identity, &observation, &intelligence),
         enlisted: &[],
         landing_sites: &[],
         connected_resources: None,
@@ -6582,12 +6556,7 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: &fixture_planning,
-        tuning: DifficultyTuning::for_level(identity.difficulty),
-        obs: &observation,
-        intel: &intelligence,
-        home: HOME,
-        orientation: test_orientation(),
-        public_map: None,
+        ev: evidence(&identity, &observation, &intelligence),
         enlisted: &[],
         landing_sites: &[],
         connected_resources: None,
@@ -6632,12 +6601,7 @@ fn connected_verify_checks_the_selected_secondary_approach_before_striking() {
     let context = AirPlanningContext {
         allow_procurement: true,
         planning: &fixture_planning,
-        tuning: DifficultyTuning::for_level(identity.difficulty),
-        obs: &observation,
-        intel: &intelligence,
-        home: HOME,
-        orientation: test_orientation(),
-        public_map: None,
+        ev: evidence(&identity, &observation, &intelligence),
         enlisted: &[],
         landing_sites: &[],
         connected_resources: None,

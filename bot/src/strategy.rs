@@ -1244,49 +1244,15 @@ impl StrategicDecision {
 }
 
 struct AirPlanningContext<'a> {
+    ev: AirEvidence<'a>,
     allow_procurement: bool,
     planning: &'a crate::planning::PlanningWork,
-    tuning: DifficultyTuning,
-    obs: &'a Observation,
-    intel: &'a StrategicIntelligence,
-    home: TilePos,
-    orientation: Orientation,
-    public_map: Option<&'a PublicMapBriefing>,
     enlisted: &'a [UnitId],
     landing_sites: &'a [TilePos],
     connected_resources: Option<ConnectedProductionResources>,
     lanes: ProducerLanes<'a>,
     paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
     reserve: CapitalReserve,
-}
-
-impl<'a> AirPlanningContext<'a> {
-    fn new(
-        ev: AirEvidence<'a>,
-        planning: &'a crate::planning::PlanningWork,
-        allow_procurement: bool,
-        reserve: CapitalReserve,
-        lanes: ProducerLanes<'a>,
-        paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
-        enlisted: &'a [UnitId],
-    ) -> Self {
-        Self {
-            allow_procurement,
-            planning,
-            tuning: ev.tuning,
-            obs: ev.obs,
-            intel: ev.intel,
-            home: ev.home,
-            orientation: ev.orientation,
-            public_map: ev.public_map,
-            enlisted,
-            landing_sites: &[],
-            connected_resources: None,
-            lanes,
-            paid_exclusions,
-            reserve,
-        }
-    }
 }
 
 /// Exact transport objective and landing envelope offered to the air planner.
@@ -3220,15 +3186,7 @@ impl StrategicPlanner {
         ActiveAirOperation { op, plan }: &mut ActiveAirOperation,
         out: &mut StrategicDecision,
     ) -> OperationEnd {
-        let AirEvidence {
-            profile,
-            tuning,
-            obs,
-            home,
-            public_map,
-            orientation,
-            ..
-        } = ev;
+        let obs = ev.obs;
         if let Err(reason) = staged {
             out.intents.clear();
             recover(op, reason, obs.tick);
@@ -3252,16 +3210,16 @@ impl StrategicPlanner {
             && (!began_in_recovery || op.phase_started_at == obs.tick);
         if op.phase() == AirOperationPhase::Recover {
             if recovery_entered_this_tick {
-                self.cooldown_until = obs.tick.saturating_add(cooldown(profile, tuning));
+                self.cooldown_until = obs.tick.saturating_add(cooldown(ev.profile, ev.tuning));
             }
             reconcile_recovery_return(
                 op,
                 plan,
                 RecoveryReturnContext {
                     obs,
-                    home,
-                    public_map,
-                    orientation,
+                    home: ev.home,
+                    public_map: ev.public_map,
+                    orientation: ev.orientation,
                     issue_order: recovery_entered_this_tick,
                 },
                 out,
@@ -3396,17 +3354,15 @@ fn planning_context<'c>(
             )
         });
     AirPlanningContext {
+        ev,
+        allow_procurement: inputs.allow_new_operation,
+        planning: inputs.planning,
+        enlisted,
         landing_sites,
         connected_resources,
-        ..AirPlanningContext::new(
-            ev,
-            inputs.planning,
-            inputs.allow_new_operation,
-            inputs.reserve,
-            inputs.lanes,
-            inputs.paid_exclusions,
-            enlisted,
-        )
+        lanes: inputs.lanes,
+        paid_exclusions: inputs.paid_exclusions,
+        reserve: inputs.reserve,
     }
 }
 
@@ -3592,15 +3548,17 @@ impl<'a> AirTurn<'a> {
                 &unavailable,
                 |kind| kind == Role::AirGround.unit_for(obs.faction),
             );
-            let planning = AirPlanningContext::new(
-                self.ev,
-                connected.planning,
+            let planning = AirPlanningContext {
+                ev: self.ev,
                 allow_procurement,
-                connected.reserve,
+                planning: connected.planning,
+                enlisted: &unavailable,
+                landing_sites: &[],
+                connected_resources: None,
                 lanes,
-                connected.paid_exclusions,
-                &unavailable,
-            );
+                paid_exclusions: connected.paid_exclusions,
+                reserve: connected.reserve,
+            };
             let demands = missing_island_members(
                 AirRoster::from(&membership),
                 membership.screen.len(),
@@ -4041,7 +3999,7 @@ fn remembered_recon(
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let obs = context.obs;
+    let obs = context.ev.obs;
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let previous_scout = op.scout;
     op.scout = remembered_recon_scout(op, obs, context.enlisted);
@@ -4055,9 +4013,9 @@ fn remembered_recon(
         op,
         plan,
         obs,
-        context.intel,
+        context.ev.intel,
         context.landing_sites,
-        connected_public_map(plan, context.public_map),
+        connected_public_map(plan, context.ev.public_map),
         out,
     )?;
     schedule(
@@ -4084,7 +4042,7 @@ fn unowned_queued_scouts(context: &AirPlanningContext<'_>, scout: UnitKind) -> u
         .iter()
         .filter(|(_, kind, _)| *kind == scout)
         .count();
-    queued(context.obs, |kind| kind == scout)
+    queued(context.ev.obs, |kind| kind == scout)
         .saturating_add(prior)
         .saturating_sub(unavailable)
 }
@@ -4119,17 +4077,17 @@ fn reconcile_preparation_members(
     plan: &mut AirPlan,
     context: &AirPlanningContext<'_>,
 ) -> Result<(), AirRecoveryReason> {
-    let obs = context.obs;
+    let obs = context.ev.obs;
     let route_unavailable = if let Some(resources) = context.connected_resources.as_ref() {
         connected_provider_unavailable(
             obs,
             &resources.targets,
             &[],
             ConnectedRouteContext::new(
-                context.intel,
-                context.public_map,
-                context.orientation,
-                context.home,
+                context.ev.intel,
+                context.ev.public_map,
+                context.ev.orientation,
+                context.ev.home,
                 preferred_anchor(op, plan),
             ),
         )
@@ -4188,20 +4146,17 @@ fn recon(
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let AirPlanningContext {
-        tuning,
-        obs,
-        intel,
-        landing_sites,
-        ..
-    } = context;
+    let AirEvidence {
+        tuning, obs, intel, ..
+    } = context.ev;
+    let landing_sites = context.landing_sites;
     let scout_kind = Role::Scout.unit_for(obs.faction);
-    let public_map = connected_public_map(plan, context.public_map);
+    let public_map = connected_public_map(plan, context.ev.public_map);
     reconcile_preparation_members(op, plan, context)?;
     dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)?;
     schedule_missing_members(op, plan, context, scout_kind, out);
     if matches!(plan, AirPlan::Connected(_)) {
-        hold_strike_aircraft(op, obs, context.home, out);
+        hold_strike_aircraft(op, obs, context.ev.home, out);
     }
     if op.scout_dispatch.is_some()
         && target_seen(op, plan, obs)
@@ -4218,41 +4173,38 @@ fn assemble(
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let AirPlanningContext {
-        obs,
-        intel,
-        home,
-        landing_sites,
-        ..
-    } = context;
+    let AirEvidence {
+        obs, intel, home, ..
+    } = context.ev;
+    let landing_sites = context.landing_sites;
     let scout_kind = Role::Scout.unit_for(obs.faction);
-    let public_map = connected_public_map(plan, context.public_map);
+    let public_map = connected_public_map(plan, context.ev.public_map);
     reconcile_preparation_members(op, plan, context)?;
     schedule_missing_members(op, plan, context, scout_kind, out);
     let complete = assembly_complete(op, plan);
     if matches!(plan, AirPlan::Connected(_)) && !complete {
-        hold_strike_aircraft(op, obs, *home, out);
+        hold_strike_aircraft(op, obs, home, out);
     }
     if complete {
         if plan.airborne() {
             dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)?;
             enter(op, AirStage::SuppressAa, obs.tick);
-            hold_air_strike(op, plan, obs, *home, out);
+            hold_air_strike(op, plan, obs, home, out);
             return Ok(());
         }
         let objective = operation_objective_anchor(op, plan, intel);
         let staging = match artillery_staging(
             op,
             obs,
-            *home,
+            home,
             objective,
-            context.public_map,
-            context.orientation,
+            context.ev.public_map,
+            context.ev.orientation,
         ) {
             None => return Err(AirRecoveryReason::UnreachableStaging),
             Some(ArtilleryStaging::NeedsRecon(goal)) => {
                 dispatch_scout_to(op, obs, goal, public_map, out)?;
-                hold_strike_aircraft(op, obs, *home, out);
+                hold_strike_aircraft(op, obs, home, out);
                 return Ok(());
             }
             Some(ArtilleryStaging::Ready(staging)) => staging,
@@ -4260,7 +4212,7 @@ fn assemble(
         dispatch_scout(op, plan, obs, intel, landing_sites, public_map, out)?;
         enter(op, AirStage::SuppressAa, obs.tick);
         stage_artillery(op, staging, out);
-        hold_strike_aircraft(op, obs, *home, out);
+        hold_strike_aircraft(op, obs, home, out);
     }
     Ok(())
 }
@@ -4278,12 +4230,12 @@ fn suppress(
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let tuning = context.tuning;
-    let obs = context.obs;
-    let intel = context.intel;
-    let home = context.home;
+    let tuning = context.ev.tuning;
+    let obs = context.ev.obs;
+    let intel = context.ev.intel;
+    let home = context.ev.home;
     let landing_sites = context.landing_sites;
-    let public_map = connected_public_map(plan, context.public_map);
+    let public_map = connected_public_map(plan, context.ev.public_map);
     let cluster_aa = (!plan.airborne()).then(|| cluster_air_defense(op, plan, intel));
     let connected_engagement = if plan.airborne() {
         None
@@ -4294,7 +4246,7 @@ fn suppress(
             obs,
             intel,
             public_map,
-            context.orientation,
+            context.ev.orientation,
         )
     };
     let air_defense = if plan.airborne() {
@@ -4417,14 +4369,14 @@ fn stage_air_defense(
 ) -> (Option<ClusterAirDefense>, Option<Target>) {
     if plan.airborne() {
         let flak = targetable_corridor_flak(
-            context.intel,
-            context.home,
+            context.ev.intel,
+            context.ev.home,
             op.target,
             context.landing_sites,
         );
         (None, flak.map(Target::Building))
     } else {
-        let assessment = cluster_air_defense(op, plan, context.intel);
+        let assessment = cluster_air_defense(op, plan, context.ev.intel);
         (Some(assessment), assessment.targetable)
     }
 }
@@ -4435,10 +4387,10 @@ fn verify(
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let tuning = context.tuning;
-    let obs = context.obs;
-    let intel = context.intel;
-    let home = context.home;
+    let tuning = context.ev.tuning;
+    let obs = context.ev.obs;
+    let intel = context.ev.intel;
+    let home = context.ev.home;
     let landing_sites = context.landing_sites;
     let (cluster_aa, air_defense) = stage_air_defense(op, plan, context);
     if air_defense.is_some() {
@@ -4495,12 +4447,12 @@ fn strike(
     context: &AirPlanningContext<'_>,
     out: &mut StrategicDecision,
 ) -> Result<(), AirRecoveryReason> {
-    let tuning = context.tuning;
-    let obs = context.obs;
-    let intel = context.intel;
-    let home = context.home;
+    let tuning = context.ev.tuning;
+    let obs = context.ev.obs;
+    let intel = context.ev.intel;
+    let home = context.ev.home;
     let landing_sites = context.landing_sites;
-    let public_map = connected_public_map(plan, context.public_map);
+    let public_map = connected_public_map(plan, context.ev.public_map);
     let (cluster_aa, air_defense) = stage_air_defense(op, plan, context);
     let connected_cluster_needs_clearance = cluster_aa.is_some_and(|assessment| {
         assessment.has_targets && assessment.evidence == AirDefenseEvidence::CurrentCoverage
@@ -4534,8 +4486,8 @@ fn strike(
             obs,
             home,
             strike_anchor,
-            context.public_map,
-            context.orientation,
+            context.ev.public_map,
+            context.ev.orientation,
         ) {
             None => return Err(AirRecoveryReason::UnreachableStaging),
             Some(ArtilleryStaging::NeedsRecon(goal)) => {
@@ -4562,8 +4514,13 @@ fn strike(
     let attackers = air_strike_members(op, plan, obs);
     if let Some(target) = live_target {
         if let Some(id) = target.id {
-            let mut air_routes =
-                operation_route_projection(plan, obs, Domain::Air, public_map, context.orientation);
+            let mut air_routes = operation_route_projection(
+                plan,
+                obs,
+                Domain::Air,
+                public_map,
+                context.ev.orientation,
+            );
             if !exact_attack_group_reaches(&mut air_routes, obs, &attackers, target.anchor) {
                 return Err(AirRecoveryReason::UnreachableAirRoute);
             }
@@ -4584,7 +4541,7 @@ fn strike(
             return Err(AirRecoveryReason::Complete);
         }
         let air_routes =
-            operation_route_projection(plan, obs, Domain::Air, public_map, context.orientation);
+            operation_route_projection(plan, obs, Domain::Air, public_map, context.ev.orientation);
         let cleared_anchor = last_strike_anchor(plan).unwrap_or(strike_anchor);
         if !air_routes.group_reaches_command_goal(&attackers, cleared_anchor) {
             return Err(AirRecoveryReason::UnreachableAirRoute);
@@ -4601,7 +4558,7 @@ fn strike(
         // Every live member has left current sight. Flying toward the best
         // remembered one reacquires it instead of idling out the phase.
         let air_routes =
-            operation_route_projection(plan, obs, Domain::Air, public_map, context.orientation);
+            operation_route_projection(plan, obs, Domain::Air, public_map, context.ev.orientation);
         if !air_routes.group_reaches_command_goal(&attackers, remembered.anchor) {
             return Err(AirRecoveryReason::UnreachableAirRoute);
         }
@@ -4739,7 +4696,7 @@ fn schedule(context: &AirPlanningContext<'_>, demands: &[(UnitKind, usize)]) -> 
     if !context.allow_procurement {
         return out;
     }
-    let obs = context.obs;
+    let obs = context.ev.obs;
     let mut bank = obs.scrap.saturating_sub(context.reserve.current);
     let mut production = super::production::ImmediateProduction::new(
         obs,
@@ -6351,7 +6308,7 @@ fn missing_island_members(
     context: &AirPlanningContext<'_>,
     scout_kind: UnitKind,
 ) -> [(UnitKind, usize); 3] {
-    let obs = context.obs;
+    let obs = context.ev.obs;
     let bomber_kind = Role::Bomber.unit_for(obs.faction);
     let missing_scout = 1usize.saturating_sub(
         usize::from(members.scout.is_some()) + unowned_queued_scouts(context, scout_kind),
@@ -6379,7 +6336,7 @@ fn connected_package_is_proven_infeasible(
         return false;
     };
     let package = &connected.package;
-    if !context.allow_procurement || context.obs.tick >= package.preparation_deadline {
+    if !context.allow_procurement || context.ev.obs.tick >= package.preparation_deadline {
         return false;
     }
     let resources = context
@@ -6389,7 +6346,7 @@ fn connected_package_is_proven_infeasible(
     let outstanding = missing_package_demands(
         package,
         AirRoster::from(op),
-        context.obs,
+        context.ev.obs,
         &resources.snapshot,
         package.preparation_deadline,
         &resources.access,
@@ -6402,10 +6359,10 @@ fn connected_package_is_proven_infeasible(
                 Some(context.planning)
             ),
             &outstanding,
-            context.obs.tick,
+            context.ev.obs.tick,
             PreparationConstraints {
                 deadline: package.preparation_deadline,
-                decision_cadence: context.tuning.cadence,
+                decision_cadence: context.ev.tuning.cadence,
                 protected_forecast_scrap: context.reserve.forecast,
             },
             connected.commitment.key(),
@@ -6481,13 +6438,13 @@ fn scout_and_hold(
     dispatch_scout(
         op,
         plan,
-        context.obs,
-        context.intel,
+        context.ev.obs,
+        context.ev.intel,
         landing_sites,
-        connected_public_map(plan, context.public_map),
+        connected_public_map(plan, context.ev.public_map),
         out,
     )?;
-    hold_air_strike(op, plan, context.obs, context.home, out);
+    hold_air_strike(op, plan, context.ev.obs, context.ev.home, out);
     Ok(())
 }
 
