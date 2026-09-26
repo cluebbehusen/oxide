@@ -111,6 +111,31 @@ pub(crate) struct TouchPoint {
     pub chrome: bool,
     /// Whether its long-press already fired (fire once per touch).
     pub fired: bool,
+    /// The card it landed on, as it stood then.
+    pub card: Option<PressedCard>,
+}
+
+/// A card as a finger found it: its slot, its action, and its face. A
+/// resting finger lets the match change the panel under it (a queue
+/// shifts, a disabled card enables), so a lift activates only if it
+/// finds this same card, not merely the same slot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PressedCard {
+    hit: crate::layout::CardHit,
+    icon: Option<crate::panel::CardIcon>,
+}
+
+/// The card under a fingertip at `p`, if any.
+fn pressed_card(game: &Game, p: Vec2, ui: f32) -> Option<PressedCard> {
+    let hit = crate::layout::card_under(&game.presentation.layout.get(), p, Some(ui))?;
+    let icon = game
+        .presentation
+        .panel_model
+        .borrow()
+        .as_ref()
+        .and_then(|panel| panel.card(hit.row, hit.index))
+        .map(|card| card.icon);
+    Some(PressedCard { hit, icon })
 }
 
 /// The one persistent world-targeting mode currently armed.
@@ -1229,6 +1254,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         moved: false,
                         fired: false,
                         chrome,
+                        card: pressed_card(game, p, input.ui),
                     },
                 ));
                 if input.touches.len() > 2 {
@@ -1368,16 +1394,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // the drawn card is smaller. A finger that
                             // landed on another card activates nothing.
                             let layout = game.presentation.layout.get();
-                            let card = crate::layout::card_under(&layout, p, Some(input.ui));
+                            let card = pressed_card(game, p, input.ui);
                             let badge = layout.idle_badge;
-                            if let Some(hit) = card {
-                                let origin = crate::layout::card_under(
-                                    &layout,
-                                    lifted.origin,
-                                    Some(input.ui),
-                                );
-                                if origin == Some(hit) {
-                                    press_card(game, input, hit);
+                            if let Some(card) = card {
+                                if lifted.card == Some(card) {
+                                    press_card(game, input, card.hit);
                                 }
                             } else if badge.w > 0.0
                                 && crate::layout::touch_pad(badge, input.ui).contains(p)

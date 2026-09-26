@@ -2371,6 +2371,79 @@ fn a_disabled_card_explains_itself_to_a_tap_or_a_click() {
 }
 
 #[test]
+fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
+    // A disabled card that enables while the finger rests on it.
+    let (mut game, attack, _) = two_card_band();
+    let mut input = InputState::new();
+    let mut layout = game.presentation.layout.get();
+    layout.cards[0] = (attack, crate::panel::CardAction::Refused);
+    game.presentation.layout.set(layout);
+    input.now = 2.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, attack.center())]);
+    layout.cards[0] = (
+        attack,
+        crate::panel::CardAction::Dispatch(Action::AttackMove),
+    );
+    game.presentation.layout.set(layout);
+    input.now = 4.0;
+    apply_events(&mut game, &mut input, &[touch_up(1, attack.center())]);
+    assert!(
+        !input.attacking,
+        "the lift never arms what the press never saw"
+    );
+
+    // A production queue that shifts while the finger reads its chip:
+    // slot 0 keeps its action but now holds a different unit.
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.presentation.human)
+        .expect("own Foundry")
+        .id;
+    game.presentation.selection.units.clear();
+    game.presentation.selection.buildings = vec![foundry];
+    let chip = |kind: UnitKind, index: u8| crate::panel::Card {
+        icon: crate::panel::CardIcon::Unit(kind),
+        title: format!("{kind:?}"),
+        cost: None,
+        hotkey: String::new(),
+        action: crate::panel::CardAction::CancelQueue(foundry, index),
+        enabled: true,
+        why: None,
+        desc: Vec::new(),
+        progress: None,
+    };
+    let slot = macroquad::math::Rect::new(20.0, 600.0, 48.0, 48.0);
+    let mut layout = bare_layout(680.0, 500.0);
+    layout.queue_slots[0] = (slot, crate::panel::CardAction::CancelQueue(foundry, 0));
+    layout.queue_count = 1;
+    game.presentation.layout.set(layout);
+    for shifts in [false, true] {
+        let mut panel =
+            crate::panel::build_for_input(&game.view(), &input).expect("a Foundry panel");
+        panel.queue = vec![chip(UnitKind::Harvester, 0), chip(UnitKind::Sentinel, 1)];
+        *game.presentation.panel_model.borrow_mut() = Some(panel);
+        game.pending.clear();
+        input.now += 1.0;
+        apply_events(&mut game, &mut input, &[touch_down(2, slot.center())]);
+        if shifts {
+            let mut model = game.presentation.panel_model.borrow_mut();
+            let queue = &mut model.as_mut().expect("the published panel").queue;
+            queue.remove(0);
+            queue[0].action = crate::panel::CardAction::CancelQueue(foundry, 0);
+        }
+        input.now += 2.0;
+        apply_events(&mut game, &mut input, &[touch_up(2, slot.center())]);
+        let cancelled = game
+            .pending
+            .iter()
+            .any(|c| matches!(c.command, Command::CancelTrain { index: 0, .. }));
+        assert_eq!(cancelled, !shifts, "shifted: {shifts}");
+    }
+}
+
+#[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a
     // long-press: the press window clamps strictly above the tap one.
