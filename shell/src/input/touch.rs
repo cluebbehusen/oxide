@@ -94,6 +94,9 @@ pub(crate) enum PairState {
     /// The spread changed past the threshold: zooming for the pair's
     /// whole lifetime, so lifting one finger commits no box.
     Pinch,
+    /// A finger landed off the battlefield: the pair neither zooms
+    /// nor boxes.
+    Inert,
 }
 
 /// A live two-finger gesture.
@@ -112,6 +115,20 @@ fn world_hold(input: &InputState) -> Option<TouchPoint> {
         return None;
     };
     (finger.born == TouchBorn::World && finger.still()).then_some(*finger)
+}
+
+/// Whether an armed mode takes a minimap tap as its target (a rally
+/// point or a patrol waypoint), so the minimap must not steer under it.
+fn minimap_targets(input: &InputState) -> bool {
+    !input.rallying.is_empty() || input.patrol_route.is_some()
+}
+
+/// Points the camera at the minimap spot under a steering finger.
+fn steer_minimap(game: &mut Game, p: Vec2) {
+    if let Some(world) = crate::render::minimap_world_clamped(&game.view(), p) {
+        game.presentation.camera.center = world;
+        game.presentation.camera.pan(Vec2::ZERO); // re-clamp
+    }
 }
 
 /// Where a finger landing at `p` was born.
@@ -173,11 +190,23 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         // Three fingers mean nothing yet; the oldest yields.
         input.touches.remove(0);
     }
+    // A finger landing on the minimap jumps the camera there at once,
+    // like a mouse press, and steers it for as long as it drags.
+    if born == TouchBorn::Minimap && !minimap_targets(input) {
+        steer_minimap(game, p);
+    }
     // A fresh pair starts undecided, whatever the last pair was doing:
     // a pinch must not outlive its fingers and swallow the next box.
-    input.pair = (input.touches.len() == 2).then(|| Pair {
-        start_dist: (input.touches[0].1.at - input.touches[1].1.at).length(),
-        state: PairState::Undecided,
+    input.pair = (input.touches.len() == 2).then(|| {
+        let [(_, a), (_, b)] = [input.touches[0], input.touches[1]];
+        Pair {
+            start_dist: (a.at - b.at).length(),
+            state: if a.born == TouchBorn::World && b.born == TouchBorn::World {
+                PairState::Undecided
+            } else {
+                PairState::Inert
+            },
+        }
     });
     if input.pair.is_some() {
         for (_, finger) in &mut input.touches {
@@ -225,12 +254,20 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
     let two = input.touches.len() == 2;
     let old_dist = two.then(|| (input.touches[0].1.at - input.touches[1].1.at).length());
     let mut delta = Vec2::ZERO;
+    let mut born = TouchBorn::World;
     if let Some((_, tp)) = input.touches.iter_mut().find(|(tid, _)| *tid == id) {
         delta = p - tp.at;
         tp.at = p;
+        born = tp.born;
         if (p - tp.origin).length() > slop {
             tp.moved = true;
         }
+    }
+    if born == TouchBorn::Minimap {
+        if !minimap_targets(input) {
+            steer_minimap(game, p);
+        }
+        return;
     }
     match input.touches.len() {
         // One moved finger drags the world under the hand —

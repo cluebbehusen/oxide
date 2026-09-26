@@ -2526,11 +2526,22 @@ fn a_pair_finger_falsely_reported_lifted_keeps_panning() {
 }
 
 #[test]
-fn a_falsely_lifted_minimap_finger_never_pans_the_world() {
+fn a_falsely_lifted_minimap_finger_keeps_steering_and_never_pans() {
+    let on_map = vec2(1100.0, 650.0);
+    let drag = [vec2(1200.0, 700.0), vec2(900.0, 400.0), vec2(500.0, 400.0)];
+    // One minimap finger that is never interrupted...
+    let mut steady = headless_game();
+    let mut input = InputState::new();
+    publish_minimap(&steady);
+    apply_events(&mut steady, &mut input, &[touch_down(1, on_map)]);
+    for p in drag {
+        apply_events(&mut steady, &mut input, &[touch_move(1, p)]);
+    }
+    // ...and the same finger after iOS reported it lifted along with a
+    // second finger, off the minimap where a world finger would pan.
     let mut game = headless_game();
     let mut input = InputState::new();
     publish_minimap(&game);
-    let on_map = vec2(1100.0, 650.0);
     let world = vec2(400.0, 300.0);
     input.now = 1.0;
     apply_events(&mut game, &mut input, &[touch_down(1, on_map)]);
@@ -2540,11 +2551,13 @@ fn a_falsely_lifted_minimap_finger_never_pans_the_world() {
         &mut input,
         &[touch_up(2, world), touch_up(1, on_map)],
     );
-    let before = game.presentation.camera.center;
-    for x in [900.0, 700.0, 500.0] {
-        apply_events(&mut game, &mut input, &[touch_move(1, vec2(x, 400.0))]);
+    for p in drag {
+        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
     }
-    assert_eq!(game.presentation.camera.center, before);
+    assert_eq!(
+        game.presentation.camera.center,
+        steady.presentation.camera.center
+    );
 }
 
 #[test]
@@ -2946,20 +2959,91 @@ fn hardware_touches_arrive_once_in_order_and_in_logical_pixels() {
 }
 
 #[test]
+fn a_minimap_drag_steers_the_camera_like_the_mouse() {
+    // The same path by finger and by mouse, from the minimap's far
+    // corner, back across it, and off its edge (clamped).
+    let path = |minimap: macroquad::math::Rect| {
+        [
+            vec2(minimap.x + 180.0, minimap.y + 170.0),
+            vec2(minimap.x + 30.0, minimap.y + 30.0),
+            vec2(400.0, 300.0),
+        ]
+    };
+    let mut by_touch = Vec::new();
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let [land, cross, off] = path(minimap);
+    apply_events(&mut game, &mut input, &[touch_down(1, land)]);
+    by_touch.push(game.presentation.camera.center);
+    for p in [cross, off] {
+        apply_events(&mut game, &mut input, &[touch_move(1, p)]);
+        by_touch.push(game.presentation.camera.center);
+    }
+    apply_events(&mut game, &mut input, &[touch_up(1, off)]);
+    assert_eq!(
+        game.presentation.camera.center, by_touch[2],
+        "lifting changes nothing"
+    );
+
+    let mut by_mouse = Vec::new();
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    publish_minimap(&game);
+    apply_events(&mut game, &mut input, &[left_down(land)]);
+    by_mouse.push(game.presentation.camera.center);
+    for p in [cross, off] {
+        apply_events(&mut game, &mut input, &[mouse_move(p)]);
+        by_mouse.push(game.presentation.camera.center);
+    }
+    assert_eq!(by_touch, by_mouse);
+    assert_ne!(by_touch[0], by_touch[1], "the drag really steered");
+}
+
+#[test]
+fn a_minimap_tap_with_rally_armed_sets_the_rally_without_steering() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.presentation.human)
+        .expect("own Foundry")
+        .id;
+    game.presentation.selection.buildings = vec![foundry];
+    input.rallying = vec![foundry];
+    let before = game.presentation.camera.center;
+    let p = vec2(minimap.x + 150.0, minimap.y + 150.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, p)]);
+    assert_eq!(game.presentation.camera.center, before);
+    apply_events(&mut game, &mut input, &[touch_up(1, p)]);
+    assert_eq!(game.presentation.camera.center, before);
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::SetRally { rally: Some(_), .. })),
+        "the minimap point became the rally: {:?}",
+        game.pending
+    );
+}
+
+#[test]
 fn chrome_born_touches_never_drive_world_gestures() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let minimap = publish_minimap(&game);
     let center_before = game.presentation.camera.center;
 
-    // A swipe that LANDS on the minimap must not pan the world
-    // behind it, however far it travels.
+    // A swipe that LANDS on the panel must not pan the world behind
+    // it, however far it travels.
+    let mut layout = game.presentation.layout.get();
+    layout.panel_regions[0] = macroquad::math::Rect::new(0.0, 680.0, 500.0, 120.0);
+    game.presentation.layout.set(layout);
     input.now = 2.0;
-    apply_events(
-        &mut game,
-        &mut input,
-        &[touch_down(1, vec2(minimap.x + 20.0, minimap.y + 20.0))],
-    );
+    apply_events(&mut game, &mut input, &[touch_down(1, vec2(300.0, 720.0))]);
     apply_events(&mut game, &mut input, &[touch_move(1, vec2(400.0, 300.0))]);
     assert_eq!(
         game.presentation.camera.center, center_before,
