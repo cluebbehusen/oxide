@@ -124,25 +124,55 @@ struct ConnectedRouteContext<'a> {
 }
 
 impl<'a> ConnectedRouteContext<'a> {
+    fn new(
+        intel: &'a StrategicIntelligence,
+        public_map: Option<&'a PublicMapBriefing>,
+        orientation: Orientation,
+        home: TilePos,
+        target: TilePos,
+    ) -> Self {
+        Self {
+            campaign_routes: None,
+            unavailable_paid: &[],
+            intel,
+            home,
+            target,
+            public_map,
+            orientation,
+        }
+    }
+
+    fn with_routes(self, campaign_routes: Option<&'a CampaignRoutes<'a>>) -> Self {
+        Self {
+            campaign_routes,
+            ..self
+        }
+    }
+
+    fn excluding_paid(self, unavailable_paid: &'a [(BuildingId, UnitKind, usize)]) -> Self {
+        Self {
+            unavailable_paid,
+            ..self
+        }
+    }
+
+    /// Runs `use_routes` with this context bound to shared campaign routes,
+    /// building them for this call when the context has none.
     fn with_navigation<T>(
         self,
         obs: &'a Observation,
-        use_routes: impl FnOnce(&CampaignRoutes<'a>) -> T,
+        use_routes: impl FnOnce(ConnectedRouteContext<'_>, &CampaignRoutes<'_>) -> T,
     ) -> T {
         if let Some(routes) = self.campaign_routes {
-            use_routes(routes)
+            use_routes(self, routes)
         } else {
-            use_routes(&CampaignRoutes::new(
-                obs,
-                self.intel,
-                self.public_map,
-                self.orientation,
-            ))
+            let routes = CampaignRoutes::new(obs, self.intel, self.public_map, self.orientation);
+            use_routes(self.with_routes(Some(&routes)), &routes)
         }
     }
 
     fn staging(self, obs: &'a Observation) -> Option<TilePos> {
-        self.with_navigation(obs, |routes| routes.staging(self.home, self.target))
+        self.with_navigation(obs, |_, routes| routes.staging(self.home, self.target))
     }
 }
 
@@ -709,15 +739,15 @@ fn derive_connected_package_options(
     // The package must refuse the same paid queue work as the resources it
     // is derived against, or it can lean on an occurrence the lowered claims
     // will not be allowed to take.
-    let route = ConnectedRouteContext {
-        campaign_routes: context.campaign_routes,
-        unavailable_paid: context.resources.access.paid_exclusions(),
+    let route = ConnectedRouteContext::new(
         intel,
+        context.public_map,
+        context.orientation,
         home,
-        target: target.anchor,
-        public_map: context.public_map,
-        orientation: context.orientation,
-    };
+        target.anchor,
+    )
+    .with_routes(context.campaign_routes)
+    .excluding_paid(context.resources.access.paid_exclusions());
     let mut selected = connected_target_subset(obs, intel, target, &[target.anchor]);
     let mut packages = derive_connected_package_options_for_targets(
         profile,
@@ -1344,6 +1374,28 @@ struct StrategicProductionContext<'a> {
     unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
     prior_intents: &'a [Intent],
     lane_reservations: &'a ProducerLaneReservations,
+}
+
+impl<'a> AirPlanningContext<'a> {
+    fn new(context: StrategicThinkContext<'a>, enlisted: &'a [UnitId]) -> Self {
+        let coordination = context.coordination;
+        Self {
+            allow_procurement: coordination.allow_new_operation,
+            planning: coordination.planning,
+            tuning: context.tuning,
+            obs: context.obs,
+            intel: context.intel,
+            home: context.home,
+            orientation: coordination.orientation,
+            public_map: coordination.public_map,
+            enlisted,
+            landing_sites: &[],
+            connected_resources: None,
+            production: context.production,
+            protected_current_scrap: coordination.protected_current_scrap,
+            protected_forecast_scrap: coordination.protected_forecast_scrap,
+        }
+    }
 }
 
 impl StrategicProductionContext<'static> {
@@ -2071,6 +2123,20 @@ struct FreshConnectedDerivationContext<'a> {
     preferred_artillery: &'a [UnitId],
 }
 
+impl<'a> FreshConnectedDerivationContext<'a> {
+    fn route(self, target: TilePos) -> ConnectedRouteContext<'a> {
+        ConnectedRouteContext::new(
+            self.intel,
+            self.coordination.public_map,
+            self.coordination.orientation,
+            self.home,
+            target,
+        )
+        .with_routes(self.campaign_routes)
+        .excluding_paid(self.unavailable_paid)
+    }
+}
+
 fn connected_opportunity_case(
     observed_at: Tick,
     intel: &StrategicIntelligence,
@@ -2328,20 +2394,11 @@ pub(crate) fn prospective_airworks_package_value(
             .unwrap();
         #[cfg(test)]
         AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
-        let route = ConnectedRouteContext {
-            campaign_routes: Some(&campaign_routes),
-            unavailable_paid: &[],
-            intel: &intel,
-            home: request.home,
-            target: target.anchor,
-            public_map: coordination.public_map,
-            orientation: coordination.orientation,
-        };
         let initial = ConnectedProductionResources::from_snapshot_after_current_reserve(
             &prospective,
             target,
             &unavailable,
-            route,
+            context.route(target.anchor),
             &resources,
             0,
         );
@@ -2412,20 +2469,11 @@ fn derive_fresh_connected_proposal(
             ..context
         }
     };
-    let route = ConnectedRouteContext {
-        campaign_routes: context.campaign_routes,
-        unavailable_paid: context.unavailable_paid,
-        intel: context.intel,
-        home: context.home,
-        target: target.anchor,
-        public_map: context.coordination.public_map,
-        orientation: context.coordination.orientation,
-    };
     let initial_resources = ConnectedProductionResources::from_snapshot_after_current_reserve(
         context.obs,
         target,
         context.unavailable,
-        route,
+        context.route(target.anchor),
         context.resource_snapshot,
         context.coordination.protected_current_scrap,
     );
@@ -2451,7 +2499,6 @@ fn derive_connected_proposal_with_resources(
     let FreshConnectedDerivationContext {
         minimum_only,
         campaign_routes,
-        unavailable_paid,
         profile,
         tuning,
         obs,
@@ -2461,6 +2508,7 @@ fn derive_connected_proposal_with_resources(
         coordination,
         unavailable,
         preferred_artillery,
+        ..
     } = context;
     let local_routes;
     let campaign_routes = Some(match campaign_routes {
@@ -2475,15 +2523,7 @@ fn derive_connected_proposal_with_resources(
             &local_routes
         }
     });
-    let route = ConnectedRouteContext {
-        campaign_routes,
-        unavailable_paid,
-        intel,
-        home,
-        target: target.anchor,
-        public_map: coordination.public_map,
-        orientation: coordination.orientation,
-    };
+    let route = context.route(target.anchor).with_routes(campaign_routes);
     let committed = match &origin {
         ConnectedProposalOrigin::Active { plan, .. } => Some(plan.commitment.key()),
         ConnectedProposalOrigin::Idle { .. } | ConnectedProposalOrigin::Remembered { .. } => None,
@@ -2855,22 +2895,7 @@ impl StrategicPlanner {
                 &unavailable,
                 |kind| kind == Role::AirGround.unit_for(obs.faction),
             );
-            let planning = AirPlanningContext {
-                allow_procurement: context.coordination.allow_new_operation,
-                planning: context.coordination.planning,
-                tuning: context.tuning,
-                obs,
-                intel: context.intel,
-                home: context.home,
-                orientation: context.coordination.orientation,
-                public_map: context.coordination.public_map,
-                enlisted: &unavailable,
-                landing_sites: &[],
-                connected_resources: None,
-                production: context.production,
-                protected_current_scrap: context.coordination.protected_current_scrap,
-                protected_forecast_scrap: context.coordination.protected_forecast_scrap,
-            };
+            let planning = AirPlanningContext::new(context, &unavailable);
             let demands = missing_island_members(
                 AirRoster {
                     scout: membership.scout,
@@ -3092,14 +3117,19 @@ impl StrategicPlanner {
             coordination.public_map,
             coordination.orientation,
         );
-        let route = ConnectedRouteContext {
+        let context = FreshConnectedDerivationContext {
+            minimum_only: false,
             campaign_routes: Some(&campaign_routes),
             unavailable_paid,
+            profile,
+            tuning,
+            obs,
+            resource_snapshot,
             intel,
             home,
-            target: target.anchor,
-            public_map: coordination.public_map,
-            orientation: coordination.orientation,
+            coordination,
+            unavailable: &unavailable,
+            preferred_artillery: &active.op.artillery,
         };
         let initial_resources =
             ConnectedProductionResources::from_commitment_snapshot_after_current_reserve(
@@ -3107,25 +3137,12 @@ impl StrategicPlanner {
                 target,
                 &connected.commitment,
                 &unavailable,
-                route,
+                context.route(target.anchor),
                 resource_snapshot,
                 coordination.protected_current_scrap,
             );
         let proposal = derive_connected_proposal_with_resources(
-            FreshConnectedDerivationContext {
-                minimum_only: false,
-                campaign_routes: Some(&campaign_routes),
-                unavailable_paid,
-                profile,
-                tuning,
-                obs,
-                resource_snapshot,
-                intel,
-                home,
-                coordination,
-                unavailable: &unavailable,
-                preferred_artillery: &active.op.artillery,
-            },
+            context,
             target,
             ConnectedProposalOrigin::Active {
                 op: active.op.clone(),
@@ -3218,20 +3235,20 @@ impl StrategicPlanner {
             )
             .is_none()
         {
+            let route = ConnectedRouteContext::new(
+                request.intel,
+                request.coordination.public_map,
+                request.coordination.orientation,
+                request.home,
+                connected.focus,
+            )
+            .excluding_paid(request.unavailable_paid);
             let resources =
                 ConnectedProductionResources::from_package_snapshot_after_current_reserve(
                     obs,
                     connected.commitment.player,
                     package,
-                    ConnectedRouteContext {
-                        campaign_routes: None,
-                        unavailable_paid: request.unavailable_paid,
-                        intel: request.intel,
-                        home: request.home,
-                        target: connected.focus,
-                        public_map: request.coordination.public_map,
-                        orientation: request.coordination.orientation,
-                    },
+                    route,
                     request.resource_snapshot,
                     0,
                 );
@@ -3240,20 +3257,8 @@ impl StrategicPlanner {
             {
                 let owned = reservations(&active.op, &active.plan, obs);
                 let unavailable = excluding_owned(request.coordination.enlisted, &owned);
-                let mut unavailable = connected_provider_unavailable(
-                    obs,
-                    &resources.targets,
-                    &unavailable,
-                    ConnectedRouteContext {
-                        campaign_routes: None,
-                        unavailable_paid: request.unavailable_paid,
-                        intel: request.intel,
-                        home: request.home,
-                        target: connected.focus,
-                        public_map: request.coordination.public_map,
-                        orientation: request.coordination.orientation,
-                    },
-                );
+                let mut unavailable =
+                    connected_provider_unavailable(obs, &resources.targets, &unavailable, route);
                 unavailable.retain(|id| !owned.contains(id));
                 if membership.scout.is_none() && active.op.scout_dispatch.is_none() {
                     let mut scouts = Vec::new();
@@ -3688,14 +3693,13 @@ impl StrategicPlanner {
             claimed_elsewhere,
         } = context;
         let StrategicCoordination {
-            planning,
             enlisted,
             lift_support,
             allow_new_operation,
             protected_current_scrap,
-            protected_forecast_scrap,
             public_map,
             orientation,
+            ..
         } = coordination;
         self.terminal_outcome = None;
         self.standby.prune(obs);
@@ -3854,33 +3858,21 @@ impl StrategicPlanner {
                     obs,
                     connected.commitment.player,
                     &connected.package,
-                    ConnectedRouteContext {
-                        campaign_routes: None,
-                        unavailable_paid: production.unavailable_paid,
+                    ConnectedRouteContext::new(
                         intel,
-                        home,
-                        target: connected.focus,
                         public_map,
                         orientation,
-                    },
+                        home,
+                        connected.focus,
+                    )
+                    .excluding_paid(production.unavailable_paid),
                     protected_current_scrap,
                 )
             });
         let context = AirPlanningContext {
-            allow_procurement: allow_new_operation,
-            planning,
-            tuning,
-            obs,
-            intel,
-            home,
-            orientation,
-            public_map,
-            enlisted: &external_enlisted,
             landing_sites: &landing_sites,
             connected_resources,
-            production,
-            protected_current_scrap,
-            protected_forecast_scrap,
+            ..AirPlanningContext::new(context, &external_enlisted)
         };
         match op.stage {
             AirStage::Watching => remembered_recon(&mut op, &plan, &context, &mut out),
@@ -4194,15 +4186,13 @@ fn reconcile_preparation_members(
             obs,
             &resources.targets,
             &[],
-            ConnectedRouteContext {
-                campaign_routes: None,
-                unavailable_paid: &[],
-                intel: context.intel,
-                home: context.home,
-                target: preferred_anchor(op, plan),
-                public_map: context.public_map,
-                orientation: context.orientation,
-            },
+            ConnectedRouteContext::new(
+                context.intel,
+                context.public_map,
+                context.orientation,
+                context.home,
+                preferred_anchor(op, plan),
+            ),
         )
     } else {
         Vec::new()
@@ -5715,13 +5705,9 @@ fn connected_provider_unavailable<'a>(
     if candidates.is_empty() {
         return excluded;
     }
-    route.with_navigation(obs, |navigation| {
+    route.with_navigation(obs, |route, navigation| {
         let scout_kind = Role::Scout.unit_for(obs.faction);
         let staging = navigation.staging(route.home, route.target);
-        let route = ConnectedRouteContext {
-            campaign_routes: Some(navigation),
-            ..route
-        };
         let ground_routes = navigation.ground();
         let air_routes = navigation.air();
         excluded.extend(candidates.into_iter().filter_map(|member| {
@@ -5761,12 +5747,8 @@ fn connected_production_access<'a>(
     resources: &ResourceSnapshot,
     route: ConnectedRouteContext<'a>,
 ) -> ProductionAccess {
-    route.with_navigation(obs, |navigation| {
+    route.with_navigation(obs, |route, navigation| {
         let staging = navigation.staging(route.home, route.target);
-        let route = ConnectedRouteContext {
-            campaign_routes: Some(navigation),
-            ..route
-        };
         let ground_routes = navigation.ground();
         let air_routes = navigation.air();
         let mut allowed = Vec::new();
@@ -5855,7 +5837,7 @@ fn connected_target_selection<'a>(
     unavailable: &[UnitId],
     route: ConnectedRouteContext<'a>,
 ) -> ConnectedTargetSelection {
-    route.with_navigation(obs, |navigation| {
+    route.with_navigation(obs, |route, navigation| {
         candidates.sort_unstable_by_key(|candidate| {
             (
                 candidate.anchor != target.anchor,
@@ -5876,10 +5858,6 @@ fn connected_target_selection<'a>(
             connected_suppression_origins(obs, unavailable, route.public_map, route.orientation);
         let staging = navigation.staging(route.home, route.target);
         let air_routes = navigation.air();
-        let route = ConnectedRouteContext {
-            campaign_routes: Some(navigation),
-            ..route
-        };
         let ground_routes = navigation.ground();
         let mut target_anchors = Vec::new();
         let mut suppression_targets = Vec::new();
@@ -7345,7 +7323,7 @@ fn connected_artillery_group_has_staging(
     let Some(source_staging) = route.staging(obs) else {
         return false;
     };
-    route.with_navigation(obs, |navigation| {
+    route.with_navigation(obs, |_, navigation| {
         let routes = navigation.ground();
         let exact_live = exact_live_provider_group(obs, demands, preferred, unavailable);
         artillery_staging_candidates(obs, route.home, route.target, route.public_map)
