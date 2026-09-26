@@ -816,6 +816,15 @@ fn roster_filter_desc(touch_only: bool) -> Vec<String> {
     }
 }
 
+/// How the Patrol card collects and starts its route.
+fn patrol_desc(touch_only: bool) -> &'static str {
+    if touch_only {
+        "Arm a looping route, tap waypoints, then tap Patrol again to start it."
+    } else {
+        "Arm a looping route, click waypoints, then press again to start it."
+    }
+}
+
 /// How ground machines board a selected transport.
 fn transport_load_desc(touch_only: bool) -> &'static str {
     if touch_only {
@@ -1101,7 +1110,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         enabled: true,
         why: None,
         desc: vec![
-            "Arm a looping route; press again to start it.".into(),
+            patrol_desc(crate::platform::TOUCH_ONLY).into(),
             "Machines engage whatever they meet along the way.".into(),
         ],
         progress: None,
@@ -1269,6 +1278,7 @@ mod tests {
             crate::platform::assert_touch_copy(&line);
         }
         crate::platform::assert_touch_copy(transport_load_desc(true));
+        crate::platform::assert_touch_copy(patrol_desc(true));
         crate::platform::assert_touch_copy(&construction_summary("Esc", true));
         assert_eq!(roster_filter_desc(false).len(), 2);
         assert_eq!(

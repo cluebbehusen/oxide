@@ -136,13 +136,14 @@ pub(crate) fn touch_box(input: &InputState) -> Option<(Vec2, Vec2, bool)> {
 }
 
 /// The lone finger that may charge a battlefield long-press. Placement
-/// claims every world press for its ghost, so nothing charges then.
+/// and patrol claim every world press as a target, so nothing charges
+/// while either collects them.
 fn world_hold(input: &InputState) -> Option<TouchPoint> {
     let [(_, finger)] = input.touches.as_slice() else {
         return None;
     };
-    (finger.born == TouchBorn::World && finger.still() && input.placing.is_none())
-        .then_some(*finger)
+    let claimed = input.placing.is_some() || input.patrol_route.is_some();
+    (finger.born == TouchBorn::World && finger.still() && !claimed).then_some(*finger)
 }
 
 /// Whether an armed mode takes a minimap tap as its target (a rally
@@ -503,6 +504,9 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
         return;
     }
     input.touches[0].1.spent = true;
+    // Like a right-click, a long-press is a new intent: it stands down
+    // any verb left armed before issuing its own order.
+    input.close_construction();
     let world = game.presentation.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     // Only entities the viewer can actually SEE steer the gesture — an

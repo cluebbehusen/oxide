@@ -2977,6 +2977,128 @@ fn the_queue_chip_flips_by_tap_and_click() {
     assert!(!input.queue_held(), "leaving the screen drops it");
 }
 
+fn armed_patrol() -> (Game, InputState, oxide_sim::UnitId) {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.presentation.selection.units = vec![fighter];
+    dispatch_action(&mut game, &mut input, Action::Patrol);
+    assert_eq!(
+        input.patrol_route,
+        Some(Vec::new()),
+        "premise: patrol armed"
+    );
+    (game, input, fighter)
+}
+
+#[test]
+fn taps_collect_a_patrol_route_and_the_card_starts_it() {
+    let (mut game, mut input, fighter) = armed_patrol();
+    let minimap = publish_minimap(&game);
+    let before = game.presentation.camera.center;
+    tap_world(&mut game, &mut input, vec2(9.5, 5.5));
+    tap_world(&mut game, &mut input, vec2(12.5, 8.5));
+    tap(
+        &mut game,
+        &mut input,
+        vec2(minimap.x + 150.0, minimap.y + 120.0),
+    );
+    assert_eq!(
+        game.presentation.camera.center, before,
+        "the minimap tap is a waypoint"
+    );
+    assert_eq!(input.patrol_route.as_ref().map(Vec::len), Some(3));
+    assert_eq!(
+        game.presentation.selection.units,
+        vec![fighter],
+        "taps never reselect"
+    );
+    dispatch_action(&mut game, &mut input, Action::Patrol);
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Patrol { waypoints, .. } if waypoints.len() == 3
+        )),
+        "the second Patrol starts the circuit: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn a_left_click_adds_a_patrol_waypoint_and_a_full_route_says_so() {
+    let (mut game, mut input, _) = armed_patrol();
+    let p = game.presentation.camera.to_screen(vec2(9.5, 5.5));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(input.patrol_route.as_ref().map(Vec::len), Some(1));
+    input.patrol_route = Some(vec![TilePos::new(9, 5); oxide_sim::stats::ORDER_QUEUE_CAP]);
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(
+        input.patrol_route.as_ref().map(Vec::len),
+        Some(oxide_sim::stats::ORDER_QUEUE_CAP)
+    );
+    assert!(
+        game.presentation
+            .toasts
+            .iter()
+            .any(|t| t.text.starts_with("patrol is full"))
+    );
+}
+
+#[test]
+fn a_long_press_honors_the_armed_mode() {
+    // Collecting a route, a long rest never orders: its lift is just a
+    // slow tap, adding the waypoint under it.
+    let (mut game, mut input, fighter) = armed_patrol();
+    long_press_world(&mut game, &mut input, vec2(12.5, 8.5));
+    assert!(game.pending.is_empty());
+    assert_eq!(input.patrol_route, Some(vec![TilePos::new(12, 8)]));
+
+    // Any other armed verb stands down, as for a right-click, and the
+    // long-press issues its own order.
+    input.patrol_route = None;
+    input.attacking = true;
+    game.presentation.selection.units = vec![fighter];
+    long_press_world(&mut game, &mut input, vec2(12.5, 8.5));
+    assert!(!input.attacking, "the armed verb stood down");
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { .. })),
+        "the long-press ordered: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn patrol_is_exclusive_with_the_other_armed_verbs() {
+    let (mut game, mut input, _) = armed_patrol();
+    dispatch_action(&mut game, &mut input, Action::AttackMove);
+    assert!(input.attacking);
+    assert_eq!(
+        input.patrol_route, None,
+        "arming attack-move drops the route"
+    );
+    dispatch_action(&mut game, &mut input, Action::Patrol);
+    assert!(!input.attacking, "arming patrol stands attack-move down");
+    assert_eq!(input.patrol_route, Some(Vec::new()));
+}
+
+#[test]
+fn patrol_copy_speaks_touch_on_touch_only_builds() {
+    assert_eq!(
+        patrol_arm_toast("R", false),
+        "patrol: click waypoints, R to start"
+    );
+    crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
+    crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
+}
+
 #[test]
 fn touch_windows_keep_their_ordering_invariant() {
     // A hand-edited config cannot make a lazy double-tap read as a

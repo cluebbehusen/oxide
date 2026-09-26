@@ -499,13 +499,14 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     /// One armed left-click verb at a time: arming placement, salvage,
-    /// repair, run, attack-move, or rally stands the others down. `armed_click`
+    /// repair, run, attack-move, rally, or patrol stands the others down. `armed_click`
     /// resolves modes in a fixed priority order, so two live at once
     /// would make the next click do something other than what the toast
     /// promised — press M while placing and the click would still stamp
     /// a building.
     pub(crate) fn disarm_click_verbs(&mut self) {
         self.stop_placing();
+        self.patrol_route = None;
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
@@ -1190,17 +1191,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 let queue = input.queue_held();
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                    if let Some(route) = &mut input.patrol_route {
-                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.presentation.toast(format!(
-                                "patrol is full: {} starts it",
-                                input.bindings.label(Action::Patrol)
-                            ));
-                        } else {
-                            route.push(tile);
-                            game.presentation
-                                .ping(vec2(world.x, world.y), PingKind::Rally);
-                        }
+                    if input.patrol_route.is_some() {
+                        add_patrol_waypoint(game, input, world);
                     } else {
                         let units = game.presentation.selection.units.clone();
                         // The same commandability gate the world path
@@ -1220,17 +1212,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
                     let world = game.presentation.camera.to_world(vec2(x, y));
-                    if let Some(route) = &mut input.patrol_route {
-                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.presentation.toast(format!(
-                                "patrol is full: {} starts it",
-                                input.bindings.label(Action::Patrol)
-                            ));
-                        } else {
-                            route
-                                .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
-                            game.presentation.ping(world, PingKind::Rally);
-                        }
+                    if input.patrol_route.is_some() {
+                        add_patrol_waypoint(game, input, world);
                     } else {
                         context_order(game, vec2(x, y), queue);
                     }
@@ -1665,7 +1648,51 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         }
         return true;
     }
+    if input.patrol_route.is_some() {
+        // Left-clicks and taps collect the route just as right-clicks
+        // do; the minimap keeps its ground meaning.
+        let world = crate::render::minimap_world_at(&game.view(), p)
+            .or_else(|| (!click_on_hud(game, p)).then(|| game.presentation.camera.to_world(p)));
+        if let Some(world) = world {
+            add_patrol_waypoint(game, input, world);
+        }
+        return true;
+    }
     false
+}
+
+/// Adds a waypoint at `world` to the patrol route being collected, or
+/// says the route is full.
+fn add_patrol_waypoint(game: &mut Game, input: &mut InputState, world: Vec2) {
+    let key = input.bindings.label(Action::Patrol);
+    let Some(route) = &mut input.patrol_route else {
+        return;
+    };
+    if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
+        game.presentation
+            .toast(patrol_full_toast(&key, crate::platform::TOUCH_ONLY));
+    } else {
+        route.push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
+        game.presentation.ping(world, PingKind::Rally);
+    }
+}
+
+/// The toast that arms a patrol.
+pub(crate) fn patrol_arm_toast(key: &str, touch_only: bool) -> String {
+    if touch_only {
+        "patrol: tap waypoints, then tap Patrol again to start".to_string()
+    } else {
+        format!("patrol: click waypoints, {key} to start")
+    }
+}
+
+/// The toast when the route has no room for another waypoint.
+fn patrol_full_toast(key: &str, touch_only: bool) -> String {
+    if touch_only {
+        "patrol is full: tap Patrol to start it".to_string()
+    } else {
+        format!("patrol is full: {key} starts it")
+    }
 }
 
 pub(crate) fn activate_action_card(game: &mut Game, input: &mut InputState, action: Action) {

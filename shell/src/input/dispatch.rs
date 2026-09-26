@@ -182,10 +182,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             // First press arms a route; the second sends the circuit.
             match input.patrol_route.take() {
                 None if !game.presentation.selection.units.is_empty() => {
+                    input.disarm_click_verbs();
                     input.patrol_route = Some(Vec::new());
-                    game.presentation.toast(format!(
-                        "patrol: right-click waypoints, {} to start",
-                        input.bindings.label(Action::Patrol)
+                    game.presentation.toast(super::patrol_arm_toast(
+                        &input.bindings.label(Action::Patrol),
+                        crate::platform::TOUCH_ONLY,
                     ));
                 }
                 None => {}
