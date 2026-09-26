@@ -6,7 +6,7 @@ use super::operations::{
 };
 use super::{
     AllocationBudgetOutcome, AllocationParticipants, AllocationSession, AllocationSessionContext,
-    AllocationSessionOutcome, PlannerClaims, RetainedOperationWork,
+    AllocationSessionOutcome, PlannerClaims, RetainedOperationWork, air_paid_exclusions,
 };
 use crate::{
     PublicMapBriefing,
@@ -340,7 +340,7 @@ pub(crate) fn admit_decision(
                 prior_intents: &allocated_producer_intents,
                 reservations: &producer_lane_reservations,
             },
-            paid_exclusions: &policy.state.reconnaissance.paid_exclusions(),
+            paid_exclusions: &air_paid_exclusions(policy, raids),
         },
     );
     let air_decision_for_trace = air_decision.clone();

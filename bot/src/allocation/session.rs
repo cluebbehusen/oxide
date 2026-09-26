@@ -79,7 +79,7 @@ struct SupportPreparation {
 struct FreshInvestmentInputs<'a> {
     active_revision: ActiveRevisionPreparation,
     defense_admission_reserve: u32,
-    recon_paid_exclusions: &'a [(oxide_sim::ids::BuildingId, UnitKind, usize)],
+    paid_exclusions: &'a [(oxide_sim::ids::BuildingId, UnitKind, usize)],
     standing_force: StandingForceWork,
 }
 
@@ -179,6 +179,24 @@ impl<'a> PlannerClaims<'a> {
             self.lift(),
         )
     }
+}
+
+/// Paid queue occurrences the reconnaissance and raid programs own. No air
+/// operation may count them as its own supply.
+pub(crate) fn air_paid_exclusions(
+    policy: &UtilityPolicy,
+    raids: &RaidPlanner,
+) -> Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)> {
+    let mut excluded = policy.state.reconnaissance.paid_exclusions();
+    excluded.extend(
+        raids
+            .paid_claims()
+            .iter()
+            .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
+    );
+    excluded.sort_unstable();
+    excluded.dedup();
+    excluded
 }
 
 pub(crate) fn prior_planner_claims(
@@ -409,12 +427,6 @@ impl<'a> AllocationSession<'a> {
             .participants
             .policy
             .observe_reconnaissance(observed_context, self.context.home);
-        let recon_paid_exclusions = self
-            .participants
-            .policy
-            .state
-            .reconnaissance
-            .paid_exclusions();
         drop(recon_scope);
         let support_scope =
             crate::observer::PhaseScope::new(self.observer, crate::observer::BotPhase::Support);
@@ -435,7 +447,6 @@ impl<'a> AllocationSession<'a> {
         ObservedAllocation {
             resources,
             support_snapshot,
-            recon_paid_exclusions,
             maintenance_intents,
         }
     }
@@ -446,7 +457,6 @@ impl<'a> AllocationSession<'a> {
         let ObservedAllocation {
             resources,
             support_snapshot,
-            mut recon_paid_exclusions,
             maintenance_intents,
         } = observed;
         let RetainedPreparation {
@@ -458,9 +468,8 @@ impl<'a> AllocationSession<'a> {
             prospective_carrier_floor,
             emergency_defense,
             repair_renewals,
-        } = self
-            .retained_work()
-            .prepare(resources, &mut recon_paid_exclusions, &support_snapshot);
+            paid_exclusions,
+        } = self.retained_work().prepare(resources, &support_snapshot);
         let support = self.prepare_support(&claims, &obligations, &support_snapshot);
         let fresh_support_relief = self.prepare_support_relief(&claims);
         let fresh_support_deployments =
@@ -492,7 +501,7 @@ impl<'a> AllocationSession<'a> {
         let operational_scout_queues = self.participants.strategy.reconnaissance_paid_claims(
             self.context.observation,
             &obligations.resources,
-            &recon_paid_exclusions,
+            &paid_exclusions,
         );
         let raid_work =
             self.prepare_raid_procurement(&claims, &obligations, &recon_paid_unavailable);
@@ -560,7 +569,7 @@ impl<'a> AllocationSession<'a> {
             FreshInvestmentInputs {
                 active_revision,
                 defense_admission_reserve,
-                recon_paid_exclusions: &recon_paid_exclusions,
+                paid_exclusions: &paid_exclusions,
                 standing_force: StandingForceWork {
                     repair_work: support.repair_work,
                     protection_work,
@@ -733,7 +742,7 @@ impl<'a> AllocationSession<'a> {
         let FreshInvestmentInputs {
             active_revision,
             defense_admission_reserve,
-            recon_paid_exclusions,
+            paid_exclusions,
             standing_force: work,
         } = inputs;
         let admission_tick = strategic_admission_tick(self.context.observation.tick)
@@ -796,7 +805,7 @@ impl<'a> AllocationSession<'a> {
                     planning: &self.participants.policy.planning,
                     resources: &obligations.resources,
                     unavailable: &claims.planner_claims,
-                    paid_exclusions: recon_paid_exclusions,
+                    paid_exclusions,
                     reserve: CapitalReserve {
                         current: current_reserve_at(
                             &obligations.obligations,
@@ -1422,12 +1431,10 @@ impl<'a> AllocationSession<'a> {
                         planning: &self.participants.policy.planning,
                         resources: &prepared.resources,
                         unavailable: &prepared.planner_claims,
-                        paid_exclusions: &self
-                            .participants
-                            .policy
-                            .state
-                            .reconnaissance
-                            .paid_exclusions(),
+                        paid_exclusions: &air_paid_exclusions(
+                            self.participants.policy,
+                            self.participants.raids,
+                        ),
                         reserve: CapitalReserve::default(),
                     },
                 )
@@ -2248,7 +2255,6 @@ impl CommitEffects {
 struct ObservedAllocation {
     resources: ResourceSnapshot,
     support_snapshot: SupportWorkSnapshot,
-    recon_paid_exclusions: Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)>,
     maintenance_intents: Vec<Intent>,
 }
 

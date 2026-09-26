@@ -17,6 +17,7 @@ pub(super) struct RetainedPreparation {
     pub(super) prospective_carrier_floor: u32,
     pub(super) emergency_defense: Option<FreshEmergencyDefense>,
     pub(super) repair_renewals: Vec<crate::utility::RepairAssignment>,
+    pub(super) paid_exclusions: Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +85,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
     pub(super) fn prepare(
         &mut self,
         resources: ResourceSnapshot,
-        recon_paid_exclusions: &mut Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)>,
         support_snapshot: &SupportWorkSnapshot,
     ) -> RetainedPreparation {
         self.participants.raids.reconcile_procurement_routes(
@@ -92,18 +92,12 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             Some(self.context.public_map),
             Some(self.context.orientation),
         );
-        recon_paid_exclusions.extend(
-            self.participants
-                .raids
-                .paid_claims()
-                .iter()
-                .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
-        );
-        recon_paid_exclusions.sort_unstable();
-        recon_paid_exclusions.dedup();
+        let paid_exclusions =
+            air_paid_exclusions(self.participants.policy, self.participants.raids);
 
         let mut claims = snapshot_claims(self.context, self.participants);
-        let mut obligations = self.collect_retained_obligations(&claims, resources);
+        let mut obligations =
+            self.collect_retained_obligations(&claims, resources, &paid_exclusions);
         self.prepare_standing_saving(&claims, &mut obligations);
         let emergency_defense = self.prepare_emergency_defense(&claims, &mut obligations);
         if let Some(plan) = self.participants.policy.economic_foundation() {
@@ -182,7 +176,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     saved = Some(self.prepare_saved_foundry(&claims, &air_lift, &mut obligations));
                 }
                 RetainedStep::Island => {
-                    self.stage_active_island(&mut claims, &mut obligations, recon_paid_exclusions);
+                    self.stage_active_island(&mut claims, &mut obligations, &paid_exclusions);
                     if island_precedes_lift
                         && let Some(staged) = obligations.island_preparation.as_ref()
                     {
@@ -227,11 +221,8 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             );
         }
         let mut saved = saved.expect("retained preparation visits the Foundry exactly once");
-        let active_revision = self.prepare_active_connected_revision(
-            &claims,
-            &mut obligations,
-            recon_paid_exclusions,
-        );
+        let active_revision =
+            self.prepare_active_connected_revision(&claims, &mut obligations, &paid_exclusions);
         if active_revision.proposal.is_none() {
             self.downgrade_unfundable_active_connected(&mut saved, &air_lift, &mut obligations);
         }
@@ -249,6 +240,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             prospective_carrier_floor,
             emergency_defense,
             repair_renewals,
+            paid_exclusions,
         }
     }
 
@@ -367,6 +359,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &ClaimSnapshot,
         resources: ResourceSnapshot,
+        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
     ) -> ObligationPreparation {
         let air_work = economic_air_work(
             self.context,
@@ -500,12 +493,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 planning: &self.participants.policy.planning,
                 resources: &resources,
                 unavailable: &claims.planner_claims,
-                paid_exclusions: &self
-                    .participants
-                    .policy
-                    .state
-                    .reconnaissance
-                    .paid_exclusions(),
+                paid_exclusions,
                 reserve: CapitalReserve::default(),
             },
         );
@@ -1094,7 +1082,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &mut ClaimSnapshot,
         obligations: &mut ObligationPreparation,
-        recon_paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
     ) {
         if obligations.coordinator_failure.is_some() {
             return;
@@ -1130,7 +1118,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     planning: &self.participants.policy.planning,
                     resources: &obligations.resources,
                     unavailable: &claims.planner_claims,
-                    paid_exclusions: recon_paid_exclusions,
+                    paid_exclusions,
                     reserve: CapitalReserve {
                         current: protected_current_scrap,
                         forecast: protected_forecast_scrap,
@@ -1176,7 +1164,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
-        recon_paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
     ) -> ActiveRevisionPreparation {
         let deadline = self
             .participants
@@ -1229,7 +1217,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     planning: &self.participants.policy.planning,
                     resources: &obligations.resources,
                     unavailable: &external_claims,
-                    paid_exclusions: recon_paid_exclusions,
+                    paid_exclusions,
                     reserve: CapitalReserve {
                         current: protected_current_scrap,
                         forecast: protected_forecast_scrap,
