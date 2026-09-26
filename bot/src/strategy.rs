@@ -1803,34 +1803,6 @@ impl AirMembership {
     fn units(&self, obs: &Observation) -> Vec<UnitId> {
         AirRoster::from(self).live_members(&self.screen, obs)
     }
-
-    pub(crate) fn apply(self, planner: &mut StrategicPlanner, now: Tick) {
-        let active = planner
-            .air
-            .as_mut()
-            .expect("validated air operation remains active");
-        let previous_scout = active.op.scout;
-        let previous_artillery = core::mem::replace(&mut active.op.artillery, self.artillery);
-        let previous_strike =
-            core::mem::replace(&mut active.op.strike_aircraft, self.strike_aircraft);
-        active.op.scout = self.scout;
-        if let Some(screen) = active.plan.screen_mut() {
-            *screen = self.screen;
-        }
-        if previous_scout != active.op.scout
-            && active.op.scout.is_some()
-            && (matches!(active.plan, AirPlan::Connected(_))
-                || active.op.phase() == AirOperationPhase::Recon)
-        {
-            active.op.phase_started_at = now;
-        }
-        invalidate_reassigned_member_orders(
-            &mut active.op,
-            previous_scout,
-            &previous_artillery,
-            &previous_strike,
-        );
-    }
 }
 
 pub(crate) struct IslandPreparation {
@@ -2629,7 +2601,7 @@ pub(super) struct ConnectedPackageDiagnostics {
 /// Controller-local owner of the active operation and its cooldown.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StrategicPlanner {
-    pub(crate) outcomes: super::experience::OutcomeJournal,
+    outcomes: super::experience::OutcomeJournal,
     air: Option<ActiveAirOperation>,
     standby: AirStandby,
     cooldown_until: Tick,
@@ -2734,6 +2706,14 @@ impl StrategicPlanner {
         self.terminal_outcome
     }
 
+    pub(crate) fn outcomes_mut(&mut self) -> &mut super::experience::OutcomeJournal {
+        &mut self.outcomes
+    }
+
+    pub(crate) fn episode_id(&self) -> Option<super::experience::EpisodeId> {
+        self.outcomes.episode_id()
+    }
+
     pub(crate) fn owned_units(&self) -> impl Iterator<Item = UnitId> + '_ {
         self.air
             .iter()
@@ -2759,6 +2739,35 @@ impl StrategicPlanner {
                 abort_if_needed(&mut active.op, &active.plan, profile, obs, intel);
             }
         }
+        self.prune_paid_production(obs);
+    }
+
+    pub(crate) fn apply_membership(&mut self, membership: AirMembership, now: Tick) {
+        let active = self
+            .air
+            .as_mut()
+            .expect("validated air operation remains active");
+        let previous_scout = active.op.scout;
+        let previous_artillery = core::mem::replace(&mut active.op.artillery, membership.artillery);
+        let previous_strike =
+            core::mem::replace(&mut active.op.strike_aircraft, membership.strike_aircraft);
+        active.op.scout = membership.scout;
+        if let Some(screen) = active.plan.screen_mut() {
+            *screen = membership.screen;
+        }
+        if previous_scout != active.op.scout
+            && active.op.scout.is_some()
+            && (matches!(active.plan, AirPlan::Connected(_))
+                || active.op.phase() == AirOperationPhase::Recon)
+        {
+            active.op.phase_started_at = now;
+        }
+        invalidate_reassigned_member_orders(
+            &mut active.op,
+            previous_scout,
+            &previous_artillery,
+            &previous_strike,
+        );
     }
 
     pub(crate) fn has_active_island_operation(&self) -> bool {
@@ -3257,21 +3266,29 @@ impl StrategicPlanner {
             .collect()
     }
 
-    /// Paid purchases still supplying the retained force. Completed history
-    /// leaves the ledger so it cannot capture later ordinary queue items.
-    pub(crate) fn paid_connected_production(
-        &mut self,
-        obs: &Observation,
-    ) -> Vec<ConnectedPurchase> {
+    /// Paid purchases still supplying the retained force.
+    pub(crate) fn paid_connected_production(&self) -> &[ConnectedPurchase] {
+        self.air
+            .as_ref()
+            .filter(|active| {
+                active.op.assault_admitted() && active.op.phase() <= AirOperationPhase::Assemble
+            })
+            .and_then(|active| active.plan.connected())
+            .map_or(&[], |plan| &plan.paid_production)
+    }
+
+    /// Completed history leaves the ledger so it cannot capture later
+    /// ordinary queue items.
+    fn prune_paid_production(&mut self, obs: &Observation) {
         let Some(active) = self.air.as_mut().filter(|active| {
             active.op.assault_admitted() && active.op.phase() <= AirOperationPhase::Assemble
         }) else {
-            return Vec::new();
+            return;
         };
         let mut missing = connected_provider_shortfall(active, obs);
         let mut queued = observed_queue_multiplicity(obs);
         let AirPlan::Connected(plan) = &mut active.plan else {
-            return Vec::new();
+            return;
         };
         plan.paid_production.retain_mut(|purchase| {
             let Some(needed) = missing.get_mut(&purchase.kind).filter(|count| **count > 0) else {
@@ -3292,7 +3309,6 @@ impl StrategicPlanner {
             }
             owned
         });
-        plan.paid_production.clone()
     }
 
     /// Releases unpaid connected demand during emergency economy recovery
@@ -3310,9 +3326,8 @@ impl StrategicPlanner {
             orientation,
             recon_paid_exclusions,
         } = context;
-        // Prunes completed purchases so they cannot claim later ordinary queue
-        // work. This path returns before the normal pass would do it.
-        self.paid_connected_production(obs);
+        // This path returns before the normal observation would prune.
+        self.prune_paid_production(obs);
         let has_unpaid_provider = self.air.as_ref().is_some_and(|active| {
             if active.op.phase() > AirOperationPhase::Assemble {
                 return false;

@@ -867,20 +867,20 @@ fn paid_connected_queue_keeps_duplicates_and_releases_completed_history() {
         },
     ];
     active.plan.connected_mut().paid_production = purchases.clone();
-    assert_eq!(planner.paid_connected_production(&obs), purchases);
+    assert_eq!(planner.settle_paid_production(&obs), purchases);
     obs.my_queues[2] = vec![kind, kind];
     obs.tick = ready;
     obs.my_queue_progress[2] = kind.stats().train_ticks - 1;
-    assert_eq!(planner.paid_connected_production(&obs), purchases);
+    assert_eq!(planner.settle_paid_production(&obs), purchases);
     obs.tick += 1;
     obs.my_queues[2] = vec![kind];
     obs.my_queue_progress[2] = 0;
-    assert_eq!(planner.paid_connected_production(&obs), purchases[1..]);
+    assert_eq!(planner.settle_paid_production(&obs), purchases[1..]);
     obs.tick = purchases[1].ready_at + 1;
-    assert!(planner.paid_connected_production(&obs).is_empty());
+    assert!(planner.settle_paid_production(&obs).is_empty());
     obs.tick += 12;
     assert!(
-        planner.paid_connected_production(&obs).is_empty(),
+        planner.settle_paid_production(&obs).is_empty(),
         "later ordinary work cannot resurrect released ownership"
     );
 }
@@ -907,13 +907,13 @@ fn blocked_paid_connected_queue_remains_owned_after_predicted_completion() {
     obs.my_queues[2] = vec![kind];
     obs.my_queue_progress = vec![0; obs.my_buildings.len()];
     obs.my_queue_progress[2] = kind.stats().train_ticks;
-    assert_eq!(planner.paid_connected_production(&obs).len(), 1);
+    assert_eq!(planner.settle_paid_production(&obs).len(), 1);
     obs.tick += 12;
-    assert_eq!(planner.paid_connected_production(&obs).len(), 1);
+    assert_eq!(planner.settle_paid_production(&obs).len(), 1);
     obs.my_queues[2].clear();
-    assert!(planner.paid_connected_production(&obs).is_empty());
+    assert!(planner.settle_paid_production(&obs).is_empty());
     obs.my_queues[2] = vec![kind];
-    assert!(planner.paid_connected_production(&obs).is_empty());
+    assert!(planner.settle_paid_production(&obs).is_empty());
 }
 
 #[test]
@@ -1006,7 +1006,7 @@ fn unpaid_connected_demand_can_buy_earlier_and_does_not_expire_after_rollback() 
             .any(|(earlier, old)| earlier.enqueued_at < old.enqueued_at)
     );
     assert!(
-        planner.paid_connected_production(&obs).is_empty(),
+        planner.settle_paid_production(&obs).is_empty(),
         "quotations create no paid ownership"
     );
     obs.tick += 12;
@@ -1020,7 +1020,7 @@ fn unpaid_connected_demand_can_buy_earlier_and_does_not_expire_after_rollback() 
     );
     planner.record_connected_purchases(&retry, obs.tick);
     assert_eq!(
-        planner.paid_connected_production(&obs).len(),
+        planner.settle_paid_production(&obs).len(),
         retry
             .iter()
             .filter(|job| job.enqueued_at == obs.tick)
@@ -1054,7 +1054,7 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
     planner.commit_connected(proposal);
     let schedule = settle_active(&mut planner, &obs);
     planner.record_connected_purchases(&schedule, obs.tick);
-    let paid = planner.paid_connected_production(&obs);
+    let paid = planner.settle_paid_production(&obs);
     assert!(!paid.is_empty());
     for purchase in &paid {
         let index = obs
@@ -1071,7 +1071,7 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
         .iter()
         .map(|queue| if queue.is_empty() { 0 } else { 12 })
         .collect();
-    assert_eq!(planner.paid_connected_production(&obs), paid);
+    assert_eq!(planner.settle_paid_production(&obs), paid);
     let revision = planner
         .active_connected_revision_proposal(FreshConnectedProposalRequest::new(
             &identity,
@@ -1086,7 +1086,7 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
         .unwrap();
     assert_eq!(revision.deadline(), deadline);
     planner.commit_connected(revision);
-    assert_eq!(planner.paid_connected_production(&obs), paid);
+    assert_eq!(planner.settle_paid_production(&obs), paid);
     let before = active_obligation(&mut planner, &obs)
         .unwrap()
         .provider_jobs()
@@ -1113,8 +1113,8 @@ fn paid_connected_ownership_survives_revision_and_completion_does_not_repurchase
             .collect::<Vec<_>>(),
         before
     );
-    after.membership.apply(&mut planner, obs.tick);
-    assert!(planner.paid_connected_production(&obs).is_empty());
+    planner.apply_membership(after.membership, obs.tick);
+    assert!(planner.settle_paid_production(&obs).is_empty());
     assert!(
         planner
             .recover_unpaid_connected_for_economy_emergency(EconomyEmergencyRecovery {
@@ -1154,7 +1154,7 @@ fn unpaid_connected_operation(obs: &Observation) -> (StrategicPlanner, Vec<Conne
     let jobs = proposal.minimum_claims().provider_jobs().to_vec();
     planner.commit_connected(proposal);
     assert!(
-        planner.paid_connected_production(obs).is_empty(),
+        planner.settle_paid_production(obs).is_empty(),
         "the fixture buys nothing, so the package is wholly outstanding"
     );
     assert!(!jobs.is_empty(), "the fixture must leave unpaid demand");

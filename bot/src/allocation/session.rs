@@ -1016,8 +1016,8 @@ impl<'a> AllocationSession<'a> {
         committed.extend(
             self.participants
                 .strategy
-                .paid_connected_production(self.context.observation)
-                .into_iter()
+                .paid_connected_production()
+                .iter()
                 .map(|assignment| {
                     StandingProductionCommitment::paid(assignment.producer(), assignment.kind())
                 }),
@@ -1663,7 +1663,9 @@ impl<'a> AllocationSession<'a> {
         );
         self.commit_emergency_defense(prepared, &mut effects);
         if let Some(membership) = air_membership {
-            membership.apply(self.participants.strategy, self.context.observation.tick);
+            self.participants
+                .strategy
+                .apply_membership(membership, self.context.observation.tick);
         }
         self.commit_lift(prepared, &producer_schedule);
         if let Some(membership) = prepared.lift_membership.take() {
@@ -5102,7 +5104,7 @@ mod tests {
         let (mut strategy, _) = current_connected_planner(&observation);
         let outcome = run_connected_session(&observation, &mut UtilityPolicy::new(), &mut strategy);
         assert!(outcome.allocation_ok);
-        let paid = strategy.paid_connected_production(&observation);
+        let paid = strategy.settle_paid_production(&observation);
         assert!(!paid.is_empty());
         for purchase in paid {
             assert!(
@@ -5343,7 +5345,7 @@ mod tests {
         let mut policy = UtilityPolicy::new();
         let admission = run_connected_session(&observation, &mut policy, &mut strategy);
         assert!(admission.allocation_ok);
-        let paid = strategy.paid_connected_production(&observation);
+        let paid = strategy.settle_paid_production(&observation);
         assert!(!paid.is_empty(), "the unfunded package buys providers");
 
         let mut revised = next_decision(&observation);
@@ -5362,7 +5364,7 @@ mod tests {
             .retain(|building| building.anchor != CLUSTER_PRIMARY);
         let outcome = run_connected_session(&revised, &mut policy, &mut strategy);
         assert!(outcome.allocation_ok);
-        let ledger = strategy.paid_connected_production(&revised);
+        let ledger = strategy.settle_paid_production(&revised);
         assert!(
             paid.iter().all(|purchase| ledger.contains(purchase)),
             "the revision keeps every paid purchase: {paid:?} -> {ledger:?}"

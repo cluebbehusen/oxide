@@ -1551,7 +1551,7 @@ fn committed_strike_records_the_objective_gone_only_once_the_cluster_is_gone() {
     battle.act_next();
     assert_eq!(battle.operation().phase(), AirOperationPhase::Strike);
     assert!(
-        (battle.brain.mind().strategy).outcomes.pending.is_empty(),
+        (battle.brain.mind().strategy).outcomes().pending.is_empty(),
         "losing the primary does not complete a cluster with live members"
     );
 
@@ -1575,7 +1575,7 @@ fn committed_strike_records_the_objective_gone_only_once_the_cluster_is_gone() {
         Some(AirRecoveryReason::Complete)
     );
     let report = (battle.brain.mind().strategy)
-        .outcomes
+        .outcomes()
         .pending
         .last()
         .expect("completion reports the episode");

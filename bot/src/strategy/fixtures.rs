@@ -469,6 +469,16 @@ impl StrategicPlanner {
     pub(super) fn air_plan_mut(&mut self) -> Option<&mut AirPlan> {
         self.air.as_mut().map(|active| &mut active.plan)
     }
+
+    pub(crate) fn outcomes(&self) -> &crate::experience::OutcomeJournal {
+        &self.outcomes
+    }
+
+    /// Prunes the paid ledger against `obs` and returns what remains.
+    pub(crate) fn settle_paid_production(&mut self, obs: &Observation) -> Vec<ConnectedPurchase> {
+        self.prune_paid_production(obs);
+        self.paid_connected_production().to_vec()
+    }
 }
 
 pub(super) fn select_target(

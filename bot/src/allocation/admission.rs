@@ -417,7 +417,7 @@ pub(crate) fn admit_decision(
     if strategy
         .air_operation()
         .is_some_and(|operation| lifts.shares_air_objective(operation))
-        && let Some(credit) = strategy.outcomes.episode_id()
+        && let Some(credit) = strategy.episode_id()
     {
         lifts.outcomes.share_credit(credit);
     }

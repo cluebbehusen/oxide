@@ -245,7 +245,7 @@ impl Brain {
                 mind.experience.report(report);
             }
             for journal in [
-                &mut mind.strategy.outcomes,
+                mind.strategy.outcomes_mut(),
                 &mut mind.lifts.outcomes,
                 &mut mind.raids.outcomes,
                 &mut mind.team.outcomes,

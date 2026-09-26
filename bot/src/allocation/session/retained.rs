@@ -227,14 +227,6 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             );
         }
         let mut saved = saved.expect("retained preparation visits the Foundry exactly once");
-        {
-            // Active revision proposals carry the exact planner snapshot they
-            // revise, so settle completed queue ownership before deriving one.
-            let _ = self
-                .participants
-                .strategy
-                .paid_connected_production(self.context.observation);
-        }
         let active_revision = self.prepare_active_connected_revision(
             &claims,
             &mut obligations,
