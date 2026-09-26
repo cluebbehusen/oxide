@@ -1,0 +1,35 @@
+// Build settings for the iPad wrapper around the Rust shell.
+//
+// Set your signing team in Local.xcconfig (copy Local.xcconfig.example),
+// which git ignores. Picking a team in Xcode's Signing pane instead
+// writes it into the shared project file.
+
+PRODUCT_NAME = Oxide
+PRODUCT_BUNDLE_IDENTIFIER = dev.luebbehusen.oxide
+INFOPLIST_FILE = Oxide/Info.plist
+GENERATE_INFOPLIST_FILE = NO
+
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTS_MACCATALYST = NO
+TARGETED_DEVICE_FAMILY = 2
+ARCHS = arm64
+
+// build_rust.sh passes this to Cargo: rustc and the C dependencies must
+// link for the same minimum OS.
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+
+// The Rust build runs Cargo, which a sandboxed script cannot reach.
+ENABLE_USER_SCRIPT_SANDBOXING = NO
+
+// Xcode's PNG rewriting produces files the shell's decoder cannot read.
+COMPRESS_PNG_FILES = NO
+STRIP_PNG_TEXT = NO
+
+DEBUG_INFORMATION_FORMAT = dwarf
+ALWAYS_SEARCH_USER_PATHS = NO
+
+#include? "Local.xcconfig"
