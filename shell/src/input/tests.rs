@@ -880,6 +880,248 @@ fn a_right_click_on_ground_stages_an_advance() {
     );
 }
 
+/// The newest order acknowledgment, if any.
+fn last_ping(game: &Game) -> Option<(Vec2, crate::game::PingKind)> {
+    game.presentation
+        .fx
+        .iter()
+        .rev()
+        .find_map(|fx| match fx.kind {
+            crate::game::EffectKind::Ping { at, kind, .. } => Some((at, kind)),
+            _ => None,
+        })
+}
+
+/// Asserts the newest acknowledgment is `kind`, centred on `tile`.
+fn assert_pinged_at_centre(game: &Game, tile: TilePos, kind: crate::game::PingKind) {
+    let (at, pinged) = last_ping(game).expect("the order was acknowledged");
+    assert!(pinged == kind, "the acknowledgment speaks the order's verb");
+    assert!(
+        (at - vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5)).length_squared() < f32::EPSILON,
+        "the ring sits on the ordered tile's centre, not the cursor: {at:?} vs {tile:?}"
+    );
+}
+
+/// A world point well inside `tile` but nowhere near its centre.
+fn off_centre(tile: TilePos) -> Vec2 {
+    vec2(tile.x as f32 + 0.15, tile.y as f32 + 0.85)
+}
+
+#[test]
+fn an_off_centre_ground_click_orders_its_tile_and_pings_its_centre() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (fighter, at) = own_fighter(&game);
+    game.presentation.selection.units = vec![fighter];
+    let tile = TilePos::new(at.x as i32 + 4, at.y as i32 + 2);
+    let screen = game.presentation.camera.to_screen(off_centre(tile));
+
+    apply_events(&mut game, &mut input, &[right_down(screen)]);
+
+    assert!(
+        matches!(
+            game.pending.as_slice(),
+            [PlayerCommand { command: Command::Advance { goal, .. }, .. }] if *goal == tile
+        ),
+        "the order names the clicked tile: {:?}",
+        game.pending
+    );
+    assert_pinged_at_centre(&game, tile, crate::game::PingKind::Move);
+}
+
+#[test]
+fn armed_ground_verbs_ping_at_the_tile_centre() {
+    for attack in [false, true] {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let (fighter, at) = own_fighter(&game);
+        game.presentation.selection.units = vec![fighter];
+        if attack {
+            input.attacking = true;
+        } else {
+            input.running = true;
+        }
+        let tile = TilePos::new(at.x as i32 + 3, at.y as i32 - 2);
+        let screen = game.presentation.camera.to_screen(off_centre(tile));
+
+        apply_events(&mut game, &mut input, &[left_down(screen)]);
+
+        let goal = game.pending.iter().find_map(|c| match c.command {
+            Command::Move { goal, .. } if !attack => Some(goal),
+            Command::AttackMove { goal, .. } if attack => Some(goal),
+            _ => None,
+        });
+        assert_eq!(goal, Some(tile), "attack={attack}: {:?}", game.pending);
+        let kind = if attack {
+            crate::game::PingKind::Attack
+        } else {
+            crate::game::PingKind::Move
+        };
+        assert_pinged_at_centre(&game, tile, kind);
+    }
+}
+
+#[test]
+fn a_minimap_order_pings_at_the_tile_centre() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (fighter, _) = own_fighter(&game);
+    game.presentation.selection.units = vec![fighter];
+    let minimap = publish_minimap(&game);
+    let screen = vec2(minimap.x + 97.0, minimap.y + 61.0);
+    let world = crate::render::minimap_world_at(&game.view(), screen).expect("inside the minimap");
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    assert!(
+        (world - vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5)).length() > 0.05,
+        "premise: the minimap point is off the tile's centre"
+    );
+
+    apply_events(&mut game, &mut input, &[right_down(screen)]);
+
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { goal, .. } if goal == tile)),
+        "{:?}",
+        game.pending
+    );
+    assert_pinged_at_centre(&game, tile, crate::game::PingKind::Move);
+}
+
+#[test]
+fn patrol_waypoints_ping_at_the_tile_centre() {
+    let (mut game, mut input, _) = armed_patrol();
+    let tile = TilePos::new(10, 6);
+    let screen = game.presentation.camera.to_screen(off_centre(tile));
+
+    apply_events(&mut game, &mut input, &[left_down(screen)]);
+
+    assert_eq!(input.patrol_route, Some(vec![tile]));
+    assert_pinged_at_centre(&game, tile, crate::game::PingKind::Rally);
+}
+
+#[test]
+fn context_and_armed_rallies_ping_at_the_tile_centre() {
+    let rally = TilePos::new(14, 9);
+    let mut game = multi_producer_game();
+    let producers: Vec<_> = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == game.presentation.human)
+        .map(|building| building.id)
+        .collect();
+    game.presentation.selection.buildings = producers.clone();
+    let screen = game.presentation.camera.to_screen(off_centre(rally));
+    context_order(&mut game, screen, false);
+    assert!(
+        !game.pending.is_empty()
+            && game.pending.iter().all(
+                |c| matches!(c.command, Command::SetRally { rally: Some(tile), .. } if tile == rally)
+            ),
+        "{:?}",
+        game.pending
+    );
+    assert_pinged_at_centre(&game, rally, crate::game::PingKind::Rally);
+
+    let mut game = multi_producer_game();
+    let mut input = InputState::new();
+    input.rallying = producers;
+    let screen = game.presentation.camera.to_screen(off_centre(rally));
+    apply_events(&mut game, &mut input, &[left_down(screen)]);
+    assert!(
+        !game.pending.is_empty()
+            && game.pending.iter().all(
+                |c| matches!(c.command, Command::SetRally { rally: Some(tile), .. } if tile == rally)
+            ),
+        "{:?}",
+        game.pending
+    );
+    assert_pinged_at_centre(&game, rally, crate::game::PingKind::Rally);
+}
+
+/// A scenario with a harvester beside a scrap node on the map's west
+/// edge, so a click in the camera's edge slack lands just past it.
+fn edge_scrap_game() -> Game {
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"edge scrap\",
+        \"seed\": 7,
+        \"players\": [
+            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 500, \"bot\": false},
+            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 500, \"bot\": true,
+             \"bot_config\": {\"controller\": \"scripted\"}}
+        ],
+        \"map\": [
+            \"................\",
+            \"..1.............\",
+            \"................\",
+            \"................\",
+            \"s...............\",
+            \"................\",
+            \"............2...\",
+            \"................\",
+            \"................\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"harvester\", \"x\": 3, \"y\": 4}
+        ]
+    }",
+    )
+    .expect("inline edge scenario parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("edge input fixture builds")
+}
+
+#[test]
+fn an_edge_slack_click_orders_the_edge_tile_and_never_binds_edge_scrap() {
+    let node = TilePos::new(0, 4);
+    for (world, harvest) in [(vec2(-1.3, 4.6), false), (off_centre(node), true)] {
+        let mut game = edge_scrap_game();
+        let mut input = InputState::new();
+        assert!(
+            game.my_vision().remembered_scrap(node) > 0,
+            "premise: the edge node is known"
+        );
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.presentation.human)
+            .expect("fixture harvester")
+            .id;
+        game.presentation.selection.units = vec![harvester];
+        let screen = game.presentation.camera.to_screen(world);
+        assert!(
+            screen.x > 0.0 && screen.y > 0.0 && !click_on_hud(&game, screen),
+            "premise: the point is on open screen: {screen:?}"
+        );
+
+        apply_events(&mut game, &mut input, &[right_down(screen)]);
+
+        if harvest {
+            assert!(
+                matches!(
+                    game.pending.as_slice(),
+                    [PlayerCommand { command: Command::Harvest { node: at, .. }, .. }] if *at == node
+                ),
+                "{:?}",
+                game.pending
+            );
+            assert_pinged_at_centre(&game, node, crate::game::PingKind::Harvest);
+        } else {
+            assert!(
+                matches!(
+                    game.pending.as_slice(),
+                    [PlayerCommand { command: Command::Advance { goal, .. }, .. }] if *goal == node
+                ),
+                "a slack click walks to the edge tile instead of harvesting it: {:?}",
+                game.pending
+            );
+            assert_pinged_at_centre(&game, node, crate::game::PingKind::Move);
+        }
+    }
+}
+
 #[test]
 fn a_context_order_cancels_placement_and_every_deferred_build_ghost() {
     let mut scenario = oxide_sim::Scenario::skirmish();

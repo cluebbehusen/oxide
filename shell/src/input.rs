@@ -384,6 +384,22 @@ fn placement_ping(kind: oxide_sim::BuildingKind, anchor: TilePos) -> Vec2 {
     )
 }
 
+/// The map tile a ground order names. The camera's edge slack lets the
+/// cursor rest past the map, so the tile clamps back onto it.
+pub(crate) fn ground_tile(state: &oxide_sim::State, world: Vec2) -> TilePos {
+    let map = state.map();
+    TilePos::new(
+        (world.x.floor() as i32).clamp(0, map.width() - 1),
+        (world.y.floor() as i32).clamp(0, map.height() - 1),
+    )
+}
+
+/// Where a ground order's acknowledgment draws: the centre of the
+/// ordered tile, which is also where its waypoint marker sits.
+pub(crate) fn tile_center(tile: TilePos) -> Vec2 {
+    vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5)
+}
+
 impl InputState {
     pub(crate) fn construction_open(&self) -> bool {
         self.build_menu || self.placing.is_some()
@@ -1282,7 +1298,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // swallows the click.
                 let queue = input.queue_held();
                 if let Some(world) = crate::render::minimap_world_at(&game.view(), vec2(x, y)) {
-                    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    let tile = ground_tile(&game.state, world);
                     if input.patrol_route.is_some() {
                         add_patrol_waypoint(game, input, world);
                     } else {
@@ -1296,13 +1312,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 goal: tile,
                                 queue,
                             });
-                            game.presentation.ping_order(
-                                vec2(world.x, world.y),
-                                PingKind::Move,
-                                queue,
-                            );
+                            game.presentation
+                                .ping_order(tile_center(tile), PingKind::Move, queue);
                         } else if units.is_empty() {
-                            rally_selected_producers(game, tile, world);
+                            rally_selected_producers(game, tile);
                         }
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
@@ -1430,7 +1443,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
         let world = crate::render::minimap_world_at(&game.view(), p)
             .or_else(|| (!click_on_hud(game, p)).then(|| game.presentation.camera.to_world(p)));
         if let Some(world) = world {
-            let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let rally = ground_tile(&game.state, world);
             for building in crate::building_actions::SelectedBuildings::inspect_ids(
                 &game.view(),
                 &input.rallying,
@@ -1442,7 +1455,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
                     rally: Some(rally),
                 });
             }
-            game.presentation.ping(world, PingKind::Rally);
+            game.presentation.ping(tile_center(rally), PingKind::Rally);
             input.rallying.clear();
             game.presentation.toast("Rally point set");
         }
@@ -1755,7 +1768,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
             let world = game.presentation.camera.to_world(p);
-            let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let goal = ground_tile(&game.state, world);
             let units = game.presentation.selection.units.clone();
             game.issue(Command::Move {
                 units,
@@ -1763,7 +1776,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 queue: input.queue_held(),
             });
             game.presentation
-                .ping_order(world, PingKind::Move, input.queue_held());
+                .ping_order(tile_center(goal), PingKind::Move, input.queue_held());
             if !input.queue_held() {
                 input.running = false;
             }
@@ -1778,7 +1791,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation.camera.pan(Vec2::ZERO); // re-clamp
         } else if !click_on_hud(game, p) {
             let world = game.presentation.camera.to_world(p);
-            let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let goal = ground_tile(&game.state, world);
             let units = game.presentation.selection.units.clone();
             game.issue(Command::AttackMove {
                 units,
@@ -1786,7 +1799,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 queue: input.queue_held(),
             });
             game.presentation
-                .ping_order(world, PingKind::Attack, input.queue_held());
+                .ping_order(tile_center(goal), PingKind::Attack, input.queue_held());
             if !input.queue_held() {
                 input.attacking = false;
             }
@@ -1817,8 +1830,10 @@ fn add_patrol_waypoint(game: &mut Game, input: &mut InputState, world: Vec2) {
         game.presentation
             .toast(patrol_full_toast(&key, crate::platform::TOUCH_ONLY));
     } else {
-        route.push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
-        game.presentation.ping(world, PingKind::Rally);
+        let waypoint = ground_tile(&game.state, world);
+        route.push(waypoint);
+        game.presentation
+            .ping(tile_center(waypoint), PingKind::Rally);
     }
 }
 
