@@ -148,6 +148,16 @@ fn world_hold(input: &InputState) -> Option<TouchPoint> {
     (finger.born == TouchBorn::World && finger.still() && !claimed).then_some(*finger)
 }
 
+/// A lone finger resting on a control-group slot: the one chrome hold
+/// that fires, saving the selection to that group.
+fn group_hold(input: &InputState) -> Option<(TouchPoint, crate::layout::GroupSlot)> {
+    let [(_, finger)] = input.touches.as_slice() else {
+        return None;
+    };
+    let slot = finger.group?;
+    (finger.born == TouchBorn::Chrome && finger.still()).then_some((*finger, slot))
+}
+
 /// Whether an armed mode takes a minimap tap as its target (a rally
 /// point or a patrol waypoint), so the minimap must not steer under it.
 fn minimap_targets(input: &InputState) -> bool {
@@ -186,7 +196,17 @@ pub(crate) const TOUCH_REST_MS: f64 = 120.0;
 /// zero once the finger has rested to one as the order fires. Only a
 /// lone world-born finger that has neither moved nor fired charges.
 pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
-    let finger = world_hold(input)?;
+    charge(input, &world_hold(input)?)
+}
+
+/// Where a control-group slot's long-press is charging, and how far.
+pub(crate) fn group_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
+    charge(input, &group_hold(input)?.0)
+}
+
+/// A held finger's charge: nothing while it may still be a tap, then
+/// filling until the long-press fires.
+fn charge(input: &InputState, finger: &TouchPoint) -> Option<(Vec2, f32)> {
     let held_ms = (input.now - finger.down_at) * 1000.0;
     if held_ms < TOUCH_REST_MS {
         return None;
@@ -526,6 +546,16 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
         && (input.now - pair.formed_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms)
     {
         pair.state = PairState::Box;
+    }
+    // A control-group slot is the one chrome a long-press serves: it
+    // saves the selection there. Spending the finger keeps its lift
+    // from also recalling.
+    if let Some((finger, slot)) = group_hold(input) {
+        if (input.now - finger.down_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms) {
+            input.touches[0].1.spent = true;
+            super::press_group_slot(game, input, slot, true);
+        }
+        return;
     }
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world

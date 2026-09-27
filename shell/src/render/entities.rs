@@ -2530,9 +2530,20 @@ pub(crate) fn draw_rally_marker(game: &crate::game::Scene<'_>) {
 /// A ring that fills around a resting finger until its long-press
 /// order fires, so the hold reads as progress rather than a stall.
 pub(crate) fn draw_long_press_ring(input: &InputState) {
-    let Some((at, progress)) = crate::input::long_press_progress(input) else {
-        return;
-    };
+    if let Some((at, progress)) = crate::input::long_press_progress(input) {
+        draw_press_ring(at, progress);
+    }
+}
+
+/// The same ring for a finger saving a control group. It draws after
+/// the top bar, which would otherwise cover it.
+pub(crate) fn draw_group_press_ring(input: &InputState) {
+    if let Some((at, progress)) = crate::input::group_press_progress(input) {
+        draw_press_ring(at, progress);
+    }
+}
+
+fn draw_press_ring(at: Vec2, progress: f32) {
     let s = ui_scale();
     let radius = 32.0 * s;
     let thickness = 3.5 * s;

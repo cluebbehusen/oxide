@@ -1033,7 +1033,8 @@ use select::{
 };
 pub use touch::update_touch;
 pub(crate) use touch::{
-    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress, touch_box,
+    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, group_press_progress, long_press_progress,
+    touch_box,
 };
 
 /// The cursor shape the current intent deserves: crosshair while

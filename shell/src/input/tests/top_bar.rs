@@ -141,3 +141,45 @@ fn a_tap_on_a_slot_recalls_like_a_click() {
     );
     assert_eq!(game.presentation.selection.units, vec![fighter]);
 }
+
+#[test]
+fn a_long_press_on_a_slot_saves_the_selection_there_without_recalling() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let own = own_units(&game);
+    input.groups[0] = vec![own[0]];
+    game.presentation.selection.units = vec![own[1]];
+    let rects = publish_strip(
+        &mut game,
+        [Some(GroupSlot::Recall(1)), None, None, None, None],
+    );
+    let at = rects[0].center();
+    input.now = 5.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, at)]);
+    input.now = 5.25;
+    let (_, progress) = group_press_progress(&input).expect("the slot charges");
+    assert!(progress > 0.0 && progress < 1.0);
+    assert_eq!(
+        long_press_progress(&input),
+        None,
+        "no world ring over chrome"
+    );
+    input.now = 6.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(input.groups[0], vec![own[1]], "the selection took the slot");
+    apply_events(&mut game, &mut input, &[touch_up(1, at)]);
+    assert_eq!(
+        input.last_recall, None,
+        "the lift after the hold recalls nothing"
+    );
+    assert_eq!(game.presentation.selection.units, vec![own[1]]);
+
+    // With nothing selected, the hold clears the group.
+    game.presentation.selection.units.clear();
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &[touch_down(2, at)]);
+    input.now = 11.0;
+    update_touch(&mut game, &mut input);
+    apply_events(&mut game, &mut input, &[touch_up(2, at)]);
+    assert!(input.groups[0].is_empty());
+}
