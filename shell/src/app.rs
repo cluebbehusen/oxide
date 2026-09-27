@@ -681,7 +681,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     game.recovery_root = crate::paths::recovery_dir();
     if game.recovery_root.is_none() {
         game.presentation
-            .toast("Recovery unavailable: no writable data folder is configured.");
+            .toast("Recovery unavailable: no writable data folder is configured");
     }
     game.presentation.paused = args.paused;
     game.presentation.speed = args.speed;

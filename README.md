@@ -98,21 +98,23 @@ A double tap selects every unit of that kind on screen, and dragging on the
 minimap steers the camera. The cards, the ≡ menu button, and the clock (tap to
 pause) cover the rest. Rest a finger on a card to read its details, then lift to
 use it or slide off to cancel. Tapping or clicking a disabled card says why it
-is unavailable. To build, tap open ground to drop a ghost, drag it into place,
-and tap it to confirm. While Patrol is armed, taps (or left-clicks) add
-waypoints. With units selected, the QUEUE toggle above the panel's left corner
-stands in for Shift: taps add to the selection, orders queue, and armed commands
-stay armed. It stays lit while on, and one tap turns it off; with it lit, a
-tapped kind in the selection panel drops out of the selection. Tapping the
-ribbon cancels its command. The Back card, or a tap that misses every unit and
-building (a scrap pile included), closes the build palette and keeps the
-builder. In the control-group column above the minimap, tap a group to recall it
-(tap again quickly to center the camera), long-press any slot to save the
-selection there (or clear it with nothing selected), or tap + to save the
-selection as a new group; Settings can hide the column. Tap the under-attack
-badge to jump to the fight. Tapping a scrap pile selects it, and its panel shows
-the scrap left and how many of your harvesters work it. Key help and gesture
-hints stay hidden until a screen has sat idle for about 15 seconds.
+is unavailable. The Stop button above the orders or production queue halts the
+selection or cancels the whole queue with full refunds. To build, tap open
+ground to drop a ghost, drag it into place, and tap it to confirm. While Patrol
+is armed, taps (or left-clicks) add waypoints. With units selected, the QUEUE
+toggle above the panel's left corner stands in for Shift: taps add to the
+selection, orders queue, and armed commands stay armed. It stays lit while on,
+and one tap turns it off; with it lit, a tapped kind in the selection panel
+drops out of the selection. Tapping the ribbon cancels its command. The Back
+card, or a tap that misses every unit and building (a scrap pile included),
+closes the build palette and keeps the builder. In the control-group column
+above the minimap, tap a group to recall it (tap again quickly to center the
+camera), long-press any slot to save the selection there (or clear it with
+nothing selected), or tap + to save the selection as a new group; Settings can
+hide the column. Tap the under-attack badge to jump to the fight. Tapping a
+scrap pile selects it, and its panel shows the scrap left and how many of your
+harvesters work it. Key help and gesture hints stay hidden until a screen has
+sat idle for about 15 seconds.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;

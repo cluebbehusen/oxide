@@ -969,7 +969,7 @@ mod tests {
             .presentation
             .toasts
             .iter()
-            .find(|toast| toast.text == "seek complete")
+            .find(|toast| toast.text == "Seek complete")
             .expect("a toast outlives a long frame");
         assert_eq!(toast.age, 0.25);
     }

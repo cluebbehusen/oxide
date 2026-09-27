@@ -66,6 +66,8 @@ pub struct LayoutModel {
     pub queue_slots: [(Rect, CardAction); 8],
     /// How many queue slots are live this frame.
     pub queue_count: usize,
+    /// The Stop button above the dock; zero-sized while there is none.
+    pub queue_stop: (Rect, CardAction),
 }
 
 impl Default for LayoutModel {
@@ -92,6 +94,7 @@ impl Default for LayoutModel {
             card_count: 0,
             queue_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
             queue_count: 0,
+            queue_stop: (Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None),
         }
     }
 }
@@ -393,6 +396,7 @@ impl LayoutModel {
             card_count,
             queue_slots,
             queue_count,
+            queue_stop: (Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None),
         }
     }
 
@@ -419,6 +423,8 @@ pub(crate) enum CardRow {
     Roster,
     Cards,
     Queue,
+    /// The Stop button above the dock.
+    Stop,
 }
 
 /// A published panel card under a pointer.
@@ -431,13 +437,14 @@ pub(crate) struct CardHit {
 }
 
 /// The card under `p`, searching the roster, then command cards, then
-/// the queue. A fingertip (`touch_ui`) hits through each card's padded
+/// the queue and its Stop button. A fingertip (`touch_ui`) hits through each card's padded
 /// touch target; a mouse hits the drawn rect.
 pub(crate) fn card_under(layout: &LayoutModel, p: Vec2, touch_ui: Option<f32>) -> Option<CardHit> {
-    let rows: [(CardRow, &[(Rect, CardAction)]); 3] = [
+    let rows: [(CardRow, &[(Rect, CardAction)]); 4] = [
         (CardRow::Roster, &layout.roster_slots[..layout.roster_count]),
         (CardRow::Cards, &layout.cards[..layout.card_count]),
         (CardRow::Queue, &layout.queue_slots[..layout.queue_count]),
+        (CardRow::Stop, std::slice::from_ref(&layout.queue_stop)),
     ];
     rows.into_iter().find_map(|(row, slots)| {
         slots

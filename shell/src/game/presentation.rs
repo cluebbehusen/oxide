@@ -318,7 +318,7 @@ impl Presentation {
 
     /// Raises a transient HUD message (capped; oldest fall off).
     pub fn toast(&mut self, text: impl Into<String>) {
-        let text = text.into();
+        let text = crate::typography::sentence_case(&text.into());
         self.toasts.retain(|toast| toast.text != text);
         self.toasts.push(Toast { text, age: 0.0 });
         if self.toasts.len() > 3 {

@@ -179,28 +179,12 @@ impl SelectedBuildings {
                 hotkey: bindings.labels(Action::ClearRally),
                 action: CardAction::ClearRally,
                 enabled: any_rally,
-                why: (!any_rally).then(|| "No rally points set.".into()),
+                why: (!any_rally).then(|| "no rally points set".into()),
                 desc: vec!["Return new units to their producer doors.".into()],
                 progress: None,
             });
         }
         let defenses = self.defenses(None);
-        if !defenses.is_empty() {
-            cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Stop),
-                title: "Stop".into(),
-                cost: None,
-                hotkey: bindings.labels(Action::StopOrScrap),
-                action: CardAction::Dispatch(Action::StopOrScrap),
-                enabled: true,
-                why: None,
-                desc: vec![format!(
-                    "Clear target preference for {} defenses; resume automatic fire.",
-                    defenses.len()
-                )],
-                progress: None,
-            });
-        }
         let sites = self.sites();
         if !sites.is_empty() {
             cards.push(Card {
@@ -342,7 +326,7 @@ pub(crate) fn stop_or_scrap(game: &mut Game) {
     } else if !selected.sites().is_empty() {
         scrap_sites(game);
     } else if selected.buildings.iter().any(|b| !b.built && b.tier > 0) {
-        game.presentation.toast("upgrades cannot be cancelled");
+        game.presentation.toast("Upgrades cannot be cancelled");
     }
 }
 

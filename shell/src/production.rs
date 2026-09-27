@@ -315,6 +315,27 @@ pub(crate) fn train(game: &mut Game, slot: usize) {
     }
 }
 
+/// Empties every selected producer's queue with full refunds, last job
+/// first so each index still names its job when its command runs.
+pub(crate) fn cancel_all(game: &mut Game) {
+    let selected = SelectedBuildings::inspect(&game.view());
+    if !selected.accepts {
+        return;
+    }
+    let jobs: Vec<_> = selected
+        .buildings
+        .iter()
+        .flat_map(|b| {
+            (0..b.queue.len())
+                .rev()
+                .map(move |index| (b.id, index as u8))
+        })
+        .collect();
+    for (building, index) in jobs {
+        game.issue(Command::CancelTrain { building, index });
+    }
+}
+
 pub(crate) fn cancel_one(game: &mut Game, kind: UnitKind) {
     if let Some((building, index)) = Production::inspect(&game.view()).cancel_target(kind) {
         game.issue(Command::CancelTrain { building, index });
@@ -515,6 +536,52 @@ mod tests {
             Some(&UnitKind::Sentinel)
         );
         assert!(game.state.building(ids[1]).unwrap().queue.is_empty());
+    }
+
+    #[test]
+    fn the_stop_square_empties_every_selected_queue_with_full_refunds() {
+        let mut game = factories(5000);
+        let ids = game.presentation.selection.buildings.clone();
+        let stop = |game: &Game| {
+            crate::panel::build_for_palette(&game.view(), &BindingMap::classic(), false)
+                .and_then(|panel| panel.stop)
+                .map(|card| card.action)
+        };
+        assert_eq!(stop(&game), None, "idle factories have nothing to stop");
+        for slot in [0, 0, 1] {
+            train(&mut game, slot);
+        }
+        game.do_tick();
+        game.do_tick();
+        assert!(game.state.player(game.presentation.human).scrap < 5000);
+        assert!(
+            ids.iter()
+                .all(|id| game.state.building(*id).unwrap().queue.len() == 3)
+        );
+        assert!(
+            game.state.building(ids[0]).unwrap().progress > 0,
+            "the head has started"
+        );
+        assert_eq!(stop(&game), Some(CardAction::ClearQueues));
+
+        cancel_all(&mut game);
+        assert!(
+            !game
+                .do_tick()
+                .events
+                .iter()
+                .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
+        );
+        assert!(
+            ids.iter()
+                .all(|id| game.state.building(*id).unwrap().queue.is_empty())
+        );
+        assert_eq!(
+            game.state.player(game.presentation.human).scrap,
+            5000,
+            "every job, the started heads included, is refunded in full"
+        );
+        assert_eq!(stop(&game), None);
     }
 
     #[test]

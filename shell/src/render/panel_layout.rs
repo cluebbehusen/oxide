@@ -126,5 +126,6 @@ pub(super) struct PanelGeometry {
     pub card_count: usize,
     pub queue_slots: [(Rect, crate::panel::CardAction); 8],
     pub queue_count: usize,
+    pub queue_stop: (Rect, crate::panel::CardAction),
     pub hides_minimap: bool,
 }

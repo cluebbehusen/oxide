@@ -39,7 +39,7 @@ fn only_the_host_pauses_a_lan_match() {
             .presentation
             .toasts
             .iter()
-            .any(|toast| toast.text == "Only the host can pause.")
+            .any(|toast| toast.text == "Only the host can pause")
     );
 }
 
@@ -1093,15 +1093,6 @@ fn a_lit_queue_turns_off_with_a_tap_so_the_next_ground_tap_clears() {
         game.pending.is_empty(),
         "a long-press on QUEUE orders nothing"
     );
-}
-
-#[test]
-fn touch_armed_toasts_only_name_their_target() {
-    assert_eq!(
-        armed_toast("weld", "a damaged own unit", "Esc", false),
-        "weld: click a damaged own unit, Esc to cancel"
-    );
-    crate::platform::assert_touch_copy(&armed_toast("weld", "a damaged own unit", "Esc", true));
 }
 
 #[test]
@@ -2248,7 +2239,7 @@ fn a_refused_confirm_keeps_the_ghost_and_the_mode() {
         game.presentation
             .toasts
             .iter()
-            .any(|t| t.text.starts_with("can't build there")),
+            .any(|t| t.text.starts_with("Can't build there")),
         "the refusal says why"
     );
 }
@@ -2644,6 +2635,7 @@ fn a_disabled_card_explains_itself_to_a_tap_or_a_click() {
     layout.cards[index] = (rect, crate::panel::CardAction::Refused);
     layout.card_count = index + 1;
     game.presentation.layout.set(layout);
+    let why = crate::typography::sentence_case(&why);
     let toasted = |game: &Game| game.presentation.toasts.iter().any(|t| t.text == why);
 
     tap(&mut game, &mut input, rect.center());
@@ -3171,7 +3163,7 @@ fn a_left_click_adds_a_patrol_waypoint_and_a_full_route_says_so() {
         game.presentation
             .toasts
             .iter()
-            .any(|t| t.text.starts_with("patrol is full"))
+            .any(|t| t.text.starts_with("Patrol is full"))
     );
 }
 
@@ -3218,7 +3210,7 @@ fn patrol_is_exclusive_with_the_other_armed_verbs() {
 fn patrol_copy_speaks_touch_on_touch_only_builds() {
     assert_eq!(
         patrol_arm_toast("R", false),
-        "patrol: click waypoints, R to start"
+        "Patrol: click waypoints, R to start"
     );
     crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
     crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
@@ -6268,7 +6260,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
         game.presentation
             .toasts
             .iter()
-            .any(|toast| toast.text == "upgrade runs automatically")
+            .any(|toast| toast.text == "Upgrade runs automatically")
     );
 
     game.presentation.toasts.clear();
@@ -6284,7 +6276,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
         game.presentation
             .toasts
             .iter()
-            .any(|toast| toast.text == "upgrades cannot be cancelled")
+            .any(|toast| toast.text == "Upgrades cannot be cancelled")
     );
 }
 
@@ -7164,6 +7156,56 @@ fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
 }
 
 #[test]
+fn the_dock_stop_square_halts_the_selection_by_click_and_tap() {
+    let mut game = headless_game();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: game.presentation.human,
+        command: Command::AttackMove {
+            units: vec![harvester],
+            goal: TilePos::new(8, 8),
+            queue: false,
+        },
+    }]);
+    game.presentation.selection.units = vec![harvester];
+    let square = macroquad::math::Rect::new(8.0, 560.0, 44.0, 44.0);
+    for touch in [false, true] {
+        let mut input = InputState::new();
+        input.now = 1.0;
+        let panel = crate::panel::build_for_input(&game.view(), &input).expect("a panel");
+        let action = panel.stop.as_ref().expect("a busy unit can stop").action;
+        *game.presentation.panel_model.borrow_mut() = Some(panel);
+        let mut layout = bare_layout(680.0, 500.0);
+        layout.queue_stop = (square, action);
+        game.presentation.layout.set(layout);
+        game.pending.clear();
+        if touch {
+            apply_events(&mut game, &mut input, &[touch_down(1, square.center())]);
+            input.now += 0.1;
+            apply_events(&mut game, &mut input, &[touch_up(1, square.center())]);
+        } else {
+            apply_events(
+                &mut game,
+                &mut input,
+                &click(square.center().x, square.center().y),
+            );
+        }
+        assert!(
+            game.pending
+                .iter()
+                .any(|pc| matches!(&pc.command, Command::Stop { units } if units == &[harvester])),
+            "touch: {touch}"
+        );
+    }
+}
+
+#[test]
 fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
     for damaged in [false, true] {
         let mut game = headless_game();
@@ -7216,7 +7258,7 @@ fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
 }
 
 #[test]
-fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
+fn return_cargo_empty_selection_hides_the_card_and_refuses_the_shortcut() {
     let mut game = headless_game();
     let worker = game
         .state
@@ -7233,9 +7275,7 @@ fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
         !panel
             .cards
             .iter()
-            .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
-            .unwrap()
-            .enabled
+            .any(|card| card.action.semantic() == Some(Action::ReturnCargo))
     );
     apply_events(&mut game, &mut input, &[key_down(Key::U)]);
     assert!(game.pending.is_empty());

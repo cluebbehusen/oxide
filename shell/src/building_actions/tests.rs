@@ -276,9 +276,9 @@ fn every_building_inherits_single_and_group_actions_from_capabilities() {
                 kind.upgrade_from(0).is_some(),
                 "{kind:?} x {count}"
             );
-            assert_eq!(
-                has(CardAction::Dispatch(Action::StopOrScrap)),
-                !kind.base_stats().weapons.is_empty()
+            assert!(
+                !has(CardAction::Dispatch(Action::StopOrScrap)),
+                "Stop lives on the dock"
             );
             assert_eq!(
                 has(CardAction::ArmRally),
