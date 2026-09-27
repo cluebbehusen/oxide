@@ -257,10 +257,12 @@ Gameplay touch lives in `input::touch`. Each finger records where it landed
 decides what it may drive for its whole life. A minimap finger steers the camera
 through `render::minimap_world_clamped`, the same clamp the mouse uses, except
 while rally or patrol take minimap taps as targets. A two-finger `Pair` starts
-undecided: a spread past `PINCH_START_PX` zooms, and a pair that rests for the
-long-press window claims a box whose corners follow the fingers. The box is
-drawn once the pair has rested, and the first lift commits it. A pair with a
-non-world finger, formed mid-pan, or formed while a mode is armed does neither.
+undecided: a spread past `PAIR_PINCH_PX` zooms, and a pair that rests for
+`BOX_REST_MS` claims a box whose corners follow the fingers. The box appears
+only when claimed, so any box on screen can be dragged and selects when a finger
+lifts; an undecided pair shows nothing and its lift selects nothing. A pair with
+a non-world finger, formed mid-pan, or formed while a mode is armed does
+neither.
 
 Touch placement drops a `PlacementGhost` centered under the finger instead of
 placing on the tap. Dragging the ghost moves it by whole tiles, and a still tap

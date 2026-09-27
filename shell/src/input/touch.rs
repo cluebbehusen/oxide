@@ -94,13 +94,13 @@ impl TouchPoint {
 /// What a two-finger pair is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairState {
-    /// Neither a pinch nor a held box yet; a lift commits a box.
+    /// Neither a pinch nor a held box yet; a lift selects nothing.
     Undecided,
     /// The spread changed past the threshold: zooming for the pair's
     /// whole lifetime, so lifting one finger commits no box.
     Pinch,
-    /// The pair rested for the long-press window: a selection box whose
-    /// corners follow the fingers until one lifts. Holding one finger
+    /// The pair rested for `BOX_REST_MS`: a selection box whose corners
+    /// follow the fingers until one lifts, committing it. Holding one finger
     /// still while the other moves is also a common pinch grip, so the
     /// box must be claimed by resting before either finger drags.
     Box,
@@ -121,20 +121,14 @@ pub(crate) struct Pair {
     pub state: PairState,
 }
 
-/// The selection box a two-finger pair is drawing, as its two screen
-/// corners, and whether the rest claimed it (so finger motion resizes
-/// it). An undecided pair shows its box once it has rested briefly.
-pub(crate) fn touch_box(input: &InputState) -> Option<(Vec2, Vec2, bool)> {
+/// The selection box a two-finger pair claimed, as its two screen
+/// corners. An undecided pair shows nothing: it may still be a pinch.
+pub(crate) fn touch_box(input: &InputState) -> Option<(Vec2, Vec2)> {
     let pair = input.pair?;
     let [(_, a), (_, b)] = input.touches.as_slice() else {
         return None;
     };
-    let rested = (input.now - pair.formed_at) * 1000.0 >= TOUCH_REST_MS;
-    match pair.state {
-        PairState::Box => Some((a.at, b.at, true)),
-        PairState::Undecided if rested => Some((a.at, b.at, false)),
-        _ => None,
-    }
+    (pair.state == PairState::Box).then_some((a.at, b.at))
 }
 
 /// The lone finger that may charge a battlefield long-press. Placement
@@ -191,6 +185,15 @@ fn born_at(game: &Game, input: &InputState, p: Vec2) -> TouchBorn {
 /// How long a finger must rest before it reads as deliberate rather
 /// than the start of a tap, so feedback never flashes under quick taps.
 pub(crate) const TOUCH_REST_MS: f64 = 120.0;
+
+/// How long a battlefield pair must rest before it claims a selection
+/// box, which appears only then: a box on screen is always one the
+/// fingers can drag and a lift will select.
+pub(crate) const BOX_REST_MS: f64 = 250.0;
+
+/// How far a battlefield pair's spread must change to read as a pinch:
+/// small, so a gentle pinch commits to zooming before the box claims it.
+const PAIR_PINCH_PX: f32 = 14.0;
 
 /// Where a battlefield long-press is charging and how full it is, from
 /// zero once the finger has rested to one as the order fires. Only a
@@ -360,8 +363,7 @@ pub(super) fn moved(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
             if let Some(pair) = &mut input.pair
                 && pair.state == PairState::Undecided
-                && (new_dist - pair.start_dist).abs()
-                    > crate::viewer_touch::PINCH_START_PX * input.ui
+                && (new_dist - pair.start_dist).abs() > PAIR_PINCH_PX * input.ui
             {
                 pair.state = PairState::Pinch;
             }
@@ -402,16 +404,12 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         });
     }
     match input.touches.len() {
-        // Second finger of a pair released: a pair that
-        // never pinched commits the box between the fingers
-        // — both corners world-born; a chrome-born finger
-        // boxes nothing behind its panel.
+        // Second finger of a pair released: only a box the
+        // pair rested into, and drew, selects what it covers.
+        // An undecided pair was a pinch that never got going.
         1 => {
             let survivor = input.touches[0].1;
-            if input
-                .pair
-                .is_some_and(|pair| matches!(pair.state, PairState::Undecided | PairState::Box))
-            {
+            if input.pair.is_some_and(|pair| pair.state == PairState::Box) {
                 box_select(game, survivor.at, p, input.queue_held());
             }
             // The survivor is spent EITHER way: after a box
@@ -543,7 +541,7 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     // rides the same clock.
     if let Some(pair) = &mut input.pair
         && pair.state == PairState::Undecided
-        && (input.now - pair.formed_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms)
+        && (input.now - pair.formed_at) * 1000.0 >= BOX_REST_MS
     {
         pair.state = PairState::Box;
     }
