@@ -3301,18 +3301,24 @@ def icon_attack() -> None:
     finish(img, ICON, "icon_attack")
 
 
+def _icon_box(d, x0: float, y0: float, x1: float, y1: float, color) -> None:
+    """A rectangle whose edges land on whole pixels once downsampled, so
+    straight strokes stay as crisp as the solid icons beside them."""
+    d.rectangle([s(x0), s(y0), s(x1) - 1, s(y1) - 1], fill=color)
+
+
 def icon_patrol() -> None:
-    """A closed round: the loop with its arrowhead."""
+    """A closed round: the loop with its arrowhead, at the family's
+    stroke weight."""
     img, d = canvas(ICON)
-    for a, b in [
-        ((12, 10), (36, 10)),
-        ((38, 12), (38, 36)),
-        ((36, 38), (18, 38)),
-        ((10, 36), (10, 12)),
-    ]:
-        _icon_bar(d, a, b, 5.0, (*BONE, 255))
+    clear = (0, 0, 0, 0)
+    _icon_box(d, 6, 6, 42, 42, (*BONE, 255))
+    _icon_box(d, 13, 13, 35, 35, clear)
+    # The gap the arrowhead leaves in the loop's lower-left corner.
+    _icon_box(d, 6, 27, 13, 42, clear)
+    _icon_box(d, 6, 35, 21, 42, clear)
     # Arrowhead riding the bottom leg, pointing the way around.
-    d.polygon([(s(12), s(38)), (s(22), s(30)), (s(22), s(46))], fill=(*BONE, 255))
+    d.polygon([(s(5), s(38.5)), (s(21), s(30)), (s(21), s(47))], fill=(*BONE, 255))
     finish(img, ICON, "icon_patrol")
 
 
@@ -3326,14 +3332,16 @@ def icon_harvest() -> None:
 
 
 def icon_build() -> None:
-    """A wrench over the work."""
+    """A tower crane lowering a scrap block into place."""
     img, d = canvas(ICON)
-    d.ellipse([s(6), s(6), s(24), s(24)], fill=(*BONE, 255))
-    d.ellipse([s(11), s(11), s(19), s(19)], fill=(0, 0, 0, 0))
-    # The jaw notch.
-    d.polygon([(s(20), s(4)), (s(30), s(14)), (s(20), s(20))], fill=(0, 0, 0, 0))
-    _icon_bar(d, (17, 17), (38, 38), 7.5, (*BONE, 255))
-    d.rectangle([s(33), s(33), s(43), s(43)], fill=(*BONE, 255))
+    bone = (*BONE, 255)
+    _icon_box(d, 9, 5, 15, 44, bone)  # mast
+    _icon_box(d, 4, 40, 20, 44, bone)  # footing
+    _icon_box(d, 5, 5, 43, 11, bone)  # jib
+    _icon_box(d, 15, 11, 19, 15, bone)  # jib brace
+    _icon_box(d, 32, 11, 34, 23, bone)  # hoist line
+    _icon_box(d, 25, 23, 41, 36, (*SCRAP, 255))
+    _icon_box(d, 25, 23, 41, 26, (*SCRAP_LIGHT, 255))
     finish(img, ICON, "icon_build")
 
 
