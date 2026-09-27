@@ -182,11 +182,14 @@ publishes a shared `LayoutModel` whose rectangles also drive hit testing. The
 HUD's supported layout floor is 1280×800 at default UI scale. Smaller windows
 are overflow stress cases. `layout::top_bar` places the top bar from measured
 text: the bank, income, and unit count run left to right, then the idle and
-under-attack badges; the status hangs off the menu button; and the control-group
-strip sits just left of the status, sized against the widest the badges and
-status can grow so it never moves. Where that leaves no room, the strip drops to
-a row under the bar. Touch-only builds hold the menu button and bank further
-from the corners, which iPad screens round and iPadOS safe areas leave out.
+under-attack badges, and the status hangs off the menu button. Touch-only builds
+hold the menu button and bank further from the corners, which iPad screens round
+and iPadOS safe areas leave out. `layout::group_column` stacks the control
+groups on a plate above the minimap's right edge, mirroring the orders dock, and
+wraps into more columns when the window is short. It shows once a group is saved
+or the selection can be saved, never while the minimap is hidden, and a setting
+hides it; its slots and plate are chrome. The top edge is left to taps because
+iPadOS takes a long-press there as a window move.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated
@@ -243,9 +246,9 @@ and a finger that lands on one card or group slot and lifts on another activates
 neither. The one exception is a control-group slot, where a long-press saves the
 selection to that group and spends the finger so its lift does not also recall.
 A world-born or group-slot finger draws a filling ring from the same rest
-threshold until its long-press fires; the slot's ring draws above the top bar.
-Disabled cards publish `CardAction::Refused`, so a tap or click toasts the
-reason their hotkey gives.
+threshold until its long-press fires; the slot's ring draws above the HUD and
+minimap. Disabled cards publish `CardAction::Refused`, so a tap or click toasts
+the reason their hotkey gives.
 
 Gameplay touch lives in `input::touch`. Each finger records where it landed
 (`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that
