@@ -2767,7 +2767,9 @@ impl StrategicPlanner {
     }
 
     /// Releases unpaid connected demand during emergency economy recovery
-    /// and returns every still-routable member immediately.
+    /// and returns every still-routable member immediately. The operation
+    /// stays in recovery even with no survivors: this path returns before Lift
+    /// runs, so the next full decision settles it and hands the abort to Lift.
     pub(crate) fn recover_unpaid_connected_for_economy_emergency(
         &mut self,
         context: EconomyEmergencyRecovery<'_>,
@@ -2812,16 +2814,16 @@ impl StrategicPlanner {
             return None;
         }
 
-        let ActiveAirOperation { mut op, mut plan } = self
+        let ActiveAirOperation { op, plan } = self
             .air
-            .take()
+            .as_mut()
             .expect("unpaid connected demand belongs to one active operation");
-        recover(&mut op, AirRecoveryReason::PreparationInfeasible, obs.tick);
+        recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
         self.cooldown_until = obs.tick.saturating_add(cooldown(profile, tuning));
         let mut out = StrategicDecision::default();
         reconcile_recovery_return(
-            &mut op,
-            &mut plan,
+            op,
+            plan,
             RecoveryReturnContext {
                 obs,
                 home,
@@ -2831,12 +2833,7 @@ impl StrategicPlanner {
             },
             &mut out,
         );
-        out.reservations = reservations(&op, &plan, obs);
-        if out.reservations.is_empty() {
-            self.terminal_outcome = Some(air_operation_outcome(&op));
-        } else {
-            self.air = Some(ActiveAirOperation { op, plan });
-        }
+        out.reservations = reservations(op, plan, obs);
         Some(out)
     }
 

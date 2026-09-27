@@ -2628,13 +2628,19 @@ mod tests {
     const HOME: TilePos = TilePos::new(5, 15);
     const TARGET: TilePos = TilePos::new(50, 15);
 
+    fn coordinator_profile() -> crate::profile::ResolvedProfile {
+        crate::profile::ResolvedProfile::resolve(oxide_sim::scenario::BotConfig::scripted(
+            BotDifficulty::Prime,
+            oxide_sim::scenario::BotStance::Balanced,
+            7,
+        ))
+    }
+
     fn rejected_coordinator_pass(
         obs: &Observation,
         lifts: &mut LiftPlanner,
         strategy: &mut crate::strategy::StrategicPlanner,
     ) -> crate::allocation::AdmittedWork {
-        use crate::allocation::{DecisionContext, DecisionParticipants, admit_decision};
-        use crate::utility::{Dials, UtilityPolicy};
         let mut obs = obs.clone();
         for (id, anchor) in [(800, HOME.offset(10, 10)), (801, HOME.offset(11, 10))] {
             let mut worker = own(id, UnitKind::Harvester, HOME);
@@ -2642,12 +2648,29 @@ mod tests {
             obs.my_units.push(worker);
         }
         obs.my_units.sort_unstable_by_key(|unit| unit.id);
-        let profile =
-            crate::profile::ResolvedProfile::resolve(oxide_sim::scenario::BotConfig::scripted(
-                BotDifficulty::Prime,
-                oxide_sim::scenario::BotStance::Balanced,
-                7,
-            ));
+        let (work, trace) = coordinator_pass(&obs, lifts, strategy);
+        assert!(
+            trace.budget.unwrap().frozen,
+            "overlapping accepted foundations must reject allocation: {:?}",
+            trace.allocation
+        );
+        assert!(
+            work.intents
+                .iter()
+                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
+        );
+        work
+    }
+
+    /// One full controller decision over the Lift and air planners.
+    fn coordinator_pass(
+        obs: &Observation,
+        lifts: &mut LiftPlanner,
+        strategy: &mut crate::strategy::StrategicPlanner,
+    ) -> (crate::allocation::AdmittedWork, crate::trace::DecisionTrace) {
+        use crate::allocation::{DecisionContext, DecisionParticipants, admit_decision};
+        use crate::utility::{Dials, UtilityPolicy};
+        let profile = coordinator_profile();
         let tuning = DifficultyTuning::for_level(profile.difficulty);
         let dials = Dials::scripted(&profile, tuning);
         let map = crate::PublicMapBriefing {
@@ -2661,17 +2684,17 @@ mod tests {
             initial_scrap: Vec::new(),
         };
         let mut recorder = crate::trace::DecisionTraceRecorder::default();
-        recorder.begin(&obs);
+        recorder.begin(obs);
         let work = admit_decision(
             DecisionContext {
                 evidence: Default::default(),
                 dials: &dials,
                 profile: &profile,
                 tuning,
-                observation: &obs,
+                observation: obs,
                 home: HOME,
                 public_map: &map,
-                orientation: crate::orient::Orientation::for_home(&obs, HOME),
+                orientation: crate::orient::Orientation::for_home(obs, HOME),
                 armies: &[],
                 enlisted: &[],
             },
@@ -2686,18 +2709,7 @@ mod tests {
             Some(&mut recorder),
             None,
         );
-        let trace = recorder.finish().unwrap();
-        assert!(
-            trace.budget.unwrap().frozen,
-            "overlapping accepted foundations must reject allocation: {:?}",
-            trace.allocation
-        );
-        assert!(
-            work.intents
-                .iter()
-                .all(|intent| !matches!(intent, Intent::TrainAt { .. }))
-        );
-        work
+        (work, recorder.finish().unwrap())
     }
 
     #[test]
