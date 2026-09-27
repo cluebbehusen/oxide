@@ -1926,6 +1926,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             });
         }
         crate::panel::CardAction::ClosePalette => input.close_construction(),
+        crate::panel::CardAction::ClearQueues => crate::production::cancel_all(game),
         crate::panel::CardAction::None | crate::panel::CardAction::Refused => {}
     }
 }

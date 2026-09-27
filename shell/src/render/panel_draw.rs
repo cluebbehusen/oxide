@@ -286,15 +286,27 @@ fn card_title_lines(title: &str, measure: impl Fn(&str) -> f32, width: f32) -> V
 /// column stays pleasantly quiet when it fits; a full eight-slot
 /// production queue becomes a 2×4 dock in the 640×400 stress case instead
 /// of hiding paid, cancelable work behind a "+4" label.
-fn queue_grid(queue_len: usize, panel_top: f32, scale: f32) -> (Rect, [Rect; 8], usize) {
-    queue_grid_with_width(queue_len, panel_top, scale, 44.0)
+fn queue_grid(
+    queue_len: usize,
+    panel_top: f32,
+    scale: f32,
+    header: f32,
+) -> (Rect, [Rect; 8], usize) {
+    queue_grid_with_width(queue_len, panel_top, scale, 44.0, header)
 }
 
+/// The Stop button's own plate above the dock: the button and its inset.
+const STOP_PLATE: f32 = 60.0;
+/// The gap between the Stop plate and the dock beneath it.
+const STOP_GAP: f32 = 6.0;
+
+/// `header` reserves logical px at the dock's top, above its label.
 fn queue_grid_with_width(
     queue_len: usize,
     panel_top: f32,
     scale: f32,
     width: f32,
+    header: f32,
 ) -> (Rect, [Rect; 8], usize) {
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut slots = [zero; 8];
@@ -303,22 +315,24 @@ fn queue_grid_with_width(
         return (zero, slots, 0);
     }
     let (size, gap) = (44.0 * scale, 4.0 * scale);
-    let label_h = 18.0 * scale;
+    let label_h = 24.0 * scale;
+    let header = header * scale;
     let available =
-        (panel_top - crate::layout::TOP_BAR_H * scale - label_h - 2.0 * scale).max(size);
+        (panel_top - crate::layout::TOP_BAR_H * scale - header - label_h - 2.0 * scale).max(size);
     let max_rows = (((available + gap) / (size + gap)).floor() as usize).max(1);
     let columns = count.div_ceil(max_rows).max(1);
     let rows = count.div_ceil(columns);
     let slot_width = width * scale;
     let width = 16.0 * scale + columns as f32 * slot_width + columns.saturating_sub(1) as f32 * gap;
-    let height = label_h + rows as f32 * size + rows.saturating_sub(1) as f32 * gap + 2.0 * scale;
+    let height =
+        header + label_h + rows as f32 * size + rows.saturating_sub(1) as f32 * gap + 2.0 * scale;
     let dock = Rect::new(0.0, panel_top - height, width, height);
     for (index, slot) in slots.iter_mut().take(count).enumerate() {
         let row = index / columns;
         let column = index % columns;
         *slot = Rect::new(
             8.0 * scale + column as f32 * (slot_width + gap),
-            dock.y + label_h + row as f32 * (size + gap),
+            dock.y + header + label_h + row as f32 * (size + gap),
             slot_width,
             size,
         );
@@ -331,15 +345,16 @@ fn collective_queue_grid(
     top: f32,
     scale: f32,
     viewport_width: f32,
+    header: f32,
 ) -> (Rect, [Rect; 8], usize) {
     if viewport_width / scale < 800.0 {
-        return queue_grid_with_width(count, top, scale, 64.0);
+        return queue_grid_with_width(count, top, scale, 64.0, header);
     }
-    let wide = queue_grid_with_width(count, top, scale, 170.0);
+    let wide = queue_grid_with_width(count, top, scale, 170.0, header);
     if wide.0.right() <= viewport_width {
         wide
     } else {
-        queue_grid_with_width(count, top, scale, 64.0)
+        queue_grid_with_width(count, top, scale, 64.0, header)
     }
 }
 
@@ -370,14 +385,7 @@ fn queue_label_width(panel: &crate::panel::Panel, measure: impl Fn(&str) -> f32)
         let digits = seconds.ilog10() + 1;
         (digits + 1) as f32 * digit_width + measure(".s")
     };
-    let total_ticks = ticks.clone().sum();
-    let later_ticks = ticks.skip(1).sum();
-    let ready_width = if later_ticks == 0 {
-        measure("queue ready")
-    } else {
-        measure("queue ready + ") + time_width(later_ticks)
-    };
-    (measure("queue ") + time_width(total_ticks)).max(ready_width)
+    time_width(ticks.sum()).max(measure("Ready"))
 }
 
 fn catalog_geometry(
@@ -615,6 +623,7 @@ fn draw_catalog(
         card_count: panel.cards.len(),
         queue_slots: [(zero, CardAction::None); 8],
         queue_count: 0,
+        queue_stop: (zero, CardAction::None),
         hides_minimap: false,
     }
 }
@@ -1106,8 +1115,9 @@ pub(crate) fn draw_panel(
     // stacked above the band's corner so the band itself stays short.
     let mut queue_slots = [(zero, CardAction::None); 8];
     let mut queue_count = 0;
+    let mut queue_stop = (zero, CardAction::None);
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
-    if !panel.queue.is_empty() {
+    if !panel.queue.is_empty() || panel.stop.is_some() {
         let toggle_below =
             super::chrome::queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY);
         let floor = if toggle_below {
@@ -1115,15 +1125,26 @@ pub(crate) fn draw_panel(
         } else {
             top
         };
-        let (mut grid_dock, grid_slots, n) = if panel.queue_groups.is_empty() {
-            queue_grid(panel.queue.len(), floor, s)
+        let header = if panel.stop.is_some() {
+            STOP_PLATE + STOP_GAP
         } else {
-            collective_queue_grid(panel.queue.len(), floor, s, viewport.x)
+            0.0
         };
-        let queue_label_width = queue_label_width(panel, |text| {
-            measure_text(text, None, (13.0 * s) as u16, 1.0).width
-        }) + 16.0 * s;
-        grid_dock.w = grid_dock.w.max(queue_label_width);
+        let (mut grid_dock, grid_slots, n) = if panel.queue.is_empty() {
+            // A lone Stop plate: some other selected unit is busy.
+            let side = STOP_PLATE * s;
+            (Rect::new(0.0, floor - side, side, side), [zero; 8], 0)
+        } else if panel.queue_groups.is_empty() {
+            queue_grid(panel.queue.len(), floor, s, header)
+        } else {
+            collective_queue_grid(panel.queue.len(), floor, s, viewport.x, header)
+        };
+        if !panel.queue.is_empty() {
+            let queue_label_width = queue_label_width(panel, |text| {
+                measure_text(text, None, (14.0 * s) as u16, 1.0).width
+            }) + 16.0 * s;
+            grid_dock.w = grid_dock.w.max(queue_label_width);
+        }
         dock = grid_dock;
         let hidden = panel.queue.len().saturating_sub(n);
         let more_h = if hidden > 0 { 16.0 * s } else { 0.0 };
@@ -1138,29 +1159,72 @@ pub(crate) fn draw_panel(
             dock.h = top - dock.y;
         }
         let dock_top = dock.y;
-        fill_rect(dock, Color::from_rgba(20, 20, 24, 255));
-        draw_rectangle(
-            dock.x,
-            dock.y,
-            dock.w,
-            1.5 * s,
-            Color::new(0.6, 0.6, 0.65, 0.4),
-        );
-        draw_rectangle(
-            dock.x + dock.w - 1.5 * s,
-            dock.y,
-            1.5 * s,
-            dock.h,
-            Color::new(0.6, 0.6, 0.65, 0.4),
-        );
-        draw_text(
-            &panel.queue_label,
-            8.0 * s,
-            dock_top + 15.0 * s,
-            13.0 * s,
-            TEXT_SECONDARY,
-        );
-        let orders_dock = panel.queue_label.starts_with("orders");
+        // Plates border their open sides; the screen edge closes the left.
+        let plate = |rect: Rect, bottom: bool| {
+            let edge = Color::new(0.6, 0.6, 0.65, 0.4);
+            fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
+            draw_rectangle(rect.x, rect.y, rect.w, 1.5 * s, edge);
+            draw_rectangle(rect.right() - 1.5 * s, rect.y, 1.5 * s, rect.h, edge);
+            if bottom {
+                draw_rectangle(rect.x, rect.bottom() - 1.5 * s, rect.w, 1.5 * s, edge);
+            }
+        };
+        // The list rests on the band beneath the Stop plate and its gap.
+        let list = Rect::new(dock.x, dock_top + header * s, dock.w, dock.h - header * s);
+        if list.h > 0.0 {
+            plate(list, false);
+        }
+        if !panel.queue.is_empty() {
+            draw_text(
+                &panel.queue_label,
+                8.0 * s,
+                list.y + 17.0 * s,
+                14.0 * s,
+                TEXT_PRIMARY,
+            );
+        }
+        if let Some(card) = &panel.stop {
+            // As wide as the chips beneath it, and named where they are.
+            let width = if n > 0 { grid_slots[0].w } else { 44.0 * s };
+            plate(
+                Rect::new(0.0, dock_top, width + 16.0 * s, STOP_PLATE * s),
+                true,
+            );
+            let rect = Rect::new(8.0 * s, dock_top + 8.0 * s, width, 44.0 * s);
+            let named = width >= 150.0 * s;
+            fill_rect(rect, Color::new(0.14, 0.14, 0.18, 1.0));
+            stroke_rect(
+                rect,
+                1.2 * s,
+                if rect.contains(input.mouse) {
+                    BONE
+                } else {
+                    Color::new(0.45, 0.45, 0.52, 0.8)
+                },
+            );
+            let isz = 34.0 * s;
+            draw_icon(
+                Rect::new(
+                    rect.x + if named { 4.0 * s } else { (rect.w - isz) * 0.5 },
+                    rect.y + (rect.h - isz) * 0.5,
+                    isz,
+                    isz,
+                ),
+                &card.icon,
+                WHITE,
+            );
+            if named {
+                draw_text(
+                    &card.title,
+                    rect.x + 42.0 * s,
+                    rect.y + 27.0 * s,
+                    13.0 * s,
+                    BONE,
+                );
+            }
+            queue_stop = (rect, card.action);
+        }
+        let orders_dock = panel.queue_label == "Orders";
         for (i, card) in panel.queue.iter().take(n).enumerate() {
             let mut rect = grid_slots[i];
             rect.y -= more_h;
@@ -1290,6 +1354,7 @@ pub(crate) fn draw_panel(
         card_count,
         queue_slots,
         queue_count,
+        queue_stop,
         hides_minimap: packing.hides_minimap,
     }
 }
@@ -1326,7 +1391,10 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
         return;
     };
     let r = hit.rect;
-    let (anchor, side) = if hit.row == crate::layout::CardRow::Queue {
+    let (anchor, side) = if matches!(
+        hit.row,
+        crate::layout::CardRow::Queue | crate::layout::CardRow::Stop
+    ) {
         // Anchored across the dock's full width so the box clears the
         // strip cleanly at any chip inset.
         (
@@ -1483,7 +1551,7 @@ mod tests {
             for (width, top) in [(640.0, 110.0), (800.0, 190.0), (1280.0, 650.0)] {
                 for count in 1..=8 {
                     let (dock, slots, shown) =
-                        collective_queue_grid(count, top * scale, scale, width * scale);
+                        collective_queue_grid(count, top * scale, scale, width * scale, 0.0);
                     assert_eq!(shown, count);
                     assert!(dock.right() <= width * scale);
                     assert!(dock.y >= crate::layout::TOP_BAR_H * scale);
@@ -1545,13 +1613,13 @@ mod tests {
             assert!(measure(&panel.queue_label) <= width);
             labels.push(panel.queue_label.clone());
             widths.push(width);
-            panel.queue_label = "queue ready + 5s".into();
+            panel.queue_label = "Ready".into();
             assert_eq!(queue_label_width(&panel, measure), width);
             assert!(measure(&panel.queue_label) <= width);
             game.state.tick(&[]);
         }
-        assert!(labels.iter().any(|label| label == "queue 10s"));
-        assert!(labels.iter().any(|label| label == "queue 9.9s"));
+        assert!(labels.iter().any(|label| label == "10s"));
+        assert!(labels.iter().any(|label| label == "9.9s"));
         assert!(widths.iter().all(|width| *width == widths[0]));
         assert_eq!(game.state.building(foundry).unwrap().queue.len(), 1);
     }
@@ -1603,7 +1671,7 @@ mod tests {
             let info = selection_info_rect(viewport, left, measured.height, actions);
             assert_eq!(info.y, actions.y);
             assert_eq!(info.bottom(), viewport.y);
-            let (dock, slots, count) = queue_grid(8, info.y, scale);
+            let (dock, slots, count) = queue_grid(8, info.y, scale, 0.0);
             assert_eq!(count, 8);
             assert_eq!(dock.bottom(), info.y);
             assert!(slots[..count].iter().all(|slot| slot.bottom() <= info.y));
@@ -1919,7 +1987,7 @@ mod tests {
         // A 120px command band leaves panel_top=280 in the
         // 640×400 stress case. Every slot must remain present, above the band,
         // and below the top bar rather than folding into "+N".
-        let (dock, slots, count) = queue_grid(8, 280.0, 1.0);
+        let (dock, slots, count) = queue_grid(8, 280.0, 1.0, 0.0);
         assert_eq!(count, 8);
         assert!(dock.y >= crate::layout::TOP_BAR_H);
         assert_eq!(
@@ -1948,8 +2016,28 @@ mod tests {
     }
 
     #[test]
+    fn the_stop_plate_sits_above_the_label_and_every_slot() {
+        let header = STOP_PLATE + STOP_GAP;
+        for (len, top) in [(3, 680.0), (8, 280.0)] {
+            let (plain, _, _) = queue_grid(len, top, 1.0, 0.0);
+            let (dock, slots, count) = queue_grid(len, top, 1.0, header);
+            assert_eq!(count, len, "the square never folds a slot away");
+            assert!(dock.y >= crate::layout::TOP_BAR_H);
+            assert_eq!(dock.bottom(), top, "the dock still rests on the band");
+            assert!(dock.h >= plain.h, "the square adds a row, not an overlap");
+            for slot in &slots[..count] {
+                assert!(
+                    slot.y >= dock.y + header + 24.0,
+                    "below the square and label"
+                );
+                assert!(slot.bottom() <= top);
+            }
+        }
+    }
+
+    #[test]
     fn a_queue_that_fits_stays_in_one_quiet_column() {
-        let (_, slots, count) = queue_grid(5, 680.0, 1.0);
+        let (_, slots, count) = queue_grid(5, 680.0, 1.0, 0.0);
         assert_eq!(count, 5);
         assert!(slots[..count].iter().all(|slot| slot.x == slots[0].x));
     }
@@ -2003,7 +2091,7 @@ mod tests {
         });
         assert_eq!(panel.roster.len(), 8);
         assert_eq!(info.roster_columns, 4);
-        let (dock, slots, count) = queue_grid(8, 400.0 - info.height, 1.0);
+        let (dock, slots, count) = queue_grid(8, 400.0 - info.height, 1.0, 0.0);
         assert_eq!(count, 8);
         assert!(dock.y >= crate::layout::TOP_BAR_H);
         assert!(dock.w <= 204.0);

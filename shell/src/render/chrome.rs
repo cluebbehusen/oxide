@@ -617,6 +617,7 @@ pub(crate) fn draw_hud(
     let mut card_count = 0;
     let mut queue_slots = [(zero, crate::panel::CardAction::None); 8];
     let mut queue_count = 0;
+    let mut queue_stop = (zero, crate::panel::CardAction::None);
     let mut panel_top = f32::INFINITY;
     let mut panel_right = 0.0;
     let mut orders_dock = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -630,6 +631,7 @@ pub(crate) fn draw_hud(
         card_count = geometry.card_count;
         queue_slots = geometry.queue_slots;
         queue_count = geometry.queue_count;
+        queue_stop = geometry.queue_stop;
         panel_regions = [geometry.info, geometry.actions];
         panel_top = panel_regions
             .iter()
@@ -676,6 +678,7 @@ pub(crate) fn draw_hud(
     );
     layout.panel_regions = panel_regions;
     layout.queue_toggle = queue_toggle;
+    layout.queue_stop = queue_stop;
     layout.alert_badge = alert_badge;
     layout.group_column = group_column;
     layout.group_slots = group_slots;

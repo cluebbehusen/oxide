@@ -185,22 +185,6 @@ impl SelectedBuildings {
             });
         }
         let defenses = self.defenses(None);
-        if !defenses.is_empty() {
-            cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Stop),
-                title: "Stop".into(),
-                cost: None,
-                hotkey: bindings.labels(Action::StopOrScrap),
-                action: CardAction::Dispatch(Action::StopOrScrap),
-                enabled: true,
-                why: None,
-                desc: vec![format!(
-                    "Clear target preference for {} defenses; resume automatic fire.",
-                    defenses.len()
-                )],
-                progress: None,
-            });
-        }
         let sites = self.sites();
         if !sites.is_empty() {
             cards.push(Card {

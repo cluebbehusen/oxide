@@ -7156,6 +7156,56 @@ fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
 }
 
 #[test]
+fn the_dock_stop_square_halts_the_selection_by_click_and_tap() {
+    let mut game = headless_game();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: game.presentation.human,
+        command: Command::AttackMove {
+            units: vec![harvester],
+            goal: TilePos::new(8, 8),
+            queue: false,
+        },
+    }]);
+    game.presentation.selection.units = vec![harvester];
+    let square = macroquad::math::Rect::new(8.0, 560.0, 44.0, 44.0);
+    for touch in [false, true] {
+        let mut input = InputState::new();
+        input.now = 1.0;
+        let panel = crate::panel::build_for_input(&game.view(), &input).expect("a panel");
+        let action = panel.stop.as_ref().expect("a busy unit can stop").action;
+        *game.presentation.panel_model.borrow_mut() = Some(panel);
+        let mut layout = bare_layout(680.0, 500.0);
+        layout.queue_stop = (square, action);
+        game.presentation.layout.set(layout);
+        game.pending.clear();
+        if touch {
+            apply_events(&mut game, &mut input, &[touch_down(1, square.center())]);
+            input.now += 0.1;
+            apply_events(&mut game, &mut input, &[touch_up(1, square.center())]);
+        } else {
+            apply_events(
+                &mut game,
+                &mut input,
+                &click(square.center().x, square.center().y),
+            );
+        }
+        assert!(
+            game.pending
+                .iter()
+                .any(|pc| matches!(&pc.command, Command::Stop { units } if units == &[harvester])),
+            "touch: {touch}"
+        );
+    }
+}
+
+#[test]
 fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
     for damaged in [false, true] {
         let mut game = headless_game();

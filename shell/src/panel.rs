@@ -116,6 +116,8 @@ pub enum CardAction {
     FilterKind(UnitKind),
     /// Close the build palette in one press, keeping the selection.
     ClosePalette,
+    /// Empty the selected producers' queues, every job refunded in full.
+    ClearQueues,
     /// Display only.
     None,
     /// A disabled card: pressing it explains why instead of acting.
@@ -203,10 +205,13 @@ pub struct Panel {
     pub queue: Vec<Card>,
     /// Counts for a collective production dock; empty for individual queues.
     pub queue_groups: Vec<crate::production::QueueGroup>,
-    /// What the queue strip is labeled — for order docks, WHOSE
-    /// program it shows ("orders - Harvester"), because the dock draws
-    /// one unit's story while breadcrumbs draw many.
+    /// What the queue strip is labeled. An order dock draws the subject's
+    /// program, and the portrait beside it already names whose.
     pub queue_label: String,
+    /// The Stop button above the dock: it halts the selection's orders, clears
+    /// a defense's target preference, or empties production. Absent
+    /// while nothing selected has anything to stop.
+    pub stop: Option<Card>,
 }
 
 impl Panel {
@@ -216,6 +221,7 @@ impl Panel {
             crate::layout::CardRow::Roster => self.roster.get(index),
             crate::layout::CardRow::Cards => self.cards.get(index),
             crate::layout::CardRow::Queue => self.queue.get(index),
+            crate::layout::CardRow::Stop => self.stop.as_ref().filter(|_| index == 0),
         }
     }
 }
@@ -422,27 +428,23 @@ fn unit_speed_label(kind: UnitKind) -> String {
     )
 }
 
+/// The production dock's heading: the time left on everything queued,
+/// or "Ready" while a finished head waits to leave.
 fn production_queue_label(
     queue: &std::collections::VecDeque<UnitKind>,
     progress: u32,
 ) -> Option<String> {
     let head = queue.front()?;
     let head_ticks = head.stats().train_ticks;
-    let ready = progress >= head_ticks;
+    if progress >= head_ticks {
+        return Some("Ready".to_string());
+    }
     let later_ticks = queue
         .iter()
         .skip(1)
         .map(|kind| kind.stats().train_ticks)
         .sum::<u32>();
-    if ready {
-        return Some(if later_ticks == 0 {
-            "queue ready".to_string()
-        } else {
-            format!("queue ready + {}", tick_time_label(later_ticks))
-        });
-    }
-    let remaining = head_ticks - progress + later_ticks;
-    Some(format!("queue {}", tick_time_label(remaining)))
+    Some(tick_time_label(head_ticks - progress + later_ticks))
 }
 
 fn bot_controller_label(game: &Scene<'_>, player: oxide_sim::PlayerId) -> Option<String> {
@@ -754,6 +756,21 @@ fn chord(bindings: &BindingMap, action: Action) -> String {
     bindings.labels(action)
 }
 
+/// The Stop button above the dock for whatever `action` stops.
+fn stop_card(action: CardAction, hotkey: String, desc: &str) -> Card {
+    Card {
+        icon: CardIcon::Verb(VerbIcon::Stop),
+        title: "Stop".into(),
+        cost: None,
+        hotkey,
+        action,
+        enabled: true,
+        why: None,
+        desc: vec![desc.into()],
+        progress: None,
+    }
+}
+
 /// Builds the selection panel against the live construction-menu state.
 pub fn build_for_palette(
     game: &Scene<'_>,
@@ -859,6 +876,7 @@ fn pile_panel(game: &Scene<'_>, tile: chassis::grid::TilePos) -> Option<Panel> {
         queue: Vec::new(),
         queue_groups: Vec::new(),
         queue_label: String::new(),
+        stop: None,
     })
 }
 
@@ -896,7 +914,8 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             cards: Vec::new(),
             queue: Vec::new(),
             queue_groups: Vec::new(),
-            queue_label: "queue".into(),
+            queue_label: "Queue".into(),
+            stop: None,
         };
         if selected_buildings
             .iter()
@@ -935,7 +954,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             }
         } else if let Some(building) = selected.buildings.first() {
             if let Some(target) = building.focus {
-                panel.queue_label = "target preference".into();
+                panel.queue_label = "Target preference".into();
                 panel.queue.push(order_card(
                     game,
                     &Order::Attack {
@@ -971,12 +990,27 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                 });
             }
         }
+        panel.stop = if selected.buildings.iter().any(|b| b.focus.is_some()) {
+            Some(stop_card(
+                CardAction::Dispatch(Action::StopOrScrap),
+                chord(bindings, Action::StopOrScrap),
+                "Clear target preference; resume automatic fire.",
+            ))
+        } else if selected.accepts && selected.buildings.iter().any(|b| !b.queue.is_empty()) {
+            Some(stop_card(
+                CardAction::ClearQueues,
+                String::new(),
+                "Cancel every queued unit; full refund.",
+            ))
+        } else {
+            None
+        };
         let production = crate::production::Production::from_selected(selected);
         if production.homogeneous() {
             panel.cards.extend(production.cards(bindings));
             if plural {
                 (panel.queue, panel.queue_groups) = production.collective_queue();
-                panel.queue_label = "combined production".into();
+                panel.queue_label = "Combined production".into();
             }
         }
         return Some(panel);
@@ -1029,12 +1063,8 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         cards: Vec::new(),
         queue: Vec::new(),
         queue_groups: Vec::new(),
-        queue_label: if units.len() == 1 {
-            "orders".to_string()
-        } else {
-            // The dock shows ONE unit's program; say whose.
-            format!("orders - {}", entity_name(first.kind.name()))
-        },
+        queue_label: "Orders".to_string(),
+        stop: None,
     };
     if owner != game.presentation.human {
         // Foreign units inspect read-only. Static weapon facts are safe
@@ -1084,17 +1114,6 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             }
         }
     }
-    panel.cards.push(Card {
-        icon: CardIcon::Verb(VerbIcon::Stop),
-        title: "Stop".into(),
-        cost: None,
-        hotkey: chord(bindings, Action::StopOrScrap),
-        action: CardAction::Dispatch(Action::StopOrScrap),
-        enabled: true,
-        why: None,
-        desc: vec!["Clear orders; stand and auto-engage.".into()],
-        progress: None,
-    });
     // Run and Attack-move only differ from a plain move for a machine
     // that can shoot. Patrol stays for everyone: an unarmed scout patrols.
     if has_fighter {
@@ -1304,6 +1323,18 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         for order in first.queue.iter().take(7) {
             panel.queue.push(own_order_card(game, order, false));
         }
+    }
+    // The square answers for the whole selection, so it shows even when
+    // the subject is idle and only another selected unit is busy.
+    if units
+        .iter()
+        .any(|u| !matches!(u.order, Order::Idle) || !u.queue.is_empty())
+    {
+        panel.stop = Some(stop_card(
+            CardAction::Dispatch(Action::StopOrScrap),
+            chord(bindings, Action::StopOrScrap),
+            "Clear orders; stand and auto-engage.",
+        ));
     }
     Some(panel)
 }
@@ -1692,11 +1723,11 @@ mod tests {
         }]);
         let panel =
             build_for_palette(&game.view(), &BindingMap::classic(), false).expect("queued panel");
-        assert_eq!(panel.queue_label, "queue 5s");
+        assert_eq!(panel.queue_label, "5s");
         game.state.tick(&[]);
         let panel = build_for_palette(&game.view(), &BindingMap::classic(), false)
             .expect("progressing panel");
-        assert_eq!(panel.queue_label, "queue 4.9s");
+        assert_eq!(panel.queue_label, "4.9s");
     }
 
     #[test]
@@ -1784,13 +1815,13 @@ mod tests {
 
         let panel =
             build_for_palette(&game.view(), &BindingMap::classic(), false).expect("Turret panel");
-        assert_eq!(
-            panel.cards.len(),
-            2,
-            "the turret offers Stop and its tier upgrade"
+        assert_eq!(panel.cards.len(), 1, "the turret offers its tier upgrade");
+        assert!(
+            panel.stop.is_none(),
+            "a turret without a target has nothing to stop"
         );
         assert!(
-            matches!(panel.cards[1].action, CardAction::Upgrade),
+            matches!(panel.cards[0].action, CardAction::Upgrade),
             "the turret's card lifts its tier"
         );
         assert!(
@@ -1941,7 +1972,7 @@ mod tests {
         // Unarmed, it has no Run or Attack-move, and an empty hopper has
         // no cargo to return.
         let titles: Vec<&str> = panel.cards.iter().map(|card| card.title.as_str()).collect();
-        assert_eq!(titles, ["Stop", "Patrol", "Salvage", "Weld", "Build"]);
+        assert_eq!(titles, ["Patrol", "Salvage", "Weld", "Build"]);
         assert!(
             !panel
                 .info
@@ -1970,6 +2001,7 @@ mod tests {
         // An idle unit with nothing queued shows no order chips at all —
         // the dock only exists when there is a program to show.
         assert!(panel.queue.is_empty(), "idle shows no dock");
+        assert!(panel.stop.is_none(), "an idle unit has nothing to stop");
         // Give it a program: the strip appears, and stays display-only.
         game.state.tick(&[oxide_sim::PlayerCommand {
             player: game.presentation.human,
@@ -1986,6 +2018,9 @@ mod tests {
             CardAction::None,
             "orders are display-only"
         );
+        let stop = panel.stop.as_ref().expect("a busy unit can stop");
+        assert_eq!(stop.action, CardAction::Dispatch(Action::StopOrScrap));
+        assert_eq!(stop.hotkey, "X");
     }
 
     /// Places `kind` on the first tile the sim accepts near the
@@ -2334,12 +2369,13 @@ mod tests {
         let queue = std::collections::VecDeque::from([UnitKind::Harvester, UnitKind::Sentinel]);
         assert_eq!(
             production_queue_label(&queue, 25).as_deref(),
-            Some("queue 11.3s"),
+            Some("11.3s"),
             "75 head ticks plus 150 queued ticks"
         );
         assert_eq!(
             production_queue_label(&queue, UnitKind::Harvester.stats().train_ticks).as_deref(),
-            Some("queue ready + 7.5s")
+            Some("Ready"),
+            "nothing behind a blocked head is counting down"
         );
         assert_eq!(
             production_queue_label(
@@ -2347,7 +2383,7 @@ mod tests {
                 UnitKind::Harvester.stats().train_ticks,
             )
             .as_deref(),
-            Some("queue ready")
+            Some("Ready")
         );
         assert!(production_queue_label(&std::collections::VecDeque::new(), 0).is_none());
     }
