@@ -4330,7 +4330,7 @@ fn fresh_connected_proposal_is_pure_repeatable_and_keeps_one_minimum_basis() {
     assert_eq!(first.identity().anchor, TARGET);
     assert_eq!(
         first.deadline(),
-        battle.tick.saturating_add(connected_preparation_horizon())
+        battle.tick.saturating_add(CONNECTED_PREPARATION_HORIZON)
     );
     let minimum = &first.variants[0];
     let minimum_package = &minimum.plan.package;
@@ -5501,13 +5501,16 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
         .iter()
         .find(|contact| contact.anchor == TARGET)
         .expect("current primary target");
-    assert!(!known_ground_connected(
-        &observation,
-        HOME,
-        secondary,
-        BuildingKind::Crucible.base_stats().size,
-        Some(&pit_map),
-    ));
+    assert_ne!(
+        known_ground_connection(
+            &observation,
+            HOME,
+            secondary,
+            BuildingKind::Crucible.base_stats().size,
+            Some(&pit_map),
+        ),
+        Some(true)
+    );
 
     let pit_selection = fresh_target_selection(
         &observation,

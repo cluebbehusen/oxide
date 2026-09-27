@@ -54,8 +54,9 @@ use force_package::{
 /// out the ordinary line that protects the economy.
 const CONNECTED_OPERATION_MINIMUM_COMBAT_ROSTER: usize = 12;
 /// A connected operation may use only completed production that can finish its
-/// whole requested package inside this immutable preparation window.
-const CONNECTED_PREPARATION_HORIZON: Tick = 2_400;
+/// whole requested package inside this immutable preparation window. The
+/// coordinator's joint resource projection shares it.
+pub(crate) const CONNECTED_PREPARATION_HORIZON: Tick = 2_400;
 
 #[cfg(test)]
 thread_local! {
@@ -65,12 +66,6 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn airworks_package_derivations() -> usize {
     AIRWORKS_PACKAGE_DERIVATIONS.with(core::cell::Cell::get)
-}
-
-/// Shared preparation horizon used by connected proposal derivation and the
-/// coordinator's joint resource projection.
-pub(crate) const fn connected_preparation_horizon() -> Tick {
-    CONNECTED_PREPARATION_HORIZON
 }
 const ISLAND_OPERATION_EARLIEST_TICK: Tick = 3_600;
 const STRATEGIC_AIR_QUEUE_DEPTH: usize = 2;
@@ -659,13 +654,14 @@ fn derive_connected_package_options(
     unavailable: &[UnitId],
     context: ConnectedPlanningContext<'_>,
 ) -> Result<ConnectedForcePackageOptions, ConnectedPlanRejection> {
-    if !known_ground_connected(
+    if known_ground_connection(
         obs,
         home,
         target.anchor,
         target.kind.base_stats().size,
         context.public_map,
-    ) {
+    ) != Some(true)
+    {
         return Err(ConnectedPlanRejection::DisconnectedGroundRoute);
     }
     // The package must refuse the same paid queue work as the resources it
@@ -1271,6 +1267,18 @@ pub(crate) struct AirEvidence<'a> {
     pub(crate) orientation: Orientation,
 }
 
+impl<'a> AirEvidence<'a> {
+    fn route(self, target: TilePos) -> ConnectedRouteContext<'a> {
+        ConnectedRouteContext::new(
+            self.intel,
+            self.public_map,
+            self.orientation,
+            self.home,
+            target,
+        )
+    }
+}
+
 /// Current scrap, and forecast scrap through the preparation window, that
 /// earlier owners already hold.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1873,15 +1881,10 @@ struct FreshConnectedDerivationContext<'a> {
 
 impl<'a> FreshConnectedDerivationContext<'a> {
     fn route(self, target: TilePos) -> ConnectedRouteContext<'a> {
-        ConnectedRouteContext::new(
-            self.ev.intel,
-            self.ev.public_map,
-            self.ev.orientation,
-            self.ev.home,
-            target,
-        )
-        .with_routes(Some(self.campaign_routes))
-        .excluding_paid(self.inputs.paid_exclusions)
+        self.ev
+            .route(target)
+            .with_routes(Some(self.campaign_routes))
+            .excluding_paid(self.inputs.paid_exclusions)
     }
 }
 
@@ -3299,14 +3302,8 @@ fn planning_context<'c>(
                 ev.obs,
                 connected.commitment.player,
                 &connected.package,
-                ConnectedRouteContext::new(
-                    ev.intel,
-                    ev.public_map,
-                    ev.orientation,
-                    ev.home,
-                    connected.focus,
-                )
-                .excluding_paid(inputs.paid_exclusions),
+                ev.route(connected.focus)
+                    .excluding_paid(inputs.paid_exclusions),
                 &ResourceSnapshot::from_observation(ev.obs),
                 inputs.reserve.current,
             )
@@ -3400,14 +3397,10 @@ impl<'a> AirTurn<'a> {
             )
             .is_none()
         {
-            let route = ConnectedRouteContext::new(
-                self.ev.intel,
-                self.ev.public_map,
-                self.ev.orientation,
-                self.ev.home,
-                connected.focus,
-            )
-            .excluding_paid(inputs.paid_exclusions);
+            let route = self
+                .ev
+                .route(connected.focus)
+                .excluding_paid(inputs.paid_exclusions);
             let resources =
                 ConnectedProductionResources::from_package_snapshot_after_current_reserve(
                     obs,
@@ -4032,13 +4025,7 @@ fn reconcile_preparation_members(
             obs,
             &resources.targets,
             &[],
-            ConnectedRouteContext::new(
-                context.ev.intel,
-                context.ev.public_map,
-                context.ev.orientation,
-                context.ev.home,
-                preferred_anchor(op, plan),
-            ),
+            context.ev.route(preferred_anchor(op, plan)),
         )
     } else {
         Vec::new()
@@ -6795,13 +6782,13 @@ fn wealthy_island_target(
                 .saturating_mul(4);
     developed_economy
         && combat_roster(obs) >= 12
-        && known_ground_disconnected(
+        && known_ground_connection(
             obs,
             home,
             target.anchor,
             target.kind.base_stats().size,
             public_map,
-        )
+        ) == Some(false)
 }
 
 fn ready_for_airborne_strike(obs: &Observation) -> bool {
@@ -6812,26 +6799,6 @@ fn ready_for_airborne_strike(obs: &Observation) -> bool {
     ]
     .into_iter()
     .all(|kind| requirements_met(obs, kind) && has_producer(obs, kind))
-}
-
-fn known_ground_disconnected(
-    obs: &Observation,
-    home: TilePos,
-    target: TilePos,
-    target_size: (i32, i32),
-    public_map: Option<&PublicMapBriefing>,
-) -> bool {
-    known_ground_connection(obs, home, target, target_size, public_map) == Some(false)
-}
-
-fn known_ground_connected(
-    obs: &Observation,
-    home: TilePos,
-    target: TilePos,
-    target_size: (i32, i32),
-    public_map: Option<&PublicMapBriefing>,
-) -> bool {
-    known_ground_connection(obs, home, target, target_size, public_map) == Some(true)
 }
 
 fn known_ground_connection(

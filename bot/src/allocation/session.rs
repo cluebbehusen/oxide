@@ -42,10 +42,9 @@ use crate::standing_force::{
 };
 use crate::strategy::{
     ActiveConnectedObligation, AirAdjudication, AirOperation, AirOperationOutcome,
-    AirOperationPhase, AirRecoveryReason, AirTurn, CapitalReserve, ConnectedInputs,
-    FreshConnectedProposal, IslandInputs, LiftSupportRequest, ProducerLanes,
+    AirOperationPhase, AirRecoveryReason, AirTurn, CONNECTED_PREPARATION_HORIZON, CapitalReserve,
+    ConnectedInputs, FreshConnectedProposal, IslandInputs, LiftSupportRequest, ProducerLanes,
     RejectedConnectedCandidate, StrategicDecision, StrategicPlanner, air_adjudication,
-    connected_preparation_horizon,
 };
 use crate::team::TeamReliefPlanner;
 use crate::trace::{
@@ -575,7 +574,7 @@ impl<'a> AllocationSession<'a> {
                 .context
                 .observation
                 .tick
-                .saturating_add(connected_preparation_horizon());
+                .saturating_add(CONNECTED_PREPARATION_HORIZON);
             let committed_production = self.committed_standing_production();
             let standing_force = self
                 .standing_force_inputs(
@@ -799,7 +798,7 @@ impl<'a> AllocationSession<'a> {
                             self.context
                                 .observation
                                 .tick
-                                .saturating_add(connected_preparation_horizon()),
+                                .saturating_add(CONNECTED_PREPARATION_HORIZON),
                         ),
                     },
                 },
@@ -837,7 +836,7 @@ impl<'a> AllocationSession<'a> {
                 self.context
                     .observation
                     .tick
-                    .saturating_add(connected_preparation_horizon())
+                    .saturating_add(CONNECTED_PREPARATION_HORIZON)
             });
         let committed_production = self.committed_standing_production();
         let defense_scope =
@@ -1976,7 +1975,7 @@ fn allocation_horizon(
     let mut horizon = context
         .observation
         .tick
-        .saturating_add(connected_preparation_horizon())
+        .saturating_add(CONNECTED_PREPARATION_HORIZON)
         .max(
             context
                 .observation
@@ -5200,7 +5199,7 @@ mod tests {
         let deadline = strategy.connected_deadline();
         assert_eq!(
             deadline,
-            Some(120 + crate::strategy::connected_preparation_horizon())
+            Some(120 + crate::strategy::CONNECTED_PREPARATION_HORIZON)
         );
         let operation = strategy.air_operation().expect("the operation is admitted");
         assert_eq!(

@@ -452,7 +452,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             self.context
                 .observation
                 .tick
-                .saturating_add(connected_preparation_horizon()),
+                .saturating_add(CONNECTED_PREPARATION_HORIZON),
             self.context.dials.cadence,
         ) {
             Ok(mut observed) => obligations.append(&mut observed),
@@ -712,7 +712,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 self.context
                     .observation
                     .tick
-                    .saturating_add(connected_preparation_horizon())
+                    .saturating_add(CONNECTED_PREPARATION_HORIZON)
             },
             |operation| operation.deadline,
         );
@@ -931,7 +931,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     retained_units: retained_lift_units,
                     production_deadline: self.participants.lifts.operation().map_or_else(
                         || {
-                            connected_preparation_horizon()
+                            CONNECTED_PREPARATION_HORIZON
                                 .saturating_add(self.context.observation.tick)
                         },
                         |operation| operation.deadline,
@@ -1100,7 +1100,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             .context
             .observation
             .tick
-            .saturating_add(connected_preparation_horizon());
+            .saturating_add(CONNECTED_PREPARATION_HORIZON);
         let protected_forecast_scrap =
             forecast_reserve_through(&obligations.obligations, production_deadline);
         let Some((producer_lane_reservations, prior_producer_intents)) = retained_producer_context(
@@ -1174,7 +1174,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 self.context
                     .observation
                     .tick
-                    .saturating_add(connected_preparation_horizon())
+                    .saturating_add(CONNECTED_PREPARATION_HORIZON)
             });
         let connected_precedes_foundry =
             self.participants
@@ -1347,7 +1347,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                         .context
                         .observation
                         .tick
-                        .saturating_add(connected_preparation_horizon())
+                        .saturating_add(CONNECTED_PREPARATION_HORIZON)
                         .max(
                             self.context
                                 .observation
