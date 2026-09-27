@@ -230,6 +230,15 @@ impl HostSession {
         }
     }
 
+    /// Whether every live client has acknowledged every published batch, and
+    /// so reported every hash the host is waiting on.
+    pub fn caught_up(&self) -> bool {
+        self.clients
+            .iter()
+            .filter(|client| client.live)
+            .all(|client| client.acked == self.next_tick)
+    }
+
     /// Applies timeouts, queues heartbeats, and returns what happened since
     /// the last poll. Call it from the game loop, never from a network thread,
     /// so a hung host stops heartbeating.
@@ -700,6 +709,20 @@ mod tests {
         .encode();
         assert_eq!(host.take_outgoing(), vec![(A, desync.clone()), (B, desync)]);
         assert!(host.seal(secs(0)).is_none());
+    }
+
+    #[test]
+    fn a_host_is_caught_up_once_every_live_client_acknowledged_every_batch() {
+        let mut host = HostSession::new(HOST, &[A, B], secs(0));
+        assert!(host.caught_up());
+        for _ in 0..3 {
+            step(&mut host, secs(0), 0).unwrap();
+        }
+        ack_through(&mut host, A, 1, 3, secs(0));
+        ack_through(&mut host, B, 1, 2, secs(0));
+        assert!(!host.caught_up(), "B is a batch behind");
+        host.disconnected(B);
+        assert!(host.caught_up(), "a dropped client is not waited on");
     }
 
     #[test]

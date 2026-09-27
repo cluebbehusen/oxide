@@ -10,6 +10,7 @@ pub mod browser;
 pub mod codex;
 pub mod final_map;
 pub mod home;
+pub mod lobby;
 pub mod pause;
 pub mod playback;
 pub mod results;
