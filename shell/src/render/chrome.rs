@@ -70,11 +70,13 @@ fn draw_group_slot(
             {
                 size -= 1.0 * s;
             }
-            let width = measure_text(&text, None, size as u16, 1.0).width;
+            // Centered on the glyphs' own box, not the baseline, so the
+            // count sits in the middle of the slot at any size.
+            let dims = measure_text(&text, None, size as u16, 1.0);
             draw_text(
                 &text,
-                rect.x + (rect.w - width) * 0.5 + 3.0 * s,
-                rect.y + 27.0 * s,
+                rect.x + (rect.w - dims.width) * 0.5,
+                rect.y + (rect.h - dims.height) * 0.5 + dims.offset_y,
                 size,
                 SCRAP_COLOR,
             );
@@ -82,7 +84,7 @@ fn draw_group_slot(
         crate::layout::GroupSlot::Assign(_) => {
             fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
             stroke_rect(rect, 1.0 * s, TEXT_DISABLED);
-            let c = rect.center() + vec2(2.0 * s, 2.0 * s);
+            let c = rect.center();
             let arm = 6.0 * s;
             line_between(c - vec2(arm, 0.0), c + vec2(arm, 0.0), 2.0 * s, SCRAP_COLOR);
             line_between(c - vec2(0.0, arm), c + vec2(0.0, arm), 2.0 * s, SCRAP_COLOR);
