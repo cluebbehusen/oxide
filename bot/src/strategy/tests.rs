@@ -129,13 +129,11 @@ fn planning_context<'a>(
         .find(|contact| contact.anchor == TARGET)
         .expect("the fixture has a current strategic target");
     AirPlanningContext {
-        allow_procurement: true,
-        planning: fixture_planning,
         ev: AirEvidence {
             tuning: DifficultyTuning::for_level(identity.difficulty),
             ..evidence(identity, observation, intelligence)
         },
-        enlisted: &[],
+        procurement: AirProcurement::fixture(fixture_planning),
         landing_sites: &[],
         connected_resources: Some(ConnectedProductionResources::from_observation(
             observation,
@@ -143,9 +141,6 @@ fn planning_context<'a>(
             &[],
             ConnectedRouteContext::new(intelligence, None, test_orientation(), HOME, target.anchor),
         )),
-        lanes: ProducerLanes::empty(),
-        paid_exclusions: &[],
-        reserve: CapitalReserve::default(),
     }
 }
 
@@ -641,13 +636,11 @@ fn active_obligation(
     planner: &mut StrategicPlanner,
     obs: &Observation,
 ) -> Option<ActiveConnectedObligation> {
-    let fixture_planning = crate::planning::PlanningWork::default();
-
     let resources = ResourceSnapshot::from_observation(obs);
     let intel = knowledge(obs);
     planner
         .unobserved_turn(evidence(&profile(), obs, &intel))
-        .retained_obligation(connected_inputs(&fixture_planning, &resources))
+        .retained_obligation(&resources, &[], &[])
 }
 
 #[test]
@@ -1805,15 +1798,10 @@ fn artillery_staging_is_dispatched_once_until_the_goal_or_mission_changes() {
     let mut plan = connected_test_plan(&suppression_observation);
     let identity = profile();
     let context = AirPlanningContext {
-        allow_procurement: true,
-        planning: &fixture_planning,
         ev: evidence(&identity, &suppression_observation, &intelligence),
-        enlisted: &[],
+        procurement: AirProcurement::fixture(&fixture_planning),
         landing_sites: &[],
         connected_resources: None,
-        lanes: ProducerLanes::empty(),
-        paid_exclusions: &[],
-        reserve: CapitalReserve::default(),
     };
     assert_eq!(
         Ok(()),
@@ -2261,8 +2249,8 @@ fn immediate_air_scheduling_preserves_staged_order_depth_and_protected_capital()
         observation.scrap = bank + 53;
         let mut context =
             planning_context(&fixture_planning, &identity, &observation, &intelligence);
-        context.lanes.prior_intents = &prior;
-        context.reserve.current = 53;
+        context.procurement.lanes.prior_intents = &prior;
+        context.procurement.reserve.current = 53;
         let mut out = StrategicDecision::default();
         schedule(&context, &[(kind, 5)]).append_to(&mut out);
         assert_eq!(out.intents, expected);
@@ -4213,7 +4201,10 @@ fn losing_the_primary_keeps_the_committed_identity_and_moves_the_focus() {
     let _ = planner.think(
         evidence(&profile(), &initial, &intelligence),
         ThinkInputs {
-            allow_new_operation: false,
+            procurement: AirProcurement {
+                allow: false,
+                ..AirProcurement::fixture(&fixture_planning)
+            },
             ..ThinkInputs::fixture(&fixture_planning)
         },
     );
@@ -4237,7 +4228,10 @@ fn losing_the_primary_keeps_the_committed_identity_and_moves_the_focus() {
     let decision = planner.think(
         evidence(&profile(), &after_destruction, &intelligence),
         ThinkInputs {
-            allow_new_operation: false,
+            procurement: AirProcurement {
+                allow: false,
+                ..AirProcurement::fixture(&fixture_planning)
+            },
             ..ThinkInputs::fixture(&fixture_planning)
         },
     );
@@ -6204,15 +6198,10 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
             &mut operation,
             &mut plan,
             &AirPlanningContext {
-                allow_procurement: true,
-                planning: &fixture_planning,
                 ev: evidence(&identity, &hidden, &intelligence),
-                enlisted: &[],
+                procurement: AirProcurement::fixture(&fixture_planning),
                 landing_sites: &[],
                 connected_resources: None,
-                lanes: ProducerLanes::empty(),
-                paid_exclusions: &[],
-                reserve: CapitalReserve::default(),
             },
             &mut decision,
         )
@@ -6244,15 +6233,10 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
             &mut operation,
             &mut plan,
             &AirPlanningContext {
-                allow_procurement: true,
-                planning: &fixture_planning,
                 ev: evidence(&identity, &cleared, &intelligence),
-                enlisted: &[],
+                procurement: AirProcurement::fixture(&fixture_planning),
                 landing_sites: &[],
                 connected_resources: None,
-                lanes: ProducerLanes::empty(),
-                paid_exclusions: &[],
-                reserve: CapitalReserve::default(),
             },
             &mut decision,
         )
@@ -6283,15 +6267,10 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     commit_to_cluster(&mut plan, &operation, vec![TARGET, secondary]);
     let identity = profile();
     let context = AirPlanningContext {
-        allow_procurement: true,
-        planning: &fixture_planning,
         ev: evidence(&identity, &observation, &intelligence),
-        enlisted: &[],
+        procurement: AirProcurement::fixture(&fixture_planning),
         landing_sites: &[],
         connected_resources: None,
-        lanes: ProducerLanes::empty(),
-        paid_exclusions: &[],
-        reserve: CapitalReserve::default(),
     };
     let mut decision = StrategicDecision::default();
 
@@ -6321,15 +6300,10 @@ fn connected_verify_scouts_every_selected_footprint_before_accepting_negative_aa
     observation.visible[far_index] = true;
     intelligence.update(&observation);
     let context = AirPlanningContext {
-        allow_procurement: true,
-        planning: &fixture_planning,
         ev: evidence(&identity, &observation, &intelligence),
-        enlisted: &[],
+        procurement: AirProcurement::fixture(&fixture_planning),
         landing_sites: &[],
         connected_resources: None,
-        lanes: ProducerLanes::empty(),
-        paid_exclusions: &[],
-        reserve: CapitalReserve::default(),
     };
     let mut cleared = StrategicDecision::default();
     assert_eq!(
@@ -6366,15 +6340,10 @@ fn connected_verify_checks_the_selected_secondary_approach_before_striking() {
     let mut plan = connected_test_plan(&observation);
     commit_to_cluster(&mut plan, &operation, vec![TARGET, secondary]);
     let context = AirPlanningContext {
-        allow_procurement: true,
-        planning: &fixture_planning,
         ev: evidence(&identity, &observation, &intelligence),
-        enlisted: &[],
+        procurement: AirProcurement::fixture(&fixture_planning),
         landing_sites: &[],
         connected_resources: None,
-        lanes: ProducerLanes::empty(),
-        paid_exclusions: &[],
-        reserve: CapitalReserve::default(),
     };
     let mut decision = StrategicDecision::default();
     assert_eq!(
@@ -6725,13 +6694,13 @@ fn retained_connected_feasibility_defers_without_recovering_but_rejects_lost_pro
     let op = operation(AirOperationPhase::Assemble, observation.tick);
     let zero = crate::planning::PlanningWork::with_allowance(0);
     let mut context = planning_context(&fixture_planning, &identity, &observation, &intelligence);
-    context.planning = &zero;
+    context.procurement.planning = &zero;
     assert!(!connected_package_is_proven_infeasible(
         &op, &plan, &context
     ));
     assert_eq!(zero.spent(), 0);
     let work = crate::planning::PlanningWork::default();
-    context.planning = &work;
+    context.procurement.planning = &work;
     assert!(!connected_package_is_proven_infeasible(
         &op, &plan, &context
     ));
@@ -6741,7 +6710,7 @@ fn retained_connected_feasibility_defers_without_recovering_but_rejects_lost_pro
     observation.my_queues.clear();
     observation.my_queue_progress.clear();
     let mut context = planning_context(&fixture_planning, &identity, &observation, &intelligence);
-    context.planning = &work;
+    context.procurement.planning = &work;
     assert!(connected_package_is_proven_infeasible(&op, &plan, &context));
 }
 
@@ -7813,7 +7782,10 @@ fn remembered_recon_buys_only_the_scout_not_owned_by_another_question() {
         let result = planner.think(
             evidence(&identity, &ghost, &intelligence),
             ThinkInputs {
-                paid_exclusions: &foreign,
+                procurement: AirProcurement {
+                    paid_exclusions: &foreign,
+                    ..AirProcurement::fixture(&fixture_planning)
+                },
                 ..ThinkInputs::fixture(&fixture_planning)
             },
         );

@@ -1237,14 +1237,11 @@ impl StrategicDecision {
 
 struct AirPlanningContext<'a> {
     ev: AirEvidence<'a>,
-    allow_procurement: bool,
-    planning: &'a crate::planning::PlanningWork,
-    enlisted: &'a [UnitId],
+    /// Procurement whose `unavailable` units are every unit the operation
+    /// may not enlist this decision.
+    procurement: AirProcurement<'a>,
     landing_sites: &'a [TilePos],
     connected_resources: Option<ConnectedProductionResources>,
-    lanes: ProducerLanes<'a>,
-    paid_exclusions: &'a [PaidQueueClaim],
-    reserve: CapitalReserve,
 }
 
 /// Exact transport objective and landing envelope offered to the air planner.
@@ -1315,28 +1312,30 @@ impl ProducerLanes<'static> {
     }
 }
 
-/// Allocation evidence for staging an admitted island operation.
-pub(crate) struct IslandInputs<'a> {
-    pub(crate) connected: ConnectedInputs<'a>,
+/// Allocation evidence for recruiting and buying an air operation's members.
+#[derive(Clone, Copy)]
+pub(crate) struct AirProcurement<'a> {
+    pub(crate) planning: &'a crate::planning::PlanningWork,
+    /// Units other owners hold.
+    pub(crate) unavailable: &'a [UnitId],
+    /// Paid queue occurrences other programs own.
+    pub(crate) paid_exclusions: &'a [PaidQueueClaim],
+    pub(crate) reserve: CapitalReserve,
     pub(crate) lanes: ProducerLanes<'a>,
-    pub(crate) allow_procurement: bool,
+    /// Whether the operation may buy members. The lifecycle also begins a
+    /// new operation only when it may.
+    pub(crate) allow: bool,
 }
 
 /// Allocation verdicts the post-adjudication lifecycle acts on.
 pub(crate) struct ThinkInputs<'a> {
-    pub(crate) planning: &'a crate::planning::PlanningWork,
-    /// Units other owners hold.
-    pub(crate) unavailable: &'a [UnitId],
+    pub(crate) procurement: AirProcurement<'a>,
     /// Units another owner claimed after allocation; the operation waits
     /// rather than acting through them.
     pub(crate) claimed_elsewhere: &'a [UnitId],
     pub(crate) lift_support: Option<&'a LiftSupportRequest>,
-    pub(crate) allow_new_operation: bool,
     /// Excludes every unit the operation does not already own.
     pub(crate) owned_only: bool,
-    pub(crate) reserve: CapitalReserve,
-    pub(crate) lanes: ProducerLanes<'a>,
-    pub(crate) paid_exclusions: &'a [PaidQueueClaim],
 }
 
 /// A live operation and the plan it was admitted under. They exist only
@@ -2949,7 +2948,7 @@ impl StrategicPlanner {
         {
             let admitted_at = plan.admitted_at();
             if wealthy_island_target(profile, obs, home, current_target, public_map) {
-                let mut admitted = IslandPlan::new(profile, obs, inputs.lanes);
+                let mut admitted = IslandPlan::new(profile, obs, inputs.procurement.lanes);
                 op.admit_assault(obs.tick);
                 admitted.admitted_at = admitted_at;
                 *plan = AirPlan::Island(admitted);
@@ -2968,7 +2967,7 @@ impl StrategicPlanner {
         let mut out = StrategicDecision::default();
         let landing_sites = landing_sites(inputs.lift_support, op);
         let owned = reservations(op, plan, obs);
-        let mut enlisted = excluding_owned(inputs.unavailable, &owned);
+        let mut enlisted = excluding_owned(inputs.procurement.unavailable, &owned);
         if inputs.owned_only {
             enlisted.extend(
                 obs.my_units
@@ -2978,7 +2977,16 @@ impl StrategicPlanner {
             enlisted.sort_unstable();
             enlisted.dedup();
         }
-        let context = planning_context(ev, &inputs, op, plan, &landing_sites, &enlisted);
+        let context = planning_context(
+            ev,
+            AirProcurement {
+                unavailable: &enlisted,
+                ..inputs.procurement
+            },
+            op,
+            plan,
+            &landing_sites,
+        );
         let staged = match op.stage {
             AirStage::Watching => remembered_recon(op, plan, &context, &mut out),
             AirStage::Recon => recon(op, plan, &context, &mut out),
@@ -3037,7 +3045,7 @@ impl StrategicPlanner {
         if let Some(active) = self.air.take() {
             return Ok(active);
         }
-        match self.admission(ev, inputs.allow_new_operation, inputs.lift_support) {
+        match self.admission(ev, inputs.procurement.allow, inputs.lift_support) {
             AirAdmission::Hold => Err(holding(&self.standby)),
             AirAdmission::NoTarget => {
                 self.standby = AirStandby::default();
@@ -3048,7 +3056,7 @@ impl StrategicPlanner {
                 Ok(fresh_air_operation(
                     ev.profile,
                     ev.obs,
-                    inputs.lanes,
+                    inputs.procurement.lanes,
                     selected,
                     standby,
                 ))
@@ -3162,7 +3170,7 @@ impl StrategicPlanner {
             out.reserved_scrap = 0;
             recover(op, AirRecoveryReason::Timeout, obs.tick);
         }
-        if !inputs.allow_new_operation {
+        if !inputs.procurement.allow {
             out.intents
                 .retain(|intent| !matches!(intent, Intent::TrainAt { .. }));
             out.reserved_scrap = 0;
@@ -3288,11 +3296,10 @@ fn landing_sites(lift_support: Option<&LiftSupportRequest>, op: &AirOperation) -
 
 fn planning_context<'c>(
     ev: AirEvidence<'c>,
-    inputs: &ThinkInputs<'c>,
+    procurement: AirProcurement<'c>,
     op: &AirOperation,
     plan: &AirPlan,
     landing_sites: &'c [TilePos],
-    enlisted: &'c [UnitId],
 ) -> AirPlanningContext<'c> {
     let connected_resources = plan
         .connected()
@@ -3303,21 +3310,16 @@ fn planning_context<'c>(
                 connected.commitment.player,
                 &connected.package,
                 ev.route(connected.focus)
-                    .excluding_paid(inputs.paid_exclusions),
+                    .excluding_paid(procurement.paid_exclusions),
                 &ResourceSnapshot::from_observation(ev.obs),
-                inputs.reserve.current,
+                procurement.reserve.current,
             )
         });
     AirPlanningContext {
         ev,
-        allow_procurement: inputs.allow_new_operation,
-        planning: inputs.planning,
-        enlisted,
+        procurement,
         landing_sites,
         connected_resources,
-        lanes: inputs.lanes,
-        paid_exclusions: inputs.paid_exclusions,
-        reserve: inputs.reserve,
     }
 }
 
@@ -3376,7 +3378,9 @@ impl<'a> AirTurn<'a> {
     /// Reconstructs unpaid demand from the retained package and current inventory.
     pub(crate) fn retained_obligation(
         &self,
-        inputs: ConnectedInputs<'_>,
+        resources: &ResourceSnapshot,
+        unavailable: &[UnitId],
+        paid_exclusions: &[PaidQueueClaim],
     ) -> Option<ActiveConnectedObligation> {
         let active = self
             .air
@@ -3400,21 +3404,21 @@ impl<'a> AirTurn<'a> {
             let route = self
                 .ev
                 .route(connected.focus)
-                .excluding_paid(inputs.paid_exclusions);
+                .excluding_paid(paid_exclusions);
             let resources =
                 ConnectedProductionResources::from_package_snapshot_after_current_reserve(
                     obs,
                     connected.commitment.player,
                     package,
                     route,
-                    inputs.resources,
+                    resources,
                     0,
                 );
             if active.op.phase() <= AirOperationPhase::Assemble
                 && active.op.membership_frozen_at.is_none()
             {
                 let owned = reservations(&active.op, &active.plan, obs);
-                let unavailable = excluding_owned(inputs.unavailable, &owned);
+                let unavailable = excluding_owned(unavailable, &owned);
                 let mut unavailable =
                     connected_provider_unavailable(obs, &resources.targets, &unavailable, route);
                 unavailable.retain(|id| !owned.contains(id));
@@ -3468,7 +3472,10 @@ impl<'a> AirTurn<'a> {
         })
     }
 
-    pub(crate) fn island_preparation(&self, inputs: IslandInputs<'_>) -> Option<IslandPreparation> {
+    pub(crate) fn island_preparation(
+        &self,
+        procurement: AirProcurement<'_>,
+    ) -> Option<IslandPreparation> {
         let active = self.air.as_ref()?;
         let AirPlan::Island(island) = &active.plan else {
             return None;
@@ -3482,12 +3489,8 @@ impl<'a> AirTurn<'a> {
         let mut membership = AirMembership::from_active(active);
         let mut purchases = ProductionPlan::default();
         if op.phase() <= AirOperationPhase::Assemble {
-            let IslandInputs {
-                connected,
-                lanes,
-                allow_procurement,
-            } = inputs;
-            let unavailable = excluding_owned(connected.unavailable, &reservations(op, plan, obs));
+            let unavailable =
+                excluding_owned(procurement.unavailable, &reservations(op, plan, obs));
             let scout = Role::Scout.unit_for(obs.faction);
             membership.scout = retained_scout(membership.scout, obs, &unavailable);
             assign_artillery(&mut membership.artillery, plan, obs, &unavailable);
@@ -3501,14 +3504,12 @@ impl<'a> AirTurn<'a> {
             );
             let planning = AirPlanningContext {
                 ev: self.ev,
-                allow_procurement,
-                planning: connected.planning,
-                enlisted: &unavailable,
+                procurement: AirProcurement {
+                    unavailable: &unavailable,
+                    ..procurement
+                },
                 landing_sites: &[],
                 connected_resources: None,
-                lanes,
-                paid_exclusions: connected.paid_exclusions,
-                reserve: connected.reserve,
             };
             let demands = missing_island_members(
                 AirRoster::from(&membership),
@@ -3944,7 +3945,7 @@ fn remembered_recon(
     let obs = context.ev.obs;
     let scout_kind = Role::Scout.unit_for(obs.faction);
     let previous_scout = op.scout;
-    op.scout = remembered_recon_scout(op, obs, context.enlisted);
+    op.scout = remembered_recon_scout(op, obs, context.procurement.unavailable);
     if op.scout != previous_scout {
         op.scout_dispatch = None;
         if op.scout.is_some() {
@@ -3974,12 +3975,14 @@ fn remembered_recon(
 
 fn unowned_queued_scouts(context: &AirPlanningContext<'_>, scout: UnitKind) -> usize {
     let prior = context
+        .procurement
         .lanes
         .prior_intents
         .iter()
         .filter(|intent| matches!(intent, Intent::TrainAt { kind, .. } if *kind == scout))
         .count();
     let unavailable = context
+        .procurement
         .paid_exclusions
         .iter()
         .filter(|claim| claim.kind == scout)
@@ -4030,7 +4033,7 @@ fn reconcile_preparation_members(
     } else {
         Vec::new()
     };
-    let unavailable = merged_unavailable(context.enlisted, &route_unavailable);
+    let unavailable = merged_unavailable(context.procurement.unavailable, &route_unavailable);
     let previous_scout = op.scout;
     let previous_artillery = op.artillery.clone();
     let previous_strike_aircraft = op.strike_aircraft.clone();
@@ -4066,9 +4069,13 @@ fn reconcile_preparation_members(
     let screen_kind = Role::AirGround.unit_for(obs.faction);
     let desired_screen = plan.desired_screen();
     if let Some(screen) = plan.screen_mut() {
-        assign_exact(screen, desired_screen, obs, context.enlisted, |kind| {
-            kind == screen_kind
-        });
+        assign_exact(
+            screen,
+            desired_screen,
+            obs,
+            context.procurement.unavailable,
+            |kind| kind == screen_kind,
+        );
     }
     if connected_package_is_proven_infeasible(op, plan, context) {
         return Err(AirRecoveryReason::PreparationInfeasible);
@@ -4629,15 +4636,16 @@ fn operation_recovery_reason(
 /// full, the available bank is claimed so ordinary production cannot skim it.
 fn schedule(context: &AirPlanningContext<'_>, demands: &[(UnitKind, usize)]) -> ProductionPlan {
     let mut out = ProductionPlan::default();
-    if !context.allow_procurement {
+    let procurement = context.procurement;
+    if !procurement.allow {
         return out;
     }
     let obs = context.ev.obs;
-    let mut bank = obs.scrap.saturating_sub(context.reserve.current);
+    let mut bank = obs.scrap.saturating_sub(procurement.reserve.current);
     let mut production = super::production::ImmediateProduction::new(
         obs,
-        context.lanes.reservations,
-        context.lanes.prior_intents,
+        procurement.lanes.reservations,
+        procurement.lanes.prior_intents,
     );
     'demands: for &(kind, count) in demands {
         if !requirements_met(obs, kind) || !has_producer(obs, kind) {
@@ -6269,7 +6277,7 @@ fn connected_package_is_proven_infeasible(
         return false;
     };
     let package = &connected.package;
-    if !context.allow_procurement || context.ev.obs.tick >= package.preparation_deadline {
+    if !context.procurement.allow || context.ev.obs.tick >= package.preparation_deadline {
         return false;
     }
     let resources = context
@@ -6289,14 +6297,14 @@ fn connected_package_is_proven_infeasible(
             ProductionEvidence::with_planning(
                 &resources.snapshot,
                 &resources.access,
-                Some(context.planning)
+                Some(context.procurement.planning)
             ),
             &outstanding,
             context.ev.obs.tick,
             PreparationConstraints {
                 deadline: package.preparation_deadline,
                 decision_cadence: context.ev.tuning.cadence,
-                protected_forecast_scrap: context.reserve.forecast,
+                protected_forecast_scrap: context.procurement.reserve.forecast,
             },
             connected.commitment.key(),
         ),

@@ -487,16 +487,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             }
         }
 
-        let active_connected = self
-            .participants
-            .strategy
-            .retained_obligation(ConnectedInputs {
-                planning: &self.participants.policy.planning,
-                resources: &resources,
-                unavailable: &claims.planner_claims,
-                paid_exclusions,
-                reserve: CapitalReserve::default(),
-            });
+        let active_connected = self.participants.strategy.retained_obligation(
+            &resources,
+            &claims.planner_claims,
+            paid_exclusions,
+        );
         let active_lift = self.participants.lifts.active_production_obligation();
         let mut connected_import = active_connected.as_ref().map(active_connected_obligation);
         let mut lift_import = active_lift.as_ref().map(active_lift_production_obligation);
@@ -1114,23 +1109,24 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             // prove the air operation itself infeasible.
             return;
         };
-        let Some(result) = self.participants.strategy.island_preparation(IslandInputs {
-            connected: ConnectedInputs {
+        let Some(result) = self
+            .participants
+            .strategy
+            .island_preparation(AirProcurement {
                 planning: &self.participants.policy.planning,
-                resources: &obligations.resources,
                 unavailable: &claims.planner_claims,
                 paid_exclusions,
                 reserve: CapitalReserve {
                     current: protected_current_scrap,
                     forecast: protected_forecast_scrap,
                 },
-            },
-            lanes: ProducerLanes {
-                prior_intents: &prior_producer_intents,
-                reservations: &producer_lane_reservations,
-            },
-            allow_procurement: claims.opening_core.ready,
-        }) else {
+                lanes: ProducerLanes {
+                    prior_intents: &prior_producer_intents,
+                    reservations: &producer_lane_reservations,
+                },
+                allow: claims.opening_core.ready,
+            })
+        else {
             return;
         };
         let accepted_at = accepted_at.expect("a staged island operation has an admission tick");

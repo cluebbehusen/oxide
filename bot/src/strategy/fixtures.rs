@@ -506,19 +506,28 @@ impl<'a> ConnectedInputs<'a> {
     }
 }
 
-impl<'a> ThinkInputs<'a> {
-    /// An open allocation verdict with no foreign claims or accepted lanes.
+impl<'a> AirProcurement<'a> {
+    /// Open procurement with no reserve, foreign claims, or accepted lanes.
     pub(crate) fn fixture(planning: &'a crate::planning::PlanningWork) -> Self {
         Self {
             planning,
             unavailable: &[],
-            claimed_elsewhere: &[],
-            lift_support: None,
-            allow_new_operation: true,
-            owned_only: false,
+            paid_exclusions: &[],
             reserve: CapitalReserve::default(),
             lanes: ProducerLanes::empty(),
-            paid_exclusions: &[],
+            allow: true,
+        }
+    }
+}
+
+impl<'a> ThinkInputs<'a> {
+    /// An open allocation verdict with no foreign claims or accepted lanes.
+    pub(crate) fn fixture(planning: &'a crate::planning::PlanningWork) -> Self {
+        Self {
+            procurement: AirProcurement::fixture(planning),
+            claimed_elsewhere: &[],
+            lift_support: None,
+            owned_only: false,
         }
     }
 }
@@ -604,17 +613,14 @@ pub(crate) fn turn(planner: &mut StrategicPlanner, fixture: &TurnFixture<'_>) ->
         reserve,
     };
     let mut air = planner.observe(ev);
-    let mut active = air.retained_obligation(ConnectedInputs {
-        reserve: CapitalReserve::default(),
-        ..inputs
-    });
+    let mut active = air.retained_obligation(&resources, unavailable, &[]);
     let island = air
         .has_active_island_operation()
         .then(|| {
-            air.island_preparation(IslandInputs {
-                connected: inputs,
-                lanes: ProducerLanes::empty(),
-                allow_procurement: true,
+            air.island_preparation(AirProcurement {
+                unavailable,
+                reserve,
+                ..AirProcurement::fixture(planning)
             })
         })
         .flatten();

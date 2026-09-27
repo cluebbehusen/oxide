@@ -42,8 +42,8 @@ use crate::standing_force::{
 };
 use crate::strategy::{
     ActiveConnectedObligation, AirAdjudication, AirOperation, AirOperationOutcome,
-    AirOperationPhase, AirRecoveryReason, AirTurn, CONNECTED_PREPARATION_HORIZON, CapitalReserve,
-    ConnectedInputs, FreshConnectedProposal, IslandInputs, LiftSupportRequest, ProducerLanes,
+    AirOperationPhase, AirProcurement, AirRecoveryReason, AirTurn, CONNECTED_PREPARATION_HORIZON,
+    CapitalReserve, ConnectedInputs, FreshConnectedProposal, LiftSupportRequest, ProducerLanes,
     RejectedConnectedCandidate, StrategicDecision, StrategicPlanner, air_adjudication,
 };
 use crate::team::TeamReliefPlanner;
@@ -1407,18 +1407,11 @@ impl<'a> AllocationSession<'a> {
         if revises_active {
             remove_active_connected_obligation(&mut prepared.obligations);
             prepared.active_connected = {
-                self.participants
-                    .strategy
-                    .retained_obligation(ConnectedInputs {
-                        planning: &self.participants.policy.planning,
-                        resources: &prepared.resources,
-                        unavailable: &prepared.planner_claims,
-                        paid_exclusions: &air_paid_exclusions(
-                            self.participants.policy,
-                            self.participants.raids,
-                        ),
-                        reserve: CapitalReserve::default(),
-                    })
+                self.participants.strategy.retained_obligation(
+                    &prepared.resources,
+                    &prepared.planner_claims,
+                    &air_paid_exclusions(self.participants.policy, self.participants.raids),
+                )
             };
             if let Some(active) = &prepared.active_connected {
                 prepared
@@ -3647,10 +3640,7 @@ mod tests {
                 public_map: Some(&briefing),
                 orientation: Orientation::for_home(observation, TilePos::new(3, 10)),
             })
-            .retained_obligation(ConnectedInputs::fixture(
-                &crate::planning::PlanningWork::default(),
-                &ResourceSnapshot::from_observation(observation),
-            ))
+            .retained_obligation(&ResourceSnapshot::from_observation(observation), &[], &[])
             .expect("an admitted connected operation retains demand")
     }
 
@@ -3975,12 +3965,14 @@ mod tests {
                 orientation: Orientation::for_home(observation, HOME),
             })
             .think(ThinkInputs {
-                unavailable: &outcome.planner_claims,
-                allow_new_operation: outcome.connected_continues
-                    || outcome.allow_new_voluntary_operations,
-                reserve: CapitalReserve {
-                    forecast: outcome.budget.connected_forecast_hold,
-                    ..CapitalReserve::default()
+                procurement: AirProcurement {
+                    unavailable: &outcome.planner_claims,
+                    allow: outcome.connected_continues || outcome.allow_new_voluntary_operations,
+                    reserve: CapitalReserve {
+                        forecast: outcome.budget.connected_forecast_hold,
+                        ..CapitalReserve::default()
+                    },
+                    ..AirProcurement::fixture(&crate::planning::PlanningWork::default())
                 },
                 ..ThinkInputs::fixture(&crate::planning::PlanningWork::default())
             })
