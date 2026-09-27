@@ -114,6 +114,8 @@ pub enum CardAction {
     /// Narrow the selection to one kind (Ctrl, Shift, or a lit QUEUE
     /// removes it instead) — the mixed-army type strip.
     FilterKind(UnitKind),
+    /// Close the build palette in one press, keeping the selection.
+    ClosePalette,
     /// Display only.
     None,
     /// A disabled card: pressing it explains why instead of acting.
@@ -842,16 +844,6 @@ fn transport_load_desc(touch_only: bool) -> &'static str {
     }
 }
 
-/// The open construction palette's summary; the Back key closes it on
-/// desktop, and touch closes it with the palette's own card.
-fn construction_summary(back_key: &str, touch_only: bool) -> String {
-    if touch_only {
-        "Choose a building".to_string()
-    } else {
-        format!("Choose a building\n{back_key} to return")
-    }
-}
-
 /// An inspected salvage tile: read-only, with no cards to act on.
 fn pile_panel(game: &Scene<'_>, tile: chassis::grid::TilePos) -> Option<Panel> {
     let salvage = game.known_salvage(tile)?;
@@ -1223,8 +1215,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             panel.cards.clear();
             panel.roster.clear();
             panel.title = "CONSTRUCTION".into();
-            panel.summary =
-                construction_summary(&bindings.label(Action::Back), crate::platform::TOUCH_ONLY);
+            panel.summary.clear();
             panel.portrait = CardIcon::Verb(VerbIcon::Build);
         } else {
             panel.cards.push(Card {
@@ -1283,6 +1274,22 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                 progress: None,
             });
         }
+        if build_menu_open {
+            // Esc and B step back through placement and category first;
+            // the card leaves the palette outright, which touch has no
+            // other way to do without dropping the selection.
+            panel.cards.push(Card {
+                icon: CardIcon::Verb(VerbIcon::Cancel),
+                title: "Back".into(),
+                cost: None,
+                hotkey: String::new(),
+                action: CardAction::ClosePalette,
+                enabled: true,
+                why: None,
+                desc: vec!["Close construction.".into()],
+                progress: None,
+            });
+        }
     }
     // The first unit's program: what it is doing and what comes next.
     // An idle unit with nothing queued contributes no chips, so the
@@ -1308,12 +1315,7 @@ mod tests {
         }
         crate::platform::assert_touch_copy(transport_load_desc(true));
         crate::platform::assert_touch_copy(patrol_desc(true));
-        crate::platform::assert_touch_copy(&construction_summary("Esc", true));
         assert_eq!(roster_filter_desc(false).len(), 2);
-        assert_eq!(
-            construction_summary("Esc", false),
-            "Choose a building\nEsc to return"
-        );
     }
 
     #[test]
@@ -1952,13 +1954,14 @@ mod tests {
                 .any(|card| matches!(card.action, CardAction::ArmBuild(_)))
         );
         let construction = build_for_palette(&game.view(), &BindingMap::classic(), true).unwrap();
-        assert_eq!(construction.cards.len(), 13);
+        assert_eq!(construction.cards.len(), 14);
+        let (back, buildings) = construction.cards.split_last().expect("cards");
         assert!(
-            construction
-                .cards
+            buildings
                 .iter()
                 .all(|card| matches!(card.action, CardAction::ArmBuild(_)))
         );
+        assert_eq!(back.action, CardAction::ClosePalette, "Back comes last");
         // An idle unit with nothing queued shows no order chips at all —
         // the dock only exists when there is a program to show.
         assert!(panel.queue.is_empty(), "idle shows no dock");

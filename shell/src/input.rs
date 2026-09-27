@@ -1817,6 +1817,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                     .is_some_and(|u| (u.kind == kind) == keep)
             });
         }
+        crate::panel::CardAction::ClosePalette => input.close_construction(),
         crate::panel::CardAction::None | crate::panel::CardAction::Refused => {}
     }
 }

@@ -6171,8 +6171,10 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     let keys = [Key::Q, Key::E, Key::R, Key::T];
     dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
     let panel = crate::panel::build_for_input(&game.view(), &input).unwrap();
-    assert_eq!(panel.cards.len(), 13);
-    for card in panel.cards {
+    assert_eq!(panel.cards.len(), 14);
+    let (back, buildings) = panel.cards.split_last().expect("cards");
+    assert_eq!(back.action, crate::panel::CardAction::ClosePalette);
+    for card in buildings {
         let crate::panel::CardAction::ArmBuild(kind) = card.action else {
             panic!("build card");
         };
@@ -6202,6 +6204,30 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     controls_key(&mut game, &mut input, Key::B);
     controls_key(&mut game, &mut input, Key::B);
     assert!(!input.construction_open());
+}
+
+#[test]
+fn the_back_card_closes_the_palette_and_keeps_the_builder() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(input.construction_open());
+    let builders = game.presentation.selection.units.clone();
+    assert!(!builders.is_empty(), "opening the palette picked a builder");
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::ArmBuild(oxide_sim::BuildingKind::Turret),
+    );
+    assert!(input.placing.is_some(), "a building is armed");
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::ClosePalette,
+    );
+    assert!(!input.construction_open(), "one press leaves it outright");
+    assert_eq!(game.presentation.selection.units, builders);
+    assert!(game.pending.is_empty());
 }
 
 #[test]
