@@ -278,15 +278,16 @@ dock rises to stack above it, so queueing orders never moves the toggle.
 `ribbon_row_press` hit-tests both before every other target: the toggle flips
 QUEUE and the ribbon cancels its mode. The build palette ends with a Back card
 (`CardAction::ClosePalette`) that leaves construction in one press, and on touch
-a tap that picks nothing while the palette is open and nothing is armed closes
-it and keeps the selection. With QUEUE lit (or Shift or Ctrl held), a roster
-chip drops its kind instead of keeping only it. Taps and clicks select through
-`select::pick`, which gives a fingertip a wider reach than a cursor. A press
-that picks nothing on a tile with known salvage selects that tile as
-`Selection::pile`, read-only and exclusive: any other selection drops it, and
-`Game` drops it once the viewer knows of no salvage there. Its panel and the
-desktop hover readout share `Scene::known_salvage`, which reads live amounts on
-visible ground and remembered amounts under fog.
+a tap that picks no unit or building while the palette is open and nothing is
+armed closes it and keeps the selection, even over a scrap pile: dismissing
+never also acts. With QUEUE lit (or Shift or Ctrl held), a roster chip drops its
+kind instead of keeping only it. Taps and clicks select through `select::pick`,
+which gives a fingertip a wider reach than a cursor. A press that picks nothing
+on a tile with known salvage selects that tile as `Selection::pile`, read-only
+and exclusive: any other selection drops it, and `Game` drops it once the viewer
+knows of no salvage there. Its panel and the desktop hover readout share
+`Scene::known_salvage`, which reads live amounts on visible ground and
+remembered amounts under fog.
 
 Coaching text waits for a stuck player. `hints::HintClock`, fed each frame's
 screen mode and presses, fades coaching in after about 15 seconds without a
