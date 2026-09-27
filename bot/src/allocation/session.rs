@@ -5632,6 +5632,136 @@ mod tests {
         assert_eq!(proposal.claims.minimum_residual_scrap, carrier_floor);
     }
 
+    /// A remembered island objective under a scout-only watch, with an
+    /// Airworks, a transportable payload, no carrier, and a restorable
+    /// Extractor frame at home.
+    fn remembered_island_watch() -> (Observation, StrategicIntelligence, StrategicPlanner) {
+        const HOME: TilePos = TilePos::new(5, 15);
+        const TARGET: TilePos = TilePos::new(50, 15);
+        let island = |tick: Tick, target_seen: bool| {
+            let mut observation = Observation::from_data(ObservationData {
+                tick,
+                map_width: 64,
+                map_height: 32,
+                scrap: 10_000,
+                enemy_buildings: vec![observed_building(500, 1, BuildingKind::Foundry, TARGET)],
+                visible: (0..64 * 32)
+                    .map(|index| target_seen || index % 64 < 32)
+                    .collect(),
+                explored: vec![true; 64 * 32],
+                known_rock: (0..32).map(|y| TilePos::new(32, y)).collect(),
+                known_frames: vec![TilePos::new(12, 20)],
+                ..crate::test_support::observation_data()
+            });
+            observation.enemy_buildings[0].seen = target_seen;
+            observation.my_buildings.extend([
+                observed_building(1, 0, BuildingKind::Foundry, HOME.offset(-1, -1)),
+                observed_building(2, 0, BuildingKind::Airworks, HOME.offset(4, -4)),
+            ]);
+            observation.my_queues = vec![Vec::new(), Vec::new()];
+            observation.my_units.extend(
+                (1..=3)
+                    .map(|id| owned_unit(id, UnitKind::Sentinel, TilePos::new(8 + id as i32, 8))),
+            );
+            observation
+                .my_units
+                .push(owned_unit(20, UnitKind::Harvester, TilePos::new(10, 18)));
+            observation
+        };
+        let mut intelligence = StrategicIntelligence::new();
+        intelligence.update(&island(100, true));
+        let observation = island(120, false);
+        intelligence.update(&observation);
+        let strategy = StrategicPlanner::remembered_watch_fixture(PlayerId(1), TARGET, 120);
+        (observation, intelligence, strategy)
+    }
+
+    fn prepared_carrier_floor(
+        observation: &Observation,
+        intelligence: &StrategicIntelligence,
+        policy: &mut UtilityPolicy,
+        strategy: &mut StrategicPlanner,
+    ) -> u32 {
+        let mut setup = SessionProfile::new(prime_profile());
+        setup.dials.minimum_core_equivalents = 0;
+        let public_map = connected_briefing(observation);
+        let mut lifts = LiftPlanner::new();
+        let mut team = TeamReliefPlanner::new();
+        let mut raids = RaidPlanner::new();
+        let session_context =
+            setup.context(observation, TilePos::new(5, 15), &public_map, intelligence);
+        let mut session = AllocationSession::new(
+            session_context,
+            AllocationParticipants {
+                policy,
+                strategy: strategy.observe(air_evidence(&session_context)),
+                lifts: &mut lifts,
+                team: &mut team,
+                raids: &mut raids,
+            },
+            advanced(),
+            None,
+        );
+        let observed = session.observe_retained_work();
+        let prepared = session.prepare(observed);
+        assert!(prepared.coordinator_failure.is_none());
+        prepared.prospective_carrier_floor
+    }
+
+    #[test]
+    fn a_held_economic_saving_withholds_the_prospective_carrier_floor() {
+        let (observation, intelligence, strategy) = remembered_island_watch();
+        assert_eq!(
+            prepared_carrier_floor(
+                &observation,
+                &intelligence,
+                &mut UtilityPolicy::new(),
+                &mut strategy.clone(),
+            ),
+            UnitKind::Skyhook.stats().cost,
+            "the remembered island objective previews its first carrier"
+        );
+
+        let mut policy = UtilityPolicy::new();
+        let resources = ResourceSnapshot::from_observation(&observation);
+        let saving = policy
+            .economic_quotes(EconomicInvestmentContext {
+                evidence: Default::default(),
+                obligations: &[],
+                obs: &observation,
+                resources: &resources,
+                profile: &prime_profile(),
+                briefing: &connected_briefing(&observation),
+                orientation: Orientation::for_home(&observation, TilePos::new(5, 15)),
+                unavailable: &[],
+                demands: &[],
+                cadence: 12,
+                unit_contacts: &[],
+                building_contacts: &[],
+                protected_scrap: 0,
+                air_work: &[],
+            })
+            .investments()
+            .pop()
+            .expect("the home frame is worth restoring");
+        policy.commit_economic_investment(saving, 0, &mut Vec::new());
+        assert!(policy.economic_saving().is_some());
+        assert_eq!(
+            prepared_carrier_floor(
+                &observation,
+                &intelligence,
+                &mut policy,
+                &mut strategy.clone(),
+            ),
+            0,
+            "a held saving closes voluntary operations, so no carrier is previewed"
+        );
+        assert!(
+            policy.economic_saving().is_some(),
+            "the saving is still held when the preview reads it"
+        );
+    }
+
     #[test]
     fn active_revision_keeps_full_defense_admission_until_claims_are_stable() {
         let mut revision = ActiveRevisionPreparation::default();

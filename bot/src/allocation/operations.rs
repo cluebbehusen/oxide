@@ -255,33 +255,24 @@ pub(super) fn settle_operations(
         context.enlisted,
         &prior_non_lift_after_raid,
     );
-    let prospective_carrier_commitment = if context.allocation_ok
-        && context.allow_new_voluntary_operations
-    {
-        strategy
-            .air_operation()
-            .filter(|operation| {
-                operation.phase() == AirOperationPhase::Recon && !operation.assault_admitted()
-            })
-            .and_then(|operation| {
-                context.intelligence.buildings().iter().find(|contact| {
-                    contact.player == operation.target_player && contact.anchor == operation.target
+    let prospective_carrier_commitment =
+        if context.allocation_ok && context.allow_new_voluntary_operations {
+            strategy
+                .remembered_recon_target(context.intelligence)
+                .map(|target| {
+                    lifts.prospective_first_carrier_commitment(
+                        context.observation,
+                        context.home,
+                        &lift_unavailable_after_raid,
+                        &core_exclusions_after_raid,
+                        context.minimum_core_equivalents,
+                        target,
+                    )
                 })
-            })
-            .map(|target| {
-                lifts.prospective_first_carrier_commitment(
-                    context.observation,
-                    context.home,
-                    &lift_unavailable_after_raid,
-                    &core_exclusions_after_raid,
-                    context.minimum_core_equivalents,
-                    target,
-                )
-            })
-            .unwrap_or(0)
-    } else {
-        0
-    };
+                .unwrap_or(0)
+        } else {
+            0
+        };
     let prospective_carrier_hold = funds.hold(prospective_carrier_commitment);
     strategic.committed_scrap = strategic
         .committed_scrap
