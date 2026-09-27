@@ -34,6 +34,9 @@ pub struct LayoutModel {
     /// The idle-worker badge in the top bar; zero-sized when nobody
     /// idles. Clicking it cycles idle harvesters.
     pub idle_badge: Rect,
+    /// The under-attack badge beside it; zero-sized without a recent
+    /// alert. Clicking it jumps the camera to the last alert.
+    pub alert_badge: Rect,
     /// The menu button at the top bar's right edge; it opens the pause
     /// menu. Zero-sized while spectating.
     pub menu_button: Rect,
@@ -71,6 +74,7 @@ impl Default for LayoutModel {
             orders: Rect::new(0.0, 0.0, 0.0, 0.0),
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
+            alert_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
             menu_button: Rect::new(0.0, 0.0, 0.0, 0.0),
             pause_status: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -139,6 +143,8 @@ pub(crate) struct TopBarText {
     pub units: f32,
     /// The idle badge's text, while any harvester idles.
     pub idle: Option<f32>,
+    /// The under-attack badge's text, while an alert is recent.
+    pub alert: Option<f32>,
     /// The clock, speed, or PAUSED status.
     pub status: f32,
 }
@@ -153,6 +159,7 @@ pub(crate) struct TopBar {
     pub units_x: f32,
     pub count_x: f32,
     pub idle_badge: Rect,
+    pub alert_badge: Rect,
     pub menu_button: Rect,
     pub status_x: f32,
     pub pause_status: Rect,
@@ -162,8 +169,8 @@ pub(crate) struct TopBar {
 }
 
 /// Lays out the top bar from measured text: the bank, income, and unit
-/// count run left to right from fixed minimums, the idle badge follows
-/// them, and the status hangs off the menu button at the right.
+/// count run left to right from fixed minimums, the idle and alert badges
+/// follow them, and the status hangs off the menu button at the right.
 pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarText) -> TopBar {
     let inset = if touch_only { TOUCH_LEFT_INSET } else { 0.0 } * ui;
     let scrap_label_x = 12.0 * ui + inset;
@@ -171,17 +178,24 @@ pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarTe
     let passive_x = (scrap_x + text.scrap + 16.0 * ui).max(151.0 * ui + inset);
     let units_x = (passive_x + text.passive + 16.0 * ui).max(284.0 * ui + inset);
     let count_x = units_x + (text.units_label + 12.0 * ui).max(60.0 * ui);
+    let badge = |x: f32, width: f32| Rect::new(x, 3.0 * ui, width + 18.0 * ui, 34.0 * ui);
+    let badges_x = count_x + (text.units + 20.0 * ui).max(45.0 * ui);
     let idle_badge = text.idle.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |width| {
-        Rect::new(
-            count_x + (text.units + 20.0 * ui).max(45.0 * ui),
-            3.0 * ui,
-            width + 18.0 * ui,
-            34.0 * ui,
-        )
+        badge(badges_x, width)
     });
+    let alert_x = if idle_badge.w > 0.0 {
+        idle_badge.x + idle_badge.w + 8.0 * ui
+    } else {
+        badges_x
+    };
+    let alert_badge = text
+        .alert
+        .map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |width| badge(alert_x, width));
     let menu_button = menu_button_rect(viewport_w, ui, touch_only);
     let status_x = menu_button.x - 12.0 * ui - text.status;
-    let occupied_right = (count_x + text.units).max(idle_badge.x + idle_badge.w);
+    let occupied_right = (count_x + text.units)
+        .max(idle_badge.x + idle_badge.w)
+        .max(alert_badge.x + alert_badge.w);
     TopBar {
         scrap_label_x,
         scrap_x,
@@ -189,6 +203,7 @@ pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarTe
         units_x,
         count_x,
         idle_badge,
+        alert_badge,
         menu_button,
         status_x,
         pause_status: Rect::new(
@@ -281,6 +296,7 @@ impl LayoutModel {
             orders,
             minimap,
             idle_badge,
+            alert_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
             menu_button,
             pause_status,
             mode_ribbon,
@@ -527,6 +543,7 @@ mod tests {
             units_label: 38.0 * ui,
             units: 24.0 * ui,
             idle: Some(70.0 * ui),
+            alert: None,
             status: 76.0 * ui,
         }
     }
@@ -573,6 +590,26 @@ mod tests {
         );
         assert_eq!(no_idle.idle_badge, Rect::new(0.0, 0.0, 0.0, 0.0));
         assert_eq!(no_idle.status_space.0, no_idle.count_x + 24.0);
+    }
+
+    #[test]
+    fn the_alert_badge_follows_the_idle_badge_or_takes_its_place() {
+        let text = TopBarText {
+            alert: Some(90.0),
+            ..sample_text(1.0)
+        };
+        let bar = top_bar(1280.0, 1.0, false, text);
+        assert_eq!(bar.alert_badge.x, bar.idle_badge.x + bar.idle_badge.w + 8.0);
+        assert_eq!(bar.alert_badge.w, 108.0);
+        assert_eq!(bar.status_space.0, bar.alert_badge.x + bar.alert_badge.w);
+        let alone = top_bar(1280.0, 1.0, false, TopBarText { idle: None, ..text });
+        assert_eq!(alone.alert_badge.x, bar.idle_badge.x, "no idle, same slot");
+        let quiet = top_bar(1280.0, 1.0, false, sample_text(1.0));
+        assert_eq!(quiet.alert_badge, Rect::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(
+            quiet.idle_badge, bar.idle_badge,
+            "an alert moves nothing else"
+        );
     }
 
     #[test]

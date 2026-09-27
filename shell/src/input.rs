@@ -1109,6 +1109,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     cycle_idle_worker(game);
                     continue;
                 }
+                let alert = layout.alert_badge;
+                if alert.w > 0.0 && alert.contains(vec2(x, y)) {
+                    dispatch_action(game, input, Action::JumpToLastAlert);
+                    continue;
+                }
                 if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
                     input.menu_requested = true;
                     continue;

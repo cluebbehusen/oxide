@@ -451,6 +451,10 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     // bar, which the bare-chrome swallow
                     // below would otherwise eat.
                     cycle_idle_worker(game);
+                } else if layout.alert_badge.w > 0.0
+                    && crate::layout::touch_pad(layout.alert_badge, input.ui).contains(p)
+                {
+                    dispatch_action(game, input, Action::JumpToLastAlert);
                 } else if layout.menu_button.w > 0.0
                     && crate::layout::touch_pad(layout.menu_button, input.ui).contains(p)
                 {

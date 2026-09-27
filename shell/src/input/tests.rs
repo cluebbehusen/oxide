@@ -3903,6 +3903,42 @@ fn chrome_born_touches_never_drive_world_gestures() {
 }
 
 #[test]
+fn the_alert_badge_jumps_the_camera_by_click_or_tap() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let badge = macroquad::math::Rect::new(420.0, 3.0, 120.0, 34.0);
+    let mut layout = top_bar_layout();
+    layout.alert_badge = badge;
+    game.presentation.layout.set(layout);
+    let map = game.state.map();
+    let alert = vec2(map.width() as f32 * 0.5, map.height() as f32 * 0.5);
+    game.presentation.last_alert = Some(alert);
+    for touch in [false, true] {
+        game.presentation.camera.center = vec2(5.0, 5.0);
+        if touch {
+            // A fingertip just under the badge still lands on its pad.
+            tap(
+                &mut game,
+                &mut input,
+                vec2(badge.center().x, badge.y + badge.h + 3.0),
+            );
+        } else {
+            apply_events(
+                &mut game,
+                &mut input,
+                &click(badge.center().x, badge.center().y),
+            );
+        }
+        assert!(
+            game.presentation.camera.center.distance(alert) < 0.01,
+            "touch {touch}: {:?}",
+            game.presentation.camera.center
+        );
+    }
+    assert!(game.pending.is_empty());
+}
+
+#[test]
 fn a_tap_on_the_idle_badge_cycles_workers() {
     let mut game = headless_game();
     let mut input = InputState::new();

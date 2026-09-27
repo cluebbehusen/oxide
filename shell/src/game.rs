@@ -1368,6 +1368,10 @@ mod tests {
             vec![(SoundKind::Alert, None)],
             "the region gate must admit one alert cue rather than one per hit"
         );
+        assert!(
+            game.presentation.toasts.is_empty(),
+            "the top-bar badge speaks for the alert"
+        );
     }
 
     #[test]

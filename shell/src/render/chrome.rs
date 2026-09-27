@@ -7,7 +7,8 @@ use super::*;
 use crate::render::prim::{fill_rect, line_between, stroke_rect};
 use crate::theme::TEXT_ACCENT;
 
-/// Fill shared by the top bar's badges: the idle nag and the menu button.
+/// Fill shared by the top bar's badges: the idle nag, the alert, and
+/// the menu button.
 const TOP_BAR_BADGE: Color = color_u8!(57, 45, 30, 255);
 
 /// The paused status names the pause key where one exists. A
@@ -17,6 +18,15 @@ fn paused_status(key: &str, touch_only: bool) -> String {
         "PAUSED".to_string()
     } else {
         format!("PAUSED [{key}]")
+    }
+}
+
+/// The under-attack badge names the jump key where one exists.
+fn alert_badge_text(key: &str, touch_only: bool) -> String {
+    if touch_only || key.is_empty() {
+        "under attack".to_string()
+    } else {
+        format!("under attack [{key}]")
     }
 }
 
@@ -378,6 +388,7 @@ pub(crate) fn draw_hud(
     // nag — the viewer's transport bar is its own chrome. The layout
     // still publishes below so the minimap stays clickable.
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut alert_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut menu_button = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut pause_status = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut status_space = None;
@@ -422,6 +433,11 @@ pub(crate) fn draw_hud(
                 crate::platform::TOUCH_ONLY,
             )
         });
+        // Alerts age out in a few seconds and hold while paused, so the
+        // badge shows exactly while the minimap still pulses one.
+        let alert_text = (!game.presentation.alerts.is_empty()).then(|| {
+            alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY)
+        });
         let status = if game.presentation.paused {
             paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
         } else if (game.presentation.speed - 1.0).abs() > f64::EPSILON {
@@ -440,6 +456,9 @@ pub(crate) fn draw_hud(
                 units_label: crate::typography::measure("UNITS", 13.0 * s).width,
                 units: crate::typography::measure(&units_text, 21.0 * s).width,
                 idle: idle_text
+                    .as_deref()
+                    .map(|text| measure_text(text, None, (15.0 * s) as u16, 1.0).width),
+                alert: alert_text
                     .as_deref()
                     .map(|text| measure_text(text, None, (15.0 * s) as u16, 1.0).width),
                 status: crate::typography::measure(&status, 14.0 * s).width,
@@ -465,6 +484,17 @@ pub(crate) fn draw_hud(
                 26.0 * s,
                 15.0 * s,
                 SCRAP_COLOR,
+            );
+        }
+        if let Some(text) = &alert_text {
+            alert_badge = bar.alert_badge;
+            fill_rect(alert_badge, TOP_BAR_BADGE);
+            draw_text(
+                text,
+                alert_badge.x + 9.0 * s,
+                26.0 * s,
+                15.0 * s,
+                crate::theme::TEXT_DANGER,
             );
         }
         menu_button = bar.menu_button;
@@ -539,6 +569,7 @@ pub(crate) fn draw_hud(
     );
     layout.panel_regions = panel_regions;
     layout.queue_toggle = queue_toggle;
+    layout.alert_badge = alert_badge;
     game.presentation.layout.set(layout);
 
     if let Some(view) = performance {
@@ -647,6 +678,9 @@ mod tests {
     fn hud_copy_names_keys_only_on_desktop() {
         assert_eq!(idle_badge_text(3, "F1", false), "3 idle [F1]");
         crate::platform::assert_touch_copy(&idle_badge_text(3, "F1", true));
+        assert_eq!(alert_badge_text("Tab", false), "under attack [Tab]");
+        assert_eq!(alert_badge_text("", false), "under attack");
+        crate::platform::assert_touch_copy(&alert_badge_text("Tab", true));
         assert!(concede_hint(false).contains("{back}"));
         crate::platform::assert_touch_copy(concede_hint(true));
     }
