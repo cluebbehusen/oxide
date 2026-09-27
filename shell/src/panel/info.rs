@@ -95,6 +95,28 @@ impl SelectionInfo {
 pub(crate) fn selection_info(game: &Scene<'_>, panel: &Panel) -> SelectionInfo {
     use StatIcon::{Capability as Cap, Verb};
     let mut info = SelectionInfo::default();
+    if let Some(tile) = game.presentation.selection.pile {
+        if let Some(salvage) = game.known_salvage(tile) {
+            info.row(
+                "Scrap left",
+                salvage.amount(),
+                Some(Verb(VerbIcon::Harvest)),
+            );
+            // Own harvesters only: another player's orders are intent
+            // the viewer has no license to read.
+            let harvesters = game
+                .state
+                .units()
+                .iter()
+                .filter(|u| {
+                    u.player == game.presentation.human
+                        && matches!(u.order, oxide_sim::Order::Harvest { node, .. } if node == tile)
+                })
+                .count();
+            info.row("Harvesters", harvesters, None);
+        }
+        return info;
+    }
     if game.presentation.selection.buildings.len() == 1 {
         let Some(b) = game
             .state

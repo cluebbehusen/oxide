@@ -241,7 +241,8 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                     queue,
                     defer: false,
                 });
-                game.presentation.ping(world, PingKind::Harvest);
+                game.presentation
+                    .ping_order(world, PingKind::Harvest, queue);
                 return;
             }
             // Welders alone cannot lay construction: fall through.
@@ -287,7 +288,8 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 building: building.id,
                 queue,
             });
-            game.presentation.ping(world, PingKind::Harvest);
+            game.presentation
+                .ping_order(world, PingKind::Harvest, queue);
             return;
         }
         // A healthy built own building — or a site without a worker, or
@@ -329,7 +331,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 transport,
                 queue,
             });
-            game.presentation.ping(world, PingKind::Move);
+            game.presentation.ping_order(world, PingKind::Move, queue);
             return;
         }
     }
@@ -341,7 +343,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             target,
             queue,
         });
-        game.presentation.ping(at, PingKind::Attack);
+        game.presentation.ping_order(at, PingKind::Attack, queue);
         return;
     }
     // A wounded own GROUND unit under the cursor takes the weld, the
@@ -374,7 +376,8 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 target,
                 queue,
             });
-            game.presentation.ping(world, PingKind::Harvest);
+            game.presentation
+                .ping_order(world, PingKind::Harvest, queue);
             return;
         }
     }
@@ -389,7 +392,8 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             node: tile,
             queue,
         });
-        game.presentation.ping(world, PingKind::Harvest);
+        game.presentation
+            .ping_order(world, PingKind::Harvest, queue);
         return;
     }
     // Default ground movement keeps formation intent: weapons take
@@ -400,7 +404,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         goal: tile,
         queue,
     });
-    game.presentation.ping(world, PingKind::Move);
+    game.presentation.ping_order(world, PingKind::Move, queue);
 }
 
 /// Train the selected production slot through the shared pending-command view.

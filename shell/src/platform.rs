@@ -6,25 +6,10 @@
 /// target; pure helpers take it as a parameter.
 pub(crate) const TOUCH_ONLY: bool = cfg!(target_os = "ios");
 
-/// The pointer verb for instructions: a touch player taps what a mouse
-/// player clicks.
-pub(crate) fn tap_or_click(touch_only: bool) -> &'static str {
-    if touch_only { "tap" } else { "click" }
-}
-
-/// [`tap_or_click`] opening a sentence.
+/// The pointer verb opening an instruction: a touch player taps what a
+/// mouse player clicks.
 pub(crate) fn tap_or_click_capitalized(touch_only: bool) -> &'static str {
     if touch_only { "Tap" } else { "Click" }
-}
-
-/// How an armed command is dropped: the Back key on desktop, the mode
-/// ribbon's CANCEL on touch.
-pub(crate) fn cancel_hint(back_key: &str, touch_only: bool) -> String {
-    if touch_only {
-        "or tap CANCEL".to_string()
-    } else {
-        format!("{back_key} to cancel")
-    }
 }
 
 /// Fails when touch-facing copy names a key, a mouse action, or an
@@ -49,11 +34,7 @@ mod tests {
 
     #[test]
     fn instruction_helpers_speak_touch_on_touch_only_builds() {
-        assert_eq!(tap_or_click(false), "click");
         assert_eq!(tap_or_click_capitalized(false), "Click");
-        assert_eq!(cancel_hint("Esc", false), "Esc to cancel");
-        assert_touch_copy(tap_or_click(true));
         assert_touch_copy(tap_or_click_capitalized(true));
-        assert_touch_copy(&cancel_hint("Esc", true));
     }
 }

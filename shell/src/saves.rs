@@ -53,28 +53,23 @@ pub struct ReplayEntry {
     pub label: String,
     /// Focused-row detail line.
     pub blurb: String,
+    /// How to act on the focused row: coaching, shown when stuck.
+    pub hint: String,
     /// Whether this build can load or watch the record.
     pub compatible: bool,
     /// What the record is; decides its shelf section and verb.
     pub kind: RecordKind,
 }
 
-/// What activating a shelf row does. Deleting takes a key, so a
-/// touch-only build leaves the delete clause out.
-fn activate_clause(action: &str, touch_action: &str, touch_only: bool) -> String {
-    if touch_only {
-        format!("tap to {touch_action}")
-    } else {
-        format!("{{confirm}} {action}{}", delete_clause(false))
-    }
-}
-
-/// The key-only delete clause.
-fn delete_clause(touch_only: bool) -> &'static str {
-    if touch_only {
-        ""
-    } else {
-        " | {delete} twice deletes"
+/// How to act on a shelf row: activate it, where it can be activated,
+/// and delete it. Deleting takes a key, so a touch-only build leaves the
+/// delete clause out.
+fn entry_hint(action: Option<(&str, &str)>, touch_only: bool) -> String {
+    match (action, touch_only) {
+        (Some((_, touch_action)), true) => format!("tap to {touch_action}"),
+        (None, true) => String::new(),
+        (Some((action, _)), false) => format!("{{confirm}} {action} | {{delete}} twice deletes"),
+        (None, false) => "{delete} twice deletes".to_string(),
     }
 }
 
@@ -173,14 +168,14 @@ fn scan_cancellable(
             None => format!("{} | t{} | {} | {}", replay.map, ticks, date, elide(stem)),
         };
         let touch_only = crate::platform::TOUCH_ONLY;
-        let blurb = if let Some(problem) = replay.problem {
-            format!("unavailable: {problem}{}", delete_clause(touch_only))
+        let (blurb, action) = if let Some(problem) = replay.problem {
+            (format!("unavailable: {problem}"), None)
         } else if kind.resumable() {
             let what = match kind {
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            let (action, touch_action) = if replay.legacy {
+            let action = if replay.legacy {
                 (
                     "reconstructs and loads paused",
                     "reconstruct and load paused",
@@ -188,24 +183,21 @@ fn scan_cancellable(
             } else {
                 ("loads paused", "load paused")
             };
-            format!(
-                "{what} | {}",
-                activate_clause(action, touch_action, touch_only)
-            )
+            (what.to_string(), Some(action))
         } else {
-            format!(
-                "{} seats | sim v{} | {}",
-                replay.seats,
-                replay.meta.sim_version,
-                activate_clause("watches", "watch", touch_only)
+            (
+                format!("{} seats | sim v{}", replay.seats, replay.meta.sim_version),
+                Some(("watches", "watch")),
             )
         };
+        let hint = entry_hint(action, touch_only);
         out.push((
             RecordTime { saved_at, modified },
             ReplayEntry {
                 path,
                 label,
                 blurb,
+                hint,
                 compatible,
                 kind,
             },
@@ -239,12 +231,13 @@ mod tests {
     use crate::game::GameReplay;
 
     #[test]
-    fn shelf_blurbs_offer_only_the_gestures_the_build_has() {
+    fn shelf_hints_offer_only_the_gestures_the_build_has() {
         assert_eq!(
-            activate_clause("watches", "watch", false),
+            entry_hint(Some(("watches", "watch")), false),
             "{confirm} watches | {delete} twice deletes"
         );
-        for (action, touch_action) in [
+        assert_eq!(entry_hint(None, false), "{delete} twice deletes");
+        for action in [
             ("watches", "watch"),
             ("loads paused", "load paused"),
             (
@@ -252,9 +245,9 @@ mod tests {
                 "reconstruct and load paused",
             ),
         ] {
-            crate::platform::assert_touch_copy(&activate_clause(action, touch_action, true));
+            crate::platform::assert_touch_copy(&entry_hint(Some(action), true));
         }
-        assert_eq!(delete_clause(true), "");
+        assert_eq!(entry_hint(None, true), "");
     }
 
     #[test]

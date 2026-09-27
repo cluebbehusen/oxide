@@ -97,8 +97,10 @@ impl Default for CameraPrefs {
     }
 }
 
-/// Touch gesture timing windows, in milliseconds.
+/// Touch gesture preferences. Fields a config predates take their
+/// defaults, so adding one never resets the rest of the settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TouchPrefs {
     /// Two taps inside this window read as a double-tap.
     pub double_tap_ms: u32,
@@ -593,6 +595,37 @@ mod tests {
         assert_eq!(loaded.volumes.music, 1.0);
         assert_eq!(loaded.volumes.effects, 0.5);
         assert_eq!(loaded.ui_scale, 1.25);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_touch_preference_the_config_predates_keeps_every_other_setting() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide-config-pre-touch-{}", std::process::id()));
+        let path = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = serde_json::to_value(Config {
+            ui_scale: 1.25,
+            touch: TouchPrefs {
+                double_tap_ms: 280,
+                ..TouchPrefs::default()
+            },
+            ..Config::default()
+        })
+        .unwrap();
+        old["touch"]
+            .as_object_mut()
+            .unwrap()
+            .remove("long_press_ms");
+        std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+
+        let loaded = Config::load_from(Some(path));
+        assert_eq!(loaded.ui_scale, 1.25, "the rest of the config survives");
+        assert_eq!(loaded.touch.double_tap_ms, 280);
+        assert_eq!(
+            loaded.touch.long_press_ms,
+            TouchPrefs::default().long_press_ms
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -562,25 +562,6 @@ impl Browser {
             title_size,
             TEXT_TITLE,
         );
-        // Scroll cues.
-        if layout.more_above {
-            draw_text(
-                "^",
-                band_x + band_w * 0.5,
-                110.0 * ui,
-                22.0 * ui,
-                TEXT_SECONDARY,
-            );
-        }
-        if layout.more_below {
-            draw_text(
-                "v",
-                band_x + band_w * 0.5,
-                view.y - 66.0 * ui,
-                22.0 * ui,
-                TEXT_SECONDARY,
-            );
-        }
         // A draw-only scrollbar thumb: where the window sits in the
         // shelf, at a glance. The wheel is the drag; this just tells
         // the truth about how much shelf is off screen.
@@ -628,7 +609,7 @@ impl Browser {
             (view.x - dims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,
-            TEXT_SECONDARY,
+            crate::hints::fade(TEXT_SECONDARY),
         );
     }
 }

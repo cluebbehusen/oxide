@@ -97,6 +97,55 @@ pub struct Presentation {
     pub(super) accum: f32,
 }
 
+/// Salvage the viewer knows lies on a tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Salvage {
+    /// A scrap node, with the scrap left in it and in any wreck on it.
+    Scrap(u32),
+    /// A wreck, with the scrap left in it.
+    Wreck(u32),
+}
+
+impl Salvage {
+    /// The scrap left, whatever the source.
+    pub(crate) fn amount(self) -> u32 {
+        match self {
+            Self::Scrap(amount) | Self::Wreck(amount) => amount,
+        }
+    }
+}
+
+/// What `human` knows of the salvage on `tile`: live amounts on visible
+/// ground, remembered amounts under fog, and nothing where they have
+/// never looked, so no readout can leak what fog took back.
+pub(crate) fn known_salvage(
+    state: &State,
+    human: PlayerId,
+    all_seeing: bool,
+    tile: chassis::grid::TilePos,
+) -> Option<Salvage> {
+    let vision = state.vision(human);
+    let (scrap, wreck) = if all_seeing || vision.visible(tile) {
+        (state.map().scrap_at(tile), state.map().wreck_at(tile))
+    } else if vision.explored(tile) {
+        (vision.remembered_scrap(tile), vision.remembered_wreck(tile))
+    } else {
+        return None;
+    };
+    classify_salvage(scrap, wreck)
+}
+
+/// A tile's salvage from its node and wreck amounts. A wreck can lie on
+/// a live node (a flyer downed over it); it is recoverable once the node
+/// is stripped, so it counts toward the node's total.
+fn classify_salvage(scrap: u32, wreck: u32) -> Option<Salvage> {
+    match (scrap, wreck) {
+        (0, 0) => None,
+        (0, wreck) => Some(Salvage::Wreck(wreck)),
+        (scrap, wreck) => Some(Salvage::Scrap(scrap.saturating_add(wreck))),
+    }
+}
+
 /// One immutable world paired with its presentation and pending human commands.
 #[derive(Clone, Copy)]
 pub(crate) struct Scene<'a> {
@@ -148,6 +197,15 @@ impl<'a> Scene<'a> {
     /// The local player's fog view (what rendering and targeting honor).
     pub fn my_vision(&self) -> &oxide_sim::Vision {
         self.state.vision(self.presentation.human)
+    }
+    /// What the local player knows of the salvage on `tile`.
+    pub(crate) fn known_salvage(&self, tile: chassis::grid::TilePos) -> Option<Salvage> {
+        known_salvage(
+            self.state,
+            self.presentation.human,
+            self.presentation.all_seeing(),
+            tile,
+        )
     }
     pub(crate) fn draw_hull_heading(&self, id: UnitId, alpha: f32) -> f32 {
         self.presentation.draw_hull_heading(self.state, id, alpha)
@@ -243,11 +301,17 @@ impl Presentation {
 
     /// Drops an order-acknowledgment ping at a world point.
     pub fn ping(&mut self, at: Vec2, kind: PingKind) {
+        self.ping_order(at, kind, false);
+    }
+
+    /// Drops an order-acknowledgment ping; a `queued` order's ping says
+    /// it joined the program rather than replacing it.
+    pub fn ping_order(&mut self, at: Vec2, kind: PingKind, queued: bool) {
         // An order the sim accepted deserves an answer in the ear as
         // well as the eye (the mixer rate-limits volley spam).
         self.sounds_pending.push((SoundKind::Ack, None));
         self.fx.push(Effect {
-            kind: EffectKind::Ping { at, kind },
+            kind: EffectKind::Ping { at, kind, queued },
             age: 0.0,
         });
     }
@@ -604,6 +668,14 @@ mod tests {
         }
         scenario.units.clear();
         Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap()
+    }
+
+    #[test]
+    fn a_wreck_on_a_live_node_counts_toward_its_scrap() {
+        assert_eq!(classify_salvage(0, 0), None);
+        assert_eq!(classify_salvage(0, 30), Some(Salvage::Wreck(30)));
+        assert_eq!(classify_salvage(400, 0), Some(Salvage::Scrap(400)));
+        assert_eq!(classify_salvage(400, 30), Some(Salvage::Scrap(430)));
     }
 
     #[test]

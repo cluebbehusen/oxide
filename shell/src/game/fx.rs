@@ -541,6 +541,9 @@ pub enum EffectKind {
         at: Vec2,
         /// Color class.
         kind: PingKind,
+        /// Whether the order joined the unit's program rather than
+        /// replacing it.
+        queued: bool,
     },
     /// A splash detonation blooming over its radius.
     Burst {
@@ -1025,6 +1028,7 @@ impl Presentation {
                             kind: EffectKind::Ping {
                                 at: world_vec(u.pos),
                                 kind: PingKind::Spawn,
+                                queued: false,
                             },
                             age: 0.0,
                         });
@@ -1223,6 +1227,7 @@ impl Presentation {
                         kind: EffectKind::Ping {
                             at: world_vec(*pos),
                             kind: PingKind::Attack,
+                            queued: false,
                         },
                         age: 0.0,
                     });

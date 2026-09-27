@@ -690,6 +690,18 @@ pub(crate) fn draw_panel(
                 }
                 CardIcon::Building(kind, tier) => blit_building(dest, *kind, *tier, faction, tint),
                 CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
+                CardIcon::Salvage { wreck } => blit(
+                    dest,
+                    if *wreck {
+                        sprites.wreck_pile()
+                    } else {
+                        sprites.scrap(
+                            oxide_sim::stats::SCRAP_NODE_AMOUNT,
+                            oxide_sim::stats::SCRAP_NODE_AMOUNT,
+                        )
+                    },
+                    tint,
+                ),
                 CardIcon::Order { verb, .. } => blit(dest, sprites.verb_icon(*verb), tint),
             }
             return;
@@ -1089,10 +1101,17 @@ pub(crate) fn draw_panel(
     let mut queue_count = 0;
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
-        let (mut grid_dock, grid_slots, n) = if panel.queue_groups.is_empty() {
-            queue_grid(panel.queue.len(), top, s)
+        let toggle_below =
+            super::chrome::queue_toggle_shown(game, input, crate::platform::TOUCH_ONLY);
+        let floor = if toggle_below {
+            top - super::chrome::queue_dock_lift(s)
         } else {
-            collective_queue_grid(panel.queue.len(), top, s, viewport.x)
+            top
+        };
+        let (mut grid_dock, grid_slots, n) = if panel.queue_groups.is_empty() {
+            queue_grid(panel.queue.len(), floor, s)
+        } else {
+            collective_queue_grid(panel.queue.len(), floor, s, viewport.x)
         };
         let queue_label_width = queue_label_width(panel, |text| {
             measure_text(text, None, (13.0 * s) as u16, 1.0).width
@@ -1104,6 +1123,12 @@ pub(crate) fn draw_panel(
         if more_h > 0.0 {
             dock.y -= more_h;
             dock.h += more_h;
+        }
+        // The dock borders only its open top and right, resting on the
+        // band. With the QUEUE toggle beneath it, the plate runs down to
+        // the band so the toggle sits inside one closed column.
+        if toggle_below {
+            dock.h = top - dock.y;
         }
         let dock_top = dock.y;
         fill_rect(dock, Color::from_rgba(20, 20, 24, 255));

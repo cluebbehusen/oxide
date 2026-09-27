@@ -100,7 +100,6 @@ fn bare_layout(panel_top: f32, panel_right: f32) -> crate::layout::LayoutModel {
         zero,
         zero,
         zero,
-        zero,
         [none; 8],
         0,
         [none; 16],
@@ -707,7 +706,7 @@ fn every_tile_of_a_known_extractor_frame_places_the_same_site() {
             assert!(
                 game.presentation.fx.iter().any(|effect| matches!(
                     effect.kind,
-                    crate::game::EffectKind::Ping { at, kind: crate::game::PingKind::Rally }
+                    crate::game::EffectKind::Ping { at, kind: crate::game::PingKind::Rally, .. }
                         if (at - vec2(8.0, 5.0)).length_squared() < f32::EPSILON
                 )),
                 "the acknowledgment stays centered on the snapped frame"
@@ -1030,50 +1029,104 @@ fn the_rally_card_arms_a_touchable_world_target() {
 }
 
 #[test]
-fn the_armed_mode_ribbon_cancel_is_a_real_touch_action() {
+fn a_ribbon_tap_cancels_the_mode_and_keeps_the_selection() {
     let mut game = headless_game();
     let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.presentation.selection.units = vec![fighter];
     input.attacking = true;
     let ribbon = macroquad::math::Rect::new(220.0, 620.0, 280.0, 44.0);
-    let cancel = macroquad::math::Rect::new(456.0, 620.0, 44.0, 44.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
     layout.mode_ribbon = ribbon;
-    layout.mode_cancel = cancel;
     game.presentation.layout.set(layout);
-    let at = cancel.center();
-    input.now = 1.0;
+    tap(&mut game, &mut input, ribbon.center());
+    assert_eq!(input.armed_mode(), None);
+    assert_eq!(game.presentation.selection.units, vec![fighter]);
+    assert!(game.pending.is_empty(), "cancel emits no gameplay command");
+
+    input.running = true;
     apply_events(
         &mut game,
         &mut input,
-        &[touch_down(11, at), touch_up(11, at)],
+        &click(ribbon.x + 20.0, ribbon.center().y),
     );
-    assert_eq!(input.armed_mode(), None);
-    assert!(game.pending.is_empty(), "cancel emits no gameplay command");
+    assert_eq!(input.armed_mode(), None, "a click cancels too");
+}
+
+#[test]
+fn a_lit_queue_turns_off_with_a_tap_so_the_next_ground_tap_clears() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (fighter, at) = own_fighter(&game);
+    let chip = macroquad::math::Rect::new(160.0, 620.0, 96.0, 44.0);
+    let mut layout = bare_layout(f32::INFINITY, 0.0);
+    layout.queue_toggle = chip;
+    game.presentation.layout.set(layout);
+    game.presentation.selection.units = vec![fighter];
+    input.queue_toggle = true;
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert_eq!(
+        game.presentation.selection.units,
+        vec![fighter],
+        "with QUEUE on a ground tap only adds"
+    );
+
+    input.now += 1.0;
+    tap(&mut game, &mut input, chip.center());
+    assert!(!input.queue_toggle, "one tap on the lit chip turns it off");
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(game.presentation.selection.units.is_empty());
+
+    // Resting on the chip never charges a battlefield order.
+    game.presentation.selection.units = vec![fighter];
+    input.now += 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(3, chip.center())]);
+    input.now += 2.0;
+    update_touch(&mut game, &mut input);
+    assert!(
+        game.pending.is_empty(),
+        "a long-press on QUEUE orders nothing"
+    );
+}
+
+#[test]
+fn touch_armed_toasts_only_name_their_target() {
+    assert_eq!(
+        armed_toast("weld", "a damaged own unit", "Esc", false),
+        "weld: click a damaged own unit, Esc to cancel"
+    );
+    crate::platform::assert_touch_copy(&armed_toast("weld", "a damaged own unit", "Esc", true));
 }
 
 #[test]
 fn every_targeting_mode_has_persistent_human_copy() {
     let mut input = InputState::new();
     input.placing = Some(oxide_sim::BuildingKind::Bastion);
-    assert_eq!(input.armed_mode().unwrap().label(), "BUILD Bastion");
+    assert_eq!(input.armed_mode().unwrap().label(), "Bastion");
     input.disarm_click_verbs();
     input.rallying = vec![oxide_sim::BuildingId(0)];
-    assert_eq!(input.armed_mode().unwrap().label(), "SET RALLY");
+    assert_eq!(input.armed_mode().unwrap().label(), "Set rally");
     input.disarm_click_verbs();
     input.salvaging = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "SALVAGE");
+    assert_eq!(input.armed_mode().unwrap().label(), "Salvage");
     input.disarm_click_verbs();
     input.repairing = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "WELD UNIT");
+    assert_eq!(input.armed_mode().unwrap().label(), "Weld");
     input.disarm_click_verbs();
     input.running = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "RUN");
+    assert_eq!(input.armed_mode().unwrap().label(), "Run");
     input.disarm_click_verbs();
     input.attacking = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "ATTACK-MOVE");
+    assert_eq!(input.armed_mode().unwrap().label(), "Attack-move");
     input.disarm_click_verbs();
     input.patrol_route = Some(vec![TilePos::new(1, 1), TilePos::new(2, 2)]);
-    assert_eq!(input.armed_mode().unwrap().label(), "PATROL | 2 WAYPOINTS");
+    assert_eq!(input.armed_mode().unwrap().label(), "Patrol \u{b7} 2");
     assert!(input.cancel_armed_mode());
     assert_eq!(input.armed_mode(), None);
 }
@@ -2988,11 +3041,8 @@ fn the_queue_chip_flips_by_tap_and_click() {
     tap(&mut game, &mut input, chip.center());
     assert!(input.queue_held());
     assert!(
-        game.presentation
-            .toasts
-            .iter()
-            .any(|t| t.text.starts_with("queue on")),
-        "the first switch explains itself"
+        game.presentation.toasts.is_empty(),
+        "the lit chip speaks for itself"
     );
     apply_events(
         &mut game,
@@ -3129,6 +3179,235 @@ fn patrol_copy_speaks_touch_on_touch_only_builds() {
     );
     crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
     crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
+}
+
+fn own_fighter(game: &Game) -> (oxide_sim::UnitId, Vec2) {
+    game.state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind.stats().can_fight())
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .expect("a starting combat unit")
+}
+
+#[test]
+fn a_ground_tap_deselects_and_a_long_press_orders() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (fighter, at) = own_fighter(&game);
+    let last_ping_queued = |game: &Game| {
+        game.presentation
+            .fx
+            .iter()
+            .rev()
+            .find_map(|fx| match fx.kind {
+                crate::game::EffectKind::Ping { queued, .. } => Some(queued),
+                _ => None,
+            })
+    };
+    game.presentation.selection.units = vec![fighter];
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "a tap deselects"
+    );
+    assert!(game.pending.is_empty(), "and never orders");
+
+    game.presentation.selection.units = vec![fighter];
+    long_press_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { queue: false, .. })),
+        "the long-press ordered: {:?}",
+        game.pending
+    );
+    assert_eq!(last_ping_queued(&game), Some(false));
+
+    game.pending.clear();
+    input.queue_toggle = true;
+    long_press_world(&mut game, &mut input, at + vec2(4.0, -2.0));
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Advance { queue: true, .. })),
+        "QUEUE queues the long-press's order"
+    );
+    assert_eq!(last_ping_queued(&game), Some(true), "and its ping says so");
+}
+
+#[test]
+fn a_fingertip_that_just_misses_a_unit_still_selects_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (fighter, _) = own_fighter(&game);
+    let other = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.id != fighter)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .expect("a second own unit");
+    game.presentation.selection.units = vec![fighter];
+    // Beyond a cursor's reach, inside a fingertip's.
+    let reach = super::unit_pick_radius(game.state.unit(other.0).expect("the second unit").kind)
+        .max(10.0 / game.presentation.camera.zoom);
+    tap_world(&mut game, &mut input, other.1 + vec2(reach + 0.05, 0.0));
+    assert!(game.pending.is_empty(), "a near miss never orders");
+    assert_eq!(game.presentation.selection.units, vec![other.0]);
+}
+
+#[test]
+fn a_double_tap_on_a_unit_sweeps_its_kind() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvesters: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .map(|u| (u.id, vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())))
+        .collect();
+    assert!(harvesters.len() > 1, "premise: several harvesters");
+    let p = game.presentation.camera.to_screen(harvesters[0].1);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
+    input.now = 1.1;
+    apply_events(&mut game, &mut input, &[touch_down(1, p), touch_up(1, p)]);
+    assert_eq!(
+        game.presentation.selection.units.len(),
+        harvesters.len(),
+        "a double tap on a unit sweeps its kind"
+    );
+}
+
+#[test]
+fn a_tap_on_a_scrap_pile_selects_it_for_its_panel() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let tile = TilePos::new(7, 2);
+    let scrap = game.state.map().scrap_at(tile);
+    assert!(scrap > 0, "premise: the home pile holds scrap");
+    let (fighter, _) = own_fighter(&game);
+    game.presentation.selection.units = vec![fighter];
+    tap_world(&mut game, &mut input, vec2(7.5, 2.5));
+    assert!(game.presentation.selection.units.is_empty());
+    assert_eq!(game.presentation.selection.pile, Some(tile));
+    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a pile panel");
+    assert_eq!(panel.title, "Scrap pile");
+    assert!(panel.cards.is_empty(), "a pile takes no orders");
+    let row = |panel: &crate::panel::Panel, label: &str| {
+        panel
+            .info
+            .rows
+            .iter()
+            .find(|row| row.label == label)
+            .map(|row| row.value.clone())
+    };
+    assert_eq!(row(&panel, "Scrap left"), Some(scrap.to_string()));
+    assert_eq!(row(&panel, "Harvesters"), Some("0".into()));
+
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.presentation.human && u.kind == UnitKind::Harvester)
+        .expect("a harvester")
+        .id;
+    game.issue(Command::Harvest {
+        units: vec![harvester],
+        node: tile,
+        queue: false,
+    });
+    game.present_ticks(1);
+    let panel = crate::panel::build_for_input(&game.view(), &input).expect("a pile panel");
+    assert_eq!(row(&panel, "Harvesters"), Some("1".into()));
+
+    tap_world(&mut game, &mut input, vec2(12.5, 12.5));
+    assert_eq!(
+        game.presentation.selection.pile, None,
+        "bare ground clears it"
+    );
+}
+
+#[test]
+fn fingertip_slop_never_takes_a_tap_from_the_pile_under_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let pile = vec2(7.5, 2.5);
+    let (nearest, distance) = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.presentation.human)
+        .map(|u| {
+            let at = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+            (u, at.distance(pile))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("an own unit");
+    assert!(
+        distance > super::unit_pick_radius(nearest.kind),
+        "premise: the tap misses the unit's body"
+    );
+    // Zoomed out until a fingertip's reach covers the unit.
+    game.presentation.camera.zoom = 22.0 * input.ui / (distance + 0.1);
+    tap_world(&mut game, &mut input, pile);
+    assert!(game.presentation.selection.units.is_empty());
+    assert_eq!(game.presentation.selection.pile, Some(TilePos::new(7, 2)));
+}
+
+#[test]
+fn selecting_anything_else_drops_the_pile() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let tile = TilePos::new(7, 2);
+    game.presentation.selection.pile = Some(tile);
+    let (fighter, at) = own_fighter(&game);
+    tap_world(&mut game, &mut input, at);
+    assert_eq!(game.presentation.selection.units, vec![fighter]);
+    assert_eq!(game.presentation.selection.pile, None);
+
+    game.presentation.selection.units.clear();
+    game.presentation.selection.pile = Some(tile);
+    dispatch_action(&mut game, &mut input, Action::CycleIdleWorker);
+    apply_events(&mut game, &mut input, &[]);
+    assert!(!game.presentation.selection.units.is_empty());
+    assert_eq!(
+        game.presentation.selection.pile, None,
+        "any selection writer, not just taps"
+    );
+}
+
+#[test]
+fn a_pile_the_viewer_cannot_know_is_never_selected_and_is_dropped_once_empty() {
+    let mut game = headless_game();
+    let input = InputState::new();
+    let map = game.state.map();
+    let tiles: Vec<TilePos> = (0..map.height())
+        .flat_map(|y| (0..map.width()).map(move |x| TilePos::new(x, y)))
+        .collect();
+    let unseen = *tiles
+        .iter()
+        .find(|&&t| map.scrap_at(t) > 0 && !game.my_vision().explored(t))
+        .expect("scrap the human has never seen");
+    let empty = *tiles
+        .iter()
+        .find(|&&t| game.my_vision().visible(t) && map.scrap_at(t) == 0 && map.wreck_at(t) == 0)
+        .expect("visible bare ground");
+    let screen = game
+        .presentation
+        .camera
+        .to_screen(vec2(unseen.x as f32 + 0.5, unseen.y as f32 + 0.5));
+    select::click_select(&mut game, screen, false, input.ui, Pointer::Touch);
+    assert_eq!(game.presentation.selection.pile, None, "fog hides it");
+
+    game.presentation.selection.pile = Some(empty);
+    game.present_ticks(1);
+    assert_eq!(
+        game.presentation.selection.pile, None,
+        "a tile with no known salvage drops out on the next tick"
+    );
 }
 
 #[test]

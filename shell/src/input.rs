@@ -50,13 +50,14 @@ pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
 }
 
 /// The instruction toast shown when a mode arms the next pointer press,
-/// e.g. "weld: click a damaged own unit, Esc to cancel".
+/// e.g. "weld: click a damaged own unit, Esc to cancel". On touch the
+/// ribbon and the X are the way out, so the toast only names the target.
 fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> String {
-    format!(
-        "{mode}: {} {target}, {}",
-        crate::platform::tap_or_click(touch_only),
-        crate::platform::cancel_hint(back_key, touch_only)
-    )
+    if touch_only {
+        format!("{mode}: tap {target}")
+    } else {
+        format!("{mode}: click {target}, {back_key} to cancel")
+    }
 }
 
 /// World-unit pick radius around a unit's center.
@@ -92,14 +93,14 @@ impl ArmedMode {
     /// Compact persistent label; detailed coaching remains in the toast.
     pub(crate) fn label(self) -> String {
         match self {
-            Self::Build(kind) => format!("BUILD {}", crate::typography::entity_name(kind.name())),
-            Self::Rally => "SET RALLY".to_string(),
-            Self::Salvage => "SALVAGE".to_string(),
-            Self::Weld => "WELD UNIT".to_string(),
-            Self::Run => "RUN".to_string(),
-            Self::AttackMove => "ATTACK-MOVE".to_string(),
-            Self::Patrol(0) => "PATROL | ADD WAYPOINTS".to_string(),
-            Self::Patrol(count) => format!("PATROL | {count} WAYPOINTS"),
+            Self::Build(kind) => crate::typography::entity_name(kind.name()),
+            Self::Rally => "Set rally".to_string(),
+            Self::Salvage => "Salvage".to_string(),
+            Self::Weld => "Weld".to_string(),
+            Self::Run => "Run".to_string(),
+            Self::AttackMove => "Attack-move".to_string(),
+            Self::Patrol(0) => "Patrol".to_string(),
+            Self::Patrol(count) => format!("Patrol \u{b7} {count}"),
         }
     }
 }
@@ -207,8 +208,6 @@ pub struct InputState {
     pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
     /// The QUEUE toggle: touch's sticky stand-in for a held Shift.
     pub(crate) queue_toggle: bool,
-    /// Whether this session already explained the QUEUE toggle.
-    queue_explained: bool,
     /// The live two-finger gesture, if two fingers are down.
     pub(crate) pair: Option<Pair>,
     /// Pair fingers the platform reported lifted, newest last.
@@ -434,7 +433,6 @@ impl InputState {
             touches: Vec::new(),
             last_tap: None,
             queue_toggle: false,
-            queue_explained: false,
             pair: None,
             lifted_pair: Vec::new(),
             menu_requested: false,
@@ -592,15 +590,9 @@ impl InputState {
         self.queue_toggle || self.resolver.shift_held()
     }
 
-    /// Flips the QUEUE toggle, explaining it the first time it turns
-    /// on in a session.
-    pub(crate) fn toggle_queue(&mut self, game: &mut Game) {
+    /// Flips the QUEUE toggle.
+    pub(crate) fn toggle_queue(&mut self) {
         self.queue_toggle = !self.queue_toggle;
-        if self.queue_toggle && !self.queue_explained {
-            self.queue_explained = true;
-            game.presentation
-                .toast("queue on: taps add to the selection, orders queue, and modes stay armed");
-        }
     }
 
     /// Consumes this frame's menu-button press, if any.
@@ -615,7 +607,6 @@ impl InputState {
     /// would resolve to unrelated units in the new world.
     pub fn reset_session(&mut self) {
         self.reset_transient();
-        self.queue_explained = false;
         self.groups = Default::default();
         self.bookmarks = [None; 4];
         self.last_click = None;
@@ -973,6 +964,11 @@ pub(crate) use touch::{
 /// chrome, the arrow otherwise. Pure — the loop applies it.
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
+    let layout = game.presentation.layout.get();
+    let row = [layout.queue_toggle, layout.mode_ribbon];
+    if row.iter().any(|r| r.w > 0.0 && r.contains(input.mouse)) {
+        return CursorIcon::Pointer;
+    }
     if input.placing.is_some()
         || input.patrol_route.is_some()
         || input.salvaging
@@ -1071,8 +1067,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // stamp defers or founds on its own ground.
                             defer: build_defer_needed(&game.view(), kind, anchor),
                         });
-                        game.presentation
-                            .ping(placement_ping(kind, anchor), PingKind::Rally);
+                        game.presentation.ping_order(
+                            placement_ping(kind, anchor),
+                            PingKind::Rally,
+                            true,
+                        );
                         stroke.anchors.push(anchor);
                     }
                 }
@@ -1091,7 +1090,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                if armed_click(game, input, vec2(x, y), Pointer::Mouse) {
+                if ribbon_row_press(game, input, vec2(x, y), Pointer::Mouse)
+                    || armed_click(game, input, vec2(x, y), Pointer::Mouse)
+                {
                     continue;
                 }
                 // Panel cards are buttons: each carries the exact action
@@ -1114,10 +1115,6 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 }
                 if layout.pause_status.w > 0.0 && layout.pause_status.contains(vec2(x, y)) {
                     dispatch_action(game, input, Action::TogglePause);
-                    continue;
-                }
-                if layout.queue_toggle.w > 0.0 && layout.queue_toggle.contains(vec2(x, y)) {
-                    input.toggle_queue(game);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -1154,9 +1151,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 now - t < 0.35 && p.distance(release) <= 12.0 * input.ui
                             });
                         if double {
-                            select_all_of_kind_on_screen(game, release, input.ui);
+                            select_all_of_kind_on_screen(game, release, input.ui, Pointer::Mouse);
                         } else {
-                            click_select(game, release, additive, input.ui);
+                            click_select(game, release, additive, input.ui, Pointer::Mouse);
                         }
                         input.last_click = Some((now, release));
                     } else {
@@ -1204,8 +1201,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 goal: tile,
                                 queue,
                             });
-                            game.presentation
-                                .ping(vec2(world.x, world.y), PingKind::Move);
+                            game.presentation.ping_order(
+                                vec2(world.x, world.y),
+                                PingKind::Move,
+                                queue,
+                            );
                         } else if units.is_empty() {
                             rally_selected_producers(game, tile, world);
                         }
@@ -1264,6 +1264,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             input.close_construction();
         }
     }
+    let selection = &mut game.presentation.selection;
+    if !selection.units.is_empty() || !selection.buildings.is_empty() {
+        selection.pile = None;
+    }
 }
 
 /// One armed world click or tap at screen point `p`. Returns whether
@@ -1271,17 +1275,40 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
-fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
-    let cancel = game.presentation.layout.get().mode_cancel;
-    if cancel.w > 0.0 && crate::layout::touch_pad(cancel, input.ui).contains(p) {
+/// A press on the ribbon row: QUEUE toggles, and the ribbon cancels its
+/// mode but keeps the selection. It runs before every other target, for
+/// mouse and touch alike.
+pub(super) fn ribbon_row_press(
+    game: &mut Game,
+    input: &mut InputState,
+    p: Vec2,
+    pointer: Pointer,
+) -> bool {
+    let layout = game.presentation.layout.get();
+    let ui = input.ui;
+    let hits = |rect: macroquad::math::Rect| {
+        rect.w > 0.0
+            && match pointer {
+                Pointer::Mouse => rect.contains(p),
+                Pointer::Touch => crate::layout::touch_pad(rect, ui).contains(p),
+            }
+    };
+    if hits(layout.queue_toggle) {
+        input.toggle_queue();
+    } else if hits(layout.mode_ribbon) {
         if input.cancel_armed_mode() {
             game.presentation.toast("command mode cancelled");
             game.presentation
                 .sounds_pending
                 .push((crate::game::SoundKind::Click, None));
         }
-        return true;
+    } else {
+        return false;
     }
+    true
+}
+
+fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
     if click_on_hud(game, p) && crate::render::minimap_world_at(&game.view(), p).is_none() {
         return false;
     }
@@ -1499,7 +1526,7 @@ fn place_at(
         defer: build_defer_needed(&game.view(), kind, anchor),
     });
     game.presentation
-        .ping(placement_ping(kind, anchor), PingKind::Rally);
+        .ping_order(placement_ping(kind, anchor), PingKind::Rally, queue);
     true
 }
 
@@ -1535,7 +1562,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 building,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Harvest);
+            game.presentation
+                .ping_order(world, PingKind::Harvest, input.queue_held());
             if !input.queue_held() {
                 input.salvaging = false;
             }
@@ -1597,7 +1625,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 target,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Harvest);
+            game.presentation
+                .ping_order(world, PingKind::Harvest, input.queue_held());
             if !input.queue_held() {
                 input.repairing = false;
             }
@@ -1619,7 +1648,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 goal,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Move);
+            game.presentation
+                .ping_order(world, PingKind::Move, input.queue_held());
             if !input.queue_held() {
                 input.running = false;
             }
@@ -1641,7 +1671,8 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 goal,
                 queue: input.queue_held(),
             });
-            game.presentation.ping(world, PingKind::Attack);
+            game.presentation
+                .ping_order(world, PingKind::Attack, input.queue_held());
             if !input.queue_held() {
                 input.attacking = false;
             }

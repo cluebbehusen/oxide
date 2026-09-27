@@ -178,6 +178,22 @@ impl Shelf {
         Out::Stay
     }
 
+    /// How to act on the focused row: coaching for the footer. None while
+    /// a delete is armed, since the subtitle already says what to press.
+    pub fn coaching(&self) -> Option<String> {
+        if self.arming == Some(self.menu.selected) {
+            return None;
+        }
+        match self.rows.get(self.menu.selected) {
+            Some(RowKind::Entry(i)) => self
+                .entries
+                .get(*i)
+                .map(|entry| entry.hint.clone())
+                .filter(|hint| !hint.is_empty()),
+            _ => None,
+        }
+    }
+
     /// The focused row's detail line.
     pub fn subtitle(&self) -> String {
         if self.entries.is_empty() {
@@ -213,6 +229,7 @@ mod tests {
             path,
             label: name.to_string(),
             blurb: format!("{name} blurb"),
+            hint: String::new(),
             compatible,
             kind,
         }
@@ -268,6 +285,24 @@ mod tests {
             );
             assert_eq!(out, Out::Home);
         }
+    }
+
+    #[test]
+    fn a_record_says_how_to_act_only_as_coaching() {
+        let mut record = entry("done", true, RecordKind::Match, "/nowhere/m.json".into());
+        record.hint = "{confirm} watches | {delete} twice deletes".to_string();
+        let mut shelf = Shelf::from_entries(vec![record]);
+        assert_eq!(shelf.subtitle(), "done blurb", "the details stay visible");
+        assert_eq!(
+            shelf.coaching().as_deref(),
+            Some("{confirm} watches | {delete} twice deletes")
+        );
+        shelf.arming = Some(shelf.menu.selected);
+        assert!(
+            shelf.subtitle().contains("again to delete"),
+            "an armed delete says so"
+        );
+        assert_eq!(shelf.coaching(), None);
     }
 
     #[test]
