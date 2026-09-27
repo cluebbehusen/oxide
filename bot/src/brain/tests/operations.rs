@@ -1432,7 +1432,7 @@ impl CommittedCluster {
             .live_anchors
     }
 
-    fn identity_and_anchors(&self) -> (crate::strategy::ConnectedOffenseIdentity, Vec<TilePos>) {
+    fn identity_and_anchors(&self) -> (crate::allocation::ConnectedOffenseKey, Vec<TilePos>) {
         let strategy = &self.brain.mind().strategy;
         (
             strategy

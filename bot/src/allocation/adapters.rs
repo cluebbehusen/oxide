@@ -4,8 +4,8 @@ use super::{
     AllocationConflict, AllocationPersonality, AllocationResult, ClaimBundle, ClaimBundleError,
     Confidence, ConnectedOffenseKey, DefenseInvestmentKey, DeferrableCapitalClaim, ExecutionSafety,
     ForecastClaim, FoundryExpansionKey, ImportedObligation, InvestmentProposal, ObligationClass,
-    ObligationKey, ProducerJobClaim, ProposalCase, ProposalKey, ScheduledProducerJob,
-    StrategicValue, TimeToImpact, Urgency,
+    ProducerJobClaim, ProposalCase, ProposalKey, ScheduledProducerJob, StrategicValue,
+    TimeToImpact, Urgency,
 };
 use crate::profile::ResolvedProfile;
 use crate::standing_force::StandingForceProposal;
@@ -246,12 +246,8 @@ pub(crate) fn connected_investment_proposal(
     proposal: FreshConnectedProposal,
 ) -> DomainInvestmentProposal {
     let claims = connected_claim_bundle(proposal.minimum_claims());
-    let identity = proposal.identity();
     InvestmentProposal::retained(
-        ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        }),
+        ProposalKey::ConnectedOffenseMinimum(proposal.identity()),
         proposal.case().into(),
         proposal.accepted_at(),
         claims,
@@ -396,7 +392,6 @@ pub(crate) fn active_connected_revision_obligation(
     proposal: &FreshConnectedProposal,
 ) -> ImportedObligation {
     debug_assert!(proposal.revises_active_operation());
-    let identity = proposal.identity();
     let minimum = proposal.minimum_claims();
     let provider_jobs = minimum
         .provider_jobs()
@@ -413,10 +408,7 @@ pub(crate) fn active_connected_revision_obligation(
     super::imported_obligation(
         ObligationClass::PersistentPlan,
         proposal.accepted_at(),
-        ObligationKey::ConnectedOffense {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        },
+        proposal.identity().into(),
         ClaimBundle::new(
             0,
             Vec::new(),
@@ -436,12 +428,8 @@ pub(crate) fn active_connected_revision_investment_proposal(
     proposal: FreshConnectedProposal,
 ) -> DomainInvestmentProposal {
     debug_assert!(proposal.revises_active_operation());
-    let identity = proposal.identity();
     InvestmentProposal::retained(
-        ProposalKey::ConnectedOffenseMinimum(ConnectedOffenseKey {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        }),
+        ProposalKey::ConnectedOffenseMinimum(proposal.identity()),
         proposal.case().into(),
         proposal.accepted_at(),
         ClaimBundle::default(),

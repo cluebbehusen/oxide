@@ -444,8 +444,8 @@ impl StrategicPlanner {
     }
 
     /// Identity an admitted connected operation committed to.
-    pub(crate) fn connected_identity(&self) -> Option<ConnectedOffenseIdentity> {
-        Some(self.air.as_ref()?.plan.connected()?.commitment.identity())
+    pub(crate) fn connected_identity(&self) -> Option<crate::allocation::ConnectedOffenseKey> {
+        Some(self.air.as_ref()?.plan.connected()?.commitment.key())
     }
 
     pub(super) fn air_plan(&self) -> Option<&AirPlan> {

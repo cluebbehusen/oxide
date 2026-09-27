@@ -1250,6 +1250,15 @@ pub(crate) enum ObligationKey {
     AirPurchases,
 }
 
+impl From<ConnectedOffenseKey> for ObligationKey {
+    fn from(key: ConnectedOffenseKey) -> Self {
+        Self::ConnectedOffense {
+            objective: key.objective,
+            anchor: key.anchor,
+        }
+    }
+}
+
 impl ObligationKey {
     fn sort_key(self) -> (u8, i32, i32, u32) {
         match self {

@@ -1284,14 +1284,10 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let Some(active) = obligations.active_connected.clone() else {
             return;
         };
-        let identity = active.identity();
         let owner = ClaimOwner::Obligation {
             class: ObligationClass::PersistentPlan,
             accepted_at: active.accepted_at(),
-            key: ObligationKey::ConnectedOffense {
-                objective: identity.objective(),
-                anchor: identity.anchor(),
-            },
+            key: active.identity().into(),
         };
         if !self.requires_recovery(
             owner,
@@ -1582,14 +1578,10 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         else {
             return false;
         };
-        let identity = revision.identity();
         let owner = ClaimOwner::Obligation {
             class: ObligationClass::PersistentPlan,
             accepted_at: revision.accepted_at(),
-            key: ObligationKey::ConnectedOffense {
-                objective: identity.objective(),
-                anchor: identity.anchor(),
-            },
+            key: revision.identity().into(),
         };
         if !self.requires_recovery(
             owner,

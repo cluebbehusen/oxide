@@ -7,10 +7,10 @@
 
 use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
-    ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
-    CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
-    ImportedObligation, ObligationClass, ObligationKey, OperationProductionRequest, PaidQueueClaim,
-    ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
+    ClaimOwner, ConnectedPortfolioContext, CoordinatorInputError, CrossDomainAllocation,
+    CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal, ImportedObligation,
+    ObligationClass, ObligationKey, OperationProductionRequest, PaidQueueClaim, ProducerJobClaim,
+    ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
     active_connected_revision_investment_proposal, active_connected_revision_obligation,
     clamped_current_reserve_obligation, connected_investment_proposal, current_reserve_at,
     defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
@@ -3150,8 +3150,8 @@ mod tests {
     mod relief;
     mod retained;
     use super::super::{
-        Confidence, DeferrableCapitalClaim, ExecutionSafety, ProposalCase, StrategicValue,
-        TimeToImpact, Urgency,
+        Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, ProposalCase,
+        StrategicValue, TimeToImpact, Urgency,
     };
     use super::standing::ContextualStandingForce;
     use super::*;
@@ -5164,12 +5164,7 @@ mod tests {
     fn committed_cluster(
         strategy: &StrategicPlanner,
         intelligence: &StrategicIntelligence,
-    ) -> (
-        crate::strategy::ConnectedOffenseIdentity,
-        Vec<TilePos>,
-        TilePos,
-        Vec<TilePos>,
-    ) {
+    ) -> (ConnectedOffenseKey, Vec<TilePos>, TilePos, Vec<TilePos>) {
         let package = strategy
             .connected_package_diagnostics(intelligence)
             .expect("the connected operation keeps its commitment");
@@ -5193,8 +5188,10 @@ mod tests {
         let observation = clustered_connected_observation(120, 10_000);
         let (mut strategy, _) = current_connected_planner(&observation);
         let intelligence = intelligence_through(&[&observation]);
-        let admitted =
-            crate::strategy::ConnectedOffenseIdentity::new(BuildingId(80), CLUSTER_PRIMARY);
+        let admitted = ConnectedOffenseKey {
+            objective: BuildingId(80),
+            anchor: CLUSTER_PRIMARY,
+        };
         let (identity, anchors, focus, live) = committed_cluster(&strategy, &intelligence);
         assert_eq!(identity, admitted);
         assert_eq!(anchors, sorted(CLUSTER.to_vec()));
@@ -6138,10 +6135,7 @@ mod tests {
             )],
         })
         .into_active_revision_fixture();
-        let key = ConnectedOffenseKey {
-            objective: proposal.identity().objective(),
-            anchor: proposal.identity().anchor(),
-        };
+        let key = proposal.identity();
 
         let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(&observation);
@@ -6518,10 +6512,7 @@ mod tests {
                 "evaluate each distinct ownership only once"
             );
             assert_eq!(demands, first.1);
-            let key = ConnectedOffenseKey {
-                objective: proposal.identity().objective(),
-                anchor: proposal.identity().anchor(),
-            };
+            let key = proposal.identity();
             let expected = (!revision)
                 .then_some(ConnectedPortfolioContext::Absent)
                 .into_iter()

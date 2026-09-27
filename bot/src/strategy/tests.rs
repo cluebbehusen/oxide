@@ -4203,7 +4203,10 @@ fn losing_the_primary_keeps_the_committed_identity_and_moves_the_focus() {
         .plan
         .package
         .clone();
-    let admitted_identity = ConnectedOffenseIdentity::new(BuildingId(80), TARGET);
+    let admitted_identity = crate::allocation::ConnectedOffenseKey {
+        objective: BuildingId(80),
+        anchor: TARGET,
+    };
     assert_eq!(proposal.identity(), admitted_identity);
     let mut planner = StrategicPlanner::new();
     planner.commit_connected(proposal);
@@ -4323,8 +4326,8 @@ fn fresh_connected_proposal_is_pure_repeatable_and_keeps_one_minimum_basis() {
         planner, before,
         "proposal derivation must not mutate planner state"
     );
-    assert_eq!(first.identity().objective(), BuildingId(80));
-    assert_eq!(first.identity().anchor(), TARGET);
+    assert_eq!(first.identity().objective, BuildingId(80));
+    assert_eq!(first.identity().anchor, TARGET);
     assert_eq!(
         first.deadline(),
         battle.tick.saturating_add(connected_preparation_horizon())
@@ -4598,8 +4601,8 @@ fn fresh_connected_proposal_falls_back_without_committing_the_rejected_target() 
         .expect("the lower-ranked reachable target remains admissible")
         .expect("the lower-ranked reachable target produces a proposal");
 
-    assert_eq!(proposal.identity().objective(), BuildingId(81));
-    assert_eq!(proposal.identity().anchor(), reachable);
+    assert_eq!(proposal.identity().objective, BuildingId(81));
+    assert_eq!(proposal.identity().anchor, reachable);
     assert_eq!(planner, before);
 }
 

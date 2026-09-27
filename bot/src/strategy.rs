@@ -519,10 +519,6 @@ impl ConnectedCommitment {
         }
     }
 
-    fn identity(&self) -> ConnectedOffenseIdentity {
-        ConnectedOffenseIdentity::new(self.primary, self.scope)
-    }
-
     fn key(&self) -> crate::allocation::ConnectedOffenseKey {
         crate::allocation::ConnectedOffenseKey {
             objective: self.primary,
@@ -1484,28 +1480,6 @@ fn on_map(map: &PublicMapBriefing, tile: TilePos) -> bool {
     (0..map.map_width()).contains(&tile.x) && (0..map.map_height()).contains(&tile.y)
 }
 
-/// Stable owner identity shared by a connected proposal and every exact
-/// producer assignment returned for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ConnectedOffenseIdentity {
-    objective: BuildingId,
-    anchor: TilePos,
-}
-
-impl ConnectedOffenseIdentity {
-    pub(crate) const fn new(objective: BuildingId, anchor: TilePos) -> Self {
-        Self { objective, anchor }
-    }
-
-    pub(crate) const fn objective(self) -> BuildingId {
-        self.objective
-    }
-
-    pub(crate) const fn anchor(self) -> TilePos {
-        self.anchor
-    }
-}
-
 /// A purchase already emitted through shared allocation. Predicted completion
 /// only releases ownership after the observed queue can actually advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1719,8 +1693,8 @@ impl FreshConnectedProposal {
     /// Identity every variant commits to. A fresh proposal takes it from the
     /// objective selected by domain ranking; a revision keeps the identity its
     /// operation was admitted under.
-    pub(crate) fn identity(&self) -> ConnectedOffenseIdentity {
-        self.variants[0].plan.commitment.identity()
+    pub(crate) fn identity(&self) -> crate::allocation::ConnectedOffenseKey {
+        self.variants[0].plan.commitment.key()
     }
 
     /// Fixed deadline shared by the minimum and all marginal variants.
@@ -1858,7 +1832,7 @@ impl<'a> From<&'a AirStandby> for AirRoster<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveConnectedObligation {
     pub(crate) membership: AirMembership,
-    identity: ConnectedOffenseIdentity,
+    identity: crate::allocation::ConnectedOffenseKey,
     accepted_at: Tick,
     deadline: Tick,
     units: Vec<UnitId>,
@@ -1866,7 +1840,7 @@ pub(crate) struct ActiveConnectedObligation {
 }
 
 impl ActiveConnectedObligation {
-    pub(crate) const fn identity(&self) -> ConnectedOffenseIdentity {
+    pub(crate) const fn identity(&self) -> crate::allocation::ConnectedOffenseKey {
         self.identity
     }
 
@@ -2832,7 +2806,7 @@ impl StrategicPlanner {
         schedule: &[crate::allocation::ScheduledProducerJob],
         observed_at: Tick,
     ) {
-        use crate::allocation::{ClaimOwner, ObligationKey, ProposalKey};
+        use crate::allocation::{ClaimOwner, ConnectedOffenseKey, ObligationKey, ProposalKey};
         let Some(ActiveAirOperation {
             plan: AirPlan::Connected(plan),
             ..
@@ -2840,19 +2814,17 @@ impl StrategicPlanner {
         else {
             return;
         };
-        let owner = plan.commitment.identity();
+        let owner = plan.commitment.key();
         for job in schedule.iter().filter(|job| job.enqueued_at == observed_at) {
-            let identity = match job.owner {
-                ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(key)) => {
-                    ConnectedOffenseIdentity::new(key.objective, key.anchor)
-                }
+            let key = match job.owner {
+                ClaimOwner::Proposal(ProposalKey::ConnectedOffenseMinimum(key)) => key,
                 ClaimOwner::Obligation {
                     key: ObligationKey::ConnectedOffense { objective, anchor },
                     ..
-                } => ConnectedOffenseIdentity::new(objective, anchor),
+                } => ConnectedOffenseKey { objective, anchor },
                 _ => continue,
             };
-            if identity == owner {
+            if key == owner {
                 plan.paid_production.push(ConnectedPurchase {
                     producer: job.producer,
                     kind: job.kind,
@@ -3494,7 +3466,7 @@ impl<'a> AirTurn<'a> {
             Vec::new()
         };
         Some(ActiveConnectedObligation {
-            identity: connected.commitment.identity(),
+            identity: connected.commitment.key(),
             accepted_at: connected.commitment.admitted_at,
             deadline: package.preparation_deadline,
             units: membership.units(obs),

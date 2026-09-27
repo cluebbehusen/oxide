@@ -1173,14 +1173,10 @@ pub(crate) fn saved_foundry_obligation(
 pub(crate) fn active_connected_obligation(
     obligation: &ActiveConnectedObligation,
 ) -> ImportedObligation {
-    let identity = obligation.identity();
     imported_obligation(
         ObligationClass::PersistentPlan,
         obligation.accepted_at(),
-        ObligationKey::ConnectedOffense {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        },
+        obligation.identity().into(),
         ClaimBundle::new(
             0,
             Vec::new(),

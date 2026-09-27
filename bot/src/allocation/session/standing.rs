@@ -1,6 +1,6 @@
 //! Standing-force alternatives for exact connected-operation ownership contexts.
 
-use super::{ConnectedOffenseKey, ConnectedPortfolioContext, FreshConnectedProposal};
+use super::{ConnectedPortfolioContext, FreshConnectedProposal};
 use crate::standing_force::{
     CapabilityDemand, StandingForceCommitment, StandingForceContext, StandingForceProposal,
     StandingGroundTarget, StandingProductionCommitment, derive_standing_force_with_demand,
@@ -143,11 +143,7 @@ impl OwnershipContexts {
         if !proposal.revises_active_operation() {
             plan.push(ConnectedPortfolioContext::Absent, base_exclusions, &[]);
         }
-        let identity = proposal.identity();
-        let key = ConnectedOffenseKey {
-            objective: identity.objective(),
-            anchor: identity.anchor(),
-        };
+        let key = proposal.identity();
         let mut units = base_exclusions.to_vec();
         let mut production = Vec::new();
         for (marginal_depth, claims) in std::iter::once(proposal.minimum_claims())
