@@ -13,8 +13,8 @@ description:
 A sandbox stages chosen units and structures without requiring an opponent,
 Foundries, or a victory condition. It uses ordinary simulation commands and
 rules, so saves and replays reproduce the scene. A sandbox proves mechanics and
-presentation, not opponent credibility; use the scripted-bot skill for that.
-Keep throwaway scenes outside the shipped scenario pool.
+presentation, not opponent credibility; use the scripted-bot or oxide-opponent
+skill for that. Keep throwaway scenes outside the shipped scenario pool.
 
 ## Build the scenario
 

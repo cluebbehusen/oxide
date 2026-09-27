@@ -1,5 +1,8 @@
 # Scripted bot strategy
 
+This document applies only to `oxide-bot`. [`oxide-opponent`](oxide-opponent.md)
+has its own specification.
+
 This document defines the strategic model toward which Oxide's player-facing
 rules-based bot should evolve. It is normative: the current implementation only
 partially realizes it. Architecture documents describe what the code does today;

@@ -17,8 +17,9 @@ review read-only.
 
 Identify the checkout, commit, comparison base and relevant uncommitted work.
 Distinguish what is on the PR from what exists only locally. Read the affected
-crate README and relevant architecture sections; `docs/bot-strategy.md`
-describes intended behavior, not proof of current behavior. Follow changed data
+crate README and relevant architecture sections. Intended bot behavior is in
+`docs/bot-strategy.md` for `oxide-bot` and `docs/oxide-opponent.md` for
+`oxide-opponent`; neither is proof of current behavior. Follow changed data
 through its producer, owner, consumers and retirement rather than reviewing
 isolated functions.
 

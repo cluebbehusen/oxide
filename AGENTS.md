@@ -21,8 +21,9 @@ Read the README for the crate you are changing:
 
 Implementation contracts live in `docs/simulation-architecture.md`,
 `docs/shell-architecture.md`, and `docs/bot-architecture.md`. Keep those
-descriptive. Put repeatable procedures in a skill and historical results in
-notes or version control.
+descriptive. `oxide-opponent`, a second opponent controller alongside
+`oxide-bot`, is specified in `docs/oxide-opponent.md`. Put repeatable procedures
+in a skill and historical results in notes or version control.
 
 ## Keep instructions in their proper place
 
@@ -57,15 +58,18 @@ review; they do not establish architectural quality.
 Consider deterministic parallelism for expensive independent work after removing
 duplication: frozen inputs, private mutable scratch, fixed work allowances and
 canonical result ordering. Admission and shared mutation remain ordered; measure
-overhead and contention before adding workers.
+overhead and contention before adding workers. `oxide-opponent` keeps its work
+cheap instead: beyond the existing per-seat execution, it adds parallelism only
+where a profile shows a real win.
 
 ## Determinism contract
 
 The target is strict: **same seed plus same command log produces bit-identical
 state on every run and platform.**
 
-- `chassis`, `oxide-sim`, and `oxide-bot` contain no floating-point arithmetic.
-  Use `chassis::fx::Fx`; floats are presentation-only.
+- `chassis`, `oxide-sim`, `oxide-bot`, and `oxide-opponent` contain no
+  floating-point arithmetic. Use `chassis::fx::Fx`; floats are
+  presentation-only.
 - Never depend on `HashMap` or `HashSet` iteration for an outcome. Use complete,
   stable ordering. Geometric ties must also preserve the documented symmetry:
   use the existing query-, footprint-, or owner-relative ranks instead of
@@ -101,7 +105,9 @@ state on every run and platform.**
   knowledge without spending live work or delaying readiness. Do not drop
   progress merely because its eventual answer is derivable. Controller
   validation rejects state that could panic or cause unbounded work; a forged
-  value that only changes play is accepted.
+  value that only changes play is accepted. `oxide-opponent` has no planning
+  progress: its checkpoints hold exactly the non-derivable state its
+  specification lists, and a new checkpoint field needs a design review.
 - `FogView` is the canonical player-knowledge surface. Omniscient QA views must
   never feed a bot or player decision.
 - Live, playback, and headless sessions share `oxide_protocol::DebugSession`.
@@ -117,10 +123,17 @@ movement, combat, and economy. Never hide bot-only income, vision, stats, legal
 actions, or construction privileges behind controller code.
 
 [`docs/bot-strategy.md`](docs/bot-strategy.md) is the normative design model for
-the player-facing opponent. It defines the observe, remember, forecast,
-allocate, plan, commit, and evaluate loop. Personality influences both
-cross-domain investment and execution within a funded domain, but never access
-to information, strategies, units, commands, or rules.
+`oxide-bot`, the current player-facing opponent. It defines the observe,
+remember, forecast, allocate, plan, commit, and evaluate loop. Personality
+influences both cross-domain investment and execution within a funded domain,
+but never access to information, strategies, units, commands, or rules.
+
+[`docs/oxide-opponent.md`](docs/oxide-opponent.md) is normative for
+`oxide-opponent`, a reactive best-effort controller alongside `oxide-bot`. Work
+on that crate follows its specification and the oxide-opponent skill, not
+`docs/bot-strategy.md` or `docs/bot/`. It must not reintroduce exact
+cross-domain allocation, production forecasts, plan search or planning state
+that spans decisions.
 
 Normal matches use one configurable rules-based controller. Scrapheap, Standard,
 Veteran, and Prime alter fair macro competence plus cognitive and execution
@@ -218,6 +231,10 @@ correctness and replay compatibility.
 - If existing state-hash rows move, inspect the drift and ask the user whether
   to approve a version bump or a same-version bless. Do not choose either path
   autonomously.
+- Exception: fixtures driven only by `oxide-opponent` live in their own file,
+  separate from simulation-only and `oxide-bot`-driven hashes. Its behavior is
+  expected to change, so the implementing agent reblesses them with a
+  smoke-matrix comparison in the PR, without a version decision.
 - Regenerate driver fixtures with `BLESS=1 cargo test -p oxide-driver --locked`
   only after that compatibility decision. `BLESS_SAME_VERSION=1` also requires
   explicit approval from the human user.

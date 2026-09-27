@@ -1,6 +1,7 @@
 # Controller and profiles
 
-[Architecture and ownership map](../bot-architecture.md).
+[Architecture and ownership map](../bot-architecture.md). Applies only to
+`oxide-bot`; [`oxide-opponent`](../oxide-opponent.md) has its own specification.
 
 ## Crate boundary
 
