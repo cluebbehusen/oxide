@@ -12,7 +12,7 @@ use oxide_net::{
 };
 use oxide_sim::{PlayerId, Scenario, Tick};
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -357,23 +357,43 @@ pub(crate) fn with_default_port(address: &str) -> String {
 }
 
 /// Where other machines reach a listener bound to `bound`. A wildcard bind
-/// shows the address of the interface this machine routes through.
+/// shows the addresses of the interfaces this machine routes through to the
+/// internet and to Tailscale's service address, which differ only when a
+/// tailnet is up.
 fn reachable(bound: SocketAddr) -> String {
     if !bound.ip().is_unspecified() {
         return bound.to_string();
     }
-    // Connecting a UDP socket only picks a route; it sends nothing.
-    let routed = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+    let mut shown: Vec<String> = Vec::new();
+    for probe in [
+        Ipv4Addr::new(192, 0, 2, 1),
+        Ipv4Addr::new(100, 100, 100, 100),
+    ] {
+        if let Some(ip) = routed_from(probe) {
+            let address = SocketAddr::new(ip, bound.port()).to_string();
+            if !shown.contains(&address) {
+                shown.push(address);
+            }
+        }
+    }
+    if shown.is_empty() {
+        format!("port {}", bound.port())
+    } else {
+        shown.join(" or ")
+    }
+}
+
+/// The local address this machine would send to `probe` from. Connecting a
+/// UDP socket only picks a route; it sends nothing.
+fn routed_from(probe: Ipv4Addr) -> Option<IpAddr> {
+    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
         .and_then(|socket| {
-            socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
+            socket.connect((probe, 9))?;
             socket.local_addr()
         })
         .ok()
-        .filter(|local| !local.ip().is_unspecified());
-    match routed {
-        Some(local) => SocketAddr::new(local.ip(), bound.port()).to_string(),
-        None => format!("port {}", bound.port()),
-    }
+        .map(|local| local.ip())
+        .filter(|ip| !ip.is_unspecified())
 }
 
 /// A host waiting for every human seat to fill.

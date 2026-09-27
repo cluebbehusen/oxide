@@ -10,8 +10,8 @@ use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
 use std::time::Duration;
 
-/// Longest host address the field accepts: a MagicDNS name and a port.
-const ADDRESS_MAX: usize = 64;
+/// Longest host address the field accepts: the longest DNS name and a port.
+const ADDRESS_MAX: usize = 253 + ":65535".len();
 
 /// What a lobby frame decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +170,10 @@ mod tests {
             Out::Join("10.0.0.2:4200".to_owned())
         );
         assert_eq!(press(&mut screen, Key::Escape), Out::Cancel);
+
+        let longest = format!("{}:4200", "a".repeat(253));
+        let mut screen = LobbyScreen::address(&longest);
+        assert_eq!(press(&mut screen, Key::Enter), Out::Join(longest));
     }
 
     #[test]
