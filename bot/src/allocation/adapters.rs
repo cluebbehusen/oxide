@@ -823,7 +823,7 @@ mod tests {
         ResourcePlanningProjection,
     };
     use crate::standing_force::{StandingForceFixture, StandingForceProposal, StandingForceReason};
-    use crate::strategy::FreshConnectedProposalFixture;
+    use crate::strategy::fixtures::FreshConnectedProposalFixture;
     use crate::utility::DefenseConstruction;
     use chassis::Tick;
     use chassis::grid::TilePos;

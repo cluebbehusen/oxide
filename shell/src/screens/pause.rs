@@ -119,7 +119,8 @@ impl Row {
 }
 
 /// The rows the current match state offers, in display order. Watch
-/// Replay belongs to decided matches; Save Game and Surrender to
+/// Replay belongs to decided matches (mid-match playback would be a
+/// fog-free scout of the enemy); Save Game and Surrender to
 /// running ones, with Surrender further limited to a seat that still
 /// has a voice — a resigned or eliminated spectator is shown no verb
 /// the sim would only reject. Quit is left out where the platform, not
@@ -217,13 +218,9 @@ pub struct PauseScreen {
     /// A one-line verdict from the last explicit save (success or
     /// failure), shown as the subtitle until the next activation.
     notice: Option<String>,
-    /// Whether the match is decided — only then does Watch Replay
-    /// appear. Mid-match playback is a fog-free scout of the enemy;
-    /// replays are an end-of-match affair.
-    pub finished: bool,
-    /// Whether the human's seat can still concede (alive and not
-    /// already resigned) — the Surrender row's other gate.
-    can_surrender: bool,
+    /// Whether this is the menu over a LAN match (see
+    /// [`PauseScreen::for_lan_match`]).
+    lan: bool,
 }
 
 /// The state a save-failure dialog holds open.
@@ -236,6 +233,13 @@ struct SaveFailed {
     /// from Home or a window close outside a match) instead of the
     /// pause rows.
     cancel_home: bool,
+}
+
+fn pause_menu(rows: &[Row], lan: bool) -> Menu {
+    Menu::new(
+        if lan { "MENU" } else { "PAUSED" },
+        rows.iter().map(|row| row.label().to_string()).collect(),
+    )
 }
 
 fn confirm_menu(row: Row) -> Menu {
@@ -252,9 +256,8 @@ impl PauseScreen {
     /// Opens on the pause rows.
     pub fn open(finished: bool, can_surrender: bool) -> Self {
         let rows = rows(finished, can_surrender, !crate::platform::TOUCH_ONLY);
-        let items: Vec<String> = rows.iter().map(|r| r.label().to_string()).collect();
         Self {
-            menu: Menu::new("PAUSED", items),
+            menu: pause_menu(&rows, false),
             rows,
             confirming: None,
             save_failed: None,
@@ -262,8 +265,7 @@ impl PauseScreen {
             name_press: Press::default(),
             keyboard_request: false,
             notice: None,
-            finished,
-            can_surrender,
+            lan: false,
         }
     }
 
@@ -335,6 +337,16 @@ impl PauseScreen {
         crate::button::draw(layout.save, "SAVE", layout.save.contains(mouse), s);
     }
 
+    /// The menu over a LAN match, which keeps running underneath: no
+    /// saving and no restart.
+    pub fn for_lan_match(mut self) -> Self {
+        self.rows
+            .retain(|row| !matches!(row, Row::SaveGame | Row::Restart));
+        self.lan = true;
+        self.menu = pause_menu(&self.rows, true);
+        self
+    }
+
     /// Shows `notice` as the subtitle until the next activation.
     pub fn with_notice(mut self, notice: impl Into<String>) -> Self {
         self.notice = Some(notice.into());
@@ -362,7 +374,7 @@ impl PauseScreen {
     /// back on Save Game, the verdict as the subtitle.
     pub fn end_naming(&mut self, notice: String) {
         self.naming = None;
-        self.menu = Self::open(self.finished, self.can_surrender).menu;
+        self.menu = pause_menu(&self.rows, self.lan);
         let display = self
             .rows
             .iter()
@@ -384,14 +396,7 @@ impl PauseScreen {
     /// safe Cancel row sits preselected (the destructive-confirm house
     /// pattern); Leave without saving is always reachable, so a full
     /// disk can never trap the player in the game.
-    pub fn open_save_failed(
-        line: String,
-        verb: LeaveVerb,
-        finished: bool,
-        can_surrender: bool,
-        cancel_home: bool,
-    ) -> Self {
-        let mut screen = Self::open(finished, can_surrender);
+    pub fn with_save_failed(mut self, line: String, verb: LeaveVerb, cancel_home: bool) -> Self {
         let mut menu = Menu::new(
             "COULD NOT SAVE",
             vec![
@@ -401,13 +406,18 @@ impl PauseScreen {
             ],
         );
         menu.select(1);
-        screen.menu = menu;
-        screen.save_failed = Some(SaveFailed {
+        self.menu = menu;
+        self.save_failed = Some(SaveFailed {
             verb,
             line,
             cancel_home,
         });
-        screen
+        self
+    }
+
+    /// Whether the rows were built for a decided match.
+    pub fn decided(&self) -> bool {
+        self.rows.contains(&Row::WatchReplay)
     }
 
     /// Whether the confirmation dialog is up (for the mode report).
@@ -507,7 +517,7 @@ impl PauseScreen {
             if escaped || pressed == Some(NameZone::Cancel) {
                 self.naming = None;
                 self.name_press.cancel();
-                self.menu = Self::open(self.finished, self.can_surrender).menu;
+                self.menu = pause_menu(&self.rows, self.lan);
                 let display = self
                     .rows
                     .iter()
@@ -543,7 +553,7 @@ impl PauseScreen {
                 LeaveVerb::MainMenu => Row::MainMenu,
                 LeaveVerb::Quit => Row::Quit,
             };
-            self.menu = Self::open(self.finished, self.can_surrender).menu;
+            self.menu = pause_menu(&self.rows, self.lan);
             let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
             self.menu.select(display);
             return Out::Stay;
@@ -551,7 +561,7 @@ impl PauseScreen {
         if let Some(row) = self.confirming {
             if escaped || picked == Some(0) {
                 self.confirming = None;
-                self.menu = Self::open(self.finished, self.can_surrender).menu;
+                self.menu = pause_menu(&self.rows, self.lan);
                 // The cursor returns to the armed row.
                 let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
                 self.menu.select(display);
@@ -594,6 +604,45 @@ impl PauseScreen {
 mod tests {
     use super::*;
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn a_lan_match_menu_offers_no_save_or_restart() {
+        let lan = PauseScreen::open(false, true).for_lan_match();
+        assert_eq!(lan.menu.title, "MENU");
+        assert!(!lan.rows.contains(&Row::SaveGame));
+        assert!(!lan.rows.contains(&Row::Restart));
+        assert!(lan.rows.contains(&Row::Surrender));
+        assert_eq!(lan.rows.len(), lan.menu.items.len());
+    }
+
+    #[test]
+    fn a_lan_menu_keeps_its_rows_through_every_dialog() {
+        let lan_rows = |p: &PauseScreen| {
+            assert_eq!(p.menu.title, "MENU");
+            assert!(
+                !p.menu
+                    .items
+                    .iter()
+                    .any(|i| i == "Save Game" || i == "Restart")
+            );
+            assert_eq!(p.menu.items.len(), p.rows.len());
+        };
+        for label in ["Surrender", "Main Menu", "Quit"] {
+            let mut p = PauseScreen::open(false, true).for_lan_match();
+            activate(&mut p, label);
+            assert!(p.confirming());
+            drive(&mut p, Key::Enter);
+            lan_rows(&p);
+            assert_eq!(p.menu.items[p.menu.selected], label);
+            assert_eq!(activate(&mut p, "Settings"), Out::Settings);
+        }
+        let mut p = PauseScreen::open(false, true)
+            .for_lan_match()
+            .with_save_failed("x".to_string(), LeaveVerb::MainMenu, false);
+        assert_eq!(drive(&mut p, Key::Escape), Out::Stay);
+        lan_rows(&p);
+        assert_eq!(p.menu.items[p.menu.selected], "Main Menu");
+    }
 
     fn drive(p: &mut PauseScreen, key: Key) -> Out {
         let mut mouse = vec2(0.0, 0.0);
@@ -729,11 +778,9 @@ mod tests {
 
     #[test]
     fn the_save_failure_dialog_preselects_cancel_and_returns_to_the_verb() {
-        let mut p = PauseScreen::open_save_failed(
+        let mut p = PauseScreen::open(false, true).with_save_failed(
             "could not save: unable to write the save file".to_string(),
             LeaveVerb::Quit,
-            false,
-            true,
             false,
         );
         assert!(p.saving_failed());
@@ -750,8 +797,11 @@ mod tests {
 
     #[test]
     fn retry_and_leave_unsaved_carry_the_pending_verb() {
-        let mut p =
-            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::MainMenu, false, true, false);
+        let mut p = PauseScreen::open(false, true).with_save_failed(
+            "x".to_string(),
+            LeaveVerb::MainMenu,
+            false,
+        );
         assert_eq!(
             activate(&mut p, "Retry"),
             Out::RetrySave(LeaveVerb::MainMenu, false)
@@ -766,14 +816,17 @@ mod tests {
 
     #[test]
     fn escape_cancels_the_save_failure_dialog_never_the_leave() {
-        let mut p =
-            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true, false);
+        let mut p = PauseScreen::open(false, true).with_save_failed(
+            "x".to_string(),
+            LeaveVerb::Quit,
+            false,
+        );
         assert_eq!(drive(&mut p, Key::Escape), Out::Stay);
         assert!(!p.saving_failed());
         // A Home-origin dialog cancels back to the front door instead
         // of a pause menu the player never opened.
         let mut p =
-            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true, true);
+            PauseScreen::open(false, true).with_save_failed("x".to_string(), LeaveVerb::Quit, true);
         assert_eq!(drive(&mut p, Key::Escape), Out::Home);
     }
 

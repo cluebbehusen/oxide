@@ -121,6 +121,11 @@ impl ClientSession {
         Ok(())
     }
 
+    /// How many received batches are waiting to execute.
+    pub fn backlog(&self) -> usize {
+        self.batches.len()
+    }
+
     /// Lines to send to the host.
     pub fn take_outgoing(&mut self) -> Vec<String> {
         std::mem::take(&mut self.outgoing)
@@ -176,7 +181,9 @@ mod tests {
         assert_eq!(client.next_batch(), None);
         client.receive(&batch_line(0, 10), secs(0)).unwrap();
         client.receive(&batch_line(1, 11), secs(0)).unwrap();
+        assert_eq!(client.backlog(), 2);
         let first = client.next_batch().unwrap();
+        assert_eq!(client.backlog(), 1);
         assert_eq!(first[0].command, stop(10));
         client.executed(|| unreachable!("tick 1 is not a report tick"));
         assert_eq!(client.next_batch().unwrap()[0].command, stop(11));

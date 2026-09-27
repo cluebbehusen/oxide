@@ -9,6 +9,7 @@
 use super::super::executive::weapon_burst_dps100;
 use super::super::intelligence::{
     AirDefenseContact, AirDefenseSource, BuildingContact, ContactEvidence, StrategicIntelligence,
+    UnitContact,
 };
 use super::super::observation::Observation;
 use super::super::profile::ResolvedProfile;
@@ -17,13 +18,11 @@ use super::super::resources::{
     count_paid_queued_ready_with_access,
 };
 use crate::allocation::{AllocationCapacity, ConnectedOffenseKey, ProducerJobClaim};
-#[cfg(test)]
-use crate::observation::ObservationData;
 use crate::planning::{PlanningWork, Progress};
 use chassis::Tick;
 use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::TilePos;
-use oxide_sim::ids::{PlayerId, UnitId};
+use oxide_sim::ids::{BuildingId, PlayerId, Target, UnitId};
 use oxide_sim::stats::{BOMB_SALVO_SPACING, BuildingKind, Domain, Role, UnitKind, WeaponStats};
 use std::cell::Cell;
 use std::cmp::Reverse;
@@ -285,20 +284,6 @@ impl ProviderFundingEvidence<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
-#[cfg(test)]
-struct FundedLane {
-    eligible_kinds: Vec<UnitKind>,
-    available_tick: Tick,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg(test)]
-struct FundedLaneClass {
-    eligible_kinds: Vec<UnitKind>,
-    available_ticks: Vec<Tick>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct PreservedProvider {
     family: ForceFamily,
@@ -325,22 +310,9 @@ impl PackageRefinement<'_> {
         let jobs = providers
             .iter()
             .map(|provider| {
-                let eligible = eligible_by_kind.entry(provider.kind).or_insert_with(|| {
-                    resources
-                        .producers()
-                        .iter()
-                        .filter(|lane| {
-                            access.allows(lane.producer, provider.kind)
-                                && lane.horizon_timing(&[provider.kind]).is_some_and(|timing| {
-                                    matches!(
-                                        timing.current_egress,
-                                        ProducerEgress::NotRequired | ProducerEgress::Open
-                                    )
-                                })
-                        })
-                        .map(|lane| lane.producer)
-                        .collect::<Vec<_>>()
-                });
+                let eligible = eligible_by_kind
+                    .entry(provider.kind)
+                    .or_insert_with(|| eligible_producers(resources, access, provider.kind, None));
                 ProducerJobClaim::flexible(
                     provider.kind,
                     provider.command_tick,
@@ -351,6 +323,31 @@ impl PackageRefinement<'_> {
             .collect();
         crate::allocation::forecast::refine(self.capacity, self.key, jobs, self.planning)
     }
+}
+
+/// Completed producers that `access` allows to train `kind` with open egress,
+/// limited to those that can finish it before `ready_before` when given.
+pub(super) fn eligible_producers(
+    resources: &ResourceSnapshot,
+    access: &ProductionAccess,
+    kind: UnitKind,
+    ready_before: Option<Tick>,
+) -> Vec<BuildingId> {
+    resources
+        .producers()
+        .iter()
+        .filter(|lane| {
+            access.allows(lane.producer, kind)
+                && lane.horizon_timing(&[kind]).is_some_and(|timing| {
+                    ready_before.is_none_or(|deadline| timing.no_block_latest_ready_tick < deadline)
+                        && matches!(
+                            timing.current_egress,
+                            ProducerEgress::NotRequired | ProducerEgress::Open
+                        )
+                })
+        })
+        .map(|lane| lane.producer)
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -385,20 +382,6 @@ struct PackageSearchKey {
     preserved: Vec<(ForceFamily, UnitKind, usize)>,
     provider_priority: Vec<ProviderDemandTranche>,
     funded_providers: Vec<FundedProvider>,
-}
-
-#[cfg(test)]
-fn funded_providers_fit(
-    resources: &ResourceSnapshot,
-    providers: &[FundedProvider],
-    deadline: Tick,
-    access: &ProductionAccess,
-) -> bool {
-    let mut kinds: Vec<_> = providers.iter().map(|provider| provider.kind).collect();
-    kinds.sort_unstable();
-    kinds.dedup();
-    let lanes = funded_lane_evidence(resources, access, &kinds);
-    funded_lane_schedule_fits(lanes, providers, deadline)
 }
 
 pub(super) fn refine_provider_demands(
@@ -437,19 +420,6 @@ pub(super) fn refine_provider_demands(
     }
 }
 
-#[cfg(test)]
-fn provider_demands_fit_funded_horizon(
-    resources: &ResourceSnapshot,
-    demands: &[ProviderDemandTranche],
-    observed_at: Tick,
-    constraints: PreparationConstraints,
-    access: &ProductionAccess,
-) -> bool {
-    funded_demand_releases(resources, demands, observed_at, constraints).is_some_and(|providers| {
-        funded_providers_fit(resources, &providers, constraints.deadline, access)
-    })
-}
-
 fn funded_demand_releases(
     resources: &ResourceSnapshot,
     demands: &[ProviderDemandTranche],
@@ -481,356 +451,6 @@ fn funded_demand_releases(
     Some(providers)
 }
 
-#[cfg(test)]
-fn funded_lane_schedule_fits(
-    lanes: Vec<FundedLane>,
-    providers: &[FundedProvider],
-    deadline: Tick,
-) -> bool {
-    if providers.is_empty() {
-        return true;
-    }
-    debug_assert!(
-        providers
-            .windows(2)
-            .all(|pair| pair[0].command_tick <= pair[1].command_tick)
-    );
-    let classes = canonical_funded_lane_classes(lanes);
-    FundedHorizonSearch {
-        providers,
-        deadline,
-        failed: BTreeMap::new(),
-    }
-    .fits(0, classes)
-}
-
-#[cfg(test)]
-fn funded_lane_evidence(
-    resources: &ResourceSnapshot,
-    access: &ProductionAccess,
-    kinds: &[UnitKind],
-) -> Vec<FundedLane> {
-    resources
-        .producers()
-        .iter()
-        .filter_map(|lane| {
-            let mut available_tick = None;
-            let eligible_kinds: Vec<_> = kinds
-                .iter()
-                .copied()
-                .filter(|&kind| {
-                    if !access.allows(lane.producer, kind) {
-                        return false;
-                    }
-                    let Some(timing) = lane.horizon_timing(&[kind]) else {
-                        return false;
-                    };
-                    if !matches!(
-                        timing.current_egress,
-                        ProducerEgress::NotRequired | ProducerEgress::Open
-                    ) {
-                        return false;
-                    }
-                    let Some(kind_available_tick) = timing
-                        .no_block_latest_ready_tick
-                        .checked_add(1)
-                        .and_then(|tick| tick.checked_sub(Tick::from(kind.stats().train_ticks)))
-                    else {
-                        return false;
-                    };
-                    debug_assert!(
-                        available_tick.is_none_or(|existing| existing == kind_available_tick)
-                    );
-                    available_tick = Some(kind_available_tick);
-                    true
-                })
-                .collect();
-            Some(FundedLane {
-                eligible_kinds,
-                available_tick: available_tick?,
-            })
-        })
-        .collect()
-}
-
-#[cfg(test)]
-fn canonical_funded_lane_classes(lanes: Vec<FundedLane>) -> Vec<FundedLaneClass> {
-    let mut classes = BTreeMap::<Vec<UnitKind>, Vec<Tick>>::new();
-    for lane in lanes {
-        classes
-            .entry(lane.eligible_kinds)
-            .or_default()
-            .push(lane.available_tick);
-    }
-    classes
-        .into_iter()
-        .map(|(eligible_kinds, mut available_ticks)| {
-            available_ticks.sort_unstable();
-            FundedLaneClass {
-                eligible_kinds,
-                available_ticks,
-            }
-        })
-        .collect()
-}
-
-/// Exact fixed-order scheduling over canonical producer classes.
-///
-/// A provider's funding command is a release time. Within one lane, provider
-/// order is the canonical funding order, so a state needs only each lane's
-/// next available tick. Equal-eligibility lanes are interchangeable and a
-/// state with every lane available no later dominates a later state.
-#[cfg(test)]
-struct FundedHorizonSearch<'a> {
-    providers: &'a [FundedProvider],
-    deadline: Tick,
-    failed: BTreeMap<usize, Vec<Vec<FundedLaneClass>>>,
-}
-
-#[cfg(test)]
-impl FundedHorizonSearch<'_> {
-    fn fits(&mut self, provider_index: usize, lanes: Vec<FundedLaneClass>) -> bool {
-        if provider_index == self.providers.len() {
-            return true;
-        }
-        if self.is_dominated_failure(provider_index, &lanes) {
-            return false;
-        }
-        if !remaining_funded_work_can_fit(&self.providers[provider_index..], &lanes, self.deadline)
-        {
-            self.record_failure(provider_index, lanes);
-            return false;
-        }
-
-        let provider = self.providers[provider_index];
-        let duration = Tick::from(provider.kind.stats().train_ticks);
-        let mut candidates = Vec::new();
-        for (class_index, class) in lanes.iter().enumerate() {
-            if class.eligible_kinds.binary_search(&provider.kind).is_err() {
-                continue;
-            }
-            let flexibility = class
-                .eligible_kinds
-                .iter()
-                .filter(|kind| {
-                    self.providers[provider_index + 1..]
-                        .iter()
-                        .any(|future| future.kind == **kind)
-                })
-                .count();
-            for (lane_index, &available_tick) in class.available_ticks.iter().enumerate() {
-                if lane_index > 0 && class.available_ticks[lane_index - 1] == available_tick {
-                    continue;
-                }
-                let Some(next_available_tick) = available_tick
-                    .max(provider.command_tick)
-                    .checked_add(duration)
-                else {
-                    continue;
-                };
-                if next_available_tick > self.deadline {
-                    continue;
-                }
-                candidates.push((
-                    flexibility,
-                    Reverse(next_available_tick),
-                    class_index,
-                    lane_index,
-                    next_available_tick,
-                ));
-            }
-        }
-        candidates.sort_unstable();
-
-        for (_, _, class_index, lane_index, next_available_tick) in candidates {
-            let mut next_lanes = lanes.clone();
-            next_lanes[class_index].available_ticks[lane_index] = next_available_tick;
-            next_lanes[class_index].available_ticks.sort_unstable();
-            if self.fits(provider_index + 1, next_lanes) {
-                return true;
-            }
-        }
-
-        self.record_failure(provider_index, lanes);
-        false
-    }
-
-    fn is_dominated_failure(&self, provider_index: usize, lanes: &[FundedLaneClass]) -> bool {
-        self.failed.get(&provider_index).is_some_and(|failed| {
-            failed
-                .iter()
-                .any(|known| funded_lanes_dominate(known, lanes))
-        })
-    }
-
-    fn record_failure(&mut self, provider_index: usize, lanes: Vec<FundedLaneClass>) {
-        let failed = self.failed.entry(provider_index).or_default();
-        failed.retain(|known| !funded_lanes_dominate(&lanes, known));
-        failed.push(lanes);
-    }
-}
-
-#[cfg(test)]
-fn funded_lanes_dominate(left: &[FundedLaneClass], right: &[FundedLaneClass]) -> bool {
-    left.len() == right.len()
-        && left.iter().zip(right).all(|(left, right)| {
-            left.eligible_kinds == right.eligible_kinds
-                && left.available_ticks.len() == right.available_ticks.len()
-                && left
-                    .available_ticks
-                    .iter()
-                    .zip(&right.available_ticks)
-                    .all(|(&left, &right)| left <= right)
-        })
-}
-
-#[cfg(test)]
-fn remaining_funded_work_can_fit(
-    providers: &[FundedProvider],
-    lanes: &[FundedLaneClass],
-    deadline: Tick,
-) -> bool {
-    let Some(first) = providers.first() else {
-        return true;
-    };
-    let mut counts = BTreeMap::<UnitKind, usize>::new();
-    let requested_ticks = providers.iter().fold(0_u128, |total, provider| {
-        *counts.entry(provider.kind).or_default() += 1;
-        total.saturating_add(u128::from(provider.kind.stats().train_ticks))
-    });
-    let capacity_after = |release_tick: Tick| {
-        lanes
-            .iter()
-            .flat_map(|class| &class.available_ticks)
-            .map(|&available_tick| deadline.saturating_sub(available_tick.max(release_tick)))
-            .map(u128::from)
-            .sum::<u128>()
-    };
-    if requested_ticks > capacity_after(first.command_tick) {
-        return false;
-    }
-
-    let modular_capacity = lanes
-        .iter()
-        .map(|class| {
-            let divisor = class
-                .eligible_kinds
-                .iter()
-                .filter(|kind| counts.contains_key(kind))
-                .map(|kind| Tick::from(kind.stats().train_ticks))
-                .reduce(greatest_common_divisor);
-            class
-                .available_ticks
-                .iter()
-                .map(|&available_tick| {
-                    deadline.saturating_sub(available_tick.max(first.command_tick))
-                })
-                .map(|capacity| divisor.map_or(0, |divisor| capacity - capacity % divisor))
-                .map(u128::from)
-                .sum::<u128>()
-        })
-        .sum::<u128>();
-    if requested_ticks > modular_capacity {
-        return false;
-    }
-
-    if counts.iter().any(|(&kind, &count)| {
-        let duration = Tick::from(kind.stats().train_ticks);
-        let slots = lanes
-            .iter()
-            .filter(|class| class.eligible_kinds.binary_search(&kind).is_ok())
-            .flat_map(|class| &class.available_ticks)
-            .map(|&available_tick| {
-                deadline.saturating_sub(available_tick.max(first.command_tick)) / duration
-            })
-            .map(u128::from)
-            .sum::<u128>();
-        count as u128 > slots
-    }) {
-        return false;
-    }
-
-    let mut suffix_ticks = requested_ticks;
-    for (index, provider) in providers.iter().enumerate() {
-        if (index == 0 || providers[index - 1].command_tick != provider.command_tick)
-            && suffix_ticks > capacity_after(provider.command_tick)
-        {
-            return false;
-        }
-        suffix_ticks = suffix_ticks.saturating_sub(u128::from(provider.kind.stats().train_ticks));
-    }
-    true
-}
-
-#[cfg(test)]
-fn greatest_common_divisor(mut left: Tick, mut right: Tick) -> Tick {
-    while right != 0 {
-        (left, right) = (right, left % right);
-    }
-    left
-}
-
-/// Derives a side-effect-free package for a currently observed target.
-///
-/// Rejection reports why the fixed deadline, current completed production
-/// base, current scrap plus conservative completed-source forecast after older
-/// forecast promises, and available existing forces cannot field the common
-/// minimum repertoire. Forecast-funded work starts only on a later real bot
-/// decision cadence. The returned counts are revisable kind totals; the owning
-/// planner schedules only currently open queue positions and freezes exact unit
-/// ids when it commits to suppression.
-#[cfg(test)]
-pub(super) fn derive_connected_force_package(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    target: &BuildingContact,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
-) -> Result<ConnectedForcePackage, ForcePackageRejection> {
-    let cluster = current_target_cluster(intelligence, target.player, target.anchor);
-    derive_connected_force_package_for_cluster(
-        profile,
-        observation,
-        intelligence,
-        ConnectedTargetEvidence {
-            primary: target,
-            cluster: &cluster,
-            committed: None,
-        },
-        production,
-        unavailable,
-        constraints,
-    )
-}
-
-/// [`derive_connected_force_package`] against a caller-vetted current cluster.
-///
-/// Connected admission uses this boundary after proving that every retained
-/// member is reachable by the operation's actual air and suppression tactics.
-#[cfg(test)]
-pub(super) fn derive_connected_force_package_for_cluster(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    targets: ConnectedTargetEvidence<'_>,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
-) -> Result<ConnectedForcePackage, ForcePackageRejection> {
-    derive_connected_force_package_options_for_cluster(
-        profile,
-        observation,
-        intelligence,
-        targets,
-        production,
-        unavailable,
-        constraints,
-    )
-    .map(ConnectedForcePackageOptions::into_largest)
-}
-
 /// Exact common minimum followed by deterministic, additions-only marginal
 /// variants on the same evidence, target cluster, and preparation deadline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -840,15 +460,21 @@ pub(super) struct ConnectedForcePackageOptions {
     pub(super) marginal: Vec<ConnectedForcePackage>,
 }
 
-impl ConnectedForcePackageOptions {
-    #[cfg(test)]
-    pub(super) fn into_largest(self) -> ConnectedForcePackage {
-        self.marginal.into_iter().last().unwrap_or(self.minimum)
-    }
-}
-
 /// Derives the independently admissible minimum and every useful marginal
 /// extension without changing the minimum's target or production basis.
+///
+/// Rejection reports why the fixed deadline, current completed production
+/// base, current scrap plus conservative completed-source forecast after older
+/// forecast promises, and available existing forces cannot field the common
+/// minimum repertoire. Forecast-funded work starts only on a later real bot
+/// decision cadence. The returned counts are revisable kind totals; the owning
+/// planner schedules only currently open queue positions and freezes exact unit
+/// ids when it commits to suppression. With `minimum_only`, no marginal
+/// variant is derived.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the derivation boundary takes each independent evidence source"
+)]
 pub(super) fn derive_connected_force_package_options_for_cluster(
     profile: &ResolvedProfile,
     observation: &Observation,
@@ -857,49 +483,10 @@ pub(super) fn derive_connected_force_package_options_for_cluster(
     production: ProductionEvidence<'_>,
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
-) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
-    derive_package_options::<false>(
-        profile,
-        observation,
-        intelligence,
-        targets,
-        production,
-        unavailable,
-        constraints,
-    )
-}
-
-pub(super) fn derive_connected_minimum_for_cluster(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    targets: ConnectedTargetEvidence<'_>,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
-) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
-    derive_package_options::<true>(
-        profile,
-        observation,
-        intelligence,
-        targets,
-        production,
-        unavailable,
-        constraints,
-    )
-}
-
-fn derive_package_options<const MINIMUM_ONLY: bool>(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    targets: ConnectedTargetEvidence<'_>,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
+    minimum_only: bool,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
     let deferred = Cell::new(false);
-    let result = derive_package_options_inner::<MINIMUM_ONLY>(
+    let result = derive_package_options_inner(
         profile,
         observation,
         intelligence,
@@ -907,6 +494,7 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
         production,
         unavailable,
         constraints,
+        minimum_only,
         &deferred,
     );
     if result.is_err() && deferred.get() {
@@ -920,7 +508,7 @@ fn derive_package_options<const MINIMUM_ONLY: bool>(
     clippy::too_many_arguments,
     reason = "one derivation shares a deferred verdict across composition alternatives"
 )]
-fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
+fn derive_package_options_inner(
     profile: &ResolvedProfile,
     observation: &Observation,
     intelligence: &StrategicIntelligence,
@@ -928,6 +516,7 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
     production: ProductionEvidence<'_>,
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
+    minimum_only: bool,
     deferred: &Cell<bool>,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
     let ConnectedTargetEvidence {
@@ -1125,17 +714,9 @@ fn derive_package_options_inner<const MINIMUM_ONLY: bool>(
             deadline: preparation_deadline,
         });
     }
-    let builders = if MINIMUM_ONLY {
-        let mut candidates = minimum_candidates;
-        candidates.sort_by_key(|candidate| {
-            Reverse(package_candidate_score(
-                profile,
-                minimum_capability,
-                0,
-                candidate,
-            ))
-        });
-        vec![candidates.remove(0)]
+    let builders = if minimum_only {
+        minimum_candidates.truncate(1);
+        minimum_candidates
     } else {
         best_complete_portfolio_path(
             profile,
@@ -1864,32 +1445,13 @@ fn has_completed_provider_capability(
     production_access: &ProductionAccess,
     family: ForceFamily,
 ) -> bool {
-    let completed = |kind: BuildingKind| {
-        observation.my_buildings.iter().any(|building| {
-            building.player == observation.me
-                && building.kind == kind
-                && building.built
-                && building.hp > 0
-        })
-    };
     new_provider_order(family, observation.faction)
         .into_iter()
         .any(|unit_kind| {
-            unit_kind
-                .faction()
-                .is_none_or(|faction| faction == observation.faction)
-                && unit_kind.stats().requires.iter().copied().all(completed)
-                && resources.producers().iter().any(|lane| {
-                    production_access.allows(lane.producer, unit_kind)
-                        && observation.my_buildings.iter().any(|building| {
-                            building.id == lane.producer
-                                && building
-                                    .kind
-                                    .tier_stats(building.tier)
-                                    .produces
-                                    .contains(&unit_kind)
-                        })
-                })
+            resources.producers().iter().any(|lane| {
+                production_access.allows(lane.producer, unit_kind)
+                    && lane.trainable().contains(&unit_kind)
+            })
         })
 }
 
@@ -2128,68 +1690,38 @@ fn current_air_defense(
     intelligence: &StrategicIntelligence,
     cluster: &[&BuildingContact],
 ) -> CurrentAirDefense {
-    let sources: BTreeMap<_, _> = target_cluster_air_defense(intelligence, cluster)
+    let sources: Vec<_> = target_cluster_air_defense(intelligence, cluster)
         .sources
         .into_iter()
-        .filter(|source| {
-            source.evidence == ContactEvidence::Current
-                && current_operational_aa_source(intelligence, source.source)
+        .filter(|source| source.evidence == ContactEvidence::Current)
+        .filter_map(|source| {
+            let contact = current_aa_contact(intelligence, source.source)?;
+            Some((u64::from(source.firepower_per_100_ticks), contact))
         })
-        .map(|source| (source.source, source.firepower_per_100_ticks))
         .collect();
-    let total_firepower = sources.values().fold(0_u64, |total, value| {
-        total.saturating_add(u64::from(*value))
+    let total_firepower = sources.iter().fold(0_u64, |total, (firepower, _)| {
+        total.saturating_add(*firepower)
     });
     let mut suppressible_firepower = 0_u64;
     let mut suppressible_hp = 0_u64;
     let mut suppressible_mobile_units = BTreeSet::new();
     let mut untargetable_air_firepower = 0_u64;
     let mut untargetable_air_hp = 0_u64;
-    for (source, source_firepower) in &sources {
-        match source {
-            AirDefenseSource::Unit { id, kind, tile } => {
-                let Some(contact) = intelligence.units().iter().find(|contact| {
-                    contact.id == *id
-                        && contact.kind == *kind
-                        && contact.tile == *tile
-                        && contact.evidence == ContactEvidence::Current
-                        && contact.hp > 0
-                }) else {
-                    continue;
-                };
-                if contact.body_domain() == Domain::Ground {
-                    suppressible_firepower =
-                        suppressible_firepower.saturating_add(u64::from(*source_firepower));
-                    suppressible_hp = suppressible_hp.saturating_add(u64::from(contact.hp));
-                    suppressible_mobile_units.insert(contact.id);
-                } else {
-                    untargetable_air_firepower =
-                        untargetable_air_firepower.saturating_add(u64::from(*source_firepower));
-                    untargetable_air_hp = untargetable_air_hp.saturating_add(u64::from(contact.hp));
-                }
+    for (firepower, contact) in sources {
+        match contact {
+            CurrentAaContact::Unit(contact) if contact.body_domain() == Domain::Ground => {
+                suppressible_firepower = suppressible_firepower.saturating_add(firepower);
+                suppressible_hp = suppressible_hp.saturating_add(u64::from(contact.hp));
+                suppressible_mobile_units.insert(contact.id);
             }
-            AirDefenseSource::Building {
-                id: Some(id),
-                player,
-                kind,
-                anchor,
-            } => {
-                let Some(contact) = intelligence.buildings().iter().find(|contact| {
-                    contact.id == Some(*id)
-                        && contact.player == *player
-                        && contact.kind == *kind
-                        && contact.anchor == *anchor
-                        && contact.evidence == ContactEvidence::Current
-                        && contact.built
-                        && contact.hp > 0
-                }) else {
-                    continue;
-                };
-                suppressible_firepower =
-                    suppressible_firepower.saturating_add(u64::from(*source_firepower));
+            CurrentAaContact::Unit(contact) => {
+                untargetable_air_firepower = untargetable_air_firepower.saturating_add(firepower);
+                untargetable_air_hp = untargetable_air_hp.saturating_add(u64::from(contact.hp));
+            }
+            CurrentAaContact::Building(contact) => {
+                suppressible_firepower = suppressible_firepower.saturating_add(firepower);
                 suppressible_hp = suppressible_hp.saturating_add(u64::from(contact.hp));
             }
-            AirDefenseSource::Building { id: None, .. } => {}
         }
     }
     CurrentAirDefense {
@@ -2202,45 +1734,69 @@ fn current_air_defense(
     }
 }
 
-pub(super) fn current_operational_aa_source(
+/// The live, currently observed contact behind an anti-air source.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CurrentAaContact<'a> {
+    Unit(&'a UnitContact),
+    Building(&'a BuildingContact),
+}
+
+impl CurrentAaContact<'_> {
+    /// Target a ground suppression force can attack: every building and every
+    /// ground-domain unit.
+    pub(super) fn suppression_target(self) -> Option<Target> {
+        match self {
+            Self::Unit(contact) => {
+                (contact.body_domain() == Domain::Ground).then_some(Target::Unit(contact.id))
+            }
+            Self::Building(contact) => contact.id.map(Target::Building),
+        }
+    }
+}
+
+pub(super) fn current_aa_contact(
     intelligence: &StrategicIntelligence,
     source: AirDefenseSource,
-) -> bool {
+) -> Option<CurrentAaContact<'_>> {
     match source {
-        AirDefenseSource::Unit { id, kind, tile } => intelligence.units().iter().any(|contact| {
-            contact.id == id
-                && contact.kind == kind
-                && contact.tile == tile
-                && contact.hp > 0
-                && contact.evidence == ContactEvidence::Current
-        }),
+        AirDefenseSource::Unit { id, kind, tile } => intelligence
+            .units()
+            .iter()
+            .find(|contact| {
+                contact.id == id
+                    && contact.kind == kind
+                    && contact.tile == tile
+                    && contact.hp > 0
+                    && contact.evidence == ContactEvidence::Current
+            })
+            .map(CurrentAaContact::Unit),
         AirDefenseSource::Building {
             id: Some(id),
             player,
             kind,
             anchor,
-        } => intelligence.buildings().iter().any(|contact| {
-            contact.id == Some(id)
-                && contact.player == player
-                && contact.kind == kind
-                && contact.anchor == anchor
-                && contact.hp > 0
-                && contact.built
-                && contact.evidence == ContactEvidence::Current
-        }),
-        AirDefenseSource::Building { id: None, .. } => false,
+        } => intelligence
+            .buildings()
+            .iter()
+            .find(|contact| {
+                contact.id == Some(id)
+                    && contact.player == player
+                    && contact.kind == kind
+                    && contact.anchor == anchor
+                    && contact.hp > 0
+                    && contact.built
+                    && contact.evidence == ContactEvidence::Current
+            })
+            .map(CurrentAaContact::Building),
+        AirDefenseSource::Building { id: None, .. } => None,
     }
 }
 
+/// Baseline-first provider order, the reverse of [`new_provider_order`].
 fn preservation_order(family: ForceFamily, faction: oxide_sim::state::Faction) -> Vec<UnitKind> {
-    match family {
-        ForceFamily::Recon => vec![Role::Scout.unit_for(faction)],
-        ForceFamily::Suppression => vec![UnitKind::Bombard, UnitKind::Avalanche],
-        ForceFamily::Strike => vec![
-            Role::AirGround.unit_for(faction),
-            Role::Bomber.unit_for(faction),
-        ],
-    }
+    let mut order = new_provider_order(family, faction);
+    order.reverse();
+    order
 }
 
 fn new_provider_order(family: ForceFamily, faction: oxide_sim::state::Faction) -> Vec<UnitKind> {
@@ -2273,12 +1829,10 @@ fn provider_capability(
     if family == ForceFamily::Recon {
         return NORMALIZED_PROVIDER;
     }
-    let baseline = match family {
-        ForceFamily::Recon => unreachable!("recon returned above"),
-        ForceFamily::Suppression => UnitKind::Bombard,
-        ForceFamily::Strike => Role::AirGround.unit_for(faction),
-    };
-    normalized_ratio(ground_firepower(kind), ground_firepower(baseline))
+    normalized_ratio(
+        ground_firepower(kind),
+        ground_firepower(baseline_provider(family, faction)),
+    )
 }
 
 pub(super) fn suppression_capability(kind: UnitKind, faction: oxide_sim::state::Faction) -> u64 {
@@ -2381,5 +1935,7 @@ fn manhattan(a: TilePos, b: TilePos) -> u32 {
     a.x.abs_diff(b.x).saturating_add(a.y.abs_diff(b.y))
 }
 
+#[cfg(test)]
+mod fixtures;
 #[cfg(test)]
 mod tests;

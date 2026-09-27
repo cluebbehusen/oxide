@@ -49,6 +49,8 @@ exporter's identity. Source archives report unknown provenance.
   combat behavior.
 - `auto`, `smoke`, `shots`, and `profile` exercise the real shell where a
   headless run is not enough.
+- `ios` (aliased as `cargo ios`) builds, installs, and launches the iPad app on
+  a paired iPad or an iPad simulator.
 
 Run `oxide-driver --help` for the current command tree. Procedures for live
 shell QA belong in the repository's `oxide-live-qa` skill rather than here.
@@ -99,7 +101,8 @@ delayed links on a virtual clock. Each human seat's orders come from a scripted
 controller on that seat's own machine and cross the wire. It checks that every
 machine executes identical batches under latency and jitter, and covers a
 stalled client, a stuck client, a closed connection, a silent host, and a
-diverged client.
+diverged client. One test instead joins, starts, and plays a short match over
+real localhost TCP with a real clock.
 
 `tests/player_facing_hashes.rs` checks exact recovery funding and repeated
 nearby harvest deliveries through the maintained controller. Behavioral

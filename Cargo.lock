@@ -713,6 +713,7 @@ dependencies = [
  "macroquad",
  "oxide-bot",
  "oxide-kit",
+ "oxide-net",
  "oxide-protocol",
  "oxide-sim",
  "png",

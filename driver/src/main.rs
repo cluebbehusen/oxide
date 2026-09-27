@@ -452,6 +452,17 @@ enum Cmd {
         #[arg(long, default_value_t = 0.01)]
         threshold: f64,
     },
+    /// Build the iPad app, install it, and launch it on a paired iPad or
+    /// an iPad simulator (`cargo ios`). Asks which device when there are
+    /// several, remembering the last choice.
+    Ios {
+        /// Device name, name fragment, or identifier; skips the picker.
+        #[arg(long)]
+        device: Option<String>,
+        /// Print the available devices and stop.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 mod live_cli;
@@ -1129,6 +1140,7 @@ fn main() -> Result<()> {
             dir,
             threshold,
         } => oxide_driver::shots::run(port, bless, &dir, threshold)?,
+        Cmd::Ios { device, list } => oxide_driver::ios::run(device.as_deref(), list)?,
     }
     Ok(())
 }

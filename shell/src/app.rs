@@ -25,6 +25,7 @@ use crate::menu::{Menu, PreviewCache};
 use crate::screens::codex::CodexScreen;
 use crate::screens::final_map::FinalMapScreen;
 use crate::screens::home::HomeScreen;
+use crate::screens::lobby::LobbyScreen;
 use crate::screens::pause::PauseScreen;
 use crate::screens::playback::{PlaybackSession, ReturnTo as PlaybackReturn};
 use crate::screens::results::ResultsScreen;
@@ -77,6 +78,9 @@ enum Screen {
     },
     /// The New Match wizard (map grid, then match setup).
     Wizard(Wizard),
+    /// A LAN match gathering its machines. Leaving drops every
+    /// connection the lobby holds.
+    Lobby(Box<LobbyScreen>),
     /// The game proper — the session lives in [`App::game`], which
     /// every screen needs as its backdrop.
     Playing,
@@ -165,6 +169,13 @@ struct App {
     live_streak: u8,
     /// Whether this app last asked for the on-screen keyboard.
     soft_keyboard: bool,
+    /// The running LAN match's link, pumped every frame while a screen
+    /// holds the match, so menus sit over a running match.
+    net: Option<crate::netplay::Link>,
+    /// A departed host's connections, still flushing the deciding batches.
+    lingering: Option<crate::netplay::Lingering>,
+    /// The session clock the lobby and the link read.
+    clock: std::time::Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -497,6 +508,7 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
         }
         Screen::Results(_) => match_soundtrack_scene(&game.view(), false),
         Screen::Home(_)
+        | Screen::Lobby(_)
         | Screen::Settings { .. }
         | Screen::Codex { .. }
         | Screen::Wizard(_)
@@ -641,7 +653,18 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     // alike — starts cold at the Home front door.
     let purposeful =
         (args.debug_server && !args.automation) || args.scenario.is_some() || args.replay.is_some();
-    let mut screen = if let Some(path) = &args.watch {
+    let commit = crate::build_identity().revision;
+    let mut screen = if let Some(address) = &args.host {
+        let lobby = crate::netplay::HostLobby::new(address, game.scenario.clone(), &commit)?;
+        Screen::Lobby(Box::new(LobbyScreen::open(crate::netplay::Lobby::Host(
+            Box::new(lobby),
+        ))))
+    } else if let Some(address) = &args.join {
+        let lobby = crate::netplay::ClientLobby::new(address, &commit);
+        Screen::Lobby(Box::new(LobbyScreen::open(crate::netplay::Lobby::Client(
+            lobby,
+        ))))
+    } else if let Some(path) = &args.watch {
         let mut session = PlaybackSession::open(path)?;
         // The clock flags drive whichever session is visible: a viewer
         // launch applies them to the transport, not the hidden match.
@@ -706,6 +729,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         performance: crate::performance::Performance::default(),
         live_streak: 0,
         soft_keyboard: false,
+        net: None,
+        lingering: None,
+        clock: std::time::Instant::now(),
     };
     let mut ui_view = capture_ui(&screen, &app);
     // A rerun pass re-enters the loop inside the same presented frame;
@@ -852,6 +878,20 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         }
 
         drop(input_diagnostic_scope);
+        let now = app.clock.elapsed();
+        if let Some(link) = &mut app.net
+            && let Some(end) = link.pump(&mut app.game, now)
+        {
+            screen = app.end_network_match(end, screen);
+        }
+        if app
+            .lingering
+            .as_mut()
+            .is_some_and(|lingering| !lingering.pump(now))
+        {
+            app.lingering = None;
+        }
+        screen = report_under_menu(&app.game, screen);
         let screen_before = std::mem::discriminant(&screen);
         let screen_frame = screen_flow::update_and_draw(
             &mut app,
@@ -863,6 +903,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         )?;
         gl_use_default_material();
         screen = screen_frame.screen;
+        if !screen_holds_live_match(&screen)
+            && let Some(link) = app.net.take()
+        {
+            app.lingering = link.leave(&app.game, app.clock.elapsed());
+        }
         let rerun = screen_frame.rerun;
         let profile_frame_active = screen_frame.profile_frame_active;
         if rerun {
@@ -1068,9 +1113,36 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     }
 }
 
+/// A LAN match runs under its menu and can end there; the report replaces a
+/// menu built for the running match.
+fn report_under_menu(game: &Game, screen: Screen) -> Screen {
+    let stale =
+        matches!(&screen, Screen::Pause(pause) if !pause.decided() && !pause.saving_failed());
+    if stale
+        && game.net_role().is_some()
+        && game.state.result().is_some()
+        && game.end_stats.is_some()
+    {
+        Screen::Results(ResultsScreen::open())
+    } else {
+        screen
+    }
+}
+
 /// The Surrender row shares the simulation's seat command gate.
 fn can_surrender(game: &Game) -> bool {
     game.state.accepts_commands(game.presentation.human)
+}
+
+/// The pause rows for the live match; a LAN match keeps running under
+/// its menu and offers no save or restart.
+fn pause_menu(game: &Game) -> PauseScreen {
+    let pause = PauseScreen::open(game.state.result().is_some(), can_surrender(game));
+    if game.net_role().is_some() {
+        pause.for_lan_match()
+    } else {
+        pause
+    }
 }
 
 fn visible_diagnostics<'a>(
@@ -1121,6 +1193,7 @@ fn visible_profile_mode(screen: &Screen) -> &'static str {
         Screen::Settings { .. } => "settings",
         Screen::Codex { .. } => "codex",
         Screen::Wizard(_) => "wizard",
+        Screen::Lobby(_) => "lobby",
         Screen::Playing => "playing",
         Screen::Playback(_) => "playback",
         Screen::FinalMap(_) => "final_map",
@@ -1179,7 +1252,7 @@ fn screen_holds_live_match(screen: &Screen) -> bool {
             playback.return_to,
             PlaybackReturn::Pause | PlaybackReturn::Results
         ),
-        Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) => false,
+        Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Lobby(_) => false,
         Screen::Busy(_) => true,
     }
 }
@@ -1205,6 +1278,28 @@ impl App {
         self.game.presentation.paused = paused;
         self.performance.reset();
         self.input.reset_session();
+    }
+
+    /// Swaps in a LAN match from the lobby with the link that carries it:
+    /// real time, no overlay, no tutorial.
+    fn install_networked(&mut self, game: Game, link: crate::netplay::Link) {
+        self.install_session(game, false, None);
+        self.game.presentation.speed = 1.0;
+        self.game.presentation.overlay = false;
+        self.net = Some(link);
+    }
+
+    /// Reports why a LAN match ended and leaves it through the ordinary
+    /// leave save, which keeps its replay.
+    fn end_network_match(&mut self, end: crate::netplay::End, screen: Screen) -> Screen {
+        self.menu_notice = Some((end.notice(), get_time() + 10.0));
+        if matches!(screen, Screen::Busy(_)) {
+            return screen;
+        }
+        self.persistence_screen(
+            persistence::Intent::Leave(screens::pause::LeaveVerb::MainMenu, false),
+            screen,
+        )
     }
 }
 
@@ -1253,6 +1348,7 @@ fn screen_mode(screen: &Screen) -> &'static str {
         Screen::FinalMap(_) => "final_map",
         Screen::Results(_) => "results",
         Screen::Replays(_) => "replays",
+        Screen::Lobby(_) => "lobby",
         Screen::Busy(busy) => busy.mode(),
         Screen::Pause(ps) => {
             if ps.saving_failed() {
@@ -1311,6 +1407,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
             };
         }
         Screen::Replays(shelf) => (screen_mode(screen), Some(&shelf.menu)),
+        Screen::Lobby(lobby) => (screen_mode(screen), Some(&lobby.menu)),
         Screen::Busy(busy) => (screen_mode(screen), Some(&busy.menu)),
         Screen::Pause(ps) => (screen_mode(screen), Some(&ps.menu)),
     };
@@ -1449,21 +1546,52 @@ enum Route {
     RefuseFrozen,
     /// A local mutating verb while the read-only viewer owns the screen.
     RefuseViewer,
+    /// A verb a LAN match cannot honor on this machine.
+    RefuseLockstep,
     /// A locally-answered verb against the app's own state.
     Local,
 }
 
 /// The local routing guards around shared protocol dispatch. Frozen-map
-/// refusal runs before dispatch; the viewer's read-only guard runs after a
-/// request proves not to be shared.
-fn route(playback: bool, final_map: bool, request: &Request) -> Route {
+/// and lockstep refusal run before dispatch; the viewer's read-only guard
+/// runs after a request proves not to be shared. `net` is the live match's
+/// role and bound seat when it is a LAN match.
+fn route(
+    playback: bool,
+    final_map: bool,
+    net: Option<(crate::game::network::NetRole, oxide_sim::PlayerId)>,
+    request: &Request,
+) -> Route {
     if final_map && frozen_map_refuses(request) {
         return Route::RefuseFrozen;
+    }
+    if !playback && net.is_some_and(|(role, seat)| lockstep_refuses(role, seat, request)) {
+        return Route::RefuseLockstep;
     }
     if playback && viewer_refuses(request) {
         return Route::RefuseViewer;
     }
     Route::Local
+}
+
+/// What a LAN match refuses: its clock, speed, and roster belong to the
+/// session, only the host pauses, and a machine speaks only for its seat.
+fn lockstep_refuses(
+    role: crate::game::network::NetRole,
+    seat: oxide_sim::PlayerId,
+    request: &Request,
+) -> bool {
+    matches!(
+        request,
+        Request::AdvanceTicks { .. }
+            | Request::PresentTicks { .. }
+            | Request::SetSpeed { .. }
+            | Request::LoadScenario { .. }
+            | Request::LoadReplay { .. }
+            | Request::BeginPerformanceWindow { .. }
+    ) || (role == crate::game::network::NetRole::Client
+        && matches!(request, Request::Pause | Request::Resume))
+        || matches!(request, Request::SendCommand { player, .. } if *player != seat)
 }
 
 fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
@@ -1479,14 +1607,30 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
     }
     let playback = matches!(&*screen, Screen::Playback(_));
     let final_map = matches!(&*screen, Screen::FinalMap(_));
-    if route(playback, final_map, &request) == Route::RefuseFrozen {
-        reply
-            .send(ResponseEnvelope::err(
-                id,
-                "the final battlefield is frozen; return to the report first".to_string(),
-            ))
-            .ok();
-        return;
+    let net = app
+        .game
+        .net_role()
+        .map(|role| (role, app.game.presentation.human));
+    match route(playback, final_map, net, &request) {
+        Route::RefuseFrozen => {
+            reply
+                .send(ResponseEnvelope::err(
+                    id,
+                    "the final battlefield is frozen; return to the report first".to_string(),
+                ))
+                .ok();
+            return;
+        }
+        Route::RefuseLockstep => {
+            reply
+                .send(ResponseEnvelope::err(
+                    id,
+                    "a LAN match owns its clock and seats; this machine cannot do that",
+                ))
+                .ok();
+            return;
+        }
+        Route::RefuseViewer | Route::Local => {}
     }
     let shared = {
         let session: &mut dyn oxide_protocol::DebugSession = match &mut *screen {
@@ -1525,7 +1669,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
     }
     // The viewer is read-only: refusing beats acknowledging a request
     // that would silently mutate the hidden match.
-    if route(playback, final_map, &request) == Route::RefuseViewer {
+    if route(playback, final_map, net, &request) == Route::RefuseViewer {
         let refusal = "the viewer is read-only; leave playback first".to_string();
         reply.send(ResponseEnvelope::err(id, refusal)).ok();
         return;
@@ -1746,6 +1890,37 @@ mod tests {
     /// viewer's read-only boundary around local requests. Shared requests
     /// are covered by the dispatcher and session-parity suites.
     #[test]
+    fn a_lan_match_decided_under_its_menu_opens_the_report() {
+        let mut scenario = Scenario::skirmish();
+        for player in &mut scenario.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
+        let mut game = Game::networked(
+            scenario,
+            oxide_sim::PlayerId(0),
+            crate::game::network::NetRole::Host,
+            vec2(1280.0, 800.0),
+        )
+        .unwrap();
+        let running = || Screen::Pause(pause_menu(&Game::new(Scenario::skirmish()).unwrap()));
+        let is_results = |screen: &Screen| matches!(screen, Screen::Results(_));
+        assert!(!is_results(&report_under_menu(&game, running())));
+        game.run_batch(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Surrender,
+        }]);
+        assert!(game.state.result().is_some());
+        assert!(is_results(&report_under_menu(&game, running())));
+        assert!(
+            !is_results(&report_under_menu(&game, Screen::Pause(pause_menu(&game)))),
+            "a menu opened after the end stays"
+        );
+        let local = Game::new(Scenario::skirmish()).unwrap();
+        assert!(!is_results(&report_under_menu(&local, running())));
+    }
+
+    #[test]
     fn local_request_guards_follow_screen_ownership() {
         let advance = Request::AdvanceTicks { ticks: 8 };
         let send = Request::SendCommand {
@@ -1756,17 +1931,59 @@ mod tests {
 
         // The frozen final map refuses time and mutation before shared
         // dispatch can advance the hidden live match.
-        assert_eq!(route(false, true, &advance), Route::RefuseFrozen);
-        assert_eq!(route(false, true, &send), Route::RefuseFrozen);
-        assert_eq!(route(false, true, &camera), Route::Local);
+        assert_eq!(route(false, true, None, &advance), Route::RefuseFrozen);
+        assert_eq!(route(false, true, None, &send), Route::RefuseFrozen);
+        assert_eq!(route(false, true, None, &camera), Route::Local);
 
         // The read-only viewer bounces local mutation and answers
         // local reads.
-        assert_eq!(route(true, false, &send), Route::RefuseViewer);
-        assert_eq!(route(true, false, &camera), Route::Local);
+        assert_eq!(route(true, false, None, &send), Route::RefuseViewer);
+        assert_eq!(route(true, false, None, &camera), Route::Local);
 
         // The live screen answers everything else locally.
-        assert_eq!(route(false, false, &send), Route::Local);
+        assert_eq!(route(false, false, None, &send), Route::Local);
+    }
+
+    /// A LAN match refuses the clock and other seats before shared
+    /// dispatch, and only its host may pause.
+    #[test]
+    fn a_lan_match_refuses_its_clock_and_other_seats() {
+        use crate::game::network::NetRole;
+        let seat = oxide_sim::PlayerId(1);
+        let host = Some((NetRole::Host, seat));
+        let client = Some((NetRole::Client, seat));
+        let send = |player| Request::SendCommand {
+            player: oxide_sim::PlayerId(player),
+            command: oxide_sim::Command::Surrender,
+        };
+        for net in [host, client] {
+            for refused in [
+                Request::AdvanceTicks { ticks: 1 },
+                Request::PresentTicks { ticks: 1 },
+                Request::SetSpeed { multiplier: 2.0 },
+                send(0),
+            ] {
+                assert_eq!(
+                    route(false, false, net, &refused),
+                    Route::RefuseLockstep,
+                    "{refused:?}"
+                );
+            }
+            assert_eq!(route(false, false, net, &send(1)), Route::Local);
+            assert_eq!(
+                route(false, false, net, &Request::QueryCamera),
+                Route::Local
+            );
+        }
+        for pause in [Request::Pause, Request::Resume] {
+            assert_eq!(route(false, false, host, &pause), Route::Local);
+            assert_eq!(route(false, false, client, &pause), Route::RefuseLockstep);
+        }
+        assert_eq!(
+            route(true, false, client, &Request::Pause),
+            Route::Local,
+            "the viewer keeps its own clock"
+        );
     }
 
     #[test]

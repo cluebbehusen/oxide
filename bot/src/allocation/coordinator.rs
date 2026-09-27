@@ -1219,11 +1219,11 @@ mod tests {
         ResourcePlanningProjection, ResourceSnapshot,
     };
     use crate::standing_force::{StandingForceFixture, StandingForceProposal, StandingForceReason};
+    use crate::strategy::fixtures::FreshConnectedProposalFixture;
     use crate::strategy::{
         ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
         ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
         ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposal,
-        FreshConnectedProposalFixture,
     };
     use crate::trace::{ConnectedMarginalDispositionTrace, ConnectedPortfolioSelectionTrace};
     use crate::utility::{

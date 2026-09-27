@@ -120,7 +120,13 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             input.build_menu = true;
             input.build_category = Some(category);
         }
-        Action::TogglePause => game.presentation.paused = !game.presentation.paused,
+        Action::TogglePause => {
+            if game.net_role() == Some(crate::game::network::NetRole::Client) {
+                game.presentation.toast("Only the host can pause.");
+            } else {
+                game.presentation.paused = !game.presentation.paused;
+            }
+        }
         Action::ToggleBuildPalette => {
             if input.construction_open() {
                 if input.build_category.take().is_some() {

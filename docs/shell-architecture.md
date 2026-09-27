@@ -40,6 +40,23 @@ roster, including no bots; the New Match wizard still authors one local seat.
 Sandbox completion rules belong to the simulation, so headless and native
 sessions reproduce the same open-ended scene.
 
+`--host` and `--join` open a LAN lobby (`netplay::Lobby`) that exchanges
+`oxide-net` Hellos, fills the scenario's human seats in join order, and passes
+the start barrier before installing the match. `App` then owns the match's
+`netplay::Link` and pumps it once per loop pass on every screen that holds the
+match, so menus sit over a running match, and a match decided under the pause
+menu opens its report. Leaving the match drops the link, except that a host
+leaving a decided match first finishes its connections so lagging clients still
+receive the deciding batches. The host paces its ticks at 1x, seals each tick's
+human orders, appends bot commands, and runs the published batch; a client runs
+batches as they arrive with a small buffer and catches up when behind. Once the
+match is decided, the host closes the connections only after every client has
+acknowledged the final batch, so late hash reports are still checked. Staged
+orders reach the session through the game's outbox. Only the host pauses, and
+speed is fixed. Networked sessions never journal crash recovery, save only a
+watch-only recording, and leave through the ordinary leave save when the host is
+lost or a desync halts the match.
+
 Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in
 input seat order before commands are recorded. `State::tick` remains serial.
@@ -447,7 +464,9 @@ between frames, with screenshot replies deferred until GPU readback.
 for live play, read-only playback, and the driven headless session. Each
 supplies its own clock semantics. Camera, input injection, native profiling, and
 other window capabilities are supported only where they are real. Unsupported
-operations are explicitly refused.
+operations are explicitly refused. A LAN match refuses clock, speed, load, and
+performance-window requests before shared dispatch, refuses pause and resume on
+clients, and accepts `SendCommand` only for the machine's bound seat.
 
 `StateView` is an omniscient QA representation, not an exact serialized state;
 use `State::hash` for deterministic identity. `FogView::capture` is the shared

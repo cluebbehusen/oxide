@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Lockstep multiplayer session core: wire messages, tick scheduling, and liveness"
+description = "Lockstep multiplayer: wire messages, session core, start barrier, and TCP transport"
 
 [dependencies]
 oxide-sim = { workspace = true }

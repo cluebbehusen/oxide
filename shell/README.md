@@ -39,6 +39,8 @@ crate-level rustdoc.
 - `assets`, `typography`, `audio_mix`, and `soundtrack` own presentation
   resources.
 - `debug_server` connects the frame loop to `oxide-protocol`.
+- `netplay` gathers LAN machines in a lobby and carries a running match between
+  them over `oxide-net`; `screens/lobby` shows the lobby's status.
 - `saved_game` owns compact checkpoint files with independently readable
   metadata. `autosave` owns atomic publication and retention; `saves` classifies
   checkpoints and recordings for the shelf. `app/persistence` runs capture
@@ -61,6 +63,15 @@ cargo test -p oxide-shell --locked
 cargo run -p oxide-driver -- smoke --spawn
 ```
 
+To play over a LAN or Tailscale, build the same commit on every machine. The
+host passes a scenario whose players are the seats with `"bot": false`; the host
+takes the first, and joining machines fill the rest in order:
+
+```sh
+cargo run -p oxide-shell --release -- --host 0.0.0.0:4200 --scenario duel.json
+cargo run -p oxide-shell --release -- --join 192.168.1.20:4200
+```
+
 ## iPad build
 
 `ios/` wraps the shell in an Xcode project with a script phase that runs Cargo
@@ -71,20 +82,19 @@ app-icon catalog. It needs full Xcode (not only the Command Line Tools), the
 simulator), and an iPad with Developer Mode on. Set your signing team in the
 ignored `ios/Local.xcconfig`, never in Xcode's Signing pane, which writes it
 into the shared project file. If you sign with your own team, also set a bundle
-ID you control there (the example file shows how) and launch with that ID
-instead of `dev.luebbehusen.oxide`:
+ID you control there (the example file shows how).
 
 ```sh
-rustup target add aarch64-apple-ios
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 cp ios/Local.xcconfig.example ios/Local.xcconfig   # set DEVELOPMENT_TEAM
-xcodebuild -project ios/Oxide.xcodeproj -scheme Oxide -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode \
-  -allowProvisioningUpdates build
-xcrun devicectl list devices
-xcrun devicectl device install app --device <id> \
-  target/ios-xcode/Build/Products/Release-iphoneos/Oxide.app
-xcrun devicectl device process launch --device <id> dev.luebbehusen.oxide
+cargo ios
 ```
+
+`cargo ios` builds the Release app, installs it, and launches it on a paired
+iPad or an iPad simulator. With several devices it lists them and asks, offering
+the last choice as the default; `--device <name or id>` skips the question and
+`--list` only prints the devices. A locked iPad still receives the install; open
+Oxide yourself once it is unlocked.
 
 iPadOS 27 requires the UIScene lifecycle, so the workspace pins an unreleased
 miniquad commit; see the workspace `Cargo.toml` for why that exact commit.
