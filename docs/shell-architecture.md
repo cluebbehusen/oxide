@@ -145,9 +145,9 @@ skips max-tier or offline members, and allocates available scrap in building-id
 order. The card shows the recipient count, total cost, and per-tier
 destinations. Its activation rechecks pending commands, as do defense orders, so
 an upgrade already staged while paused cannot be bought twice or invalidate
-another selected defense's target command. Stop clears completed defenses first;
-a separate Scrap sites card can abandon fresh sites in the same selection.
-Committed upgrades cannot be cancelled.
+another selected defense's target command. The Stop key clears completed
+defenses first; a separate Scrap sites card can abandon fresh sites in the same
+selection. Committed upgrades cannot be cancelled.
 
 Selecting multiple own production buildings of one kind exposes their shared
 roster. Each activation stages one ordinary `Train` per available factory in
@@ -209,6 +209,24 @@ Static capabilities may be shown for foreign selections; current enemy orders,
 loads, and building income remain private. Placement and support previews use
 authoritative queries rather than duplicating game rules. Unknown concealed
 mines cannot alter player-visible picking or placement feedback.
+
+A unit panel offers only the verbs its selection can use: Run and Attack-move
+need a unit that can fight, while Patrol stays for unarmed scouts. Stop is not a
+card. `Panel.stop` is a button in its own box above the orders or production
+dock, published as `LayoutModel.queue_stop` and hit-tested with the cards. It
+stops the selection while any selected unit has orders, even when the dock's
+subject is idle, and clears a defense's target preference. Over production it
+cancels every selected producer's queue with full refunds, last job first, so
+each `CancelTrain` index still names its job when it runs. The button takes the
+chip column's width and names itself where the chips do. A single factory's dock
+is headed by the time left on its queue, or "Ready" while a finished head waits
+for an exit.
+
+Toasts report refusals and outcomes, not armed modes, which the ribbon already
+names, or their cancellation; only Patrol coaches its two-step start.
+`Presentation::toast` and the tooltip's refusal line capitalize the first
+letter, so refusal reasons stay lowercase fragments that also read inside longer
+messages.
 
 Loaded Harvesters and Excavators expose a Return Cargo card and shortcut (`U` by
 default). Worker selections use Return Cargo, a single selected transport uses
