@@ -17,6 +17,10 @@ use crate::theme::{
 
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
+/// The space between rows, left out of each row's target.
+const ROW_GAP: f32 = 6.0;
+/// The tightest a desktop list packs its rows before it scrolls.
+const MIN_ROW: f32 = 30.0;
 /// Travel, in logical px at 1x, past which a finger scrolls the list
 /// instead of tapping a row.
 const DRAG_SLOP: f32 = 8.0;
@@ -256,16 +260,16 @@ impl Menu {
 
     /// Where the list lives this frame: top edge, row height, and the
     /// window of visible rows. The list fits itself between the title
-    /// block and the hint line — rows shrink when the window is short,
-    /// and past the readable minimum the list scrolls around the
-    /// selection instead of running off the screen.
+    /// block and the hint line — rows pack as tight as `row_pitch`
+    /// allows when the window is short, and past that the list scrolls
+    /// around the selection instead of running off the screen.
     fn layout(&self) -> (f32, f32, usize, usize) {
         let s = ui();
         let top_bound = (view_h() * 0.36).max(view_h() * 0.28 + 64.0 * s);
         let bottom_bound = view_h() - 64.0 * s;
         let avail = (bottom_bound - top_bound).max(ITEM_HEIGHT * s);
         let n = self.items.len().max(1);
-        let row = (avail / n as f32).clamp(30.0 * s, ITEM_HEIGHT * s);
+        let row = row_pitch(avail, n, s, crate::platform::TOUCH_ONLY);
         let visible = ((avail / row).floor() as usize).clamp(1, n);
         // The window is scroll state, clamped — never a function of the
         // selection, or hovering near an edge walks the list.
@@ -290,7 +294,7 @@ impl Menu {
             (view_w() - width) * 0.5 + view_w() * self.shift,
             top + (index - first) as f32 * row,
             width,
-            row - 6.0 * s,
+            row - ROW_GAP * s,
         ))
     }
 
@@ -592,6 +596,19 @@ impl Menu {
     }
 }
 
+/// The distance from one row to the next. A desktop list packs its rows
+/// down to a readable minimum before it scrolls; a touch-only list keeps
+/// every row a full fingertip target and scrolls sooner.
+fn row_pitch(avail: f32, rows: usize, s: f32, touch_only: bool) -> f32 {
+    let (min, max) = if touch_only {
+        let pitch = crate::layout::MIN_TOUCH_TARGET + ROW_GAP;
+        (pitch, pitch)
+    } else {
+        (MIN_ROW, ITEM_HEIGHT)
+    };
+    (avail / rows.max(1) as f32).clamp(min * s, max * s)
+}
+
 /// The line under every menu: its keys and clicks on desktop, taps on a
 /// touch-only build, plus the drag only when the list actually scrolls.
 /// ASCII on purpose: the default font has no glyphs for arrows.
@@ -790,6 +807,22 @@ mod footer_tests {
     fn the_footer_speaks_touch_on_touch_only_builds() {
         assert!(menu_footer(false, true).ends_with("confirm - or click"));
         crate::platform::assert_touch_copy(&menu_footer(true, true));
+    }
+
+    #[test]
+    fn touch_rows_stay_a_full_fingertip_tall_and_desktop_rows_pack() {
+        for s in [1.0, 1.25] {
+            let long_list_short_window = (300.0 * s, 20);
+            let touch = row_pitch(long_list_short_window.0, long_list_short_window.1, s, true);
+            assert!(
+                touch - ROW_GAP * s >= crate::layout::MIN_TOUCH_TARGET * s,
+                "a touch row's target is at least a fingertip"
+            );
+            let desktop = row_pitch(long_list_short_window.0, long_list_short_window.1, s, false);
+            assert_eq!(desktop, MIN_ROW * s, "desktop packs before it scrolls");
+            assert_eq!(row_pitch(600.0 * s, 5, s, false), ITEM_HEIGHT * s);
+            assert_eq!(row_pitch(600.0 * s, 5, s, true), touch, "one touch pitch");
+        }
     }
 
     #[test]
