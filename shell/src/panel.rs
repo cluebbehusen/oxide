@@ -111,8 +111,8 @@ pub enum CardAction {
     ScrapSites,
     /// Set a transport's cargo down around where it hovers.
     UnloadHere(oxide_sim::UnitId),
-    /// Narrow the selection to one kind (Ctrl-click removes it
-    /// instead) — the mixed-army type strip.
+    /// Narrow the selection to one kind (Ctrl, Shift, or a lit QUEUE
+    /// removes it instead) — the mixed-army type strip.
     FilterKind(UnitKind),
     /// Display only.
     None,
@@ -808,15 +808,18 @@ fn strip_hotkeys(panel: &mut Panel) {
     }
 }
 
-/// How a roster tile narrows the selection. Ctrl has no touch
-/// equivalent, so touch offers only the keep-only filter.
+/// How a roster tile narrows the selection. The lit QUEUE toggle is
+/// touch's Shift, so it drops the kind as Shift- and Ctrl-clicks do.
 fn roster_filter_desc(touch_only: bool) -> Vec<String> {
     if touch_only {
-        vec!["Tap: keep only this kind.".into()]
+        vec![
+            "Tap: keep only this kind.".into(),
+            "With QUEUE lit, tap drops this kind.".into(),
+        ]
     } else {
         vec![
             "Click: keep only this kind.".into(),
-            "Ctrl-click: drop this kind instead.".into(),
+            "Shift- or Ctrl-click: drop this kind.".into(),
         ]
     }
 }
@@ -1056,8 +1059,8 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         return Some(panel);
     }
     // The roster strip: a mixed army offers one chip per kind, counted.
-    // Click keeps only that kind; Ctrl-click drops it — the two cuts
-    // every RTS hand knows. It has its own eight-chip budget, so every
+    // Click keeps only that kind; Shift- or Ctrl-click (or a lit QUEUE)
+    // drops it — the two cuts every RTS hand knows. It has its own eight-chip budget, so every
     // roster role stays reachable without consuming command verbs.
     if units.len() > 1 {
         let mut counts: Vec<(UnitKind, usize)> = Vec::new();

@@ -1808,8 +1808,9 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         }
         crate::panel::CardAction::FilterKind(kind) => {
             // The cut is shell-side only: selections are presentation,
-            // no command leaves here.
-            let keep = !input.resolver.ctrl_held();
+            // no command leaves here. Ctrl, Shift, or a lit QUEUE drops
+            // the kind instead of keeping it.
+            let keep = !(input.resolver.ctrl_held() || input.queue_held());
             game.presentation.selection.units.retain(|id| {
                 game.state
                     .unit(*id)

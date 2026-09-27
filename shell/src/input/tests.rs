@@ -4381,6 +4381,28 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
     );
     apply_events(&mut game, &mut input, &[key_up(Key::Ctrl)]);
 
+    // Shift, and touch's lit QUEUE, drop it too.
+    let without_harvesters = game.presentation.selection.units.clone();
+    for queue in [false, true] {
+        game.presentation.selection.units = mine.clone();
+        if queue {
+            input.queue_toggle = true;
+        } else {
+            apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
+        }
+        activate_card(
+            &mut game,
+            &mut input,
+            crate::panel::CardAction::FilterKind(UnitKind::Harvester),
+        );
+        assert_eq!(
+            game.presentation.selection.units, without_harvesters,
+            "queue {queue}: the kind drops out"
+        );
+        input.queue_toggle = false;
+        apply_events(&mut game, &mut input, &[key_up(Key::Shift)]);
+    }
+
     // ...and the plain click keeps only the named kind.
     game.presentation.selection.units = mine;
     activate_card(
