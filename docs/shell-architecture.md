@@ -222,6 +222,12 @@ chip column's width and names itself where the chips do. A single factory's dock
 is headed by the time left on its queue, or "Ready" while a finished head waits
 for an exit.
 
+Ground orders name whole tiles. Move, attack-move, advance, patrol, and rally
+clicks clamp the cursor's tile onto the map, since the camera's edge slack lets
+it rest past the edge, and their acknowledgment ring draws at that tile's
+centre, where the waypoint marker sits. Entity lookups keep the unclamped tile,
+so a slack click never binds to whatever stands on the edge.
+
 Toasts report refusals and outcomes, not armed modes, which the ribbon already
 names, or their cancellation; only Patrol coaches its two-step start.
 `Presentation::toast` and the tooltip's refusal line capitalize the first

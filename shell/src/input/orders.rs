@@ -3,7 +3,7 @@
 //! re-validates everything — this module only shapes intent, and its
 //! fog checks exist so a click cannot *probe* what the player can't see.
 
-use super::{InputState, unit_pick_radius};
+use super::{InputState, ground_tile, tile_center, unit_pick_radius};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
@@ -13,7 +13,7 @@ pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
     crate::building_actions::SelectedBuildings::inspect(&game.view()).producers()
 }
 
-pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2) {
+pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos) {
     let producers = selected_producers(game);
     if producers.is_empty() {
         return;
@@ -24,7 +24,7 @@ pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2
             rally: Some(rally),
         });
     }
-    game.presentation.ping(at, PingKind::Rally);
+    game.presentation.ping(tile_center(rally), PingKind::Rally);
 }
 
 fn visible_hostile_target_at(
@@ -190,7 +190,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         }
         // Selected producers share one rally destination. Non-producers
         // ignore a ground right-click.
-        rally_selected_producers(game, tile, world);
+        rally_selected_producers(game, ground_tile(&game.state, world));
         return;
     }
     if !game.selection_commandable() {
@@ -393,18 +393,19 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             queue,
         });
         game.presentation
-            .ping_order(world, PingKind::Harvest, queue);
+            .ping_order(tile_center(tile), PingKind::Harvest, queue);
         return;
     }
     // Default ground movement keeps formation intent: weapons take
     // already-available shots, but machines never stop or chase.
     // Explicit attack-move is the F verb.
-    game.issue(Command::Advance {
-        units,
-        goal: tile,
-        queue,
-    });
-    game.presentation.ping_order(world, PingKind::Move, queue);
+    // Entity lookups above read the raw tile so a click in the edge
+    // slack never binds to whatever sits on the edge; only the ground
+    // goal clamps onto the map.
+    let goal = ground_tile(&game.state, world);
+    game.issue(Command::Advance { units, goal, queue });
+    game.presentation
+        .ping_order(tile_center(goal), PingKind::Move, queue);
 }
 
 /// Train the selected production slot through the shared pending-command view.

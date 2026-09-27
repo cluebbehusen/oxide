@@ -1353,8 +1353,8 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             EffectKind::Falling { .. } => true,
             EffectKind::Burst { at, .. } => sees(at),
             EffectKind::Debris { at, .. } => sees(at),
-            // Own-order acknowledgments always show; fogged targets are
-            // already impossible to order onto.
+            // Own-order acknowledgments always show: each marks the
+            // player's own click or a target the player already knows.
             EffectKind::Ping { .. } => true,
         };
         if !game.presentation.all_seeing() && !in_sight {
