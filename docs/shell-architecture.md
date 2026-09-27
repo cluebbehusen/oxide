@@ -180,7 +180,13 @@ reports them all lifted. Gesture code treats a repeated landing as the same
 finger and picks up a falsely lifted pair finger on its next move. Drawing
 publishes a shared `LayoutModel` whose rectangles also drive hit testing. The
 HUD's supported layout floor is 1280×800 at default UI scale. Smaller windows
-are overflow stress cases.
+are overflow stress cases. `layout::top_bar` places the top bar from measured
+text: the bank, income, and unit count run left to right, then the idle and
+under-attack badges; the status hangs off the menu button; and the control-group
+strip sits just left of the status, sized against the widest the badges and
+status can grow so it never moves. Where that leaves no room, the strip drops to
+a row under the bar. Touch-only builds hold the menu button and bank further
+from the corners, which iPad screens round and iPadOS safe areas leave out.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated
@@ -231,12 +237,15 @@ on-screen keyboard to follow it.
 
 Hints, toasts, card descriptions, and the tutorial speak touch on touch-only
 builds, and panel cards drop their hotkeys. A finger resting on chrome for
-`TOUCH_REST_MS` previews the card beneath it with the hover tooltip; chrome
+`TOUCH_REST_MS` previews the card beneath it with the hover tooltip. Chrome
 touches never fire a long-press, so lifting in place still activates the card,
-and a finger that lands on one card and lifts on another activates neither. A
-world-born finger draws a filling ring from the same rest threshold until its
-long-press fires. Disabled cards publish `CardAction::Refused`, so a tap or
-click toasts the reason their hotkey gives.
+and a finger that lands on one card or group slot and lifts on another activates
+neither. The one exception is a control-group slot, where a long-press saves the
+selection to that group and spends the finger so its lift does not also recall.
+A world-born or group-slot finger draws a filling ring from the same rest
+threshold until its long-press fires; the slot's ring draws above the top bar.
+Disabled cards publish `CardAction::Refused`, so a tap or click toasts the
+reason their hotkey gives.
 
 Gameplay touch lives in `input::touch`. Each finger records where it landed
 (`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that
@@ -264,7 +273,11 @@ shows on touch-only builds while the human commands a selected unit or QUEUE is
 on. It sits over the panel's left corner in the orders dock's column, and the
 dock rises to stack above it, so queueing orders never moves the toggle.
 `ribbon_row_press` hit-tests both before every other target: the toggle flips
-QUEUE and the ribbon cancels its mode. Taps and clicks select through
+QUEUE and the ribbon cancels its mode. The build palette ends with a Back card
+(`CardAction::ClosePalette`) that leaves construction in one press, and on touch
+a tap that picks nothing while the palette is open and nothing is armed closes
+it and keeps the selection. With QUEUE lit (or Shift or Ctrl held), a roster
+chip drops its kind instead of keeping only it. Taps and clicks select through
 `select::pick`, which gives a fingertip a wider reach than a cursor. A press
 that picks nothing on a tile with known salvage selects that tile as
 `Selection::pile`, read-only and exclusive: any other selection drops it, and

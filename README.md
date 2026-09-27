@@ -64,7 +64,7 @@ shortcuts cover the core loop:
 | `U` with a building / transport selected | Upgrade / unload here.                                                                                                    |
 | `Y` / Shift+`Y` with a producer selected | Set / clear rally.                                                                                                        |
 | Left click / drag                        | Select a unit, building, or group.                                                                                        |
-| Shift + click / drag                     | Add to or remove from the current selection.                                                                              |
+| Shift + click / drag                     | Add to or remove from the current selection. Shift-click a kind in the selection panel to drop that kind.                 |
 | Right click                              | Give the contextual order: harvest scrap, attack an enemy, repair an ally, or advance to ground.                          |
 | Shift + right click                      | Queue the contextual order.                                                                                               |
 | `F`, then ground                         | Attack-move and engage along the route.                                                                                   |
@@ -76,10 +76,10 @@ shortcuts cover the core loop:
 | `V`, then an own building                | Salvage the building for a partial refund. Foundries cannot be salvaged.                                                  |
 | `X`                                      | Stop selected units, or cancel a selected new construction site.                                                          |
 | Q/E/R/T/Z/X with a producer selected     | Train the unit in that card slot.                                                                                         |
-| Ctrl + `1`–`5` / `1`–`5`                 | Assign or recall a control group.                                                                                         |
+| Ctrl + `1`–`5` / `1`–`5`                 | Assign or recall a control group. The group slots in the top bar recall on click, Ctrl-click assigns, and + saves.        |
 | `N`                                      | Select and center the next idle Harvester.                                                                                |
 | `Space`                                  | Center the camera on your Foundry.                                                                                        |
-| `Tab`                                    | Jump to the last under-attack alert.                                                                                      |
+| `Tab`                                    | Jump to the last under-attack alert; the under-attack badge in the top bar does the same while it shows.                  |
 | `P`                                      | Pause immediately; clicking the clock at the top right does the same.                                                     |
 | `Esc`                                    | Cancel the active action, clear selection, or open the pause menu. The ≡ button at the top right opens the menu directly. |
 
@@ -102,10 +102,16 @@ it is unavailable. To build, tap open ground to drop a ghost, drag it into
 place, and tap it to confirm. While Patrol is armed, taps (or left-clicks) add
 waypoints. With units selected, the QUEUE toggle above the panel's left corner
 stands in for Shift: taps add to the selection, orders queue, and armed commands
-stay armed. It stays lit while on, and one tap turns it off. Tapping the ribbon
-cancels its command. Tapping a scrap pile selects it, and its panel shows the
-scrap left and how many of your harvesters work it. Key help and gesture hints
-stay hidden until a screen has sat idle for about 15 seconds.
+stay armed. It stays lit while on, and one tap turns it off; with it lit, a
+tapped kind in the selection panel drops out of the selection. Tapping the
+ribbon cancels its command. The Back card, or a tap on open ground, closes the
+build palette and keeps the builder. Tap a group slot in the top bar to recall
+it (tap again quickly to center the camera), long-press any slot to save the
+selection there (or clear it with nothing selected), or tap + to save the
+selection as a new group. Tap the under-attack badge to jump to the fight.
+Tapping a scrap pile selects it, and its panel shows the scrap left and how many
+of your harvesters work it. Key help and gesture hints stay hidden until a
+screen has sat idle for about 15 seconds.
 
 Construction categories are Economy (Q), Production (E), Defense (R), and
 Utility (T). For example, B, R, Q chooses a Turret. Shift queues placement;
