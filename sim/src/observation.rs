@@ -1214,7 +1214,7 @@ mod tests {
             .expect("the first own Harvester exists")
             .queue
             .push_back(Order::Move {
-                goal: TilePos::new(8, 8),
+                goal: TilePos::new(8, 8).into(),
             });
         state
             .unit_mut(own_workers[1])
@@ -1225,7 +1225,7 @@ mod tests {
             .expect("the hostile Harvester exists")
             .queue
             .push_back(Order::Move {
-                goal: TilePos::new(30, 15),
+                goal: TilePos::new(30, 15).into(),
             });
 
         for observation in [

@@ -52,6 +52,7 @@ pub(crate) mod flight;
 pub(crate) mod landing;
 mod movement;
 mod production;
+mod reach;
 mod spatial;
 
 use crate::command::PlayerCommand;
@@ -589,10 +590,8 @@ pub(crate) fn domain_goal(
         }
         crate::stats::Domain::Air => {
             // Clamp to the map, then off any peak: this is the funnel
-            // patrol waypoints and rally orders lower through, and a
-            // stored peak goal deadlocks the flyer — it reaches the
-            // route's snapped endpoint, compares against the original
-            // order goal, and repaths to the same tile forever.
+            // patrol waypoints and rally orders lower through, so the
+            // stored goal names sky the flyer can occupy.
             let clamped = TilePos::new(
                 goal.x.clamp(0, state.map.width() - 1),
                 goal.y.clamp(0, state.map.height() - 1),
@@ -1101,10 +1100,15 @@ mod tests {
                 }
                 (Order::AttackMove { goal: left_goal }, Order::AttackMove { goal: right_goal }) => {
                     assert_eq!(
-                        mirror_tile(state, left_goal),
-                        right_goal,
+                        mirror_tile(state, left_goal.tile()),
+                        right_goal.tile(),
                         "{stage}: attack-move goal"
-                    )
+                    );
+                    assert_eq!(
+                        left_goal.endpoint.map(|tile| mirror_tile(state, tile)),
+                        right_goal.endpoint,
+                        "{stage}: attack-move endpoint"
+                    );
                 }
                 (Order::Idle, Order::Idle) => {}
                 orders => panic!("{stage}: orders are not paired: {orders:?}"),

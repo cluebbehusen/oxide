@@ -3,7 +3,8 @@
 
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind,
+    BuildingKind, Command, Event, Faction, Goal, Order, PlayerCommand, PlayerId, Scenario, State,
+    UnitKind,
 };
 
 /// A small arena: two Foundries in opposite corners, open ground between.
@@ -117,6 +118,29 @@ pub fn cmd(player: u8, command: Command) -> PlayerCommand {
     PlayerCommand {
         player: PlayerId(player),
         command,
+    }
+}
+
+/// `order` with every walking goal reduced to its commanded tile, so a test
+/// compares the program a player wrote without depending on how far the
+/// sim has resolved each goal.
+pub fn commanded(order: Order) -> Order {
+    let tile = |goal: Goal| Goal::at(goal.tile());
+    match order {
+        Order::Move { goal } => Order::Move { goal: tile(goal) },
+        Order::AttackMove { goal } => Order::AttackMove { goal: tile(goal) },
+        Order::Advance { goal } => Order::Advance { goal: tile(goal) },
+        Order::Unload { at } => Order::Unload { at: tile(at) },
+        Order::Attack {
+            target,
+            pursue,
+            resume,
+        } => Order::Attack {
+            target,
+            pursue,
+            resume: resume.map(tile),
+        },
+        other => other,
     }
 }
 

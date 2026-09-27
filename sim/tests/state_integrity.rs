@@ -399,10 +399,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidStallTicks(_) => 77,
         E::InvalidLeashClock(_) => 78,
         E::SandboxElimination => 79,
+        E::NonCanonicalGoal(_) => 80,
     }
 }
 
-const ROWS: usize = 80;
+const ROWS: usize = 81;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -495,6 +496,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidStallTicks(UnitId(0)),
         E::InvalidLeashClock(UnitId(0)),
         E::SandboxElimination,
+        E::NonCanonicalGoal(UnitId(0)),
     ]
 }
 
@@ -925,6 +927,58 @@ fn every_checklist_row_refuses_its_forgery() {
                 d["units"][0]["order"]["node"] = json!({"x": 15, "y": 8});
             },
             "unit u0 names a harvest source outside its work zone",
+        ),
+        (
+            "a walk endpoint at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["order"] = json!({
+                    "order": "move",
+                    "goal": {"x": 3, "y": 3, "endpoint": {"x": i32::MAX, "y": 3}},
+                });
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "an unload drop point at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["queue"] =
+                    json!([{"order": "unload", "at": {"x": 3, "y": i32::MIN}}]);
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "an attack resuming toward an endpoint at the far end of the coordinate space",
+            |d| {
+                let victim = d["units"][2]["id"].clone();
+                d["units"][0]["order"] = json!({
+                    "order": "attack",
+                    "target": {"kind": "unit", "id": victim},
+                    "resume": {"x": 3, "y": 3, "endpoint": {"x": 3, "y": i32::MIN}},
+                });
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "a walk storing its own target as its endpoint",
+            |d| {
+                d["units"][0]["queue"] = json!([{
+                    "order": "attack_move",
+                    "goal": {"x": 6, "y": 2, "endpoint": {"x": 6, "y": 2}},
+                }]);
+            },
+            "unit u0 stores an endpoint equal to its own goal",
+        ),
+        (
+            "an attack resuming toward its own target as its endpoint",
+            |d| {
+                let victim = d["units"][2]["id"].clone();
+                d["units"][0]["order"] = json!({
+                    "order": "attack",
+                    "target": {"kind": "unit", "id": victim},
+                    "resume": {"x": 6, "y": 2, "endpoint": {"x": 6, "y": 2}},
+                });
+            },
+            "unit u0 stores an endpoint equal to its own goal",
         ),
         (
             "an order against an id the run never minted",
@@ -1406,10 +1460,11 @@ fn a_ticked_state_survives_a_json_round_trip() {
 #[test]
 fn a_full_verb_run_stays_valid_every_tick() {
     let mut state = arena().build().unwrap();
-    let (harvester, bombard, sentinel) = (
+    let (harvester, bombard, sentinel, stray) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
+        state.units()[3].id,
     );
     let fabricator = BuildingId(state.buildings()[2].id.0);
     let tile = chassis::grid::TilePos::new;
@@ -1446,6 +1501,16 @@ fn a_full_verb_run_stays_valid_every_tick() {
                     Command::Train {
                         building: fabricator,
                         kind: UnitKind::Lancer,
+                    },
+                ),
+                // The turret site placed at tick 40 covers this goal before
+                // the walker arrives, so the walk ends beside it.
+                cmd(
+                    1,
+                    Command::Move {
+                        units: vec![stray],
+                        goal: tile(3, 4),
+                        queue: false,
                     },
                 ),
             ],
@@ -1498,7 +1563,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
     ];
 
     let (mut saw_shell, mut saw_site, mut saw_strip, mut saw_weld) = (false, false, false, false);
-    let mut saw_haul = false;
+    let (mut saw_haul, mut saw_short) = (false, false);
     let mut last_hp = state.building(fabricator).map(|b| b.hp);
     for tick in 0..1_200u32 {
         let commands = script
@@ -1506,9 +1571,19 @@ fn a_full_verb_run_stays_valid_every_tick() {
             .find(|(at, _)| *at == tick)
             .map(|(_, c)| c.clone())
             .unwrap_or_default();
-        state.tick(&commands);
+        let report = state.tick(&commands);
         state.validate_invariants().unwrap_or_else(|err| {
             panic!("tick {tick} produced a state the validator refuses: {err}")
+        });
+        saw_short |= report.events.iter().any(|event| {
+            matches!(
+                event,
+                oxide_sim::Event::OrderStalled {
+                    unit,
+                    reason: oxide_sim::StallReason::NoRoute,
+                    ..
+                } if *unit == stray
+            )
         });
         saw_shell |= !state.shells().is_empty();
         saw_haul |= state.units().iter().any(|u| u.carrying > 0);
@@ -1524,12 +1599,52 @@ fn a_full_verb_run_stays_valid_every_tick() {
     assert!(saw_site, "premise: a site stood unfinished");
     assert!(saw_strip, "premise: the Fabricator was stripped");
     assert!(saw_weld, "premise: the Fabricator was welded back");
+    assert!(saw_short, "premise: a walk ended short of a covered goal");
     assert!(
         state
             .building(fabricator)
             .is_some_and(|b| b.salvage_drained > 0 && b.salvage_credited > 0),
         "premise: the salvage ledger carries a real entry"
     );
+}
+
+#[test]
+fn an_off_map_ground_unit_with_an_unreachable_move_ticks_without_panicking() {
+    use chassis::fx::{Fx, Vec2Fx};
+    let mut base = snapshot();
+    // The accepted coordinate envelope reaches well past the map, so a
+    // body out there is a legal state that the endpoint scan must survive.
+    base["units"][0]["pos"] =
+        serde_json::to_value(Vec2Fx::new(Fx::from_num(-300), Fx::from_num(4))).unwrap();
+    base["units"][0]["order"] = json!({"order": "move", "goal": {"x": 6, "y": 2}});
+    base["units"][0]["queue"] = json!([{"order": "move", "goal": {"x": -2_000, "y": 2_000}}]);
+    for key in ["path", "leash", "stall_ticks", "drive_speed"] {
+        base["units"][0].as_object_mut().unwrap().remove(key);
+    }
+    let mut state: State = serde_json::from_value(base).expect("an off-map body is legal");
+    let stray = state.units()[0].id;
+    let mut reports = 0;
+    for _ in 0..5 {
+        let report = state.tick(&[]);
+        state.validate_invariants().unwrap();
+        reports += report
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    oxide_sim::Event::OrderStalled {
+                        unit,
+                        reason: oxide_sim::StallReason::NoRoute,
+                        ..
+                    } if *unit == stray
+                )
+            })
+            .count();
+    }
+    let unit = state.unit(stray).expect("the stray survives");
+    assert_eq!(unit.order, oxide_sim::Order::Idle);
+    assert_eq!(reports, 2, "each sealed leg ends short once");
 }
 
 #[test]

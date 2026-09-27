@@ -157,7 +157,10 @@ The lift planner grows its payload and matching Skyhook target during Provision,
 then freezes exact manifests when Boarding begins. Carrier demand follows
 payload and usable landing capacity rather than an arbitrary controller cap,
 while a ground-capable reserve remains at home instead of being stripped into a
-bulk lift.
+bulk lift. Drop planning treats unexplored peaks as open sky. A carrier whose
+drop proves sealed in flight sets its riders down as close to it as the sky
+allows and returns empty; only riders that can still reach the drop join the
+assault.
 
 The wealthy island air operation also has a separate admission gate of 12
 currently armed units. That standing-roster check establishes readiness to open

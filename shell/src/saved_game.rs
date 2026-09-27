@@ -119,6 +119,22 @@ fn check_header(header: &Header) -> Result<()> {
 }
 
 pub(crate) fn prepare_load(path: &Path) -> Result<RestoredGame> {
+    let (header, payload) = read_payload(path)?;
+    let mut reader = payload.as_slice();
+    let checkpoint: GameCheckpoint = ciborium::from_reader(&mut reader)?;
+    ensure!(reader.is_empty(), "trailing checkpoint payload");
+    let game = checkpoint.restore()?;
+    ensure!(
+        header.meta.ticks == Some(game.tick())
+            && header.map == game.scenario().name
+            && header.seats == game.scenario().players.len(),
+        "save metadata does not match session"
+    );
+    Ok(game)
+}
+
+/// The checked header and decompressed checkpoint bytes of a player save.
+fn read_payload(path: &Path) -> Result<(Header, Vec<u8>)> {
     let mut file =
         std::fs::File::open(path).with_context(|| format!("loading save {}", path.display()))?;
     let len = file.metadata()?.len();
@@ -148,17 +164,7 @@ pub(crate) fn prepare_load(path: &Path) -> Result<RestoredGame> {
         payload.len() as u64 == header.decoded_bytes,
         "decoded payload length mismatch"
     );
-    let mut reader = payload.as_slice();
-    let checkpoint: GameCheckpoint = ciborium::from_reader(&mut reader)?;
-    ensure!(reader.is_empty(), "trailing checkpoint payload");
-    let game = checkpoint.restore()?;
-    ensure!(
-        header.meta.ticks == Some(game.tick())
-            && header.map == game.scenario().name
-            && header.seats == game.scenario().players.len(),
-        "save metadata does not match session"
-    );
-    Ok(game)
+    Ok((header, payload))
 }
 
 #[cfg(test)]
@@ -408,6 +414,55 @@ mod tests {
         malformed[8..12].copy_from_slice(&((MAX_HEADER + 1) as u32).to_le_bytes());
         std::fs::write(&path.0, malformed).unwrap();
         assert!(prepare_load(&path.0).is_err());
+    }
+
+    /// Walking orders gained optional fields; the world inside a retained
+    /// same-version save written before them must still restore and play.
+    /// Only the simulation state is decoded: the fixture is a profiling
+    /// checkpoint, and controller memory is not held to its format.
+    #[test]
+    fn the_world_in_the_retained_late_skyhook_save_restores_and_plays_on() {
+        fn field<'a>(value: &'a ciborium::Value, name: &str) -> &'a ciborium::Value {
+            value
+                .as_map()
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|(key, _)| key.as_text() == Some(name))
+                        .map(|(_, value)| value)
+                })
+                .unwrap_or_else(|| panic!("the checkpoint carries `{name}`"))
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../driver/tests/fixtures/performance/skyhook-late.oxsave");
+        let (_, payload) = read_payload(&path).expect("the retained save decodes");
+        let checkpoint: ciborium::Value = ciborium::from_reader(payload.as_slice()).unwrap();
+        let mut state: oxide_sim::State = field(field(&checkpoint, "session"), "state")
+            .deserialized()
+            .expect("the saved world restores");
+        assert!(
+            state.units().iter().any(|unit| matches!(
+                unit.order,
+                oxide_sim::Order::Move { .. }
+                    | oxide_sim::Order::AttackMove { .. }
+                    | oxide_sim::Order::Attack {
+                        resume: Some(_),
+                        ..
+                    }
+            )),
+            "premise: the save holds walking orders in their older shape"
+        );
+        state
+            .validate_invariants()
+            .expect("the saved world is valid");
+        let start = state.current_tick();
+        for _ in 0..5 {
+            state.tick(&[]);
+            state
+                .validate_invariants()
+                .expect("the continued world is valid");
+        }
+        assert_eq!(state.current_tick(), start + 5);
     }
 
     #[test]

@@ -144,7 +144,7 @@ pub(super) fn build(
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
-        unit.clear_program();
+        unit.drop_active_order();
         events.push(Event::OrderStalled {
             unit: id,
             player,
@@ -187,7 +187,7 @@ pub(super) fn found(
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let pos = unit.pos;
-        unit.clear_program();
+        unit.drop_active_order();
         events.push(Event::OrderStalled {
             unit: id,
             player,
@@ -294,7 +294,7 @@ pub(super) fn repair(
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
-        unit.clear_program();
+        unit.drop_active_order();
         events.push(Event::OrderStalled {
             unit: id,
             player,
@@ -522,7 +522,7 @@ fn chase_patient(state: &mut State, id: UnitId, patient_tile: TilePos, events: &
         None => {
             let unit = state.unit_mut(id).expect("caller checked");
             let (player, pos) = (unit.player, unit.pos);
-            unit.clear_program();
+            unit.drop_active_order();
             events.push(Event::OrderStalled {
                 unit: id,
                 player,
@@ -578,7 +578,7 @@ pub(super) fn salvage(
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
-        unit.clear_program();
+        unit.drop_active_order();
         events.push(Event::OrderStalled {
             unit: id,
             player,

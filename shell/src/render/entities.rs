@@ -152,7 +152,7 @@ pub(crate) fn breadcrumb_points(
         let goal = match order {
             oxide_sim::Order::Move { goal }
             | oxide_sim::Order::Advance { goal }
-            | oxide_sim::Order::AttackMove { goal } => *goal,
+            | oxide_sim::Order::AttackMove { goal } => goal.tile(),
             oxide_sim::Order::Harvest { node, .. } => *node,
             oxide_sim::Order::ReturnCargo { foundry, .. } => game.state.building(*foundry)?.anchor,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
@@ -163,7 +163,7 @@ pub(crate) fn breadcrumb_points(
             // A weld patient is the viewer's own machine — always seen.
             oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
-            oxide_sim::Order::Unload { at } => *at,
+            oxide_sim::Order::Unload { at } => at.tile(),
             oxide_sim::Order::Land { goal } => *goal,
             oxide_sim::Order::Attack { target, .. } => {
                 let view = game.state.attack_view(game.presentation.human, *target)?;

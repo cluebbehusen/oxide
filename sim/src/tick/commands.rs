@@ -11,7 +11,7 @@ use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
 use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
-use crate::state::{Order, State, Unit};
+use crate::state::{Goal, Order, State, Unit};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
 
@@ -279,12 +279,7 @@ fn end_station_keeping(unit: &mut crate::state::Unit) {
 /// completion.
 fn remove_active_order(unit: &mut crate::state::Unit) {
     end_station_keeping(unit);
-    unit.order = unit.queue.pop_front().unwrap_or(Order::Idle);
-    if matches!(unit.order, Order::Idle) {
-        unit.looping = false;
-    }
-    unit.path = None;
-    unit.progress = 0;
+    unit.drop_active_order();
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
@@ -304,13 +299,14 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     if !queue {
         unit.queue.clear();
         unit.looping = false;
-        // Reissuing the exact current order is a no-op past the queue
-        // wipe: progress and path survive. Resetting them let a
+        // Reissuing the current order is a no-op past the queue wipe:
+        // the order, progress, and path survive. Resetting them let a
         // re-commanded welder heal forever without ever crossing a
         // billing tick, dropped a re-clicked harvester's half-extracted
         // scrap, and threw away perfectly good paths on every army
-        // re-push.
-        if unit.order == order {
+        // re-push. A walk matches on its commanded tile, so it also keeps
+        // the endpoint it has resolved.
+        if unit.order.reissue_matches(&order) {
             return true;
         }
     }
@@ -468,7 +464,7 @@ fn apply_group_goal(
     units: &[UnitId],
     goal: TilePos,
     queue: bool,
-    order_for: impl Fn(&Unit, TilePos) -> Order,
+    order_for: impl Fn(&Unit, Goal) -> Order,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, goal) {
         return Err(RejectReason::OutOfBounds);
@@ -491,7 +487,7 @@ fn apply_group_goal(
         let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
         for (id, goal) in ids.into_iter().zip(goals) {
             let unit = state.unit_mut(id).expect("filtered above");
-            let order = order_for(unit, goal);
+            let order = order_for(unit, Goal::at(goal));
             if assign(unit, order, queue) {
                 landed += 1;
             }
@@ -556,7 +552,7 @@ fn apply_attack(
                 landed += 1;
             }
         } else if let Some(goal) = walk_goals[(stats.domain == Domain::Air) as usize]
-            && assign(u, Order::Move { goal }, queue)
+            && assign(u, Order::Move { goal: goal.into() }, queue)
         {
             landed += 1;
         }
@@ -679,7 +675,8 @@ fn apply_patrol(
         for id in ids {
             let unit = state.unit_mut(id).expect("filtered above");
             let can_fight = unit.kind.stats().can_fight();
-            let legs = snapped.iter().map(|&goal| {
+            let legs = snapped.iter().map(|&tile| {
+                let goal = Goal::at(tile);
                 if can_fight {
                     Order::AttackMove { goal }
                 } else {
@@ -1268,10 +1265,8 @@ fn apply_unload(
         return Err(RejectReason::InvalidTarget);
     }
     // Lower the destination through the same goal snap every air route
-    // takes. Storing a raw peak (or off-map) goal would leave the order
-    // pointing at ground the flyer can never occupy: routing snaps the
-    // flight, arrival never matches the order, and the transport orbits
-    // its endpoint without unloading.
+    // takes, so the stored drop point names sky the transport can occupy
+    // and ground around it to set riders down on.
     let domain = t.kind.stats().domain;
     let at = if state.passable_for(domain, at) {
         at
@@ -1281,7 +1276,7 @@ fn apply_unload(
         return Err(RejectReason::OutOfBounds);
     };
     let unit = state.unit_mut(transport).expect("just seen");
-    if assign(unit, Order::Unload { at }, queue) {
+    if assign(unit, Order::Unload { at: at.into() }, queue) {
         Ok(())
     } else {
         Err(RejectReason::QueueFull)

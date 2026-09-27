@@ -217,6 +217,7 @@ impl Brain {
             rear,
             tuning.coordinated_focus,
             tuning.coordinated_defense_focus,
+            Some(&self.mind.public_map),
         );
         let maintenance_commands = commands.len();
         let oriented = orientation.observe(obs);

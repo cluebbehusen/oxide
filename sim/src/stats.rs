@@ -2302,6 +2302,11 @@ pub const ROUTE_LOOKAHEAD: usize = 6;
 /// click point.
 pub const ARRIVAL_NEAR: Fx = Fx::lit("1.5");
 
+/// How far from an unreachable goal's endpoint a parked crowd may extend and
+/// still end a walk that touches it. Endpoints sit on the edge of reachable
+/// ground, where [`ARRIVAL_NEAR`] alone leaves room for only a few bodies.
+pub const CROWD_CHAIN_REACH: Fx = Fx::lit("16");
+
 /// Collision share taken by an anchored unit (extracting or firing from a
 /// hold); the mover takes the rest. Passers-by flow around workers.
 pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");

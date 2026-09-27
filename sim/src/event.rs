@@ -263,16 +263,17 @@ pub enum Event {
         /// Why.
         reason: RejectReason,
     },
-    /// A unit silently gave up an order because no route exists. Fired so
-    /// shells can say so instead of leaving the player wondering.
+    /// A unit ended an order without doing what it was asked: it stopped as
+    /// close as it could get to an unreachable goal, or it gave the order up.
+    /// Fired so shells can say so instead of leaving the player wondering.
     OrderStalled {
-        /// The unit that gave up.
+        /// The unit that stopped.
         unit: UnitId,
         /// Its owner (shells filter to the local player).
         player: PlayerId,
-        /// Where it stood when it gave up.
+        /// Where it stood when it stopped.
         pos: Vec2Fx,
-        /// Why the program died — own-state facts only (routes, banks,
+        /// Why the order ended — own-state facts only (routes, banks,
         /// footing); a reason must never reveal what fog hides.
         reason: StallReason,
     },
@@ -335,7 +336,10 @@ pub struct GroundMotion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StallReason {
-    /// No route to the goal (or to any doorstep of the work site).
+    /// The goal (or every doorstep of the work site) is out of reach. A
+    /// walk ends on the reachable tile nearest its goal and its program
+    /// continues; a patrol lap passes silently. Other orders drop only
+    /// themselves, except a chase, which ends the whole program.
     NoRoute,
     /// No standable tile within weapon reach of the victim.
     NoFiringPosition,

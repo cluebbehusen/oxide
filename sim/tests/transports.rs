@@ -468,7 +468,7 @@ fn a_boarder_walks_to_reachable_ground_beside_a_sling_over_a_building() {
 }
 
 #[test]
-fn a_loaded_sling_stands_down_when_peaks_seal_its_air_route() {
+fn a_sling_sealed_in_by_peaks_unloads_as_close_as_it_can_get() {
     let map = vec![
         "########################".into(),
         "#1.....................#".into(),
@@ -502,25 +502,120 @@ fn a_loaded_sling_stands_down_when_peaks_seal_its_air_route() {
     )]);
     assert!(state.unit(rider).is_none(), "premise: the rider is aboard");
 
-    let report = state.tick(&[cmd(
-        0,
-        Command::Unload {
-            transport: sky,
-            at: TilePos::new(18, 4),
-            queue: false,
-        },
-    )]);
-    assert!(report.events.iter().any(|event| matches!(
-        event,
-        Event::OrderStalled {
-            unit,
-            reason: oxide_sim::event::StallReason::NoRoute,
-            ..
-        } if *unit == sky
-    )));
+    let mut events = state
+        .tick(&[cmd(
+            0,
+            Command::Unload {
+                transport: sky,
+                at: TilePos::new(18, 4),
+                queue: false,
+            },
+        )])
+        .events;
+    for _ in 0..100 {
+        if state.unit(sky).unwrap().cargo.is_empty() {
+            break;
+        }
+        events.extend(state.tick(&[]).events);
+    }
+    let no_routes = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::OrderStalled {
+                    unit,
+                    reason: oxide_sim::event::StallReason::NoRoute,
+                    ..
+                } if *unit == sky
+            )
+        })
+        .count();
+    assert_eq!(no_routes, 1, "the shortfall is reported once");
     let transport = state.unit(sky).expect("the airframe survives");
     assert_eq!(transport.order, Order::Idle);
-    assert_eq!(transport.cargo.len(), 1, "a failed flight loses no cargo");
+    assert!(transport.cargo.is_empty(), "the riders are set down");
+    assert_eq!(
+        transport.tile(),
+        TilePos::new(13, 4),
+        "the flight ends inside the ring, nearest the drop point"
+    );
+    let dropped = state.unit(rider).expect("the rider is back in the world");
+    let tile = dropped.tile();
+    assert!(
+        (11..=13).contains(&tile.x) && (3..=5).contains(&tile.y),
+        "the rider lands inside the ring: {tile:?}"
+    );
+}
+
+#[test]
+fn a_boarding_walk_that_cannot_be_routed_yields_to_the_queued_move() {
+    let map = vec![
+        "########################".into(),
+        "#1.........#...........#".into(),
+        "#..........#...........#".into(),
+        "#..........#...........#".into(),
+        "#..........#...........#".into(),
+        "#..........#.......2...#".into(),
+        "#..........#...........#".into(),
+        "########################".into(),
+    ];
+    let mut scenario = arena(
+        map,
+        vec![
+            unit(0, UnitKind::Skyhook, 16, 3),
+            unit(0, UnitKind::Sentinel, 4, 3),
+        ],
+    );
+    scenario.mode = oxide_sim::scenario::ScenarioMode::Sandbox;
+    let mut state = scenario.build().unwrap();
+    let sky = state.units()[0].id;
+    let rider = state.units()[1].id;
+    let home = TilePos::new(2, 5);
+    let mut events = state
+        .tick(&[
+            cmd(
+                0,
+                Command::Load {
+                    units: vec![rider],
+                    transport: sky,
+                    queue: false,
+                },
+            ),
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![rider],
+                    goal: home,
+                    queue: true,
+                },
+            ),
+        ])
+        .events;
+    for _ in 0..300 {
+        let walker = state.unit(rider).expect("the rider never boards");
+        if walker.order == Order::Idle && walker.tile() == home {
+            break;
+        }
+        events.extend(state.tick(&[]).events);
+    }
+    let walker = state.unit(rider).unwrap();
+    assert_eq!(walker.order, Order::Idle);
+    assert_eq!(walker.tile(), home, "the queued move ran");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                Event::OrderStalled {
+                    unit,
+                    reason: oxide_sim::event::StallReason::NoRoute,
+                    ..
+                } if *unit == rider
+            ))
+            .count(),
+        1
+    );
 }
 
 #[test]

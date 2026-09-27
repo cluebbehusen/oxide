@@ -28,6 +28,11 @@ provisional, nonblocking scaffolds until full visibility verifies the ground.
 Invalid sites and sites abandoned by their last worker before work starts refund
 in full; activation keeps the same site identity and never charges again.
 
+A walk whose goal cannot be reached stops on the reachable tile nearest it,
+completes, and lets its program continue, reporting `OrderStalled { NoRoute }`
+once. Other orders that cannot be routed drop only themselves; a refused chase,
+an empty bank, or a full sling still ends the whole program.
+
 Repair and salvage share one damage-first building-work resolver and remain
 mutually exclusive. Completed Repair Bays automatically heal nearby owned units
 before completed buildings, use the ordinary player bank, and skip structures
