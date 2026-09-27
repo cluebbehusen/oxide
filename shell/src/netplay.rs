@@ -19,9 +19,9 @@ use std::time::Duration;
 /// After this long without a new tick, the waiting player is told why.
 const WAIT_NOTICE: Duration = Duration::from_millis(500);
 
-/// How long a host keeps its connections open after halting on a desync,
-/// so every client hears why.
-const DESYNC_GRACE: Duration = Duration::from_secs(2);
+/// How long a host keeps finished connections open so every client hears
+/// the last lines: a desync halt, or the batches that decided the match.
+const CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// Why a running match ended for this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +135,42 @@ impl Link {
             Link::Client(client) => client.pump(game, now),
         }
     }
+
+    /// Leaves the match. A host of a decided match finishes its connections
+    /// and hands them back to flush, so a client still behind receives the
+    /// deciding batches instead of losing its host. Anything else drops at
+    /// once: a client's seat surrenders, and an undecided host ends the match.
+    pub(crate) fn leave(self, game: &Game, now: Duration) -> Option<Lingering> {
+        match self {
+            Link::Host(host) if game.state.result().is_some() => Some(Lingering {
+                peers: host
+                    .peers
+                    .into_iter()
+                    .map(|(_, mut connection)| {
+                        connection.finish();
+                        connection
+                    })
+                    .collect(),
+                since: now,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// A departed host's finished connections, flushing their last lines.
+pub(crate) struct Lingering {
+    peers: Vec<Connection>,
+    since: Duration,
+}
+
+impl Lingering {
+    /// Drains the connections; false once every one closed or the grace ran
+    /// out.
+    pub(crate) fn pump(&mut self, now: Duration) -> bool {
+        self.peers.retain(|connection| drain(connection).is_ok());
+        !self.peers.is_empty() && now.saturating_sub(self.since) < CLOSE_GRACE
+    }
 }
 
 impl HostLink {
@@ -143,7 +179,7 @@ impl HostLink {
         if let Some((since, end)) = self.closing {
             self.peers
                 .retain(|(_, connection)| drain(connection).is_ok());
-            let done = self.peers.is_empty() || now.saturating_sub(since) >= DESYNC_GRACE;
+            let done = self.peers.is_empty() || now.saturating_sub(since) >= CLOSE_GRACE;
             if done && end.is_some() {
                 self.peers.clear();
                 self.closing = Some((since, None));
@@ -910,6 +946,48 @@ mod tests {
         assert!(lan.client.0.state.result().is_some());
         assert_eq!(lan.client.0.state.hash(), lan.host.0.state.hash());
         assert_eq!(recorded(&lan.client.0), recorded(&lan.host.0));
+    }
+
+    #[test]
+    fn a_host_leaving_a_decided_match_still_delivers_the_result() {
+        let mut lan = Match::start(duel());
+        lan.run(3);
+        lan.host.0.issue(Command::Surrender);
+        while lan.host.0.state.result().is_none() {
+            lan.step_host();
+        }
+        let Match {
+            mut now,
+            host: (host, link),
+            client: (mut client, mut client_link),
+        } = lan;
+        let mut lingering = link.leave(&host, now).expect("a decided host lingers");
+        wait(|| {
+            now += STEP;
+            thread::sleep(Duration::from_millis(1));
+            lingering.pump(now);
+            assert_eq!(client_link.pump(&mut client, now), None, "no host loss");
+            matches!(
+                &client_link,
+                Link::Client(ClientLink {
+                    connection: None,
+                    ..
+                })
+            )
+            .then_some(())
+        });
+        assert_eq!(client.state.hash(), host.state.hash());
+        wait(|| (!lingering.pump(now)).then_some(()));
+
+        let mut lan = Match::start(duel());
+        lan.run(3);
+        let (host, link) = lan.host;
+        assert!(
+            link.leave(&host, lan.now).is_none(),
+            "undecided: drop at once"
+        );
+        let (client, link) = lan.client;
+        assert!(link.leave(&client, lan.now).is_none());
     }
 
     #[test]

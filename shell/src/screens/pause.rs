@@ -288,6 +288,11 @@ impl PauseScreen {
         self
     }
 
+    /// Whether the rows were built for a decided match.
+    pub fn decided(&self) -> bool {
+        self.rows.contains(&Row::WatchReplay)
+    }
+
     /// Whether the confirmation dialog is up (for the mode report).
     pub fn confirming(&self) -> bool {
         self.confirming.is_some()
