@@ -1351,8 +1351,8 @@ impl CommittedCluster {
             .find(|unit| unit.kind == UnitKind::Kestrel && unit.tile() == TilePos::new(9, 18))
             .expect("the operation scout waits at home")
             .id;
-        let strategy =
-            StrategicPlanner::committed_cluster_fixture(crate::strategy::CommittedClusterFixture {
+        let strategy = StrategicPlanner::committed_cluster_fixture(
+            crate::strategy::fixtures::CommittedClusterFixture {
                 faction: Faction::Ferrous,
                 primary: (primary, BuildingKind::Crucible, CLUSTER_PRIMARY),
                 members: vec![CLUSTER_PRIMARY, CLUSTER_AIRWORKS, CLUSTER_FABRICATOR],
@@ -1361,7 +1361,8 @@ impl CommittedCluster {
                 scout,
                 artillery: own(UnitKind::Bombard),
                 strike_aircraft: condors.clone(),
-            });
+            },
+        );
         let brain = scripted_brain(&scenario, PlayerId(0), config)
             .restore_with_strategy(strategy, &scenario, &state)
             .expect("the staged operation is a valid controller checkpoint");
@@ -1550,7 +1551,7 @@ fn committed_strike_records_the_objective_gone_only_once_the_cluster_is_gone() {
     battle.act_next();
     assert_eq!(battle.operation().phase(), AirOperationPhase::Strike);
     assert!(
-        (battle.brain.mind().strategy).outcomes.pending.is_empty(),
+        (battle.brain.mind().strategy).outcomes().pending.is_empty(),
         "losing the primary does not complete a cluster with live members"
     );
 
@@ -1574,7 +1575,7 @@ fn committed_strike_records_the_objective_gone_only_once_the_cluster_is_gone() {
         Some(AirRecoveryReason::Complete)
     );
     let report = (battle.brain.mind().strategy)
-        .outcomes
+        .outcomes()
         .pending
         .last()
         .expect("completion reports the episode");

@@ -212,11 +212,21 @@ impl PauseScreen {
             .is_some_and(TextField::take_keyboard_request)
     }
 
+    /// Draws the menu while a save this screen asked for runs: the same
+    /// dialog, dimmed, saying so, so leaving never flashes another screen.
+    pub fn draw_saving(&self, line: &str) {
+        self.menu.draw_busy(line);
+    }
+
     /// Draws the current face: the menu, or the name field with its
     /// Save and Cancel buttons.
     pub fn draw(&self, scenario_name: &str, mouse: Vec2) {
         match &self.naming {
-            Some(field) => field.draw(naming_hint(crate::platform::TOUCH_ONLY), mouse),
+            Some(field) => field.draw(
+                naming_hint(crate::platform::TOUCH_ONLY),
+                crate::hints::fade(crate::theme::TEXT_SECONDARY),
+                mouse,
+            ),
             None => self.menu.draw(self.subtitle(scenario_name)),
         }
     }

@@ -1095,10 +1095,14 @@ impl Wizard {
             TEXT_TITLE,
         );
         if !compact {
-            let sub = format!(
-                "{} - pick your seat, opponents, factions, and teams",
-                scenario.name
-            );
+            let sub = if crate::hints::showing() {
+                format!(
+                    "{} - pick your seat, opponents, factions, and teams",
+                    scenario.name
+                )
+            } else {
+                scenario.name.clone()
+            };
             let sdims = measure_text(&sub, None, (18.0 * ui) as u16, 1.0);
             draw_text(
                 &sub,
@@ -1416,10 +1420,11 @@ impl Wizard {
                 (view.x - hdims.width) * 0.5,
                 view.y - 20.0 * ui,
                 16.0 * ui,
+                // The one-team warning is information, not coaching.
                 if one_team {
                     TEXT_DANGER
                 } else {
-                    TEXT_SECONDARY
+                    crate::hints::fade(TEXT_SECONDARY)
                 },
             );
         }

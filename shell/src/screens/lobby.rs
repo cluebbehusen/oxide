@@ -135,7 +135,9 @@ impl LobbyScreen {
     /// Draws the field or the status and Cancel.
     pub fn draw(&self, mouse: Vec2) {
         match &self.face {
-            Face::Address { field, .. } => field.draw(&self.subtitle(), mouse),
+            Face::Address { field, .. } => {
+                field.draw(&self.subtitle(), crate::theme::TEXT_SECONDARY, mouse);
+            }
             Face::Waiting(_) => self.menu.draw(&self.subtitle()),
         }
     }

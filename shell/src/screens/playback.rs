@@ -302,6 +302,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2, mouse: Vec2) {
     // numbers alone must never run off both edges. A touch-only build
     // has no keys to hint at.
     let line = if crate::platform::TOUCH_ONLY
+        || !crate::hints::showing()
         || measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s
     {
         format!(

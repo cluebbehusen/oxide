@@ -68,11 +68,12 @@ fn failed_allocation_preserves_pressure_age_through_closed_admission() {
         let mut intelligence = StrategicIntelligence::new();
         intelligence.update(&obs);
         let mut trace = AllocationTrace::default();
+        let session_context = setup.context(&obs, home, &map, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&obs, home, &map, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 team: &mut team,
                 lifts: &mut lifts,
                 raids: &mut raids,
@@ -158,11 +159,12 @@ fn accepted_operations_keep_return_orders_and_losses_when_capital_is_rejected() 
                         &[],
                     ));
             }
+            let session_context = setup.context(&obs, home, &map, &intelligence);
             AllocationSession::new(
-                setup.context(&obs, home, &map, &intelligence),
+                session_context,
                 AllocationParticipants {
                     policy: &mut policy,
-                    strategy: &mut strategy,
+                    strategy: strategy.observe(air_evidence(&session_context)),
                     team: &mut team,
                     lifts: &mut lifts,
                     raids: &mut raids,
@@ -211,11 +213,12 @@ fn accepted_operations_keep_return_orders_and_losses_when_capital_is_rejected() 
                 work.team_started_at = started_at;
                 work.team_decision = team.maintain(&setup.profile, setup.tuning, &obs, home, &[]);
             }
+            let session_context = setup.context(&obs, home, &map, &intelligence);
             let mut session = AllocationSession::new(
-                setup.context(&obs, home, &map, &intelligence),
+                session_context,
                 AllocationParticipants {
                     policy: &mut policy,
-                    strategy: &mut strategy,
+                    strategy: strategy.observe(air_evidence(&session_context)),
                     team: &mut team,
                     lifts: &mut lifts,
                     raids: &mut raids,

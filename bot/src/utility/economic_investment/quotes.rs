@@ -636,30 +636,25 @@ impl<'a> EconomicQuotes<'a> {
                             tier: 0,
                             seen: true,
                         };
-                        let request = crate::strategy::FreshConnectedProposalRequest::new(
-                            context.profile,
-                            DifficultyTuning::for_level(context.profile.difficulty),
+                        let evidence = crate::strategy::AirEvidence {
+                            profile: context.profile,
+                            tuning: DifficultyTuning::for_level(context.profile.difficulty),
                             obs,
-                            context.resources,
-                            intelligence,
+                            intel: intelligence,
                             home,
-                            crate::strategy::StrategicCoordination {
-                                planning: Some(&policy.planning),
-                                enlisted: context.unavailable,
-                                lift_support: None,
-                                allow_new_operation: true,
-                                protected_current_scrap: context.protected_scrap,
-                                protected_forecast_scrap:
-                                    crate::allocation::forecast_reserve_through(
-                                        context.obligations,
-                                        deadline,
-                                    ),
-                                public_map: Some(context.briefing),
-                                orientation: context.orientation,
-                            },
-                        );
+                            public_map: Some(context.briefing),
+                            orientation: context.orientation,
+                        };
+                        let reserve = crate::strategy::CapitalReserve {
+                            current: context.protected_scrap,
+                            forecast: crate::allocation::forecast_reserve_through(
+                                context.obligations,
+                                deadline,
+                            ),
+                        };
                         if let Some(benefit) = crate::strategy::prospective_airworks_package_value(
-                            request,
+                            evidence,
+                            reserve,
                             candidate,
                             &airworks_sites,
                             delay,

@@ -43,7 +43,7 @@ pub(super) struct OperationContext<'a> {
 }
 
 pub(super) struct OperationParticipants<'a> {
-    pub(super) strategy: &'a mut StrategicPlanner,
+    pub(super) strategy: &'a StrategicPlanner,
     pub(super) lifts: &'a mut LiftPlanner,
     pub(super) team: &'a mut TeamReliefPlanner,
     pub(super) raids: &'a mut RaidPlanner,

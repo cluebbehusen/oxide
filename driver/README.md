@@ -49,6 +49,8 @@ exporter's identity. Source archives report unknown provenance.
   combat behavior.
 - `auto`, `smoke`, `shots`, and `profile` exercise the real shell where a
   headless run is not enough.
+- `ios` (aliased as `cargo ios`) builds, installs, and launches the iPad app on
+  a paired iPad or an iPad simulator.
 
 Run `oxide-driver --help` for the current command tree. Procedures for live
 shell QA belong in the repository's `oxide-live-qa` skill rather than here.

@@ -5,7 +5,7 @@ use crate::game::SoundKind;
 use crate::menu::Menu;
 use crate::press::{Fed, Press};
 use macroquad::prelude::{
-    Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text, measure_text,
+    Color, Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text, measure_text,
 };
 use oxide_protocol::{Key, RawEvent};
 
@@ -168,8 +168,10 @@ impl TextField {
         Edit::Stay
     }
 
-    /// Draws the title, `hint` under it, the field, and its buttons.
-    pub fn draw(&self, hint: &str, mouse: Vec2) {
+    /// Draws the title, `hint` under it in `hint_color`, the field, and
+    /// its buttons. Coaching passes a faded color; a notice such as a
+    /// failure passes a plain one, since warnings never wait.
+    pub fn draw(&self, hint: &str, hint_color: Color, mouse: Vec2) {
         let s = crate::render::ui_scale();
         let view = crate::render::viewport();
         let layout = layout(view, s);
@@ -189,7 +191,7 @@ impl TextField {
             (view.x - dims.width) * 0.5,
             layout.hint_y,
             hint_size,
-            crate::theme::TEXT_SECONDARY,
+            hint_color,
         );
         let field = layout.field;
         draw_rectangle(

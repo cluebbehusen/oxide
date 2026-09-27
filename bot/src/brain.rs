@@ -8,7 +8,7 @@
 //! units and lower intents to commands.
 
 use super::PublicMapBriefing;
-use super::allocation::AllocationParticipants;
+use super::allocation::DecisionParticipants;
 use super::difficulty::DifficultyTuning;
 use super::executive::Executive;
 use super::intelligence::StrategicIntelligence;
@@ -245,7 +245,7 @@ impl Brain {
                 mind.experience.report(report);
             }
             for journal in [
-                &mut mind.strategy.outcomes,
+                mind.strategy.outcomes_mut(),
                 &mut mind.lifts.outcomes,
                 &mut mind.raids.outcomes,
                 &mut mind.team.outcomes,
@@ -364,7 +364,7 @@ impl Brain {
                 armies: &armies,
                 enlisted: &enlisted,
             },
-            AllocationParticipants {
+            DecisionParticipants {
                 policy: &mut self.policy,
                 strategy,
                 lifts,

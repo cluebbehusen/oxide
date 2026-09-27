@@ -2107,11 +2107,11 @@ mod tests {
     };
     use crate::observation::{BuildingObs, UnitObs};
     use crate::profile::PersonalityTraits;
+    use crate::strategy::fixtures::FreshConnectedProposalFixture;
     use crate::strategy::{
         ConnectedConfidence, ConnectedExecutionSafety, ConnectedOffenseClaims,
         ConnectedOpportunityCase, ConnectedProviderJob, ConnectedStrategicValue,
         ConnectedTimeToImpact, ConnectedUrgency, FreshConnectedProposal,
-        FreshConnectedProposalFixture,
     };
     use chassis::grid::TilePos;
     use oxide_sim::ids::PlayerId;

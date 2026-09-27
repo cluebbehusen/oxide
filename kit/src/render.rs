@@ -32,6 +32,7 @@ const PIT: u32 = 0x0B0B10;
 const PIT_RIM: u32 = 0x1B1B22;
 const SCRAP_FULL: u32 = 0xD9A441;
 const SCRAP_LOW: u32 = 0x8C6A2F;
+const FRAME: u32 = 0x3E3E48;
 const HP_BACK: u32 = 0x141418;
 const HP_FRONT: u32 = 0xE8E4D8;
 
@@ -145,6 +146,22 @@ pub fn render_state(state: &State) -> Pixmap {
         }
     }
 
+    // Derelict Extractor frames: a gray block rimmed in scrap gold, so a
+    // rebuildable site never reads as rock. A rebuilt Extractor covers it.
+    for frame in state.map().extractor_frames() {
+        let (x, y) = (frame.x as f32 * TILE_PX, frame.y as f32 * TILE_PX);
+        let size = 2.0 * TILE_PX;
+        fill_rect(
+            &mut pixmap,
+            x + 1.0,
+            y + 1.0,
+            size - 2.0,
+            size - 2.0,
+            SCRAP_FULL,
+        );
+        fill_rect(&mut pixmap, x + 3.0, y + 3.0, size - 6.0, size - 6.0, FRAME);
+    }
+
     for building in state.buildings() {
         let color = faction_color(state.player(building.player).faction);
         let (w, h) = building.stats().size;
@@ -238,6 +255,32 @@ mod tests {
             state.map().height() as u32 * TILE_PX as u32
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_extractor_frame_draws_as_a_gold_rimmed_block_unlike_rock() {
+        let state = oxide_sim::Scenario::skirmish().build().unwrap();
+        let frame = *state
+            .map()
+            .extractor_frames()
+            .iter()
+            .find(|frame| {
+                !state
+                    .buildings()
+                    .iter()
+                    .any(|building| building.anchor == **frame)
+            })
+            .expect("an open extractor frame");
+        let pixmap = render_state(&state);
+        let at = |dx: f32, dy: f32| {
+            let x = (frame.x as f32 * TILE_PX + dx) as u32;
+            let y = (frame.y as f32 * TILE_PX + dy) as u32;
+            let p = pixmap.pixel(x, y).expect("inside the map");
+            (u32::from(p.red()) << 16) | (u32::from(p.green()) << 8) | u32::from(p.blue())
+        };
+        assert_eq!(at(1.0, 1.0), SCRAP_FULL, "the rim");
+        assert_eq!(at(TILE_PX, TILE_PX), FRAME, "the block");
+        assert_ne!(FRAME, ROCK);
     }
 
     #[test]

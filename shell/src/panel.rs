@@ -27,6 +27,11 @@ pub enum CardIcon {
     Building(BuildingKind, u8),
     /// A verb pictogram from the atlas's icon family.
     Verb(VerbIcon),
+    /// A salvage pile: a wreck, or a scrap node.
+    Salvage {
+        /// Whether it is a wreck rather than a scrap node.
+        wreck: bool,
+    },
     /// An order chip that knows what it acts on: the subject's own
     /// sprite under a corner verb badge. Orders with no subject
     /// (Idle, Move, Advance, Attack-move, Harvest) stay plain
@@ -844,7 +849,28 @@ fn construction_summary(back_key: &str, touch_only: bool) -> String {
     }
 }
 
+/// An inspected salvage tile: read-only, with no cards to act on.
+fn pile_panel(game: &Scene<'_>, tile: chassis::grid::TilePos) -> Option<Panel> {
+    let salvage = game.known_salvage(tile)?;
+    let wreck = matches!(salvage, crate::game::Salvage::Wreck(_));
+    Some(Panel {
+        info: info::SelectionInfo::default(),
+        title: if wreck { "Wreck" } else { "Scrap pile" }.into(),
+        summary: String::new(),
+        portrait: CardIcon::Salvage { wreck },
+        faction: game.state.player(game.presentation.human).faction,
+        roster: Vec::new(),
+        cards: Vec::new(),
+        queue: Vec::new(),
+        queue_groups: Vec::new(),
+        queue_label: String::new(),
+    })
+}
+
 fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -> Option<Panel> {
+    if let Some(tile) = game.presentation.selection.pile {
+        return pile_panel(game, tile);
+    }
     let selected_buildings: Vec<_> = game
         .state
         .buildings()

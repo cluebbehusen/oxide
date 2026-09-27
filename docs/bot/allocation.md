@@ -202,11 +202,16 @@ rejection. Commands and budget effects remain private until success.
 Rejection discards exact proposals without restoring any planner. Observed
 invalid commitments stay released, and rejected repair renewal does not extend
 its funding horizon. Air and lift membership are selected without acquiring
-actors, then applied only with the complete validated allocation. Post-admission
-tactics use committed members; air maintenance precedes lift support handling.
-Closed funding prevents purchases and new ownership, but is not evidence of
-operation-specific infeasibility. Operational reconnaissance reads the
-maintained air owner. There is no rollback or panic recovery transaction.
+actors, then applied only with the complete validated allocation. The air
+planner observes once per decision and lends allocation that turn: preparation
+reads its proposals and may move a failed connected operation into recovery in
+place, and commit applies the accepted connected proposal or retained membership
+together with this decision's purchases. The post-allocation lifecycle then runs
+on the same turn. Post-admission tactics use committed members; air maintenance
+precedes lift support handling. Closed funding prevents purchases and new
+ownership, but is not evidence of operation-specific infeasibility. Operational
+reconnaissance reads the maintained air owner. There is no rollback or panic
+recovery transaction.
 
 `UtilityPolicy` separates three controller-owned lifetimes. `PolicyState` holds
 decision-relevant memory and commitments, including observed work history and

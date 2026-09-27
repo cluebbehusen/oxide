@@ -133,6 +133,8 @@ struct App {
     /// and launch failures report here and the menus stay up — the
     /// in-game toast strip only draws with the HUD.
     menu_notice: Option<(String, f64)>,
+    /// When the current screen's coaching text shows.
+    hint_clock: crate::hints::HintClock,
     /// Window-size persistence: written once the size has been stable
     /// for a second — a live resize is a burst of intermediate sizes
     /// nobody wants fsynced.
@@ -756,6 +758,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         input: input::InputState::new(),
         previews: PreviewCache::default(),
         menu_notice: None,
+        hint_clock: crate::hints::HintClock::default(),
         pending_size: None,
         capture_ctrl: false,
         capture_shift: false,
@@ -1386,11 +1389,40 @@ fn live_rect(screen: &Screen, rect: Rect) -> Option<[f32; 4]> {
     (matches!(screen, Screen::Playing) && rect.w > 0.0).then_some([rect.x, rect.y, rect.w, rect.h])
 }
 
+/// The debug protocol's stable name for what the player is looking at,
+/// which also keys the coaching clock.
+fn screen_mode(screen: &Screen) -> &'static str {
+    match screen {
+        Screen::Home(_) => "home",
+        Screen::Settings { screen: sc, .. } => sc.mode_name(),
+        Screen::Codex { screen: codex, .. } => codex.mode_name(),
+        Screen::Wizard(w) => w.mode_name(),
+        Screen::Playing => "playing",
+        Screen::Playback(_) => "playback",
+        Screen::FinalMap(_) => "final_map",
+        Screen::Results(_) => "results",
+        Screen::Replays(_) => "replays",
+        Screen::Lobby { .. } => "lobby",
+        Screen::Busy(busy) => busy.mode(),
+        Screen::Pause(ps) => {
+            if ps.saving_failed() {
+                "save_failed"
+            } else if ps.naming() {
+                "save_name"
+            } else if ps.confirming() {
+                "confirm_pause"
+            } else {
+                "pause_menu"
+            }
+        }
+    }
+}
+
 fn capture_ui(screen: &Screen, app: &App) -> UiView {
     let (mode_name, menu): (&str, Option<&Menu>) = match screen {
-        Screen::Home(home) => ("home", Some(&home.menu)),
-        Screen::Settings { screen: sc, .. } => (sc.mode_name(), Some(&sc.menu)),
-        Screen::Codex { screen: codex, .. } => (codex.mode_name(), Some(&codex.menu)),
+        Screen::Home(home) => (screen_mode(screen), Some(&home.menu)),
+        Screen::Settings { screen: sc, .. } => (screen_mode(screen), Some(&sc.menu)),
+        Screen::Codex { screen: codex, .. } => (screen_mode(screen), Some(&codex.menu)),
         Screen::Wizard(w) => {
             // The wizard's custom screens (grid, setup) speak the same
             // protocol surface the row menus do — automation keeps its
@@ -1401,7 +1433,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
             // seeing.
             let visible = w.ui_visible_range(&app.draft, render::viewport(), render::ui_scale());
             return UiView {
-                mode: w.mode_name().to_string(),
+                mode: screen_mode(screen).to_string(),
                 title: Some(title),
                 selected: Some(selected),
                 items,
@@ -1413,12 +1445,10 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 pause_status: None,
             };
         }
-        Screen::Playing => ("playing", None),
-        Screen::Playback(_) => ("playback", None),
-        Screen::FinalMap(_) => ("final_map", None),
+        Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_) => (screen_mode(screen), None),
         Screen::Results(results) => {
             return UiView {
-                mode: "results".to_string(),
+                mode: screen_mode(screen).to_string(),
                 title: Some("MATCH RESULT".to_string()),
                 selected: Some(results.selected()),
                 items: results.items(),
@@ -1430,21 +1460,10 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 pause_status: None,
             };
         }
-        Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
-        Screen::Lobby { screen, .. } => ("lobby", Some(&screen.menu)),
-        Screen::Busy(busy) => (busy.mode(), Some(&busy.menu)),
-        Screen::Pause(ps) => (
-            if ps.saving_failed() {
-                "save_failed"
-            } else if ps.naming() {
-                "save_name"
-            } else if ps.confirming() {
-                "confirm_pause"
-            } else {
-                "pause_menu"
-            },
-            Some(&ps.menu),
-        ),
+        Screen::Replays(shelf) => (screen_mode(screen), Some(&shelf.menu)),
+        Screen::Lobby { screen: lobby, .. } => (screen_mode(screen), Some(&lobby.menu)),
+        Screen::Busy(busy) => (screen_mode(screen), Some(&busy.menu)),
+        Screen::Pause(ps) => (screen_mode(screen), Some(&ps.menu)),
     };
     UiView {
         mode: mode_name.to_string(),

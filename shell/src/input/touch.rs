@@ -416,7 +416,9 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 // A tap is an atomic click — no drag can
                 // follow, so the stroke closes here and
                 // Shift decides the mode, like MouseUp.
-                if armed_click(game, input, p, super::Pointer::Touch) {
+                if super::ribbon_row_press(game, input, p, super::Pointer::Touch)
+                    || armed_click(game, input, p, super::Pointer::Touch)
+                {
                     input.last_tap = None;
                     return;
                 }
@@ -460,22 +462,27 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     && crate::layout::touch_pad(layout.pause_status, input.ui).contains(p)
                 {
                     dispatch_action(game, input, Action::TogglePause);
-                } else if layout.queue_toggle.w > 0.0
-                    && crate::layout::touch_pad(layout.queue_toggle, input.ui).contains(p)
-                {
-                    input.toggle_queue(game);
                 } else if click_on_hud(game, p) {
                     // Bare chrome: the tap is swallowed.
-                } else if double && !input.queue_held() {
-                    select_all_of_kind_on_screen(game, p, input.ui);
-                    input.last_tap = None;
                 } else {
-                    click_select(game, p, input.queue_held(), input.ui);
-                    input.last_tap = Some((input.now, p));
+                    world_tap(game, input, p, double);
                 }
             }
         }
         _ => {}
+    }
+}
+
+/// A still tap on the battlefield selects, and a quick second tap on a
+/// unit sweeps its kind.
+fn world_tap(game: &mut Game, input: &mut InputState, p: Vec2, double: bool) {
+    let picked = select::pick(game, p, input.ui, super::Pointer::Touch);
+    if double && picked.is_some() && !input.queue_held() {
+        select_all_of_kind_on_screen(game, p, input.ui, super::Pointer::Touch);
+        input.last_tap = None;
+    } else {
+        click_select(game, p, input.queue_held(), input.ui, super::Pointer::Touch);
+        input.last_tap = Some((input.now, p));
     }
 }
 
@@ -507,25 +514,12 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     // Like a right-click, a long-press is a new intent: it stands down
     // any verb left armed before issuing its own order.
     input.close_construction();
-    let world = game.presentation.camera.to_world(tp.at);
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-    // Only entities the viewer can actually SEE steer the gesture — an
-    // omniscient probe here let a hidden hostile under the fog flip a
-    // rally into a select, making occupancy observable through touch.
-    let sees = |t: TilePos| game.presentation.all_seeing() || game.my_vision().visible(t);
-    let on_entity = game.state.units().iter().any(|u| {
-        let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-        p.distance(world) <= unit_pick_radius(u.kind)
-            && (u.player == game.presentation.human || sees(u.tile()))
-    }) || game.state.buildings_at(tile).any(|b| {
-        // Same rule as fog, for stealth: an undetected buried charge
-        // must not flip a rally into a select, or taps would scan for
-        // occupancy the fog view denies.
-        b.player == game.presentation.human
-            || (sees(tile) && game.state.building_apparent(game.presentation.human, b))
-    });
+    // The same pick a tap uses, so only what the viewer can SEE steers
+    // the gesture: a hidden hostile or an undetected charge never flips
+    // an order into a select, which would make occupancy observable.
+    let on_entity = select::pick(game, tp.at, input.ui, super::Pointer::Touch).is_some();
     if on_entity && game.presentation.selection.units.is_empty() {
-        select::click_select(game, tp.at, false, input.ui);
+        select::click_select(game, tp.at, false, input.ui, super::Pointer::Touch);
     } else {
         orders::context_order(game, tp.at, input.queue_held());
     }

@@ -87,20 +87,19 @@ app-icon catalog. It needs full Xcode (not only the Command Line Tools), the
 simulator), and an iPad with Developer Mode on. Set your signing team in the
 ignored `ios/Local.xcconfig`, never in Xcode's Signing pane, which writes it
 into the shared project file. If you sign with your own team, also set a bundle
-ID you control there (the example file shows how) and launch with that ID
-instead of `dev.luebbehusen.oxide`:
+ID you control there (the example file shows how).
 
 ```sh
-rustup target add aarch64-apple-ios
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 cp ios/Local.xcconfig.example ios/Local.xcconfig   # set DEVELOPMENT_TEAM
-xcodebuild -project ios/Oxide.xcodeproj -scheme Oxide -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath target/ios-xcode \
-  -allowProvisioningUpdates build
-xcrun devicectl list devices
-xcrun devicectl device install app --device <id> \
-  target/ios-xcode/Build/Products/Release-iphoneos/Oxide.app
-xcrun devicectl device process launch --device <id> dev.luebbehusen.oxide
+cargo ios
 ```
+
+`cargo ios` builds the Release app, installs it, and launches it on a paired
+iPad or an iPad simulator. With several devices it lists them and asks, offering
+the last choice as the default; `--device <name or id>` skips the question and
+`--list` only prints the devices. A locked iPad still receives the install; open
+Oxide yourself once it is unlocked.
 
 iPadOS 27 requires the UIScene lifecycle, so the workspace pins an unreleased
 miniquad commit; see the workspace `Cargo.toml` for why that exact commit.

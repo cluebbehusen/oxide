@@ -11,7 +11,9 @@ use oxide_sim::Scenario;
 use std::path::PathBuf;
 
 use crate::press::Press;
-use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{
+    SURFACE_MENU, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE,
+};
 
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
@@ -444,6 +446,23 @@ impl Menu {
 
     /// Draws the menu (over whatever the caller already drew).
     pub fn draw(&self, subtitle: &str) {
+        self.draw_with_coaching(subtitle, None);
+    }
+
+    /// Draws the menu with `coaching` in the footer line in place of the
+    /// standard key help. The footer is coaching either way: it fades in
+    /// only when the player seems stuck.
+    pub fn draw_with_coaching(&self, subtitle: &str, coaching: Option<&str>) {
+        self.draw_face(subtitle, coaching, false);
+    }
+
+    /// Draws the menu while work it started runs: every row dimmed and
+    /// inert-looking, `subtitle` saying what is happening, no footer.
+    pub fn draw_busy(&self, subtitle: &str) {
+        self.draw_face(subtitle, None, true);
+    }
+
+    fn draw_face(&self, subtitle: &str, coaching: Option<&str>, busy: bool) {
         let subtitle = binding_hint(subtitle);
         let s = ui();
         let title_size = 96.0 * s;
@@ -490,15 +509,19 @@ impl Menu {
                 );
                 continue;
             }
-            let selected = index == self.selected;
-            let hovered = self.hover == Some(index);
+            let selected = index == self.selected && !busy;
+            let hovered = self.hover == Some(index) && !busy;
             if selected {
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TEXT_TITLE);
             } else if hovered {
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, TEXT_SECONDARY);
             }
-            let color = if selected { TEXT_PRIMARY } else { TEXT_BODY };
+            let color = match (busy, selected) {
+                (true, _) => TEXT_DISABLED,
+                (false, true) => TEXT_PRIMARY,
+                (false, false) => TEXT_BODY,
+            };
             if self.title == "CONTROLS"
                 && let Some((name, keys)) = label.rsplit_once(": ")
                 && let Some((primary, secondary)) = keys.split_once(" | ")
@@ -544,28 +567,42 @@ impl Menu {
             );
         }
 
-        if self.items.is_empty() {
+        if self.items.is_empty() || busy {
             return;
         }
 
-        let hint = menu_footer(crate::platform::TOUCH_ONLY);
-        let hint_dims = measure_text(&hint, None, (18.0 * s) as u16, 1.0);
+        let scrolls = first > 0 || first + visible < self.items.len();
+        let hint = coaching
+            .map(binding_hint)
+            .unwrap_or_else(|| menu_footer(crate::platform::TOUCH_ONLY, scrolls));
+        let mut hint_size = 18.0 * s;
+        let mut hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
+        let max_width = view_w() - 32.0 * s;
+        if hint_dims.width > max_width {
+            hint_size = (hint_size * max_width / hint_dims.width).max(12.0 * s);
+            hint_dims = measure_text(&hint, None, hint_size as u16, 1.0);
+        }
         draw_text(
             &hint,
             (view_w() - hint_dims.width) * 0.5,
             view_h() - 24.0 * s,
-            18.0 * s,
-            TEXT_SECONDARY,
+            hint_size,
+            crate::hints::fade(TEXT_SECONDARY),
         );
     }
 }
 
-/// The line under every menu: its keys and clicks on desktop, taps and
-/// drags on a touch-only build. ASCII on purpose: the default font has
-/// no glyphs for arrows.
-fn menu_footer(touch_only: bool) -> String {
+/// The line under every menu: its keys and clicks on desktop, taps on a
+/// touch-only build, plus the drag only when the list actually scrolls.
+/// ASCII on purpose: the default font has no glyphs for arrows.
+fn menu_footer(touch_only: bool, scrolls: bool) -> String {
     if touch_only {
-        return "tap to choose - drag to scroll".to_string();
+        return if scrolls {
+            "tap to choose - drag to scroll"
+        } else {
+            "tap to choose"
+        }
+        .to_string();
     }
     MENU_BINDINGS.with(|bindings| {
         let bindings = bindings.borrow();
@@ -751,8 +788,14 @@ mod footer_tests {
 
     #[test]
     fn the_footer_speaks_touch_on_touch_only_builds() {
-        assert!(menu_footer(false).ends_with("confirm - or click"));
-        crate::platform::assert_touch_copy(&menu_footer(true));
+        assert!(menu_footer(false, true).ends_with("confirm - or click"));
+        crate::platform::assert_touch_copy(&menu_footer(true, true));
+    }
+
+    #[test]
+    fn the_touch_footer_offers_a_drag_only_when_the_list_scrolls() {
+        assert_eq!(menu_footer(true, false), "tap to choose");
+        assert!(menu_footer(true, true).ends_with("drag to scroll"));
     }
 }
 
