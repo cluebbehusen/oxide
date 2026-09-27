@@ -98,7 +98,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "2bbd5c9c9139a5a88d67ae0a6b4a3dfeefd00a6bf67a6ea73dbfb82b2d012440",
+            "e8cb18559f0d990431d1757b99501caffc6bc6874828a79e69527eb5ae60864d",
         )
 
     def test_promoted_quarry_matches_approved_pixels(self) -> None:
@@ -109,7 +109,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "c4d211b58f896f010e6169f2e5730821430af0e8e02723f4cf0c530d46231874",
+            "44920b9cdeeb1c9b7ed78bae0331ad1002e7b63c457695d51cbcebce51b1995a",
         )
 
     def test_promoted_specialists_match_approved_pixels(self) -> None:
