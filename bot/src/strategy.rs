@@ -93,19 +93,24 @@ struct ClusterAirDefense {
     evidence: AirDefenseEvidence,
 }
 
+/// Production resources and fixed deadline one package derivation sizes
+/// against.
 #[derive(Debug, Clone, Copy)]
-struct ConnectedPlanningContext<'a> {
-    planning: Option<&'a crate::planning::PlanningWork>,
+struct PackageBasis<'a> {
     /// Frozen identity of the admitted operation a revision resizes.
     committed: Option<crate::allocation::ConnectedOffenseKey>,
-    minimum_only: bool,
-    campaign_routes: &'a CampaignRoutes<'a>,
-    orientation: Orientation,
-    public_map: Option<&'a PublicMapBriefing>,
     resources: &'a ConnectedProductionResources,
-    preferred_artillery: &'a [UnitId],
-    protected_current_scrap: u32,
-    preparation: PreparationConstraints,
+    deadline: Tick,
+}
+
+impl PackageBasis<'_> {
+    fn preparation(self, context: FreshConnectedDerivationContext<'_>) -> PreparationConstraints {
+        PreparationConstraints {
+            deadline: self.deadline,
+            decision_cadence: context.ev.tuning.cadence,
+            protected_forecast_scrap: context.inputs.reserve.forecast,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -646,20 +651,23 @@ fn demand_count(demands: &[ProviderDemand]) -> usize {
 }
 
 fn derive_connected_package_options(
-    profile: &ResolvedProfile,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    home: TilePos,
+    context: FreshConnectedDerivationContext<'_>,
+    basis: PackageBasis<'_>,
     target: &BuildingContact,
-    unavailable: &[UnitId],
-    context: ConnectedPlanningContext<'_>,
 ) -> Result<ConnectedForcePackageOptions, ConnectedPlanRejection> {
+    let AirEvidence {
+        obs,
+        intel,
+        home,
+        public_map,
+        ..
+    } = context.ev;
     if known_ground_connection(
         obs,
         home,
         target.anchor,
         target.kind.base_stats().size,
-        context.public_map,
+        public_map,
     ) != Some(true)
     {
         return Err(ConnectedPlanRejection::DisconnectedGroundRoute);
@@ -667,41 +675,24 @@ fn derive_connected_package_options(
     // The package must refuse the same paid queue work as the resources it
     // is derived against, or it can lean on an occurrence the lowered claims
     // will not be allowed to take.
-    let route = ConnectedRouteContext::new(
-        intel,
-        context.public_map,
-        context.orientation,
-        home,
-        target.anchor,
-    )
-    .with_routes(Some(context.campaign_routes))
-    .excluding_paid(context.resources.access.paid_exclusions());
+    let route = context
+        .ev
+        .route(target.anchor)
+        .with_routes(Some(context.campaign_routes))
+        .excluding_paid(basis.resources.access.paid_exclusions());
     let mut selected = connected_target_subset(obs, intel, target, &[target.anchor]);
-    let mut packages = derive_connected_package_options_for_targets(
-        profile,
-        obs,
-        target,
-        unavailable,
-        &selected,
-        route,
-        context,
-    )?;
+    let mut packages =
+        derive_connected_package_options_for_targets(context, basis, target, &selected, route)?;
     if context.minimum_only {
         return Ok(packages);
     }
-    for anchor in &context.resources.targets.growth_order {
+    for anchor in &basis.resources.targets.growth_order {
         let mut proposed_anchors = selected.target_anchors.clone();
         proposed_anchors.push(*anchor);
         let proposed = connected_target_subset(obs, intel, target, &proposed_anchors);
-        if let Ok(proposed_packages) = derive_connected_package_options_for_targets(
-            profile,
-            obs,
-            target,
-            unavailable,
-            &proposed,
-            route,
-            context,
-        ) {
+        if let Ok(proposed_packages) =
+            derive_connected_package_options_for_targets(context, basis, target, &proposed, route)
+        {
             selected = proposed;
             packages = proposed_packages;
         }
@@ -710,20 +701,19 @@ fn derive_connected_package_options(
 }
 
 fn derive_connected_package_options_for_targets(
-    profile: &ResolvedProfile,
-    obs: &Observation,
+    context: FreshConnectedDerivationContext<'_>,
+    basis: PackageBasis<'_>,
     target: &BuildingContact,
-    unavailable: &[UnitId],
     targets: &ConnectedTargetSelection,
     route: ConnectedRouteContext<'_>,
-    context: ConnectedPlanningContext<'_>,
 ) -> Result<ConnectedForcePackageOptions, ConnectedPlanRejection> {
-    let intel = route.intel;
-    let access = connected_production_access(obs, targets, &context.resources.snapshot, route);
-    let unavailable = connected_provider_unavailable(obs, targets, unavailable, route);
-    let preparation = context.preparation;
+    let AirEvidence { obs, intel, .. } = context.ev;
+    let access = connected_production_access(obs, targets, &basis.resources.snapshot, route);
+    let unavailable =
+        connected_provider_unavailable(obs, targets, context.inputs.unavailable, route);
+    let preparation = basis.preparation(context);
     let protected_forecast_scrap = preparation.protected_forecast_scrap.min(
-        context
+        basis
             .resources
             .snapshot
             .forecast()
@@ -733,22 +723,24 @@ fn derive_connected_package_options_for_targets(
     let cluster =
         sized_target_contacts_at_anchors(intel, target.player, &targets.target_anchors, obs.tick);
     let mut packages = derive_connected_force_package_options_for_cluster(
-        profile,
-        obs,
-        intel,
+        context.ev,
         ConnectedTargetEvidence {
             primary: target,
             cluster: &cluster,
-            committed: context.committed,
+            committed: basis.committed,
         },
-        ProductionEvidence::with_planning(&context.resources.snapshot, &access, context.planning),
+        ProductionEvidence::with_planning(
+            &basis.resources.snapshot,
+            &access,
+            Some(context.inputs.planning),
+        ),
         &unavailable,
         preparation,
         context.minimum_only,
     )
     .map_err(|reason| ConnectedPlanRejection::Package {
         reason,
-        protected_current_scrap: context.protected_current_scrap,
+        protected_current_scrap: context.inputs.reserve.current,
         protected_forecast_scrap,
     })?;
     let mut campaign_routes = BTreeMap::new();
@@ -1284,7 +1276,7 @@ pub(crate) struct CapitalReserve {
     pub(crate) forecast: u32,
 }
 
-/// Allocation evidence for one connected-operation obligation or proposal.
+/// Allocation evidence for deriving one connected-operation proposal.
 #[derive(Clone, Copy)]
 pub(crate) struct ConnectedInputs<'a> {
     pub(crate) planning: &'a crate::planning::PlanningWork,
@@ -1874,7 +1866,6 @@ struct FreshConnectedDerivationContext<'a> {
     inputs: ConnectedInputs<'a>,
     minimum_only: bool,
     campaign_routes: &'a CampaignRoutes<'a>,
-    unavailable: &'a [UnitId],
     preferred_artillery: &'a [UnitId],
 }
 
@@ -2077,7 +2068,6 @@ pub(crate) fn prospective_airworks_package_value(
         },
         minimum_only: true,
         campaign_routes: &campaign_routes,
-        unavailable: &unavailable,
         preferred_artillery: &[],
     };
     let deadline = deadline.checked_sub(ready_after)?;
@@ -2126,22 +2116,13 @@ pub(crate) fn prospective_airworks_package_value(
             .unwrap();
         #[cfg(test)]
         AIRWORKS_PACKAGE_DERIVATIONS.with(|count| count.set(count.get() + 1));
-        let initial = ConnectedProductionResources::from_candidates(
-            &prospective,
-            target,
-            current_target_cluster(&intel, target.player, target.anchor),
-            &unavailable,
-            context.route(target.anchor),
-            &resources,
-            0,
-        );
         let derived = derive_connected_proposal_with_resources(
             context,
             target,
+            current_target_cluster(&intel, target.player, target.anchor),
             ConnectedProposalOrigin::Idle {
                 standby: AirStandby::default(),
             },
-            initial,
             deadline,
         );
         let proposal = match derived {
@@ -2182,91 +2163,48 @@ pub(crate) fn prospective_airworks_package_value(
     }
 }
 
-fn derive_fresh_connected_proposal(
-    context: FreshConnectedDerivationContext<'_>,
-    target: &BuildingContact,
-    origin: ConnectedProposalOrigin,
-) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
-    let initial_resources = ConnectedProductionResources::from_candidates(
-        context.ev.obs,
-        target,
-        current_target_cluster(context.ev.intel, target.player, target.anchor),
-        context.unavailable,
-        context.route(target.anchor),
-        context.inputs.resources,
-        context.inputs.reserve.current,
-    );
-    derive_connected_proposal_with_resources(
-        context,
-        target,
-        origin,
-        initial_resources,
-        context
-            .ev
-            .obs
-            .tick
-            .saturating_add(CONNECTED_PREPARATION_HORIZON),
-    )
-}
-
+/// Sizes a connected proposal against `target` with `candidates` as the
+/// members its production resources may serve.
 fn derive_connected_proposal_with_resources(
     context: FreshConnectedDerivationContext<'_>,
     target: &BuildingContact,
+    candidates: Vec<&BuildingContact>,
     origin: ConnectedProposalOrigin,
-    initial_resources: ConnectedProductionResources,
-    preparation_deadline: Tick,
+    deadline: Tick,
 ) -> Result<FreshConnectedProposal, ConnectedPlanRejection> {
     let FreshConnectedDerivationContext {
-        ev:
-            AirEvidence {
-                profile,
-                tuning,
-                obs,
-                intel,
-                home,
-                public_map,
-                orientation,
-            },
+        ev: AirEvidence { obs, intel, .. },
         inputs:
             ConnectedInputs {
-                planning,
                 resources: resource_snapshot,
+                unavailable,
                 reserve,
                 ..
             },
-        minimum_only,
-        campaign_routes,
-        unavailable,
-        preferred_artillery,
+        ..
     } = context;
     let route = context.route(target.anchor);
+    let initial_resources = ConnectedProductionResources::from_candidates(
+        obs,
+        target,
+        candidates,
+        unavailable,
+        route,
+        resource_snapshot,
+        reserve.current,
+    );
     let committed = match &origin {
         ConnectedProposalOrigin::Active { plan, .. } => Some(plan.commitment.key()),
         ConnectedProposalOrigin::Idle { .. } | ConnectedProposalOrigin::Remembered { .. } => None,
     };
     let packages = derive_connected_package_options(
-        profile,
-        obs,
-        intel,
-        home,
-        target,
-        unavailable,
-        ConnectedPlanningContext {
-            planning: Some(planning),
+        context,
+        PackageBasis {
             committed,
-            minimum_only,
-            campaign_routes,
-            orientation,
-            public_map,
             resources: &initial_resources,
-            preferred_artillery,
-            protected_current_scrap: reserve.current,
-            preparation: PreparationConstraints {
-                deadline: preparation_deadline,
-                decision_cadence: tuning.cadence,
-                protected_forecast_scrap: reserve.forecast,
-            },
+            deadline,
         },
+        target,
     )?;
     if packages.refinement_pending && committed.is_some() {
         return Err(ConnectedPlanRejection::Package {
@@ -3570,31 +3508,24 @@ impl<'a> AirTurn<'a> {
         let campaign_routes = CampaignRoutes::new(obs, intel, public_map, orientation);
         let context = FreshConnectedDerivationContext {
             ev: self.ev,
-            inputs,
+            inputs: ConnectedInputs {
+                unavailable: &unavailable,
+                ..inputs
+            },
             minimum_only: false,
             campaign_routes: &campaign_routes,
-            unavailable: &unavailable,
             preferred_artillery: &active.op.artillery,
         };
         // A revision sizes the admitted members only; it never searches the
         // radius around its current primary again.
-        let initial_resources = ConnectedProductionResources::from_candidates(
-            obs,
-            target,
-            connected.commitment.sized_members(intel, obs.tick),
-            &unavailable,
-            context.route(target.anchor),
-            inputs.resources,
-            inputs.reserve.current,
-        );
         let proposal = derive_connected_proposal_with_resources(
             context,
             target,
+            connected.commitment.sized_members(intel, obs.tick),
             ConnectedProposalOrigin::Active {
                 op: active.op.clone(),
                 plan: connected.clone(),
             },
-            initial_resources,
             connected.commitment.deadline,
         )
         .map_err(|reason| RejectedConnectedCandidate {
@@ -3653,19 +3584,23 @@ impl<'a> AirTurn<'a> {
             let owned = reservations(&refreshed.op, &refreshed.plan, obs);
             let unavailable = excluding_owned(inputs.unavailable, &owned);
             let campaign_routes = CampaignRoutes::new(obs, intel, public_map, orientation);
-            return derive_fresh_connected_proposal(
+            return derive_connected_proposal_with_resources(
                 FreshConnectedDerivationContext {
                     ev: self.ev,
-                    inputs,
+                    inputs: ConnectedInputs {
+                        unavailable: &unavailable,
+                        ..inputs
+                    },
                     minimum_only: false,
                     campaign_routes: &campaign_routes,
-                    unavailable: &unavailable,
                     preferred_artillery: &refreshed.op.artillery,
                 },
                 target,
+                current_target_cluster(intel, target.player, target.anchor),
                 ConnectedProposalOrigin::Remembered {
                     active: active.clone(),
                 },
+                obs.tick.saturating_add(CONNECTED_PREPARATION_HORIZON),
             )
             .map(Some)
             .map_err(|reason| RejectedConnectedCandidate {
@@ -3721,17 +3656,21 @@ impl<'a> AirTurn<'a> {
         let mut first_rejection = None;
         let campaign_routes = CampaignRoutes::new(obs, intel, public_map, orientation);
         for target in current {
-            match derive_fresh_connected_proposal(
+            match derive_connected_proposal_with_resources(
                 FreshConnectedDerivationContext {
                     ev: self.ev,
-                    inputs,
+                    inputs: ConnectedInputs {
+                        unavailable: &unavailable,
+                        ..inputs
+                    },
                     minimum_only: false,
                     campaign_routes: &campaign_routes,
-                    unavailable: &unavailable,
                     preferred_artillery: &standby.artillery,
                 },
                 target,
+                current_target_cluster(intel, target.player, target.anchor),
                 origin.clone(),
+                obs.tick.saturating_add(CONNECTED_PREPARATION_HORIZON),
             ) {
                 Ok(proposal) => return Ok(Some(proposal)),
                 Err(reason) if first_rejection.is_none() => {

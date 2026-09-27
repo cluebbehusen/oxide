@@ -95,36 +95,36 @@ impl ConnectedPlan {
     }
 }
 
+/// The largest fresh connected plan against `target`, sized on `resources`
+/// by `deadline` with no reserve, foreign claims, or preferred artillery.
 pub(super) fn connected_plan(
-    profile: &ResolvedProfile,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    home: TilePos,
+    ev: AirEvidence<'_>,
+    planning: &crate::planning::PlanningWork,
     target: &BuildingContact,
-    unavailable: &[UnitId],
-    context: ConnectedPlanningContext<'_>,
+    resources: &ConnectedProductionResources,
+    deadline: Tick,
 ) -> Result<AirPlan, ConnectedPlanRejection> {
-    derive_connected_package(profile, obs, intel, home, target, unavailable, context).map(
-        |package| {
-            AirPlan::Connected(Box::new(ConnectedPlan::new(
-                ConnectedCommitment::admit(target, &package, obs.tick),
-                package,
-            )))
-        },
-    )
-}
-
-pub(super) fn derive_connected_package(
-    profile: &ResolvedProfile,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    home: TilePos,
-    target: &BuildingContact,
-    unavailable: &[UnitId],
-    context: ConnectedPlanningContext<'_>,
-) -> Result<ConnectedForcePackage, ConnectedPlanRejection> {
-    derive_connected_package_options(profile, obs, intel, home, target, unavailable, context)
-        .map(ConnectedForcePackageOptions::into_largest)
+    let snapshot = ResourceSnapshot::from_observation(ev.obs);
+    let campaign_routes = CampaignRoutes::new(ev.obs, ev.intel, ev.public_map, ev.orientation);
+    let context = FreshConnectedDerivationContext {
+        ev,
+        inputs: ConnectedInputs::fixture(planning, &snapshot),
+        minimum_only: false,
+        campaign_routes: &campaign_routes,
+        preferred_artillery: &[],
+    };
+    let basis = PackageBasis {
+        committed: None,
+        resources,
+        deadline,
+    };
+    derive_connected_package_options(context, basis, target).map(|options| {
+        let package = options.into_largest();
+        AirPlan::Connected(Box::new(ConnectedPlan::new(
+            ConnectedCommitment::admit(target, &package, ev.obs.tick),
+            package,
+        )))
+    })
 }
 
 impl ConnectedProviderJob {

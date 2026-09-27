@@ -303,35 +303,16 @@ fn derived_connected_test_plan(
         ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, target.anchor),
     );
     connected_plan(
-        identity,
-        observation,
-        &intelligence,
-        HOME,
-        target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                observation,
-                &intelligence,
-                None,
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
-            public_map: None,
-            resources: &resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: observation
-                    .tick
-                    .saturating_add(CONNECTED_PREPARATION_HORIZON),
-                decision_cadence: DifficultyTuning::for_level(identity.difficulty).cadence,
-                protected_forecast_scrap: 0,
-            },
+        AirEvidence {
+            tuning: DifficultyTuning::for_level(identity.difficulty),
+            ..evidence(identity, observation, &intelligence)
         },
+        &fixture_planning,
+        target,
+        &resources,
+        observation
+            .tick
+            .saturating_add(CONNECTED_PREPARATION_HORIZON),
     )
     .ok()
 }
@@ -2516,33 +2497,14 @@ fn current_bank_funds_the_whole_minimum_before_forecast_funded_marginal_work() {
         ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, target.anchor),
     );
     let plan = connected_plan(
-        &identity,
-        &observation,
-        &intelligence,
-        HOME,
-        target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                &observation,
-                &intelligence,
-                None,
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
-            public_map: None,
-            resources: &resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: 8_000,
-                decision_cadence: DifficultyTuning::for_level(identity.difficulty).cadence,
-                protected_forecast_scrap: 0,
-            },
+        AirEvidence {
+            tuning: DifficultyTuning::for_level(identity.difficulty),
+            ..evidence(&identity, &observation, &intelligence)
         },
+        &fixture_planning,
+        target,
+        &resources,
+        8_000,
     )
     .expect("forecast income can fund marginal suppression after the minimum package");
     let package = plan
@@ -5325,33 +5287,11 @@ fn connected_package_uses_only_producers_that_can_reach_the_operation() {
         ConnectedRouteContext::new(&intelligence, None, test_orientation(), HOME, target.anchor),
     );
     let plan = connected_plan(
-        &identity,
-        &observation,
-        &intelligence,
-        HOME,
+        evidence(&identity, &observation, &intelligence),
+        &fixture_planning,
         &target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                &observation,
-                &intelligence,
-                None,
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
-            public_map: None,
-            resources: &connected_resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: observation.tick + CONNECTED_PREPARATION_HORIZON,
-                decision_cadence: DifficultyTuning::for_level(BotDifficulty::Prime).cadence,
-                protected_forecast_scrap: 0,
-            },
-        },
+        &connected_resources,
+        observation.tick + CONNECTED_PREPARATION_HORIZON,
     )
     .expect("the reachable Fabricator can field the suppression provider");
     let mut operation = operation(AirOperationPhase::Assemble, observation.tick);
@@ -5549,33 +5489,14 @@ fn connected_cluster_uses_air_routes_without_treating_ground_pits_as_a_barrier()
         ),
     );
     let peak_plan = connected_plan(
-        &profile(),
-        &observation,
-        &intelligence,
-        HOME,
-        target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                &observation,
-                &intelligence,
-                Some(&peak_map),
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
+        AirEvidence {
             public_map: Some(&peak_map),
-            resources: &peak_resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: observation.tick + CONNECTED_PREPARATION_HORIZON,
-                decision_cadence: 12,
-                protected_forecast_scrap: 0,
-            },
+            ..evidence(&profile(), &observation, &intelligence)
         },
+        &fixture_planning,
+        target,
+        &peak_resources,
+        observation.tick + CONNECTED_PREPARATION_HORIZON,
     )
     .expect("an inaccessible secondary target must not reject the viable primary");
     assert_eq!(
@@ -5831,33 +5752,14 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
     let open_resources =
         ConnectedProductionResources::from_observation(&open_lane, target, &[], route);
     let open_plan = connected_plan(
-        &profile(),
-        &open_lane,
-        &intelligence,
-        HOME,
-        target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                &open_lane,
-                &intelligence,
-                Some(&public_map),
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
+        AirEvidence {
             public_map: Some(&public_map),
-            resources: &open_resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: battle.tick + 400,
-                decision_cadence: 12,
-                protected_forecast_scrap: 0,
-            },
+            ..evidence(&profile(), &open_lane, &intelligence)
         },
+        &fixture_planning,
+        target,
+        &open_resources,
+        battle.tick + 400,
     )
     .expect("an open Bombard lane can cover the optional target in time");
     assert_eq!(
@@ -5869,33 +5771,14 @@ fn optional_cluster_target_is_dropped_when_its_only_provider_misses_the_deadline
     );
 
     let plan = connected_plan(
-        &profile(),
-        &battle,
-        &intelligence,
-        HOME,
-        target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                &battle,
-                &intelligence,
-                Some(&public_map),
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
+        AirEvidence {
             public_map: Some(&public_map),
-            resources: &resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: battle.tick + 400,
-                decision_cadence: 12,
-                protected_forecast_scrap: 0,
-            },
+            ..evidence(&profile(), &battle, &intelligence)
         },
+        &fixture_planning,
+        target,
+        &resources,
+        battle.tick + 400,
     )
     .expect("the live primary-only package remains feasible");
     assert_eq!(
@@ -6012,33 +5895,14 @@ fn connected_suppression_uses_an_indirect_firing_stand_beyond_a_pit_ring() {
     );
 
     connected_plan(
-        &profile(),
-        &observation,
-        &intelligence,
-        HOME,
-        target,
-        &[],
-        ConnectedPlanningContext {
-            planning: Some(&fixture_planning),
-            committed: None,
-            minimum_only: false,
-            campaign_routes: &CampaignRoutes::new(
-                &observation,
-                &intelligence,
-                Some(&public_map),
-                test_orientation(),
-            ),
-            orientation: test_orientation(),
+        AirEvidence {
             public_map: Some(&public_map),
-            resources: &resources,
-            preferred_artillery: &[],
-            protected_current_scrap: 0,
-            preparation: PreparationConstraints {
-                deadline: observation.tick + CONNECTED_PREPARATION_HORIZON,
-                decision_cadence: 12,
-                protected_forecast_scrap: 0,
-            },
+            ..evidence(&profile(), &observation, &intelligence)
         },
+        &fixture_planning,
+        target,
+        &resources,
+        observation.tick + CONNECTED_PREPARATION_HORIZON,
     )
     .expect("Pit blocks movement but not an indirect shell");
 

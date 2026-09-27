@@ -17,6 +17,7 @@ use super::super::resources::{
     ProducerEgress, ProductionAccess, ResourceForecast, ResourceSnapshot,
     count_paid_queued_ready_with_access,
 };
+use super::AirEvidence;
 use crate::allocation::{AllocationCapacity, ConnectedOffenseKey, ProducerJobClaim};
 use crate::planning::{PlanningWork, Progress};
 use chassis::Tick;
@@ -470,21 +471,22 @@ pub(super) struct ConnectedForcePackageOptions {
 /// decision cadence. The returned counts are revisable kind totals; the owning
 /// planner schedules only currently open queue positions and freezes exact unit
 /// ids when it commits to suppression. With `minimum_only`, no marginal
-/// variant is derived.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the derivation boundary takes each independent evidence source"
-)]
+/// variant is derived. Sizing reads only the profile, observation, and
+/// intelligence of `ev`.
 pub(super) fn derive_connected_force_package_options_for_cluster(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
+    ev: AirEvidence<'_>,
     targets: ConnectedTargetEvidence<'_>,
     production: ProductionEvidence<'_>,
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
     minimum_only: bool,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
+    let AirEvidence {
+        profile,
+        obs: observation,
+        intel: intelligence,
+        ..
+    } = ev;
     let ConnectedTargetEvidence {
         primary: target,
         cluster,
