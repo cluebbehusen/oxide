@@ -9,7 +9,7 @@ use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
     ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
     CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
-    ImportedObligation, ObligationClass, ObligationKey, OperationProductionRequest,
+    ImportedObligation, ObligationClass, ObligationKey, OperationProductionRequest, PaidQueueClaim,
     ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
     active_connected_revision_investment_proposal, active_connected_revision_obligation,
     clamped_current_reserve_obligation, connected_investment_proposal, current_reserve_at,
@@ -80,7 +80,7 @@ struct SupportPreparation {
 struct FreshInvestmentInputs<'a> {
     active_revision: ActiveRevisionPreparation,
     defense_admission_reserve: u32,
-    paid_exclusions: &'a [(oxide_sim::ids::BuildingId, UnitKind, usize)],
+    paid_exclusions: &'a [PaidQueueClaim],
     standing_force: StandingForceWork,
 }
 
@@ -187,14 +187,9 @@ impl<'a> PlannerClaims<'a> {
 pub(crate) fn air_paid_exclusions(
     policy: &UtilityPolicy,
     raids: &RaidPlanner,
-) -> Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)> {
-    let mut excluded = policy.state.reconnaissance.paid_exclusions();
-    excluded.extend(
-        raids
-            .paid_claims()
-            .iter()
-            .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
-    );
+) -> Vec<PaidQueueClaim> {
+    let mut excluded = policy.state.reconnaissance.paid_claims();
+    excluded.extend_from_slice(raids.paid_claims());
     excluded.sort_unstable();
     excluded.dedup();
     excluded
@@ -3858,13 +3853,7 @@ mod tests {
                 .as_ref()
                 .expect("a competing package remains feasible");
             for provider in connected.minimum_claims().paid_providers() {
-                assert!(
-                    !paid
-                        .iter()
-                        .any(|claim| claim.producer == provider.producer()
-                            && claim.kind == provider.kind()
-                            && claim.occurrence == provider.occurrence())
-                );
+                assert!(!paid.contains(provider));
             }
             let resolved = session.resolve(prepared);
             let outcome = session.finish_allocation(resolved);

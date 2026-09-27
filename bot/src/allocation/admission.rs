@@ -19,7 +19,7 @@ use crate::{
     orient::Orientation,
     profile::ResolvedProfile,
     raid::{RaidPlanner, RaidPlanningContext},
-    resources::ProducerLaneReservations,
+    resources::{PaidQueueClaim, ProducerLaneReservations},
     strategy::{
         AirEvidence, AirOperationPhase, CapitalReserve, LiftSupportRequest, ProducerLanes,
         StrategicDecision, StrategicPlanner, ThinkInputs,
@@ -36,8 +36,7 @@ use crate::{
     },
 };
 use chassis::grid::TilePos;
-use oxide_sim::ids::{BuildingId, UnitId};
-use oxide_sim::stats::UnitKind;
+use oxide_sim::ids::UnitId;
 
 pub(crate) struct DecisionContext<'a> {
     pub evidence: DecisionEvidence<'a>,
@@ -112,7 +111,7 @@ pub(crate) fn air_think_inputs<'a>(
     planning: &'a crate::planning::PlanningWork,
     claimed_elsewhere: &'a [UnitId],
     lift_support: Option<&'a LiftSupportRequest>,
-    paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+    paid_exclusions: &'a [PaidQueueClaim],
 ) -> ThinkInputs<'a> {
     ThinkInputs {
         planning,

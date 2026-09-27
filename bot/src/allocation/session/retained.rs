@@ -17,7 +17,7 @@ pub(super) struct RetainedPreparation {
     pub(super) prospective_carrier_floor: u32,
     pub(super) emergency_defense: Option<FreshEmergencyDefense>,
     pub(super) repair_renewals: Vec<crate::utility::RepairAssignment>,
-    pub(super) paid_exclusions: Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)>,
+    pub(super) paid_exclusions: Vec<PaidQueueClaim>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,7 +359,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &ClaimSnapshot,
         resources: ResourceSnapshot,
-        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[PaidQueueClaim],
     ) -> ObligationPreparation {
         let air_work = economic_air_work(
             self.context,
@@ -1085,7 +1085,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &mut ClaimSnapshot,
         obligations: &mut ObligationPreparation,
-        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[PaidQueueClaim],
     ) {
         if obligations.coordinator_failure.is_some() {
             return;
@@ -1164,7 +1164,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
-        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[PaidQueueClaim],
     ) -> ActiveRevisionPreparation {
         let deadline = self
             .participants

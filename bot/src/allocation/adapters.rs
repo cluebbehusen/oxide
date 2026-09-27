@@ -455,15 +455,7 @@ pub(crate) fn connected_marginal_claims(marginal: &ConnectedMarginalVariant) -> 
 }
 
 fn connected_claim_bundle(claims: &ConnectedOffenseClaims) -> ClaimBundle {
-    let paid = claims
-        .paid_providers()
-        .iter()
-        .map(|provider| super::PaidQueueClaim {
-            producer: provider.producer(),
-            kind: provider.kind(),
-            occurrence: provider.occurrence(),
-        })
-        .collect();
+    let paid = claims.paid_providers().to_vec();
     ClaimBundle::new(
         0,
         Vec::new(),

@@ -20,7 +20,7 @@ use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::profile::ResolvedProfile;
 use super::resources::{
-    ProducerLaneReservations, ProductionAccess, ResourceSnapshot,
+    PaidQueueClaim, ProducerLaneReservations, ProductionAccess, ResourceSnapshot,
     count_paid_queued_ready_with_access, paid_queued_ready_occurrences_with_access,
 };
 use crate::production::ProductionPlan;
@@ -116,7 +116,7 @@ struct ConnectedPlanningContext<'a> {
 #[derive(Debug, Clone, Copy)]
 struct ConnectedRouteContext<'a> {
     campaign_routes: Option<&'a CampaignRoutes<'a>>,
-    unavailable_paid: &'a [(BuildingId, UnitKind, usize)],
+    unavailable_paid: &'a [PaidQueueClaim],
     intel: &'a StrategicIntelligence,
     home: TilePos,
     target: TilePos,
@@ -150,7 +150,7 @@ impl<'a> ConnectedRouteContext<'a> {
         }
     }
 
-    fn excluding_paid(self, unavailable_paid: &'a [(BuildingId, UnitKind, usize)]) -> Self {
+    fn excluding_paid(self, unavailable_paid: &'a [PaidQueueClaim]) -> Self {
         Self {
             unavailable_paid,
             ..self
@@ -866,7 +866,7 @@ fn connected_paid_provider_claims(
     package: &ConnectedForcePackage,
     resources: &ConnectedProductionResources,
     obs: &Observation,
-) -> Vec<ConnectedPaidProvider> {
+) -> Vec<PaidQueueClaim> {
     let mut needed = BTreeMap::<UnitKind, usize>::new();
     for demand in &package.provider_priority {
         let count = needed.entry(demand.kind).or_default();
@@ -901,7 +901,7 @@ fn connected_paid_provider_claims(
             producers
                 .into_iter()
                 .take(count)
-                .map(|(producer, occurrence)| ConnectedPaidProvider {
+                .map(|(producer, occurrence)| PaidQueueClaim {
                     producer,
                     kind,
                     occurrence,
@@ -1251,7 +1251,7 @@ struct AirPlanningContext<'a> {
     landing_sites: &'a [TilePos],
     connected_resources: Option<ConnectedProductionResources>,
     lanes: ProducerLanes<'a>,
-    paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+    paid_exclusions: &'a [PaidQueueClaim],
     reserve: CapitalReserve,
 }
 
@@ -1291,7 +1291,7 @@ pub(crate) struct ConnectedInputs<'a> {
     /// Units other owners hold.
     pub(crate) unavailable: &'a [UnitId],
     /// Paid queue occurrences other programs own.
-    pub(crate) paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+    pub(crate) paid_exclusions: &'a [PaidQueueClaim],
     pub(crate) reserve: CapitalReserve,
 }
 
@@ -1332,7 +1332,7 @@ pub(crate) struct ThinkInputs<'a> {
     pub(crate) owned_only: bool,
     pub(crate) reserve: CapitalReserve,
     pub(crate) lanes: ProducerLanes<'a>,
-    pub(crate) paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+    pub(crate) paid_exclusions: &'a [PaidQueueClaim],
 }
 
 /// A live operation and the plan it was admitted under. They exist only
@@ -1563,29 +1563,8 @@ impl ConnectedProviderJob {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ConnectedOffenseClaims {
     units: Vec<UnitId>,
-    paid_providers: Vec<ConnectedPaidProvider>,
+    paid_providers: Vec<PaidQueueClaim>,
     provider_jobs: Vec<ConnectedProviderJob>,
-}
-
-/// One exact already-paid queue occurrence used by a connected package.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct ConnectedPaidProvider {
-    producer: BuildingId,
-    kind: UnitKind,
-    occurrence: usize,
-}
-
-impl ConnectedPaidProvider {
-    pub(crate) const fn occurrence(self) -> usize {
-        self.occurrence
-    }
-    pub(crate) const fn producer(self) -> BuildingId {
-        self.producer
-    }
-
-    pub(crate) const fn kind(self) -> UnitKind {
-        self.kind
-    }
 }
 
 impl ConnectedOffenseClaims {
@@ -1595,7 +1574,7 @@ impl ConnectedOffenseClaims {
     }
 
     /// Exact paid queue occurrences that satisfy this package's demand.
-    pub(crate) fn paid_providers(&self) -> &[ConnectedPaidProvider] {
+    pub(crate) fn paid_providers(&self) -> &[PaidQueueClaim] {
         &self.paid_providers
     }
 
@@ -2695,8 +2674,8 @@ impl StrategicPlanner {
         &self,
         obs: &Observation,
         resources: &ResourceSnapshot,
-        unavailable: &[(BuildingId, UnitKind, usize)],
-    ) -> Vec<super::allocation::PaidQueueClaim> {
+        unavailable: &[PaidQueueClaim],
+    ) -> Vec<PaidQueueClaim> {
         let Some(active) = self.air.as_ref().filter(|active| {
             active.op.scout.is_none()
                 && matches!(
@@ -2716,19 +2695,17 @@ impl StrategicPlanner {
                     .filter(move |(queued, _)| *queued == kind)
                     .enumerate()
                     .filter_map(move |(occurrence, (_, ready_at))| {
-                        (ready_at < deadline
-                            && !unavailable.contains(&(lane.producer, kind, occurrence)))
-                        .then_some((ready_at, lane.producer, occurrence))
+                        let claim = PaidQueueClaim {
+                            producer: lane.producer,
+                            kind,
+                            occurrence,
+                        };
+                        (ready_at < deadline && !unavailable.contains(&claim))
+                            .then_some((ready_at, claim))
                     })
             })
             .min()
-            .map(
-                |(_, producer, occurrence)| super::allocation::PaidQueueClaim {
-                    producer,
-                    kind,
-                    occurrence,
-                },
-            )
+            .map(|(_, claim)| claim)
             .into_iter()
             .collect()
     }
@@ -3912,7 +3889,7 @@ pub(crate) struct EconomyEmergencyRecovery<'a> {
     /// Queue occurrences the reconnaissance program already holds. This path
     /// returns before shared allocation runs, so it receives them directly
     /// instead of reading an obligation view.
-    pub(crate) recon_paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+    pub(crate) recon_paid_exclusions: &'a [PaidQueueClaim],
 }
 
 fn reconcile_recovery_return(
@@ -4040,7 +4017,7 @@ fn unowned_queued_scouts(context: &AirPlanningContext<'_>, scout: UnitKind) -> u
     let unavailable = context
         .paid_exclusions
         .iter()
-        .filter(|(_, kind, _)| *kind == scout)
+        .filter(|claim| claim.kind == scout)
         .count();
     queued(context.ev.obs, |kind| kind == scout)
         .saturating_add(prior)
@@ -6158,10 +6135,7 @@ fn connected_provider_shortfall(
 /// scrap, so it does not narrow producers by tactical route the way a package
 /// derivation does. Route eligibility decides whether the operation can
 /// succeed, and the ordinary preparation checks own that question.
-fn emergency_paid_queue_access(
-    obs: &Observation,
-    excluded: &[(BuildingId, UnitKind, usize)],
-) -> ProductionAccess {
+fn emergency_paid_queue_access(obs: &Observation, excluded: &[PaidQueueClaim]) -> ProductionAccess {
     let paid_allowed = obs
         .my_buildings
         .iter()

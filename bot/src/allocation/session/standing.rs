@@ -163,7 +163,7 @@ impl OwnershipContexts {
             units.sort_unstable();
             units.dedup();
             production.extend(claims.paid_providers().iter().map(|provider| {
-                StandingProductionCommitment::paid(provider.producer(), provider.kind())
+                StandingProductionCommitment::paid(provider.producer, provider.kind)
             }));
             // Equal paid entries represent distinct queue occurrences.
             production.sort_unstable();

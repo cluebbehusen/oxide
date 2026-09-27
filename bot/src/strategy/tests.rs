@@ -981,7 +981,7 @@ fn unpaid_connected_operation(obs: &Observation) -> (StrategicPlanner, Vec<Conne
 fn queue_foreign_paid_providers(
     obs: &mut Observation,
     jobs: &[ConnectedProviderJob],
-) -> Vec<(BuildingId, UnitKind, usize)> {
+) -> Vec<PaidQueueClaim> {
     let mut occurrences = Vec::new();
     for job in jobs {
         let producer = job.eligible_producers()[0];
@@ -990,7 +990,11 @@ fn queue_foreign_paid_providers(
             .iter()
             .position(|building| building.id == producer)
             .unwrap();
-        occurrences.push((producer, job.kind(), obs.my_queues[index].len()));
+        occurrences.push(PaidQueueClaim {
+            producer,
+            kind: job.kind(),
+            occurrence: obs.my_queues[index].len(),
+        });
         obs.my_queues[index].push(job.kind());
     }
     occurrences
@@ -4470,12 +4474,17 @@ fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
     battle.my_queues[factory] = vec![UnitKind::Kestrel, UnitKind::Kestrel];
     let intelligence = knowledge(&battle);
     let resources = ResourceSnapshot::from_observation(&battle);
+    let held = [PaidQueueClaim {
+        producer,
+        kind: UnitKind::Kestrel,
+        occurrence: 0,
+    }];
     let proposal = StrategicPlanner::new()
         .unobserved_turn(evidence(&profile(), &battle, &intelligence))
         .fresh_connected(
             &crate::experience::Experience::default(),
             ConnectedInputs {
-                paid_exclusions: &[(producer, UnitKind::Kestrel, 0)],
+                paid_exclusions: &held,
                 ..connected_inputs(&fixture_planning, &resources)
             },
         )
@@ -4485,8 +4494,8 @@ fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
         .minimum_claims()
         .paid_providers()
         .iter()
-        .filter(|provider| provider.kind() == UnitKind::Kestrel)
-        .map(|provider| (provider.producer(), provider.occurrence()))
+        .filter(|provider| provider.kind == UnitKind::Kestrel)
+        .map(|provider| (provider.producer, provider.occurrence))
         .collect();
     assert_eq!(scouts, [(producer, 1)]);
     assert!(
@@ -4499,12 +4508,8 @@ fn connected_scout_credit_keeps_the_unowned_queue_occurrence_identity() {
     let mut planner = StrategicPlanner::new();
     planner.air = Some(proposal.variants[0].clone().into_active());
     assert_eq!(
-        planner.reconnaissance_paid_claims(
-            &battle,
-            &resources,
-            &[(producer, UnitKind::Kestrel, 0)]
-        ),
-        [super::super::allocation::PaidQueueClaim {
+        planner.reconnaissance_paid_claims(&battle, &resources, &held),
+        [PaidQueueClaim {
             producer,
             kind: UnitKind::Kestrel,
             occurrence: 1
@@ -4529,12 +4534,17 @@ fn connected_package_funds_a_scout_when_reconnaissance_holds_the_only_queued_one
     battle.my_queues[factory] = vec![UnitKind::Kestrel];
     let intelligence = knowledge(&battle);
     let resources = ResourceSnapshot::from_observation(&battle);
+    let held = [PaidQueueClaim {
+        producer,
+        kind: UnitKind::Kestrel,
+        occurrence: 0,
+    }];
     let proposal = StrategicPlanner::new()
         .unobserved_turn(evidence(&profile(), &battle, &intelligence))
         .fresh_connected(
             &crate::experience::Experience::default(),
             ConnectedInputs {
-                paid_exclusions: &[(producer, UnitKind::Kestrel, 0)],
+                paid_exclusions: &held,
                 ..connected_inputs(&fixture_planning, &resources)
             },
         )
@@ -4545,7 +4555,7 @@ fn connected_package_funds_a_scout_when_reconnaissance_holds_the_only_queued_one
         claims
             .paid_providers()
             .iter()
-            .all(|provider| provider.kind() != UnitKind::Kestrel),
+            .all(|provider| provider.kind != UnitKind::Kestrel),
         "the reconnaissance-held occurrence must not be leaned on"
     );
     assert!(
@@ -4684,7 +4694,7 @@ fn connected_claims_retain_only_the_paid_queue_occurrences_the_package_uses() {
             .minimum_claims()
             .paid_providers()
             .iter()
-            .map(|provider| (provider.producer(), provider.kind()))
+            .map(|provider| (provider.producer, provider.kind))
             .collect::<Vec<_>>(),
         vec![(BuildingId(10), UnitKind::Bombard)],
         "the minimum uses one paid Bombard, leaving the second queue occurrence ordinary"
@@ -7787,7 +7797,12 @@ fn remembered_recon_buys_only_the_scout_not_owned_by_another_question() {
     ghost.my_queues[factory] = vec![UnitKind::Kestrel];
     intelligence.update(&ghost);
     let identity = profile();
-    for (foreign, expected) in [(vec![], 0), (vec![(producer, UnitKind::Kestrel, 0)], 1)] {
+    let held = PaidQueueClaim {
+        producer,
+        kind: UnitKind::Kestrel,
+        occurrence: 0,
+    };
+    for (foreign, expected) in [(vec![], 0), (vec![held], 1)] {
         let mut planner = StrategicPlanner::new();
         let result = planner.think(
             evidence(&identity, &ghost, &intelligence),

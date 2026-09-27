@@ -320,12 +320,6 @@ impl Reconnaissance {
             .filter_map(|assignment| assignment.paid_claim)
             .collect()
     }
-    pub(crate) fn paid_exclusions(&self) -> Vec<(BuildingId, UnitKind, usize)> {
-        self.paid_claims()
-            .into_iter()
-            .map(|claim| (claim.producer, claim.kind, claim.occurrence))
-            .collect()
-    }
     pub(crate) fn capability_demands(&self) -> &[crate::standing_force::CapabilityDemand] {
         &self.capability_demand
     }
