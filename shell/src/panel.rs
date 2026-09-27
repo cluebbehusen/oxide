@@ -996,6 +996,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
     let owner = first.player;
     let has_builder = units.iter().any(|u| u.kind.stats().harvest.is_some());
     let has_welder = units.iter().any(|u| u.kind.stats().welder);
+    let has_fighter = units.iter().any(|u| u.kind.stats().can_fight());
     let mut panel = Panel {
         info: info::SelectionInfo::default(),
         title: if units.len() == 1 {
@@ -1094,34 +1095,38 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         desc: vec!["Clear orders; stand and auto-engage.".into()],
         progress: None,
     });
-    panel.cards.push(Card {
-        icon: CardIcon::Verb(VerbIcon::Move),
-        title: "Run".into(),
-        cost: None,
-        hotkey: chord(bindings, Action::Run),
-        action: CardAction::Dispatch(Action::Run),
-        enabled: true,
-        why: None,
-        desc: vec![
-            "Move to the selected ground without attacking".into(),
-            "or acquiring targets.".into(),
-        ],
-        progress: None,
-    });
-    panel.cards.push(Card {
-        icon: CardIcon::Verb(VerbIcon::AttackMove),
-        title: "Attack-move".into(),
-        cost: None,
-        hotkey: chord(bindings, Action::AttackMove),
-        action: CardAction::Dispatch(Action::AttackMove),
-        enabled: true,
-        why: None,
-        desc: vec![
-            "Move to the selected ground while engaging enemies.".into(),
-            "Machines stop and chase targets along the route.".into(),
-        ],
-        progress: None,
-    });
+    // Run and Attack-move only differ from a plain move for a machine
+    // that can shoot. Patrol stays for everyone: an unarmed scout patrols.
+    if has_fighter {
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Move),
+            title: "Run".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::Run),
+            action: CardAction::Dispatch(Action::Run),
+            enabled: true,
+            why: None,
+            desc: vec![
+                "Move to the selected ground without attacking".into(),
+                "or acquiring targets.".into(),
+            ],
+            progress: None,
+        });
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::AttackMove),
+            title: "Attack-move".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::AttackMove),
+            action: CardAction::Dispatch(Action::AttackMove),
+            enabled: true,
+            why: None,
+            desc: vec![
+                "Move to the selected ground while engaging enemies.".into(),
+                "Machines stop and chase targets along the route.".into(),
+            ],
+            progress: None,
+        });
+    }
     panel.cards.push(Card {
         icon: CardIcon::Verb(VerbIcon::Patrol),
         title: "Patrol".into(),
@@ -1152,18 +1157,18 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             progress: None,
         });
     }
-    if has_builder {
-        let loaded = units
-            .iter()
-            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0);
+    if units
+        .iter()
+        .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+    {
         panel.cards.push(Card {
             icon: CardIcon::Verb(VerbIcon::Harvest),
             title: "Return cargo".into(),
             cost: None,
             hotkey: chord(bindings, Action::ReturnCargo),
             action: CardAction::Dispatch(Action::ReturnCargo),
-            enabled: loaded,
-            why: (!loaded).then(|| "No scrap carried.".into()),
+            enabled: true,
+            why: None,
             desc: vec!["Cancel current and queued work, deliver scrap to the nearest reachable Foundry, then stay there.".into()],
             progress: None,
         });
@@ -1933,10 +1938,10 @@ mod tests {
         game.presentation.selection.units = vec![harvester];
         let panel = build_for_palette(&game.view(), &BindingMap::classic(), false).expect("panel");
         assert_eq!(panel.title, "Harvester");
-        assert_eq!(panel.cards[0].title, "Stop");
-        assert_eq!(panel.cards[1].title, "Run");
-        assert_eq!(panel.cards[2].title, "Attack-move");
-        assert_eq!(panel.cards[3].title, "Patrol");
+        // Unarmed, it has no Run or Attack-move, and an empty hopper has
+        // no cargo to return.
+        let titles: Vec<&str> = panel.cards.iter().map(|card| card.title.as_str()).collect();
+        assert_eq!(titles, ["Stop", "Patrol", "Salvage", "Weld", "Build"]);
         assert!(
             !panel
                 .info

@@ -7216,7 +7216,7 @@ fn return_cargo_foundry_click_keeps_empty_welders_and_loaded_workers() {
 }
 
 #[test]
-fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
+fn return_cargo_empty_selection_hides_the_card_and_refuses_the_shortcut() {
     let mut game = headless_game();
     let worker = game
         .state
@@ -7233,9 +7233,7 @@ fn return_cargo_empty_selection_disables_the_card_and_shortcut() {
         !panel
             .cards
             .iter()
-            .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
-            .unwrap()
-            .enabled
+            .any(|card| card.action.semantic() == Some(Action::ReturnCargo))
     );
     apply_events(&mut game, &mut input, &[key_down(Key::U)]);
     assert!(game.pending.is_empty());
