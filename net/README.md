@@ -83,7 +83,8 @@ then bot commands, then record, then `State::tick`.
   `Closed` waits until every queued line has been written, so the final lines
   reach the peer.
 - `Listener::try_accept` never blocks, so the game loop can poll it. Bind a
-  non-loopback address for other machines to reach.
+  non-loopback address for other machines to reach. `DEFAULT_PORT` is the
+  conventional port.
 
 ## Development
 

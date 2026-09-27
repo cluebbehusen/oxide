@@ -4258,6 +4258,51 @@ fn the_hardware_stream_preserves_backspace_repeat_only_when_requested() {
     );
 }
 
+#[test]
+fn a_paste_chord_types_the_clipboard_only_into_a_text_field() {
+    use macroquad::miniquad::{EventHandler, KeyCode, KeyMods};
+    let cmd = KeyMods {
+        logo: true,
+        ..KeyMods::default()
+    };
+    let ctrl = KeyMods {
+        ctrl: true,
+        ..KeyMods::default()
+    };
+    let clipboard = || Some("10.0.0.2:4200\n\u{e9}".to_owned());
+
+    let mut gameplay = PointerStream::new(1.0, false);
+    gameplay.clipboard = clipboard;
+    gameplay.key_down_event(KeyCode::V, ctrl, false);
+    assert!(gameplay.events.is_empty());
+
+    let mut stream = PointerStream::new(1.0, true);
+    stream.clipboard = clipboard;
+    stream.key_down_event(KeyCode::V, cmd, false);
+    stream.char_event('v', cmd, false);
+    let pasted: String = stream
+        .events
+        .iter()
+        .map(|event| match event {
+            RawEvent::Text { ch } => *ch,
+            other => panic!("{other:?} is not text"),
+        })
+        .collect();
+    assert_eq!(pasted, "10.0.0.2:4200", "printable ASCII, and no stray v");
+
+    stream.events.clear();
+    stream.key_down_event(KeyCode::V, KeyMods::default(), false);
+    stream.key_down_event(KeyCode::V, ctrl, true);
+    let alt_gr = KeyMods {
+        ctrl: true,
+        alt: true,
+        ..KeyMods::default()
+    };
+    stream.char_event('@', alt_gr, false);
+    stream.char_event('v', ctrl, false);
+    assert_eq!(stream.events, vec![RawEvent::Text { ch: '@' }]);
+}
+
 /// The selection consequence of the same frame: a unit sitting between
 /// the press point and where the pointer ended the frame belongs in the
 /// box. The old adapter threw that stretch away.

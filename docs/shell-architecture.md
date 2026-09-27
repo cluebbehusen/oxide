@@ -40,20 +40,22 @@ roster, including no bots; the New Match wizard still authors one local seat.
 Sandbox completion rules belong to the simulation, so headless and native
 sessions reproduce the same open-ended scene.
 
-`--host` and `--join` open a LAN lobby (`netplay::Lobby`) that exchanges
-`oxide-net` Hellos, fills the scenario's human seats in join order, and passes
-the start barrier before installing the match. `App` then owns the match's
-`netplay::Link` and pumps it once per loop pass on every screen that holds the
-match, so menus sit over a running match; leaving the match drops the link. The
-host paces its ticks at 1x, seals each tick's human orders, appends bot
-commands, and runs the published batch; a client runs batches as they arrive
-with a small buffer and catches up when behind. Once the match is decided, the
-host closes the connections only after every client has acknowledged the final
-batch, so late hash reports are still checked. Staged orders reach the session
-through the game's outbox. Only the host pauses, and speed is fixed. Networked
-sessions never journal crash recovery, save only a watch-only recording, and
-leave through the ordinary leave save when the host is lost or a desync halts
-the match.
+Match setup with a Remote seat, Home's Join Match, `--host`, and `--join` open a
+LAN lobby (`netplay::Lobby`) that exchanges `oxide-net` Hellos, fills the
+scenario's human seats other than the host's in join order, and passes the start
+barrier before installing the match. In-game hosts listen on
+`oxide_net::DEFAULT_PORT`, and a join address without a port uses it. `App` then
+owns the match's `netplay::Link` and pumps it once per loop pass on every screen
+that holds the match, so menus sit over a running match; leaving the match drops
+the link. The host paces its ticks at 1x, seals each tick's human orders,
+appends bot commands, and runs the published batch; a client runs batches as
+they arrive with a small buffer and catches up when behind. Once the match is
+decided, the host closes the connections only after every client has
+acknowledged the final batch, so late hash reports are still checked. Staged
+orders reach the session through the game's outbox. Only the host pauses, and
+speed is fixed. Networked sessions never journal crash recovery, save only a
+watch-only recording, and leave through the ordinary leave save when the host is
+lost or a desync halts the match.
 
 Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in

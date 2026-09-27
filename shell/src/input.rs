@@ -706,16 +706,20 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
 /// injected (never queried) so the whole adapter runs headless.
 pub(crate) struct PointerStream {
     dpi: f32,
-    accept_backspace_repeat: bool,
+    /// Whether a text field owns input.
+    text_entry: bool,
+    /// Reads the system clipboard for a paste.
+    clipboard: fn() -> Option<String>,
     /// Translated events, in arrival order.
     pub(crate) events: Vec<RawEvent>,
 }
 
 impl PointerStream {
-    pub(crate) fn new(dpi: f32, accept_backspace_repeat: bool) -> Self {
+    pub(crate) fn new(dpi: f32, text_entry: bool) -> Self {
         Self {
             dpi: if dpi > 0.0 { dpi } else { 1.0 },
-            accept_backspace_repeat,
+            text_entry,
+            clipboard: macroquad::miniquad::window::clipboard_get,
             events: Vec::new(),
         }
     }
@@ -792,21 +796,32 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     }
 
     /// The polled keyboard surface exposes the initial edge but drops OS
-    /// repeat. Preserve repeated Backspace presses only while the save-name
-    /// field owns input; every gameplay binding keeps edge-only semantics.
+    /// repeat. Preserve repeated Backspace presses only while a text field
+    /// owns input; every gameplay binding keeps edge-only semantics. A
+    /// paste chord there types the clipboard as ordinary Text events.
     fn key_down_event(
         &mut self,
         keycode: macroquad::miniquad::KeyCode,
-        _keymods: macroquad::miniquad::KeyMods,
+        keymods: macroquad::miniquad::KeyMods,
         repeat: bool,
     ) {
-        if self.accept_backspace_repeat
-            && repeat
-            && keycode == macroquad::miniquad::KeyCode::Backspace
-        {
+        if !self.text_entry {
+            return;
+        }
+        if repeat && keycode == macroquad::miniquad::KeyCode::Backspace {
             self.events.push(RawEvent::KeyDown {
                 key: Key::Backspace,
             });
+        } else if !repeat
+            && keycode == macroquad::miniquad::KeyCode::V
+            && chorded(keymods)
+            && let Some(text) = (self.clipboard)()
+        {
+            self.events.extend(
+                text.chars()
+                    .filter(|ch| typable(*ch))
+                    .map(|ch| RawEvent::Text { ch }),
+            );
         }
     }
 
@@ -815,16 +830,27 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     /// Printable ASCII only, filtered AT INGEST: the menu font is
     /// Latin-1 and UI strings stay ASCII, so nothing downstream ever
     /// needs its own filter.
+    /// A shortcut chord types nothing: macOS reports Cmd+V as a `v`.
     fn char_event(
         &mut self,
         character: char,
-        _keymods: macroquad::miniquad::KeyMods,
+        keymods: macroquad::miniquad::KeyMods,
         _repeat: bool,
     ) {
-        if ('\u{20}'..='\u{7e}').contains(&character) {
+        if typable(character) && !chorded(keymods) {
             self.events.push(RawEvent::Text { ch: character });
         }
     }
+}
+
+fn typable(ch: char) -> bool {
+    ('\u{20}'..='\u{7e}').contains(&ch)
+}
+
+/// Whether Cmd, or Ctrl without Alt, is held. AltGr reaches some platforms
+/// as Ctrl+Alt and still types.
+fn chorded(mods: macroquad::miniquad::KeyMods) -> bool {
+    mods.logo || (mods.ctrl && !mods.alt)
 }
 
 // A fingertip must arrive ONCE, as a touch — macroquad otherwise
@@ -850,7 +876,7 @@ pub fn arm_hardware() {
     POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
 }
 
-pub fn poll_events(accept_backspace_repeat: bool) -> Vec<RawEvent> {
+pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
     // Pointer and touch events in true arrival order, each with its own
@@ -866,10 +892,7 @@ pub fn poll_events(accept_backspace_repeat: bool) -> Vec<RawEvent> {
         let (x, y) = mq::mouse_position();
         events.push(RawEvent::MouseMove { x, y });
     });
-    let mut stream = PointerStream::new(
-        macroquad::miniquad::window::dpi_scale(),
-        accept_backspace_repeat,
-    );
+    let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale(), text_entry);
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);
     // macroquad's mouse_leave_event marks held buttons released in the

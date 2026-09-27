@@ -17,6 +17,8 @@ pub enum Out {
     Continue,
     /// Open the New Match wizard.
     Play,
+    /// Ask for a LAN host to join.
+    Join,
     /// Start the tutorial match.
     Tutorial,
     /// Open the replay shelf.
@@ -97,6 +99,7 @@ impl HomeScreen {
             .into_iter()
             .chain([
                 ("Play", Out::Play),
+                ("Join Match", Out::Join),
                 ("Tutorial", Out::Tutorial),
                 ("Replays", Out::Replays),
                 ("Roster", Out::Roster),
@@ -159,23 +162,24 @@ mod tests {
         // once resumed a match instead of opening the map list).
         let mut fresh = HomeScreen::with_resumable(false);
         assert_eq!(pick(&mut fresh, 0), Out::Play);
-        assert_eq!(pick(&mut fresh, 2), Out::Replays);
-        assert_eq!(pick(&mut fresh, 3), Out::Roster);
-        assert_eq!(pick(&mut fresh, 4), Out::Settings);
-        assert_eq!(pick(&mut fresh, 5), Out::Quit);
+        assert_eq!(pick(&mut fresh, 1), Out::Join);
+        assert_eq!(pick(&mut fresh, 3), Out::Replays);
+        assert_eq!(pick(&mut fresh, 4), Out::Roster);
+        assert_eq!(pick(&mut fresh, 5), Out::Settings);
+        assert_eq!(pick(&mut fresh, 6), Out::Quit);
 
         let mut resumable = HomeScreen::with_resumable(true);
         assert_eq!(pick(&mut resumable, 0), Out::Continue);
         assert_eq!(pick(&mut resumable, 1), Out::Play);
-        assert_eq!(pick(&mut resumable, 4), Out::Roster);
-        assert_eq!(pick(&mut resumable, 6), Out::Quit);
+        assert_eq!(pick(&mut resumable, 5), Out::Roster);
+        assert_eq!(pick(&mut resumable, 7), Out::Quit);
     }
     #[test]
     fn a_touch_only_door_offers_no_quit_and_keeps_its_verbs() {
         let mut door = HomeScreen::build(true, false);
         assert!(!door.menu.items.iter().any(|item| item == "Quit"));
         assert_eq!(pick(&mut door, 0), Out::Continue);
-        assert_eq!(pick(&mut door, 5), Out::Settings);
+        assert_eq!(pick(&mut door, 6), Out::Settings);
         assert_eq!(door.rows.len(), door.menu.items.len());
     }
 
@@ -195,7 +199,7 @@ mod tests {
                 pick(&mut home, 1),
                 if resumable { Out::Continue } else { Out::Play }
             );
-            assert_eq!(pick(&mut home, usize::from(resumable) + 5), Out::Settings);
+            assert_eq!(pick(&mut home, usize::from(resumable) + 6), Out::Settings);
         }
     }
 }

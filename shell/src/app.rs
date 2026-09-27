@@ -80,7 +80,12 @@ enum Screen {
     Wizard(Wizard),
     /// A LAN match gathering its machines. Leaving drops every
     /// connection the lobby holds.
-    Lobby(Box<LobbyScreen>),
+    Lobby {
+        /// The screen itself.
+        screen: Box<LobbyScreen>,
+        /// Where leaving returns to: Home, or the match setup that hosted.
+        back: Box<Screen>,
+    },
     /// The game proper — the session lives in [`App::game`], which
     /// every screen needs as its backdrop.
     Playing,
@@ -225,6 +230,39 @@ impl PersonalitySeedSource {
 
 /// Builds the game a filled-in draft describes.
 fn launch(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Game> {
+    Game::new(draft_scenario(draft, personality_seed_base)?)
+}
+
+/// What starting a draft built.
+enum NewMatch {
+    /// A match on this machine alone.
+    Local(Box<Game>),
+    /// A lobby hosting the match for its remote chairs.
+    Hosted(Box<crate::netplay::HostLobby>),
+}
+
+/// Starts a draft: a local match, or a lobby listening on `bind` when a
+/// chair is remote.
+fn start_new_match(
+    draft: &NewMatchDraft,
+    personality_seed_base: u64,
+    bind: &str,
+) -> Result<NewMatch> {
+    if !screens::wizard::draft_hosts(draft) {
+        return Ok(NewMatch::Local(Box::new(launch(
+            draft,
+            personality_seed_base,
+        )?)));
+    }
+    let scenario = draft_scenario(draft, personality_seed_base)?;
+    let host = oxide_sim::PlayerId(draft.seat_choice.min(scenario.players.len() - 1) as u8);
+    let lobby =
+        crate::netplay::HostLobby::new(bind, scenario, host, &crate::build_identity().revision)?;
+    Ok(NewMatch::Hosted(Box::new(lobby)))
+}
+
+/// The scenario a filled-in draft describes.
+fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Scenario> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
     // One consumer, one source: the per-seat vector the setup screen filled.
     // Every opponent uses the same fog-honest controller with its chosen
@@ -240,9 +278,9 @@ fn launch(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Game> {
     anyhow::ensure!(!scenario.players.is_empty(), "the map has no player seats");
     let seat_choice = draft.seat_choice.min(scenario.players.len() - 1);
     for (i, player) in scenario.players.iter_mut().enumerate() {
-        player.bot = i != seat_choice;
+        let plan = draft.seats[i];
+        player.bot = i != seat_choice && !plan.remote;
         player.bot_config = player.bot.then(|| {
-            let plan = draft.seats[i];
             oxide_sim::scenario::BotConfig::scripted(
                 plan.difficulty,
                 plan.stance,
@@ -295,7 +333,7 @@ fn launch(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Game> {
         names.len() == scenario.players.len(),
         "seat names collide after setup"
     );
-    Game::new(scenario)
+    Ok(scenario)
 }
 
 /// A screenshot request parked until after this frame renders.
@@ -504,7 +542,7 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
         }
         Screen::Results(_) => match_soundtrack_scene(&game.view(), false),
         Screen::Home(_)
-        | Screen::Lobby(_)
+        | Screen::Lobby { .. }
         | Screen::Settings { .. }
         | Screen::Codex { .. }
         | Screen::Wizard(_)
@@ -651,15 +689,25 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         (args.debug_server && !args.automation) || args.scenario.is_some() || args.replay.is_some();
     let commit = crate::build_identity().revision;
     let mut screen = if let Some(address) = &args.host {
-        let lobby = crate::netplay::HostLobby::new(address, game.scenario.clone(), &commit)?;
-        Screen::Lobby(Box::new(LobbyScreen::open(crate::netplay::Lobby::Host(
-            Box::new(lobby),
-        ))))
+        let lobby = crate::netplay::HostLobby::new(
+            address,
+            game.scenario.clone(),
+            game.presentation.human,
+            &commit,
+        )?;
+        Screen::Lobby {
+            screen: Box::new(LobbyScreen::waiting(crate::netplay::Lobby::Host(Box::new(
+                lobby,
+            )))),
+            back: Box::new(Screen::Home(HomeScreen::open())),
+        }
     } else if let Some(address) = &args.join {
-        let lobby = crate::netplay::ClientLobby::new(address, &commit);
-        Screen::Lobby(Box::new(LobbyScreen::open(crate::netplay::Lobby::Client(
-            lobby,
-        ))))
+        let address = crate::netplay::with_default_port(address);
+        let lobby = crate::netplay::ClientLobby::new(&address, &commit);
+        Screen::Lobby {
+            screen: Box::new(LobbyScreen::waiting(crate::netplay::Lobby::Client(lobby))),
+            back: Box::new(Screen::Home(HomeScreen::open())),
+        }
     } else if let Some(path) = &args.watch {
         let mut session = PlaybackSession::open(path)?;
         // The clock flags drive whichever session is visible: a viewer
@@ -837,7 +885,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let mut events = if app.args.automation {
             Vec::new()
         } else {
-            input::poll_events(matches!(&screen, Screen::Pause(pause) if pause.naming()))
+            input::poll_events(text_entry(&screen))
         };
         if let Some((frame, last_top)) = trace_frames.as_mut() {
             *frame += 1;
@@ -945,9 +993,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // tap on the field brings back one the player dismissed.
         let refocus = match &mut screen {
             Screen::Pause(pause) => pause.take_keyboard_request(),
+            Screen::Lobby { screen, .. } => screen.take_keyboard_request(),
             _ => false,
         };
-        let wanted = keyboard_wanted(&screen);
+        let wanted = text_entry(&screen);
         if crate::platform::TOUCH_ONLY && (wanted != app.soft_keyboard || (wanted && refocus)) {
             macroquad::miniquad::window::show_keyboard(wanted);
             app.soft_keyboard = wanted;
@@ -1162,7 +1211,7 @@ fn visible_profile_mode(screen: &Screen) -> &'static str {
         Screen::Settings { .. } => "settings",
         Screen::Codex { .. } => "codex",
         Screen::Wizard(_) => "wizard",
-        Screen::Lobby(_) => "lobby",
+        Screen::Lobby { .. } => "lobby",
         Screen::Playing => "playing",
         Screen::Playback(_) => "playback",
         Screen::FinalMap(_) => "final_map",
@@ -1221,7 +1270,7 @@ fn screen_holds_live_match(screen: &Screen) -> bool {
             playback.return_to,
             PlaybackReturn::Pause | PlaybackReturn::Results
         ),
-        Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Lobby(_) => false,
+        Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Lobby { .. } => false,
         Screen::Busy(_) => true,
     }
 }
@@ -1284,9 +1333,14 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh
 }
 
-/// Whether the screen wants text input: only the save-name field does.
-fn keyboard_wanted(screen: &Screen) -> bool {
-    matches!(screen, Screen::Pause(pause) if pause.naming())
+/// Whether a text field owns input: the save-name field or the host
+/// address.
+fn text_entry(screen: &Screen) -> bool {
+    match screen {
+        Screen::Pause(pause) => pause.naming(),
+        Screen::Lobby { screen, .. } => screen.text_entry(),
+        _ => false,
+    }
 }
 
 /// Consecutive presented frames that began and ended in live play.
@@ -1349,7 +1403,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
             };
         }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
-        Screen::Lobby(lobby) => ("lobby", Some(&lobby.menu)),
+        Screen::Lobby { screen, .. } => ("lobby", Some(&screen.menu)),
         Screen::Busy(busy) => (busy.mode(), Some(&busy.menu)),
         Screen::Pause(ps) => (
             if ps.saving_failed() {
@@ -1794,12 +1848,10 @@ mod tests {
     #[test]
     fn keyboard_is_wanted_only_while_naming() {
         let mut pause = PauseScreen::open(false, true);
-        assert!(!keyboard_wanted(&Screen::Pause(PauseScreen::open(
-            false, true
-        ))));
+        assert!(!text_entry(&Screen::Pause(PauseScreen::open(false, true))));
         pause.begin_naming("Skirmish | t40".to_string());
-        assert!(keyboard_wanted(&Screen::Pause(pause)));
-        assert!(!keyboard_wanted(&Screen::Playing));
+        assert!(text_entry(&Screen::Pause(pause)));
+        assert!(!text_entry(&Screen::Playing));
     }
 
     #[test]
@@ -1975,6 +2027,30 @@ mod tests {
         let scenario = Scenario::load("../scenarios/trident-plateau.json").expect("shipped map");
         draft.set_scenario(scenario, None);
         draft
+    }
+
+    #[test]
+    fn remote_chairs_launch_as_humans_without_a_bot() {
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        draft.seats[0].remote = true;
+        draft.seats[1].remote = true;
+        draft.seat_choice = 1;
+        let scenario = draft_scenario(&draft, 0x1000).expect("builds");
+        assert!(scenario.players.iter().all(|player| !player.bot));
+        assert!(
+            scenario
+                .players
+                .iter()
+                .all(|player| player.bot_config.is_none())
+        );
+        draft.seats[0].remote = false;
+        let scenario = draft_scenario(&draft, 0x1000).expect("builds");
+        assert!(scenario.players[0].bot && scenario.players[0].bot_config.is_some());
+        assert!(
+            !scenario.players[1].bot,
+            "the human's chair ignores its remote flag"
+        );
     }
 
     #[test]

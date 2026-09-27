@@ -38,6 +38,7 @@ mod seat_style;
 mod slide_motion;
 mod soundtrack;
 mod strategic_markers;
+mod text_field;
 mod theme;
 mod track_motion;
 mod tutorial;

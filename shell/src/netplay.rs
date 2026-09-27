@@ -7,11 +7,12 @@ use crate::game::network::{CLIENT_BUFFER, NetRole};
 use anyhow::{Context, Result, ensure};
 use macroquad::prelude::Vec2;
 use oxide_net::{
-    ClientEnd, ClientSession, Closed, Connection, HostEvent, HostSession, JoinMessage, Listener,
-    LobbyMessage, StartBarrier, same_build,
+    ClientEnd, ClientSession, Closed, Connection, DEFAULT_PORT, HostEvent, HostSession,
+    JoinMessage, Listener, LobbyMessage, StartBarrier, same_build,
 };
 use oxide_sim::{PlayerId, Scenario, Tick};
 use std::io;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -290,16 +291,52 @@ impl Lobby {
         }
     }
 
-    /// Whether a client failed and may try again.
-    pub(crate) fn failed(&self) -> bool {
-        matches!(self, Lobby::Client(client) if matches!(client.state, Joining::Failed(_)))
-    }
-
-    /// Reconnects a failed client.
-    pub(crate) fn retry(&mut self) {
-        if let Lobby::Client(client) = self {
-            client.state = Joining::connect(&client.address);
+    /// A client that gave up: the address it tried, and why it failed.
+    pub(crate) fn failure(&self) -> Option<(&str, &str)> {
+        match self {
+            Lobby::Client(ClientLobby {
+                address,
+                state: Joining::Failed(reason),
+                ..
+            }) => Some((address, reason)),
+            _ => None,
         }
+    }
+}
+
+/// `address` with the default port when it names none.
+pub(crate) fn with_default_port(address: &str) -> String {
+    let address = address.trim();
+    let has_port = address.parse::<SocketAddr>().is_ok()
+        || address
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| !host.contains(':') && port.parse::<u16>().is_ok());
+    if has_port {
+        address.to_owned()
+    } else if address.parse::<Ipv6Addr>().is_ok() {
+        format!("[{address}]:{DEFAULT_PORT}")
+    } else {
+        format!("{address}:{DEFAULT_PORT}")
+    }
+}
+
+/// Where other machines reach a listener bound to `bound`. A wildcard bind
+/// shows the address of the interface this machine routes through.
+fn reachable(bound: SocketAddr) -> String {
+    if !bound.ip().is_unspecified() {
+        return bound.to_string();
+    }
+    // Connecting a UDP socket only picks a route; it sends nothing.
+    let routed = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|socket| {
+            socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
+            socket.local_addr()
+        })
+        .ok()
+        .filter(|local| !local.ip().is_unspecified());
+    match routed {
+        Some(local) => SocketAddr::new(local.ip(), bound.port()).to_string(),
+        None => format!("port {}", bound.port()),
     }
 }
 
@@ -324,9 +361,14 @@ struct Starting {
 }
 
 impl HostLobby {
-    /// Listens on `address` for the scenario's other human seats. The host
-    /// takes the first human seat.
-    pub(crate) fn new(address: &str, scenario: Scenario, commit: &str) -> Result<Self> {
+    /// Listens on `address` for the scenario's human seats other than
+    /// `host`'s.
+    pub(crate) fn new(
+        address: &str,
+        scenario: Scenario,
+        host: PlayerId,
+        commit: &str,
+    ) -> Result<Self> {
         let humans: Vec<PlayerId> = scenario
             .players
             .iter()
@@ -335,21 +377,21 @@ impl HostLobby {
             .map(|(_, seat)| PlayerId(seat))
             .collect();
         ensure!(
-            humans.len() >= 2,
-            "a hosted scenario needs at least two human seats (seats with \"bot\": false)"
+            humans.len() >= 2 && humans.contains(&host),
+            "a hosted scenario needs the host's seat and another human seat (seats with \"bot\": false)"
         );
         let listener =
             Listener::bind(address).with_context(|| format!("cannot listen on {address}"))?;
-        let address = listener
+        let bound = listener
             .local_addr()
-            .map_or_else(|_| address.to_owned(), |bound| bound.to_string());
+            .with_context(|| format!("cannot listen on {address}"))?;
         Ok(Self {
             listener,
-            address,
+            address: reachable(bound),
             commit: commit.to_owned(),
             scenario,
-            host: humans[0],
-            seats: humans[1..].to_vec(),
+            host,
+            seats: humans.into_iter().filter(|seat| *seat != host).collect(),
             greeting: Vec::new(),
             joined: Vec::new(),
             starting: None,
@@ -711,8 +753,12 @@ mod tests {
 
     impl Match {
         fn start(scenario: Scenario) -> Self {
+            Self::start_as(scenario, HOST)
+        }
+
+        fn start_as(scenario: Scenario, seat: PlayerId) -> Self {
             let mut host = Lobby::Host(Box::new(
-                HostLobby::new("127.0.0.1:0", scenario, COMMIT).unwrap(),
+                HostLobby::new("127.0.0.1:0", scenario, seat, COMMIT).unwrap(),
             ));
             let mut client = Lobby::Client(ClientLobby::new(&address(&host), COMMIT));
             let (mut hosted, mut joined) = (None, None);
@@ -902,22 +948,58 @@ mod tests {
     #[test]
     fn a_mismatched_build_is_refused_and_its_seat_stays_open() {
         let mut host = Lobby::Host(Box::new(
-            HostLobby::new("127.0.0.1:0", duel(), COMMIT).unwrap(),
+            HostLobby::new("127.0.0.1:0", duel(), HOST, COMMIT).unwrap(),
         ));
         let mut client = Lobby::Client(ClientLobby::new(&address(&host), "other"));
-        wait(|| {
+        let reason = wait(|| {
             assert!(host.poll(Duration::ZERO, viewport()).is_none());
             assert!(client.poll(Duration::ZERO, viewport()).is_none());
-            client.failed().then_some(())
+            client.failure().map(|(_, reason)| reason.to_owned())
         });
-        assert!(client.status().contains("host runs build lan-test"));
+        assert!(reason.contains("host runs build lan-test"));
+        assert_eq!(client.status(), reason);
         assert!(host.status().ends_with("1 of 2 players here"));
-        client.retry();
-        assert!(client.status().starts_with("Connecting to"));
+        assert!(host.failure().is_none());
     }
 
     #[test]
-    fn a_host_needs_two_human_seats() {
-        assert!(HostLobby::new("127.0.0.1:0", Scenario::skirmish(), COMMIT).is_err());
+    fn a_host_needs_its_own_seat_and_another_human_seat() {
+        assert!(HostLobby::new("127.0.0.1:0", Scenario::skirmish(), HOST, COMMIT).is_err());
+        assert!(HostLobby::new("127.0.0.1:0", duel(), PlayerId(2), COMMIT).is_err());
+    }
+
+    #[test]
+    fn a_host_can_sit_in_any_human_seat() {
+        let mut lan = Match::start_as(duel(), CLIENT);
+        assert_eq!(lan.host.0.presentation.human, CLIENT);
+        assert_eq!(lan.client.0.presentation.human, HOST);
+        lan.run(5);
+        lan.drain();
+        assert_eq!(lan.client.0.state.hash(), lan.host.0.state.hash());
+    }
+
+    #[test]
+    fn a_typed_address_gets_the_default_port_when_it_names_none() {
+        for (typed, full) in [
+            ("192.168.1.20", "192.168.1.20:4200"),
+            (" connor-mbp ", "connor-mbp:4200"),
+            ("connor-mbp:5000", "connor-mbp:5000"),
+            ("10.0.0.2:4201", "10.0.0.2:4201"),
+            ("fd7a::1", "[fd7a::1]:4200"),
+            ("[fd7a::1]:4201", "[fd7a::1]:4201"),
+        ] {
+            assert_eq!(with_default_port(typed), full, "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_wildcard_bind_shows_a_reachable_address() {
+        let loopback: SocketAddr = "127.0.0.1:4300".parse().unwrap();
+        assert_eq!(reachable(loopback), "127.0.0.1:4300");
+        let shown = reachable("0.0.0.0:4300".parse().unwrap());
+        assert!(
+            shown.ends_with("4300") && !shown.starts_with("0.0.0.0"),
+            "{shown}"
+        );
     }
 }
