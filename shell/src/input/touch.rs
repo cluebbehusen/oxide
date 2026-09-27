@@ -474,10 +474,16 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 }
 
 /// A still tap on the battlefield selects, and a quick second tap on a
-/// unit sweeps its kind.
+/// unit sweeps its kind. With the build palette open and nothing armed,
+/// a tap that picks nothing only closes the palette.
 fn world_tap(game: &mut Game, input: &mut InputState, p: Vec2, double: bool) {
     let picked = select::pick(game, p, input.ui, super::Pointer::Touch);
-    if double && picked.is_some() && !input.queue_held() {
+    if picked.is_none() && input.build_menu && input.placing.is_none() {
+        // Tapping away from the open palette dismisses it and keeps the
+        // builder: touch has no Esc, and a deselect would lose the crew.
+        input.close_construction();
+        input.last_tap = None;
+    } else if double && picked.is_some() && !input.queue_held() {
         select_all_of_kind_on_screen(game, p, input.ui, super::Pointer::Touch);
         input.last_tap = None;
     } else {

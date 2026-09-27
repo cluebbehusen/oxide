@@ -6207,6 +6207,41 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
 }
 
 #[test]
+fn a_tap_on_open_ground_closes_the_palette_and_keeps_the_builder() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (_, at) = own_fighter(&game);
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    let builders = game.presentation.selection.units.clone();
+    assert!(input.build_menu && !builders.is_empty());
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(!input.construction_open(), "the tap dismissed the palette");
+    assert_eq!(
+        game.presentation.selection.units, builders,
+        "and kept the crew"
+    );
+    assert!(game.pending.is_empty());
+
+    // The dismissing tap never counts toward a double tap.
+    assert_eq!(input.last_tap, None);
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "with the palette closed, the next ground tap deselects"
+    );
+
+    // A tap that lands on a unit still selects it.
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    let (fighter, _) = own_fighter(&game);
+    let fighter_at = {
+        let u = game.state.unit(fighter).expect("fighter");
+        vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())
+    };
+    tap_world(&mut game, &mut input, fighter_at);
+    assert_eq!(game.presentation.selection.units, vec![fighter]);
+}
+
+#[test]
 fn the_back_card_closes_the_palette_and_keeps_the_builder() {
     let mut game = headless_game();
     let mut input = InputState::new();
