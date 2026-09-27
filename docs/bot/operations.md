@@ -192,11 +192,13 @@ signal so a lift can follow air-defense suppression without depending on it.
 Signals and shared experience credit match the target by owner and anchor. A
 connected operation keeps signaling its admitted primary anchor while its
 tactics focus another member, and an operation whose survivors move to standby
-still ends with a release or abort signal. Only targetless or safely staged
-Executive armies can transfer into a lift; units holding a currently contested
-objective remain enlisted. Carrier production and extra Airworks use the same
-ordinary queues, costs, prerequisites, and deterministic capital ledger as all
-other bot production.
+still ends with a release or abort signal. An economy-emergency recall returns
+before Lift runs, so it keeps the operation in recovery, even with no survivors,
+until the next full decision settles it and hands Lift the abort. Only
+targetless or safely staged Executive armies can transfer into a lift; units
+holding a currently contested objective remain enlisted. Carrier production and
+extra Airworks use the same ordinary queues, costs, prerequisites, and
+deterministic capital ledger as all other bot production.
 
 An undispatched scout slot may still be filled or trained while an air operation
 prepares. Once the operation has sent its exact scout, losing that unit during

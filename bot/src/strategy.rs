@@ -2651,6 +2651,18 @@ impl StrategicPlanner {
         );
     }
 
+    /// The remembered objective of an unadmitted reconnaissance watch. Only
+    /// such an objective may hold a prospective first carrier's capital.
+    pub(crate) fn remembered_recon_target<'i>(
+        &self,
+        intel: &'i StrategicIntelligence,
+    ) -> Option<&'i BuildingContact> {
+        self.air
+            .as_ref()
+            .filter(|active| unadmitted_recon(&active.op))
+            .and_then(|active| remembered_objective(&active.op, intel))
+    }
+
     pub(crate) fn has_active_island_operation(&self) -> bool {
         self.air.as_ref().is_some_and(|active| {
             active.op.assault_admitted() && matches!(active.plan, AirPlan::Island(_))
@@ -2767,7 +2779,9 @@ impl StrategicPlanner {
     }
 
     /// Releases unpaid connected demand during emergency economy recovery
-    /// and returns every still-routable member immediately.
+    /// and returns every still-routable member immediately. The operation
+    /// stays in recovery even with no survivors: this path returns before Lift
+    /// runs, so the next full decision settles it and hands the abort to Lift.
     pub(crate) fn recover_unpaid_connected_for_economy_emergency(
         &mut self,
         context: EconomyEmergencyRecovery<'_>,
@@ -2812,16 +2826,16 @@ impl StrategicPlanner {
             return None;
         }
 
-        let ActiveAirOperation { mut op, mut plan } = self
+        let ActiveAirOperation { op, plan } = self
             .air
-            .take()
+            .as_mut()
             .expect("unpaid connected demand belongs to one active operation");
-        recover(&mut op, AirRecoveryReason::PreparationInfeasible, obs.tick);
+        recover(op, AirRecoveryReason::PreparationInfeasible, obs.tick);
         self.cooldown_until = obs.tick.saturating_add(cooldown(profile, tuning));
         let mut out = StrategicDecision::default();
         reconcile_recovery_return(
-            &mut op,
-            &mut plan,
+            op,
+            plan,
             RecoveryReturnContext {
                 obs,
                 home,
@@ -2831,12 +2845,7 @@ impl StrategicPlanner {
             },
             &mut out,
         );
-        out.reservations = reservations(&op, &plan, obs);
-        if out.reservations.is_empty() {
-            self.terminal_outcome = Some(air_operation_outcome(&op));
-        } else {
-            self.air = Some(ActiveAirOperation { op, plan });
-        }
+        out.reservations = reservations(op, plan, obs);
         Some(out)
     }
 
@@ -3814,12 +3823,7 @@ impl<'a> AirTurn<'a> {
             return None;
         }
         let ActiveAirOperation { mut op, plan } = match &self.air {
-            Some(active)
-                if active.op.phase() == AirOperationPhase::Recon
-                    && !active.op.assault_admitted() =>
-            {
-                active.clone()
-            }
+            Some(active) if unadmitted_recon(&active.op) => active.clone(),
             // Target selection is skipped when nothing could begin anyway.
             None if strategic_admission_tick(obs.tick) => {
                 let AirAdmission::Begin(selected) = self.admission(self.ev, true, lift_support)
@@ -3833,11 +3837,7 @@ impl<'a> AirTurn<'a> {
             Some(_) | None => return None,
         };
         refresh_target(&mut op, &plan, intel);
-        let target = intel.buildings().iter().find(|target| {
-            target.player == op.target_player
-                && target.anchor == op.target
-                && target.evidence == ContactEvidence::Remembered
-        })?;
+        let target = remembered_objective(&op, intel)?;
         if operation_recovery_reason(&op, &plan, profile, obs, intel).is_some() {
             return None;
         }
@@ -6754,6 +6754,22 @@ fn target_seen(op: &AirOperation, plan: &AirPlan, obs: &Observation) -> bool {
                 .map_or(building.anchor == op.target, |connected| {
                     connected.commitment.contains(building.anchor)
                 })
+    })
+}
+
+fn unadmitted_recon(op: &AirOperation) -> bool {
+    op.phase() == AirOperationPhase::Recon && !op.assault_admitted()
+}
+
+/// The objective's contact while current sight has yet to reacquire it.
+fn remembered_objective<'a>(
+    op: &AirOperation,
+    intel: &'a StrategicIntelligence,
+) -> Option<&'a BuildingContact> {
+    intel.buildings().iter().find(|building| {
+        building.player == op.target_player
+            && building.anchor == op.target
+            && building.evidence == ContactEvidence::Remembered
     })
 }
 

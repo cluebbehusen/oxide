@@ -739,7 +739,10 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
     }
 
     fn prospective_carrier_floor(&self, claims: &ClaimSnapshot, allocation_possible: bool) -> u32 {
-        if !allocation_possible || !claims.opening_core.ready {
+        if !allocation_possible
+            || !claims.opening_core.ready
+            || self.participants.policy.economic_saving().is_some()
+        {
             return 0;
         }
         let Some(target) = self

@@ -53,6 +53,80 @@ fn terminal_air_signals_release_or_recover_a_boarding_complete_lift() {
     );
 }
 
+#[test]
+fn an_emergency_air_recall_with_no_survivors_aborts_the_waiting_lift() {
+    use crate::experience::{Outcome, OutcomeReason};
+    use crate::strategy::fixtures::CommittedClusterFixture;
+    use crate::strategy::{AirOperationPhase, EconomyEmergencyRecovery, StrategicPlanner};
+    let (mut obs, mut lifts, manifest) = boarding_complete_lift();
+    let mut air = StrategicPlanner::committed_cluster_fixture(CommittedClusterFixture {
+        faction: obs.faction,
+        primary: (BuildingId(500), BuildingKind::Foundry, TEST_TARGET),
+        members: vec![TEST_TARGET],
+        phase: AirOperationPhase::Assemble,
+        tick: obs.tick,
+        scout: UnitId(700),
+        artillery: vec![UnitId(701)],
+        strike_aircraft: vec![UnitId(702)],
+    });
+    lifts.think_unrestricted(
+        &obs,
+        TEST_HOME,
+        &[],
+        air_support(air.air_operation(), air.terminal_outcome()),
+    );
+    assert_eq!(
+        lifts.operation().unwrap().phase,
+        LiftPhase::AwaitSupport,
+        "the loaded lift waits on the operation suppressing its target"
+    );
+
+    obs.tick += 12;
+    let profile = coordinator_profile();
+    let recovery = air
+        .recover_unpaid_connected_for_economy_emergency(EconomyEmergencyRecovery {
+            profile: &profile,
+            tuning: DifficultyTuning::for_level(profile.difficulty),
+            obs: &obs,
+            home: TEST_HOME,
+            public_map: None,
+            orientation: crate::orient::Orientation::for_home(&obs, TEST_HOME),
+            recon_paid_exclusions: &[],
+        })
+        .expect("an unpaid package yields to the economy emergency");
+    assert!(recovery.reservations.is_empty(), "no member survives");
+
+    obs.tick += 12;
+    let (work, _) = coordinator_pass(&obs, &mut lifts, &mut air);
+    let lift = lifts.operation().expect("the loaded carrier must recover");
+    assert_eq!(
+        (lift.phase, lift.launched),
+        (LiftPhase::Recover, false),
+        "the abort reaches the lift instead of leaving it to wait out its grace"
+    );
+    assert!(
+        work.intents.iter().all(|intent| !matches!(
+            intent,
+            Intent::Unload { at, .. } if *at == manifest.drop
+        )),
+        "an aborted corridor must not become a target-side launch"
+    );
+    assert!(
+        air.air_operation().is_none(),
+        "recovery settles the operation"
+    );
+    let report = air
+        .outcomes()
+        .pending
+        .last()
+        .expect("settlement finishes the operation's episode");
+    assert_eq!(
+        (report.outcome, report.reason, report.finished_at),
+        (Outcome::Invalidated, OutcomeReason::Preempted, obs.tick),
+        "an infeasible preparation closes its episode when recovery settles"
+    );
+}
+
 fn boarding_complete_lift() -> (Observation, LiftPlanner, crate::lift::LiftManifest) {
     let mut obs = test_island_observation();
     obs.my_units.extend(
