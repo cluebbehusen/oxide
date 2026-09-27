@@ -2572,8 +2572,8 @@ pub(crate) fn draw_drag_rect(game: &crate::game::Scene<'_>, input: &InputState) 
 /// The two-finger selection box, while a touch pair draws one; its unit
 /// preview starts once the rest has claimed the box.
 pub(crate) fn draw_touch_box(game: &crate::game::Scene<'_>, input: &InputState) {
-    if let Some((a, b, claimed)) = crate::input::touch_box(input) {
-        draw_selection_rect(game, a, b, claimed);
+    if let Some((a, b)) = crate::input::touch_box(input) {
+        draw_selection_rect(game, a, b, true);
     }
 }
 

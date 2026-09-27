@@ -2434,11 +2434,26 @@ fn one_finger_drags_the_camera_and_two_box_select() {
         "a drag is never a tap-select"
     );
 
-    // Two steady fingers box-select everything between them.
+    // A pair lifted before it rests into a box selects nothing: it was
+    // a pinch that never got going.
     let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
     let b = game.presentation.camera.to_screen(vec2(12.0, 10.0));
+    input.now = 1.0;
     apply_events(&mut game, &mut input, &[touch_down(1, a)]);
     apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(2, b)]);
+    apply_events(&mut game, &mut input, &[touch_up(1, a)]);
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "no box without the rest"
+    );
+
+    // Two steady fingers that rest into a box select everything in it.
+    input.now = 3.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a)]);
+    apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    input.now = 3.0 + (touch::BOX_REST_MS + 10.0) / 1000.0;
+    update_touch(&mut game, &mut input);
     apply_events(&mut game, &mut input, &[touch_up(2, b)]);
     assert!(
         !game.presentation.selection.units.is_empty(),
@@ -2859,6 +2874,8 @@ fn a_box_survivor_pans_only_past_the_slop() {
     input.now = 1.0;
     apply_events(&mut game, &mut input, &[touch_down(1, a)]);
     apply_events(&mut game, &mut input, &[touch_down(2, b)]);
+    input.now = 1.0 + (touch::BOX_REST_MS + 10.0) / 1000.0;
+    update_touch(&mut game, &mut input);
     apply_events(&mut game, &mut input, &[touch_up(2, b)]);
     assert!(
         !game.presentation.selection.units.is_empty(),
@@ -2875,7 +2892,32 @@ fn a_box_survivor_pans_only_past_the_slop() {
 }
 
 #[test]
-fn a_resting_pair_draws_its_box_then_claims_it() {
+fn a_gentle_spread_commits_to_zooming_before_the_box_can_claim_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let a = vec2(500.0, 400.0);
+    let b = vec2(600.0, 400.0);
+    input.now = 1.0;
+    apply_events(&mut game, &mut input, &[touch_down(1, a), touch_down(2, b)]);
+    input.now = 1.2;
+    apply_events(&mut game, &mut input, &[touch_move(2, b + vec2(16.0, 0.0))]);
+    assert_eq!(
+        input.pair.map(|pair| pair.state),
+        Some(touch::PairState::Pinch)
+    );
+    input.now = 3.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(
+        input.pair.map(|pair| pair.state),
+        Some(touch::PairState::Pinch),
+        "resting after the pinch starts never claims a box"
+    );
+    apply_events(&mut game, &mut input, &[touch_up(2, b + vec2(16.0, 0.0))]);
+    assert!(game.presentation.selection.units.is_empty());
+}
+
+#[test]
+fn a_resting_pair_claims_its_box_as_it_appears() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let a = game.presentation.camera.to_screen(vec2(2.0, 2.0));
@@ -2884,17 +2926,18 @@ fn a_resting_pair_draws_its_box_then_claims_it() {
     apply_events(&mut game, &mut input, &[touch_down(1, a), touch_down(2, b)]);
     assert_eq!(touch_box(&input), None, "a fresh pair may be a pinch");
     input.now = 1.0 + (TOUCH_REST_MS + 10.0) / 1000.0;
-    assert_eq!(
-        touch_box(&input),
-        Some((a, b, false)),
-        "a rested pair shows its box"
-    );
-    input.now = 1.0 + f64::from(input.touch_prefs.long_press_ms) / 1000.0 + 0.01;
     update_touch(&mut game, &mut input);
     assert_eq!(
         touch_box(&input),
-        Some((a, b, true)),
-        "the rest claims the box"
+        None,
+        "nothing shows before it can be used"
+    );
+    input.now = 1.0 + (touch::BOX_REST_MS + 10.0) / 1000.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(
+        touch_box(&input),
+        Some((a, b)),
+        "the box appears as the rest claims it"
     );
 
     // Claimed, a corner drag resizes instead of zooming.
@@ -2903,7 +2946,7 @@ fn a_resting_pair_draws_its_box_then_claims_it() {
     apply_events(&mut game, &mut input, &[touch_move(2, far)]);
     game.presentation.camera.update(1.0); // land any glide: headless has no frames
     assert_eq!(game.presentation.camera.zoom, zoom, "no pinch once claimed");
-    assert_eq!(touch_box(&input), Some((a, far, true)));
+    assert_eq!(touch_box(&input), Some((a, far)));
     apply_events(&mut game, &mut input, &[touch_up(2, far)]);
     assert!(
         !game.presentation.selection.units.is_empty(),
