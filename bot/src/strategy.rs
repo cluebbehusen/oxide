@@ -38,7 +38,9 @@ mod campaign_routes;
 #[cfg(test)]
 pub(crate) mod fixtures;
 pub(super) mod force_package;
+mod roster;
 use campaign_routes::CampaignRoutes;
+use roster::*;
 
 use force_package::{
     ConnectedForcePackage, ConnectedForcePackageOptions, ConnectedTargetEvidence, ForceFamily,
@@ -795,20 +797,6 @@ fn connected_target_subset(
         suppression_targets: current_cluster_suppression_needs(intel, &cluster).targets,
         growth_order: Vec::new(),
     }
-}
-
-fn excluding_owned(unavailable: &[UnitId], owned: &[UnitId]) -> Vec<UnitId> {
-    let mut owned = owned.to_vec();
-    owned.sort_unstable();
-    owned.dedup();
-    let mut external: Vec<_> = unavailable
-        .iter()
-        .copied()
-        .filter(|id| owned.binary_search(id).is_err())
-        .collect();
-    external.sort_unstable();
-    external.dedup();
-    external
 }
 
 fn connected_proposal_claims(
@@ -3931,31 +3919,6 @@ fn unowned_queued_scouts(context: &AirPlanningContext<'_>, scout: UnitKind) -> u
         .saturating_sub(unavailable)
 }
 
-/// Keeps a live, available scout, otherwise enlists the first available one.
-fn retained_scout(
-    scout: Option<UnitId>,
-    obs: &Observation,
-    unavailable: &[UnitId],
-) -> Option<UnitId> {
-    let kind = Role::Scout.unit_for(obs.faction);
-    scout
-        .filter(|id| {
-            unit(obs, *id).is_some_and(|member| member.kind == kind) && !unavailable.contains(id)
-        })
-        .or_else(|| available(obs, unavailable, |candidate| candidate == kind).next())
-}
-
-fn remembered_recon_scout(
-    op: &AirOperation,
-    obs: &Observation,
-    enlisted: &[UnitId],
-) -> Option<UnitId> {
-    let scout_kind = Role::Scout.unit_for(obs.faction);
-    op.scout
-        .filter(|id| unit(obs, *id).is_some())
-        .or_else(|| available(obs, enlisted, |kind| kind == scout_kind).next())
-}
-
 fn reconcile_preparation_members(
     op: &mut AirOperation,
     plan: &mut AirPlan,
@@ -5350,14 +5313,6 @@ fn approach(home: TilePos, target: TilePos) -> impl Iterator<Item = TilePos> {
     (0..=APPROACH_TILES).map(move |step| target.offset(dx * step, dy * step))
 }
 
-fn merged_unavailable(first: &[UnitId], second: &[UnitId]) -> Vec<UnitId> {
-    let mut merged = first.to_vec();
-    merged.extend_from_slice(second);
-    merged.sort_unstable();
-    merged.dedup();
-    merged
-}
-
 fn connected_provider_unavailable<'a>(
     obs: &'a Observation,
     targets: &ConnectedTargetSelection,
@@ -5896,117 +5851,6 @@ fn sized_target_contacts_at_anchors<'a>(
         .collect()
 }
 
-fn available<'a>(
-    obs: &'a Observation,
-    enlisted: &'a [UnitId],
-    accepts: impl Fn(UnitKind) -> bool + 'a,
-) -> impl Iterator<Item = UnitId> + 'a {
-    obs.my_units
-        .iter()
-        .filter(move |member| accepts(member.kind) && !enlisted.contains(&member.id))
-        .map(|member| member.id)
-}
-
-fn assign_exact(
-    assigned: &mut Vec<UnitId>,
-    desired: usize,
-    obs: &Observation,
-    enlisted: &[UnitId],
-    accepts: impl Fn(UnitKind) -> bool,
-) {
-    assigned.retain(|id| unit(obs, *id).is_some_and(|member| accepts(member.kind)));
-    for member in &obs.my_units {
-        if assigned.len() >= desired {
-            break;
-        }
-        if accepts(member.kind) && !enlisted.contains(&member.id) && !assigned.contains(&member.id)
-        {
-            assigned.push(member.id);
-        }
-    }
-    assigned.sort_unstable();
-}
-
-fn assign_artillery(
-    assigned: &mut Vec<UnitId>,
-    plan: &AirPlan,
-    obs: &Observation,
-    enlisted: &[UnitId],
-) {
-    if let Some(package) = plan.package() {
-        assign_provider_demands(assigned, &package.suppression, obs, enlisted);
-    } else {
-        // An island assault requests no artillery; this only prunes dead
-        // members inherited from standby.
-        assign_exact(assigned, 0, obs, enlisted, is_artillery);
-    }
-}
-
-fn assign_strike_aircraft(
-    assigned: &mut Vec<UnitId>,
-    plan: &AirPlan,
-    obs: &Observation,
-    enlisted: &[UnitId],
-) {
-    if let Some(package) = plan.package() {
-        assign_provider_demands(assigned, &package.strike, obs, enlisted);
-    } else {
-        let bomber = Role::Bomber.unit_for(obs.faction);
-        assign_exact(
-            assigned,
-            plan.desired_strike_aircraft(),
-            obs,
-            enlisted,
-            |kind| kind == bomber,
-        );
-    }
-}
-
-fn assign_provider_demands(
-    assigned: &mut Vec<UnitId>,
-    demands: &[ProviderDemand],
-    obs: &Observation,
-    enlisted: &[UnitId],
-) {
-    let mut selected = Vec::new();
-    for demand in demands {
-        selected.extend(
-            assigned
-                .iter()
-                .copied()
-                .filter(|id| {
-                    !enlisted.contains(id)
-                        && unit(obs, *id).is_some_and(|member| member.kind == demand.kind)
-                })
-                .take(demand.count),
-        );
-        let have = selected
-            .iter()
-            .filter(|id| unit(obs, **id).is_some_and(|member| member.kind == demand.kind))
-            .count();
-        let mut have = have;
-        for member in &obs.my_units {
-            if have >= demand.count {
-                break;
-            }
-            if member.kind == demand.kind
-                && !enlisted.contains(&member.id)
-                && !selected.contains(&member.id)
-            {
-                selected.push(member.id);
-                have += 1;
-            }
-        }
-    }
-    selected.sort_unstable();
-    selected.dedup();
-    *assigned = selected;
-}
-
-fn reservations(op: &AirOperation, plan: &AirPlan, obs: &Observation) -> Vec<UnitId> {
-    AirRoster::from(op).live_members(plan.screen(), obs)
-}
-
 fn connected_provider_shortfall(
     active: &ActiveAirOperation,
     obs: &Observation,
@@ -6104,59 +5948,6 @@ fn reusable_survivors(reason: Option<AirRecoveryReason>) -> bool {
                 | AirRecoveryReason::Timeout
         )
     )
-}
-
-fn queued(obs: &Observation, accepts: impl Fn(UnitKind) -> bool) -> usize {
-    obs.my_queues
-        .iter()
-        .flatten()
-        .filter(|kind| accepts(**kind))
-        .count()
-}
-
-fn training_ticks(count: usize, kind: UnitKind) -> Tick {
-    u64::try_from(count)
-        .expect("the roster fits in addressable memory")
-        .saturating_mul(u64::from(kind.stats().train_ticks))
-}
-
-fn remaining_training_ticks(obs: &Observation, count: usize, kind: UnitKind) -> Tick {
-    let mut front_progress: Vec<_> = obs
-        .my_buildings
-        .iter()
-        .enumerate()
-        .filter_map(|(index, building)| {
-            (obs.my_queues.get(index)?.first() == Some(&kind))
-                .then(|| obs.own_queue_progress(index))
-                .flatten()
-                .map(|progress| {
-                    let remaining = kind.stats().train_ticks.saturating_sub(progress).max(1);
-                    let completed = kind.stats().train_ticks.saturating_sub(remaining);
-                    (Reverse(completed), building.id)
-                })
-        })
-        .collect();
-    front_progress.sort_unstable();
-    let completed_ticks = front_progress
-        .into_iter()
-        .take(count)
-        .map(|(Reverse(progress), _)| Tick::from(progress))
-        .fold(0, Tick::saturating_add);
-    training_ticks(count, kind).saturating_sub(completed_ticks)
-}
-
-fn requirements_met(obs: &Observation, kind: UnitKind) -> bool {
-    kind.stats().requires.iter().all(|required| {
-        obs.my_buildings
-            .iter()
-            .any(|building| building.built && building.kind == *required)
-    })
-}
-
-fn has_producer(obs: &Observation, kind: UnitKind) -> bool {
-    obs.my_buildings
-        .iter()
-        .any(|building| building.built && building.kind.base_stats().produces.contains(&kind))
 }
 
 fn schedule_missing_members(
@@ -6299,13 +6090,6 @@ fn missing_package_demands(
         }
     }
     missing
-}
-
-fn ready_to_reconnoiter(obs: &Observation) -> bool {
-    let scout = Role::Scout.unit_for(obs.faction);
-    obs.my_units.iter().any(|unit| unit.kind == scout)
-        || queued(obs, |kind| kind == scout) > 0
-        || (requirements_met(obs, scout) && has_producer(obs, scout))
 }
 
 fn scout_and_hold(
@@ -6602,19 +6386,6 @@ fn hold_air_strike(
     op.strike_hold = Some(pad);
 }
 
-fn air_strike_members(op: &AirOperation, plan: &AirPlan, obs: &Observation) -> Vec<UnitId> {
-    let mut units: Vec<_> = op
-        .strike_aircraft
-        .iter()
-        .chain(plan.screen())
-        .copied()
-        .filter(|id| unit(obs, *id).is_some())
-        .collect();
-    units.sort_unstable();
-    units.dedup();
-    units
-}
-
 fn stage_artillery(op: &mut AirOperation, staging: TilePos, out: &mut StrategicDecision) {
     if !op.artillery.is_empty() && op.artillery_staging != Some(staging) {
         out.intents.push(Intent::MoveUnits {
@@ -6668,27 +6439,6 @@ fn current_target_contact<'a>(
 fn target_visible(op: &AirOperation, obs: &Observation) -> bool {
     let (width, height) = op.target_kind.base_stats().size;
     (0..height).any(|dy| (0..width).any(|dx| obs.visible(op.target.offset(dx, dy))))
-}
-
-fn unit(obs: &Observation, id: UnitId) -> Option<&UnitObs> {
-    obs.my_units
-        .binary_search_by_key(&id, |member| member.id)
-        .ok()
-        .map(|index| &obs.my_units[index])
-}
-
-fn completed(obs: &Observation, kind: BuildingKind) -> usize {
-    obs.my_buildings
-        .iter()
-        .filter(|building| building.built && building.kind == kind)
-        .count()
-}
-
-fn combat_roster(obs: &Observation) -> usize {
-    obs.my_units
-        .iter()
-        .filter(|unit| !unit.kind.stats().weapons.is_empty())
-        .count()
 }
 
 fn wealthy_island_target(
@@ -6806,14 +6556,6 @@ fn cooldown(profile: &ResolvedProfile, tuning: DifficultyTuning) -> Tick {
         BotStance::Aggressive => 500,
     };
     base + u64::from(100u8.saturating_sub(profile.traits.air)) * 3 + tuning.commitment_hesitation
-}
-
-fn is_artillery(kind: UnitKind) -> bool {
-    matches!(kind, UnitKind::Bombard | UnitKind::Avalanche)
-}
-
-fn is_strike_aircraft(kind: UnitKind, faction: oxide_sim::state::Faction) -> bool {
-    kind == Role::AirGround.unit_for(faction) || kind == Role::Bomber.unit_for(faction)
 }
 
 fn staging(home: TilePos, target: TilePos) -> TilePos {
