@@ -414,43 +414,14 @@ pub(crate) fn draw_hud(
         let scrap_text = scrap.to_string();
         let passive_text = format!("+{passive}/min passive");
         let units_text = my_units.to_string();
-        let passive_x =
-            (70.0 * s + crate::typography::measure(&scrap_text, 21.0 * s).width + 16.0 * s)
-                .max(151.0 * s);
-        let units_x = (passive_x
-            + measure_text(&passive_text, None, (16.0 * s) as u16, 1.0).width
-            + 16.0 * s)
-            .max(284.0 * s);
-        let count_x = units_x
-            + (crate::typography::measure("UNITS", 13.0 * s).width + 12.0 * s).max(60.0 * s);
-        crate::typography::draw("SCRAP", 12.0 * s, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
-        crate::typography::draw(&scrap_text, 70.0 * s, 27.0 * s, 21.0 * s, SCRAP_COLOR);
-        draw_text(&passive_text, passive_x, 26.0 * s, 16.0 * s, TEXT_BODY);
-        crate::typography::draw("UNITS", units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
-        crate::typography::draw(&units_text, count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
         let idle = crate::input::idle_harvesters(game).len();
-        if idle > 0 {
-            let text = idle_badge_text(
+        let idle_text = (idle > 0).then(|| {
+            idle_badge_text(
                 idle,
                 &label(Action::CycleIdleWorker),
                 crate::platform::TOUCH_ONLY,
-            );
-            let width = measure_text(&text, None, (15.0 * s) as u16, 1.0).width + 18.0 * s;
-            let idle_x = count_x
-                + (crate::typography::measure(&units_text, 21.0 * s).width + 20.0 * s)
-                    .max(45.0 * s);
-            idle_badge = Rect::new(idle_x, 3.0 * s, width, 34.0 * s);
-            fill_rect(idle_badge, TOP_BAR_BADGE);
-            draw_text(
-                &text,
-                idle_badge.x + 9.0 * s,
-                26.0 * s,
-                15.0 * s,
-                SCRAP_COLOR,
-            );
-        }
-        menu_button = crate::layout::menu_button_rect(screen_width(), s);
-        draw_menu_button(menu_button, s);
+            )
+        });
         let status = if game.presentation.paused {
             paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY)
         } else if (game.presentation.speed - 1.0).abs() > f64::EPSILON {
@@ -459,15 +430,50 @@ pub(crate) fn draw_hud(
             let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
             format!("{}:{:02}", seconds / 60, seconds % 60)
         };
-        let width = crate::typography::measure(&status, 14.0 * s).width;
-        let occupied_right = (count_x + crate::typography::measure(&units_text, 21.0 * s).width)
-            .max(idle_badge.x + idle_badge.w);
-        let status_x = menu_button.x - 12.0 * s - width;
-        status_space = Some((occupied_right, status_x));
-        crate::typography::draw(&status, status_x, 26.0 * s, 14.0 * s, TEXT_PRIMARY);
+        let bar = crate::layout::top_bar(
+            screen_width(),
+            s,
+            crate::platform::TOUCH_ONLY,
+            crate::layout::TopBarText {
+                scrap: crate::typography::measure(&scrap_text, 21.0 * s).width,
+                passive: measure_text(&passive_text, None, (16.0 * s) as u16, 1.0).width,
+                units_label: crate::typography::measure("UNITS", 13.0 * s).width,
+                units: crate::typography::measure(&units_text, 21.0 * s).width,
+                idle: idle_text
+                    .as_deref()
+                    .map(|text| measure_text(text, None, (15.0 * s) as u16, 1.0).width),
+                status: crate::typography::measure(&status, 14.0 * s).width,
+            },
+        );
+        crate::typography::draw(
+            "SCRAP",
+            bar.scrap_label_x,
+            26.0 * s,
+            13.0 * s,
+            TEXT_SECONDARY,
+        );
+        crate::typography::draw(&scrap_text, bar.scrap_x, 27.0 * s, 21.0 * s, SCRAP_COLOR);
+        draw_text(&passive_text, bar.passive_x, 26.0 * s, 16.0 * s, TEXT_BODY);
+        crate::typography::draw("UNITS", bar.units_x, 26.0 * s, 13.0 * s, TEXT_SECONDARY);
+        crate::typography::draw(&units_text, bar.count_x, 27.0 * s, 21.0 * s, TEXT_PRIMARY);
+        if let Some(text) = &idle_text {
+            idle_badge = bar.idle_badge;
+            fill_rect(idle_badge, TOP_BAR_BADGE);
+            draw_text(
+                text,
+                idle_badge.x + 9.0 * s,
+                26.0 * s,
+                15.0 * s,
+                SCRAP_COLOR,
+            );
+        }
+        menu_button = bar.menu_button;
+        draw_menu_button(menu_button, s);
+        status_space = Some(bar.status_space);
+        crate::typography::draw(&status, bar.status_x, 26.0 * s, 14.0 * s, TEXT_PRIMARY);
         // The status toggles pause; its target spans the bar's badge
         // band so the short clock text is still easy to hit.
-        pause_status = Rect::new(status_x - 6.0 * s, 3.0 * s, width + 12.0 * s, 34.0 * s);
+        pause_status = bar.pause_status;
     }
 
     *game.presentation.panel_model.borrow_mut() = crate::panel::build_for_input(game, input);

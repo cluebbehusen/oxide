@@ -112,9 +112,83 @@ pub fn touch_pad(rect: Rect, ui: f32) -> Rect {
 
 /// The top bar's menu button: a badge-height square held off the right
 /// edge, inside the bar so its padded touch target stays mostly chrome.
-pub fn menu_button_rect(viewport_w: f32, ui: f32) -> Rect {
+pub fn menu_button_rect(viewport_w: f32, ui: f32, _touch_only: bool) -> Rect {
     let size = 34.0 * ui;
     Rect::new(viewport_w - size - 8.0 * ui, 3.0 * ui, size, size)
+}
+
+/// The top bar's measured text widths, in window pixels.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct TopBarText {
+    /// The scrap count.
+    pub scrap: f32,
+    /// The passive income line.
+    pub passive: f32,
+    /// The UNITS label.
+    pub units_label: f32,
+    /// The unit count.
+    pub units: f32,
+    /// The idle badge's text, while any harvester idles.
+    pub idle: Option<f32>,
+    /// The clock, speed, or PAUSED status.
+    pub status: f32,
+}
+
+/// Where everything in the top bar sits, in window pixels. Text entries
+/// are left edges; badges are their drawn rects (zero when absent).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TopBar {
+    pub scrap_label_x: f32,
+    pub scrap_x: f32,
+    pub passive_x: f32,
+    pub units_x: f32,
+    pub count_x: f32,
+    pub idle_badge: Rect,
+    pub menu_button: Rect,
+    pub status_x: f32,
+    pub pause_status: Rect,
+    /// The span the FPS readout may use: from the left group's end to
+    /// the status's start.
+    pub status_space: (f32, f32),
+}
+
+/// Lays out the top bar from measured text: the bank, income, and unit
+/// count run left to right from fixed minimums, the idle badge follows
+/// them, and the status hangs off the menu button at the right.
+pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarText) -> TopBar {
+    let scrap_label_x = 12.0 * ui;
+    let scrap_x = 70.0 * ui;
+    let passive_x = (scrap_x + text.scrap + 16.0 * ui).max(151.0 * ui);
+    let units_x = (passive_x + text.passive + 16.0 * ui).max(284.0 * ui);
+    let count_x = units_x + (text.units_label + 12.0 * ui).max(60.0 * ui);
+    let idle_badge = text.idle.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |width| {
+        Rect::new(
+            count_x + (text.units + 20.0 * ui).max(45.0 * ui),
+            3.0 * ui,
+            width + 18.0 * ui,
+            34.0 * ui,
+        )
+    });
+    let menu_button = menu_button_rect(viewport_w, ui, touch_only);
+    let status_x = menu_button.x - 12.0 * ui - text.status;
+    let occupied_right = (count_x + text.units).max(idle_badge.x + idle_badge.w);
+    TopBar {
+        scrap_label_x,
+        scrap_x,
+        passive_x,
+        units_x,
+        count_x,
+        idle_badge,
+        menu_button,
+        status_x,
+        pause_status: Rect::new(
+            status_x - 6.0 * ui,
+            3.0 * ui,
+            text.status + 12.0 * ui,
+            34.0 * ui,
+        ),
+        status_space: (occupied_right, status_x),
+    }
 }
 
 /// Which side of the rect it describes a tooltip prefers.
@@ -411,7 +485,7 @@ mod tests {
     fn the_menu_button_sits_in_the_top_bar_with_a_full_touch_target() {
         for ui in [0.75, 1.0, 1.25, 1.5] {
             for width in [640.0, 1133.0, 1280.0, 1920.0] {
-                let button = menu_button_rect(width, ui);
+                let button = menu_button_rect(width, ui, false);
                 assert!(
                     button.y >= 0.0 && button.y + button.h <= TOP_BAR_H * ui,
                     "the drawn button stays inside the bar at {width}px, ui {ui}"
@@ -422,6 +496,74 @@ mod tests {
                     pad.x + pad.w <= width,
                     "the fingertip target stays on screen at {width}px, ui {ui}"
                 );
+            }
+        }
+    }
+
+    /// Typical desktop widths at 1x: a four-digit bank, a two-digit
+    /// income, and a PAUSED status.
+    fn sample_text(ui: f32) -> TopBarText {
+        TopBarText {
+            scrap: 44.0 * ui,
+            passive: 120.0 * ui,
+            units_label: 38.0 * ui,
+            units: 24.0 * ui,
+            idle: Some(70.0 * ui),
+            status: 76.0 * ui,
+        }
+    }
+
+    #[test]
+    fn the_desktop_top_bar_keeps_its_legacy_positions() {
+        let bar = top_bar(1280.0, 1.0, false, sample_text(1.0));
+        assert_eq!((bar.scrap_label_x, bar.scrap_x), (12.0, 70.0));
+        assert_eq!(bar.passive_x, 151.0, "a short bank keeps the minimum");
+        assert_eq!(
+            bar.units_x,
+            151.0 + 120.0 + 16.0,
+            "a long income pushes the count"
+        );
+        assert_eq!(bar.count_x, bar.units_x + 60.0);
+        assert_eq!(
+            bar.idle_badge,
+            Rect::new(bar.count_x + 45.0, 3.0, 88.0, 34.0)
+        );
+        assert_eq!(bar.menu_button, Rect::new(1238.0, 3.0, 34.0, 34.0));
+        assert_eq!(bar.status_x, 1238.0 - 12.0 - 76.0);
+        assert_eq!(
+            bar.pause_status,
+            Rect::new(bar.status_x - 6.0, 3.0, 88.0, 34.0)
+        );
+        assert_eq!(
+            bar.status_space,
+            (bar.idle_badge.x + bar.idle_badge.w, bar.status_x)
+        );
+        let no_idle = top_bar(
+            1280.0,
+            1.0,
+            false,
+            TopBarText {
+                idle: None,
+                ..sample_text(1.0)
+            },
+        );
+        assert_eq!(no_idle.idle_badge, Rect::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(no_idle.status_space.0, no_idle.count_x + 24.0);
+    }
+
+    #[test]
+    fn the_top_bar_keeps_its_groups_in_order_and_on_screen() {
+        for ui in [0.75, 1.0, 1.25, 1.5] {
+            for width in [640.0, 1024.0, 1133.0, 1194.0, 1280.0, 1920.0] {
+                for touch_only in [false, true] {
+                    let bar = top_bar(width, ui, touch_only, sample_text(ui));
+                    assert!(bar.scrap_label_x < bar.scrap_x);
+                    assert!(bar.scrap_x < bar.passive_x && bar.passive_x < bar.units_x);
+                    assert!(bar.units_x < bar.count_x && bar.count_x < bar.idle_badge.x);
+                    assert!(bar.pause_status.x + bar.pause_status.w <= bar.menu_button.x);
+                    let pad = touch_pad(bar.menu_button, ui);
+                    assert!(pad.x + pad.w <= width, "{width}px @{ui} touch {touch_only}");
+                }
             }
         }
     }

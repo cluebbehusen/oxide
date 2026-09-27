@@ -3938,7 +3938,7 @@ fn a_tap_on_the_idle_badge_cycles_workers() {
 /// top bar draws them at 1280 px wide.
 fn top_bar_layout() -> crate::layout::LayoutModel {
     let mut layout = bare_layout(f32::INFINITY, 0.0);
-    layout.menu_button = crate::layout::menu_button_rect(1280.0, 1.0);
+    layout.menu_button = crate::layout::menu_button_rect(1280.0, 1.0, false);
     layout.pause_status = macroquad::math::Rect::new(1180.0, 3.0, 46.0, 34.0);
     layout
 }
@@ -3994,7 +3994,7 @@ fn a_bar_without_a_menu_button_ignores_its_corner() {
     game.presentation
         .layout
         .set(bare_layout(f32::INFINITY, 0.0));
-    let corner = crate::layout::menu_button_rect(1280.0, 1.0).center();
+    let corner = crate::layout::menu_button_rect(1280.0, 1.0, false).center();
     apply_events(&mut game, &mut input, &click(corner.x, corner.y));
     tap(&mut game, &mut input, corner);
     assert!(
