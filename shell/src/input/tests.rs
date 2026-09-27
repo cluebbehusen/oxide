@@ -39,7 +39,7 @@ fn only_the_host_pauses_a_lan_match() {
             .presentation
             .toasts
             .iter()
-            .any(|toast| toast.text == "Only the host can pause.")
+            .any(|toast| toast.text == "Only the host can pause")
     );
 }
 
@@ -1093,15 +1093,6 @@ fn a_lit_queue_turns_off_with_a_tap_so_the_next_ground_tap_clears() {
         game.pending.is_empty(),
         "a long-press on QUEUE orders nothing"
     );
-}
-
-#[test]
-fn touch_armed_toasts_only_name_their_target() {
-    assert_eq!(
-        armed_toast("weld", "a damaged own unit", "Esc", false),
-        "weld: click a damaged own unit, Esc to cancel"
-    );
-    crate::platform::assert_touch_copy(&armed_toast("weld", "a damaged own unit", "Esc", true));
 }
 
 #[test]
@@ -2248,7 +2239,7 @@ fn a_refused_confirm_keeps_the_ghost_and_the_mode() {
         game.presentation
             .toasts
             .iter()
-            .any(|t| t.text.starts_with("can't build there")),
+            .any(|t| t.text.starts_with("Can't build there")),
         "the refusal says why"
     );
 }
@@ -2644,6 +2635,7 @@ fn a_disabled_card_explains_itself_to_a_tap_or_a_click() {
     layout.cards[index] = (rect, crate::panel::CardAction::Refused);
     layout.card_count = index + 1;
     game.presentation.layout.set(layout);
+    let why = crate::typography::sentence_case(&why);
     let toasted = |game: &Game| game.presentation.toasts.iter().any(|t| t.text == why);
 
     tap(&mut game, &mut input, rect.center());
@@ -3171,7 +3163,7 @@ fn a_left_click_adds_a_patrol_waypoint_and_a_full_route_says_so() {
         game.presentation
             .toasts
             .iter()
-            .any(|t| t.text.starts_with("patrol is full"))
+            .any(|t| t.text.starts_with("Patrol is full"))
     );
 }
 
@@ -3218,7 +3210,7 @@ fn patrol_is_exclusive_with_the_other_armed_verbs() {
 fn patrol_copy_speaks_touch_on_touch_only_builds() {
     assert_eq!(
         patrol_arm_toast("R", false),
-        "patrol: click waypoints, R to start"
+        "Patrol: click waypoints, R to start"
     );
     crate::platform::assert_touch_copy(&patrol_arm_toast("R", true));
     crate::platform::assert_touch_copy(&patrol_full_toast("R", true));
@@ -6268,7 +6260,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
         game.presentation
             .toasts
             .iter()
-            .any(|toast| toast.text == "upgrade runs automatically")
+            .any(|toast| toast.text == "Upgrade runs automatically")
     );
 
     game.presentation.toasts.clear();
@@ -6284,7 +6276,7 @@ fn an_automatic_upgrade_is_not_a_worker_target_or_a_scrappable_site() {
         game.presentation
             .toasts
             .iter()
-            .any(|toast| toast.text == "upgrades cannot be cancelled")
+            .any(|toast| toast.text == "Upgrades cannot be cancelled")
     );
 }
 

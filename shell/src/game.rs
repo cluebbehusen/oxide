@@ -1064,7 +1064,7 @@ mod tests {
             macroquad::prelude::vec2(1280.0, 800.0),
         )
         .expect("game");
-        for text in ["one", "two", "three", "four"] {
+        for text in ["One", "Two", "Three", "Four"] {
             game.presentation.toast(text);
         }
         assert_eq!(
@@ -1073,8 +1073,9 @@ mod tests {
                 .iter()
                 .map(|toast| toast.text.as_str())
                 .collect::<Vec<_>>(),
-            ["two", "three", "four"]
+            ["Two", "Three", "Four"]
         );
+        // A lowercase fragment is shown as a sentence, so it repeats "Three".
         game.presentation.toast("three");
         assert_eq!(
             game.presentation
@@ -1082,7 +1083,7 @@ mod tests {
                 .iter()
                 .map(|toast| toast.text.as_str())
                 .collect::<Vec<_>>(),
-            ["two", "four", "three"]
+            ["Two", "Four", "Three"]
         );
         assert_eq!(game.presentation.toasts.last().unwrap().age, 0.0);
     }
@@ -1440,7 +1441,7 @@ mod tests {
             game.presentation
                 .toasts
                 .iter()
-                .any(|toast| toast.text == "nothing selected can do that"),
+                .any(|toast| toast.text == "Nothing selected can do that"),
             "presentation-preserving steps must retain shell feedback"
         );
     }

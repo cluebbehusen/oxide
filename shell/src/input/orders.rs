@@ -195,7 +195,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     }
     if !game.selection_commandable() {
         game.presentation
-            .toast("You can only command your own units.");
+            .toast("You can only command your own units");
         return;
     }
     let units = game.presentation.selection.units.clone();
@@ -226,7 +226,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     {
         if !building.built {
             if building.tier > 0 {
-                game.presentation.toast("upgrade runs automatically");
+                game.presentation.toast("Upgrade runs automatically");
                 return;
             }
             if has_worker {

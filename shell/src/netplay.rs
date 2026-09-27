@@ -215,7 +215,7 @@ impl HostLink {
                 HostEvent::Dropped { seat, .. } => {
                     self.peers.retain(|(peer, _)| *peer != seat);
                     let name = &game.scenario.players[usize::from(seat.0)].name;
-                    game.presentation.toast(format!("{name} left the match."));
+                    game.presentation.toast(format!("{name} left the match"));
                 }
                 HostEvent::Desync { tick, .. } => end = Some(End::Desync { tick }),
             }

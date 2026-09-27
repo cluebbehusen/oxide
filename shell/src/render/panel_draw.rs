@@ -1364,7 +1364,7 @@ pub(crate) fn draw_panel_tooltip(game: &crate::game::Scene<'_>, input: &InputSta
         }
     }
     if let Some(why) = &card.why {
-        lines.push((why.clone(), DANGER));
+        lines.push((crate::typography::sentence_case(why), DANGER));
     }
     let text_width = lines
         .iter()

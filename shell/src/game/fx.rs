@@ -904,7 +904,7 @@ impl Presentation {
                     }
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
-                    self.toast(format!("site salvaged (+{refund} scrap)"));
+                    self.toast(format!("Site salvaged (+{refund} scrap)"));
                 }
                 Event::UnitDied {
                     unit,
@@ -1039,26 +1039,26 @@ impl Presentation {
                 }
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {
-                        oxide_sim::command::RejectReason::NotEnoughScrap => "not enough scrap",
+                        oxide_sim::command::RejectReason::NotEnoughScrap => "Not enough scrap",
                         oxide_sim::command::RejectReason::WrongFaction => {
-                            "that machine belongs to the other faction"
+                            "That machine belongs to the other faction"
                         }
-                        oxide_sim::command::RejectReason::QueueFull => "queue is full",
-                        oxide_sim::command::RejectReason::UnreachableGoal => "can't reach that",
-                        oxide_sim::command::RejectReason::InvalidTarget => "can't target that",
-                        oxide_sim::command::RejectReason::NotANode => "nothing to mine there",
-                        oxide_sim::command::RejectReason::NotYourBuilding => "not your building",
+                        oxide_sim::command::RejectReason::QueueFull => "Queue is full",
+                        oxide_sim::command::RejectReason::UnreachableGoal => "Can't reach that",
+                        oxide_sim::command::RejectReason::InvalidTarget => "Can't target that",
+                        oxide_sim::command::RejectReason::NotANode => "Nothing to mine there",
+                        oxide_sim::command::RejectReason::NotYourBuilding => "Not your building",
                         oxide_sim::command::RejectReason::CannotProduce => {
-                            "that factory can't make those"
+                            "That factory can't make those"
                         }
-                        oxide_sim::command::RejectReason::BadSite => "can't build there",
+                        oxide_sim::command::RejectReason::BadSite => "Can't build there",
                         oxide_sim::command::RejectReason::NoValidUnits => {
-                            "nothing selected can do that"
+                            "Nothing selected can do that"
                         }
-                        oxide_sim::command::RejectReason::OutOfBounds => "outside the map",
-                        oxide_sim::command::RejectReason::Eliminated => "you are eliminated",
+                        oxide_sim::command::RejectReason::OutOfBounds => "Outside the map",
+                        oxide_sim::command::RejectReason::Eliminated => "You are eliminated",
                         oxide_sim::command::RejectReason::MissingPrerequisite => {
-                            "needs its tech building first"
+                            "Needs its tech building first"
                         }
                     };
                     self.toast(why);
@@ -1211,16 +1211,16 @@ impl Presentation {
                     // Own-state facts only — a stall reason must never
                     // whisper about what fog hides.
                     self.toast(match reason {
-                        oxide_sim::StallReason::NoRoute => "no route to that order",
-                        oxide_sim::StallReason::NoFiringPosition => "no ground to fire from there",
-                        oxide_sim::StallReason::InsufficientScrap => "out of scrap",
+                        oxide_sim::StallReason::NoRoute => "No route to that order",
+                        oxide_sim::StallReason::NoFiringPosition => "No ground to fire from there",
+                        oxide_sim::StallReason::InsufficientScrap => "Out of scrap",
                         oxide_sim::StallReason::GroundTaken => {
-                            "that ground was taken before the founder arrived"
+                            "That ground was taken before the founder arrived"
                         }
-                        oxide_sim::StallReason::TransportFull => "the transport is full",
-                        oxide_sim::StallReason::NoOpenGround => "no open ground to unload there",
+                        oxide_sim::StallReason::TransportFull => "The transport is full",
+                        oxide_sim::StallReason::NoOpenGround => "No open ground to unload there",
                         oxide_sim::StallReason::DangerHold => {
-                            "worker waiting for a safe route home"
+                            "Worker waiting for a safe route home"
                         }
                     });
                     self.fx.push(Effect {

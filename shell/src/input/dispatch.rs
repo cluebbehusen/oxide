@@ -2,9 +2,9 @@
 //! lands here exactly once, whether it came from a key, a panel card,
 //! or an injected event.
 
+use super::InputState;
 use super::orders::digit_action;
 use super::select::{cycle_idle_worker, idle_harvesters};
-use super::{InputState, armed_toast};
 use crate::action::Action;
 use crate::game::Game;
 use macroquad::prelude::{Vec2, vec2};
@@ -66,7 +66,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .collect();
                 if own.len() < game.presentation.selection.units.len() {
                     game.presentation
-                        .toast("only your own units join a control group");
+                        .toast("Only your own units join a control group");
                 }
                 input.groups[slot] = own;
             }
@@ -74,7 +74,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         Action::ReturnCargo => {
             if !game.selection_commandable() {
                 game.presentation
-                    .toast("You can only command your own units.");
+                    .toast("You can only command your own units");
                 return;
             }
             if !game.presentation.selection.units.iter().any(|id| {
@@ -82,7 +82,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .unit(*id)
                     .is_some_and(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
             }) {
-                game.presentation.toast("No scrap carried.");
+                game.presentation.toast("No scrap carried");
                 return;
             }
             input.disarm_click_verbs();
@@ -98,7 +98,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             // unfinished site is scrapped for its refund.
             if !game.presentation.selection.units.is_empty() && !game.selection_commandable() {
                 game.presentation
-                    .toast("You can only command your own units.");
+                    .toast("You can only command your own units");
                 return;
             }
             if !game.presentation.selection.units.is_empty() {
@@ -122,7 +122,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         }
         Action::TogglePause => {
             if game.net_role() == Some(crate::game::network::NetRole::Client) {
-                game.presentation.toast("Only the host can pause.");
+                game.presentation.toast("Only the host can pause");
             } else {
                 game.presentation.paused = !game.presentation.paused;
             }
@@ -175,14 +175,14 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     input.build_menu = true;
                     input.stop_placing();
                 } else {
-                    game.presentation.toast("no harvester to build with");
+                    game.presentation.toast("No harvester to build with");
                 }
             }
         }
         Action::Patrol => {
             if !game.selection_commandable() {
                 game.presentation
-                    .toast("You can only command your own units.");
+                    .toast("You can only command your own units");
                 return;
             }
             // First press arms a route; the second sends the circuit.
@@ -195,14 +195,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                         crate::platform::TOUCH_ONLY,
                     ));
                 }
-                None => {}
-                Some(route) if route.is_empty() => {
-                    game.presentation.toast("patrol cancelled");
-                }
-                Some(waypoints) => {
+                Some(waypoints) if !waypoints.is_empty() => {
                     let units = game.presentation.selection.units.clone();
                     game.issue(Command::Patrol { units, waypoints });
                 }
+                _ => {}
             }
         }
         Action::ToggleOverlay => game.presentation.overlay = !game.presentation.overlay,
@@ -211,7 +208,6 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if input.placing.is_some() {
                 input.stop_placing();
                 input.build_menu = true;
-                game.presentation.toast("placement cancelled");
                 return;
             }
             if input.build_category.take().is_some() {
@@ -224,31 +220,25 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             }
             if input.salvaging {
                 input.salvaging = false;
-                game.presentation.toast("salvage cancelled");
                 return;
             }
             if input.repairing {
                 input.repairing = false;
-                game.presentation.toast("weld cancelled");
                 return;
             }
             if input.running {
                 input.running = false;
-                game.presentation.toast("run cancelled");
                 return;
             }
             if input.attacking {
                 input.attacking = false;
-                game.presentation.toast("attack-move cancelled");
                 return;
             }
             if !input.rallying.is_empty() {
                 input.rallying.clear();
-                game.presentation.toast("rally placement cancelled");
                 return;
             }
             if input.patrol_route.take().is_some() {
-                game.presentation.toast("patrol cancelled");
                 return;
             }
             game.presentation.selection.units.clear();
@@ -258,7 +248,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         Action::SetBookmark(slot) => {
             input.bookmarks[slot as usize] = Some(game.presentation.camera.center);
             game.presentation
-                .toast(format!("bookmark {} set", slot + 1));
+                .toast(format!("Bookmark {} set", slot + 1));
         }
         Action::RecallBookmark(slot) => {
             if let Some(center) = input.bookmarks[slot as usize] {
@@ -270,7 +260,6 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             // A toggle, like the palette: pressing again stands down.
             if input.salvaging {
                 input.salvaging = false;
-                game.presentation.toast("salvage cancelled");
                 return;
             }
             let has_worker = game.presentation.selection.units.iter().any(|id| {
@@ -281,21 +270,14 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_worker {
                 input.disarm_click_verbs();
                 input.salvaging = true;
-                game.presentation.toast(armed_toast(
-                    "salvage",
-                    "an own building to strip it",
-                    &input.bindings.label(Action::Back),
-                    crate::platform::TOUCH_ONLY,
-                ));
             } else {
-                game.presentation.toast("no worker to salvage with");
+                game.presentation.toast("No worker to salvage with");
             }
         }
         Action::RepairUnit => {
             // A toggle, like salvage: pressing again stands down.
             if input.repairing {
                 input.repairing = false;
-                game.presentation.toast("weld cancelled");
                 return;
             }
             let has_welder = game.presentation.selection.units.iter().any(|id| {
@@ -306,21 +288,14 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_welder {
                 input.disarm_click_verbs();
                 input.repairing = true;
-                game.presentation.toast(armed_toast(
-                    "weld",
-                    "a damaged own unit",
-                    &input.bindings.label(Action::Back),
-                    crate::platform::TOUCH_ONLY,
-                ));
             } else {
-                game.presentation.toast("no welder in hand");
+                game.presentation.toast("No welder in hand");
             }
         }
         Action::Run => {
             // A toggle, like salvage: pressing again stands down.
             if input.running {
                 input.running = false;
-                game.presentation.toast("run cancelled");
                 return;
             }
             let has_own_unit = game.presentation.selection.units.iter().any(|id| {
@@ -331,20 +306,13 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_own_unit {
                 input.disarm_click_verbs();
                 input.running = true;
-                game.presentation.toast(armed_toast(
-                    "run",
-                    "ground to move without engaging",
-                    &input.bindings.label(Action::Back),
-                    crate::platform::TOUCH_ONLY,
-                ));
             } else {
-                game.presentation.toast("no machines selected to run");
+                game.presentation.toast("No machines selected to run");
             }
         }
         Action::AttackMove => {
             if input.attacking {
                 input.attacking = false;
-                game.presentation.toast("attack-move cancelled");
                 return;
             }
             let has_own_unit = game.presentation.selection.units.iter().any(|id| {
@@ -355,15 +323,9 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if has_own_unit {
                 input.disarm_click_verbs();
                 input.attacking = true;
-                game.presentation.toast(armed_toast(
-                    "attack-move",
-                    "ground to engage and chase",
-                    &input.bindings.label(Action::Back),
-                    crate::platform::TOUCH_ONLY,
-                ));
             } else {
                 game.presentation
-                    .toast("no machines selected to attack-move");
+                    .toast("No machines selected to attack-move");
             }
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),
@@ -372,7 +334,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.presentation.camera.center = world;
                 game.presentation.camera.pan(Vec2::ZERO); // re-clamp
             } else {
-                game.presentation.toast("no recent alerts");
+                game.presentation.toast("No recent alerts");
             }
         }
         Action::HomeCamera => {

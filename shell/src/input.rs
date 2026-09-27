@@ -49,17 +49,6 @@ pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
     }
 }
 
-/// The instruction toast shown when a mode arms the next pointer press,
-/// e.g. "weld: click a damaged own unit, Esc to cancel". On touch the
-/// ribbon and the X are the way out, so the toast only names the target.
-fn armed_toast(mode: &str, target: &str, back_key: &str, touch_only: bool) -> String {
-    if touch_only {
-        format!("{mode}: tap {target}")
-    } else {
-        format!("{mode}: click {target}, {back_key} to cancel")
-    }
-}
-
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 
@@ -90,7 +79,7 @@ pub(crate) enum ArmedMode {
 }
 
 impl ArmedMode {
-    /// Compact persistent label; detailed coaching remains in the toast.
+    /// Compact persistent label naming the armed mode.
     pub(crate) fn label(self) -> String {
         match self {
             Self::Build(kind) => crate::typography::entity_name(kind.name()),
@@ -1285,12 +1274,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // placement ghost stuck to the cursor. Patrol is the
                 // exception: its right-clicks are collecting the route.
                 if input.patrol_route.is_none() {
-                    let cancelled_placement = input.placing.is_some();
                     input.close_construction();
-                    if cancelled_placement {
-                        game.presentation
-                            .toast("placement cancelled; issuing new order");
-                    }
                 }
                 // A right-click on the minimap orders to that world tile
                 // (ground semantics — entities can't be picked at that
@@ -1408,7 +1392,6 @@ pub(super) fn ribbon_row_press(
         input.toggle_queue();
     } else if hits(layout.mode_ribbon) {
         if input.cancel_armed_mode() {
-            game.presentation.toast("command mode cancelled");
             game.presentation
                 .sounds_pending
                 .push((crate::game::SoundKind::Click, None));
@@ -1461,7 +1444,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointe
             }
             game.presentation.ping(world, PingKind::Rally);
             input.rallying.clear();
-            game.presentation.toast("rally point set");
+            game.presentation.toast("Rally point set");
         }
         return true;
     }
@@ -1598,15 +1581,15 @@ fn place_at(
     if let Some(refusal) = projection.refusal {
         use oxide_sim::PlaceRefusal;
         game.presentation.toast(match refusal {
-            PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
-            PlaceRefusal::Terrain => "can't build there: impassable ground",
-            PlaceRefusal::Building => "can't build there: something already stands there",
-            PlaceRefusal::Unit => "can't build there: an enemy machine is holding that ground",
-            PlaceRefusal::NotConstructible => "that can't be built",
-            PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
-            PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
+            PlaceRefusal::Fog => "Can't build there: you haven't scouted that ground",
+            PlaceRefusal::Terrain => "Can't build there: impassable ground",
+            PlaceRefusal::Building => "Can't build there: something already stands there",
+            PlaceRefusal::Unit => "Can't build there: an enemy machine is holding that ground",
+            PlaceRefusal::NotConstructible => "That can't be built",
+            PlaceRefusal::Prerequisite => "Can't build that yet: needs its tech building",
+            PlaceRefusal::FrameRequired => "An extractor rebuilds only on a derelict frame",
             PlaceRefusal::FrameBlocked => {
-                "can't build there: that ground belongs to a derelict frame"
+                "Can't build there: that ground belongs to a derelict frame"
             }
         });
         game.presentation
@@ -1621,7 +1604,7 @@ fn place_at(
     let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
     if projection.funds.available() < cost {
         game.presentation.toast(format!(
-            "not enough scrap for a {}",
+            "Not enough scrap for a {}",
             crate::typography::entity_name(kind.name())
         ));
         game.presentation
@@ -1635,7 +1618,7 @@ fn place_at(
     // honest refusal as the broke click, mode stays armed.
     if !projection.queue_has_room {
         game.presentation
-            .toast("that builder's order queue is full");
+            .toast("That builder's order queue is full");
         game.presentation
             .sounds_pending
             .push((crate::game::SoundKind::Denied, None));
@@ -1681,7 +1664,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             });
             let Some(building) = target.map(|b| b.id) else {
                 game.presentation
-                    .toast("salvage wants an own built building (not a Foundry)");
+                    .toast("Salvage wants an own built building (not a Foundry)");
                 game.presentation
                     .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1728,7 +1711,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 .min_by(|a, b| a.0.total_cmp(&b.0));
             let Some((_, target, _)) = patient else {
                 game.presentation
-                    .toast("weld wants a damaged own ground unit");
+                    .toast("Weld wants a damaged own ground unit");
                 game.presentation
                     .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1744,7 +1727,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     })
             });
             if !has_other_welder {
-                game.presentation.toast("weld needs another welder in hand");
+                game.presentation.toast("Weld needs another welder in hand");
                 game.presentation
                     .sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1842,18 +1825,18 @@ fn add_patrol_waypoint(game: &mut Game, input: &mut InputState, world: Vec2) {
 /// The toast that arms a patrol.
 pub(crate) fn patrol_arm_toast(key: &str, touch_only: bool) -> String {
     if touch_only {
-        "patrol: tap waypoints, then tap Patrol again to start".to_string()
+        "Patrol: tap waypoints, then tap Patrol again to start".to_string()
     } else {
-        format!("patrol: click waypoints, {key} to start")
+        format!("Patrol: click waypoints, {key} to start")
     }
 }
 
 /// The toast when the route has no room for another waypoint.
 fn patrol_full_toast(key: &str, touch_only: bool) -> String {
     if touch_only {
-        "patrol is full: tap Patrol to start it".to_string()
+        "Patrol is full: tap Patrol to start it".to_string()
     } else {
-        format!("patrol is full: {key} starts it")
+        format!("Patrol is full: {key} starts it")
     }
 }
 
@@ -1898,12 +1881,6 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             }
             input.disarm_click_verbs();
             input.rallying = buildings;
-            game.presentation.toast(armed_toast(
-                "set rally",
-                "the battlefield or minimap",
-                &input.bindings.label(Action::Back),
-                crate::platform::TOUCH_ONLY,
-            ));
         }
         crate::panel::CardAction::CancelProduction(kind) => {
             crate::production::cancel_one(game, kind)
