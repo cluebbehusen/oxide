@@ -44,16 +44,18 @@ sessions reproduce the same open-ended scene.
 `oxide-net` Hellos, fills the scenario's human seats in join order, and passes
 the start barrier before installing the match. `App` then owns the match's
 `netplay::Link` and pumps it once per loop pass on every screen that holds the
-match, so menus sit over a running match; leaving the match drops the link. The
-host paces its ticks at 1x, seals each tick's human orders, appends bot
-commands, and runs the published batch; a client runs batches as they arrive
-with a small buffer and catches up when behind. Once the match is decided, the
-host closes the connections only after every client has acknowledged the final
-batch, so late hash reports are still checked. Staged orders reach the session
-through the game's outbox. Only the host pauses, and speed is fixed. Networked
-sessions never journal crash recovery, save only a watch-only recording, and
-leave through the ordinary leave save when the host is lost or a desync halts
-the match.
+match, so menus sit over a running match, and a match decided under the pause
+menu opens its report. Leaving the match drops the link, except that a host
+leaving a decided match first finishes its connections so lagging clients still
+receive the deciding batches. The host paces its ticks at 1x, seals each tick's
+human orders, appends bot commands, and runs the published batch; a client runs
+batches as they arrive with a small buffer and catches up when behind. Once the
+match is decided, the host closes the connections only after every client has
+acknowledged the final batch, so late hash reports are still checked. Staged
+orders reach the session through the game's outbox. Only the host pauses, and
+speed is fixed. Networked sessions never journal crash recovery, save only a
+watch-only recording, and leave through the ordinary leave save when the host is
+lost or a desync halts the match.
 
 Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in

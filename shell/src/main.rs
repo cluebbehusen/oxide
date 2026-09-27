@@ -69,12 +69,15 @@ struct Args {
     #[arg(
         long,
         requires = "scenario",
-        conflicts_with_all = ["replay", "watch", "join", "automation"]
+        conflicts_with_all = ["replay", "watch", "join", "automation", "paused", "speed"]
     )]
     host: Option<String>,
 
     /// Join the LAN match hosted at this address (e.g. 192.168.1.20:4200).
-    #[arg(long, conflicts_with_all = ["scenario", "replay", "watch", "automation"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["scenario", "replay", "watch", "automation", "paused", "speed"]
+    )]
     join: Option<String>,
 
     /// Serve the debug protocol on --port (skips the menu unless automated).
@@ -358,6 +361,10 @@ mod tests {
                 "save.json",
             ],
             &["--join", "a:1", "--watch", "match.json"],
+            &["--join", "a:1", "--paused"],
+            &["--join", "a:1", "--speed", "2"],
+            &["--host", "b:1", "--scenario", "map.json", "--paused"],
+            &["--host", "b:1", "--scenario", "map.json", "--speed", "1"],
         ] {
             assert!(parse(invalid).is_err(), "accepted {invalid:?}");
         }

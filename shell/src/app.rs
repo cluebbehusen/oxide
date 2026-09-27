@@ -170,6 +170,8 @@ struct App {
     /// The running LAN match's link, pumped every frame while a screen
     /// holds the match, so menus sit over a running match.
     net: Option<crate::netplay::Link>,
+    /// A departed host's connections, still flushing the deciding batches.
+    lingering: Option<crate::netplay::Lingering>,
     /// The session clock the lobby and the link read.
     clock: std::time::Instant,
 }
@@ -725,6 +727,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         live_streak: 0,
         soft_keyboard: false,
         net: None,
+        lingering: None,
         clock: std::time::Instant::now(),
     };
     let mut ui_view = capture_ui(&screen, &app);
@@ -872,11 +875,20 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         }
 
         drop(input_diagnostic_scope);
+        let now = app.clock.elapsed();
         if let Some(link) = &mut app.net
-            && let Some(end) = link.pump(&mut app.game, app.clock.elapsed())
+            && let Some(end) = link.pump(&mut app.game, now)
         {
             screen = app.end_network_match(end, screen);
         }
+        if app
+            .lingering
+            .as_mut()
+            .is_some_and(|lingering| !lingering.pump(now))
+        {
+            app.lingering = None;
+        }
+        screen = report_under_menu(&app.game, screen);
         let screen_before = std::mem::discriminant(&screen);
         let screen_frame = screen_flow::update_and_draw(
             &mut app,
@@ -888,10 +900,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         )?;
         gl_use_default_material();
         screen = screen_frame.screen;
-        if app.net.is_some() && !screen_holds_live_match(&screen) {
-            // Leaving the match drops its connections: a client's seat
-            // surrenders, and a host ends the match for everyone.
-            app.net = None;
+        if !screen_holds_live_match(&screen)
+            && let Some(link) = app.net.take()
+        {
+            app.lingering = link.leave(&app.game, app.clock.elapsed());
         }
         let rerun = screen_frame.rerun;
         let profile_frame_active = screen_frame.profile_frame_active;
@@ -1095,6 +1107,22 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             visible_diagnostic_span(&screen, &app, oxide_kit::diagnostics::Phase::FrameWait);
         next_frame().await;
         drop(wait_diagnostic_scope);
+    }
+}
+
+/// A LAN match runs under its menu and can end there; the report replaces a
+/// menu built for the running match.
+fn report_under_menu(game: &Game, screen: Screen) -> Screen {
+    let stale =
+        matches!(&screen, Screen::Pause(pause) if !pause.decided() && !pause.saving_failed());
+    if stale
+        && game.net_role().is_some()
+        && game.state.result().is_some()
+        && game.end_stats.is_some()
+    {
+        Screen::Results(ResultsScreen::open())
+    } else {
+        screen
     }
 }
 
@@ -1842,6 +1870,37 @@ mod tests {
     /// The routing guards, row by row: frozen-map precedence and the
     /// viewer's read-only boundary around local requests. Shared requests
     /// are covered by the dispatcher and session-parity suites.
+    #[test]
+    fn a_lan_match_decided_under_its_menu_opens_the_report() {
+        let mut scenario = Scenario::skirmish();
+        for player in &mut scenario.players {
+            player.bot = false;
+            player.bot_config = None;
+        }
+        let mut game = Game::networked(
+            scenario,
+            oxide_sim::PlayerId(0),
+            crate::game::network::NetRole::Host,
+            vec2(1280.0, 800.0),
+        )
+        .unwrap();
+        let running = || Screen::Pause(pause_menu(&Game::new(Scenario::skirmish()).unwrap()));
+        let is_results = |screen: &Screen| matches!(screen, Screen::Results(_));
+        assert!(!is_results(&report_under_menu(&game, running())));
+        game.run_batch(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Surrender,
+        }]);
+        assert!(game.state.result().is_some());
+        assert!(is_results(&report_under_menu(&game, running())));
+        assert!(
+            !is_results(&report_under_menu(&game, Screen::Pause(pause_menu(&game)))),
+            "a menu opened after the end stays"
+        );
+        let local = Game::new(Scenario::skirmish()).unwrap();
+        assert!(!is_results(&report_under_menu(&local, running())));
+    }
+
     #[test]
     fn local_request_guards_follow_screen_ownership() {
         let advance = Request::AdvanceTicks { ticks: 8 };
