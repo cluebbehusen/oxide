@@ -10,7 +10,7 @@ use oxide_bot::{
     Orientation, PublicMapBriefing, SeatBot as Brain, TargetEvidenceTrace, seat_bots,
 };
 use oxide_sim::scenario::{
-    BotConfig, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
+    BotConfig, BotController, BotDifficulty, BotStance, BuildingSpec, PlayerSpec, UnitSpec,
 };
 use oxide_sim::stats::{QUEUE_CAP, Role};
 use oxide_sim::{
@@ -164,6 +164,7 @@ fn default_brain_resolves_the_standard_balanced_profile() {
 #[test]
 fn scripted_profile_is_seat_symmetric() {
     let config = BotConfig {
+        controller: BotController::Scripted,
         difficulty: BotDifficulty::Prime,
         stance: BotStance::Aggressive,
         personality_seed: 8_675_309,

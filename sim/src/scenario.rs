@@ -127,6 +127,8 @@ pub struct PlayerSpec {
 /// A built-in bot controller selected for one seat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BotConfig {
+    /// Which controller implementation drives the seat.
+    pub controller: BotController,
     /// How accurately and promptly the controller reasons.
     pub difficulty: BotDifficulty,
     /// The broad tempo and risk posture selected by the player.
@@ -136,19 +138,80 @@ pub struct BotConfig {
 }
 
 impl BotConfig {
-    /// Constructs an exact rules-based opponent configuration.
+    /// Constructs an exact `oxide-bot` configuration.
     pub const fn scripted(
         difficulty: BotDifficulty,
         stance: BotStance,
         personality_seed: u64,
     ) -> Self {
         Self {
+            controller: BotController::Scripted,
+            difficulty,
+            stance,
+            personality_seed,
+        }
+    }
+
+    /// Constructs an exact `oxide-opponent` configuration.
+    pub const fn opponent(
+        difficulty: BotDifficulty,
+        stance: BotStance,
+        personality_seed: u64,
+    ) -> Self {
+        Self {
+            controller: BotController::Opponent,
             difficulty,
             stance,
             personality_seed,
         }
     }
 }
+
+/// The controller implementation a configured seat runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BotController {
+    /// `oxide-bot`, the default player-facing opponent.
+    #[default]
+    Scripted,
+    /// `oxide-opponent`, the reactive best-effort opponent.
+    Opponent,
+}
+
+impl BotController {
+    /// Every controller in player-facing order.
+    pub const ALL: [Self; 2] = [Self::Scripted, Self::Opponent];
+
+    /// Stable lowercase name used by scenarios, CLIs and diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scripted => "scripted",
+            Self::Opponent => "opponent",
+        }
+    }
+}
+
+impl std::fmt::Display for BotController {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for BotController {
+    type Err = ParseBotControllerError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|controller| value.eq_ignore_ascii_case(controller.as_str()))
+            .ok_or_else(|| ParseBotControllerError(value.to_owned()))
+    }
+}
+
+/// An invalid controller name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown bot controller `{0}`; expected scripted or opponent")]
+pub struct ParseBotControllerError(String);
 
 impl Default for BotConfig {
     fn default() -> Self {
@@ -272,19 +335,13 @@ struct CurrentBotConfigWire {
     personality_seed: u64,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum BotController {
-    Scripted,
-}
-
 impl Serialize for BotConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         CurrentBotConfigWire {
-            controller: BotController::Scripted,
+            controller: self.controller,
             difficulty: self.difficulty,
             stance: self.stance,
             personality_seed: self.personality_seed,
@@ -299,12 +356,17 @@ impl<'de> Deserialize<'de> for BotConfig {
         D: serde::Deserializer<'de>,
     {
         let CurrentBotConfigWire {
-            controller: BotController::Scripted,
+            controller,
             difficulty,
             stance,
             personality_seed,
         } = CurrentBotConfigWire::deserialize(deserializer)?;
-        Ok(Self::scripted(difficulty, stance, personality_seed))
+        Ok(Self {
+            controller,
+            difficulty,
+            stance,
+            personality_seed,
+        })
     }
 }
 
@@ -776,6 +838,61 @@ mod tests {
             scenario.build(),
             Err(ScenarioError::BadBuilding(0))
         ));
+    }
+
+    #[test]
+    fn bot_config_carries_its_controller_on_the_wire() {
+        let configured = BotConfig::opponent(BotDifficulty::Veteran, BotStance::Turtle, 42);
+        let json = serde_json::to_string(&configured).unwrap();
+        assert_eq!(
+            json,
+            r#"{"controller":"opponent","difficulty":"veteran","stance":"turtle","personality_seed":42}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<BotConfig>(&json).unwrap(),
+            configured
+        );
+
+        let minimal: BotConfig = serde_json::from_str(r#"{"controller":"opponent"}"#).unwrap();
+        assert_eq!(
+            minimal,
+            BotConfig::opponent(BotDifficulty::Standard, BotStance::Balanced, 0)
+        );
+        assert_eq!(
+            serde_json::to_string(&minimal).unwrap(),
+            r#"{"controller":"opponent"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&BotConfig::default()).unwrap(),
+            r#"{"controller":"scripted"}"#
+        );
+
+        for rejected in [
+            r#"{"controller":"oracle"}"#,
+            r#"{"controller":"Opponent"}"#,
+            r#"{"difficulty":"prime"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<BotConfig>(rejected).is_err(),
+                "{rejected} must not select a controller"
+            );
+        }
+    }
+
+    #[test]
+    fn controller_names_are_stable_and_cli_parseable() {
+        for controller in BotController::ALL {
+            assert_eq!(controller.as_str().parse(), Ok(controller));
+            assert_eq!(controller.to_string(), controller.as_str());
+            assert_eq!(
+                serde_json::to_value(controller).unwrap(),
+                controller.as_str()
+            );
+        }
+        assert_eq!("OPPONENT".parse(), Ok(BotController::Opponent));
+        assert_eq!(BotController::default(), BotController::Scripted);
+        let error = "oracle".parse::<BotController>().unwrap_err();
+        assert!(error.to_string().contains("oracle"));
     }
 
     #[test]
