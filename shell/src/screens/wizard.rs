@@ -34,6 +34,10 @@ pub struct SeatPlan {
     pub difficulty: BotDifficulty,
     /// Player-facing strategic posture for this opponent.
     pub stance: BotStance,
+    /// Whether another machine plays this chair; hosting the match lets
+    /// it join. Like the bot choices, launch ignores it for the human's
+    /// own chair.
+    pub remote: bool,
     /// Faction chip (feeds [`faction_override`]): 0 keeps the map's
     /// authored roster. The human's own card carries this too.
     pub faction_choice: usize,
@@ -211,9 +215,7 @@ const COMPACT_PAGE_ITEMS: usize = 5;
 fn setup_hint(one_team: bool, on_start: bool, cell: usize, touch_only: bool) -> &'static str {
     match (touch_only, one_team) {
         (true, true) => "every seat is on one team, nobody to fight - tap a TEAM chip to regroup",
-        (true, false) => {
-            "tap a seat to take it - tap a chip to change it - tap Start match to begin"
-        }
+        (true, false) => "tap a seat to take it - tap a chip to change it",
         (false, true) => {
             "every seat is on one team, nobody to fight - regroup a TEAM chip - {back} back"
         }
@@ -226,6 +228,14 @@ fn setup_hint(one_team: bool, on_start: bool, cell: usize, touch_only: bool) -> 
                 "{confirm} takes this seat - {left}/{right} reach difficulty, stance, faction, and team - {back} back"
             }
         },
+    }
+}
+
+fn start_label(draft: &NewMatchDraft) -> &'static str {
+    if draft_hosts(draft) {
+        "Host match"
+    } else {
+        "Start match"
     }
 }
 
@@ -614,6 +624,29 @@ fn setup_touch_cell_rect(layout: &SetupLayout, row: usize, cell: usize) -> Optio
     Some(Rect::new(left, card.y, right - left, card.h))
 }
 
+/// Steps the difficulty chip forward: every difficulty, then Remote, then
+/// back to the first difficulty.
+fn cycle_controller(plan: &mut SeatPlan) {
+    if plan.remote {
+        plan.remote = false;
+        plan.difficulty = BotDifficulty::ALL[0];
+    } else if Some(&plan.difficulty) == BotDifficulty::ALL.last() {
+        plan.remote = true;
+    } else {
+        plan.difficulty = cycle_difficulty(plan.difficulty, 1);
+    }
+}
+
+/// Whether starting the draft hosts a LAN match: a chair other than the
+/// human's is remote.
+pub fn draft_hosts(draft: &NewMatchDraft) -> bool {
+    draft
+        .seats
+        .iter()
+        .enumerate()
+        .any(|(seat, plan)| plan.remote && seat != draft.seat_choice)
+}
+
 fn cycle_difficulty(current: BotDifficulty, direction: i8) -> BotDifficulty {
     let index = BotDifficulty::ALL
         .iter()
@@ -835,7 +868,8 @@ impl Wizard {
             row < start_index
                 && match cell {
                     0 | 3 | 4 => true,
-                    1 | 2 => order[row] != draft.seat_choice,
+                    1 => order[row] != draft.seat_choice,
+                    2 => order[row] != draft.seat_choice && !draft.seats[order[row]].remote,
                     _ => false,
                 }
         };
@@ -844,7 +878,7 @@ impl Wizard {
                 return Some((back_index, 0));
             }
             for row in 0..layout.cells.len() {
-                for cell in 0..5 {
+                for cell in (0..5).filter(|cell| cell_live(row, *cell)) {
                     let rect = if touch {
                         setup_touch_cell_rect(&layout, row, cell)
                     } else {
@@ -1008,10 +1042,7 @@ impl Wizard {
                 // Seat choice never permutes seats or their other
                 // choices; it moves the human's chair.
                 0 => draft.seat_choice = seat,
-                1 => {
-                    let plan = &mut draft.seats[seat];
-                    plan.difficulty = cycle_difficulty(plan.difficulty, 1);
-                }
+                1 => cycle_controller(&mut draft.seats[seat]),
                 2 => {
                     let plan = &mut draft.seats[seat];
                     plan.stance = cycle_stance(plan.stance, 1);
@@ -1167,11 +1198,15 @@ impl Wizard {
                     TEXT_SECONDARY,
                 );
             }
-            let bot_labels = [difficulty_name(plan.difficulty), stance_name(plan.stance)];
+            let bot_labels = if plan.remote {
+                ["Remote", ""]
+            } else {
+                [difficulty_name(plan.difficulty), stance_name(plan.stance)]
+            };
             for (index, (control, label)) in
                 layout.bot_controls[pos].iter().zip(bot_labels).enumerate()
             {
-                if control.w <= 0.0 {
+                if control.w <= 0.0 || label.is_empty() {
                     continue;
                 }
                 let on_cell = selected && self.setup_cell == index + 1;
@@ -1291,7 +1326,7 @@ impl Wizard {
                     TEXT_SECONDARY
                 },
             );
-            let label = "Start match";
+            let label = start_label(draft);
             let ldims = measure_text(label, None, (20.0 * ui) as u16, 1.0);
             draw_text(
                 label,
@@ -1425,11 +1460,16 @@ impl Wizard {
                                 let name = effective_name(sc, draft, seat);
                                 let plan = draft.seats[seat];
                                 let team = team_chip_label(plan.team_choice);
-                                if seat == draft.seat_choice {
+                                if seat == draft.seat_choice || plan.remote {
                                     format!(
-                                        "{}. {} (you) | {} | {}",
+                                        "{}. {} ({}) | {} | {}",
                                         seat + 1,
                                         name,
+                                        if seat == draft.seat_choice {
+                                            "you"
+                                        } else {
+                                            "remote"
+                                        },
                                         FACTION_CHIP_ITEMS[plan.faction_choice],
                                         team
                                     )
@@ -1448,7 +1488,7 @@ impl Wizard {
                             .collect()
                     })
                     .unwrap_or_default();
-                items.push("Start match".to_string());
+                items.push(start_label(draft).to_string());
                 ("MATCH SETUP".to_string(), items, self.setup_sel)
             }
         }
@@ -2153,6 +2193,77 @@ mod tests {
         assert_eq!(wizard.mode_name(), "match_setup");
         assert_eq!(wizard.setup_cell, 2);
         assert_eq!(sounds, [(SoundKind::Click, None); 2]);
+    }
+
+    #[test]
+    fn the_difficulty_chip_cycles_through_remote_and_hosting_follows_it() {
+        crate::render::set_viewport(640.0, 400.0);
+        let (mut wizard, mut draft) = explicit_team_setup();
+        let scenario = draft.scenario.clone().expect("picked scenario");
+        let row = 1;
+        let opponent = seat_display_order(&scenario)[row];
+        let stance = draft.seats[opponent].stance;
+        wizard.setup_sel = row;
+        wizard.setup_cell = 1;
+        let start = |wizard: &Wizard, draft: &NewMatchDraft| {
+            wizard.ui_surface(draft).1.last().cloned().unwrap()
+        };
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            drive(&mut wizard, &mut draft, Key::Enter);
+            let plan = draft.seats[opponent];
+            seen.push((!plan.remote).then_some(plan.difficulty));
+        }
+        assert_eq!(
+            seen,
+            [
+                Some(BotDifficulty::Veteran),
+                Some(BotDifficulty::Prime),
+                None,
+                Some(BotDifficulty::Scrapheap),
+                Some(BotDifficulty::Standard),
+            ]
+        );
+        assert_eq!(draft.seats[opponent].stance, stance, "the stance survives");
+        assert_eq!(start(&wizard, &draft), "Start match");
+
+        draft.seats[opponent].remote = true;
+        assert_eq!(start(&wizard, &draft), "Host match");
+        assert!(wizard.ui_surface(&draft).1[row].contains("(remote)"));
+        drive(&mut wizard, &mut draft, Key::Right);
+        assert_eq!(
+            wizard.setup_cell, 3,
+            "the stance chip is inert on a remote chair"
+        );
+        let layout = setup_layout(
+            &scenario,
+            draft.seat_choice,
+            crate::render::viewport(),
+            crate::render::ui_scale(),
+        );
+        let hidden = layout.bot_controls[row][1].center();
+        let tap = [
+            RawEvent::TouchDown {
+                id: 1,
+                x: hidden.x,
+                y: hidden.y,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: hidden.x,
+                y: hidden.y,
+            },
+        ];
+        wizard
+            .update(&tap, &mut vec2(0.0, 0.0), &mut draft, &mut Vec::new())
+            .expect("tap");
+        assert_eq!(draft.seats[opponent].stance, stance);
+        assert_ne!(draft.seat_choice, opponent);
+
+        wizard.setup_cell = 0;
+        drive(&mut wizard, &mut draft, Key::Enter);
+        assert_eq!(draft.seat_choice, opponent, "a remote chair can be taken");
+        assert_eq!(start(&wizard, &draft), "Start match");
     }
 
     #[test]

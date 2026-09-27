@@ -4,65 +4,9 @@
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
-use crate::press::{Fed, Press};
-use macroquad::prelude::{
-    Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text, measure_text,
-};
+use crate::text_field::{Edit, TextField};
+use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
-
-/// The name field's pointer targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NameZone {
-    Field,
-    Save,
-    Cancel,
-}
-
-/// Where the name field's face sits. It hugs the top of the window: an
-/// on-screen keyboard covers roughly the bottom half in landscape, and
-/// the platform does not resize the canvas around it.
-#[derive(Debug, Clone, Copy)]
-struct NamingLayout {
-    title_y: f32,
-    hint_y: f32,
-    field: Rect,
-    cancel: Rect,
-    save: Rect,
-}
-
-impl NamingLayout {
-    fn zone_at(&self, p: Vec2) -> Option<NameZone> {
-        [
-            (self.field, NameZone::Field),
-            (self.save, NameZone::Save),
-            (self.cancel, NameZone::Cancel),
-        ]
-        .into_iter()
-        .find(|(rect, _)| rect.contains(p))
-        .map(|(_, zone)| zone)
-    }
-}
-
-fn naming_layout(view: Vec2, s: f32) -> NamingLayout {
-    let width = (420.0 * s).min(view.x - 32.0 * s);
-    let x = (view.x - width) * 0.5;
-    let field = Rect::new(x, 92.0 * s, width, crate::layout::MIN_TOUCH_TARGET * s);
-    let gap = 12.0 * s;
-    let button_w = (width - gap) * 0.5;
-    let buttons_y = field.y + field.h + gap;
-    NamingLayout {
-        title_y: 56.0 * s,
-        hint_y: 80.0 * s,
-        field,
-        cancel: Rect::new(x, buttons_y, button_w, crate::layout::MIN_TOUCH_TARGET * s),
-        save: Rect::new(
-            x + button_w + gap,
-            buttons_y,
-            button_w,
-            crate::layout::MIN_TOUCH_TARGET * s,
-        ),
-    }
-}
 
 /// The name field's coaching line; a touch-only build has no keys to
 /// name.
@@ -206,15 +150,9 @@ pub struct PauseScreen {
     confirming: Option<Row>,
     /// The save-failure dialog, if a leave verb's autosave refused.
     save_failed: Option<SaveFailed>,
-    /// The save-name buffer while the name field has focus. Only here
-    /// do Text events mean anything; letters stay semantic everywhere
-    /// else.
-    naming: Option<String>,
-    /// The name field's Save, Cancel, and field press.
-    name_press: Press<NameZone>,
-    /// A tap on the name field asked for the on-screen keyboard again
-    /// (the player may have dismissed it); the frame loop takes this.
-    keyboard_request: bool,
+    /// The save-name field while it has focus. Only here do Text events
+    /// mean anything; letters stay semantic everywhere else.
+    naming: Option<TextField>,
     /// A one-line verdict from the last explicit save (success or
     /// failure), shown as the subtitle until the next activation.
     notice: Option<String>,
@@ -262,8 +200,6 @@ impl PauseScreen {
             confirming: None,
             save_failed: None,
             naming: None,
-            name_press: Press::default(),
-            keyboard_request: false,
             notice: None,
             lan: false,
         }
@@ -271,7 +207,9 @@ impl PauseScreen {
 
     /// Consumes a request to raise the on-screen keyboard again.
     pub fn take_keyboard_request(&mut self) -> bool {
-        std::mem::take(&mut self.keyboard_request)
+        self.naming
+            .as_mut()
+            .is_some_and(TextField::take_keyboard_request)
     }
 
     /// Draws the menu while a save this screen asked for runs: the same
@@ -283,58 +221,14 @@ impl PauseScreen {
     /// Draws the current face: the menu, or the name field with its
     /// Save and Cancel buttons.
     pub fn draw(&self, scenario_name: &str, mouse: Vec2) {
-        let Some(value) = &self.naming else {
-            self.menu.draw(self.subtitle(scenario_name));
-            return;
-        };
-        let s = crate::render::ui_scale();
-        let view = crate::render::viewport();
-        let layout = naming_layout(view, s);
-        let title = "SAVE GAME";
-        let title_size = 48.0 * s;
-        let dims = measure_text(title, None, title_size as u16, 1.0);
-        draw_text(
-            title,
-            (view.x - dims.width) * 0.5,
-            layout.title_y,
-            title_size,
-            crate::theme::TEXT_TITLE,
-        );
-        let hint = naming_hint(crate::platform::TOUCH_ONLY);
-        let hint_size = 18.0 * s;
-        let dims = measure_text(hint, None, hint_size as u16, 1.0);
-        draw_text(
-            hint,
-            (view.x - dims.width) * 0.5,
-            layout.hint_y,
-            hint_size,
-            crate::hints::fade(crate::theme::TEXT_SECONDARY),
-        );
-        let field = layout.field;
-        draw_rectangle(
-            field.x,
-            field.y,
-            field.w,
-            field.h,
-            crate::theme::SURFACE_CARD,
-        );
-        draw_rectangle_lines(
-            field.x,
-            field.y,
-            field.w,
-            field.h,
-            2.0 * s,
-            crate::theme::TEXT_ACCENT,
-        );
-        draw_text(
-            format!("{value}_"),
-            field.x + 12.0 * s,
-            field.y + field.h * 0.66,
-            22.0 * s,
-            crate::theme::TEXT_PRIMARY,
-        );
-        crate::button::draw(layout.cancel, "CANCEL", layout.cancel.contains(mouse), s);
-        crate::button::draw(layout.save, "SAVE", layout.save.contains(mouse), s);
+        match &self.naming {
+            Some(field) => field.draw(
+                naming_hint(crate::platform::TOUCH_ONLY),
+                crate::hints::fade(crate::theme::TEXT_SECONDARY),
+                mouse,
+            ),
+            None => self.menu.draw(self.subtitle(scenario_name)),
+        }
     }
 
     /// The menu over a LAN match, which keeps running underneath: no
@@ -361,13 +255,9 @@ impl PauseScreen {
     /// caller's suggestion so Enter-Enter saves without typing (the
     /// Start-preselected doctrine).
     pub fn begin_naming(&mut self, suggested: String) {
-        // The field itself only ever grows typed ASCII; the suggestion
-        // holds to the same ASCII UI alphabet
-        // so a map name cannot smuggle glyphs past the ingest filter.
-        let mut value: String = suggested.chars().take(Self::NAME_MAX).collect();
-        value.retain(|c| c.is_ascii() || c == '\u{b7}');
-        self.menu = Self::name_menu(&value);
-        self.naming = Some(value);
+        let field = TextField::new("SAVE GAME", "SAVE", &suggested, Self::NAME_MAX);
+        self.menu = field.menu();
+        self.naming = Some(field);
     }
 
     /// Reports the save verdict and returns to the pause rows, cursor
@@ -382,13 +272,6 @@ impl PauseScreen {
             .unwrap_or(0);
         self.menu.select(display);
         self.notice = Some(notice);
-    }
-
-    /// The name field's face: one editable row under the SAVE GAME
-    /// title. The caret is a static underscore — never a blink, so
-    /// reduced motion holds and the shots suite stays deterministic.
-    fn name_menu(value: &str) -> Menu {
-        Menu::new("SAVE GAME", vec![format!("{value}_")])
     }
 
     /// Opens straight onto the save-failure dialog: a leave verb's
@@ -468,67 +351,20 @@ impl PauseScreen {
         let escaped = events
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-        if let Some(value) = self.naming.as_mut() {
-            // The name field owns the frame: typed characters edit,
-            // Backspace deletes, Enter or Save commits, Escape or Cancel
-            // abandons. The menu widget is display only here — its
-            // navigation would fight the caret.
-            let layout = naming_layout(crate::render::viewport(), crate::render::ui_scale());
-            let mut pressed = None;
-            for event in events {
-                if let Fed::Activated(zone) = self.name_press.feed(event, |p, _| layout.zone_at(p))
-                {
-                    pressed = Some(zone);
+        if let Some(field) = self.naming.as_mut() {
+            match field.update(events, sounds) {
+                Edit::Commit(name) => return Out::Save(name),
+                Edit::Stay => self.menu = field.menu(),
+                Edit::Cancel => {
+                    self.naming = None;
+                    self.menu = pause_menu(&self.rows, self.lan);
+                    let display = self
+                        .rows
+                        .iter()
+                        .position(|&r| r == Row::SaveGame)
+                        .unwrap_or(0);
+                    self.menu.select(display);
                 }
-            }
-            if pressed == Some(NameZone::Field) {
-                self.keyboard_request = true;
-            }
-            let mut edited = false;
-            for event in events {
-                match *event {
-                    RawEvent::Text { ch } => {
-                        if value.chars().count() < Self::NAME_MAX {
-                            value.push(ch);
-                            edited = true;
-                        }
-                    }
-                    RawEvent::KeyDown {
-                        key: Key::Backspace,
-                    } => {
-                        value.pop();
-                        edited = true;
-                    }
-                    _ => {}
-                }
-            }
-            let committed = pressed == Some(NameZone::Save)
-                || events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Enter }));
-            if committed {
-                let name = value.trim().to_string();
-                if name.is_empty() {
-                    sounds.push((SoundKind::Denied, None));
-                } else {
-                    return Out::Save(name);
-                }
-            }
-            if escaped || pressed == Some(NameZone::Cancel) {
-                self.naming = None;
-                self.name_press.cancel();
-                self.menu = pause_menu(&self.rows, self.lan);
-                let display = self
-                    .rows
-                    .iter()
-                    .position(|&r| r == Row::SaveGame)
-                    .unwrap_or(0);
-                self.menu.select(display);
-                return Out::Stay;
-            }
-            if edited {
-                let display = Self::name_menu(value);
-                self.menu = display;
             }
             return Out::Stay;
         }
@@ -837,11 +673,11 @@ mod tests {
         p.update(&events, &mut mouse, &mut sounds);
     }
 
-    fn naming_at_1280(suggested: &str) -> (PauseScreen, NamingLayout) {
+    fn naming_at_1280(suggested: &str) -> (PauseScreen, crate::text_field::Layout) {
         crate::render::set_viewport(1280.0, 800.0);
         let mut p = PauseScreen::open(false, true);
         p.begin_naming(suggested.to_string());
-        let layout = naming_layout(vec2(1280.0, 800.0), crate::render::ui_scale());
+        let layout = crate::text_field::layout(vec2(1280.0, 800.0), crate::render::ui_scale());
         (p, layout)
     }
 
@@ -871,20 +707,20 @@ mod tests {
     fn the_save_button_commits_like_enter_and_refuses_a_blank_name() {
         let (mut p, layout) = naming_at_1280("Skirmish | t40");
         assert_eq!(
-            pointer(&mut p, &tap(layout.save.center())).0,
+            pointer(&mut p, &tap(layout.confirm.center())).0,
             Out::Save("Skirmish | t40".to_string())
         );
         let (mut p, layout) = naming_at_1280("");
         let click = [
             RawEvent::MouseDown {
                 button: oxide_protocol::MouseButton::Left,
-                x: layout.save.center().x,
-                y: layout.save.center().y,
+                x: layout.confirm.center().x,
+                y: layout.confirm.center().y,
             },
             RawEvent::MouseUp {
                 button: oxide_protocol::MouseButton::Left,
-                x: layout.save.center().x,
-                y: layout.save.center().y,
+                x: layout.confirm.center().x,
+                y: layout.confirm.center().y,
             },
         ];
         let (out, sounds) = pointer(&mut p, &click);
@@ -904,7 +740,7 @@ mod tests {
     #[test]
     fn a_save_press_released_elsewhere_keeps_naming() {
         let (mut p, layout) = naming_at_1280("Skirmish | t40");
-        let from = layout.save.center();
+        let from = layout.confirm.center();
         let events = [
             RawEvent::TouchDown {
                 id: 1,
@@ -928,34 +764,6 @@ mod tests {
         pointer(&mut p, &tap(layout.field.center()));
         assert!(p.take_keyboard_request());
         assert!(!p.take_keyboard_request());
-    }
-
-    #[test]
-    fn the_naming_face_stays_above_an_ipad_keyboard() {
-        for view in [
-            vec2(1133.0, 744.0),
-            vec2(1180.0, 820.0),
-            vec2(1194.0, 834.0),
-            vec2(1366.0, 1024.0),
-        ] {
-            for s in [1.0, 1.25, 1.5] {
-                let layout = naming_layout(view, s);
-                for rect in [layout.field, layout.cancel, layout.save] {
-                    assert!(
-                        rect.y + rect.h <= view.y * 0.45,
-                        "{rect:?} reaches the keyboard at {view} ui {s}"
-                    );
-                }
-            }
-        }
-        let small = vec2(640.0, 400.0);
-        let layout = naming_layout(small, 1.0);
-        for rect in [layout.field, layout.cancel, layout.save] {
-            assert!(rect.x >= 0.0 && rect.x + rect.w <= small.x);
-            assert!(rect.y >= layout.hint_y && rect.y + rect.h <= small.y);
-        }
-        assert!(!layout.cancel.overlaps(&layout.save));
-        assert!(!layout.field.overlaps(&layout.save));
     }
 
     #[test]

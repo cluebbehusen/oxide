@@ -229,6 +229,9 @@ pub struct Config {
     /// unbinding on every restart.
     #[serde(default)]
     pub unbound: Vec<crate::action::Action>,
+    /// The host address the last LAN join used.
+    #[serde(default)]
+    pub last_join_address: Option<String>,
 }
 
 impl Default for Config {
@@ -247,6 +250,7 @@ impl Default for Config {
             colorblind: false,
             touch: TouchPrefs::default(),
             unbound: Vec::new(),
+            last_join_address: None,
         }
     }
 }
@@ -565,10 +569,15 @@ mod tests {
             config.save_to(&path).unwrap();
             assert_eq!(Config::load_from(Some(path.clone())), config);
         }
+        config.last_join_address = Some("connor-mbp:4200".to_owned());
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(Some(path.clone())), config);
         let mut old = serde_json::to_value(&config).unwrap();
         old.as_object_mut().unwrap().remove("performance_display");
+        old.as_object_mut().unwrap().remove("last_join_address");
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         config.performance_display = PerformanceDisplay::Off;
+        config.last_join_address = None;
         assert_eq!(Config::load_from(Some(path)), config);
         std::fs::remove_dir_all(dir).unwrap();
     }

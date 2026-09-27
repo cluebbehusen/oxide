@@ -18,7 +18,7 @@ fn backdrop_fx_advances(screen: &Screen) -> bool {
         | Screen::Wizard(_)
         | Screen::Replays(_)
         | Screen::Results(_)
-        | Screen::Lobby(_) => true,
+        | Screen::Lobby { .. } => true,
         Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
             !matches!(**back, Screen::Pause(_))
         }
@@ -93,11 +93,12 @@ fn resolve_new_match(
     out: WizardOut,
     draft: &NewMatchDraft,
     personality_seeds: &mut PersonalitySeedSource,
-) -> Option<Result<Game>> {
+    bind: &str,
+) -> Option<Result<NewMatch>> {
     match out {
         WizardOut::Home | WizardOut::Stay => None,
         WizardOut::Launch => {
-            let result = launch(draft, personality_seeds.match_base());
+            let result = start_new_match(draft, personality_seeds.match_base(), bind);
             if result.is_ok() {
                 personality_seeds.commit_launch();
             }
@@ -131,7 +132,7 @@ pub(super) fn update_and_draw(
     ));
     // Controls capture and text editing keep their conventional recovery keys.
     let fixed_editor = matches!(&screen, Screen::Settings { screen, .. } if matches!(screen.face, screens::settings::Face::Controls { .. }))
-        || matches!(&screen, Screen::Pause(pause) if pause.naming());
+        || text_entry(&screen);
     crate::menu::set_bindings(if fixed_editor {
         crate::action::BindingMap::classic()
     } else {
@@ -178,7 +179,10 @@ pub(super) fn update_and_draw(
             back,
         } => codex_frame(app, codex, back, &events),
         Screen::Wizard(w) => wizard_frame(app, w, &events, &mut rerun),
-        Screen::Lobby(lobby) => lobby_frame(app, lobby, &events, &mut rerun),
+        Screen::Lobby {
+            screen: lobby,
+            back,
+        } => lobby_frame(app, lobby, back, &events, &mut rerun),
         Screen::Playing => playing_frame(
             app,
             &mut events,
@@ -209,26 +213,41 @@ pub(super) fn update_and_draw(
 fn lobby_frame(
     app: &mut App,
     mut lobby: Box<crate::screens::lobby::LobbyScreen>,
+    back: Box<Screen>,
     events: &[RawEvent],
     rerun: &mut bool,
 ) -> Screen {
-    if let Some((game, link)) = lobby.lobby.poll(app.clock.elapsed(), render::viewport()) {
+    if let Some((game, link)) = lobby.poll(app.clock.elapsed(), render::viewport()) {
         app.install_networked(game, link);
         *rerun = true;
         return Screen::Playing;
     }
-    let out = lobby.update(
+    match lobby.update(
         events,
         &mut app.input.mouse,
         &mut app.game.presentation.sounds_pending,
-    );
-    if out == crate::screens::lobby::Out::Cancel {
-        return Screen::Home(HomeScreen::open());
+    ) {
+        crate::screens::lobby::Out::Stay => {}
+        crate::screens::lobby::Out::Cancel => return *back,
+        crate::screens::lobby::Out::Join(address) => {
+            app.config.last_join_address = Some(address.clone());
+            if let Err(err) = app.config.save() {
+                app.menu_notice =
+                    Some((format!("could not save settings: {err}"), get_time() + 5.0));
+            }
+            let commit = crate::build_identity().revision;
+            *lobby = crate::screens::lobby::LobbyScreen::waiting(crate::netplay::Lobby::Client(
+                crate::netplay::ClientLobby::new(&address, &commit),
+            ));
+        }
     }
     render::draw(&app.game.view(), &app.sprites, &app.input);
     veil();
-    lobby.menu.draw(&lobby.lobby.status());
-    Screen::Lobby(lobby)
+    lobby.draw(app.input.mouse);
+    Screen::Lobby {
+        screen: lobby,
+        back,
+    }
 }
 
 fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32) -> Result<Screen> {
@@ -262,7 +281,10 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
     // Settings) build their screen after the draw below.
     let mut next: Option<Screen> = None;
     match out {
-        screens::home::Out::Stay | screens::home::Out::Settings | screens::home::Out::Roster => {}
+        screens::home::Out::Stay
+        | screens::home::Out::Settings
+        | screens::home::Out::Roster
+        | screens::home::Out::Join => {}
         screens::home::Out::Recover => {
             if let Some(record) = &home.recovery {
                 let path = record.directory.clone();
@@ -305,6 +327,12 @@ fn home_frame(app: &mut App, mut home: HomeScreen, events: &[RawEvent], dt: f32)
     } else if out == screens::home::Out::Roster {
         Screen::Codex {
             screen: CodexScreen::open(),
+            back: Box::new(Screen::Home(home)),
+        }
+    } else if out == screens::home::Out::Join {
+        let address = app.config.last_join_address.as_deref().unwrap_or_default();
+        Screen::Lobby {
+            screen: Box::new(crate::screens::lobby::LobbyScreen::address(address)),
             back: Box::new(Screen::Home(home)),
         }
     } else {
@@ -438,7 +466,8 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
     };
     let mut next: Option<Screen> = None;
     drop(input_scope);
-    let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds);
+    let bind = format!("0.0.0.0:{}", oxide_net::DEFAULT_PORT);
+    let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds, &bind);
     match out {
         WizardOut::Home => {
             let home = HomeScreen::open();
@@ -449,11 +478,20 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
             next = Some(Screen::Home(home));
         }
         WizardOut::Launch => match launch_result.expect("launch outcome has a result") {
-            Ok(fresh) => {
-                app.install_session(fresh, app.args.paused, None);
+            Ok(NewMatch::Local(fresh)) => {
+                app.install_session(*fresh, app.args.paused, None);
                 render::draw(&app.game.view(), &app.sprites, &app.input);
                 *rerun = true;
                 next = Some(Screen::Playing);
+            }
+            Ok(NewMatch::Hosted(lobby)) => {
+                *rerun = true;
+                return Screen::Lobby {
+                    screen: Box::new(crate::screens::lobby::LobbyScreen::waiting(
+                        crate::netplay::Lobby::Host(lobby),
+                    )),
+                    back: Box::new(Screen::Wizard(w)),
+                };
             }
             Err(err) => {
                 app.menu_notice =
@@ -946,6 +984,8 @@ fn pause_frame(app: &mut App, mut ps: PauseScreen, events: &[RawEvent]) -> Resul
 mod tests {
     use super::*;
 
+    const LOOPBACK: &str = "127.0.0.1:0";
+
     #[test]
     fn the_tutorial_card_keeps_its_presses_and_a_tap_dismisses_it() {
         let card = macroquad::math::Rect::new(400.0, 36.0, 460.0, 120.0);
@@ -1117,9 +1157,13 @@ mod tests {
         let first_base = personality_seeds.match_base();
         let draft = configured_new_match_draft();
 
-        assert!(resolve_new_match(WizardOut::Stay, &draft, &mut personality_seeds).is_none());
+        assert!(
+            resolve_new_match(WizardOut::Stay, &draft, &mut personality_seeds, LOOPBACK).is_none()
+        );
         assert_eq!(personality_seeds.match_base(), first_base);
-        assert!(resolve_new_match(WizardOut::Home, &draft, &mut personality_seeds).is_none());
+        assert!(
+            resolve_new_match(WizardOut::Home, &draft, &mut personality_seeds, LOOPBACK).is_none()
+        );
         assert_eq!(
             personality_seeds.match_base(),
             first_base,
@@ -1128,8 +1172,13 @@ mod tests {
 
         let mut invalid = configured_new_match_draft();
         invalid.seats.pop();
-        let failed = resolve_new_match(WizardOut::Launch, &invalid, &mut personality_seeds)
-            .expect("launch outcome has a result");
+        let failed = resolve_new_match(
+            WizardOut::Launch,
+            &invalid,
+            &mut personality_seeds,
+            LOOPBACK,
+        )
+        .expect("launch outcome has a result");
         assert!(failed.is_err());
         assert_eq!(
             personality_seeds.match_base(),
@@ -1137,9 +1186,12 @@ mod tests {
             "a launch refusal must leave the same seed window available for retry"
         );
 
-        let launched = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds)
-            .expect("launch outcome has a result");
-        let game = launched.expect("valid draft launches");
+        let launched =
+            resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, LOOPBACK)
+                .expect("launch outcome has a result");
+        let Ok(NewMatch::Local(game)) = launched else {
+            panic!("a valid draft launches locally");
+        };
         assert_eq!(
             game.scenario.players[1]
                 .bot_config
@@ -1155,12 +1207,46 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_chair_hosts_the_match_and_a_refused_listen_keeps_the_seeds() {
+        let mut personality_seeds = PersonalitySeedSource::from_seed(41);
+        let first_base = personality_seeds.match_base();
+        let mut draft = configured_new_match_draft();
+        draft.seat_choice = 1;
+        draft.seats[0].remote = true;
+
+        let taken = std::net::TcpListener::bind(LOOPBACK).unwrap();
+        let busy = taken.local_addr().unwrap().to_string();
+        let refused = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, &busy)
+            .expect("launch outcome has a result");
+        assert!(refused.is_err(), "the port is taken");
+        assert_eq!(personality_seeds.match_base(), first_base);
+
+        let hosted = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, LOOPBACK)
+            .expect("launch outcome has a result");
+        let Ok(NewMatch::Hosted(lobby)) = hosted else {
+            panic!("a remote chair hosts");
+        };
+        assert!(
+            crate::netplay::Lobby::Host(lobby)
+                .status()
+                .ends_with("1 of 2 players here")
+        );
+        assert_eq!(
+            personality_seeds.match_base(),
+            first_base.wrapping_add(BOT_PERSONALITY_WINDOW)
+        );
+    }
+
+    #[test]
     fn restart_and_rematch_rebuild_the_exact_opponents_without_rerolling() {
         let mut personality_seeds = PersonalitySeedSource::from_seed(41);
         let draft = configured_new_match_draft();
-        let launched = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds)
-            .expect("launch outcome has a result");
-        let game = launched.expect("valid draft launches");
+        let launched =
+            resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, LOOPBACK)
+                .expect("launch outcome has a result");
+        let Ok(NewMatch::Local(game)) = launched else {
+            panic!("a valid draft launches locally");
+        };
         let next_base = personality_seeds.match_base();
         let expected = game.scenario.clone();
 

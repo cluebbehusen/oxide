@@ -19,6 +19,9 @@ pub use tcp::{Closed, Connection, Listener};
 /// wire change other than Hello itself, whose shape never changes.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The port a host listens on unless told otherwise.
+pub const DEFAULT_PORT: u16 = 4200;
+
 /// The host abandons a start that has not collected every Ready by then.
 pub const START_TIMEOUT: Duration = Duration::from_secs(20);
 

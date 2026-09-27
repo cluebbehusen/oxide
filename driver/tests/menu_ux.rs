@@ -15,7 +15,7 @@
 
 use anyhow::{Result, bail};
 use oxide_driver::auto::{
-    ShellGuard, SpawnOptions, activate_labeled, assert_mode, press_key, spawn_shell, ui,
+    ShellGuard, SpawnOptions, activate_labeled, assert_mode, inject, press_key, spawn_shell, ui,
     wait_for_mode,
 };
 use oxide_driver::client::Client;
@@ -254,6 +254,17 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
     assert_mode(&mut client, "replays", "Home > Replays")?;
     press_key(&mut client, Key::Escape)?;
     assert_mode(&mut client, "home", "Replays > Esc")?;
+
+    activate_labeled(&mut client, "join match")?;
+    assert_mode(&mut client, "lobby", "Home > Join Match")?;
+    inject(&mut client, RawEvent::Text { ch: '7' })?;
+    let field = ui(&mut client)?.items;
+    assert!(
+        field.len() == 1 && field[0].ends_with("7_"),
+        "the address field takes text: {field:?}"
+    );
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "home", "Join Match > Esc")?;
 
     activate_labeled(&mut client, "play")?;
     assert_mode(&mut client, "main_menu", "Home > Play")?;

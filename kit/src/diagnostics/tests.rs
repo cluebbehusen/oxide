@@ -287,6 +287,7 @@ fn every_shell_screen_keeps_its_identity_in_persisted_context() {
         ("replays", 8),
         ("results", 9),
         ("final_map", 10),
+        ("lobby", 11),
     ] {
         recorder.frame(FrameContext {
             mode,
