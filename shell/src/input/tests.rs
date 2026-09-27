@@ -3299,6 +3299,33 @@ fn a_tap_on_a_scrap_pile_selects_it_for_its_panel() {
 }
 
 #[test]
+fn fingertip_slop_never_takes_a_tap_from_the_pile_under_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let pile = vec2(7.5, 2.5);
+    let (nearest, distance) = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.presentation.human)
+        .map(|u| {
+            let at = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+            (u, at.distance(pile))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("an own unit");
+    assert!(
+        distance > super::unit_pick_radius(nearest.kind),
+        "premise: the tap misses the unit's body"
+    );
+    // Zoomed out until a fingertip's reach covers the unit.
+    game.presentation.camera.zoom = 22.0 * input.ui / (distance + 0.1);
+    tap_world(&mut game, &mut input, pile);
+    assert!(game.presentation.selection.units.is_empty());
+    assert_eq!(game.presentation.selection.pile, Some(TilePos::new(7, 2)));
+}
+
+#[test]
 fn selecting_anything_else_drops_the_pile() {
     let mut game = headless_game();
     let mut input = InputState::new();

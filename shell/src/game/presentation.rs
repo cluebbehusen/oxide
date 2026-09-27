@@ -100,7 +100,7 @@ pub struct Presentation {
 /// Salvage the viewer knows lies on a tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Salvage {
-    /// A scrap node, with the scrap left in it.
+    /// A scrap node, with the scrap left in it and in any wreck on it.
     Scrap(u32),
     /// A wreck, with the scrap left in it.
     Wreck(u32),
@@ -132,10 +132,17 @@ pub(crate) fn known_salvage(
     } else {
         return None;
     };
+    classify_salvage(scrap, wreck)
+}
+
+/// A tile's salvage from its node and wreck amounts. A wreck can lie on
+/// a live node (a flyer downed over it); it is recoverable once the node
+/// is stripped, so it counts toward the node's total.
+fn classify_salvage(scrap: u32, wreck: u32) -> Option<Salvage> {
     match (scrap, wreck) {
         (0, 0) => None,
         (0, wreck) => Some(Salvage::Wreck(wreck)),
-        (scrap, _) => Some(Salvage::Scrap(scrap)),
+        (scrap, wreck) => Some(Salvage::Scrap(scrap.saturating_add(wreck))),
     }
 }
 
@@ -661,6 +668,14 @@ mod tests {
         }
         scenario.units.clear();
         Game::with_viewport(scenario, vec2(1280.0, 800.0)).unwrap()
+    }
+
+    #[test]
+    fn a_wreck_on_a_live_node_counts_toward_its_scrap() {
+        assert_eq!(classify_salvage(0, 0), None);
+        assert_eq!(classify_salvage(0, 30), Some(Salvage::Wreck(30)));
+        assert_eq!(classify_salvage(400, 0), Some(Salvage::Scrap(400)));
+        assert_eq!(classify_salvage(400, 30), Some(Salvage::Scrap(430)));
     }
 
     #[test]

@@ -75,6 +75,11 @@ pub(super) enum Picked {
 /// under it.
 pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Option<Picked> {
     let world = game.presentation.camera.to_world(screen);
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    // Over known salvage only a unit's body counts: the slop that widens
+    // a fingertip or a zoomed-out cursor must not hand the harvester
+    // working a pile the tap aimed at the pile itself.
+    let salvage_here = game.view().known_salvage(tile).is_some();
     let unit = game
         .state
         .units()
@@ -83,7 +88,12 @@ pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Opti
         .filter_map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             let distance = p.distance(world);
-            (distance <= pick_radius(game, ui, u.kind, pointer)).then_some((
+            let reach = if salvage_here {
+                super::unit_pick_radius(u.kind)
+            } else {
+                pick_radius(game, ui, u.kind, pointer)
+            };
+            (distance <= reach).then_some((
                 u.player != game.presentation.human,
                 distance,
                 u.id,
@@ -98,7 +108,6 @@ pub(super) fn pick(game: &Game, screen: Vec2, ui: f32, pointer: Pointer) -> Opti
     // buildings are always inside shared team sight anyway, but ally
     // SITES are blind until built, and a blind press selecting one
     // through fog would leak its live kind and hp through the panel.
-    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     game.state
         .buildings_at(tile)
         .find(|b| selectable_building(game, b))
