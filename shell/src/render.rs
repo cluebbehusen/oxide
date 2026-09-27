@@ -518,11 +518,11 @@ pub(crate) fn draw_with_performance(
     draw_long_press_ring(input);
     draw_salvage_tooltip(game, input);
     draw_hud(game, sprites, input, performance);
-    draw_group_press_ring(input);
     if game.presentation.overlay {
         draw_overlay_info(game);
     }
     draw_minimap(game);
+    draw_group_press_ring(input);
     draw_result_overlay(game);
     draw_panel_tooltip(game, input);
 }
