@@ -1,7 +1,19 @@
 //! Shared movement and firing geometry for one immutable campaign planning batch.
 
-use super::*;
+use super::geometry::{
+    SuppressionOrigin, artillery_staging_with_routes, assign_suppression_stands,
+    legal_suppression_tiles, route_projection_with_orientation,
+};
+use crate::briefing::PublicMapBriefing;
+use crate::intelligence::StrategicIntelligence;
+use crate::navigation::commands::RouteProjection;
+use crate::observation::Observation;
+use crate::orient::Orientation;
+use chassis::grid::TilePos;
+use oxide_sim::ids::Target;
+use oxide_sim::stats::{Domain, UnitKind};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 type StandOptions = BTreeMap<(SuppressionOrigin, Target), Vec<TilePos>>;
 
