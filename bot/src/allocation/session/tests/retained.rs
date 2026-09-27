@@ -106,11 +106,13 @@ fn retained_lift_recovery_respects_conflict_owner_and_foundry_admission() {
         let mut team = TeamReliefPlanner::new();
         let mut raids = RaidPlanner::new();
 
+        let session_context =
+            setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence);
         let mut session = AllocationSession::new(
-            setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence),
+            session_context,
             AllocationParticipants {
                 policy: &mut policy,
-                strategy: &mut strategy,
+                strategy: strategy.observe(air_evidence(&session_context)),
                 lifts: &mut lifts,
                 team: &mut team,
                 raids: &mut raids,
@@ -240,11 +242,13 @@ fn unfundable_retained_lift_recovers_without_releasing_members() {
     let mut team = TeamReliefPlanner::new();
     let mut raids = RaidPlanner::new();
 
+    let session_context =
+        setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence);
     let mut session = AllocationSession::new(
-        setup.context(&observation, TilePos::new(5, 15), &briefing, &intelligence),
+        session_context,
         AllocationParticipants {
             policy: &mut policy,
-            strategy: &mut strategy,
+            strategy: strategy.observe(air_evidence(&session_context)),
             lifts: &mut lifts,
             team: &mut team,
             raids: &mut raids,
@@ -401,8 +405,7 @@ fn active_connected_revision_and_saved_foundry_commit_together() {
     observation.my_queue_progress.push(0);
     let proposal = current_connected_proposal(&observation);
     let fixed_deadline = proposal.deadline();
-    let mut planner = StrategicPlanner::new();
-    planner.commit_connected(proposal);
+    let planner = StrategicPlanner::committed(proposal);
     let foundry_cost = BuildingKind::Foundry
         .base_stats()
         .construction
@@ -514,11 +517,13 @@ fn newer_conflict_does_not_discard_an_older_connected_obligation() {
     let mut team = TeamReliefPlanner::new();
     let mut raids = RaidPlanner::new();
 
+    let session_context =
+        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence);
     let mut session = AllocationSession::new(
-        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
+        session_context,
         AllocationParticipants {
             policy: &mut policy,
-            strategy: &mut strategy,
+            strategy: strategy.observe(air_evidence(&session_context)),
             lifts: &mut lifts,
             team: &mut team,
             raids: &mut raids,
@@ -668,11 +673,13 @@ fn payable_saved_foundry_with_planning_allowance(allowance: usize) {
     prepared.standing_force = StandingForcePreparation::Unconditional(vec![standing]);
     prepared.allocation_horizon = forecast_deadline.max(standing_ready_before);
     prepared.foundry_saving = foundry_cost;
+    let session_context =
+        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence);
     let mut session = AllocationSession::new(
-        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
+        session_context,
         AllocationParticipants {
             policy: &mut policy,
-            strategy: &mut strategy,
+            strategy: strategy.observe(air_evidence(&session_context)),
             lifts: &mut lifts,
             team: &mut team,
             raids: &mut raids,
@@ -762,11 +769,13 @@ fn funding_blocked_saved_foundry_without_capital_still_commits() {
         .tick
         .saturating_add(connected_preparation_horizon());
     let mut trace = AllocationTrace::default();
+    let session_context =
+        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence);
     let mut session = AllocationSession::new(
-        setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence),
+        session_context,
         AllocationParticipants {
             policy: &mut policy,
-            strategy: &mut strategy,
+            strategy: strategy.observe(air_evidence(&session_context)),
             lifts: &mut lifts,
             team: &mut team,
             raids: &mut raids,

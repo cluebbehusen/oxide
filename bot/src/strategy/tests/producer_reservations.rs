@@ -27,12 +27,12 @@ fn fresh_island_admission_preserves_future_lift_work_on_the_only_airworks() {
         "the regression must exercise an admitted residual island operation"
     );
     assert!(
-        result.decision.intents.iter().all(|intent| !matches!(
+        result.intents.iter().all(|intent| !matches!(
             intent,
             Intent::TrainAt { building, .. } if *building == airworks
         )),
         "an immediate island append must not move the accepted future carrier: {:?}",
-        result.decision.intents
+        result.intents
     );
 }
 
@@ -58,7 +58,6 @@ fn fresh_island_admission_uses_an_airworks_disjoint_from_future_lift_work() {
     let reserved = airworks[0];
     let (_, result) = admit_island_beside_future_carrier(&scenario, &raw, reserved);
     let residual_airwork = result
-        .decision
         .intents
         .iter()
         .filter_map(|intent| match intent {
@@ -73,7 +72,7 @@ fn fresh_island_admission_uses_an_airworks_disjoint_from_future_lift_work() {
     assert!(
         !residual_airwork.is_empty(),
         "the island operation must use the compatible producer instead of being globally blocked: {:?}",
-        result.decision.intents
+        result.intents
     );
     assert!(
         residual_airwork
@@ -87,7 +86,7 @@ fn admit_island_beside_future_carrier(
     scenario: &oxide_sim::Scenario,
     raw: &Observation,
     producer: BuildingId,
-) -> (StrategicPlanner, StrategicThinkResult) {
+) -> (StrategicPlanner, StrategicDecision) {
     let home = home_foundry(raw);
     let orientation = Orientation::for_home(raw, home);
     let observed = orientation.observe(raw);
@@ -122,25 +121,23 @@ fn admit_island_beside_future_carrier(
     );
     let profile = foundry_competition_profile();
     let mut planner = StrategicPlanner::new();
-    let result = planner.think_after_connected_adjudication(
-        StrategicThinkContext::new(
-            &profile,
-            DifficultyTuning::for_level(profile.difficulty),
-            &observed,
-            &intelligence,
+    let result = planner.think(
+        AirEvidence {
+            profile: &profile,
+            tuning: DifficultyTuning::for_level(profile.difficulty),
+            obs: &observed,
+            intel: &intelligence,
             home,
-            StrategicCoordination {
-                planning: Some(&crate::planning::PlanningWork::default()),
-                enlisted: &[],
-                lift_support: None,
-                allow_new_operation: true,
-                protected_current_scrap: 0,
-                protected_forecast_scrap: 0,
-                public_map: Some(&public_map),
-                orientation,
+            public_map: Some(&public_map),
+            orientation,
+        },
+        ThinkInputs {
+            lanes: ProducerLanes {
+                prior_intents: &[],
+                reservations: &future_lift,
             },
-        )
-        .with_producer_lanes(&[], &future_lift),
+            ..ThinkInputs::fixture(&crate::planning::PlanningWork::default())
+        },
     );
     (planner, result)
 }

@@ -21,7 +21,7 @@ use crate::strategy::{AirOperationOutcome, AirRecoveryReason};
 use crate::test_support::operations::*;
 use crate::{
     executive::Intent,
-    strategy::{AirOperationPhase, StrategicCoordination, StrategicThinkContext},
+    strategy::{AirEvidence, AirOperationPhase, ThinkInputs},
     utility::combat_core_status,
 };
 use crate::{

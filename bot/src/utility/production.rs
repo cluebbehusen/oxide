@@ -14,7 +14,7 @@ const PLANNING_DEPTH: usize = 2;
 ///
 /// `missing_scrap` prices the remaining strength in whole Sentinels, because
 /// that is the unit the opening-core pass can add without further tech.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CombatCoreStatus {
     pub(crate) projected_strength: u64,
     pub(crate) target_strength: u64,

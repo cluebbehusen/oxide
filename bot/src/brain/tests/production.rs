@@ -732,25 +732,20 @@ fn active_lift_and_island_share_the_last_shallow_airworks_slot_without_starvatio
     intelligence.update(&observed);
 
     let mut strategy = StrategicPlanner::new();
-    let island_admission = strategy.think_after_connected_adjudication(StrategicThinkContext::new(
-        &profile,
-        tuning,
-        &observed,
-        &intelligence,
-        home,
-        StrategicCoordination {
-            planning: Some(&crate::planning::PlanningWork::default()),
-            enlisted: &[],
-            lift_support: None,
-            allow_new_operation: true,
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
+    let island_admission = strategy
+        .observe(AirEvidence {
+            profile: &profile,
+            tuning,
+            obs: &observed,
+            intel: &intelligence,
+            home,
             public_map: Some(&public_map),
             orientation,
-        },
-    ));
+        })
+        .think(ThinkInputs::fixture(
+            &crate::planning::PlanningWork::default(),
+        ));
     let island_train = island_admission
-        .decision
         .intents
         .iter()
         .find_map(|intent| match intent {
@@ -952,28 +947,24 @@ fn admitted_island_air_trains_before_a_fresh_foundry_without_being_thought_twice
     let mut intelligence = StrategicIntelligence::new();
     intelligence.update(&observed);
     let mut planner = StrategicPlanner::new();
-    let admission = planner.think_after_connected_adjudication(StrategicThinkContext::new(
-        &profile,
-        tuning,
-        &observed,
-        &intelligence,
-        home,
-        StrategicCoordination {
-            planning: Some(&crate::planning::PlanningWork::default()),
-            enlisted: &[],
-            lift_support: None,
-            allow_new_operation: true,
-            protected_current_scrap: 0,
-            protected_forecast_scrap: 0,
+    let admission = planner
+        .observe(AirEvidence {
+            profile: &profile,
+            tuning,
+            obs: &observed,
+            intel: &intelligence,
+            home,
             public_map: Some(&public_map),
             orientation,
-        },
-    ));
+        })
+        .think(ThinkInputs::fixture(
+            &crate::planning::PlanningWork::default(),
+        ));
     assert!(planner.air_operation().is_some_and(|operation| {
         operation.assault_admitted() && operation.phase() == AirOperationPhase::Recon
     }));
     assert!(planner.connected_deadline().is_none());
-    assert!(admission.decision.intents.iter().any(|intent| matches!(
+    assert!(admission.intents.iter().any(|intent| matches!(
         intent,
         Intent::TrainAt {
             kind: UnitKind::Buzzard,

@@ -27,7 +27,7 @@ fn remembered_island() -> StrategicPlanner {
     let island = IslandPlan::new(
         &profile(),
         &wealthy_island_obs(ADMITTED, 1),
-        StrategicProductionContext::empty(),
+        ProducerLanes::empty(),
     );
     watching(AirPlan::Reacquire(ReacquirePlan::severed(&island)))
 }
