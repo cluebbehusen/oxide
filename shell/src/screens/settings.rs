@@ -166,6 +166,7 @@ enum Row {
     ReducedMotion,
     Colorblind,
     PerformanceDisplay,
+    ControlGroups,
     MarkerTiming,
     MarkerSize,
     LeftHandedPreset,
@@ -177,7 +178,7 @@ enum Row {
 
 impl Row {
     /// Every row, in the order the menu shows them.
-    const ALL: [Row; 17] = [
+    const ALL: [Row; 18] = [
         Row::MasterVolume,
         Row::EffectsVolume,
         Row::UiVolume,
@@ -188,6 +189,7 @@ impl Row {
         Row::ReducedMotion,
         Row::Colorblind,
         Row::PerformanceDisplay,
+        Row::ControlGroups,
         Row::MarkerTiming,
         Row::MarkerSize,
         Row::LeftHandedPreset,
@@ -232,6 +234,7 @@ impl Row {
                 "Performance display: {}",
                 config.performance_display.label()
             ),
+            Row::ControlGroups => format!("Control groups: {}", onoff(config.control_groups)),
             Row::MarkerTiming => {
                 format!("Show strategic markers: {}", config.markers.timing_label())
             }
@@ -308,6 +311,10 @@ fn cycle_setting(config: &mut Config, row: Row) -> bool {
         }
         Row::PerformanceDisplay => {
             config.performance_display = config.performance_display.next();
+        }
+        Row::ControlGroups => {
+            config.control_groups = !config.control_groups;
+            render::set_control_groups(config.control_groups);
         }
         Row::Diagnostics => config.diagnostics = !config.diagnostics,
         Row::MarkerTiming => {
@@ -869,6 +876,20 @@ mod tests {
         assert!(update.dirty);
         assert_eq!(config.volumes.music, 0.0);
         assert_eq!(screen.menu.selected, 3);
+    }
+
+    #[test]
+    fn the_control_group_row_toggles_the_column() {
+        let mut config = Config::default();
+        assert_eq!(Row::ControlGroups.label(&config), "Control groups: on");
+        cycle_setting(&mut config, Row::ControlGroups);
+        assert!(!config.control_groups);
+        assert_eq!(Row::ControlGroups.label(&config), "Control groups: off");
+        assert!(!render::control_groups(), "the HUD follows at once");
+        cycle_setting(&mut config, Row::ControlGroups);
+        assert!(render::control_groups());
+        assert!(rows(true).contains(&Row::ControlGroups));
+        assert!(rows(false).contains(&Row::ControlGroups));
     }
 
     #[test]

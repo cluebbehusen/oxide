@@ -123,7 +123,8 @@ fn draw_group_column(
     let mut published = [None; crate::action::CONTROL_GROUPS];
     let counts = input.group_counts(game);
     let offer = input.group_on_offer(game);
-    let shown = counts.iter().any(|count| *count > 0) || offer.is_some();
+    let shown = crate::render::control_groups()
+        && (counts.iter().any(|count| *count > 0) || offer.is_some());
     let Some(column) =
         crate::layout::group_column(s, crate::platform::TOUCH_ONLY, minimap).filter(|_| shown)
     else {

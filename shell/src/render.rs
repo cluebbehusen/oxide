@@ -25,6 +25,17 @@ pub(crate) fn colorblind() -> bool {
     COLORBLIND.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static CONTROL_GROUPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether the HUD shows the control-group column.
+pub fn set_control_groups(on: bool) {
+    CONTROL_GROUPS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn control_groups() -> bool {
+    CONTROL_GROUPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The faction's indicator accent — the one allegiance color every
 /// signal derives from, colorblind-aware.
 pub fn faction_accent(faction: oxide_sim::Faction) -> Color {

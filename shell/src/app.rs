@@ -578,6 +578,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     render::set_user_scale(config.ui_scale);
     render::set_reduced_motion(config.reduced_motion);
     render::set_colorblind(config.colorblind);
+    render::set_control_groups(config.control_groups);
     crate::strategic_markers::set_prefs(config.markers);
     mark("config loaded");
     let sprites = assets::Sprites::load().await?;
