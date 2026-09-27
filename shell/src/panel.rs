@@ -1176,22 +1176,6 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             progress: None,
         });
     }
-    if units
-        .iter()
-        .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
-    {
-        panel.cards.push(Card {
-            icon: CardIcon::Verb(VerbIcon::Harvest),
-            title: "Return cargo".into(),
-            cost: None,
-            hotkey: chord(bindings, Action::ReturnCargo),
-            action: CardAction::Dispatch(Action::ReturnCargo),
-            enabled: true,
-            why: None,
-            desc: vec!["Cancel current and queued work, deliver scrap to the nearest reachable Foundry, then stay there.".into()],
-            progress: None,
-        });
-    }
     // The torch decides the Weld card, not the harvest kit: the Tender
     // welds without ever gathering.
     if has_welder {
@@ -1314,6 +1298,25 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                 progress: None,
             });
         }
+    }
+    // Return cargo comes and goes as workers load and unload, so it goes
+    // last: its arrival never shifts a card a finger is reaching for.
+    if !build_menu_open
+        && units
+            .iter()
+            .any(|unit| unit.kind.stats().harvest.is_some() && unit.carrying > 0)
+    {
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Harvest),
+            title: "Return cargo".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::ReturnCargo),
+            action: CardAction::Dispatch(Action::ReturnCargo),
+            enabled: true,
+            why: None,
+            desc: vec!["Cancel current and queued work, deliver scrap to the nearest reachable Foundry, then stay there.".into()],
+            progress: None,
+        });
     }
     // The first unit's program: what it is doing and what comes next.
     // An idle unit with nothing queued contributes no chips, so the

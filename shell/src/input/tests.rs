@@ -7137,6 +7137,10 @@ fn return_cargo_card_and_shortcut_replace_work_for_both_workers() {
                 .find(|card| card.action.semantic() == Some(Action::ReturnCargo))
                 .unwrap();
             assert!(card.enabled);
+            assert!(
+                std::ptr::eq(card, panel.cards.last().unwrap()),
+                "it comes and goes, so it never shifts another card"
+            );
             if via_card {
                 activate_card(&mut game, &mut input, card.action);
             } else {
