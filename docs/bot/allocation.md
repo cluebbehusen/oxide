@@ -53,7 +53,8 @@ boundary, but it never becomes current credit.
 Before considering fresh work, the session imports exact obligations for
 already-paid or retained construction, protected opening work, standing and
 planner-owned units, saved Foundry expansion, and active connected operations.
-Connected operations retain their objective, admission priority, admissible
+Connected operations retain their committed target cluster, keyed by its frozen
+admitted primary building and anchor, plus admission priority, admissible
 minimum force and preparation deadline. Their unpaid production is reconstructed
 from current route-capable live providers, paid queues and eligible factories.
 Shared allocation schedules that demand flexibly on each decision; an earlier
@@ -86,8 +87,7 @@ connected revision recovers, fresh preparation explicitly discards that quote,
 rederives standing work from current ownership, and clears the dependent
 economic alternatives. Relief, raid, air, and lift observation and accepted
 orders survive unrelated rejection; contested actors cannot be dispatched. The
-historical Airworks-capacity trace field remains zero; retained preparation no
-longer carries an inert reserve for it.
+trace's Airworks-capacity budget field is always zero.
 
 When the opening core is deficient, one current-threat emergency defense may
 also enter as a survival obligation with its scorer-selected site and builder.
@@ -109,20 +109,15 @@ first; personality resolves only a genuine semantic tie and never removes a
 domain or defensive role from consideration.
 
 Portfolio evaluation stages all ownership and capital claims before solving the
-combined producer schedule once. Acceptance reuses that validated schedule. Only
-financially feasible portfolios receive exact combined-layout checks. Those
-checks retain full multi-foundation egress and builder safety, remember rejected
-sets, and share results across connected-force contexts in the same decision;
-unused construction combinations are not enumerated in advance. Production
-search runs through retained deterministic work slices. Connected package
-feasibility uses that same funded FIFO service, without a separate unbounded
-structural assignment search. Cheap necessary capacity bounds screen speculative
-rosters; passing them is not a schedule witness. A depleted allowance defers
-work rather than proving infeasibility or cancelling an existing package.
-Producer eligibility is prepared once per distinct unit kind in each preflight.
-Input projection, claim construction and window-bound preparation are
-synchronous, so the search allowance alone is not a wall-clock bound on a
-controller tick.
+combined producer schedule once, and acceptance reuses that validated schedule.
+Only financially feasible portfolios receive exact combined-layout checks, which
+retain full multi-foundation egress and builder safety. Production search,
+including connected package feasibility, uses one funded FIFO service in
+retained deterministic work slices. Necessary capacity bounds screen speculative
+rosters but are not a schedule witness. A depleted allowance defers work rather
+than proving infeasibility or cancelling an existing package. Input projection
+and claim construction are synchronous, so the search allowance alone is not a
+wall-clock bound on a controller tick.
 
 Mandatory claims are staged together before validating their complete producer
 schedule. A fixed job may depend on an earlier job owned by another obligation;
@@ -132,33 +127,13 @@ preflight before joining allocation. Their unpaid assignments remain flexible
 until the complete portfolio is chosen, so a compatible capital investment may
 still move their payment time. Pending new work does not revoke prior orders.
 
-Fixed jobs on one factory follow their retained enqueue and execution times;
-funding priority does not reorder that lane. Production preflight rejects
-overlapping fixed execution intervals on the same factory before enumerating
-flexible schedules. A job occupies its completion tick, so the next fixed job
-may start on the following tick. Extra forecast income and alternative
-assignments for other jobs cannot resolve that overlap. Each tentative schedule
-also preserves the payment deadlines and earliest possible execution of every
-remaining fixed job. A flexible append that already makes a fixed job impossible
-is rejected before searching its successors. Flexible jobs also carry optimistic
-payment deadlines tightened by mandatory same-owner FIFO work. Before exploring
-a partial schedule, the allocator checks that its remaining jobs can still start
-and receive funding. This preserves canonical schedule order while pruning
-impossible timing combinations. Capacity bounds count whole jobs in the free
-windows before and after fixed reservations; a job cannot borrow time across a
-reserved production interval. These deadlines and window constraints are
-prepared once per scheduling attempt and reused during search.
-
-Connected campaign assessment shares artillery firing geometry and exact command
-reachability across candidate rosters and target groups within one immutable
-observation. Excluded live providers do not repeat route checks. The batch
-retains positive and negative answers within a bounded cache; reaching the cache
-limit only disables further retention, not evaluation.
-
-Defense derivation skips expensive placement for roles whose real current cost
-cannot fit after imported fixed capital. This prefilter leaves viable quotes
-unchanged; the allocator still owns producer funding and portfolio
-compatibility.
+Fixed jobs on one factory keep their retained enqueue and execution times;
+funding priority does not reorder that lane. A job occupies its completion tick,
+so the next fixed job may start on the following tick. Overlapping fixed
+execution intervals on one factory are rejected; extra forecast income or other
+assignments cannot resolve them. Every accepted schedule preserves each fixed
+job's payment deadline and earliest execution, and no job borrows time across a
+reserved production interval.
 
 Standing-force preparation receives explicit observed, ownership, and demand
 inputs. Repair, protection, and raid work belongs to the preparation phase,
@@ -202,12 +177,13 @@ rejection. Commands and budget effects remain private until success.
 Rejection discards exact proposals without restoring any planner. Observed
 invalid commitments stay released, and rejected repair renewal does not extend
 its funding horizon. Air and lift membership are selected without acquiring
-actors, then applied only with the complete validated allocation. The air
-planner observes once per decision and lends allocation that turn: preparation
-reads its proposals and may move a failed connected operation into recovery in
-place, and commit applies the accepted connected proposal or retained membership
-together with this decision's purchases. The post-allocation lifecycle then runs
-on the same turn. Post-admission tactics use committed members; air maintenance
+actors, then applied only with the complete validated allocation. Allocation
+observes the air planner once per full decision and borrows that turn:
+preparation reads its retained obligation, island staging, revision and fresh
+proposals and may move a failed connected operation into recovery in place, and
+commit applies the accepted connected proposal or retained membership together
+with this decision's purchases. The post-allocation lifecycle then runs on the
+same turn. Post-admission tactics use committed members; air maintenance
 precedes lift support handling. Closed funding prevents purchases and new
 ownership, but is not evidence of operation-specific infeasibility. Operational
 reconnaissance reads the maintained air owner. There is no rollback or panic
@@ -219,9 +195,8 @@ accepted dispatch records. `PlanningWork` owns deterministic allowances,
 unfinished jobs, and refinement cursors; rejection neither refunds work nor
 discards progress. `PolicyQueries` owns recomputable navigation,
 resource-access, egress, danger, harvest-service, and expansion answers. These
-caches survive rejection; producer-egress answers retain at most 256 planned
-layouts per base geometry, and the other services keep their existing bounds.
-Full-controller cloning still copies all three owners.
+bounded caches survive rejection. Full-controller cloning copies all three
+owners.
 
 Retained query answers are keyed by their effective inputs, independently of
 policy identity. Resource access includes worker targets and eligible resource
@@ -242,9 +217,9 @@ selects the next call's execution path.
 
 This ownership boundary leaves independent computations able to borrow shared
 evidence and use private scratch. Strategic mutation and planning admission
-still run in deterministic order. Existing parallel seat execution remains
-unchanged; sharing a planning allowance behind a lock would not make same-seat
-scheduling deterministic.
+still run in deterministic order. Parallelism stays at seat granularity; sharing
+a planning allowance behind a lock would not make same-seat scheduling
+deterministic.
 
 The Foundry commitment component owns accepted identity, fixed funding premises,
 recovery, and dispatch acknowledgement. Allocation validates and funds its exact

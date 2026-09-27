@@ -42,15 +42,9 @@ knowledge; `paths` provides canonical endpoint routes and bounds;
 `public_fields` provides terrain and danger-aware travel distances; `service`
 retains producer and target connectivity; `egress` certifies producer exits;
 `flood` handles connectivity and placement witnesses; and `travel` converts a
-route cost into free-flow ticks for a unit kind. Barricade foothold valuation
-asks for costs instead of full paths. Planners supply knowledge, safety rules,
-and target preferences; navigation preserves command orientation, path ties, and
-search limits. Ground, air, and hypothetical layouts retain separate bounded
-caches.
-
-Voluntary defense rejects construction kinds that cannot meet the current
-allocation reserve before searching for sites. Final allocation still owns the
-exact funding and compatibility decision.
+route cost into free-flow ticks for a unit kind.
+[Navigation](../docs/bot/navigation.md) describes their cache and work
+contracts.
 
 Internal operation planners and utility policy are not host entry points. Hosts
 use `SeatBot`; observation-driven tooling can use `Brain`, and diagnostics
@@ -61,25 +55,17 @@ implementation as production.
 
 ## Development
 
-Strategy's `think_alone` fixtures advance a single planner with fixture funding.
-They select the richest active revision and then use the real resource
-scheduler; they do not exercise portfolio competition or controller admission.
-`Brain` tests own command-level funding, preemption and cross-domain ownership;
-allocation-session tests own exact admission and rejection. Test-only roster
-references and work counters verify query equivalence and bounds without adding
-another runtime execution mode. Force-package fixtures supply the same bounded
-`PlanningWork` as production; missing planning state defers purchases. Tests
-comparing completed packages explicitly resume partial work within the unchanged
-decision allowance. The exhaustive funding reference is only an independent
-oracle, never a fallback inside the planner.
+Strategy tests run the air planner through the shared `strategy::fixtures::turn`
+fixture, which executes one decision in production order against an allocation
+of the planner's own claims, without competing domains. `Brain` tests own
+command-level funding, preemption and cross-domain ownership; allocation-session
+tests own exact admission and rejection.
 
 Team relief keeps observed pressure age separate from its proposed force.
 Proposals hold no units and are not persisted. A retry revalidates current
 members without restarting pressure credibility. An admitted preparation holds
 its exact group and home screen until pressure becomes credible; then it
-dispatches the group and releases the screen. Accepted relief and raid orders
-use their retained actor claims; contested members cannot record a dispatch.
-Procurement and new membership enter through exact admitted values.
+dispatches the group and releases the screen.
 
 ```sh
 cargo test -p oxide-bot --locked

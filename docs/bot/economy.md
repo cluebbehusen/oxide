@@ -61,25 +61,24 @@ valuation estimates protection at nearby asset approaches, using actual weapon
 coverage, redundancy, health, and offline time. Public terrain connectivity
 filters ground-threat priors; nearby current attackers prevent refitting. This
 estimate does not reconstruct remote army routes or credit distant choke-point
-protection. The residual technology scalar and the operational Airworks capital
-tax are absent. Economic purchases keep a fixed funding deadline separate from
-their return horizon. Shared allocation rebalances their current and forecast
-capital alongside fixed producer payments; a missed funding deadline releases
-the unpaid plan for reconsideration. Issuing a build pays for its site
-immediately, including travel through fog; paid foundations and refits follow
-ordinary simulation rules. Extractor development compares explored, safe frame
-groups around a common Foundry site by their total return after restoration,
-support, travel, and build costs. The existing expansion security check must
-admit the shared support site. Only the next restoration owns capital and a
-builder; later steps are re-evaluated as construction completes, and their
-projected income never becomes spendable forecast credit.
+protection. Economic purchases keep a fixed funding deadline separate from their
+return horizon. Shared allocation rebalances their current and forecast capital
+alongside fixed producer payments; a missed funding deadline releases the unpaid
+plan for reconsideration. Issuing a build pays for its site immediately,
+including travel through fog; paid foundations and refits follow ordinary
+simulation rules. Extractor development compares explored, safe frame groups
+around a common Foundry site by their total return after restoration, support,
+travel, and build costs. The existing expansion security check must admit the
+shared support site. Only the next restoration owns capital and a builder; later
+steps are re-evaluated as construction completes, and their projected income
+never becomes spendable forecast credit.
 
 `EconomicQuotes` owns one quotation pass over an immutable observation, resource
 snapshot, retained obligations, and capability demand. Capacity-Foundry fallback
 and ordinary economic alternatives share its service-route cache and funding
 calendar. Worker quotations, capital preparation, bounded construction-site
-selection, construction valuation, upgrade valuation, and final ranking retain
-their original order. Construction quotes and Extractor development share a lazy
+selection, construction valuation, upgrade valuation, and final ranking run in
+that fixed order. Construction quotes and Extractor development share a lazy
 `ConstructionChecks` context. It owns exact builder safety and travel,
 resource-access checks, and future-producer exit certificates over one fixed
 observation, public map, orientation, danger projection, and contested-work

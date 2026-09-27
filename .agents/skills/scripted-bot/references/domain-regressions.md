@@ -81,7 +81,11 @@ and egress agreement, funded FIFO schedules and fixed preparation deadlines.
 More resources, usable production or preparation time must not revoke admission
 or reduce capped useful capability for identical evidence. Every personality
 retains both air and siege. Freeze exact assignments at commitment and
-distinguish cohort minimum loss from loss of the exact required scout.
+distinguish cohort minimum loss from loss of the exact required scout. Cover the
+connected commitment: no retargeting outside the admitted cluster, revisions
+that size every current or confidently remembered member or leave the package,
+clearance only once every member is observed gone, and a blind strike only
+without known anti-air en route.
 
 Preflight must reproduce authoritative orientation, center snapping, group
 spreading, producer doorsteps and legal firing stands. Scheduled suppression
@@ -161,12 +165,13 @@ a capital floor, not permission to start the operation or claim riders.
 Admission must account for the floor once and release it when a premise fails.
 
 Island air tests retain the documented readiness gate without turning it into a
-force cap. Screen/bomber scaling stops at commitment. Air/lift coordination uses
-explicit target-specific holds and release/abort evidence, never missing hidden
-state. Parked aircraft occupy the ground body domain for targeting while route
-and procurement reasoning retain their flight domain. Ordinary Move holds the
-wing on pads and the strike order takes it off. Test lost dispatched scouts in
-Recon and Assemble separately from empty uncommitted scout slots.
+force cap. Screen and bomber targets are fixed at admission. Air/lift
+coordination uses explicit target-specific holds and release/abort evidence,
+never missing hidden state. Parked aircraft occupy the ground body domain for
+targeting while route and procurement reasoning retain their flight domain.
+Ordinary Move holds the wing on pads and the strike order takes it off. Test
+lost dispatched scouts in Recon and Assemble separately from empty uncommitted
+scout slots.
 
 ## Difficulty and replay boundaries
 

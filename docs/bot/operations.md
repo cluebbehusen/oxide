@@ -4,8 +4,8 @@
 
 ## Support ownership
 
-The residual Foundry pass no longer originates player-facing ordinary combat,
-siege, anti-air, or Tender orders. Residual construction no longer originates a
+The residual Foundry pass does not originate player-facing ordinary combat,
+siege, anti-air, or Tender orders. Residual construction does not originate a
 player-facing Turret, Bastion, Flak Turret, Scuttle Charge, Barricade, Array, or
 Repair Bay; it retains recovery. Support allocation compares finite own repair
 work, exact worker assignments, Tender purchases, and marginal Repair Bay sites.
@@ -31,11 +31,11 @@ question retains its consumer, evidence, goal, and useful deadline
 independently. An unpaid purchase retains its exact accepted producer schedule
 and current/forecast funding; only a current-funded append becomes a command.
 Question-local loss cooldowns and quiet intervals permit valuable safe
-reconsideration without requiring new enemy sight. Reconnaissance no longer uses
-one global scout slot. A completed paid occurrence binds only a newly observed
-eligible scout at its exact producer exit; a lost occurrence cannot adopt
-another assignment's later newborn. A surviving observer that can no longer
-arrive before its fixed deadline remains owned for recall, not recorded as lost.
+reconsideration without requiring new enemy sight. Reconnaissance has no global
+scout slot. A completed paid occurrence binds only a newly observed eligible
+scout at its exact producer exit; a lost occurrence cannot adopt another
+assignment's later newborn. A surviving observer that can no longer arrive
+before its fixed deadline remains owned for recall, not recorded as lost.
 Operational and question-driven scouts share exact
 `(producer, kind, occurrence)` exclusions: excluded items still occupy the FIFO
 lane but cannot supply another assignment. Recent objective sightings suppress
@@ -43,8 +43,8 @@ immediate repeat purchases; remembered positive buildings are not uncleared
 authored starts. Existing paid observers cover overlapping point questions only
 when their route and deadline serve the entire footprint. This overlap credit
 never replaces contested sweeps. Full-footprint negative evidence and
-contested-region sweep completion remain separate from safe return. It no longer
-originates residual scout purchases. Scuttlers enter Standing Force allocation
+contested-region sweep completion remain separate from safe return. Residual
+production does not purchase scouts. Scuttlers enter Standing Force allocation
 only through a viable current raid objective's exact missing tactical pair. Paid
 and serviceable live supply reduce that request; its preparation deadline is
 fixed, and target loss does not revoke paid queues. Raid preparation retains
@@ -74,22 +74,14 @@ The target's currently visible, actually splash-vulnerable ground units and
 buried charges create a separate optional bombing opportunity; ordinary
 buildings remain direct-strike value rather than fictional splash victims, and
 operational mobile anti-air already priced as mandatory suppression is not
-counted again as optional bombing collateral. Minimum composition and marginal
-growth each retain a width-eight beam. It ranks capped useful capability first
-and uses personality to weight how otherwise competitive marginal capability is
-divided between air, siege, direct strike, and attack-run bombing. Personality
-never gates a provider or family. One beam slot preserves the cheapest
-alternative; existing useful providers remain eligible at minimum strength, and
-every extension recomputes its canonical funding order. Speculative compositions
-use necessary funding-time and shared-lane throughput bounds. Complete minima
-receive funded FIFO refinement; explored growth candidates are then refined in
-score order until one is feasible. An infeasible favorite does not discard the
-other explored compositions, while deferred work keeps a verified minimum
-available. The offered growth ladder is rebuilt in that final order, so
-enlarging or revising a package keeps earlier job identities and payment times
-intact. Fully refined comparisons preserve the monotonic opportunity checks for
-more scrap, time, or completed production capability. Fresh admission may offer
-a verified prefix while larger variants remain pending. Pending refinement
+counted again as optional bombing collateral. Bounded package search ranks
+capped useful capability first. Personality weights how otherwise competitive
+marginal capability is divided between air, siege, direct strike, and attack-run
+bombing, but never gates a provider or family. For identical evidence, more
+scrap, time, or completed production cannot revoke a fully refined admission or
+reduce its capped useful capability. Enlarging or revising a package keeps
+earlier job identities and payment times. Fresh admission may offer a verified
+minimum or prefix while larger variants remain pending. Pending refinement
 cannot prune an active roster: an unfinished revision preserves the accepted
 operation and its exact orders.
 
@@ -104,38 +96,33 @@ allocation, paid purchases, production search, and experience; its owner and
 anchor identify it to a coordinated lift. The member set never grows. A member
 leaves the operation only when current sight finds it gone; out of sight, it
 stays live on its remembered contact. Traces report the admitted anchors, the
-live anchors, and the anchors that sized the current package. Staging and the
-strike prefer a sticky focus member, which moves during preparation only after
-it leaves current sight; the scout covers every live member's unseen footprint.
-During Recon and Verify, negative anti-air evidence requires current visibility
-over every footprint tile of every live member; the scout focuses the first
-unknown tile before the operation may commit.
+live anchors, the focus, and the anchors that sized the current package. Staging
+and the strike prefer a sticky focus member, which moves during preparation only
+after it leaves current sight; the scout covers every live member's unseen
+footprint. During Recon and Verify, negative anti-air evidence requires current
+visibility over every footprint tile of every live member; the scout focuses the
+first unknown tile before the operation may commit.
 
 Forecast income is proposal evidence, not command credit. Providers, producer
 exits, artillery staging, reconnaissance, and strike routes must remain viable
-through public terrain and observed dynamic blockers. Route preflight carries
-the active seat's original `Orientation` into the oriented observation. It
-reproduces authoritative center snapping and group spreading for `Move` and
-`AttackMove`, uses the authoritative world-frame producer doorstep, and
-validates one reachable legal firing stand for every exact suppression `Attack`
-member without applying group spread. When every demanded suppression member is
-already live, staging preflight reproduces that roster's one authoritative
-spread. If scheduled members do not yet have positions, it conservatively proves
-both possible deterministic spread scans from the admitted source component.
-Each production command still spends only the spendable current bank, uses an
-exact completed producer, and must fit that producer's conservative queue and
-egress bound.
+through public terrain and observed dynamic blockers. Route preflight reproduces
+the authoritative command geometry: seat orientation, center snapping, group
+spreading, producer doorsteps, and a reachable legal firing stand for every
+exact suppression `Attack` member. Each production command still spends only the
+spendable current bank, uses an exact completed producer, and must fit that
+producer's conservative queue and egress bound.
 
 During Recon and Assemble, a live member in current sight lets available
 resources and uncommitted providers revise the package against the committed
 members only. Members in current sight and remembered members of positive
 confidence count toward target durability and value; anti-air evidence remains
-current-only. Revision never changes the commitment or extends its preparation
-deadline. The operation freezes its exact assigned ids on entering SuppressAa.
-Later suppression- and strike-cohort losses are measured against the committed
-capability minimum; the required scout remains an exact-identity requirement.
-Missing the preparation deadline enters bounded recovery instead of extending or
-replacing the cohort indefinitely.
+current-only. A revision that cannot size every such member leaves the current
+package in place. Revision never changes the commitment or extends its
+preparation deadline. The operation freezes its exact assigned ids on entering
+SuppressAa. Later suppression- and strike-cohort losses are measured against the
+committed capability minimum; the required scout remains an exact-identity
+requirement. Missing the preparation deadline enters bounded recovery instead of
+extending or replacing the cohort indefinitely.
 
 The strike attacks the best live member in current sight, preferring the focus.
 When every live member has left sight, it attack-moves toward the best
@@ -149,6 +136,11 @@ the operation as stale intelligence.
 
 ## Air and lift operations
 
+Each air operation runs one of three plans: Reacquire watches a remembered
+objective with a scout until current sight admits an assault, Island masses
+aircraft against a ground-severed objective, and Connected commits combined arms
+to a ground-connected target cluster.
+
 Air operations own one lifecycle state: watching a remembered objective,
 admitted reconnaissance, assembly, suppression, verification, strike, or
 recovery. Recovery carries its reason and prior assault admission; other states
@@ -158,26 +150,28 @@ independently.
 
 On severed ground, wealthy bots may run two independent operations. The air
 planner builds a screen and bomber wing, scouts the route, attacks currently
-visible flak along it, and then commits against a current objective. Its force
-targets can grow with newly observed wealth and roster strength during Recon and
-Assemble, then freeze when suppression begins. The lift planner likewise grows
-its payload and matching Skyhook target during Provision, then freezes exact
-manifests when Boarding begins. Carrier demand follows payload and usable
-landing capacity rather than an arbitrary controller cap, while a ground-capable
-reserve remains at home instead of being stripped into a bulk lift.
+visible flak along it, and then commits against a current objective. Its screen
+and bomber targets are sized once at admission from renewable income, roster
+strength, stance, and personality; exact members freeze when suppression begins.
+The lift planner grows its payload and matching Skyhook target during Provision,
+then freezes exact manifests when Boarding begins. Carrier demand follows
+payload and usable landing capacity rather than an arbitrary controller cap,
+while a ground-capable reserve remains at home instead of being stripped into a
+bulk lift.
 
 The wealthy island air operation also has a separate admission gate of 12
 currently armed units. That standing-roster check establishes readiness to open
-the operation; it neither sets the screen or bomber demand nor caps later force
-scaling.
+the operation; it neither sets nor caps the screen or bomber demand.
 
 Before a remembered objective is reacquired, an unadmitted Recon operation may
 hold exactly one Skyhook's cost out of otherwise uncommitted scrap. It does so
 only for a built, non-expired contact when the bot has a completed Airworks, a
 transportable payload, no live or queued usable carrier, and optimistic routing
-still proves the pickup and objective ground-disconnected. This is a prospective
-capital floor only: it neither creates a lift nor claims a payload or queues a
-carrier before current sight.
+still proves the pickup and objective ground-disconnected. The hold also
+requires a successful allocation and open voluntary operations: the opening core
+is ready and no economic saving is held. This is a prospective capital floor
+only: it neither creates a lift nor claims a payload or queues a carrier before
+current sight.
 
 Fresh typed investments resolve before that residual Recon lifecycle. The
 allocator therefore previews the exact retained or newly admissible Recon target
@@ -276,35 +270,12 @@ uncommitted candidates expire. Emergency defense retains exhaustive best-site
 selection with conservative coverage bounds. A candidate rejected by investment
 valuation does not remain the role's incumbent.
 
-Defensive geometry shares a bot-owned route cache across economic and defensive
-valuation. Each retained generation compares map dimensions and the complete
-fog-honest passability surface. Directed endpoint paths include the candidate
-footprint in their key; air routes ignore ground-only footprints. Normal ground,
-hypothetical combined-build layouts, and air surfaces have independent bounded
-retention: one normal generation has an 8 MiB budget, two hypothetical
-generations have 1 MiB each, and air has 8 MiB. After the blocking grid,
-endpoint paths own half the payload budget; normal and candidate reverse
-distance fields each own a quarter. Eviction in one class cannot discard
-another. These bound accounted retained payload and entry allowances, not
-process RSS. Cache eviction or an oversized entry falls back to search.
-Successful hits clear old exhausted-component evidence, while failures are not
-stored as bare unreachable results.
-
-Lazy reverse distance fields use the same open-tile graph, 10/14 movement costs,
-and diagonal corner rules. Endpoint ranking uses an obstacle-free bound unless
-an exact field is already retained. Repeated uncached routes sharing either
-endpoint earn a normal field after their accumulated expansions reach the map's
-cell count; tracking retains at most 256 endpoints. Large endpoint sets can
-prepare one origin field sooner when the measured first search projects more
-work than the field across the batch. Cache hits contribute no search work.
-Existing fields reject endpoint pairs whose cost exceeds a route already found;
-newly prepared bounds also reorder the remaining endpoint pairs before path
-construction. Adding a blocking footprint cannot improve that bound. For long
-paths, exact fields for the current footprint also prune A* branches that cannot
-belong to a shortest route. Queue ordering remains unchanged to preserve the
-complete route-choice key and mobile firing positions. This pruning is disabled
-when the map exceeds the expansion cap or the start is blocked, preserving
-capped searches and escape from blocked origins. A* still constructs every
-uncached selected path. Investment scores, threat evidence, asset values, and
-budgets are recomputed from the current observation rather than retained with
-passability.
+Defensive geometry shares a bot-owned route cache with economic valuation.
+Retained routes are keyed by map dimensions, the complete fog-honest passability
+surface, and the candidate footprint. Normal ground, hypothetical combined-build
+layouts, and air have independent bounded retention; eviction or an oversized
+entry falls back to search, and failed searches are not cached as unreachable.
+Retained distance fields may prune searches but preserve canonical route choices
+and mobile firing positions. Investment scores, threat evidence, asset values,
+and budgets are recomputed from the current observation rather than retained
+with passability.
