@@ -43,6 +43,8 @@ pub(crate) struct TouchPoint {
     pub paired: bool,
     /// The card it landed on, as it stood then.
     pub card: Option<PressedCard>,
+    /// The control-group slot it landed on, as it stood then.
+    pub group: Option<crate::layout::GroupSlot>,
 }
 
 /// A card as a finger found it: its slot, its action, and its face. A
@@ -146,6 +148,16 @@ fn world_hold(input: &InputState) -> Option<TouchPoint> {
     (finger.born == TouchBorn::World && finger.still() && !claimed).then_some(*finger)
 }
 
+/// A lone finger resting on a control-group slot: the one chrome hold
+/// that fires, saving the selection to that group.
+fn group_hold(input: &InputState) -> Option<(TouchPoint, crate::layout::GroupSlot)> {
+    let [(_, finger)] = input.touches.as_slice() else {
+        return None;
+    };
+    let slot = finger.group?;
+    (finger.born == TouchBorn::Chrome && finger.still()).then_some((*finger, slot))
+}
+
 /// Whether an armed mode takes a minimap tap as its target (a rally
 /// point or a patrol waypoint), so the minimap must not steer under it.
 fn minimap_targets(input: &InputState) -> bool {
@@ -164,7 +176,10 @@ fn steer_minimap(game: &mut Game, p: Vec2) {
 fn born_at(game: &Game, input: &InputState, p: Vec2) -> TouchBorn {
     if crate::render::minimap_world_at(&game.view(), p).is_some() {
         TouchBorn::Minimap
-    } else if click_on_hud(game, p) {
+    } else if click_on_hud(game, p)
+        || crate::layout::group_slot_under(&game.presentation.layout.get(), p, Some(input.ui))
+            .is_some()
+    {
         TouchBorn::Chrome
     } else if super::ghost_touch_rect(&game.view(), input).is_some_and(|rect| rect.contains(p)) {
         TouchBorn::Ghost
@@ -181,7 +196,17 @@ pub(crate) const TOUCH_REST_MS: f64 = 120.0;
 /// zero once the finger has rested to one as the order fires. Only a
 /// lone world-born finger that has neither moved nor fired charges.
 pub(crate) fn long_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
-    let finger = world_hold(input)?;
+    charge(input, &world_hold(input)?)
+}
+
+/// Where a control-group slot's long-press is charging, and how far.
+pub(crate) fn group_press_progress(input: &InputState) -> Option<(Vec2, f32)> {
+    charge(input, &group_hold(input)?.0)
+}
+
+/// A held finger's charge: nothing while it may still be a tap, then
+/// filling until the long-press fires.
+fn charge(input: &InputState, finger: &TouchPoint) -> Option<(Vec2, f32)> {
     let held_ms = (input.now - finger.down_at) * 1000.0;
     if held_ms < TOUCH_REST_MS {
         return None;
@@ -217,6 +242,11 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             moved: false,
             spent: false,
             card: pressed_card(game, p, input.ui),
+            group: crate::layout::group_slot_under(
+                &game.presentation.layout.get(),
+                p,
+                Some(input.ui),
+            ),
             paired: false,
         },
     ));
@@ -276,6 +306,7 @@ fn readopt(input: &mut InputState, id: u64, p: Vec2) -> bool {
             spent: true,
             paired: false,
             card: None,
+            group: None,
         },
     ));
     true
@@ -451,6 +482,16 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     // bar, which the bare-chrome swallow
                     // below would otherwise eat.
                     cycle_idle_worker(game);
+                } else if let Some(slot) = lifted.group.filter(|slot| {
+                    crate::layout::group_slot_under(&layout, p, Some(input.ui)) == Some(*slot)
+                }) {
+                    // A slot acts only if the finger lifts on the same
+                    // slot it landed on, as it stood then.
+                    super::press_group_slot(game, input, slot, false);
+                } else if layout.alert_badge.w > 0.0
+                    && crate::layout::touch_pad(layout.alert_badge, input.ui).contains(p)
+                {
+                    dispatch_action(game, input, Action::JumpToLastAlert);
                 } else if layout.menu_button.w > 0.0
                     && crate::layout::touch_pad(layout.menu_button, input.ui).contains(p)
                 {
@@ -474,10 +515,16 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 }
 
 /// A still tap on the battlefield selects, and a quick second tap on a
-/// unit sweeps its kind.
+/// unit sweeps its kind. With the build palette open and nothing armed,
+/// a tap that picks nothing only closes the palette.
 fn world_tap(game: &mut Game, input: &mut InputState, p: Vec2, double: bool) {
     let picked = select::pick(game, p, input.ui, super::Pointer::Touch);
-    if double && picked.is_some() && !input.queue_held() {
+    if picked.is_none() && input.build_menu && input.placing.is_none() {
+        // Tapping away from the open palette dismisses it and keeps the
+        // builder: touch has no Esc, and a deselect would lose the crew.
+        input.close_construction();
+        input.last_tap = None;
+    } else if double && picked.is_some() && !input.queue_held() {
         select_all_of_kind_on_screen(game, p, input.ui, super::Pointer::Touch);
         input.last_tap = None;
     } else {
@@ -499,6 +546,16 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
         && (input.now - pair.formed_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms)
     {
         pair.state = PairState::Box;
+    }
+    // A control-group slot is the one chrome a long-press serves: it
+    // saves the selection there. Spending the finger keeps its lift
+    // from also recalling.
+    if let Some((finger, slot)) = group_hold(input) {
+        if (input.now - finger.down_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms) {
+            input.touches[0].1.spent = true;
+            super::press_group_slot(game, input, slot, true);
+        }
+        return;
     }
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world

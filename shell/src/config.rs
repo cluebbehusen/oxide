@@ -61,6 +61,10 @@ pub struct Volumes {
     pub music: f32,
 }
 
+fn default_on() -> bool {
+    true
+}
+
 fn default_volume() -> f32 {
     1.0
 }
@@ -219,6 +223,10 @@ pub struct Config {
     /// colors only; sprite art is untouched).
     #[serde(default)]
     pub colorblind: bool,
+    /// Show the control-group column above the minimap. Hiding it
+    /// leaves keyboard groups working.
+    #[serde(default = "default_on")]
+    pub control_groups: bool,
     /// Touch gesture timing (absent in configs saved before touch).
     #[serde(default)]
     pub touch: TouchPrefs,
@@ -248,6 +256,7 @@ impl Default for Config {
             window: (1280, 800),
             reduced_motion: false,
             colorblind: false,
+            control_groups: true,
             touch: TouchPrefs::default(),
             unbound: Vec::new(),
             last_join_address: None,
@@ -636,6 +645,14 @@ mod tests {
             TouchPrefs::default().long_press_ms
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_config_saved_before_the_group_column_shows_it() {
+        let mut old = serde_json::to_value(Config::default()).unwrap();
+        old.as_object_mut().unwrap().remove("control_groups");
+        let loaded: Config = serde_json::from_value(old).unwrap();
+        assert!(loaded.control_groups);
     }
 
     #[test]

@@ -342,7 +342,6 @@ impl Presentation {
         self.alert_gate.insert(cell, now);
         self.alerts.push((world, 0.0));
         self.last_alert = Some(world);
-        self.toast("under attack");
         self.sounds_pending.push((SoundKind::Alert, None));
     }
 

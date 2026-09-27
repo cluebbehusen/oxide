@@ -182,7 +182,16 @@ reports them all lifted. Gesture code treats a repeated landing as the same
 finger and picks up a falsely lifted pair finger on its next move. Drawing
 publishes a shared `LayoutModel` whose rectangles also drive hit testing. The
 HUD's supported layout floor is 1280×800 at default UI scale. Smaller windows
-are overflow stress cases.
+are overflow stress cases. `layout::top_bar` places the top bar from measured
+text: the bank, income, and unit count run left to right, then the idle and
+under-attack badges, and the status hangs off the menu button. Touch-only builds
+hold the menu button and bank further from the corners, which iPad screens round
+and iPadOS safe areas leave out. `layout::group_column` stacks the control
+groups on a plate above the minimap's right edge, mirroring the orders dock, and
+wraps into more columns when the window is short. It shows once a group is saved
+or the selection can be saved, never while the minimap is hidden, and a setting
+hides it; its slots and plate are chrome. The top edge is left to taps because
+iPadOS takes a long-press there as a window move.
 
 Selections contain units of one allegiance or buildings of one owner, ordered by
 id. Foreign entities can be inspected while visible, but commands remain gated
@@ -233,12 +242,15 @@ on-screen keyboard to follow it.
 
 Hints, toasts, card descriptions, and the tutorial speak touch on touch-only
 builds, and panel cards drop their hotkeys. A finger resting on chrome for
-`TOUCH_REST_MS` previews the card beneath it with the hover tooltip; chrome
+`TOUCH_REST_MS` previews the card beneath it with the hover tooltip. Chrome
 touches never fire a long-press, so lifting in place still activates the card,
-and a finger that lands on one card and lifts on another activates neither. A
-world-born finger draws a filling ring from the same rest threshold until its
-long-press fires. Disabled cards publish `CardAction::Refused`, so a tap or
-click toasts the reason their hotkey gives.
+and a finger that lands on one card or group slot and lifts on another activates
+neither. The one exception is a control-group slot, where a long-press saves the
+selection to that group and spends the finger so its lift does not also recall.
+A world-born or group-slot finger draws a filling ring from the same rest
+threshold until its long-press fires; the slot's ring draws above the HUD and
+minimap. Disabled cards publish `CardAction::Refused`, so a tap or click toasts
+the reason their hotkey gives.
 
 Gameplay touch lives in `input::touch`. Each finger records where it landed
 (`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that
@@ -266,13 +278,18 @@ shows on touch-only builds while the human commands a selected unit or QUEUE is
 on. It sits over the panel's left corner in the orders dock's column, and the
 dock rises to stack above it, so queueing orders never moves the toggle.
 `ribbon_row_press` hit-tests both before every other target: the toggle flips
-QUEUE and the ribbon cancels its mode. Taps and clicks select through
-`select::pick`, which gives a fingertip a wider reach than a cursor. A press
-that picks nothing on a tile with known salvage selects that tile as
-`Selection::pile`, read-only and exclusive: any other selection drops it, and
-`Game` drops it once the viewer knows of no salvage there. Its panel and the
-desktop hover readout share `Scene::known_salvage`, which reads live amounts on
-visible ground and remembered amounts under fog.
+QUEUE and the ribbon cancels its mode. The build palette ends with a Back card
+(`CardAction::ClosePalette`) that leaves construction in one press, and on touch
+a tap that picks no unit or building while the palette is open and nothing is
+armed closes it and keeps the selection, even over a scrap pile: dismissing
+never also acts. With QUEUE lit (or Shift or Ctrl held), a roster chip drops its
+kind instead of keeping only it. Taps and clicks select through `select::pick`,
+which gives a fingertip a wider reach than a cursor. A press that picks nothing
+on a tile with known salvage selects that tile as `Selection::pile`, read-only
+and exclusive: any other selection drops it, and `Game` drops it once the viewer
+knows of no salvage there. Its panel and the desktop hover readout share
+`Scene::known_salvage`, which reads live amounts on visible ground and
+remembered amounts under fog.
 
 Coaching text waits for a stuck player. `hints::HintClock`, fed each frame's
 screen mode and presses, fades coaching in after about 15 seconds without a

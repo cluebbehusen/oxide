@@ -870,6 +870,7 @@ mod tests {
             panel_regions: None,
             menu_button: None,
             pause_status: None,
+            group_column: None,
         };
         let json = serde_json::to_string(&ResponseEnvelope::ok(3, Reply::Ui(ui.clone()))).unwrap();
         assert!(
@@ -1106,6 +1107,7 @@ mod tests {
                 panel_regions: Some([[0.0, 500.0, 228.0, 300.0], [228.0, 724.0, 500.0, 76.0]]),
                 menu_button: Some([1238.0, 3.0, 34.0, 34.0]),
                 pause_status: Some([1180.0, 3.0, 46.0, 34.0]),
+                group_column: Some([1196.0, 380.0, 60.0, 236.0]),
                 mode: "main_menu".into(),
                 title: Some("Oxide".into()),
                 selected: Some(2),

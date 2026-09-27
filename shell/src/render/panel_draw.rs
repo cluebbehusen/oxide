@@ -397,7 +397,9 @@ fn catalog_geometry(
         .floor()
         .max(1.0) as usize;
     let rows = count.max(1).div_ceil(max_columns);
-    let grouped = count == 13 && max_columns >= 7;
+    // Thirteen buildings in their four categories plus Back, which
+    // takes the free cell under UTILITY.
+    let grouped = count == 14 && max_columns >= 7;
     let columns = if grouped {
         7
     } else {
@@ -747,8 +749,13 @@ pub(crate) fn draw_panel(
     if panel
         .cards
         .iter()
-        .all(|card| matches!(card.action, CardAction::ArmBuild(_)))
-        && !panel.cards.is_empty()
+        .any(|card| matches!(card.action, CardAction::ArmBuild(_)))
+        && panel.cards.iter().all(|card| {
+            matches!(
+                card.action,
+                CardAction::ArmBuild(_) | CardAction::ClosePalette
+            )
+        })
     {
         return draw_catalog(panel, input, mini, &draw_icon);
     }
@@ -1766,8 +1773,12 @@ mod tests {
     fn construction_catalog_keeps_every_choice_and_minimap_at_supported_sizes() {
         for viewport in [vec2(640.0, 400.0), vec2(1280.0, 800.0), vec2(1440.0, 900.0)] {
             let minimap = minimap_rect_scaled(36, 24, viewport, 1.0);
-            let (band, slots, _) = catalog_geometry(viewport, 1.0, minimap, 13);
-            assert_eq!(slots.len(), 13);
+            let (band, slots, grouped) = catalog_geometry(viewport, 1.0, minimap, 14);
+            assert_eq!(slots.len(), 14);
+            if grouped {
+                assert_eq!(slots[13].x, slots[11].x, "Back sits under UTILITY");
+                assert_eq!(slots[13].y, slots[12].y);
+            }
             assert!(band.y >= crate::layout::TOP_BAR_H);
             assert!(band.w < minimap.x);
             for (i, rect) in slots.iter().enumerate() {

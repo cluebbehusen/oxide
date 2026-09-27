@@ -426,6 +426,12 @@ pub struct UiView {
     /// click or tap there toggles pause. Absent outside live play.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_status: Option<[f32; 4]>,
+    /// The control-group column's plate [x, y, width, height] while it
+    /// shows above the minimap. Its slots recall and assign groups and
+    /// its gaps swallow presses, so it is chrome, not world. Absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_column: Option<[f32; 4]>,
 }
 
 impl StateView {

@@ -3902,6 +3902,44 @@ fn chrome_born_touches_never_drive_world_gestures() {
     );
 }
 
+mod top_bar;
+
+#[test]
+fn the_alert_badge_jumps_the_camera_by_click_or_tap() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let badge = macroquad::math::Rect::new(420.0, 3.0, 120.0, 34.0);
+    let mut layout = top_bar_layout();
+    layout.alert_badge = badge;
+    game.presentation.layout.set(layout);
+    let map = game.state.map();
+    let alert = vec2(map.width() as f32 * 0.5, map.height() as f32 * 0.5);
+    game.presentation.last_alert = Some(alert);
+    for touch in [false, true] {
+        game.presentation.camera.center = vec2(5.0, 5.0);
+        if touch {
+            // A fingertip just under the badge still lands on its pad.
+            tap(
+                &mut game,
+                &mut input,
+                vec2(badge.center().x, badge.y + badge.h + 3.0),
+            );
+        } else {
+            apply_events(
+                &mut game,
+                &mut input,
+                &click(badge.center().x, badge.center().y),
+            );
+        }
+        assert!(
+            game.presentation.camera.center.distance(alert) < 0.01,
+            "touch {touch}: {:?}",
+            game.presentation.camera.center
+        );
+    }
+    assert!(game.pending.is_empty());
+}
+
 #[test]
 fn a_tap_on_the_idle_badge_cycles_workers() {
     let mut game = headless_game();
@@ -3938,7 +3976,7 @@ fn a_tap_on_the_idle_badge_cycles_workers() {
 /// top bar draws them at 1280 px wide.
 fn top_bar_layout() -> crate::layout::LayoutModel {
     let mut layout = bare_layout(f32::INFINITY, 0.0);
-    layout.menu_button = crate::layout::menu_button_rect(1280.0, 1.0);
+    layout.menu_button = crate::layout::menu_button_rect(1280.0, 1.0, false);
     layout.pause_status = macroquad::math::Rect::new(1180.0, 3.0, 46.0, 34.0);
     layout
 }
@@ -3994,7 +4032,7 @@ fn a_bar_without_a_menu_button_ignores_its_corner() {
     game.presentation
         .layout
         .set(bare_layout(f32::INFINITY, 0.0));
-    let corner = crate::layout::menu_button_rect(1280.0, 1.0).center();
+    let corner = crate::layout::menu_button_rect(1280.0, 1.0, false).center();
     apply_events(&mut game, &mut input, &click(corner.x, corner.y));
     tap(&mut game, &mut input, corner);
     assert!(
@@ -4380,6 +4418,28 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
         "Ctrl cuts the named kind out"
     );
     apply_events(&mut game, &mut input, &[key_up(Key::Ctrl)]);
+
+    // Shift, and touch's lit QUEUE, drop it too.
+    let without_harvesters = game.presentation.selection.units.clone();
+    for queue in [false, true] {
+        game.presentation.selection.units = mine.clone();
+        if queue {
+            input.queue_toggle = true;
+        } else {
+            apply_events(&mut game, &mut input, &[key_down(Key::Shift)]);
+        }
+        activate_card(
+            &mut game,
+            &mut input,
+            crate::panel::CardAction::FilterKind(UnitKind::Harvester),
+        );
+        assert_eq!(
+            game.presentation.selection.units, without_harvesters,
+            "queue {queue}: the kind drops out"
+        );
+        input.queue_toggle = false;
+        apply_events(&mut game, &mut input, &[key_up(Key::Shift)]);
+    }
 
     // ...and the plain click keeps only the named kind.
     game.presentation.selection.units = mine;
@@ -6194,8 +6254,10 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     let keys = [Key::Q, Key::E, Key::R, Key::T];
     dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
     let panel = crate::panel::build_for_input(&game.view(), &input).unwrap();
-    assert_eq!(panel.cards.len(), 13);
-    for card in panel.cards {
+    assert_eq!(panel.cards.len(), 14);
+    let (back, buildings) = panel.cards.split_last().expect("cards");
+    assert_eq!(back.action, crate::panel::CardAction::ClosePalette);
+    for card in buildings {
         let crate::panel::CardAction::ArmBuild(kind) = card.action else {
             panic!("build card");
         };
@@ -6225,6 +6287,65 @@ fn construction_menu_shows_every_building_and_shortcuts_arm_the_visible_card() {
     controls_key(&mut game, &mut input, Key::B);
     controls_key(&mut game, &mut input, Key::B);
     assert!(!input.construction_open());
+}
+
+#[test]
+fn a_tap_on_open_ground_closes_the_palette_and_keeps_the_builder() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let (_, at) = own_fighter(&game);
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    let builders = game.presentation.selection.units.clone();
+    assert!(input.build_menu && !builders.is_empty());
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(!input.construction_open(), "the tap dismissed the palette");
+    assert_eq!(
+        game.presentation.selection.units, builders,
+        "and kept the crew"
+    );
+    assert!(game.pending.is_empty());
+
+    // The dismissing tap never counts toward a double tap.
+    assert_eq!(input.last_tap, None);
+    tap_world(&mut game, &mut input, at + vec2(4.0, 2.0));
+    assert!(
+        game.presentation.selection.units.is_empty(),
+        "with the palette closed, the next ground tap deselects"
+    );
+
+    // A tap that lands on a unit still selects it.
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    let (fighter, _) = own_fighter(&game);
+    let fighter_at = {
+        let u = game.state.unit(fighter).expect("fighter");
+        vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())
+    };
+    tap_world(&mut game, &mut input, fighter_at);
+    assert_eq!(game.presentation.selection.units, vec![fighter]);
+}
+
+#[test]
+fn the_back_card_closes_the_palette_and_keeps_the_builder() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(input.construction_open());
+    let builders = game.presentation.selection.units.clone();
+    assert!(!builders.is_empty(), "opening the palette picked a builder");
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::ArmBuild(oxide_sim::BuildingKind::Turret),
+    );
+    assert!(input.placing.is_some(), "a building is armed");
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::ClosePalette,
+    );
+    assert!(!input.construction_open(), "one press leaves it outright");
+    assert_eq!(game.presentation.selection.units, builders);
+    assert!(game.pending.is_empty());
 }
 
 #[test]

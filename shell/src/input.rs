@@ -590,6 +590,83 @@ impl InputState {
         self.queue_toggle || self.resolver.shift_held()
     }
 
+    /// Each control group's live own-unit count. Dead ids linger in a
+    /// group until its next recall, so the strip counts for itself.
+    pub(crate) fn group_counts(
+        &self,
+        game: &crate::game::Scene<'_>,
+    ) -> [usize; crate::action::CONTROL_GROUPS] {
+        std::array::from_fn(|slot| {
+            self.groups[slot]
+                .iter()
+                .filter(|id| {
+                    game.state
+                        .unit(**id)
+                        .is_some_and(|u| u.player == game.presentation.human)
+                })
+                .count()
+        })
+    }
+
+    /// The group the selection already is, exactly.
+    pub(crate) fn selected_group(&self, game: &crate::game::Scene<'_>) -> Option<u8> {
+        let human = game.presentation.human;
+        let mut own: Vec<UnitId> = game.presentation.selection.units.clone();
+        own.sort_unstable();
+        if own.is_empty()
+            || own
+                .iter()
+                .any(|id| game.state.unit(*id).is_none_or(|u| u.player != human))
+        {
+            return None;
+        }
+        (0..self.groups.len())
+            .find(|slot| {
+                let mut ids: Vec<UnitId> = self.groups[*slot]
+                    .iter()
+                    .copied()
+                    .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == human))
+                    .collect();
+                ids.sort_unstable();
+                ids == own
+            })
+            .map(|slot| slot as u8 + 1)
+    }
+
+    /// The group the strip's "+" would save the selection to: the lowest
+    /// empty one, while the selection holds own units that no live group
+    /// already names exactly.
+    pub(crate) fn group_on_offer(&self, game: &crate::game::Scene<'_>) -> Option<u8> {
+        let human = game.presentation.human;
+        let mut own: Vec<UnitId> = game
+            .presentation
+            .selection
+            .units
+            .iter()
+            .copied()
+            .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == human))
+            .collect();
+        if own.is_empty() {
+            return None;
+        }
+        own.sort_unstable();
+        let live = |slot: usize| -> Vec<UnitId> {
+            let mut ids: Vec<UnitId> = self.groups[slot]
+                .iter()
+                .copied()
+                .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == human))
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        if (0..self.groups.len()).any(|slot| live(slot) == own) {
+            return None;
+        }
+        (0..self.groups.len())
+            .find(|slot| live(*slot).is_empty())
+            .map(|slot| slot as u8 + 1)
+    }
+
     /// Flips the QUEUE toggle.
     pub(crate) fn toggle_queue(&mut self) {
         self.queue_toggle = !self.queue_toggle;
@@ -979,7 +1056,8 @@ use select::{
 };
 pub use touch::update_touch;
 pub(crate) use touch::{
-    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, long_press_progress, touch_box,
+    Pair, TOUCH_REST_MS, TouchBorn, TouchPoint, group_press_progress, long_press_progress,
+    touch_box,
 };
 
 /// The cursor shape the current intent deserves: crosshair while
@@ -1130,6 +1208,16 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 let badge = layout.idle_badge;
                 if badge.w > 0.0 && badge.contains(vec2(x, y)) {
                     cycle_idle_worker(game);
+                    continue;
+                }
+                let alert = layout.alert_badge;
+                if alert.w > 0.0 && alert.contains(vec2(x, y)) {
+                    dispatch_action(game, input, Action::JumpToLastAlert);
+                    continue;
+                }
+                if let Some(slot) = crate::layout::group_slot_under(&layout, vec2(x, y), None) {
+                    let assign = input.resolver.ctrl_held();
+                    press_group_slot(game, input, slot, assign);
                     continue;
                 }
                 if layout.menu_button.w > 0.0 && layout.menu_button.contains(vec2(x, y)) {
@@ -1329,6 +1417,26 @@ pub(super) fn ribbon_row_press(
         return false;
     }
     true
+}
+
+/// A press on a control-group slot: a saved group recalls (twice
+/// quickly centers the camera on it) and the "+" saves the selection;
+/// with `assign` (Ctrl, or a fingertip's long-press) any slot saves the
+/// selection, which clears the group when nothing is selected.
+pub(super) fn press_group_slot(
+    game: &mut Game,
+    input: &mut InputState,
+    slot: crate::layout::GroupSlot,
+    assign: bool,
+) {
+    use crate::layout::GroupSlot;
+    match (slot, assign) {
+        (GroupSlot::Recall(n), false) => dispatch_action(game, input, Action::Slot(n)),
+        (GroupSlot::Assign(n), _) | (GroupSlot::Recall(n) | GroupSlot::Empty(n), true) => {
+            dispatch_action(game, input, Action::AssignGroup(n));
+        }
+        (GroupSlot::Empty(_), false) => {}
+    }
 }
 
 fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2, pointer: Pointer) -> bool {
@@ -1831,14 +1939,16 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         }
         crate::panel::CardAction::FilterKind(kind) => {
             // The cut is shell-side only: selections are presentation,
-            // no command leaves here.
-            let keep = !input.resolver.ctrl_held();
+            // no command leaves here. Ctrl, Shift, or a lit QUEUE drops
+            // the kind instead of keeping it.
+            let keep = !(input.resolver.ctrl_held() || input.queue_held());
             game.presentation.selection.units.retain(|id| {
                 game.state
                     .unit(*id)
                     .is_some_and(|u| (u.kind == kind) == keep)
             });
         }
+        crate::panel::CardAction::ClosePalette => input.close_construction(),
         crate::panel::CardAction::None | crate::panel::CardAction::Refused => {}
     }
 }

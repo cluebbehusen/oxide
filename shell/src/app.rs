@@ -616,6 +616,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     render::set_user_scale(config.ui_scale);
     render::set_reduced_motion(config.reduced_motion);
     render::set_colorblind(config.colorblind);
+    render::set_control_groups(config.control_groups);
     crate::strategic_markers::set_prefs(config.markers);
     mark("config loaded");
     let sprites = assets::Sprites::load().await?;
@@ -1443,6 +1444,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 panel_regions: None,
                 menu_button: None,
                 pause_status: None,
+                group_column: None,
             };
         }
         Screen::Playing | Screen::Playback(_) | Screen::FinalMap(_) => (screen_mode(screen), None),
@@ -1458,6 +1460,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 panel_regions: None,
                 menu_button: None,
                 pause_status: None,
+                group_column: None,
             };
         }
         Screen::Replays(shelf) => (screen_mode(screen), Some(&shelf.menu)),
@@ -1474,6 +1477,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         hover: menu.and_then(Menu::hover),
         menu_button: live_rect(screen, app.game.presentation.layout.get().menu_button),
         pause_status: live_rect(screen, app.game.presentation.layout.get().pause_status),
+        group_column: live_rect(screen, app.game.presentation.layout.get().group_column),
         panel_regions: matches!(screen, Screen::Playing).then(|| {
             app.game
                 .presentation

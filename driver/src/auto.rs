@@ -274,6 +274,7 @@ mod tests {
             panel_regions: None,
             menu_button: None,
             pause_status: None,
+            group_column: None,
         }
     }
 
