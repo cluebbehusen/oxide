@@ -37,6 +37,9 @@ pub struct LayoutModel {
     /// The under-attack badge beside it; zero-sized without a recent
     /// alert. Clicking it jumps the camera to the last alert.
     pub alert_badge: Rect,
+    /// The control-group strip's live slots, by group; `None` where a
+    /// group is empty and not on offer.
+    pub group_slots: [Option<(Rect, GroupSlot)>; crate::action::CONTROL_GROUPS],
     /// The menu button at the top bar's right edge; it opens the pause
     /// menu. Zero-sized while spectating.
     pub menu_button: Rect,
@@ -75,6 +78,7 @@ impl Default for LayoutModel {
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
             alert_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
+            group_slots: [None; crate::action::CONTROL_GROUPS],
             menu_button: Rect::new(0.0, 0.0, 0.0, 0.0),
             pause_status: Rect::new(0.0, 0.0, 0.0, 0.0),
             mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -145,6 +149,14 @@ pub(crate) struct TopBarText {
     pub idle: Option<f32>,
     /// The under-attack badge's text, while an alert is recent.
     pub alert: Option<f32>,
+    /// The widest the idle and alert texts can read, so the control
+    /// groups never move as the badges come and go.
+    pub idle_reserve: f32,
+    pub alert_reserve: f32,
+    /// The widest the status can read (PAUSED, a long clock).
+    pub status_reserve: f32,
+    /// The FPS readout's width while the performance display is on.
+    pub fps: f32,
     /// The clock, speed, or PAUSED status.
     pub status: f32,
 }
@@ -160,6 +172,10 @@ pub(crate) struct TopBar {
     pub count_x: f32,
     pub idle_badge: Rect,
     pub alert_badge: Rect,
+    /// Every control group's slot, drawn or not: a group keeps its place.
+    pub groups: [Rect; crate::action::CONTROL_GROUPS],
+    /// Whether the strip dropped to a row under the bar for lack of room.
+    pub groups_below_bar: bool,
     pub menu_button: Rect,
     pub status_x: f32,
     pub pause_status: Rect,
@@ -196,6 +212,45 @@ pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarTe
     let occupied_right = (count_x + text.units)
         .max(idle_badge.x + idle_badge.w)
         .max(alert_badge.x + alert_badge.w);
+    // The strip hugs the status from the left, measured against the
+    // widest the badges and status can grow, so it holds still while
+    // they change; where that leaves no room, it drops under the bar.
+    let slot_w = if touch_only { MIN_TOUCH_TARGET } else { 40.0 } * ui;
+    let slot_gap = 4.0 * ui;
+    let groups_n = crate::action::CONTROL_GROUPS as f32;
+    let strip_w = groups_n * slot_w + (groups_n - 1.0) * slot_gap;
+    let left_reserved = (count_x + text.units)
+        .max(badges_x + text.idle_reserve + 18.0 * ui + 8.0 * ui + text.alert_reserve + 18.0 * ui);
+    let fps_reserve = if text.fps > 0.0 {
+        text.fps + 12.0 * ui
+    } else {
+        0.0
+    };
+    let strip_in_bar_x = menu_button.x
+        - 12.0 * ui
+        - text.status_reserve.max(text.status)
+        - fps_reserve
+        - 16.0 * ui
+        - strip_w;
+    let groups_below_bar = strip_in_bar_x < left_reserved + 16.0 * ui;
+    let (strip_x, strip_y) = if groups_below_bar {
+        (scrap_label_x, (TOP_BAR_H + 4.0) * ui)
+    } else {
+        (strip_in_bar_x, 3.0 * ui)
+    };
+    let groups = std::array::from_fn(|i| {
+        Rect::new(
+            strip_x + i as f32 * (slot_w + slot_gap),
+            strip_y,
+            slot_w,
+            34.0 * ui,
+        )
+    });
+    let status_left_of = if groups_below_bar {
+        occupied_right
+    } else {
+        strip_x + strip_w
+    };
     TopBar {
         scrap_label_x,
         scrap_x,
@@ -204,6 +259,8 @@ pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarTe
         count_x,
         idle_badge,
         alert_badge,
+        groups,
+        groups_below_bar,
         menu_button,
         status_x,
         pause_status: Rect::new(
@@ -212,8 +269,43 @@ pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarTe
             text.status + 12.0 * ui,
             34.0 * ui,
         ),
-        status_space: (occupied_right, status_x),
+        status_space: (status_left_of, status_x),
     }
+}
+
+/// What a control-group slot does when pressed. Ctrl-click, or a
+/// fingertip's long-press, saves the selection to any slot instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupSlot {
+    /// A saved group: recall it.
+    Recall(u8),
+    /// The strip's "+": save the selection as this empty group.
+    Assign(u8),
+    /// An empty group's place, holding the strip steady.
+    Empty(u8),
+}
+
+impl GroupSlot {
+    /// The group number, 1-based like its key.
+    pub fn number(self) -> u8 {
+        match self {
+            Self::Recall(n) | Self::Assign(n) | Self::Empty(n) => n,
+        }
+    }
+}
+
+/// The control-group slot under `p`: the drawn rect for a cursor, the
+/// padded fingertip target when `touch_ui` carries the ui scale.
+pub fn group_slot_under(layout: &LayoutModel, p: Vec2, touch_ui: Option<f32>) -> Option<GroupSlot> {
+    layout
+        .group_slots
+        .iter()
+        .flatten()
+        .find(|(rect, _)| match touch_ui {
+            Some(ui) => touch_pad(*rect, ui).contains(p),
+            None => rect.contains(p),
+        })
+        .map(|(_, slot)| *slot)
 }
 
 /// Which side of the rect it describes a tooltip prefers.
@@ -297,6 +389,7 @@ impl LayoutModel {
             minimap,
             idle_badge,
             alert_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
+            group_slots: [None; crate::action::CONTROL_GROUPS],
             menu_button,
             pause_status,
             mode_ribbon,
@@ -323,6 +416,11 @@ impl LayoutModel {
             || (self.orders.w > 0.0 && self.orders.contains(p))
             || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))
             || (self.queue_toggle.w > 0.0 && self.queue_toggle.contains(p))
+            || self
+                .group_slots
+                .iter()
+                .flatten()
+                .any(|(rect, _)| rect.contains(p))
     }
 }
 
@@ -544,6 +642,10 @@ mod tests {
             units: 24.0 * ui,
             idle: Some(70.0 * ui),
             alert: None,
+            idle_reserve: 90.0 * ui,
+            alert_reserve: 130.0 * ui,
+            status_reserve: 76.0 * ui,
+            fps: 0.0,
             status: 76.0 * ui,
         }
     }
@@ -569,10 +671,8 @@ mod tests {
             bar.pause_status,
             Rect::new(bar.status_x - 6.0, 3.0, 88.0, 34.0)
         );
-        assert_eq!(
-            bar.status_space,
-            (bar.idle_badge.x + bar.idle_badge.w, bar.status_x)
-        );
+        let strip_end = bar.groups[4].x + bar.groups[4].w;
+        assert_eq!(bar.status_space, (strip_end, bar.status_x));
         let touch = top_bar(1280.0, 1.0, true, sample_text(1.0));
         assert_eq!(
             touch.scrap_label_x, 18.0,
@@ -589,7 +689,43 @@ mod tests {
             },
         );
         assert_eq!(no_idle.idle_badge, Rect::new(0.0, 0.0, 0.0, 0.0));
-        assert_eq!(no_idle.status_space.0, no_idle.count_x + 24.0);
+        assert_eq!(no_idle.groups, bar.groups, "the idle badge moves no group");
+    }
+
+    #[test]
+    fn the_group_strip_holds_still_and_drops_below_the_bar_when_crowded() {
+        let quiet = TopBarText {
+            idle: None,
+            ..sample_text(1.0)
+        };
+        let busy = TopBarText {
+            alert: Some(120.0),
+            ..sample_text(1.0)
+        };
+        for (width, touch_only) in [(1280.0, false), (1194.0, true), (1133.0, true)] {
+            let a = top_bar(width, 1.0, touch_only, quiet);
+            let b = top_bar(width, 1.0, touch_only, busy);
+            assert!(!a.groups_below_bar, "{width}px fits the strip in the bar");
+            assert_eq!(a.groups, b.groups, "badges coming and going move nothing");
+            let last = a.groups[crate::action::CONTROL_GROUPS - 1];
+            assert!(last.x + last.w < a.status_x, "clear of the status");
+            assert!(
+                a.groups[0].x > b.alert_badge.x + b.alert_badge.w,
+                "clear of the badges"
+            );
+            assert_eq!(
+                a.status_space.0,
+                last.x + last.w,
+                "FPS fits beside the strip"
+            );
+            if touch_only {
+                assert!(a.groups.iter().all(|g| g.w >= MIN_TOUCH_TARGET));
+            }
+        }
+        let narrow = top_bar(900.0, 1.0, false, busy);
+        assert!(narrow.groups_below_bar);
+        assert!(narrow.groups.iter().all(|g| g.y >= TOP_BAR_H));
+        assert_eq!(narrow.groups[0].x, narrow.scrap_label_x);
     }
 
     #[test]
@@ -601,7 +737,6 @@ mod tests {
         let bar = top_bar(1280.0, 1.0, false, text);
         assert_eq!(bar.alert_badge.x, bar.idle_badge.x + bar.idle_badge.w + 8.0);
         assert_eq!(bar.alert_badge.w, 108.0);
-        assert_eq!(bar.status_space.0, bar.alert_badge.x + bar.alert_badge.w);
         let alone = top_bar(1280.0, 1.0, false, TopBarText { idle: None, ..text });
         assert_eq!(alone.alert_badge.x, bar.idle_badge.x, "no idle, same slot");
         let quiet = top_bar(1280.0, 1.0, false, sample_text(1.0));

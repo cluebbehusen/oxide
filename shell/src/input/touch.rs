@@ -43,6 +43,8 @@ pub(crate) struct TouchPoint {
     pub paired: bool,
     /// The card it landed on, as it stood then.
     pub card: Option<PressedCard>,
+    /// The control-group slot it landed on, as it stood then.
+    pub group: Option<crate::layout::GroupSlot>,
 }
 
 /// A card as a finger found it: its slot, its action, and its face. A
@@ -164,7 +166,10 @@ fn steer_minimap(game: &mut Game, p: Vec2) {
 fn born_at(game: &Game, input: &InputState, p: Vec2) -> TouchBorn {
     if crate::render::minimap_world_at(&game.view(), p).is_some() {
         TouchBorn::Minimap
-    } else if click_on_hud(game, p) {
+    } else if click_on_hud(game, p)
+        || crate::layout::group_slot_under(&game.presentation.layout.get(), p, Some(input.ui))
+            .is_some()
+    {
         TouchBorn::Chrome
     } else if super::ghost_touch_rect(&game.view(), input).is_some_and(|rect| rect.contains(p)) {
         TouchBorn::Ghost
@@ -217,6 +222,11 @@ pub(super) fn down(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
             moved: false,
             spent: false,
             card: pressed_card(game, p, input.ui),
+            group: crate::layout::group_slot_under(
+                &game.presentation.layout.get(),
+                p,
+                Some(input.ui),
+            ),
             paired: false,
         },
     ));
@@ -276,6 +286,7 @@ fn readopt(input: &mut InputState, id: u64, p: Vec2) -> bool {
             spent: true,
             paired: false,
             card: None,
+            group: None,
         },
     ));
     true
@@ -451,6 +462,12 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                     // bar, which the bare-chrome swallow
                     // below would otherwise eat.
                     cycle_idle_worker(game);
+                } else if let Some(slot) = lifted.group.filter(|slot| {
+                    crate::layout::group_slot_under(&layout, p, Some(input.ui)) == Some(*slot)
+                }) {
+                    // A slot acts only if the finger lifts on the same
+                    // slot it landed on, as it stood then.
+                    super::press_group_slot(game, input, slot, false);
                 } else if layout.alert_badge.w > 0.0
                     && crate::layout::touch_pad(layout.alert_badge, input.ui).contains(p)
                 {

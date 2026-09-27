@@ -3902,6 +3902,8 @@ fn chrome_born_touches_never_drive_world_gestures() {
     );
 }
 
+mod top_bar;
+
 #[test]
 fn the_alert_badge_jumps_the_camera_by_click_or_tap() {
     let mut game = headless_game();

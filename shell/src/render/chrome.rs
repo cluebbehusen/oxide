@@ -48,6 +48,65 @@ fn concede_hint(touch_only: bool) -> &'static str {
     }
 }
 
+/// A control-group slot: its number in the corner and, for a saved
+/// group, the machines it holds; the "+" offers to save the selection,
+/// and an empty group is a faint outline. The group the selection
+/// already is wears an accent rim.
+fn draw_group_slot(
+    rect: Rect,
+    slot: crate::layout::GroupSlot,
+    count: usize,
+    current: bool,
+    s: f32,
+) {
+    let number = slot.number();
+    match slot {
+        crate::layout::GroupSlot::Recall(_) => {
+            fill_rect(rect, TOP_BAR_BADGE);
+            let text = count.to_string();
+            let mut size = 17.0 * s;
+            while measure_text(&text, None, size as u16, 1.0).width > rect.w - 14.0 * s
+                && size > 11.0 * s
+            {
+                size -= 1.0 * s;
+            }
+            let width = measure_text(&text, None, size as u16, 1.0).width;
+            draw_text(
+                &text,
+                rect.x + (rect.w - width) * 0.5 + 3.0 * s,
+                rect.y + 27.0 * s,
+                size,
+                SCRAP_COLOR,
+            );
+        }
+        crate::layout::GroupSlot::Assign(_) => {
+            fill_rect(rect, Color::from_rgba(20, 20, 24, 255));
+            stroke_rect(rect, 1.0 * s, TEXT_DISABLED);
+            let c = rect.center() + vec2(2.0 * s, 2.0 * s);
+            let arm = 6.0 * s;
+            line_between(c - vec2(arm, 0.0), c + vec2(arm, 0.0), 2.0 * s, SCRAP_COLOR);
+            line_between(c - vec2(0.0, arm), c + vec2(0.0, arm), 2.0 * s, SCRAP_COLOR);
+        }
+        crate::layout::GroupSlot::Empty(_) => {
+            stroke_rect(rect, 1.0 * s, Color::new(0.9, 0.9, 0.85, 0.12));
+        }
+    }
+    draw_text(
+        number.to_string(),
+        rect.x + 4.0 * s,
+        rect.y + 12.0 * s,
+        12.0 * s,
+        if matches!(slot, crate::layout::GroupSlot::Empty(_)) {
+            TEXT_DISABLED
+        } else {
+            TEXT_SECONDARY
+        },
+    );
+    if current {
+        stroke_rect(rect, 1.5 * s, TEXT_ACCENT);
+    }
+}
+
 /// Three bars on the badge fill: the glyph needs no font coverage or
 /// atlas entry, and whole-rect fills stay crisp at any scale.
 fn draw_menu_button(rect: Rect, s: f32) {
@@ -389,6 +448,7 @@ pub(crate) fn draw_hud(
     // still publishes below so the minimap stays clickable.
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut alert_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut group_slots = [None; crate::action::CONTROL_GROUPS];
     let mut menu_button = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut pause_status = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut status_space = None;
@@ -446,11 +506,45 @@ pub(crate) fn draw_hud(
             let seconds = game.state.current_tick() / u64::from(oxide_sim::TICKS_PER_SECOND);
             format!("{}:{:02}", seconds / 60, seconds % 60)
         };
+        let touch_only = crate::platform::TOUCH_ONLY;
+        let status_reserve = [
+            paused_status(&label(Action::TogglePause), crate::platform::TOUCH_ONLY),
+            "88:88".to_string(),
+            "x2.00".to_string(),
+        ]
+        .iter()
+        .map(|text| crate::typography::measure(text, 14.0 * s).width)
+        .fold(0.0, f32::max);
+        let fps = performance
+            .filter(|view| view.mode != crate::config::PerformanceDisplay::Off)
+            .map_or(0.0, |_| {
+                crate::typography::measure("120 FPS", 14.0 * s).width
+            });
         let bar = crate::layout::top_bar(
             screen_width(),
             s,
-            crate::platform::TOUCH_ONLY,
+            touch_only,
             crate::layout::TopBarText {
+                idle_reserve: measure_text(
+                    idle_badge_text(
+                        99,
+                        &label(Action::CycleIdleWorker),
+                        crate::platform::TOUCH_ONLY,
+                    ),
+                    None,
+                    (15.0 * s) as u16,
+                    1.0,
+                )
+                .width,
+                alert_reserve: measure_text(
+                    alert_badge_text(&label(Action::JumpToLastAlert), crate::platform::TOUCH_ONLY),
+                    None,
+                    (15.0 * s) as u16,
+                    1.0,
+                )
+                .width,
+                status_reserve,
+                fps,
                 scrap: crate::typography::measure(&scrap_text, 21.0 * s).width,
                 passive: measure_text(&passive_text, None, (16.0 * s) as u16, 1.0).width,
                 units_label: crate::typography::measure("UNITS", 13.0 * s).width,
@@ -496,6 +590,25 @@ pub(crate) fn draw_hud(
                 15.0 * s,
                 crate::theme::TEXT_DANGER,
             );
+        }
+        let counts = input.group_counts(game);
+        let offer = input.group_on_offer(game);
+        let current = input.selected_group(game);
+        // Once groups are in use, or there is a selection to save, the
+        // strip shows all its places so every group keeps its spot.
+        if counts.iter().any(|count| *count > 0) || offer.is_some() {
+            for (slot, rect) in bar.groups.iter().enumerate() {
+                let number = slot as u8 + 1;
+                let action = if counts[slot] > 0 {
+                    crate::layout::GroupSlot::Recall(number)
+                } else if offer == Some(number) {
+                    crate::layout::GroupSlot::Assign(number)
+                } else {
+                    crate::layout::GroupSlot::Empty(number)
+                };
+                draw_group_slot(*rect, action, counts[slot], current == Some(number), s);
+                group_slots[slot] = Some((*rect, action));
+            }
         }
         menu_button = bar.menu_button;
         draw_menu_button(menu_button, s);
@@ -570,6 +683,7 @@ pub(crate) fn draw_hud(
     layout.panel_regions = panel_regions;
     layout.queue_toggle = queue_toggle;
     layout.alert_badge = alert_badge;
+    layout.group_slots = group_slots;
     game.presentation.layout.set(layout);
 
     if let Some(view) = performance {
