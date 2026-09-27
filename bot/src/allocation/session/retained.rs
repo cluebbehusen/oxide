@@ -17,7 +17,7 @@ pub(super) struct RetainedPreparation {
     pub(super) prospective_carrier_floor: u32,
     pub(super) emergency_defense: Option<FreshEmergencyDefense>,
     pub(super) repair_renewals: Vec<crate::utility::RepairAssignment>,
-    pub(super) paid_exclusions: Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)>,
+    pub(super) paid_exclusions: Vec<PaidQueueClaim>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,7 +359,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &ClaimSnapshot,
         resources: ResourceSnapshot,
-        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[PaidQueueClaim],
     ) -> ObligationPreparation {
         let air_work = economic_air_work(
             self.context,
@@ -452,7 +452,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             self.context
                 .observation
                 .tick
-                .saturating_add(connected_preparation_horizon()),
+                .saturating_add(CONNECTED_PREPARATION_HORIZON),
             self.context.dials.cadence,
         ) {
             Ok(mut observed) => obligations.append(&mut observed),
@@ -487,16 +487,11 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             }
         }
 
-        let active_connected = self
-            .participants
-            .strategy
-            .retained_obligation(ConnectedInputs {
-                planning: &self.participants.policy.planning,
-                resources: &resources,
-                unavailable: &claims.planner_claims,
-                paid_exclusions,
-                reserve: CapitalReserve::default(),
-            });
+        let active_connected = self.participants.strategy.retained_obligation(
+            &resources,
+            &claims.planner_claims,
+            paid_exclusions,
+        );
         let active_lift = self.participants.lifts.active_production_obligation();
         let mut connected_import = active_connected.as_ref().map(active_connected_obligation);
         let mut lift_import = active_lift.as_ref().map(active_lift_production_obligation);
@@ -712,7 +707,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 self.context
                     .observation
                     .tick
-                    .saturating_add(connected_preparation_horizon())
+                    .saturating_add(CONNECTED_PREPARATION_HORIZON)
             },
             |operation| operation.deadline,
         );
@@ -931,7 +926,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                     retained_units: retained_lift_units,
                     production_deadline: self.participants.lifts.operation().map_or_else(
                         || {
-                            connected_preparation_horizon()
+                            CONNECTED_PREPARATION_HORIZON
                                 .saturating_add(self.context.observation.tick)
                         },
                         |operation| operation.deadline,
@@ -1085,7 +1080,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &mut ClaimSnapshot,
         obligations: &mut ObligationPreparation,
-        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[PaidQueueClaim],
     ) {
         if obligations.coordinator_failure.is_some() {
             return;
@@ -1100,7 +1095,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             .context
             .observation
             .tick
-            .saturating_add(connected_preparation_horizon());
+            .saturating_add(CONNECTED_PREPARATION_HORIZON);
         let protected_forecast_scrap =
             forecast_reserve_through(&obligations.obligations, production_deadline);
         let Some((producer_lane_reservations, prior_producer_intents)) = retained_producer_context(
@@ -1114,23 +1109,24 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
             // prove the air operation itself infeasible.
             return;
         };
-        let Some(result) = self.participants.strategy.island_preparation(IslandInputs {
-            connected: ConnectedInputs {
+        let Some(result) = self
+            .participants
+            .strategy
+            .island_preparation(AirProcurement {
                 planning: &self.participants.policy.planning,
-                resources: &obligations.resources,
                 unavailable: &claims.planner_claims,
                 paid_exclusions,
                 reserve: CapitalReserve {
                     current: protected_current_scrap,
                     forecast: protected_forecast_scrap,
                 },
-            },
-            lanes: ProducerLanes {
-                prior_intents: &prior_producer_intents,
-                reservations: &producer_lane_reservations,
-            },
-            allow_procurement: claims.opening_core.ready,
-        }) else {
+                lanes: ProducerLanes {
+                    prior_intents: &prior_producer_intents,
+                    reservations: &producer_lane_reservations,
+                },
+                allow: claims.opening_core.ready,
+            })
+        else {
             return;
         };
         let accepted_at = accepted_at.expect("a staged island operation has an admission tick");
@@ -1164,7 +1160,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         &mut self,
         claims: &ClaimSnapshot,
         obligations: &mut ObligationPreparation,
-        paid_exclusions: &[(oxide_sim::ids::BuildingId, UnitKind, usize)],
+        paid_exclusions: &[PaidQueueClaim],
     ) -> ActiveRevisionPreparation {
         let deadline = self
             .participants
@@ -1174,7 +1170,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                 self.context
                     .observation
                     .tick
-                    .saturating_add(connected_preparation_horizon())
+                    .saturating_add(CONNECTED_PREPARATION_HORIZON)
             });
         let connected_precedes_foundry =
             self.participants
@@ -1284,14 +1280,10 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         let Some(active) = obligations.active_connected.clone() else {
             return;
         };
-        let identity = active.identity();
         let owner = ClaimOwner::Obligation {
             class: ObligationClass::PersistentPlan,
             accepted_at: active.accepted_at(),
-            key: ObligationKey::ConnectedOffense {
-                objective: identity.objective(),
-                anchor: identity.anchor(),
-            },
+            key: active.identity().into(),
         };
         if !self.requires_recovery(
             owner,
@@ -1351,7 +1343,7 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
                         .context
                         .observation
                         .tick
-                        .saturating_add(connected_preparation_horizon())
+                        .saturating_add(CONNECTED_PREPARATION_HORIZON)
                         .max(
                             self.context
                                 .observation
@@ -1582,14 +1574,10 @@ impl<'s, 'a> RetainedWork<'s, 'a> {
         else {
             return false;
         };
-        let identity = revision.identity();
         let owner = ClaimOwner::Obligation {
             class: ObligationClass::PersistentPlan,
             accepted_at: revision.accepted_at(),
-            key: ObligationKey::ConnectedOffense {
-                objective: identity.objective(),
-                anchor: identity.anchor(),
-            },
+            key: revision.identity().into(),
         };
         if !self.requires_recovery(
             owner,

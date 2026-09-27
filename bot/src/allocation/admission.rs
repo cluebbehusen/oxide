@@ -19,10 +19,10 @@ use crate::{
     orient::Orientation,
     profile::ResolvedProfile,
     raid::{RaidPlanner, RaidPlanningContext},
-    resources::ProducerLaneReservations,
+    resources::{PaidQueueClaim, ProducerLaneReservations},
     strategy::{
-        AirEvidence, AirOperationPhase, CapitalReserve, LiftSupportRequest, ProducerLanes,
-        StrategicDecision, StrategicPlanner, ThinkInputs,
+        AirEvidence, AirOperationPhase, AirProcurement, CapitalReserve, LiftSupportRequest,
+        ProducerLanes, StrategicDecision, StrategicPlanner, ThinkInputs,
     },
     team::TeamReliefPlanner,
     trace::{
@@ -36,8 +36,7 @@ use crate::{
     },
 };
 use chassis::grid::TilePos;
-use oxide_sim::ids::{BuildingId, UnitId};
-use oxide_sim::stats::UnitKind;
+use oxide_sim::ids::UnitId;
 
 pub(crate) struct DecisionContext<'a> {
     pub evidence: DecisionEvidence<'a>,
@@ -112,28 +111,30 @@ pub(crate) fn air_think_inputs<'a>(
     planning: &'a crate::planning::PlanningWork,
     claimed_elsewhere: &'a [UnitId],
     lift_support: Option<&'a LiftSupportRequest>,
-    paid_exclusions: &'a [(BuildingId, UnitKind, usize)],
+    paid_exclusions: &'a [PaidQueueClaim],
 ) -> ThinkInputs<'a> {
     ThinkInputs {
-        planning,
-        unavailable: &outcome.planner_claims,
+        procurement: AirProcurement {
+            planning,
+            unavailable: &outcome.planner_claims,
+            paid_exclusions,
+            reserve: CapitalReserve {
+                current: bank.saturating_sub(outcome.budget.connected_spendable),
+                forecast: outcome.budget.connected_forecast_hold,
+            },
+            lanes: ProducerLanes {
+                prior_intents: &outcome.allocated_producer_intents,
+                reservations: &outcome.producer_lane_reservations,
+            },
+            allow: outcome.allocation_ok
+                && (outcome.connected_continues || outcome.allow_new_voluntary_operations),
+        },
         claimed_elsewhere,
         lift_support,
-        allow_new_operation: outcome.allocation_ok
-            && (outcome.connected_continues || outcome.allow_new_voluntary_operations),
         owned_only: !outcome.allocation_ok
             || outcome.connected_continues
             || outcome.island_allocated
             || outcome.accepted_connected,
-        reserve: CapitalReserve {
-            current: bank.saturating_sub(outcome.budget.connected_spendable),
-            forecast: outcome.budget.connected_forecast_hold,
-        },
-        lanes: ProducerLanes {
-            prior_intents: &outcome.allocated_producer_intents,
-            reservations: &outcome.producer_lane_reservations,
-        },
-        paid_exclusions,
     }
 }
 

@@ -17,6 +17,7 @@ use super::super::resources::{
     ProducerEgress, ProductionAccess, ResourceForecast, ResourceSnapshot,
     count_paid_queued_ready_with_access,
 };
+use super::AirEvidence;
 use crate::allocation::{AllocationCapacity, ConnectedOffenseKey, ProducerJobClaim};
 use crate::planning::{PlanningWork, Progress};
 use chassis::Tick;
@@ -470,55 +471,22 @@ pub(super) struct ConnectedForcePackageOptions {
 /// decision cadence. The returned counts are revisable kind totals; the owning
 /// planner schedules only currently open queue positions and freezes exact unit
 /// ids when it commits to suppression. With `minimum_only`, no marginal
-/// variant is derived.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the derivation boundary takes each independent evidence source"
-)]
+/// variant is derived. Sizing reads only the profile, observation, and
+/// intelligence of `ev`.
 pub(super) fn derive_connected_force_package_options_for_cluster(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
+    ev: AirEvidence<'_>,
     targets: ConnectedTargetEvidence<'_>,
     production: ProductionEvidence<'_>,
     unavailable: &[UnitId],
     constraints: PreparationConstraints,
     minimum_only: bool,
 ) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
-    let deferred = Cell::new(false);
-    let result = derive_package_options_inner(
+    let AirEvidence {
         profile,
-        observation,
-        intelligence,
-        targets,
-        production,
-        unavailable,
-        constraints,
-        minimum_only,
-        &deferred,
-    );
-    if result.is_err() && deferred.get() {
-        Err(ForcePackageRejection::Deferred)
-    } else {
-        result
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one derivation shares a deferred verdict across composition alternatives"
-)]
-fn derive_package_options_inner(
-    profile: &ResolvedProfile,
-    observation: &Observation,
-    intelligence: &StrategicIntelligence,
-    targets: ConnectedTargetEvidence<'_>,
-    production: ProductionEvidence<'_>,
-    unavailable: &[UnitId],
-    constraints: PreparationConstraints,
-    minimum_only: bool,
-    deferred: &Cell<bool>,
-) -> Result<ConnectedForcePackageOptions, ForcePackageRejection> {
+        obs: observation,
+        intel: intelligence,
+        ..
+    } = ev;
     let ConnectedTargetEvidence {
         primary: target,
         cluster,
@@ -634,6 +602,16 @@ fn derive_package_options_inner(
                     anchor: target.anchor,
                 }),
             });
+    // Composition alternatives share one deferred verdict. A rejection reached
+    // after any refinement deferred is not proven.
+    let deferred = Cell::new(false);
+    let unless_deferred = |reason| {
+        if deferred.get() {
+            ForcePackageRejection::Deferred
+        } else {
+            reason
+        }
+    };
     let mut builder = PackageBuilder {
         faction: observation.faction,
         observed_at: observation.tick,
@@ -646,7 +624,7 @@ fn derive_package_options_inner(
         committed_scrap: 0,
         production_access,
         refinement: refinement.as_ref(),
-        deferred,
+        deferred: &deferred,
         funded_providers: Vec::new(),
         preserved: Vec::new(),
         provider_priority: Vec::new(),
@@ -691,12 +669,10 @@ fn derive_package_options_inner(
     let mut minimum_candidates =
         minimum_package_candidates(profile, template.clone(), minimum_capability);
     if minimum_candidates.is_empty() {
-        minimum_candidates.push(construct_minimum(
-            template,
-            observation,
-            resources,
-            minimum_capability,
-        )?);
+        minimum_candidates.push(
+            construct_minimum(template, observation, resources, minimum_capability)
+                .map_err(unless_deferred)?,
+        );
     }
     minimum_candidates.sort_by_key(|candidate| {
         Reverse(package_candidate_score(
@@ -708,11 +684,13 @@ fn derive_package_options_inner(
     });
     minimum_candidates.retain(|candidate| candidate.refine_providers(&candidate.funded_providers));
     if minimum_candidates.is_empty() {
-        return Err(ForcePackageRejection::PreparationWindowTooShort {
-            family: ForceFamily::Strike,
-            observed_at: observation.tick,
-            deadline: preparation_deadline,
-        });
+        return Err(unless_deferred(
+            ForcePackageRejection::PreparationWindowTooShort {
+                family: ForceFamily::Strike,
+                observed_at: observation.tick,
+                deadline: preparation_deadline,
+            },
+        ));
     }
     let builders = if minimum_only {
         minimum_candidates.truncate(1);

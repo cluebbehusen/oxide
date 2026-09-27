@@ -115,6 +115,7 @@ impl ConnectedPortfolioContext {
 }
 
 pub(crate) use super::navigation::ServiceTarget as StandingForceServiceKey;
+pub(crate) use super::resources::PaidQueueClaim;
 
 /// Stable identity of one repeatable standing-force purchase.
 #[derive(
@@ -635,7 +636,8 @@ pub(crate) enum ClaimBundleError {
     DuplicateDeferrableCapital,
 }
 
-/// Every shared resource required by one exact proposal or prior obligation.
+/// Every shared resource required by one exact proposal or prior obligation:
+/// exact actors, capital, geometry, and production ownership.
 ///
 /// `current_scrap` and `forecast_scrap` describe non-production capital such as
 /// construction or a protected reserve. `minimum_residual_scrap` is different:
@@ -643,17 +645,6 @@ pub(crate) enum ClaimBundleError {
 /// residual policy. Every producer job is charged exactly once from
 /// [`UnitKind`] by the joint scheduler and must not be duplicated in a capital
 /// field.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub(crate) struct PaidQueueClaim {
-    pub(crate) producer: BuildingId,
-    pub(crate) kind: UnitKind,
-    /// Occurrence of this kind in the producer's current paid queue.
-    pub(crate) occurrence: usize,
-}
-
-/// Exact actors, capital, geometry, and production ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ClaimBundle {
     current_scrap: u32,
@@ -1257,6 +1248,15 @@ pub(crate) enum ObligationKey {
     AirMembers,
     /// Immediate air-operation purchases and reserve.
     AirPurchases,
+}
+
+impl From<ConnectedOffenseKey> for ObligationKey {
+    fn from(key: ConnectedOffenseKey) -> Self {
+        Self::ConnectedOffense {
+            objective: key.objective,
+            anchor: key.anchor,
+        }
+    }
 }
 
 impl ObligationKey {

@@ -95,36 +95,36 @@ impl ConnectedPlan {
     }
 }
 
+/// The largest fresh connected plan against `target`, sized on `resources`
+/// by `deadline` with no reserve, foreign claims, or preferred artillery.
 pub(super) fn connected_plan(
-    profile: &ResolvedProfile,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    home: TilePos,
+    ev: AirEvidence<'_>,
+    planning: &crate::planning::PlanningWork,
     target: &BuildingContact,
-    unavailable: &[UnitId],
-    context: ConnectedPlanningContext<'_>,
+    resources: &ConnectedProductionResources,
+    deadline: Tick,
 ) -> Result<AirPlan, ConnectedPlanRejection> {
-    derive_connected_package(profile, obs, intel, home, target, unavailable, context).map(
-        |package| {
-            AirPlan::Connected(Box::new(ConnectedPlan::new(
-                ConnectedCommitment::admit(target, &package, obs.tick),
-                package,
-            )))
-        },
-    )
-}
-
-pub(super) fn derive_connected_package(
-    profile: &ResolvedProfile,
-    obs: &Observation,
-    intel: &StrategicIntelligence,
-    home: TilePos,
-    target: &BuildingContact,
-    unavailable: &[UnitId],
-    context: ConnectedPlanningContext<'_>,
-) -> Result<ConnectedForcePackage, ConnectedPlanRejection> {
-    derive_connected_package_options(profile, obs, intel, home, target, unavailable, context)
-        .map(ConnectedForcePackageOptions::into_largest)
+    let snapshot = ResourceSnapshot::from_observation(ev.obs);
+    let campaign_routes = CampaignRoutes::new(ev.obs, ev.intel, ev.public_map, ev.orientation);
+    let context = FreshConnectedDerivationContext {
+        ev,
+        inputs: ConnectedInputs::fixture(planning, &snapshot),
+        minimum_only: false,
+        campaign_routes: &campaign_routes,
+        preferred_artillery: &[],
+    };
+    let basis = PackageBasis {
+        committed: None,
+        resources,
+        deadline,
+    };
+    derive_connected_package_options(context, basis, target).map(|options| {
+        let package = options.into_largest();
+        AirPlan::Connected(Box::new(ConnectedPlan::new(
+            ConnectedCommitment::admit(target, &package, ev.obs.tick),
+            package,
+        )))
+    })
 }
 
 impl ConnectedProviderJob {
@@ -444,8 +444,8 @@ impl StrategicPlanner {
     }
 
     /// Identity an admitted connected operation committed to.
-    pub(crate) fn connected_identity(&self) -> Option<ConnectedOffenseIdentity> {
-        Some(self.air.as_ref()?.plan.connected()?.commitment.identity())
+    pub(crate) fn connected_identity(&self) -> Option<crate::allocation::ConnectedOffenseKey> {
+        Some(self.air.as_ref()?.plan.connected()?.commitment.key())
     }
 
     pub(super) fn air_plan(&self) -> Option<&AirPlan> {
@@ -506,19 +506,28 @@ impl<'a> ConnectedInputs<'a> {
     }
 }
 
-impl<'a> ThinkInputs<'a> {
-    /// An open allocation verdict with no foreign claims or accepted lanes.
+impl<'a> AirProcurement<'a> {
+    /// Open procurement with no reserve, foreign claims, or accepted lanes.
     pub(crate) fn fixture(planning: &'a crate::planning::PlanningWork) -> Self {
         Self {
             planning,
             unavailable: &[],
-            claimed_elsewhere: &[],
-            lift_support: None,
-            allow_new_operation: true,
-            owned_only: false,
+            paid_exclusions: &[],
             reserve: CapitalReserve::default(),
             lanes: ProducerLanes::empty(),
-            paid_exclusions: &[],
+            allow: true,
+        }
+    }
+}
+
+impl<'a> ThinkInputs<'a> {
+    /// An open allocation verdict with no foreign claims or accepted lanes.
+    pub(crate) fn fixture(planning: &'a crate::planning::PlanningWork) -> Self {
+        Self {
+            procurement: AirProcurement::fixture(planning),
+            claimed_elsewhere: &[],
+            lift_support: None,
+            owned_only: false,
         }
     }
 }
@@ -604,17 +613,14 @@ pub(crate) fn turn(planner: &mut StrategicPlanner, fixture: &TurnFixture<'_>) ->
         reserve,
     };
     let mut air = planner.observe(ev);
-    let mut active = air.retained_obligation(ConnectedInputs {
-        reserve: CapitalReserve::default(),
-        ..inputs
-    });
+    let mut active = air.retained_obligation(&resources, unavailable, &[]);
     let island = air
         .has_active_island_operation()
         .then(|| {
-            air.island_preparation(IslandInputs {
-                connected: inputs,
-                lanes: ProducerLanes::empty(),
-                allow_procurement: true,
+            air.island_preparation(AirProcurement {
+                unavailable,
+                reserve,
+                ..AirProcurement::fixture(planning)
             })
         })
         .flatten();

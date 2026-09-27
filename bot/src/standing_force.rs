@@ -1155,7 +1155,7 @@ pub(crate) fn derive_standing_force_with_demand(
                 .forecast()
                 .income_through(
                     obs.tick
-                        .saturating_add(super::strategy::connected_preparation_horizon()),
+                        .saturating_add(super::strategy::CONNECTED_PREPARATION_HORIZON),
                 )
                 .amount(),
         ) / UnitKind::Sentinel.stats().cost)
@@ -1714,7 +1714,7 @@ fn apply_bounded_provider_accumulation(
                 let production = candidate.ready_before.saturating_sub(obs.tick);
                 let through = obs
                     .tick
-                    .saturating_add(super::strategy::connected_preparation_horizon())
+                    .saturating_add(super::strategy::CONNECTED_PREPARATION_HORIZON)
                     .saturating_sub(production);
                 (through >= obs.tick
                     && bank.saturating_add(resources.forecast().income_through(through).amount())
@@ -2673,7 +2673,7 @@ mod tests {
         assert!(wait.accumulation().is_some());
         assert!(
             wait.reservation_deadline()
-                <= obs.tick + super::super::strategy::connected_preparation_horizon()
+                <= obs.tick + super::super::strategy::CONNECTED_PREPARATION_HORIZON
         );
 
         obs.tick += 1;

@@ -10,6 +10,17 @@ use chassis::Tick;
 use oxide_sim::ids::BuildingId;
 use oxide_sim::stats::{Domain, UnitKind};
 
+/// One exact already-paid occurrence of a unit kind in a producer's queue.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub(crate) struct PaidQueueClaim {
+    pub(crate) producer: BuildingId,
+    pub(crate) kind: UnitKind,
+    /// Occurrence of this kind in the producer's current paid queue.
+    pub(crate) occurrence: usize,
+}
+
 /// Producer-to-objective reachability supplied by an owning strategy.
 ///
 /// The resource layer proves local queue and egress timing. A strategy whose
@@ -19,7 +30,7 @@ use oxide_sim::stats::{Domain, UnitKind};
 pub(crate) struct ProductionAccess {
     allowed: Vec<(BuildingId, UnitKind)>,
     paid_allowed: Vec<(BuildingId, UnitKind)>,
-    paid_exclusions: Vec<(BuildingId, UnitKind, usize)>,
+    paid_exclusions: Vec<PaidQueueClaim>,
 }
 
 impl ProductionAccess {
@@ -44,7 +55,7 @@ impl ProductionAccess {
         }
     }
 
-    pub(crate) fn excluding_paid(mut self, excluded: &[(BuildingId, UnitKind, usize)]) -> Self {
+    pub(crate) fn excluding_paid(mut self, excluded: &[PaidQueueClaim]) -> Self {
         self.paid_exclusions.extend_from_slice(excluded);
         self.paid_exclusions.sort_unstable();
         self.paid_exclusions.dedup();
@@ -58,7 +69,11 @@ impl ProductionAccess {
         occurrence: usize,
     ) -> bool {
         self.paid_exclusions
-            .binary_search(&(producer, kind, occurrence))
+            .binary_search(&PaidQueueClaim {
+                producer,
+                kind,
+                occurrence,
+            })
             .is_err()
     }
 
@@ -69,7 +84,7 @@ impl ProductionAccess {
     /// The already-paid queue occurrences this view refuses, so a plan
     /// derived against it can pass the same refusals to any sub-derivation
     /// that rebuilds an access view of its own.
-    pub(crate) fn paid_exclusions(&self) -> &[(BuildingId, UnitKind, usize)] {
+    pub(crate) fn paid_exclusions(&self) -> &[PaidQueueClaim] {
         &self.paid_exclusions
     }
 

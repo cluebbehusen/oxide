@@ -320,6 +320,25 @@ fn greatest_common_divisor(mut left: Tick, mut right: Tick) -> Tick {
     left
 }
 
+/// Decision evidence for package sizing, which reads only the profile,
+/// observation, and intelligence.
+pub(super) fn package_evidence<'a>(
+    profile: &'a ResolvedProfile,
+    observation: &'a Observation,
+    intelligence: &'a StrategicIntelligence,
+) -> AirEvidence<'a> {
+    let home = TilePos::new(0, 0);
+    AirEvidence {
+        profile,
+        tuning: crate::difficulty::DifficultyTuning::for_level(profile.difficulty),
+        obs: observation,
+        intel: intelligence,
+        home,
+        public_map: None,
+        orientation: crate::orient::Orientation::for_home(observation, home),
+    }
+}
+
 /// The largest package against `target`'s current cluster.
 pub(super) fn derive_connected_force_package(
     profile: &ResolvedProfile,
@@ -332,9 +351,7 @@ pub(super) fn derive_connected_force_package(
 ) -> Result<ConnectedForcePackage, ForcePackageRejection> {
     let cluster = current_target_cluster(intelligence, target.player, target.anchor);
     derive_connected_force_package_options_for_cluster(
-        profile,
-        observation,
-        intelligence,
+        package_evidence(profile, observation, intelligence),
         ConnectedTargetEvidence {
             primary: target,
             cluster: &cluster,

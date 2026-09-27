@@ -132,9 +132,12 @@ fn admit_island_beside_future_carrier(
             orientation,
         },
         ThinkInputs {
-            lanes: ProducerLanes {
-                prior_intents: &[],
-                reservations: &future_lift,
+            procurement: AirProcurement {
+                lanes: ProducerLanes {
+                    prior_intents: &[],
+                    reservations: &future_lift,
+                },
+                ..AirProcurement::fixture(&crate::planning::PlanningWork::default())
             },
             ..ThinkInputs::fixture(&crate::planning::PlanningWork::default())
         },

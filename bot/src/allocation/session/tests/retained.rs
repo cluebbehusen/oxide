@@ -767,7 +767,7 @@ fn funding_blocked_saved_foundry_without_capital_still_commits() {
     prepared.saved_foundry = Some(saved);
     prepared.allocation_horizon = observation
         .tick
-        .saturating_add(connected_preparation_horizon());
+        .saturating_add(CONNECTED_PREPARATION_HORIZON);
     let mut trace = AllocationTrace::default();
     let session_context =
         setup.context(&observation, TilePos::new(3, 10), &briefing, &intelligence);

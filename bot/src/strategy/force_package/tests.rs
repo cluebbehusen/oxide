@@ -391,9 +391,7 @@ fn shared_forecast_defers_without_rejecting_and_resumes_the_minimum() {
             .unwrap();
         let resources = ResourceSnapshot::from_observation(obs);
         derive_connected_force_package_options_for_cluster(
-            &profile(50, 50),
-            obs,
-            intel,
+            package_evidence(&profile(50, 50), obs, intel),
             ConnectedTargetEvidence {
                 primary: target,
                 cluster: &[target],
@@ -455,9 +453,7 @@ fn runtime_composition_leaves_admission_work_and_only_offers_funded_rosters() {
         let resources = ResourceSnapshot::from_observation(&obs);
         let work = PlanningWork::default();
         let options = derive_connected_force_package_options_for_cluster(
-            &profile(50, 50),
-            &obs,
-            &intel,
+            package_evidence(&profile(50, 50), &obs, &intel),
             ConnectedTargetEvidence {
                 primary: &target,
                 cluster: &intel.buildings().iter().collect::<Vec<_>>(),
@@ -490,9 +486,7 @@ fn investment_witness_only_derives_a_complete_minimum() {
     let (intelligence, target) = intelligence_with_target(&mut observation, 4);
     let resources = ResourceSnapshot::from_observation(&observation);
     let minimum = derive_connected_force_package_options_for_cluster(
-        &profile(50, 50),
-        &observation,
-        &intelligence,
+        package_evidence(&profile(50, 50), &observation, &intelligence),
         ConnectedTargetEvidence {
             primary: &target,
             cluster: &[&target],
@@ -600,9 +594,7 @@ fn derive_settled(
     loop {
         let spent = planning.spent();
         let options = derive_connected_force_package_options_for_cluster(
-            profile,
-            observation,
-            intelligence,
+            package_evidence(profile, observation, intelligence),
             ConnectedTargetEvidence {
                 primary: target,
                 cluster: &cluster,
@@ -2310,9 +2302,7 @@ fn late_funded_preference_cannot_hide_a_feasible_composition() {
         let access = all_producers(&resources);
         let planning = PlanningWork::default();
         let options = derive_connected_force_package_options_for_cluster(
-            &profile(73, 41),
-            &obs,
-            &intelligence,
+            package_evidence(&profile(73, 41), &obs, &intelligence),
             ConnectedTargetEvidence {
                 primary: target,
                 cluster: &[target],
@@ -3243,9 +3233,7 @@ fn every_marginal_variant_preserves_earlier_provider_identity_and_funding() {
             let resources = ResourceSnapshot::from_observation(&observation);
             let cluster = intelligence.buildings().iter().collect::<Vec<_>>();
             let Ok(options) = derive_connected_force_package_options_for_cluster(
-                &profile(air, siege),
-                &observation,
-                &intelligence,
+                package_evidence(&profile(air, siege), &observation, &intelligence),
                 ConnectedTargetEvidence {
                     primary: &target,
                     cluster: &cluster,
@@ -3718,9 +3706,7 @@ fn dense_portfolio_reaches_a_proved_alternative_across_checkpoint_boundaries() {
             let access = all_producers(&resources);
             let derive = |work| {
                 derive_connected_force_package_options_for_cluster(
-                    &profile(10, 90),
-                    &obs,
-                    &intel,
+                    package_evidence(&profile(10, 90), &obs, &intel),
                     ConnectedTargetEvidence {
                         primary: target,
                         cluster: &cluster,

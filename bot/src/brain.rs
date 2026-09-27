@@ -270,7 +270,7 @@ impl Brain {
         }
         if let Some(recovery) = self.exec.harvester_recovery(self.player, obs) {
             commands.extend(recovery);
-            let recon_paid_exclusions = self.policy.state.reconnaissance.paid_exclusions();
+            let recon_paid_exclusions = self.policy.state.reconnaissance.paid_claims();
             let strategic_recovery = {
                 let mind = &mut self.mind;
                 let PlayerFacingMind {

@@ -378,8 +378,13 @@ fn foreign_paid_occurrences_remain_in_the_lane_without_supplying_capability() {
             ProducerEgress::NotRequired,
         )],
     );
-    let access = ProductionAccess::restricted_kinds(vec![(producer, scout)])
-        .excluding_paid(&[(producer, scout, 0)]);
+    let access = ProductionAccess::restricted_kinds(vec![(producer, scout)]).excluding_paid(&[
+        PaidQueueClaim {
+            producer,
+            kind: scout,
+            occurrence: 0,
+        },
+    ]);
     assert_eq!(
         paid_queued_ready_occurrences_with_access(&resources, scout, Tick::MAX, &access,),
         [(producer, 1)]

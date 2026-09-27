@@ -7,10 +7,10 @@
 
 use super::{
     AllocationConflict, AllocationError, AllocationPersonality, ClaimBundle, ClaimBundleError,
-    ClaimOwner, ConnectedOffenseKey, ConnectedPortfolioContext, CoordinatorInputError,
-    CrossDomainAllocation, CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal,
-    ImportedObligation, ObligationClass, ObligationKey, OperationProductionRequest,
-    ProducerJobClaim, ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
+    ClaimOwner, ConnectedPortfolioContext, CoordinatorInputError, CrossDomainAllocation,
+    CrossDomainSettlement, DefenseInvestmentKey, DomainInvestmentProposal, ImportedObligation,
+    ObligationClass, ObligationKey, OperationProductionRequest, PaidQueueClaim, ProducerJobClaim,
+    ProposalKey, StandingForceKey, Urgency, active_connected_obligation,
     active_connected_revision_investment_proposal, active_connected_revision_obligation,
     clamped_current_reserve_obligation, connected_investment_proposal, current_reserve_at,
     defense_investment_proposals, economic_investment_claims, economic_investment_proposal,
@@ -42,10 +42,9 @@ use crate::standing_force::{
 };
 use crate::strategy::{
     ActiveConnectedObligation, AirAdjudication, AirOperation, AirOperationOutcome,
-    AirOperationPhase, AirRecoveryReason, AirTurn, CapitalReserve, ConnectedInputs,
-    FreshConnectedProposal, IslandInputs, LiftSupportRequest, ProducerLanes,
+    AirOperationPhase, AirProcurement, AirRecoveryReason, AirTurn, CONNECTED_PREPARATION_HORIZON,
+    CapitalReserve, ConnectedInputs, FreshConnectedProposal, LiftSupportRequest, ProducerLanes,
     RejectedConnectedCandidate, StrategicDecision, StrategicPlanner, air_adjudication,
-    connected_preparation_horizon,
 };
 use crate::team::TeamReliefPlanner;
 use crate::trace::{
@@ -80,7 +79,7 @@ struct SupportPreparation {
 struct FreshInvestmentInputs<'a> {
     active_revision: ActiveRevisionPreparation,
     defense_admission_reserve: u32,
-    paid_exclusions: &'a [(oxide_sim::ids::BuildingId, UnitKind, usize)],
+    paid_exclusions: &'a [PaidQueueClaim],
     standing_force: StandingForceWork,
 }
 
@@ -187,14 +186,9 @@ impl<'a> PlannerClaims<'a> {
 pub(crate) fn air_paid_exclusions(
     policy: &UtilityPolicy,
     raids: &RaidPlanner,
-) -> Vec<(oxide_sim::ids::BuildingId, UnitKind, usize)> {
-    let mut excluded = policy.state.reconnaissance.paid_exclusions();
-    excluded.extend(
-        raids
-            .paid_claims()
-            .iter()
-            .map(|claim| (claim.producer, claim.kind, claim.occurrence)),
-    );
+) -> Vec<PaidQueueClaim> {
+    let mut excluded = policy.state.reconnaissance.paid_claims();
+    excluded.extend_from_slice(raids.paid_claims());
     excluded.sort_unstable();
     excluded.dedup();
     excluded
@@ -580,7 +574,7 @@ impl<'a> AllocationSession<'a> {
                 .context
                 .observation
                 .tick
-                .saturating_add(connected_preparation_horizon());
+                .saturating_add(CONNECTED_PREPARATION_HORIZON);
             let committed_production = self.committed_standing_production();
             let standing_force = self
                 .standing_force_inputs(
@@ -804,7 +798,7 @@ impl<'a> AllocationSession<'a> {
                             self.context
                                 .observation
                                 .tick
-                                .saturating_add(connected_preparation_horizon()),
+                                .saturating_add(CONNECTED_PREPARATION_HORIZON),
                         ),
                     },
                 },
@@ -842,7 +836,7 @@ impl<'a> AllocationSession<'a> {
                 self.context
                     .observation
                     .tick
-                    .saturating_add(connected_preparation_horizon())
+                    .saturating_add(CONNECTED_PREPARATION_HORIZON)
             });
         let committed_production = self.committed_standing_production();
         let defense_scope =
@@ -1413,18 +1407,11 @@ impl<'a> AllocationSession<'a> {
         if revises_active {
             remove_active_connected_obligation(&mut prepared.obligations);
             prepared.active_connected = {
-                self.participants
-                    .strategy
-                    .retained_obligation(ConnectedInputs {
-                        planning: &self.participants.policy.planning,
-                        resources: &prepared.resources,
-                        unavailable: &prepared.planner_claims,
-                        paid_exclusions: &air_paid_exclusions(
-                            self.participants.policy,
-                            self.participants.raids,
-                        ),
-                        reserve: CapitalReserve::default(),
-                    })
+                self.participants.strategy.retained_obligation(
+                    &prepared.resources,
+                    &prepared.planner_claims,
+                    &air_paid_exclusions(self.participants.policy, self.participants.raids),
+                )
             };
             if let Some(active) = &prepared.active_connected {
                 prepared
@@ -1981,7 +1968,7 @@ fn allocation_horizon(
     let mut horizon = context
         .observation
         .tick
-        .saturating_add(connected_preparation_horizon())
+        .saturating_add(CONNECTED_PREPARATION_HORIZON)
         .max(
             context
                 .observation
@@ -3155,8 +3142,8 @@ mod tests {
     mod relief;
     mod retained;
     use super::super::{
-        Confidence, DeferrableCapitalClaim, ExecutionSafety, ProposalCase, StrategicValue,
-        TimeToImpact, Urgency,
+        Confidence, ConnectedOffenseKey, DeferrableCapitalClaim, ExecutionSafety, ProposalCase,
+        StrategicValue, TimeToImpact, Urgency,
     };
     use super::standing::ContextualStandingForce;
     use super::*;
@@ -3653,10 +3640,7 @@ mod tests {
                 public_map: Some(&briefing),
                 orientation: Orientation::for_home(observation, TilePos::new(3, 10)),
             })
-            .retained_obligation(ConnectedInputs::fixture(
-                &crate::planning::PlanningWork::default(),
-                &ResourceSnapshot::from_observation(observation),
-            ))
+            .retained_obligation(&ResourceSnapshot::from_observation(observation), &[], &[])
             .expect("an admitted connected operation retains demand")
     }
 
@@ -3858,13 +3842,7 @@ mod tests {
                 .as_ref()
                 .expect("a competing package remains feasible");
             for provider in connected.minimum_claims().paid_providers() {
-                assert!(
-                    !paid
-                        .iter()
-                        .any(|claim| claim.producer == provider.producer()
-                            && claim.kind == provider.kind()
-                            && claim.occurrence == provider.occurrence())
-                );
+                assert!(!paid.contains(provider));
             }
             let resolved = session.resolve(prepared);
             let outcome = session.finish_allocation(resolved);
@@ -3987,12 +3965,14 @@ mod tests {
                 orientation: Orientation::for_home(observation, HOME),
             })
             .think(ThinkInputs {
-                unavailable: &outcome.planner_claims,
-                allow_new_operation: outcome.connected_continues
-                    || outcome.allow_new_voluntary_operations,
-                reserve: CapitalReserve {
-                    forecast: outcome.budget.connected_forecast_hold,
-                    ..CapitalReserve::default()
+                procurement: AirProcurement {
+                    unavailable: &outcome.planner_claims,
+                    allow: outcome.connected_continues || outcome.allow_new_voluntary_operations,
+                    reserve: CapitalReserve {
+                        forecast: outcome.budget.connected_forecast_hold,
+                        ..CapitalReserve::default()
+                    },
+                    ..AirProcurement::fixture(&crate::planning::PlanningWork::default())
                 },
                 ..ThinkInputs::fixture(&crate::planning::PlanningWork::default())
             })
@@ -5175,12 +5155,7 @@ mod tests {
     fn committed_cluster(
         strategy: &StrategicPlanner,
         intelligence: &StrategicIntelligence,
-    ) -> (
-        crate::strategy::ConnectedOffenseIdentity,
-        Vec<TilePos>,
-        TilePos,
-        Vec<TilePos>,
-    ) {
+    ) -> (ConnectedOffenseKey, Vec<TilePos>, TilePos, Vec<TilePos>) {
         let package = strategy
             .connected_package_diagnostics(intelligence)
             .expect("the connected operation keeps its commitment");
@@ -5204,8 +5179,10 @@ mod tests {
         let observation = clustered_connected_observation(120, 10_000);
         let (mut strategy, _) = current_connected_planner(&observation);
         let intelligence = intelligence_through(&[&observation]);
-        let admitted =
-            crate::strategy::ConnectedOffenseIdentity::new(BuildingId(80), CLUSTER_PRIMARY);
+        let admitted = ConnectedOffenseKey {
+            objective: BuildingId(80),
+            anchor: CLUSTER_PRIMARY,
+        };
         let (identity, anchors, focus, live) = committed_cluster(&strategy, &intelligence);
         assert_eq!(identity, admitted);
         assert_eq!(anchors, sorted(CLUSTER.to_vec()));
@@ -5214,7 +5191,7 @@ mod tests {
         let deadline = strategy.connected_deadline();
         assert_eq!(
             deadline,
-            Some(120 + crate::strategy::connected_preparation_horizon())
+            Some(120 + crate::strategy::CONNECTED_PREPARATION_HORIZON)
         );
         let operation = strategy.air_operation().expect("the operation is admitted");
         assert_eq!(
@@ -6149,10 +6126,7 @@ mod tests {
             )],
         })
         .into_active_revision_fixture();
-        let key = ConnectedOffenseKey {
-            objective: proposal.identity().objective(),
-            anchor: proposal.identity().anchor(),
-        };
+        let key = proposal.identity();
 
         let setup = SessionProfile::new(prime_profile());
         let briefing = connected_briefing(&observation);
@@ -6529,10 +6503,7 @@ mod tests {
                 "evaluate each distinct ownership only once"
             );
             assert_eq!(demands, first.1);
-            let key = ConnectedOffenseKey {
-                objective: proposal.identity().objective(),
-                anchor: proposal.identity().anchor(),
-            };
+            let key = proposal.identity();
             let expected = (!revision)
                 .then_some(ConnectedPortfolioContext::Absent)
                 .into_iter()
