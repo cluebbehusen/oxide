@@ -110,11 +110,20 @@ pub fn touch_pad(rect: Rect, ui: f32) -> Rect {
     )
 }
 
+/// How far a touch-only build holds the menu button off the right edge.
+/// iPad screens round their corners, and iPadOS safe areas leave them
+/// out, so a button in the corner is clipped.
+const TOUCH_RIGHT_INSET: f32 = 20.0;
+/// How much further a touch-only build holds the top bar's left group
+/// in from the rounded corner.
+const TOUCH_LEFT_INSET: f32 = 6.0;
+
 /// The top bar's menu button: a badge-height square held off the right
 /// edge, inside the bar so its padded touch target stays mostly chrome.
-pub fn menu_button_rect(viewport_w: f32, ui: f32, _touch_only: bool) -> Rect {
+pub fn menu_button_rect(viewport_w: f32, ui: f32, touch_only: bool) -> Rect {
     let size = 34.0 * ui;
-    Rect::new(viewport_w - size - 8.0 * ui, 3.0 * ui, size, size)
+    let margin = if touch_only { TOUCH_RIGHT_INSET } else { 8.0 };
+    Rect::new(viewport_w - size - margin * ui, 3.0 * ui, size, size)
 }
 
 /// The top bar's measured text widths, in window pixels.
@@ -156,10 +165,11 @@ pub(crate) struct TopBar {
 /// count run left to right from fixed minimums, the idle badge follows
 /// them, and the status hangs off the menu button at the right.
 pub(crate) fn top_bar(viewport_w: f32, ui: f32, touch_only: bool, text: TopBarText) -> TopBar {
-    let scrap_label_x = 12.0 * ui;
-    let scrap_x = 70.0 * ui;
-    let passive_x = (scrap_x + text.scrap + 16.0 * ui).max(151.0 * ui);
-    let units_x = (passive_x + text.passive + 16.0 * ui).max(284.0 * ui);
+    let inset = if touch_only { TOUCH_LEFT_INSET } else { 0.0 } * ui;
+    let scrap_label_x = 12.0 * ui + inset;
+    let scrap_x = 70.0 * ui + inset;
+    let passive_x = (scrap_x + text.scrap + 16.0 * ui).max(151.0 * ui + inset);
+    let units_x = (passive_x + text.passive + 16.0 * ui).max(284.0 * ui + inset);
     let count_x = units_x + (text.units_label + 12.0 * ui).max(60.0 * ui);
     let idle_badge = text.idle.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |width| {
         Rect::new(
@@ -485,17 +495,25 @@ mod tests {
     fn the_menu_button_sits_in_the_top_bar_with_a_full_touch_target() {
         for ui in [0.75, 1.0, 1.25, 1.5] {
             for width in [640.0, 1133.0, 1280.0, 1920.0] {
-                let button = menu_button_rect(width, ui, false);
-                assert!(
-                    button.y >= 0.0 && button.y + button.h <= TOP_BAR_H * ui,
-                    "the drawn button stays inside the bar at {width}px, ui {ui}"
-                );
-                let pad = touch_pad(button, ui);
-                assert!(pad.w >= MIN_TOUCH_TARGET * ui && pad.h >= MIN_TOUCH_TARGET * ui);
-                assert!(
-                    pad.x + pad.w <= width,
-                    "the fingertip target stays on screen at {width}px, ui {ui}"
-                );
+                for touch_only in [false, true] {
+                    let button = menu_button_rect(width, ui, touch_only);
+                    assert!(
+                        button.y >= 0.0 && button.y + button.h <= TOP_BAR_H * ui,
+                        "the drawn button stays inside the bar at {width}px, ui {ui}"
+                    );
+                    let pad = touch_pad(button, ui);
+                    assert!(pad.w >= MIN_TOUCH_TARGET * ui && pad.h >= MIN_TOUCH_TARGET * ui);
+                    assert!(
+                        pad.x + pad.w <= width,
+                        "the fingertip target stays on screen at {width}px, ui {ui}"
+                    );
+                    if touch_only {
+                        assert!(
+                            button.x + button.w <= width - TOUCH_RIGHT_INSET * ui,
+                            "clear of a rounded screen corner"
+                        );
+                    }
+                }
             }
         }
     }
@@ -538,6 +556,12 @@ mod tests {
             bar.status_space,
             (bar.idle_badge.x + bar.idle_badge.w, bar.status_x)
         );
+        let touch = top_bar(1280.0, 1.0, true, sample_text(1.0));
+        assert_eq!(
+            touch.scrap_label_x, 18.0,
+            "touch holds the bank off the corner"
+        );
+        assert_eq!(touch.menu_button.x, 1280.0 - 34.0 - 20.0);
         let no_idle = top_bar(
             1280.0,
             1.0,
