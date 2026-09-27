@@ -134,6 +134,18 @@ Review each candidate in all relevant contexts:
 not replace it with a custom gallery, a contact sheet, a README full of
 thumbnails, or a directory the reviewer must inspect manually.
 
+For refinements to existing assets, present code-generated candidates matching
+the production art's scale, palette, and rendering. Concept art may support
+exploration; present it as the deliverable only when the user explicitly
+requests concepts.
+
+For refinements to world assets, each moving candidate's primary card must show
+its animation on actual Oxide ground, using the existing runtime timing. Include
+a separate static view in evidence. Static candidates, including abandoned
+frames, must also appear on actual Oxide ground. Include the exact current or
+user-selected control with the same ground, scale, and presentation. An
+animation buried in `evidence/` does not satisfy the primary-card requirement.
+
 Build the review package around decisions rather than around generation output:
 
 1. Give every candidate option one stable, unique integer review ID. Prefix its
@@ -176,20 +188,20 @@ flattening the design to fit existing tiles. Give every pit ID a full-map
 primary view plus native-scale edges, corners, junctions, and traversal context
 in sibling evidence.
 
-At handoff, give exact launch and selection instructions. From the repository
-root, the standard launch is:
+At handoff, give verified absolute paths to `tools/asset_review.html` and every
+session directory. Resolve each path where the file or directory actually
+exists; review artifacts may live outside the implementation worktree. Provide a
+copyable `open` command with the actual absolute gallery path quoted. Do not
+rely on the user's current directory or say "from the repository root."
 
-```sh
-open tools/asset_review.html
-```
-
-Then tell the reviewer to click **Choose asset directory** and name each exact
-session directory to select, together with its ID range. Do not merely say to
-open the review root. If the native directory picker is unavailable, use the
-page's compatibility picker in Chrome or Edge. Open each named session in the
-tool yourself before handoff and verify that every card is one intended
-candidate, sorted by its stable ID, with no supporting artifact changing the
-card count.
+Tell the reviewer to click **Choose asset directory** and give each session's
+absolute path, contents, and option IDs. Do not merely name the review root. If
+the native directory picker is unavailable, use the page's compatibility picker
+in Chrome or Edge. Open those exact paths yourself before handoff and verify
+that the primary cards expose the required ground-backed static or animated
+views directly, that animation playback works, and that every card is one
+intended candidate, sorted by its stable ID, with no supporting artifact
+changing the card count.
 
 ## Animate actions
 
