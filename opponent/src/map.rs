@@ -17,8 +17,8 @@ const HOME_REACH: i32 = 12;
 /// Public map facts one match's `oxide-opponent` seats share.
 #[derive(Debug)]
 pub struct MapModel {
-    /// Ground component per tile, numbered from one; zero where terrain or a
-    /// starting scrap node blocks ground units.
+    /// Ground component per tile, numbered from one; zero where terrain blocks
+    /// ground units.
     components: Grid<u32>,
     /// Each seat's authored Foundry anchor, by player index.
     starts: Vec<Option<TilePos>>,
@@ -81,8 +81,9 @@ impl MapModel {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// The ground component holding `tile`, or `None` where ground units
-    /// cannot stand. Building footprints keep their terrain's component.
+    /// The ground component holding `tile`, or `None` where terrain blocks
+    /// ground units. Scrap nodes and building footprints keep their ground's
+    /// component.
     pub(crate) fn component(&self, tile: TilePos) -> Option<u32> {
         self.components
             .get(tile)
@@ -132,17 +133,21 @@ fn home_spots(map: &Map, components: &Grid<u32>, start: TilePos) -> Vec<TilePos>
     spots.into_iter().map(|(_, anchor)| anchor).collect()
 }
 
-/// Labels 4-connected open ground. Diagonal steps never cut corners, so this
-/// is exactly the connectivity of ground movement. Starting scrap blocks until
-/// mined out, which only ever joins components.
+/// Labels 4-connected ground. Diagonal steps never cut corners, so this is
+/// the connectivity of ground movement. Scrap counts as ground: mining it out
+/// opens the way, and a harvest order finds the reachable nodes of a field.
 fn components(map: &Map) -> Grid<u32> {
+    let ground = |tile: TilePos| {
+        map.tile(tile)
+            .is_some_and(|cell| !cell.terrain.blocks_ground())
+    };
     let mut labels = Grid::new(map.width(), map.height(), 0_u32);
     let mut next = 0;
     let mut stack = Vec::new();
     for y in 0..map.height() {
         for x in 0..map.width() {
             let seed = TilePos::new(x, y);
-            if labels.get(seed) != Some(&0) || !map.terrain_passable(seed) {
+            if labels.get(seed) != Some(&0) || !ground(seed) {
                 continue;
             }
             next += 1;
@@ -153,7 +158,7 @@ fn components(map: &Map) -> Grid<u32> {
             while let Some(tile) = stack.pop() {
                 for step in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                     let neighbour = tile.offset(step.0, step.1);
-                    if !map.terrain_passable(neighbour) {
+                    if !ground(neighbour) {
                         continue;
                     }
                     if let Some(label) = labels.get_mut(neighbour).filter(|label| **label == 0) {
@@ -193,7 +198,7 @@ mod tests {
         let east = model.component(TilePos::new(8, 4)).unwrap();
         assert_ne!(west, east);
         assert_eq!(model.component(TilePos::new(4, 3)), None, "rock");
-        assert_eq!(model.component(TilePos::new(2, 4)), None, "scrap");
+        assert_eq!(model.component(TilePos::new(2, 4)), Some(west), "scrap");
         assert_eq!(
             model.component(model.start(PlayerId(0)).unwrap()),
             Some(west),
@@ -245,6 +250,22 @@ mod tests {
         let rotate = |anchor: TilePos| TilePos::new(20 - 2 - anchor.x, 16 - 2 - anchor.y);
         assert_eq!(west.iter().copied().map(rotate).collect::<Vec<_>>(), east);
         assert_eq!(model.spots(PlayerId(2)), &[] as &[TilePos]);
+    }
+
+    #[test]
+    fn a_scrap_choke_joins_what_it_will_open_once_mined() {
+        const CHOKE: [&str; 5] = [
+            "##########",
+            "#1..#....#",
+            "#...s..2.#",
+            "#...#....#",
+            "##########",
+        ];
+        let model = model(&CHOKE);
+        assert_eq!(
+            model.component(TilePos::new(1, 3)),
+            model.component(TilePos::new(6, 1))
+        );
     }
 
     #[test]
