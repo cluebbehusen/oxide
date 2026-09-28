@@ -2930,8 +2930,8 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
         "the lift never arms what the press never saw"
     );
 
-    // A production queue that shifts while the finger reads its chip:
-    // slot 0 keeps its action but now holds a different unit.
+    // A production queue that shifts under a pressed chip: slot 0 keeps
+    // its action but now holds a different unit.
     let foundry = game
         .state
         .buildings()
@@ -2971,7 +2971,7 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
             queue.remove(0);
             queue[0].action = crate::panel::CardAction::CancelQueue(foundry, 0);
         }
-        input.now += 2.0;
+        input.now += 0.1;
         apply_events(&mut game, &mut input, &[touch_up(2, slot.center())]);
         let cancelled = game
             .pending

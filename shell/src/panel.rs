@@ -146,6 +146,20 @@ impl CardAction {
             _ => None,
         }
     }
+
+    /// Whether pressing this dock chip throws away queued or started work:
+    /// an order, a construction site, a planned foundation, or a production
+    /// slot.
+    pub(crate) fn discards_work(self) -> bool {
+        matches!(
+            self,
+            Self::CancelOrder { .. }
+                | Self::CancelSite(_)
+                | Self::CancelFound(..)
+                | Self::CancelQueue(..)
+                | Self::CancelProduction(_)
+        )
+    }
 }
 
 /// One button (or display chip) on the panel.
@@ -1404,6 +1418,35 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
 mod tests {
     use super::*;
     use crate::game::Game;
+
+    #[test]
+    fn every_dock_chip_that_cancels_work_discards_it_and_nothing_else_does() {
+        let site = oxide_sim::BuildingId(3);
+        let tile = chassis::grid::TilePos::new(4, 5);
+        for action in [
+            CardAction::CancelOrder {
+                unit: oxide_sim::UnitId(1),
+                key: oxide_sim::OrderKey::Walk { tile },
+                from_end: 0,
+            },
+            CardAction::CancelSite(site),
+            CardAction::CancelFound(BuildingKind::Turret, tile),
+            CardAction::CancelQueue(site, 0),
+            CardAction::CancelProduction(UnitKind::Harvester),
+        ] {
+            assert!(action.discards_work(), "{action:?}");
+        }
+        for action in [
+            CardAction::Dispatch(Action::AttackMove),
+            CardAction::ArmRally,
+            CardAction::UnloadHere(oxide_sim::UnitId(1)),
+            CardAction::FilterKind(UnitKind::Harvester),
+            CardAction::None,
+            CardAction::Refused,
+        ] {
+            assert!(!action.discards_work(), "{action:?}");
+        }
+    }
 
     #[test]
     fn touch_copy_drops_keys_and_mouse_buttons_from_cards() {

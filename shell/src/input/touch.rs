@@ -513,17 +513,12 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
 }
 
 /// Whether lifting `finger` over `card` presses it: only the card it landed
-/// on, and an order chip only if it was not held. A finger held past the
-/// long-press threshold on a chip was reading its preview, and lifting must
-/// not cost the order it names.
+/// on, and a chip that discards work only if it was not held. A finger held
+/// past the long-press threshold on such a chip was reading its preview, and
+/// lifting must not cost the order, site, or production slot it names.
 fn lift_presses(input: &InputState, finger: &TouchPoint, card: PressedCard) -> bool {
     let held = (input.now - finger.down_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms);
-    finger.card == Some(card)
-        && !(held
-            && matches!(
-                card.hit.action,
-                crate::panel::CardAction::CancelOrder { .. }
-            ))
+    finger.card == Some(card) && !(held && card.hit.action.discards_work())
 }
 
 /// A still tap on the battlefield selects, and a quick second tap on a

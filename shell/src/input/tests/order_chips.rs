@@ -263,6 +263,94 @@ fn a_chip_answers_a_slow_tap_but_not_a_lift_after_a_hold() {
     assert_eq!(dock_walks(&game, &input), [(a, 0)]);
 }
 
+/// Holds the dock's first chip past the long-press threshold and lifts,
+/// then taps it: how many commands the hold staged, and what the tap did.
+fn hold_then_tap(game: &mut Game, input: &mut InputState) -> (usize, Vec<Command>) {
+    let chips = publish_dock(game, input);
+    let p = chips[0].center();
+    let hold = f64::from(input.touch_prefs.long_press_ms) / 1000.0;
+    input.now = 5.0;
+    apply_events(game, input, &[touch_down(1, p)]);
+    input.now += hold + 0.05;
+    apply_events(game, input, &[touch_up(1, p)]);
+    let held = game.pending.len();
+    input.now += 1.0;
+    apply_events(game, input, &[touch_down(2, p)]);
+    input.now += 0.1;
+    apply_events(game, input, &[touch_up(2, p)]);
+    let tapped = game.pending.iter().map(|c| c.command.clone()).collect();
+    (held, tapped)
+}
+
+#[test]
+fn a_held_site_chip_scraps_nothing_but_a_tap_cancels_the_site() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let human = game.presentation.human;
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == human && u.kind == UnitKind::Harvester)
+        .expect("a starting harvester")
+        .id;
+    let anchor = turret_ground(&game, worker);
+    game.state.tick(&[PlayerCommand {
+        player: human,
+        command: Command::Build {
+            units: vec![worker],
+            kind: oxide_sim::BuildingKind::Turret,
+            anchor,
+            queue: false,
+            defer: false,
+        },
+    }]);
+    let site = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor && !b.built)
+        .expect("the site stands")
+        .id;
+    game.presentation.selection.units = vec![worker];
+    game.presentation.paused = true;
+
+    let (held, tapped) = hold_then_tap(&mut game, &mut input);
+
+    assert_eq!(held, 0, "a hold that read the site chip scraps nothing");
+    assert!(
+        matches!(tapped.as_slice(), [Command::Cancel { building }] if *building == site),
+        "a tap still cancels the site: {tapped:?}"
+    );
+}
+
+#[test]
+fn a_held_production_chip_cancels_nothing_but_a_tap_does() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let foundry = game.home_foundry().expect("a Foundry").id;
+    game.presentation.selection.buildings = vec![foundry];
+    super::super::orders::train(&mut game, 0);
+    let staged: Vec<PlayerCommand> = game.pending.drain(..).collect();
+    assert_eq!(staged.len(), 1, "premise: one job queued");
+    game.state.tick(&staged);
+    game.presentation.paused = true;
+
+    let (held, tapped) = hold_then_tap(&mut game, &mut input);
+
+    assert_eq!(
+        held, 0,
+        "a hold that read the production chip cancels nothing"
+    );
+    assert!(
+        matches!(
+            tapped.as_slice(),
+            [Command::CancelTrain { building, index: 0 }] if *building == foundry
+        ),
+        "a tap still cancels the job: {tapped:?}"
+    );
+}
+
 #[test]
 fn a_chip_sends_the_rest_of_the_selection_along() {
     let mut game = headless_game();

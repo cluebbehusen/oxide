@@ -290,12 +290,13 @@ touches never fire a long-press, so lifting in place still activates the card,
 and a finger that lands on one card or group slot and lifts on another activates
 neither. The one exception is a control-group slot, where a long-press saves the
 selection to that group and spends the finger so its lift does not also recall.
-An order chip ignores a lift after a hold: a finger held past the long-press
-threshold was reading its preview, so it lifts without removing the order. A
-world-born or group-slot finger draws a filling ring from the same rest
-threshold until its long-press fires; the slot's ring draws above the HUD and
-minimap. Disabled cards publish `CardAction::Refused`, so a tap or click toasts
-the reason their hotkey gives.
+A dock chip that discards work, whether an order, a site, a planned foundation,
+or a production slot, ignores a lift after a hold: a finger held past the
+long-press threshold was reading its preview, so it lifts without cancelling
+anything. A world-born or group-slot finger draws a filling ring from the same
+rest threshold until its long-press fires; the slot's ring draws above the HUD
+and minimap. Disabled cards publish `CardAction::Refused`, so a tap or click
+toasts the reason their hotkey gives.
 
 Gameplay touch lives in `input::touch`. Each finger records where it landed
 (`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that
