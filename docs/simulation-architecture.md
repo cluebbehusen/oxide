@@ -662,13 +662,15 @@ orientation as the dynamic observation.
 
 Enemy buildings remain as last-seen ghosts until their footprint is observed
 again. Scrap and wreck amounts likewise freeze at the last visible value. Arrays
-add sorted, deduplicated radar contact tiles outside true sight; a contact
-carries no owner, type, domain, or concealed entity id. Team-shared tracks
-retain a contact id and one second of reported positions. Spatial buckets bound
-one-to-one matching, ranked by predicted distance, previous distance, contact
-id, and coordinates. Visible identity can link visible observations; radar
-matching uses only reported movement. Unmatched tracks end immediately, and ids
-are never reused.
+add sorted, deduplicated radar contact tiles outside true sight. A hostile unit
+reports its tile; an apparent hostile building reports the one footprint tile
+nearest a mast, with distance ties ranked in its radial map frame. A contact
+carries no owner, type, domain, or concealed entity id, and radar fire at a
+building's contact tile can hit it. Team-shared tracks retain a contact id and
+one second of reported positions. Spatial buckets bound one-to-one matching,
+ranked by predicted distance, previous distance, contact id, and coordinates.
+Visible identity can link visible observations; radar matching uses only
+reported movement. Unmatched tracks end immediately, and ids are never reused.
 
 Salvage-relevant hostile incidents, such as a Harvester hit or an allied loss,
 remember only the victim's tile for a bounded caution period, never the

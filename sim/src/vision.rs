@@ -88,9 +88,10 @@ pub struct Vision {
     /// apart from scrap memory because renderers draw them differently
     /// and the harvest brain approaches them differently.
     remembered_wreck: Grid<u32>,
-    /// Radar blips: tiles holding a hostile unit inside an own built
-    /// Array's outer ring but outside true sight. A contact without
-    /// identity — no kind, no owner, no memory (rebuilt every tick).
+    /// Radar blips: tiles holding a hostile unit or one tile of a hostile
+    /// building inside an own built Array's outer ring but outside true
+    /// sight. A contact without identity — no kind, no owner, no memory
+    /// (rebuilt every tick).
     contacts: Vec<TilePos>,
     #[serde(default)]
     tracking: tracking::Tracking,
@@ -990,10 +991,10 @@ pub(crate) fn refresh(state: &mut State) {
             }
         }
 
-        // Radar blips: hostile units inside any own built Array's outer
-        // ring, on ground this player cannot actually see. A tile only —
-        // detection is not identification, and there is no memory: a
-        // contact that leaves the ring is simply gone.
+        // Radar blips: hostile units and buildings inside any own built
+        // Array's outer ring, on ground this player cannot actually see. A
+        // tile only — detection is not identification, and there is no
+        // memory: a contact that leaves the ring is simply gone.
         view.contacts.clear();
         let masts: Vec<TilePos> = state
             .buildings
@@ -1003,16 +1004,46 @@ pub(crate) fn refresh(state: &mut State) {
             .collect();
         if !masts.is_empty() {
             let r = crate::stats::RADAR_DETECT_RADIUS;
+            let ring_distance = |t: TilePos| {
+                masts
+                    .iter()
+                    .map(|m| {
+                        let (dx, dy) = (t.x - m.x, t.y - m.y);
+                        dx * dx + dy * dy
+                    })
+                    .min()
+                    .filter(|&d| d <= r * r)
+            };
             for u in state.units.iter().filter(|u| !allied(u.player)) {
                 let t = u.tile();
-                if view.visible(t) {
+                if !view.visible(t) && ring_distance(t).is_some() {
+                    view.contacts.push(t);
+                }
+            }
+            // A building returns one blip, like a unit of any size: the
+            // footprint tile nearest a mast. Distance ties rank in the
+            // footprint's radial frame so mirrored seats report mirrored
+            // tiles. An undetected charge or hostile provisional site is
+            // not apparent and returns nothing.
+            let map_size = (state.map.width(), state.map.height());
+            let viewer = PlayerId(index as u8);
+            for b in state
+                .buildings
+                .iter()
+                .filter(|b| !allied(b.player) && state.building_apparent(viewer, b))
+            {
+                if b.tiles().any(|t| view.visible(t)) {
                     continue;
                 }
-                let detected = masts.iter().any(|m| {
-                    let (dx, dy) = (t.x - m.x, t.y - m.y);
-                    dx * dx + dy * dy <= r * r
-                });
-                if detected {
+                let size = b.stats().size;
+                let nearest = b
+                    .tiles()
+                    .filter_map(|t| {
+                        let key = crate::geometry::spawn_doorstep_key(map_size, b.anchor, size, t);
+                        ring_distance(t).map(|d| ((d, key), t))
+                    })
+                    .min_by_key(|&(key, _)| key);
+                if let Some((_, t)) = nearest {
                     view.contacts.push(t);
                 }
             }

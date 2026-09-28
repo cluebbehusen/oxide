@@ -101,7 +101,7 @@ fn buffer_blind(
     hits: &mut Vec<PendingHit>,
 ) {
     let (shooter, player) = shooter;
-    let direct = if view.footprint.is_some() {
+    let building = || {
         state
             .buildings()
             .iter()
@@ -114,6 +114,9 @@ fn buffer_blind(
             })
             .min_by_key(|b| b.id)
             .map(|b| Target::Building(b.id))
+    };
+    let direct = if view.footprint.is_some() {
+        building()
     } else {
         let tile = TilePos::containing(view.position);
         state
@@ -127,6 +130,8 @@ fn buffer_blind(
             })
             .min_by_key(|u| (u.pos.dist_sq(tile.center()), u.id))
             .map(|u| Target::Unit(u.id))
+            // A radar blip can be a building's footprint tile.
+            .or_else(building)
     };
     if let Some(victim) = direct {
         buffer_shot(state, shooter, victim, from, aim, weapon, hits);

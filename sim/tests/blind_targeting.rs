@@ -948,3 +948,118 @@ fn legacy_focus_still_rejects_friendly_hidden_and_incompatible_units() {
         );
     }
 }
+
+/// Two masts each exactly ten tiles from a different corner of a hostile
+/// Fabricator, so only the footprint's radial frame can break the tie. With
+/// `rotated`, the whole world turns 180 degrees and the seats trade places.
+fn building_radar_scene(rotated: bool) -> oxide_sim::State {
+    let (width, height) = (40, 30);
+    let (me, them) = if rotated { (1, 0) } else { (0, 1) };
+    let place = |player, kind: BuildingKind, x: i32, y: i32| {
+        let (w, h) = kind.base_stats().size;
+        if rotated {
+            building(player, kind, width - w - x, height - h - y)
+        } else {
+            building(player, kind, x, y)
+        }
+    };
+    let mut scenario = open_arena(width as usize, height as usize, Vec::new());
+    scenario.buildings = vec![
+        place(me, BuildingKind::Array, 8, 14),
+        place(me, BuildingKind::Array, 29, 15),
+        place(them, BuildingKind::Fabricator, 18, 14),
+        // Inside the radar ring but beyond both masts' charge detection.
+        place(them, BuildingKind::ScuttleCharge, 18, 24),
+    ];
+    let mut state = scenario.build().unwrap();
+    state.tick(&[]);
+    state.validate_invariants().unwrap();
+    state
+}
+
+#[test]
+fn radar_reports_one_mirrored_blip_per_apparent_hostile_building() {
+    let state = building_radar_scene(false);
+    let viewer = PlayerId(0);
+    let charge = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::ScuttleCharge)
+        .unwrap();
+    assert!(!state.building_apparent(viewer, charge));
+    for b in state.buildings().iter().filter(|b| b.player != viewer) {
+        assert!(b.tiles().all(|t| !state.can_see(viewer, t)), "{:?}", b.kind);
+    }
+    // The Fabricator returns its outward tile and the enemy Foundry, also in
+    // the south-east mast's ring, its tile nearest that mast. The buried
+    // charge returns nothing.
+    let contacts = state.vision(viewer).contacts().to_vec();
+    assert_eq!(contacts, [TilePos::new(18, 14), TilePos::new(37, 27)]);
+    assert_eq!(
+        state
+            .vision(viewer)
+            .tracks()
+            .iter()
+            .filter(|track| track.visible_unit.is_none())
+            .count(),
+        2
+    );
+
+    let rotated = building_radar_scene(true);
+    let mut mirrored: Vec<_> = contacts
+        .iter()
+        .map(|t| TilePos::new(39 - t.x, 29 - t.y))
+        .collect();
+    mirrored.sort_unstable_by_key(|t| (t.y, t.x));
+    assert_eq!(rotated.vision(PlayerId(1)).contacts(), mirrored);
+}
+
+#[test]
+fn defenses_fire_on_a_building_known_only_by_radar() {
+    // Tier 2 of the Turret ladder is the direct-fire Bulwark; the Bastion
+    // lands shells. Each blip tile sits outside the defense's sight and
+    // inside its reach.
+    for (kind, tier, target) in [
+        (BuildingKind::Turret, 2, (10, 11)),
+        (BuildingKind::Bastion, 0, (13, 11)),
+    ] {
+        let mut scenario = open_arena(32, 22, Vec::new());
+        scenario.buildings = vec![
+            building(0, BuildingKind::Array, 4, 1),
+            building(0, kind, 5, 6),
+            building(1, BuildingKind::Fabricator, target.0, target.1),
+        ];
+        let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+        value["buildings"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["kind"] == serde_json::to_value(kind).unwrap())
+            .unwrap()["tier"] = serde_json::json!(tier);
+        let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+        state.tick(&[]);
+        let victim = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Fabricator)
+            .unwrap()
+            .id;
+        let hp = state.building(victim).unwrap().hp;
+        let blip = TilePos::new(target.0, target.1);
+        assert_eq!(state.vision(PlayerId(0)).contacts(), [blip], "{kind:?}");
+        let mut fired = false;
+        for _ in 0..120 {
+            fired |= state.tick(&[]).events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::TurretFired { target: None, .. }
+                        | Event::ShellLaunched { target: None, .. }
+                )
+            });
+            assert!(!state.can_see(PlayerId(0), blip), "{kind:?}");
+        }
+        state.validate_invariants().unwrap();
+        assert!(fired, "{kind:?}");
+        assert!(state.building(victim).unwrap().hp < hp, "{kind:?}");
+    }
+}

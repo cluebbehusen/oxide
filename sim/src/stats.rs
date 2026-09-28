@@ -1958,8 +1958,9 @@ pub const FOUNDRY_WRECK_VALUE: u32 = 300;
 /// permanent bank.
 pub const WRECK_DECAY_TICKS: u64 = 300;
 
-/// Outer detection ring of the Array, in tiles: hostile units inside it
-/// but out of true sight appear as blips — a tile, no kind, no owner.
+/// Outer detection ring of the Array, in tiles: hostile units and buildings
+/// inside it but out of true sight appear as blips — a tile, no kind, no
+/// owner.
 /// Blips never satisfy targeted-attack visibility. One mast covers an
 /// approach corridor, providing persistent warning that a patrol cannot.
 pub const RADAR_DETECT_RADIUS: i32 = 20;
