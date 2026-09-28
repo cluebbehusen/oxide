@@ -11,7 +11,7 @@ use super::goals::{self, spread_scan_reversed};
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
 use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
-use crate::state::{Goal, Order, State, Unit};
+use crate::state::{Goal, Order, OrderKey, State, Unit};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
 
@@ -153,6 +153,19 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 at,
                 queue,
             } => apply_unload(state, pc.player, *transport, *at, *queue),
+            Command::CancelOrder {
+                unit,
+                key,
+                from_end,
+                units,
+            } => apply_cancel_order(
+                state,
+                pc.player,
+                *unit,
+                *key,
+                *from_end,
+                &canonical_units(units),
+            ),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -1237,6 +1250,62 @@ fn apply_cancel_train(
     Ok(())
 }
 
+/// Where `unit`'s `from_end`-th match of `key`, counted back from the end
+/// of its program, sits: 0 is the active order and `i` is `queue[i - 1]`.
+fn program_match(
+    state: &State,
+    player: PlayerId,
+    unit: &Unit,
+    key: OrderKey,
+    from_end: u8,
+) -> Option<usize> {
+    (0..=unit.queue.len())
+        .rev()
+        .filter(|&slot| {
+            let order = if slot == 0 {
+                &unit.order
+            } else {
+                &unit.queue[slot - 1]
+            };
+            order.key(state, player) == Some(key)
+        })
+        .nth(usize::from(from_end))
+}
+
+/// Removes one order from each unit's program. The subject is checked
+/// before anything changes; every other unit edits only if it holds a
+/// match.
+fn apply_cancel_order(
+    state: &mut State,
+    player: PlayerId,
+    subject: UnitId,
+    key: OrderKey,
+    from_end: u8,
+    units: &[UnitId],
+) -> Result<(), RejectReason> {
+    let unit = state
+        .unit(subject)
+        .filter(|unit| unit.player == player)
+        .ok_or(RejectReason::NoValidUnits)?;
+    let slot =
+        program_match(state, player, unit, key, from_end).ok_or(RejectReason::InvalidTarget)?;
+    let mut edits = vec![(subject, slot)];
+    edits.extend(units.iter().filter(|&&id| id != subject).filter_map(|&id| {
+        let unit = state.unit(id).filter(|unit| unit.player == player)?;
+        Some((id, program_match(state, player, unit, key, from_end)?))
+    }));
+    for (id, slot) in edits {
+        let unit = state.unit_mut(id).expect("matched above");
+        if slot == 0 {
+            remove_active_order(unit);
+        } else {
+            end_station_keeping(unit);
+            unit.queue.remove(slot - 1);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn apply_cancel_found(
     state: &mut State,
     player: PlayerId,
@@ -1244,19 +1313,19 @@ pub(super) fn apply_cancel_found(
     anchor: TilePos,
     events: &mut Vec<Event>,
 ) -> Result<(), RejectReason> {
-    if let Some(id) = state
+    if let Some((id, started)) = state
         .buildings
         .iter()
         .find(|b| {
-            b.player == player
-                && b.kind == kind
-                && b.anchor == anchor
-                && !b.built
-                && b.tier == 0
-                && b.progress == 0
+            b.player == player && b.kind == kind && b.anchor == anchor && !b.built && b.tier == 0
         })
-        .map(|b| b.id)
+        .map(|b| (b.id, b.progress > 0))
     {
+        // A site placed by a command still in flight can be under way by
+        // the time this lands; it then cancels like any started site.
+        if started {
+            return apply_cancel(state, player, id, events);
+        }
         super::construction::refund(state, id, events);
         return Ok(());
     }

@@ -1201,6 +1201,8 @@ fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
         | Command::UpgradeBuilding { .. }
         | Command::Unload { .. }
         | Command::ClearFocus { .. } => None,
+        // The controller never emits order cancellation.
+        Command::CancelOrder { .. } => None,
     }
 }
 

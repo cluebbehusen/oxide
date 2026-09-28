@@ -222,6 +222,18 @@ chip column's width and names itself where the chips do. A single factory's dock
 is headed by the time left on its queue, or "Ready" while a finished head waits
 for an exit.
 
+A unit's orders dock and the selection's waypoint chain show programs with every
+staged command applied. `Presentation` caches that projection for the tick, the
+staged-command count, and the decorated selection; only a staged batch costs an
+`inspect_command_phase` call, and it keeps the sites staged Build orders claim.
+Pressing an own chip stages `CancelOrder` with the chip's key and how many later
+chips share it, sending the rest of the selection along, so the order leaves
+every selected own unit that still has it and the dock and waypoints renumber at
+once. A chip for an unbuilt site or a planned one cancels the whole site
+instead; a site only staged commands place is cancelled by kind and anchor,
+since other seats' commands or earlier batches may take the id it was projected
+with. An ally's chips do nothing.
+
 Ground orders name whole tiles. Move, attack-move, advance, patrol, and rally
 clicks clamp the cursor's tile onto the map, since the camera's edge slack lets
 it rest past the edge, and their acknowledgment ring draws at that tile's
@@ -278,7 +290,9 @@ touches never fire a long-press, so lifting in place still activates the card,
 and a finger that lands on one card or group slot and lifts on another activates
 neither. The one exception is a control-group slot, where a long-press saves the
 selection to that group and spends the finger so its lift does not also recall.
-A world-born or group-slot finger draws a filling ring from the same rest
+An order chip ignores a lift after a hold: a finger held past the long-press
+threshold was reading its preview, so it lifts without removing the order. A
+world-born or group-slot finger draws a filling ring from the same rest
 threshold until its long-press fires; the slot's ring draws above the HUD and
 minimap. Disabled cards publish `CardAction::Refused`, so a tap or click toasts
 the reason their hotkey gives.

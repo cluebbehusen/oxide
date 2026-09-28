@@ -26,8 +26,8 @@ use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use oxide_sim::stats::{BuildingKind, ORDER_QUEUE_CAP};
 use oxide_sim::{
-    BuildingId, Command, Event, GameResult, PlayerCommand, PlayerId, Scenario, State, Target,
-    UnitId, UnitKind,
+    BuildingId, Command, Event, GameResult, OrderKey, PlayerCommand, PlayerId, Scenario, State,
+    Target, UnitId, UnitKind,
 };
 
 /// Ticks per run.
@@ -69,13 +69,14 @@ enum CommandTag {
     Unload,
     ClearFocus,
     ReturnCargo,
+    CancelOrder,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 23] = [
+const COMMAND_TAGS: [CommandTag; 24] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -99,6 +100,7 @@ const COMMAND_TAGS: [CommandTag; 23] = [
     CommandTag::Unload,
     CommandTag::ClearFocus,
     CommandTag::ReturnCargo,
+    CommandTag::CancelOrder,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -138,6 +140,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::Unload => 20,
         CommandTag::ClearFocus => 21,
         CommandTag::ReturnCargo => 22,
+        CommandTag::CancelOrder => 23,
     }
 }
 
@@ -167,6 +170,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::Unload { .. } => CommandTag::Unload,
         Command::ClearFocus { .. } => CommandTag::ClearFocus,
         Command::ReturnCargo { .. } => CommandTag::ReturnCargo,
+        Command::CancelOrder { .. } => CommandTag::CancelOrder,
     }
 }
 
@@ -416,6 +420,44 @@ fn target(rng: &mut Pcg32, state: &State) -> oxide_sim::AttackTarget {
     }
 }
 
+/// An order cancellation that usually names a real order: a program entry
+/// of the drawn unit, keyed for its owner, with the honest count of later
+/// matches. The rest miscount, or name a unit with no program at all, so
+/// the refusals see garbage too.
+fn cancel_order(rng: &mut Pcg32, state: &State) -> Command {
+    let unit = unit_id(rng, state);
+    let picked = state.unit(unit).and_then(|subject| {
+        let program: Vec<_> = std::iter::once(&subject.order)
+            .chain(&subject.queue)
+            .collect();
+        let at = rng.next_below(program.len() as u32) as usize;
+        let key = program[at].key(state, subject.player)?;
+        let later = program[at + 1..]
+            .iter()
+            .filter(|order| order.key(state, subject.player) == Some(key))
+            .count();
+        Some((key, later as u8))
+    });
+    let (key, honest) = picked.unwrap_or_else(|| {
+        (
+            OrderKey::Walk {
+                tile: tile(rng, state),
+            },
+            0,
+        )
+    });
+    let from_end = match rng.next_below(4) {
+        0 => rng.next_below(u32::from(u8::MAX) + 1) as u8,
+        _ => honest,
+    };
+    Command::CancelOrder {
+        unit,
+        key,
+        from_end,
+        units: units(rng, state),
+    }
+}
+
 /// Appending is the interesting half — it is the only way a duplicate id
 /// or a long program can reach [`ORDER_QUEUE_CAP`] — so the coin is
 /// loaded toward it.
@@ -528,6 +570,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             at: tile(rng, state),
             queue: queue(rng),
         },
+        CommandTag::CancelOrder => cancel_order(rng, state),
     }
 }
 
@@ -553,6 +596,7 @@ struct Reach {
     salvaged: u64,
     cancelled: u64,
     cancelled_found: u64,
+    cancelled_order: u64,
 }
 
 impl Reach {
@@ -572,6 +616,7 @@ impl Reach {
         self.salvaged += other.salvaged;
         self.cancelled += other.cancelled;
         self.cancelled_found += other.cancelled_found;
+        self.cancelled_order += other.cancelled_order;
     }
 }
 
@@ -676,6 +721,66 @@ fn exercise_cancel_found_reach(state: &mut State) {
     assert_eq!(found_claims(state, player, kind, anchor), 0);
 }
 
+fn walk_tiles(state: &State, id: UnitId) -> Vec<TilePos> {
+    let unit = state.unit(id).expect("the walker lives");
+    std::iter::once(&unit.order)
+        .chain(&unit.queue)
+        .filter_map(|order| match order.key(state, unit.player) {
+            Some(OrderKey::Walk { tile }) => Some(tile),
+            _ => None,
+        })
+        .collect()
+}
+
+fn exercise_cancel_order_reach(state: &mut State) {
+    let player = PlayerId(0);
+    let walker = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == player && unit.kind == UnitKind::Harvester)
+        .expect("fuzz arena has a Ferrous Harvester")
+        .id;
+    let here = state.unit(walker).unwrap().tile();
+    let (a, b) = (here.offset(2, 0), here.offset(0, 2));
+    let legs: Vec<PlayerCommand> = [a, b, a]
+        .into_iter()
+        .enumerate()
+        .map(|(leg, goal)| PlayerCommand {
+            player,
+            command: Command::Move {
+                units: vec![walker],
+                goal,
+                queue: leg > 0,
+            },
+        })
+        .collect();
+    state.tick(&legs);
+    assert_eq!(walk_tiles(state, walker), [a, b, a]);
+
+    let cancel = state.tick(&[PlayerCommand {
+        player,
+        command: Command::CancelOrder {
+            unit: walker,
+            key: OrderKey::Walk { tile: a },
+            from_end: 0,
+            units: Vec::new(),
+        },
+    }]);
+    assert!(
+        !cancel
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. })),
+        "the fuzz reach fixture must land CancelOrder"
+    );
+    assert_eq!(
+        walk_tiles(state, walker),
+        [a, b],
+        "the last visit to the repeated tile went"
+    );
+    state.validate_invariants().unwrap();
+}
+
 fn exercise_return_cargo_reach(state: &mut State) {
     let worker = state
         .units()
@@ -721,6 +826,7 @@ fn exercise_return_cargo_reach(state: &mut State) {
 fn fuzz_run(seed: u64) -> Run {
     let mut state = arena();
     exercise_cancel_found_reach(&mut state);
+    exercise_cancel_order_reach(&mut state);
     exercise_return_cargo_reach(&mut state);
     let mut rng = Pcg32::new(seed, 0xF022);
     let mut reach = Reach {
@@ -771,7 +877,26 @@ fn fuzz_run(seed: u64) -> Run {
             }
         }
 
+        let frozen = state.result().is_some();
+        let seats = state.players().len();
         let report = state.tick(&commands);
+        // A refusal does not name its command, so only a tick that refused
+        // nothing proves which cancellations landed. Out-of-range issuers
+        // and a decided match drop commands without a refusal.
+        if !frozen
+            && !report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::CommandRejected { .. }))
+        {
+            reach.cancelled_order += commands
+                .iter()
+                .filter(|command| {
+                    usize::from(command.player.0) < seats
+                        && matches!(command.command, Command::CancelOrder { .. })
+                })
+                .count() as u64;
+        }
         for event in &report.events {
             match event {
                 Event::CommandRejected { .. } => reach.rejected += 1,
@@ -919,6 +1044,10 @@ fn seeded_garbage_never_panics_and_reproduces() {
     assert!(
         reach.cancelled_found > 0,
         "the sweep must accept a deferred-site cancellation"
+    );
+    assert!(
+        reach.cancelled_order > 0,
+        "the sweep must land an order cancellation drawn from a real program"
     );
     assert!(reach.salvaged > 0, "the sweep must strip a building");
 }

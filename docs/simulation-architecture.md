@@ -162,7 +162,20 @@ immediately. Each unit has one active `Order`, a bounded FIFO queue, and a
 - a walk to an unreachable goal completes where it got as close as it could, and
   the program continues;
 - any other order that cannot be routed drops only itself, except that a refused
-  chase, an empty bank, or a full sling still clears the whole program.
+  chase, an empty bank, or a full sling still clears the whole program;
+- `CancelOrder` removes one order, named by its `OrderKey`, from the subject
+  unit and every other listed unit that holds it. Walks match by clicked tile
+  whatever their verb, including the march an engagement resumes and the walk a
+  landing took over. Each unit drops its `from_end`-th match counted back from
+  the end of its program, so legs finished while the command is in flight never
+  shift which order goes. A removed active order hands over to the next without
+  rotating into a patrol, a program stops looping only once the unit is idle,
+  cargo stays aboard, and an unstarted site whose last Build order goes is
+  refunded. The subject must be the issuer's, in the world, and still hold the
+  match; otherwise nothing changes. Counting from the end names the same order
+  only while units hold the same sequence, so patrol members at different points
+  of a circuit that repeats a waypoint, or units holding a repeat queued to only
+  some of them, can drop different visits.
 
 Re-issuing the active order without queueing continues it past the queue wipe:
 its path and progress survive. A walking order matches on its variant and
@@ -681,7 +694,7 @@ map rather than an exhaustive test inventory.
 | State, hashing, validation, and teams              | `sim/src/state.rs`, `chassis/src/hash.rs`                                                                                                                              | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs`                                                    |
 | Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                     | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
 | Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                    | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
-| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                       | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
+| Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                       | `sim/tests/command_canonicalization.rs`, `sim/tests/cancel_order.rs`, `sim/tests/fuzz.rs`                                           |
 | Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/reach.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
 | Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                      | `sim/tests/transports.rs`                                                                                                           |
 | Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                          | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |

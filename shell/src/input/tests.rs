@@ -6,6 +6,12 @@ use oxide_sim::{PlayerCommand, UnitKind};
 
 mod double_click;
 
+/// The waypoints `unit` draws in `game`'s current frame.
+fn crumbs(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usize, Vec2, macroquad::color::Color)> {
+    let view = game.view();
+    crate::render::entities::breadcrumb_points(&view, &view.projection(), unit)
+}
+
 fn headless_game() -> Game {
     Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
         .expect("embedded skirmish builds")
@@ -2184,6 +2190,13 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
             .any(|row| row.label == "Speed" && row.value == "2.5 tiles/s")
     );
     assert!(!panel.queue.is_empty(), "the ally's orders show");
+    assert!(
+        panel
+            .queue
+            .iter()
+            .all(|chip| chip.action == crate::panel::CardAction::None),
+        "an ally's chips remove nothing"
+    );
     assert_eq!(
         panel.faction,
         oxide_sim::Faction::Cupric,
@@ -2270,7 +2283,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();
     assert!(
-        crate::render::entities::breadcrumb_points(&game.view(), unit).is_empty(),
+        crumbs(&game, unit).is_empty(),
         "a foreign program draws no waypoints"
     );
 }
@@ -4179,6 +4192,7 @@ fn chrome_born_touches_never_drive_world_gestures() {
     );
 }
 
+mod order_chips;
 mod top_bar;
 
 #[test]
@@ -5350,7 +5364,7 @@ fn a_fogged_leg_draws_at_its_click_in_program_order() {
             .camera
             .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5))
     };
-    let points: Vec<_> = crate::render::entities::breadcrumb_points(&game.view(), unit)
+    let points: Vec<_> = crumbs(&game, unit)
         .into_iter()
         .map(|(index, point, _)| (index, point))
         .collect();
@@ -5437,7 +5451,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
             .to_screen(vec2(clicked.x as f32 + 0.5, clicked.y as f32 + 0.5));
         for id in &group {
             let unit = game.state.unit(*id).unwrap();
-            let points: Vec<_> = crate::render::entities::breadcrumb_points(&game.view(), unit)
+            let points: Vec<_> = crumbs(game, unit)
                 .into_iter()
                 .map(|(index, point, _)| (index, point))
                 .collect();
@@ -5492,7 +5506,7 @@ fn a_landing_that_took_over_a_walk_draws_at_its_click() {
     }
     assert_ne!(pad.expect("the walk hands over to a landing"), clicked);
     let unit = game.state.unit(condor).unwrap();
-    let points: Vec<_> = crate::render::entities::breadcrumb_points(&game.view(), unit)
+    let points: Vec<_> = crumbs(&game, unit)
         .into_iter()
         .map(|(index, point, _)| (index, point))
         .collect();

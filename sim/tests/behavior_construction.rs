@@ -2252,6 +2252,69 @@ fn cancelling_a_deferred_site_drops_the_whole_builder_crew() {
 }
 
 #[test]
+fn cancelling_a_started_site_by_kind_and_anchor_matches_cancelling_it_by_id() {
+    use oxide_sim::stats::BuildingKind;
+
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 8, 5)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(9, 5);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .expect("the site stands")
+        .id;
+    for _ in 0..600 {
+        if state.building(site).is_some_and(|b| b.progress > 0) {
+            break;
+        }
+        state.tick(&[]);
+    }
+    assert!(
+        state
+            .building(site)
+            .is_some_and(|b| b.progress > 0 && !b.built),
+        "premise: the site is under way"
+    );
+
+    let mut by_id = state.clone();
+    let by_key = state.tick(&[cmd(
+        0,
+        Command::CancelFound {
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    by_id.tick(&[cmd(0, Command::Cancel { building: site })]);
+
+    assert!(
+        !by_key
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. })),
+        "a started site still cancels by kind and anchor"
+    );
+    assert!(state.building(site).is_none());
+    assert_eq!(
+        state.hash(),
+        by_id.hash(),
+        "the same partial refund and crew release as a cancel by id"
+    );
+}
+
+#[test]
 fn repeated_pending_cancellation_cannot_retarget_the_next_site() {
     use oxide_sim::stats::BuildingKind;
 

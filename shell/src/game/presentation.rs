@@ -86,6 +86,10 @@ pub struct Presentation {
     /// The frame's command panel, built once in draw_hud and read by
     /// the tooltip pass — building it twice per frame was pure waste.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
+    /// The selection's programs through the staged commands, shared by the
+    /// orders dock and the waypoint chain. A `RefCell` because drawing
+    /// borrows presentation.
+    pub(crate) projection: std::cell::RefCell<super::projection::Projection>,
     /// Whether the surrender overlay (banner + concede stats + the
     /// Esc-to-menu exit) is up. Presentation only; opening the pause
     /// menu dismisses it so spectating the ally stays unobstructed.
@@ -210,6 +214,24 @@ impl<'a> Scene<'a> {
     pub(crate) fn draw_hull_heading(&self, id: UnitId, alpha: f32) -> f32 {
         self.presentation.draw_hull_heading(self.state, id, alpha)
     }
+
+    /// The decorated selection's programs as the staged commands will leave
+    /// them. Callers drop the borrow before asking again.
+    pub(crate) fn projection(&self) -> std::cell::Ref<'a, super::projection::Projection> {
+        let units = crate::render::entities::decor_units(self);
+        let cache = &self.presentation.projection;
+        if !cache
+            .borrow()
+            .is_current(self.state.current_tick(), self.pending.len(), &units)
+        {
+            cache.replace(super::projection::Projection::capture(
+                self.state,
+                self.pending,
+                units,
+            ));
+        }
+        cache.borrow()
+    }
 }
 impl Presentation {
     pub(crate) fn new(state: &State, human: PlayerId, viewport: Vec2) -> Self {
@@ -260,6 +282,7 @@ impl Presentation {
             fx_clock: 0.0,
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             panel_model: std::cell::RefCell::new(None),
+            projection: std::cell::RefCell::default(),
             conceded_banner: false,
             spectate: false,
             accum: 0.0,
@@ -396,6 +419,7 @@ impl Presentation {
     /// must not replay as a burst of noise.
     pub fn drop_presentation(&mut self, state: &State) {
         self.fx.clear();
+        self.projection.take();
         self.restore_pending_crashes(state);
         self.sounds_pending.clear();
         self.toasts.clear();
