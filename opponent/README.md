@@ -30,22 +30,21 @@ own, siege for known enemy defenses and by preference, anti-air to answer three
 quarters of the enemy air it has seen (a seen enemy Airworks counts as air), and
 air strikes by preference once it has or is saving for an Airworks. Each idle
 producer trains for the most wanted role it can serve, or line units when
-nothing is wanted, choosing among its units by coarse suitability: reach against
-the enemy's usual reach, durability for the price, covering both enemy domains,
-splash against clustered enemies, affordability at the seat's income, and
-personality. Raiders, support units, scouts and transports are left to later
-behavior. A role it needs but cannot train at all adds to the investment score
-of the cheapest building that would let it.
+nothing is wanted, choosing the unit it can afford now by coarse suitability:
+reach against the enemy's usual reach, durability for the price, covering both
+enemy domains, splash against clustered enemies, affordability at the seat's
+income, and personality. Raiders, support units, scouts and transports are left
+to later behavior. A role it needs but cannot train at all adds to the
+investment score of the cheapest building that would let it.
 
 ## Investments and saving
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
-another Fabricator or Airworks when all of that kind are busy and income and
-unprotected scrap could keep one more working, an expansion Foundry at a scrap
-field away from every start, an Extractor on a free frame on its home ground,
-more Reclaimers (worth more with no expansion left), and Refinery upgrades.
-Saturated harvesting, time, income, home depletion, army needs and personality
-set the scores.
+another Fabricator or Airworks when all of that kind are busy and income could
+keep one more working, an expansion Foundry at a scrap field away from every
+start, an Extractor on a free frame on its home ground, more Reclaimers (worth
+more with no expansion left), and Refinery upgrades. Saturated harvesting, time,
+income, home depletion, army needs and personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile

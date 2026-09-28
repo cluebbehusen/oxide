@@ -62,8 +62,6 @@ pub(crate) struct Situation<'a> {
     pub(crate) income: u32,
     /// Per-mille share of the scrap around the start already mined.
     pub(crate) depletion: u32,
-    /// Scrap not protected for saving when the decision began.
-    pub(crate) spendable: u32,
     /// What unmet army needs add to buildings the seat lacks.
     pub(crate) pull: Vec<(BuildingKind, u32)>,
 }
@@ -224,10 +222,9 @@ fn requirement_step(
     build_step(observation, missing, depth - 1)
 }
 
-/// Whether every built producer of `kind` was busy when the decision began,
-/// income supports another at a minimum of 300 a minute each, and unprotected
-/// scrap covers two of its cheapest units. A producer already being built
-/// answers the need.
+/// Whether every built producer of `kind` was busy when the decision began
+/// and income could keep one more working at 300 a minute each. A producer
+/// already being built answers the need.
 fn busy(situation: &Situation<'_>, kind: BuildingKind) -> bool {
     let observation = situation.observation;
     let producers: Vec<bool> = observation
@@ -237,21 +234,9 @@ fn busy(situation: &Situation<'_>, kind: BuildingKind) -> bool {
         .filter(|(building, _)| building.kind == kind)
         .map(|(building, queue)| building.built && !queue.is_empty())
         .collect();
-    let cheapest = kind
-        .base_stats()
-        .produces
-        .iter()
-        .filter(|unit| {
-            unit.faction()
-                .is_none_or(|faction| faction == observation.faction)
-        })
-        .map(|unit| unit.stats().cost)
-        .min()
-        .unwrap_or(u32::MAX);
     !producers.is_empty()
         && producers.iter().all(|busy| *busy)
-        && situation.income >= 300 * producers.len() as u32
-        && situation.spendable >= cheapest.saturating_mul(2)
+        && situation.income >= 300 * (producers.len() as u32 + 1)
 }
 
 /// Own buildings of `kind`, built or not.

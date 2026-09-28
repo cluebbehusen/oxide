@@ -162,7 +162,7 @@ fn busy_producers_ask_for_another() {
     };
     state.tick(&[busy]);
     let observation = ObservationData::fog_honest(&state, PlayerId(0));
-    let wants = |income: u32, spendable: u32| {
+    let wants = |income: u32| {
         investments::candidates(&Situation {
             observation: &observation,
             map: &model,
@@ -178,7 +178,6 @@ fn busy_producers_ask_for_another() {
             saturation: 1_000,
             income,
             depletion: 0,
-            spendable,
             pull: Vec::new(),
         })
         .into_iter()
@@ -186,9 +185,11 @@ fn busy_producers_ask_for_another() {
         .collect::<Vec<_>>()
     };
     let another = Investment::Capacity(BuildingKind::Fabricator);
-    assert!(wants(400, 400).contains(&another));
-    assert!(!wants(200, 400).contains(&another), "income too low");
-    assert!(!wants(400, 100).contains(&another), "no scrap to use it");
+    assert!(wants(600).contains(&another));
+    assert!(
+        !wants(599).contains(&another),
+        "income for one more is too low"
+    );
 }
 
 #[test]
@@ -218,4 +219,37 @@ fn enemy_units_fade_and_vanish_when_their_spot_is_seen_empty() {
     empty.tick = 12;
     memory.observe(&empty);
     assert!(memory.units().is_empty(), "its spot is in sight and empty");
+}
+
+#[test]
+fn a_producer_trains_the_best_unit_it_can_afford() {
+    let clustered = [
+        (UnitKind::Harvester, 10, 9),
+        (UnitKind::Harvester, 11, 9),
+        (UnitKind::Harvester, 10, 10),
+        (UnitKind::Harvester, 11, 10),
+    ];
+    let mut scenario = armed(&clustered, &[(BuildingKind::Turret, 12, 9)]);
+    scenario.players[0].scrap = 150 + UnitKind::Sentinel.stats().cost;
+    let mut state = scenario.build().unwrap();
+    let busy = PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Train {
+            building: foundries(&state, PlayerId(0))[0],
+            kind: UnitKind::Sentinel,
+        },
+    };
+    advance_to(&mut state, 12, &[busy]);
+    let at = fabricator(&state);
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let trained: Vec<UnitKind> = trains(&commands)
+        .into_iter()
+        .filter(|(building, _)| *building == at)
+        .map(|(_, kind)| kind)
+        .collect();
+    assert!(
+        UnitKind::Bombard.stats().cost > 150,
+        "premise: the splash unit is out of reach"
+    );
+    assert_eq!(trained, [UnitKind::Lancer]);
 }

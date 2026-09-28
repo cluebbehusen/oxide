@@ -62,15 +62,19 @@ impl Saving {
         if let Some(target) = &mut self.target
             && let Some(attempt) = target.attempt.take()
         {
-            if confirmed(observation, attempt) {
-                if investments::completes(target.investment, attempt.step) {
-                    self.target = None;
+            match outcome(observation, attempt) {
+                Outcome::Placed => {
+                    if investments::completes(target.investment, attempt.step) {
+                        self.target = None;
+                    }
                 }
-            } else {
-                if let Step::Build(kind) = attempt.step {
-                    memory.fail(kind, attempt.anchor, observation.tick);
+                Outcome::Pending => target.attempt = Some(attempt),
+                Outcome::Missing => {
+                    if let Step::Build(kind) = attempt.step {
+                        memory.fail(kind, attempt.anchor, observation.tick);
+                    }
+                    refund = true;
                 }
-                refund = true;
             }
         }
         let current = self.target.and_then(|target| {
@@ -116,6 +120,11 @@ impl Saving {
         };
     }
 
+    /// Whether a purchase toward the target still awaits its site.
+    pub(crate) fn pending(&self) -> bool {
+        self.target.is_some_and(|target| target.attempt.is_some())
+    }
+
     /// Records a purchase toward the target for the next decision to check.
     /// The purchase spent what was protected for it.
     pub(crate) fn attempted(&mut self, step: Step, anchor: TilePos, at: u64) {
@@ -143,23 +152,45 @@ impl Saving {
     }
 }
 
-/// Whether a purchase shows up in the world: the building or its site at the
-/// anchor, a worker's claim on it, or the upgraded building.
-fn confirmed(observation: &ObservationData, attempt: Attempt) -> bool {
+/// What became of a purchase.
+enum Outcome {
+    /// The building, its physical site, or the upgrade stands.
+    Placed,
+    /// A provisional scaffold or a worker's claim still waits for its
+    /// ground to be confirmed, which can still refund it.
+    Pending,
+    /// Nothing stands: it was rejected, cancelled or refunded.
+    Missing,
+}
+
+fn outcome(observation: &ObservationData, attempt: Attempt) -> Outcome {
     match attempt.step {
         Step::Build(kind) => {
-            observation
+            let site = observation
                 .my_buildings
                 .iter()
-                .any(|building| building.kind == kind && building.anchor == attempt.anchor)
-                || observation
-                    .my_units
-                    .iter()
-                    .any(|unit| unit.founding == Some((kind, attempt.anchor)))
+                .find(|building| building.kind == kind && building.anchor == attempt.anchor);
+            let claimed = observation
+                .my_units
+                .iter()
+                .any(|unit| unit.founding == Some((kind, attempt.anchor)));
+            match site {
+                Some(site) if !site.provisional => Outcome::Placed,
+                Some(_) => Outcome::Pending,
+                None if claimed => Outcome::Pending,
+                None => Outcome::Missing,
+            }
         }
-        Step::Upgrade(id) => observation
-            .my_buildings
-            .iter()
-            .any(|building| building.id == id && building.tier > 0),
+        Step::Upgrade(id) => {
+            let upgraded = observation
+                .my_buildings
+                .iter()
+                .any(|building| building.id == id && building.tier > 0);
+            if upgraded {
+                Outcome::Placed
+            } else {
+                Outcome::Missing
+            }
+        }
     }
 }

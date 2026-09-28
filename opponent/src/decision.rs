@@ -226,7 +226,6 @@ pub(crate) fn decide(
         saturation: staffing.saturation(),
         income,
         depletion: depletion(observation, map),
-        spendable: observation.scrap - persistent.saving.protected().min(observation.scrap),
         pull: needs.pull(observation),
     };
     let candidates = investments::candidates(&situation);
@@ -277,6 +276,9 @@ fn buy(
     let Some(investment) = persistent.saving.investment() else {
         return;
     };
+    if persistent.saving.pending() {
+        return;
+    }
     let Some((step, price)) = investments::step(observation, investment) else {
         return;
     };
@@ -308,11 +310,12 @@ fn buy(
                     .map(|allowed| (anchor, allowed))
             });
             let Some((anchor, allowed)) = site else {
-                scout(observation, frame, &anchors, kind, ledger);
+                scout(observation, map, frame, &anchors, kind, ledger);
                 return;
             };
             let centre = footprint_centre(kind, anchor);
-            let Some(builder) = workers::builder(observation, frame, centre, ledger) else {
+            let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger)
+            else {
                 return;
             };
             ledger.build(builder, kind, anchor, allowed.defer, price);
@@ -326,6 +329,7 @@ fn buy(
 /// never seen, so the footprint can be checked once it is explored.
 fn scout(
     observation: &ObservationData,
+    map: &MapModel,
     frame: HomeFrame,
     anchors: &[TilePos],
     kind: BuildingKind,
@@ -339,7 +343,7 @@ fn scout(
         return;
     };
     let centre = footprint_centre(kind, anchor);
-    if let Some(builder) = workers::builder(observation, frame, centre, ledger) {
+    if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger) {
         ledger.order(Command::Move {
             units: vec![builder],
             goal: anchor,
@@ -379,7 +383,8 @@ fn produce(
         if !producer.idle || ledger.queued_at(producer.building.id) {
             continue;
         }
-        let Some(kind) = needs.choose(observation, producer.building.kind) else {
+        let Some(kind) = needs.choose(observation, producer.building.kind, ledger.spendable())
+        else {
             continue;
         };
         if ledger.train(producer.building.id, kind) {
