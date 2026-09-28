@@ -2423,6 +2423,12 @@
   128,
   128
  ],
+ "extractor_accent_work4": [
+  1586,
+  1322,
+  128,
+  128
+ ],
  "extractor_cupric": [
   2906,
   1322,
@@ -2483,6 +2489,12 @@
   128,
   128
  ],
+ "extractor_cupric_work4": [
+  2906,
+  1322,
+  128,
+  128
+ ],
  "extractor_ferrous": [
   134,
   1454,
@@ -2539,6 +2551,12 @@
  ],
  "extractor_ferrous_work3": [
   1322,
+  1454,
+  128,
+  128
+ ],
+ "extractor_ferrous_work4": [
+  134,
   1454,
   128,
   128

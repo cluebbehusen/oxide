@@ -139,7 +139,7 @@ def install_machines(registry: dict[str, Image.Image], out: Path) -> None:
             ("crucible", 3),
             ("repair_bay", 4),
             ("array", 6),
-            ("extractor", 3),
+            ("extractor", 4),
             ("reclaimer", 3),
             ("reclaimer_t1", 3),
         ):
