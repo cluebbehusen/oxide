@@ -449,9 +449,12 @@ hp. A non-stealthy footprint blocks ground from that command onward; the buried
 Scuttle Charge is the deliberate exception. Harvesters raise the site over time.
 Wreck salvage beneath a site remains, with ordinary decay, until the first crew
 work clears its footprint. Cancelling before that work preserves the salvage. A
-deferred build pays for one provisional scaffold and installs a `Found` program
-for its workers. Provisional scaffolds provide no vision, physical occupancy,
-damage target, or construction progress. Once the owner's team sees the entire
+deferred build requires explored ground, except that discovering any tile of an
+Extractor frame makes its entire authored footprint eligible. Known occupants
+still block the order, including remembered enemy claims. An accepted deferred
+build pays for one provisional scaffold and installs a `Found` program for its
+workers. Provisional scaffolds provide no vision, physical occupancy, damage
+target, or construction progress. Once the owner's team sees the entire
 footprint, the simulation checks placement against that knowledge: a blocker
 cancels the scaffold with a full refund; clear ground activates its occupancy
 and converts every matching worker commitment to `Build` using the same building
