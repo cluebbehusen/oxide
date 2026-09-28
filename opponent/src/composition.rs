@@ -122,7 +122,9 @@ impl Enemy {
                 );
             }
         }
-        let recent: Vec<_> = memory.units().iter().rev().take(32).collect();
+        let mut recent: Vec<_> = memory.units().iter().collect();
+        recent.sort_by_key(|unit| (Reverse(unit.seen), unit.id));
+        recent.truncate(32);
         enemy.clustered = recent.iter().any(|unit| {
             recent
                 .iter()
@@ -208,11 +210,14 @@ impl Needs {
             .or_else(|| roles.into_iter().find(|role| *role == Role::Line))
     }
 
-    /// The best unit `producer` can train now, for its most wanted role.
+    /// The best unit `producer` can train now for its most wanted role within
+    /// `budget`. A better unit it cannot afford yet gives way to the best one
+    /// it can, since other producers spend the scrap meanwhile.
     pub(crate) fn choose(
         &self,
         observation: &ObservationData,
         producer: BuildingKind,
+        budget: u32,
     ) -> Option<UnitKind> {
         let options: Vec<UnitKind> = producible(observation, producer).collect();
         let role = self.pick(
@@ -222,7 +227,7 @@ impl Needs {
         )?;
         options
             .into_iter()
-            .filter(|kind| self::role(*kind) == Some(role))
+            .filter(|kind| self::role(*kind) == Some(role) && kind.stats().cost <= budget)
             .max_by_key(|kind| (self.suitability(*kind, role), Reverse(kind.stats().cost)))
     }
 
@@ -389,5 +394,39 @@ mod tests {
         };
         assert!(prefers(true));
         assert!(!prefers(false));
+    }
+
+    #[test]
+    fn clustering_reads_the_most_recently_seen_enemies() {
+        use oxide_sim::observation::UnitObs;
+        use oxide_sim::{PlayerId, Scenario, UnitId};
+        let state = Scenario::skirmish().build().unwrap();
+        let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+        let template = observation.my_units[0].clone();
+        let unit = |id: u32, x: i32, y: i32| UnitObs {
+            id: UnitId(id),
+            kind: UnitKind::Sentinel,
+            tile: chassis::grid::TilePos::new(x, y),
+            ..template.clone()
+        };
+        observation
+            .visible
+            .iter_mut()
+            .for_each(|visible| *visible = false);
+        observation.enemy_units = (0..36)
+            .map(|index| unit(100 + index, (index % 6) as i32 * 6, (index / 6) as i32 * 4))
+            .collect();
+        let mut memory = Memory::default();
+        memory.observe(&observation);
+        assert!(
+            !Enemy::of(&observation, &memory).clustered,
+            "premise: spread out"
+        );
+        observation.tick = 300;
+        observation.enemy_units = (1..=4)
+            .map(|index| unit(index, 20 + (index % 2) as i32, 20 + (index / 2) as i32))
+            .collect();
+        memory.observe(&observation);
+        assert!(Enemy::of(&observation, &memory).clustered);
     }
 }

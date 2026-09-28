@@ -30,23 +30,23 @@ own, siege for known enemy defenses and by preference, anti-air to answer three
 quarters of the enemy air it has seen (a seen enemy Airworks counts as air), and
 air strikes by preference once it has or is saving for an Airworks. Each idle
 producer trains for the most wanted role it can serve, or line units when
-nothing is wanted, choosing among its units by coarse suitability: reach against
-the enemy's usual reach, durability for the price, covering both enemy domains,
-splash against clustered enemies, affordability at the seat's income, and
-personality. Raiders, support units, scouts and transports are left to later
-behavior. A role it needs but cannot train at all adds to the investment score
-of the cheapest building that would let it.
+nothing is wanted, choosing the unit it can afford now by coarse suitability:
+reach against the enemy's usual reach, durability for the price, covering both
+enemy domains, splash against clustered enemies, affordability at the seat's
+income, and personality. Raiders, support units, scouts and transports are left
+to later behavior. A role it needs but cannot train at all adds to the
+investment score of the cheapest building that would let it.
 
 ## Investments and saving
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
-another Fabricator or Airworks when all of that kind are busy and income and
-unprotected scrap could keep one more working, more Reclaimers, and Refinery
-upgrades. Saturated harvesting, time, income, home depletion, army needs and
-personality set the scores. The seat saves for one target at a time. It starts
-saving only for an investment that scores well, keeps it while it still scores,
-and switches only for one that scores clearly higher. Prerequisites come first:
-saving for Airworks buys a Fabricator.
+another Fabricator or Airworks when all of that kind are busy and income could
+keep one more working, more Reclaimers, and Refinery upgrades. Saturated
+harvesting, time, income, home depletion, army needs and personality set the
+scores. The seat saves for one target at a time. It starts saving only for an
+investment that scores well, keeps it while it still scores, and switches only
+for one that scores clearly higher. Prerequisites come first: saving for
+Airworks buys a Fabricator.
 
 While saving, a share of the seat's estimated income is protected from ordinary
 spending, up to the next purchase's price. Stance and greed set the share, and

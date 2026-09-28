@@ -224,7 +224,6 @@ pub(crate) fn decide(
         saturation: staffing.saturation(),
         income,
         depletion: depletion(observation, map),
-        spendable: observation.scrap - persistent.saving.protected().min(observation.scrap),
         pull: needs.pull(observation),
     };
     let candidates = investments::candidates(&situation);
@@ -355,7 +354,8 @@ fn produce(
         if !producer.idle || ledger.queued_at(producer.building.id) {
             continue;
         }
-        let Some(kind) = needs.choose(observation, producer.building.kind) else {
+        let Some(kind) = needs.choose(observation, producer.building.kind, ledger.spendable())
+        else {
             continue;
         };
         if ledger.train(producer.building.id, kind) {

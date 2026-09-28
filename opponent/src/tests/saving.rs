@@ -326,7 +326,6 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             saturation: 1_000,
             income: 400,
             depletion: 0,
-            spendable: 0,
             pull: Vec::new(),
         })
         .into_iter()
