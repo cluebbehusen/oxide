@@ -1,10 +1,12 @@
 //! Controller persistence. The profile and decision interval rebuild from the
-//! scenario, so a checkpoint holds only the seat.
+//! scenario and the map model is shared scenario data, so a checkpoint holds
+//! only the seat.
 
-use crate::Opponent;
+use crate::{MapModel, Opponent};
 use oxide_sim::scenario::BotController;
 use oxide_sim::{PlayerId, Scenario, State};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// The non-derivable state one seat needs to continue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,11 +24,13 @@ impl Opponent {
     }
 
     /// Restores a seat at a completed simulation boundary. The seat must be a
-    /// configured `oxide-opponent` bot in both the scenario and the world.
+    /// configured `oxide-opponent` bot in both the scenario and the world, and
+    /// `map` the model built from that scenario.
     pub fn restore(
         checkpoint: &Checkpoint,
         scenario: &Scenario,
         state: &State,
+        map: Arc<MapModel>,
     ) -> Result<Self, String> {
         let seat = usize::from(checkpoint.player.0);
         let spec = scenario
@@ -41,6 +45,6 @@ impl Opponent {
         if config.controller != BotController::Opponent {
             return Err("checkpoint seat is not an oxide-opponent seat".into());
         }
-        Ok(Self::new(checkpoint.player, config))
+        Ok(Self::new(checkpoint.player, config, map))
     }
 }

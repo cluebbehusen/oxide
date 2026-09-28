@@ -1,33 +1,41 @@
 #![doc = include_str!("../README.md")]
 
 mod checkpoint;
+mod decision;
 mod events;
-mod policy;
+mod frame;
+mod map;
 mod profile;
 mod trace;
+mod workers;
 
 pub use checkpoint::Checkpoint;
 pub use events::{OwnEvent, OwnEvents};
+pub use map::MapModel;
 pub use profile::{PersonalityTraits, ResolvedProfile, Specialty};
 pub use trace::{Purchase, Trace};
 
 use oxide_sim::observation::ObservationData;
 use oxide_sim::scenario::{BotConfig, BotDifficulty};
 use oxide_sim::{BuildingKind, PlayerCommand, PlayerId, State};
+use std::sync::Arc;
 
 /// One seat driven by `oxide-opponent`.
 #[derive(Debug, Clone)]
 pub struct Opponent {
     player: PlayerId,
     profile: ResolvedProfile,
+    map: Arc<MapModel>,
 }
 
 impl Opponent {
-    /// Creates the controller for `player` from its scenario configuration.
-    pub fn new(player: PlayerId, config: BotConfig) -> Self {
+    /// Creates the controller for `player` from its scenario configuration and
+    /// the match's shared map model.
+    pub fn new(player: PlayerId, config: BotConfig, map: Arc<MapModel>) -> Self {
         Self {
             player,
             profile: ResolvedProfile::resolve(config),
+            map,
         }
     }
 
@@ -75,6 +83,7 @@ impl Opponent {
             spent: decision.spent,
             purchases: decision.purchases,
             unit_orders: decision.unit_orders,
+            allowance: decision.allowance,
         };
         (decision.commands, Some(trace))
     }
@@ -83,7 +92,7 @@ impl Opponent {
         &self,
         state: &State,
         events: &mut OwnEvents,
-    ) -> Option<(ObservationData, Vec<OwnEvent>, policy::Decision)> {
+    ) -> Option<(ObservationData, Vec<OwnEvent>, decision::Decision)> {
         if !self.decision_due(state)
             || state.player(self.player).resigned
             || !state.buildings().iter().any(|building| {
@@ -96,7 +105,7 @@ impl Opponent {
         }
         let observation = ObservationData::fog_honest(state, self.player);
         let events = events.take();
-        let decision = policy::decide(&observation);
+        let decision = decision::decide(&observation, &self.map, self.profile.difficulty);
         Some((observation, events, decision))
     }
 }

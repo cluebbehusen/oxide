@@ -22,6 +22,8 @@ pub struct Trace {
     pub purchases: Vec<Purchase>,
     /// Orders issued to units, not counting purchases.
     pub unit_orders: u32,
+    /// Unit orders the decision could have issued.
+    pub allowance: u32,
 }
 
 /// One queued unit.

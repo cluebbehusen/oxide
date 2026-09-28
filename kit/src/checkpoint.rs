@@ -225,10 +225,13 @@ impl SessionCheckpoint {
             self.bots.len() == self.expected_seats().len(),
             "controller roster mismatch"
         );
+        let opponent_map = crate::controller::OpponentMap::new(&self.scenario);
         let bots = self
             .bots
             .iter()
-            .map(|checkpoint| SeatController::restore(checkpoint, &self.scenario, &self.state))
+            .map(|checkpoint| {
+                SeatController::restore(checkpoint, &self.scenario, &self.state, &opponent_map)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map_err(anyhow::Error::msg)?;
         ensure!(
