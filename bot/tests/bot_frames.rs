@@ -32,7 +32,7 @@ fn a_partially_discovered_frame_receives_an_accepted_deferred_bot_build() {
         if remembered {
             state.tick(&[cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![scout],
                     goal: TilePos::new(3, 14),
                     queue: false,

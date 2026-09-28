@@ -252,7 +252,7 @@ fn one_explored_corner_allows_deferred_extractor_construction() {
             if remembered {
                 state.tick(&[cmd(
                     0,
-                    Command::Move {
+                    Command::Run {
                         units: vec![worker],
                         goal: TilePos::new(if x < FOG_FRAME.x { 3 } else { 27 }, y),
                         queue: false,
@@ -355,7 +355,7 @@ fn one_visible_corner_discloses_an_enemy_extractor_site() {
     let observer = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![observer],
             goal: TilePos::new(3, 4),
             queue: false,
