@@ -46,6 +46,13 @@ exporter's identity. Source archives report unknown provenance.
   leave hidden staging files or a partial replay set because arbitrary final
   paths cannot be published atomically; inspect and remove that incomplete
   batch, then rerun it under a fresh candidate.
+- `bot_cost` times controller decisions on named workloads: a Skirmish duel, the
+  seven-bot Skyhook game, and a staged mature-army match kept under
+  `tests/fixtures/performance/` so it stays out of the shipped pool. It reports
+  average and p99 wall time per decision, total CPU, and the fog-honest
+  observation and `oxide-bot` orientation costs, per seat and per controller.
+  Seats decide serially with tracing off; its command and final hashes equal an
+  untimed run.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
   combat behavior.
