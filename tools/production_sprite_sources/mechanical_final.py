@@ -140,8 +140,8 @@ def install_machines(registry: dict[str, Image.Image], out: Path) -> None:
             ("repair_bay", 4),
             ("array", 6),
             ("extractor", 4),
-            ("reclaimer", 3),
-            ("reclaimer_t1", 3),
+            ("reclaimer", economy.RECLAIMER_WORK_FRAMES),
+            ("reclaimer_t1", economy.RECLAIMER_WORK_FRAMES),
         ):
             render = {
                 "extractor": extractor.render_extractor,

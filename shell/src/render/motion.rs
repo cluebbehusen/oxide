@@ -243,7 +243,7 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
                 BuildingBodyFrame::Work(cycle_index(cycle, 4))
             }
             BuildingActivity::Reclaiming { cycle } => {
-                BuildingBodyFrame::Work(cycle_index(cycle, 3))
+                BuildingBodyFrame::Work(cycle_index(cycle, 12))
             }
             BuildingActivity::RepairPulse { progress } => {
                 BuildingBodyFrame::Work(cycle_index(progress, 4))
@@ -978,7 +978,7 @@ mod tests {
         state.activity = BuildingActivity::Reclaiming { cycle: 0.99 };
         assert_eq!(
             building_frame(BuildingKind::Reclaimer, state).body,
-            BuildingBodyFrame::Work(2)
+            BuildingBodyFrame::Work(11)
         );
     }
 
