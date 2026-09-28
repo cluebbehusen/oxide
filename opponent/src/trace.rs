@@ -2,7 +2,9 @@
 //! memory, simulation state or replay input.
 
 use crate::OwnEvent;
-use oxide_sim::{BuildingId, PlayerId, UnitKind};
+use crate::investments::{Investment, Step};
+use chassis::grid::TilePos;
+use oxide_sim::{BuildingId, BuildingKind, PlayerId, UnitKind};
 use serde::Serialize;
 
 /// What one decision saw and did.
@@ -18,19 +20,58 @@ pub struct Trace {
     pub events: Vec<OwnEvent>,
     /// Scrap the decision's purchases committed.
     pub spent: u32,
-    /// Units queued, in command order.
+    /// Purchases, in command order.
     pub purchases: Vec<Purchase>,
     /// Orders issued to units, not counting purchases.
     pub unit_orders: u32,
     /// Unit orders the decision could have issued.
     pub allowance: u32,
+    /// The investment the seat was saving for.
+    pub target: Option<SavingTarget>,
+    /// Scrap held back from ordinary spending after the decision.
+    pub protected: u32,
 }
 
-/// One queued unit.
+/// One purchase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Purchase {
-    /// The producing building.
-    pub building: BuildingId,
-    /// The unit queued there.
-    pub kind: UnitKind,
+#[serde(tag = "purchase", rename_all = "snake_case")]
+pub enum Purchase {
+    /// A unit queued at a producer.
+    Train {
+        /// The producing building.
+        building: BuildingId,
+        /// The unit queued there.
+        unit: UnitKind,
+    },
+    /// A building placed.
+    Build {
+        /// What was placed.
+        building: BuildingKind,
+        /// Its footprint anchor.
+        anchor: TilePos,
+    },
+    /// A building upgraded.
+    Upgrade {
+        /// The upgraded building.
+        building: BuildingId,
+    },
+}
+
+/// A saving target as one decision saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SavingTarget {
+    /// What the seat was saving for.
+    pub investment: Investment,
+    /// The next purchase toward it, unless a prerequisite was still being
+    /// built.
+    pub next: Option<NextPurchase>,
+}
+
+/// The next purchase toward a saving target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NextPurchase {
+    /// The purchase.
+    pub step: Step,
+    /// Its price.
+    pub price: u32,
 }

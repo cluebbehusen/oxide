@@ -133,6 +133,15 @@ impl SeatController {
         }
     }
 
+    /// Scrap the seat is holding back for a saving target. `oxide-bot` holds
+    /// none back this way.
+    pub fn protected_scrap(&self) -> u32 {
+        match self {
+            Self::Scripted(_) => 0,
+            Self::Opponent { controller, .. } => controller.protected_scrap(),
+        }
+    }
+
     /// Whether this seat is scheduled to decide at this tick. A due seat can
     /// still produce no commands.
     pub fn decision_due(&self, state: &State) -> bool {
@@ -359,10 +368,8 @@ mod tests {
             .map(|seat| seat.checkpoint().unwrap())
             .collect();
         let json = serde_json::to_value(&checkpoints).unwrap();
-        assert_eq!(
-            json[0],
-            serde_json::json!({"opponent": {"controller": {"player": 0}, "events": []}})
-        );
+        assert_eq!(json[0]["opponent"]["controller"]["player"], 0);
+        assert_eq!(json[0]["opponent"]["events"], serde_json::json!([]));
         assert!(json[1]["scripted"].is_object());
         let decoded: Vec<ControllerCheckpoint> = serde_json::from_value(json).unwrap();
         let opponent_map = OpponentMap::new(&scenario);
@@ -399,6 +406,29 @@ mod tests {
         let config = scripted_only.players[1].bot_config.unwrap();
         SeatController::configured(PlayerId(1), config, &public_map, &opponent_map).unwrap();
         assert!(opponent_map.model.get().is_none());
+    }
+
+    #[test]
+    fn hosts_read_the_scrap_an_opponent_protects() {
+        let scenario = mixed_skirmish();
+        let mut state = scenario.build().unwrap();
+        let mut seats = seat_controllers(&scenario).unwrap();
+        let mut protected = false;
+        while state.current_tick() < 2_400 {
+            let mut commands = Vec::new();
+            for seat in &mut seats {
+                let (decided, trace) = seat.act_traced(&state);
+                if let Some(SeatTrace::Opponent(trace)) = trace {
+                    assert_eq!(trace.protected, seat.protected_scrap());
+                    protected |= trace.protected > 0;
+                }
+                commands.extend(decided);
+            }
+            let report = state.tick(&commands);
+            record_events(&mut seats, &report);
+        }
+        assert!(protected, "premise: the opponent saved for something");
+        assert_eq!(seats[1].protected_scrap(), 0, "oxide-bot protects nothing");
     }
 
     #[test]

@@ -722,9 +722,6 @@ fn evaluate_plan_artifact_impl(
     let watched: Vec<bool> = plan.controllers.iter().map(Option::is_some).collect();
     let mut failures = failures::FailureDetectors::new(watched.iter().copied());
     let mut income = income::IncomeTracker::new(&state, watched);
-    // Scrap each seat's controller reports holding back for a saving target.
-    // No controller reports it yet, so starvation weighs the whole bank.
-    let protected = vec![0_u32; scenario.players.len()];
 
     let mut stall_loop = None;
     'run: while state.current_tick() < tick_limit && state.result().is_none() {
@@ -766,6 +763,10 @@ fn evaluate_plan_artifact_impl(
         }
         income.observe(&state, &report.events, QA_CHECK_PERIOD);
         if tick.is_multiple_of(QA_CHECK_PERIOD) {
+            let mut protected = vec![0_u32; scenario.players.len()];
+            for bot in &bots {
+                protected[usize::from(bot.player().0)] = bot.protected_scrap();
+            }
             failures.check(&state, tick, &protected);
         }
     }

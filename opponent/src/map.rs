@@ -2,10 +2,17 @@
 //! map. Terrain and the authored starts never change, so nothing here depends
 //! on what any seat has seen, and every seat of a match shares one model.
 
+use crate::frame::{HomeFrame, footprint_centre};
 use chassis::grid::{Grid, TilePos};
 use oxide_sim::map::Map;
 use oxide_sim::scenario::ScenarioError;
-use oxide_sim::{PlayerId, Scenario};
+use oxide_sim::{BuildingKind, PlayerId, Scenario};
+
+/// Empty tiles between a home spot and the start Foundry.
+const SPOT_GAPS: std::ops::RangeInclusive<i32> = 2..=5;
+
+/// Chebyshev reach from a start that counts as its home scrap.
+const HOME_REACH: i32 = 12;
 
 /// Public map facts one match's `oxide-opponent` seats share.
 #[derive(Debug)]
@@ -15,25 +22,63 @@ pub struct MapModel {
     components: Grid<u32>,
     /// Each seat's authored Foundry anchor, by player index.
     starts: Vec<Option<TilePos>>,
+    /// Each seat's home building spots, by player index.
+    spots: Vec<Vec<TilePos>>,
+    /// Each seat's starting scrap nodes near its start, with their amounts.
+    home_nodes: Vec<Vec<(TilePos, u32)>>,
 }
 
 impl MapModel {
     /// Builds the model from the scenario's authored map.
     pub fn from_scenario(scenario: &Scenario) -> Result<Self, ScenarioError> {
         let (map, anchors) = scenario.parse_map_and_anchors()?;
-        let mut starts = vec![None; scenario.players.len()];
+        Ok(Self::new(&map, &anchors, scenario.players.len()))
+    }
+
+    fn new(map: &Map, anchors: &[(PlayerId, TilePos)], seats: usize) -> Self {
+        let components = components(map);
+        let mut starts = vec![None; seats];
+        let mut spots = vec![Vec::new(); seats];
+        let mut home_nodes = vec![Vec::new(); seats];
         for (player, anchor) in anchors {
-            starts[usize::from(player.0)] = Some(anchor);
+            let seat = usize::from(player.0);
+            starts[seat] = Some(*anchor);
+            spots[seat] = home_spots(map, &components, *anchor);
+            home_nodes[seat] = map
+                .iter()
+                .filter(|(tile, cell)| cell.scrap > 0 && tile.chebyshev(*anchor) <= HOME_REACH)
+                .map(|(tile, cell)| (tile, cell.scrap))
+                .collect();
         }
-        Ok(Self {
-            components: components(&map),
+        Self {
+            components,
             starts,
-        })
+            spots,
+            home_nodes,
+        }
     }
 
     /// The seat's authored Foundry anchor, if the scenario places one.
     pub(crate) fn start(&self, player: PlayerId) -> Option<TilePos> {
         self.starts.get(usize::from(player.0)).copied().flatten()
+    }
+
+    /// Anchors for the seat's home buildings, nearest its start first. Each
+    /// is a two-by-two footprint of open ground in the start's component, off
+    /// every frame and a tile clear of starting scrap; smaller buildings use
+    /// its top-left corner.
+    pub(crate) fn spots(&self, player: PlayerId) -> &[TilePos] {
+        self.spots
+            .get(usize::from(player.0))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The seat's starting scrap nodes near its start, with their starting
+    /// amounts.
+    pub(crate) fn home_nodes(&self, player: PlayerId) -> &[(TilePos, u32)] {
+        self.home_nodes
+            .get(usize::from(player.0))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The ground component holding `tile`, or `None` where ground units
@@ -54,6 +99,37 @@ impl MapModel {
             })
         })
     }
+}
+
+/// Home spots around `start`, ordered by their gap to the start Foundry and
+/// then in the seat's frame, so mirrored seats list mirrored spots.
+fn home_spots(map: &Map, components: &Grid<u32>, start: TilePos) -> Vec<TilePos> {
+    let Some(home) = components.get(start).copied().filter(|label| *label != 0) else {
+        return Vec::new();
+    };
+    let frame = HomeFrame::at(start, map.width(), map.height());
+    let reach = SPOT_GAPS.end() + 2;
+    let mut spots: Vec<(i32, TilePos)> = Vec::new();
+    for y in start.y - reach..=start.y + reach {
+        for x in start.x - reach..=start.x + reach {
+            let anchor = TilePos::new(x, y);
+            let gap = (anchor.x - start.x).abs().max((anchor.y - start.y).abs()) - 2;
+            let footprint = (0..2).flat_map(|dy| (0..2).map(move |dx| anchor.offset(dx, dy)));
+            let open = footprint.clone().all(|tile| {
+                components.get(tile) == Some(&home) && !map.tile_in_extractor_frame(tile)
+            });
+            let clear =
+                (-1..=2).all(|dy| (-1..=2).all(|dx| map.scrap_at(anchor.offset(dx, dy)) == 0));
+            if SPOT_GAPS.contains(&gap) && open && clear {
+                spots.push((gap, anchor));
+            }
+        }
+    }
+    spots.sort_by_key(|(gap, anchor)| {
+        let centre = footprint_centre(BuildingKind::Foundry, *anchor);
+        (*gap, frame.rank(frame.home, centre))
+    });
+    spots.into_iter().map(|(_, anchor)| anchor).collect()
 }
 
 /// Labels 4-connected open ground. Diagonal steps never cut corners, so this
@@ -107,14 +183,7 @@ mod tests {
 
     fn model(rows: &[&str]) -> MapModel {
         let (map, anchors) = Map::parse(rows).unwrap();
-        let mut starts = vec![None; 2];
-        for (player, anchor) in anchors {
-            starts[usize::from(player.0)] = Some(anchor);
-        }
-        MapModel {
-            components: components(&map),
-            starts,
-        }
+        MapModel::new(&map, &anchors, 2)
     }
 
     #[test]
@@ -142,6 +211,43 @@ mod tests {
     }
 
     #[test]
+    fn home_spots_leave_room_around_the_start_and_mirror_between_seats() {
+        const ROOM: [&str; 16] = [
+            "####################",
+            "#..................#",
+            "#..................#",
+            "#..s...............#",
+            "#..................#",
+            "#....1.............#",
+            "#..................#",
+            "#..................#",
+            "#..................#",
+            "#............2.....#",
+            "#..................#",
+            "#..................#",
+            "#...............s..#",
+            "#..................#",
+            "#..................#",
+            "####################",
+        ];
+        let model = model(&ROOM);
+        let west = model.spots(PlayerId(0));
+        let east = model.spots(PlayerId(1));
+        assert!(!west.is_empty());
+        let start = model.start(PlayerId(0)).unwrap();
+        for spot in west {
+            let gap = (spot.x - start.x).abs().max((spot.y - start.y).abs()) - 2;
+            assert!(SPOT_GAPS.contains(&gap), "{spot:?}");
+            let crowds =
+                (spot.x - 1..=spot.x + 2).contains(&3) && (spot.y - 1..=spot.y + 2).contains(&3);
+            assert!(!crowds, "{spot:?} crowds the scrap");
+        }
+        let rotate = |anchor: TilePos| TilePos::new(20 - 2 - anchor.x, 16 - 2 - anchor.y);
+        assert_eq!(west.iter().copied().map(rotate).collect::<Vec<_>>(), east);
+        assert_eq!(model.spots(PlayerId(2)), &[] as &[TilePos]);
+    }
+
+    #[test]
     fn every_shipped_scenario_builds_a_model_with_every_start_on_ground() {
         let scenarios = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios"))
             .unwrap()
@@ -156,6 +262,11 @@ mod tests {
             for seat in 0..scenario.players.len() {
                 let start = model.start(PlayerId(seat as u8)).unwrap();
                 assert!(model.component(start).is_some(), "{}", path.display());
+                assert!(
+                    model.spots(PlayerId(seat as u8)).len() >= 8,
+                    "{} seat {seat}",
+                    path.display()
+                );
             }
         }
     }

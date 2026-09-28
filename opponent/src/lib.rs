@@ -4,16 +4,22 @@ mod checkpoint;
 mod decision;
 mod events;
 mod frame;
+mod income;
+mod investments;
 mod map;
+mod memory;
+mod placement;
 mod profile;
+mod saving;
 mod trace;
 mod workers;
 
 pub use checkpoint::Checkpoint;
 pub use events::{OwnEvent, OwnEvents};
+pub use investments::{Investment, Step};
 pub use map::MapModel;
 pub use profile::{PersonalityTraits, ResolvedProfile, Specialty};
-pub use trace::{Purchase, Trace};
+pub use trace::{NextPurchase, Purchase, SavingTarget, Trace};
 
 use oxide_sim::observation::ObservationData;
 use oxide_sim::scenario::{BotConfig, BotDifficulty};
@@ -26,6 +32,7 @@ pub struct Opponent {
     player: PlayerId,
     profile: ResolvedProfile,
     map: Arc<MapModel>,
+    persistent: decision::Persistent,
 }
 
 impl Opponent {
@@ -36,7 +43,13 @@ impl Opponent {
             player,
             profile: ResolvedProfile::resolve(config),
             map,
+            persistent: decision::Persistent::default(),
         }
+    }
+
+    /// Scrap the seat is holding back for its saving target.
+    pub fn protected_scrap(&self) -> u32 {
+        self.persistent.saving.protected()
     }
 
     /// The seat this controller drives.
@@ -84,12 +97,14 @@ impl Opponent {
             purchases: decision.purchases,
             unit_orders: decision.unit_orders,
             allowance: decision.allowance,
+            target: decision.target,
+            protected: decision.protected,
         };
         (decision.commands, Some(trace))
     }
 
     fn decide(
-        &self,
+        &mut self,
         state: &State,
         events: &mut OwnEvents,
     ) -> Option<(ObservationData, Vec<OwnEvent>, decision::Decision)> {
@@ -105,7 +120,16 @@ impl Opponent {
         }
         let observation = ObservationData::fog_honest(state, self.player);
         let events = events.take();
-        let decision = decision::decide(&observation, &self.map, self.profile.difficulty);
+        let rejected = events
+            .iter()
+            .any(|event| matches!(event, OwnEvent::CommandRejected { .. }));
+        let decision = decision::decide(
+            &observation,
+            rejected,
+            &self.map,
+            &self.profile,
+            &mut self.persistent,
+        );
         Some((observation, events, decision))
     }
 }

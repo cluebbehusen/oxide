@@ -72,7 +72,7 @@ exact-allocation, forecasting or planning-progress requirements.
 - **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
   writes one JSONL row per decision. Opponent seats' rows carry this crate's
   `Trace`: tick, player, bank, received own events, spent, purchases, unit-order
-  count and allowance.
+  count, allowance, saving target and protected scrap.
 
 ## Report at handoff
 
@@ -135,9 +135,8 @@ controlled seat. They never reach a controller.
 - **Starved production:** every built producer of the seat stays idle for 1,200
   ticks while the bank, less scrap this bot protects for a saving target, covers
   the cheapest unit any of them may legally train. Queueing anything ends the
-  episode. The trace does not report protected scrap yet, so the whole bank
-  counts. Rows also list each producer's idle, affordable ticks as a diagnostic,
-  not an incident.
+  episode. Rows also list each producer's idle, affordable ticks as a
+  diagnostic, not an incident.
 
 Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation

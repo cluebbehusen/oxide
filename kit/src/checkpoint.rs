@@ -546,10 +546,8 @@ mod tests {
         }
         let captured = SessionCheckpoint::capture(&scenario, &state, &bots, &[], None).unwrap();
         let json = serde_json::to_value(&captured).unwrap();
-        assert_eq!(
-            json["bots"][0],
-            serde_json::json!({"opponent": {"controller": {"player": 0}, "events": []}})
-        );
+        assert_eq!(json["bots"][0]["opponent"]["controller"]["player"], 0);
+        assert_eq!(json["bots"][0]["opponent"]["events"], serde_json::json!([]));
         assert!(json["bots"][1]["scripted"].is_object());
 
         let mut restored = serde_json::from_value::<SessionCheckpoint>(json.clone())
