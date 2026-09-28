@@ -12,7 +12,7 @@
 //! all-baseline cell reproduces a direct configured-bot mirror run bit
 //! for bit (a test pins that against the sim stepped by hand).
 
-use crate::sweep::{SweepOutcome, Tally, outcome_of, play_mirror};
+use crate::sweep::{SweepOutcome, Tally, outcome_of, play_mirror, wilson};
 use anyhow::{Context, Result};
 #[cfg(test)]
 use oxide_sim::PlayerId;
@@ -566,19 +566,6 @@ fn roster_record(matches: &[FactorialMatch]) -> Option<RosterRecord> {
     })
 }
 
-/// The 95% Wilson score interval for `wins` of `n` — the interval that
-/// stays inside 0..1 and stays honest at the small per-cell counts a
-/// factorial design produces.
-fn wilson(wins: u32, n: u32) -> [f64; 2] {
-    const Z: f64 = 1.959_963_984_540_054;
-    let n = f64::from(n);
-    let p = f64::from(wins) / n;
-    let denominator = 1.0 + Z * Z / n;
-    let centre = (p + Z * Z / (2.0 * n)) / denominator;
-    let half = Z / denominator * (p * (1.0 - p) / n + Z * Z / (4.0 * n * n)).sqrt();
-    [(centre - half).max(0.0), (centre + half).min(1.0)]
-}
-
 /// Plays one cell on one seed. The all-baseline cell is a plain
 /// configured-bot mirror match: the scenario as authored and seat-order
 /// commands.
@@ -1037,17 +1024,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("only once"), "{err}");
-    }
-
-    /// The interval brackets the point estimate and never leaves 0..1.
-    #[test]
-    fn the_wilson_interval_stays_inside_the_unit_range() {
-        for (wins, n) in [(0u32, 1u32), (1, 1), (0, 8), (8, 8), (3, 7), (40, 95)] {
-            let [lo, hi] = wilson(wins, n);
-            let p = f64::from(wins) / f64::from(n);
-            assert!((0.0..=1.0).contains(&lo) && (0.0..=1.0).contains(&hi));
-            assert!(lo <= p && p <= hi, "{wins}/{n} -> [{lo}, {hi}]");
-        }
     }
 
     /// An unknown factor names the ones that exist.
