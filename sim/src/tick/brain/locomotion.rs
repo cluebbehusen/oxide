@@ -1,4 +1,4 @@
-//! Getting there: idle auto-acquire, advance and attack-move routing,
+//! Getting there: idle auto-acquire, advance and hunt routing,
 //! plain walking, contact-propagated arrival, and doorstep approach.
 
 use super::super::landing::{self, Pick, RunIn};
@@ -260,7 +260,7 @@ pub(super) fn land(
 
 /// March toward the goal, but engage anything that shows up on the way;
 /// the attack order remembers the goal and hands it back afterwards.
-pub(super) fn attack_move(
+pub(super) fn hunt(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
     reach: &mut Reach,
@@ -426,7 +426,7 @@ pub(super) enum Steer {
     },
 }
 
-/// Steers the active walking order (Move, AttackMove, Advance, or Unload)
+/// Steers the active walking order (Run, Hunt, Advance, or Unload)
 /// toward its destination.
 ///
 /// Routes go to the target while it is reachable, and otherwise to the
@@ -686,7 +686,7 @@ mod tests {
                 for (slot, unit) in state.units.iter_mut().enumerate().skip(1) {
                     unit.landed = phase % 2 == 0 && unit.kind == UnitKind::Condor;
                     unit.order = if (slot + phase) % 3 == 0 {
-                        Order::Move { goal: goal.into() }
+                        Order::Run { goal: goal.into() }
                     } else {
                         Order::Idle
                     };
@@ -732,7 +732,7 @@ mod tests {
         let goal = TilePos::new(12, 8);
         for unit in &mut state.units {
             unit.kind = crate::UnitKind::Sentinel;
-            unit.order = Order::Move { goal: goal.into() };
+            unit.order = Order::Run { goal: goal.into() };
             unit.path = Some(PathFollow {
                 goal,
                 waypoints: vec![goal],
@@ -756,7 +756,7 @@ mod tests {
         assert_ne!(state.units[1].tile(), goal);
         assert!(!touching_settled_arrival(&state, &index, follower, goal));
         walk(&mut state, &index, &mut reach, follower, &mut events);
-        assert_eq!(state.units[1].order, Order::Move { goal: goal.into() });
+        assert_eq!(state.units[1].order, Order::Run { goal: goal.into() });
 
         state.units[0].drive_speed = Fx::ZERO;
         assert!(touching_settled_arrival(&state, &index, follower, goal));
@@ -799,8 +799,8 @@ mod tests {
     #[derive(serde::Serialize)]
     #[serde(tag = "order", rename_all = "snake_case")]
     enum LegacyOrder {
-        Move { goal: chassis::grid::TilePos },
-        AttackMove { goal: chassis::grid::TilePos },
+        Run { goal: chassis::grid::TilePos },
+        Hunt { goal: chassis::grid::TilePos },
         Advance { goal: chassis::grid::TilePos },
         Unload { at: chassis::grid::TilePos },
     }
@@ -814,20 +814,20 @@ mod tests {
         type Issue = fn(Vec<crate::UnitId>) -> Command;
         let commands: [(Issue, LegacyOrder); 3] = [
             (
-                |units| Command::Move {
+                |units| Command::Run {
                     units,
                     goal: TilePos::new(6, 4),
                     queue: false,
                 },
-                LegacyOrder::Move { goal },
+                LegacyOrder::Run { goal },
             ),
             (
-                |units| Command::AttackMove {
+                |units| Command::Hunt {
                     units,
                     goal: TilePos::new(6, 4),
                     queue: false,
                 },
-                LegacyOrder::AttackMove { goal },
+                LegacyOrder::Hunt { goal },
             ),
             (
                 |units| Command::Advance {
@@ -900,7 +900,7 @@ mod tests {
             let mut state = sandbox(&map, &[(kind, 1, 1)]);
             let flier = state.units()[0].id;
             // Commands snap peaks away; a forged or legacy order may not.
-            state.unit_mut(flier).unwrap().order = Order::Move { goal: peak.into() };
+            state.unit_mut(flier).unwrap().order = Order::Run { goal: peak.into() };
             let mut stalls = 0;
             for _ in 0..100 {
                 let report = state.tick(&[]);
@@ -957,8 +957,8 @@ mod tests {
                 "premise: the ordinary arrival wave cannot reach the walker"
             );
             let unit = state.unit_mut(walker).unwrap();
-            unit.order = Order::Move { goal };
-            unit.queue.push_back(Order::Move { goal: home.into() });
+            unit.order = Order::Run { goal };
+            unit.queue.push_back(Order::Run { goal: home.into() });
             let mut index = super::super::super::spatial::UnitIndex::new();
             index.rebuild(&state.units);
             let mut reach = super::super::super::reach::Reach::new(&state);
@@ -981,13 +981,13 @@ mod tests {
 
         assert_eq!(
             run(short, true),
-            (Order::Move { goal: home.into() }, 1, 1),
+            (Order::Run { goal: home.into() }, 1, 1),
             "meeting the crowd ends the walk once, and the program carries on"
         );
         assert_eq!(
             run(Goal::at(endpoint), true),
             (
-                Order::Move {
+                Order::Run {
                     goal: endpoint.into()
                 },
                 0,
@@ -997,7 +997,7 @@ mod tests {
         );
         assert_eq!(
             run(short, false),
-            (Order::Move { goal: short }, 0, 0),
+            (Order::Run { goal: short }, 0, 0),
             "a walker touching nothing keeps walking"
         );
     }

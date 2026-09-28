@@ -70,7 +70,7 @@ fn march_command(client: &mut Client, player: u8) -> Result<Command> {
         .map(|u| oxide_sim::UnitId(u.id))
         .collect();
     assert!(!units.is_empty(), "the seat has units to command");
-    Ok(Command::AttackMove {
+    Ok(Command::Hunt {
         units,
         goal: chassis::grid::TilePos::new(12, 9),
         queue: false,
@@ -109,8 +109,8 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
 
     // Commands stage for the next tick, exactly like a paused shell.
     let command = march_command(&mut client, 0)?;
-    let Command::AttackMove { .. } = command.clone() else {
-        bail!("the march is an attack-move");
+    let Command::Hunt { .. } = command.clone() else {
+        bail!("the march is an hunt");
     };
     client.call(Request::SendCommand {
         player: PlayerId(0),

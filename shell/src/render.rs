@@ -1180,10 +1180,7 @@ pub fn draw_tutorial(
                 "{build}",
                 &bindings.label(crate::action::Action::ToggleBuildPalette),
             )
-            .replace(
-                "{attack}",
-                &bindings.label(crate::action::Action::AttackMove),
-            )
+            .replace("{hunt}", &bindings.label(crate::action::Action::Hunt))
             .replace("{back}", &bindings.label(crate::action::Action::Back));
         draw_text(
             &line,

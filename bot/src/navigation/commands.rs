@@ -439,7 +439,7 @@ impl<'a> RouteProjection<'a> {
     }
 
     /// Whether a unit standing on any of `starts` could reach the tile an
-    /// ordinary Move or AttackMove on `goal` snaps to.
+    /// ordinary Run or Hunt on `goal` snaps to.
     ///
     /// The simulation snaps a group's goal to the first open tile of a ring
     /// scan whose direction depends on the group's approach, so every open
@@ -1193,8 +1193,8 @@ pub(crate) fn first_reachable_group_where(
     )
 }
 
-/// The largest canonical subset that can accept one mixed-domain Move or
-/// AttackMove. Removing a refused member changes later spread goals, so repeat
+/// The largest canonical subset that can accept one mixed-domain Run or
+/// Hunt. Removing a refused member changes later spread goals, so repeat
 /// until every remaining member reaches the goal it would actually receive.
 pub(crate) fn routable_command_subset(
     query_purpose: QueryPurpose,
@@ -1224,8 +1224,8 @@ pub(crate) fn routable_command_subset_with_orientation(
     )
 }
 
-/// The largest canonical subset that can accept one mixed-domain Move or
-/// AttackMove against public static terrain and observed dynamic blockers.
+/// The largest canonical subset that can accept one mixed-domain Run or
+/// Hunt against public static terrain and observed dynamic blockers.
 #[cfg(test)]
 pub(crate) fn routable_command_subset_with_public_terrain(
     query_purpose: QueryPurpose,
@@ -1441,7 +1441,7 @@ pub(crate) fn production_spawn_doorstep(
     )
 }
 
-/// The projected ground goals assigned by Move or AttackMove.
+/// The projected ground goals assigned by Run or Hunt.
 pub(crate) fn ground_command_goals(
     query_purpose: QueryPurpose,
     obs: &Observation,
@@ -1485,7 +1485,7 @@ struct CommandGoalProjection<'a> {
     orientation: Option<Orientation>,
 }
 
-/// The tiles a group Move or AttackMove on `goal` assigns its `count`
+/// The tiles a group Run or Hunt on `goal` assigns its `count`
 /// members in canonical order: the snapped center, then the ring-scanned
 /// spread around it, padded with the last. `None` when nothing within the
 /// snap radius is open to the domain; the simulation then walks the group
@@ -3115,7 +3115,7 @@ mod tests {
                 let issued = state.inspect_command_phase(
                     &[PlayerCommand {
                         player: PlayerId(0),
-                        command: Command::Move {
+                        command: Command::Run {
                             units: ids.clone(),
                             goal,
                             queue: false,
@@ -3125,7 +3125,7 @@ mod tests {
                         view.units()
                             .iter()
                             .map(|unit| match unit.order {
-                                Order::Move { goal } => (unit.id, goal.target()),
+                                Order::Run { goal } => (unit.id, goal.target()),
                                 other => panic!("unit {} got {other:?}", unit.id),
                             })
                             .collect::<Vec<_>>()

@@ -432,7 +432,7 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![worker],
                 goal,
                 queue: true,
@@ -442,7 +442,7 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
     run_until(
         &mut state,
         1_000,
-        |state, _| matches!(state.unit(worker).unwrap().order, Order::Move { goal: g } if g.tile() == goal),
+        |state, _| matches!(state.unit(worker).unwrap().order, Order::Run { goal: g } if g.tile() == goal),
     );
     let unit = state.unit(worker).unwrap();
     assert_eq!(unit.carrying, 0, "the queued leg starts only after deposit");
@@ -461,7 +461,7 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
 
     state.tick(&[]);
     assert!(
-        matches!(state.unit(worker).unwrap().order, Order::Move { goal: g } if g.tile() == goal),
+        matches!(state.unit(worker).unwrap().order, Order::Run { goal: g } if g.tile() == goal),
         "retirement cannot pop the newly active order a second time"
     );
 }
@@ -517,7 +517,7 @@ fn shared_sight_retires_an_autonomous_retarget_but_not_before_it_is_known() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(20, 5),
             queue: false,
@@ -531,7 +531,7 @@ fn shared_sight_retires_an_autonomous_retarget_but_not_before_it_is_known() {
     });
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(4, 5),
             queue: false,
@@ -865,7 +865,7 @@ fn an_explicit_source_avoids_unrelated_known_danger_on_the_way() {
     let scout = state.units()[1].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(3, 4),
             queue: false,
@@ -929,7 +929,7 @@ fn an_explicit_source_prefers_a_safe_doorstep_before_a_dangerous_fallback() {
     let scout = state.units()[1].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(3, 4),
             queue: false,
@@ -1092,7 +1092,7 @@ fn a_remembered_armed_structure_blocks_an_autonomous_retarget_after_sight_is_los
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(3, 4),
             queue: false,

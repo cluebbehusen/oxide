@@ -1417,7 +1417,7 @@ fn egress_goal(
 
 /// Chase-and-hit. Range is measured to the target's closest point and
 /// shots are buffered. A vanished target — or one no carried weapon can
-/// cover — hands control back to the remembered attack-move (or idle,
+/// cover — hands control back to the remembered hunt (or idle,
 /// where auto-acquire finds the next fight).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn attack(
@@ -1455,7 +1455,7 @@ pub(super) fn attack(
         unit.cooldowns,
     );
 
-    // An attack-mover pounding a building stays alert: an enemy *unit*
+    // An huntr pounding a building stays alert: an enemy *unit*
     // wandering into aggro takes priority (deterministic — acquire prefers
     // units), so marching armies fight back instead of tunnel-visioning.
     if resume.is_some()
@@ -1647,7 +1647,7 @@ pub(super) fn attack(
         if leash.anchor.center().dist_sq(pos) > radius_sq {
             if leash.patience == 0 {
                 let unit = state.unit_mut(id).expect("caller checked");
-                unit.order = Order::Move {
+                unit.order = Order::Run {
                     goal: leash.anchor.into(),
                 };
                 unit.path = None;
@@ -1759,7 +1759,7 @@ fn stall_attack(
     if resume.is_none()
         && let Some(leash) = unit.leash
     {
-        unit.order = Order::Move {
+        unit.order = Order::Run {
             goal: leash.anchor.into(),
         };
         unit.path = None;
@@ -1885,7 +1885,7 @@ fn fire_sidearms(
 /// Damage answers back: a hit unit that can fight and isn't already
 /// fighting turns on its attacker — the counter to weapons that outrange
 /// aggro (nothing else ever gets this far: inside aggro, auto-acquire
-/// already found the attacker). An attack-mover keeps its destination as
+/// already found the attacker). An huntr keeps its destination as
 /// the resume point. Brains run in id order, so the first hit of a tick
 /// picks the target deterministically.
 pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
@@ -1913,13 +1913,13 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     }
     let resume = match unit.order {
         Order::Idle => None,
-        Order::AttackMove { goal } => Some(goal),
+        Order::Hunt { goal } => Some(goal),
         // A tethered homecoming answers fire: the walk home resumes
         // through the leash once the attacker falls, so no resume
-        // goal is carried. A plain Move stays oblivious — it is the
+        // goal is carried. A plain Run stays oblivious — it is the
         // player's recall verb, and auto-engaging on damage would
         // undo exactly what it was issued to do.
-        Order::Move { .. } if unit.leash.is_some() => None,
+        Order::Run { .. } if unit.leash.is_some() => None,
         // An attack aimed at something that just died in resolution is no
         // engagement — a victim auto-acquired a neighbor this tick, the
         // neighbor fell in the volley, and without this arm the busy-guard
@@ -2199,7 +2199,7 @@ mod tests {
         let march = |state: &State, player: u8, goal: TilePos| -> PlayerCommand {
             PlayerCommand {
                 player: PlayerId(player),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: state
                         .units
                         .iter()
@@ -2337,7 +2337,7 @@ mod tests {
         let march = |state: &State, player: u8, goal: TilePos| -> PlayerCommand {
             PlayerCommand {
                 player: PlayerId(player),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: state
                         .units
                         .iter()

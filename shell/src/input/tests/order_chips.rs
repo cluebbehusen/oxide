@@ -58,7 +58,7 @@ fn legs(player: PlayerId, unit: UnitId, goals: &[TilePos]) -> Vec<PlayerCommand>
         .enumerate()
         .map(|(leg, &goal)| PlayerCommand {
             player,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![unit],
                 goal,
                 queue: leg > 0,

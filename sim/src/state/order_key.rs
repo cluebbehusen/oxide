@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// A key survives the rewrites the simulation makes to an order while it
 /// runs: a walk keeps its clicked tile when its goal takes a slot or an
-/// endpoint, when an attack-move stops to fight on the way, or when an
+/// endpoint, when an hunt stops to fight on the way, or when an
 /// airframe lands in its place, and a harvest keeps its clicked source as
 /// it moves between nodes. A few rewrites do change the key: a landing
 /// that turns into a fight, and a planned site that becomes a build once
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "order", rename_all = "snake_case")]
 pub enum OrderKey {
-    /// A Move, AttackMove, or Advance to this clicked tile, the march an
+    /// A Run, Hunt, or Advance to this clicked tile, the march an
     /// engagement resumes, or the walk a landing took over.
     Walk {
         /// The clicked tile.
@@ -96,7 +96,7 @@ impl Order {
     pub fn key(&self, state: &State, player: PlayerId) -> Option<OrderKey> {
         Some(match *self {
             Order::Idle => return None,
-            Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
+            Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => {
                 OrderKey::Walk { tile: goal.tile() }
             }
             Order::Attack {

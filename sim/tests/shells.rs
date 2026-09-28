@@ -99,7 +99,7 @@ fn establish_straight_motion(
     state.tick(&[
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![target],
                 goal,
                 queue: false,
@@ -109,7 +109,7 @@ fn establish_straight_motion(
         // cannot auto-acquire before the motion sample exists.
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![bombard],
                 goal: bombard_tile,
                 queue: false,
@@ -195,7 +195,7 @@ fn a_moving_target_walks_out_of_the_blast() {
     state.tick(&[
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![scuttler],
                 goal: TilePos::new(11, 1),
                 queue: false,
@@ -295,7 +295,7 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
     let setup_commands = vec![
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![target],
                 goal: TilePos::new(13, 5),
                 queue: false,
@@ -303,7 +303,7 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![bombard],
                 goal: bombard_tile,
                 queue: false,
@@ -464,7 +464,7 @@ fn neighbor_shot(
     let mut orders = vec![
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![gun],
                 goal: TilePos::new(4, 7),
                 queue: false,
@@ -472,7 +472,7 @@ fn neighbor_shot(
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![target],
                 goal: TilePos::new(6, 7),
                 queue: false,
@@ -482,7 +482,7 @@ fn neighbor_shot(
     if !air {
         orders.push(cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![neighbor],
                 goal: TilePos::new(6, 8),
                 queue: false,
@@ -490,7 +490,7 @@ fn neighbor_shot(
         ));
         orders.push(cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![spotter],
                 goal: TilePos::new(1, if hidden { 4 } else { 5 }),
                 queue: false,
@@ -585,7 +585,7 @@ fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
         let launcher_tile = state.unit(launcher).unwrap().tile();
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![launcher],
                 goal: launcher_tile,
                 queue: false,
@@ -676,7 +676,7 @@ fn predictive_aim_is_independent_of_unit_id_order_and_brain_parity() {
             let hold = state.unit(bombard).unwrap().tile();
             state.tick(&[cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![bombard],
                     goal: hold,
                     queue: false,

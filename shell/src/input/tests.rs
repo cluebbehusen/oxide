@@ -943,7 +943,7 @@ fn armed_ground_verbs_ping_at_the_tile_centre() {
         let (fighter, at) = own_fighter(&game);
         game.presentation.selection.units = vec![fighter];
         if attack {
-            input.attacking = true;
+            input.hunting = true;
         } else {
             input.running = true;
         }
@@ -953,8 +953,8 @@ fn armed_ground_verbs_ping_at_the_tile_centre() {
         apply_events(&mut game, &mut input, &[left_down(screen)]);
 
         let goal = game.pending.iter().find_map(|c| match c.command {
-            Command::Move { goal, .. } if !attack => Some(goal),
-            Command::AttackMove { goal, .. } if attack => Some(goal),
+            Command::Run { goal, .. } if !attack => Some(goal),
+            Command::Hunt { goal, .. } if attack => Some(goal),
             _ => None,
         });
         assert_eq!(goal, Some(tile), "attack={attack}: {:?}", game.pending);
@@ -1205,7 +1205,7 @@ fn a_context_order_cancels_placement_and_every_deferred_build_ghost() {
             .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
     );
     let builder = game.state.unit(builder).unwrap();
-    assert!(matches!(builder.order, oxide_sim::Order::Move { .. }));
+    assert!(matches!(builder.order, oxide_sim::Order::Run { .. }));
     assert!(
         builder.queue.is_empty(),
         "replacement clears queued claims too"
@@ -1288,7 +1288,7 @@ fn a_ribbon_tap_cancels_the_mode_and_keeps_the_selection() {
         .expect("a starting combat unit")
         .id;
     game.presentation.selection.units = vec![fighter];
-    input.attacking = true;
+    input.hunting = true;
     let ribbon = macroquad::math::Rect::new(220.0, 620.0, 280.0, 44.0);
     let mut layout = bare_layout(f32::INFINITY, 0.0);
     layout.mode_ribbon = ribbon;
@@ -1361,8 +1361,8 @@ fn every_targeting_mode_has_persistent_human_copy() {
     input.running = true;
     assert_eq!(input.armed_mode().unwrap().label(), "Run");
     input.disarm_click_verbs();
-    input.attacking = true;
-    assert_eq!(input.armed_mode().unwrap().label(), "Attack-move");
+    input.hunting = true;
+    assert_eq!(input.armed_mode().unwrap().label(), "Hunt");
     input.disarm_click_verbs();
     input.patrol_route = Some(vec![TilePos::new(1, 1), TilePos::new(2, 2)]);
     assert_eq!(input.armed_mode().unwrap().label(), "Patrol \u{b7} 2");
@@ -1731,10 +1731,10 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
         .id;
     game.presentation.selection.units = vec![fighter];
     // Arm with the classic hotkey, exactly as a player would.
-    apply_events(&mut game, &mut input, &[key_down(Key::M), key_up(Key::M)]);
-    assert!(input.running, "M arms the recall");
+    apply_events(&mut game, &mut input, &[key_down(Key::G), key_up(Key::G)]);
+    assert!(input.running, "G arms Run");
 
-    // The click sends a plain Move — the OBLIVIOUS walk, not the
+    // The click sends a Run order — the OBLIVIOUS walk, not the
     // explicit fighting march armed with F — and stands down.
     let home = game.state.unit(fighter).unwrap().tile();
     let goal = TilePos::new(home.x + 3, home.y);
@@ -1746,9 +1746,9 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
     assert!(
         game.pending.iter().any(|c| matches!(
             &c.command,
-            Command::Move { goal: g, queue: false, .. } if *g == goal
+            Command::Run { goal: g, queue: false, .. } if *g == goal
         )),
-        "the armed click issues Command::Move: {:?}",
+        "the armed click issues Command::Run: {:?}",
         game.pending
     );
     assert!(!input.running, "a plain click finishes the recall");
@@ -1756,7 +1756,7 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
         !game
             .pending
             .iter()
-            .any(|c| matches!(&c.command, Command::AttackMove { .. })),
+            .any(|c| matches!(&c.command, Command::Hunt { .. })),
         "nothing about the run engages"
     );
 }
@@ -1773,12 +1773,12 @@ fn arming_run_stands_the_other_verbs_down() {
         .unwrap()
         .id;
     game.presentation.selection.units = vec![harvester];
-    // Placement armed, then M: exactly one verb may hold the cursor —
+    // Placement armed, then G: exactly one verb may hold the cursor —
     // armed_click resolves placement before run, so both live at once
     // would stamp a building under a "run" toast.
     input.placing = Some(oxide_sim::BuildingKind::Turret);
-    apply_events(&mut game, &mut input, &[key_down(Key::M), key_up(Key::M)]);
-    assert!(input.running, "M arms the recall");
+    apply_events(&mut game, &mut input, &[key_down(Key::G), key_up(Key::G)]);
+    assert!(input.running, "G arms Run");
     assert!(input.placing.is_none(), "and placement stood down");
     let home = game.state.unit(harvester).unwrap().tile();
     let p = game
@@ -1796,7 +1796,7 @@ fn arming_run_stands_the_other_verbs_down() {
     assert!(
         game.pending
             .iter()
-            .any(|c| matches!(&c.command, Command::Move { .. })),
+            .any(|c| matches!(&c.command, Command::Run { .. })),
         "the click issued the run"
     );
     // And the mirror direction: arming salvage stands run down.
@@ -1804,8 +1804,8 @@ fn arming_run_stands_the_other_verbs_down() {
         &mut game,
         &mut input,
         &[
-            key_down(Key::M),
-            key_up(Key::M),
+            key_down(Key::G),
+            key_up(Key::G),
             key_down(Key::V),
             key_up(Key::V),
         ],
@@ -1815,7 +1815,7 @@ fn arming_run_stands_the_other_verbs_down() {
 }
 
 #[test]
-fn f_arms_explicit_attack_move_and_the_click_consumes_it() {
+fn f_arms_explicit_hunt_and_the_click_consumes_it() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let fighter = game
@@ -1827,8 +1827,8 @@ fn f_arms_explicit_attack_move_and_the_click_consumes_it() {
         .id;
     game.presentation.selection.units = vec![fighter];
     apply_events(&mut game, &mut input, &[key_down(Key::F), key_up(Key::F)]);
-    assert!(input.attacking, "F arms the fighting march");
-    assert!(!input.running, "attack-move and run are mutually exclusive");
+    assert!(input.hunting, "F arms the fighting march");
+    assert!(!input.running, "hunt and run are mutually exclusive");
 
     let goal = game.state.unit(fighter).unwrap().tile().offset(4, 1);
     let p = game
@@ -1839,17 +1839,17 @@ fn f_arms_explicit_attack_move_and_the_click_consumes_it() {
 
     assert!(game.pending.iter().any(|command| matches!(
         command.command,
-        Command::AttackMove {
+        Command::Hunt {
             goal: staged,
             queue: false,
             ..
         } if staged == goal
     )));
-    assert!(!input.attacking, "a plain click consumes the armed verb");
+    assert!(!input.hunting, "a plain click consumes the armed verb");
 }
 
 #[test]
-fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
+fn the_hunt_card_is_touchable_and_arms_the_same_world_tap() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let fighter = game
@@ -1863,7 +1863,7 @@ fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
 
     let card = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
     let mut layout = bare_layout(680.0, 500.0);
-    layout.cards[0] = (card, crate::panel::CardAction::Dispatch(Action::AttackMove));
+    layout.cards[0] = (card, crate::panel::CardAction::Dispatch(Action::Hunt));
     layout.card_count = 1;
     game.presentation.layout.set(layout);
 
@@ -1879,7 +1879,7 @@ fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
         &mut input,
         &[touch_up(1, vec2(card.x + 20.0, card.y + 20.0))],
     );
-    assert!(input.attacking, "the fingertip arms the panel verb");
+    assert!(input.hunting, "the fingertip arms the panel verb");
 
     let goal = game.state.unit(fighter).unwrap().tile().offset(4, 1);
     let point = game
@@ -1893,13 +1893,13 @@ fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
 
     assert!(game.pending.iter().any(|command| matches!(
         command.command,
-        Command::AttackMove {
+        Command::Hunt {
             goal: staged,
             queue: false,
             ..
         } if staged == goal
     )));
-    assert!(!input.attacking, "the world tap consumes the armed verb");
+    assert!(!input.hunting, "the world tap consumes the armed verb");
 }
 
 #[test]
@@ -1973,7 +1973,7 @@ fn queued_orders_count_against_the_stroke_prediction() {
     // must see three fewer free slots even though live state still
     // reads an idle unit.
     for x in [14, 15, 16] {
-        game.issue(Command::Move {
+        game.issue(Command::Run {
             units: vec![builder],
             goal: TilePos::new(x, 2),
             queue: true,
@@ -2048,7 +2048,7 @@ fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
     // Leave exactly one queue slot for the opening Shift stamp.
     let mut fill = vec![PlayerCommand {
         player: game.presentation.human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![builder],
             goal: TilePos::new(14, 7),
             queue: false,
@@ -2057,7 +2057,7 @@ fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
     for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP - 1 {
         fill.push(PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(15, 7),
                 queue: true,
@@ -2093,7 +2093,7 @@ fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
     let first = game.presentation.camera.to_screen(vec2(4.5, 2.5));
     apply_events(&mut game, &mut input, &[left_down(first)]);
     for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
-        game.issue(Command::Move {
+        game.issue(Command::Run {
             units: vec![builder],
             goal: TilePos::new(15, 7),
             queue: true,
@@ -2777,7 +2777,7 @@ fn a_resting_world_finger_charges_the_long_press_ring() {
     assert_eq!(long_press_progress(&input), None, "chrome owns its ground");
 }
 
-/// Attack-move and Run side by side in the command band, with a fighter
+/// Hunt and Run side by side in the command band, with a fighter
 /// selected so either card arms its verb.
 fn two_card_band() -> (Game, macroquad::math::Rect, macroquad::math::Rect) {
     let mut game = headless_game();
@@ -2792,10 +2792,7 @@ fn two_card_band() -> (Game, macroquad::math::Rect, macroquad::math::Rect) {
     let attack = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
     let run = macroquad::math::Rect::new(362.0, 700.0, 60.0, 60.0);
     let mut layout = bare_layout(680.0, 500.0);
-    layout.cards[0] = (
-        attack,
-        crate::panel::CardAction::Dispatch(Action::AttackMove),
-    );
+    layout.cards[0] = (attack, crate::panel::CardAction::Dispatch(Action::Hunt));
     layout.cards[1] = (run, crate::panel::CardAction::Dispatch(Action::Run));
     layout.card_count = 2;
     game.presentation.layout.set(layout);
@@ -2823,7 +2820,7 @@ fn a_resting_finger_previews_a_card_and_lifting_in_place_activates_it() {
         "the preview outlasts the long-press"
     );
     apply_events(&mut game, &mut input, &[touch_up(1, at)]);
-    assert!(input.attacking, "lifting in place activates the card");
+    assert!(input.hunting, "lifting in place activates the card");
 
     // World ground never previews.
     let ground = vec2(400.0, 300.0);
@@ -2860,7 +2857,7 @@ fn a_finger_that_leaves_its_card_activates_nothing() {
         &[touch_move(2, over), touch_up(2, over)],
     );
 
-    assert!(!input.attacking && !input.running, "neither card arms");
+    assert!(!input.hunting && !input.running, "neither card arms");
     assert!(game.pending.is_empty());
 }
 
@@ -2918,15 +2915,12 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
     game.presentation.layout.set(layout);
     input.now = 2.0;
     apply_events(&mut game, &mut input, &[touch_down(1, attack.center())]);
-    layout.cards[0] = (
-        attack,
-        crate::panel::CardAction::Dispatch(Action::AttackMove),
-    );
+    layout.cards[0] = (attack, crate::panel::CardAction::Dispatch(Action::Hunt));
     game.presentation.layout.set(layout);
     input.now = 4.0;
     apply_events(&mut game, &mut input, &[touch_up(1, attack.center())]);
     assert!(
-        !input.attacking,
+        !input.hunting,
         "the lift never arms what the press never saw"
     );
 
@@ -3434,10 +3428,10 @@ fn a_long_press_honors_the_armed_mode() {
     // Any other armed verb stands down, as for a right-click, and the
     // long-press issues its own order.
     input.patrol_route = None;
-    input.attacking = true;
+    input.hunting = true;
     game.presentation.selection.units = vec![fighter];
     long_press_world(&mut game, &mut input, vec2(12.5, 8.5));
-    assert!(!input.attacking, "the armed verb stood down");
+    assert!(!input.hunting, "the armed verb stood down");
     assert!(
         game.pending
             .iter()
@@ -3450,14 +3444,11 @@ fn a_long_press_honors_the_armed_mode() {
 #[test]
 fn patrol_is_exclusive_with_the_other_armed_verbs() {
     let (mut game, mut input, _) = armed_patrol();
-    dispatch_action(&mut game, &mut input, Action::AttackMove);
-    assert!(input.attacking);
-    assert_eq!(
-        input.patrol_route, None,
-        "arming attack-move drops the route"
-    );
+    dispatch_action(&mut game, &mut input, Action::Hunt);
+    assert!(input.hunting);
+    assert_eq!(input.patrol_route, None, "arming hunt drops the route");
     dispatch_action(&mut game, &mut input, Action::Patrol);
-    assert!(!input.attacking, "arming patrol stands attack-move down");
+    assert!(!input.hunting, "arming patrol stands hunt down");
     assert_eq!(input.patrol_route, Some(Vec::new()));
 }
 
@@ -3776,7 +3767,7 @@ fn an_allied_site_under_fog_refuses_selection() {
     // its ground goes dark.
     game.state.tick(&[oxide_sim::PlayerCommand {
         player: oxide_sim::PlayerId(1),
-        command: Command::Move {
+        command: Command::Run {
             units: vec![ally_worker],
             goal: TilePos::new(16, 2),
             queue: false,
@@ -3807,7 +3798,7 @@ fn an_allied_site_under_fog_refuses_selection() {
     );
     game.state.tick(&[oxide_sim::PlayerCommand {
         player: oxide_sim::PlayerId(1),
-        command: Command::Move {
+        command: Command::Run {
             units: vec![ally_worker],
             goal: TilePos::new(25, 4),
             queue: false,
@@ -3973,7 +3964,7 @@ fn a_selected_hostile_drops_when_fog_recovers_it() {
     // harvester east to mine — both walks end my sight of it, and the
     // selection must end with the sight (the machine itself lives on).
     let mine = game.state.units()[0].id;
-    game.issue(Command::Move {
+    game.issue(Command::Run {
         units: vec![mine],
         goal: TilePos::new(3, 4),
         queue: false,
@@ -5168,7 +5159,7 @@ fn a_shift_stroke_spends_only_the_builders_headroom() {
     // queued — headroom 2.
     let mut fill = vec![PlayerCommand {
         player: game.presentation.human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![builder],
             goal: TilePos::new(3, 7),
             queue: false,
@@ -5177,7 +5168,7 @@ fn a_shift_stroke_spends_only_the_builders_headroom() {
     for _ in 0..30 {
         fill.push(PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(4, 7),
                 queue: true,
@@ -5265,7 +5256,7 @@ fn a_full_queue_refuses_the_opening_shift_stamp() {
     // full queue — zero headroom for the stamp the click would append.
     game.state.tick(&[PlayerCommand {
         player: game.presentation.human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![builder],
             goal: TilePos::new(15, 2),
             queue: false,
@@ -5274,7 +5265,7 @@ fn a_full_queue_refuses_the_opening_shift_stamp() {
     for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
         game.state.tick(&[PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(15, 2),
                 queue: true,
@@ -5338,7 +5329,7 @@ fn a_fogged_leg_draws_at_its_click_in_program_order() {
     game.state.tick(&[
         PlayerCommand {
             player: game.presentation.human,
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: vec![fighter],
                 goal: fogged,
                 queue: false,
@@ -5346,7 +5337,7 @@ fn a_fogged_leg_draws_at_its_click_in_program_order() {
         },
         PlayerCommand {
             player: game.presentation.human,
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: vec![fighter],
                 goal: home,
                 queue: true,
@@ -5429,7 +5420,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
     );
     game.state.tick(&[PlayerCommand {
         player: human,
-        command: Command::Move {
+        command: Command::Run {
             units: group.clone(),
             goal: clicked,
             queue: false,
@@ -5439,7 +5430,7 @@ fn a_group_sent_into_fog_draws_its_click_for_every_member() {
         group
             .iter()
             .map(|id| match game.state.unit(*id).unwrap().order {
-                oxide_sim::Order::Move { goal } => goal,
+                oxide_sim::Order::Run { goal } => goal,
                 other => panic!("unit {id} left its walk: {other:?}"),
             })
             .collect()
@@ -5489,7 +5480,7 @@ fn a_landing_that_took_over_a_walk_draws_at_its_click() {
     assert!(!game.state.passable(clicked), "premise: the click is rock");
     game.state.tick(&[PlayerCommand {
         player: human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![condor],
             goal: clicked,
             queue: false,
@@ -5936,7 +5927,7 @@ fn a_click_on_remembered_ground_defers_and_unscouted_refuses() {
     let walk = |game: &mut Game, goal: TilePos| {
         game.state.tick(&[PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![harvester],
                 goal,
                 queue: false,
@@ -6012,7 +6003,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     let walk = |game: &mut Game, goal: TilePos| {
         game.state.tick(&[PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![builder],
                 goal,
                 queue: false,
@@ -6362,7 +6353,7 @@ fn a_deferred_shift_build_can_use_any_selected_worker_with_room() {
         .expect("map has passable ground");
     let mut fill = vec![PlayerCommand {
         player: game.presentation.human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![workers[0]],
             goal: far,
             queue: false,
@@ -6371,7 +6362,7 @@ fn a_deferred_shift_build_can_use_any_selected_worker_with_room() {
     for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
         fill.push(PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![workers[0]],
                 goal: far,
                 queue: true,
@@ -6896,7 +6887,7 @@ fn right_click_uses_building_memory_and_anonymous_contacts_and_stop_clears_focus
     let scout = game.state.units()[1].id;
     game.state.tick(&[PlayerCommand {
         player: game.presentation.human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 3),
             queue: false,
@@ -6976,7 +6967,7 @@ fn radar_contact_above_a_building_ghost_wins_for_units_and_defenses() {
     let enemy = game.state.units()[2].id;
     game.state.tick(&[PlayerCommand {
         player: game.presentation.human,
-        command: Command::Move {
+        command: Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 3),
             queue: false,
@@ -7580,7 +7571,7 @@ fn the_dock_stop_square_halts_the_selection_by_click_and_tap() {
         .id;
     game.state.tick(&[oxide_sim::PlayerCommand {
         player: game.presentation.human,
-        command: Command::AttackMove {
+        command: Command::Hunt {
             units: vec![harvester],
             goal: TilePos::new(8, 8),
             queue: false,
@@ -7774,7 +7765,7 @@ fn mixed_workers_use_the_cargo_shortcut_and_keep_other_unit_bindings() {
         }]
     ));
     game.pending.clear();
-    controls_key(&mut game, &mut input, Key::M);
+    controls_key(&mut game, &mut input, Key::G);
     assert!(input.running);
     controls_key(&mut game, &mut input, Key::X);
     assert!(matches!(

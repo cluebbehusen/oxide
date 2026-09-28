@@ -81,7 +81,7 @@ fn control_sections() -> Vec<(&'static str, Vec<Action>)> {
             vec![
                 StopOrScrap,
                 Run,
-                AttackMove,
+                Hunt,
                 Patrol,
                 Salvage,
                 RepairUnit,
@@ -1056,14 +1056,10 @@ mod tests {
                 .unwrap(),
         );
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
-        // M already means Run.
-        let up = drive(&mut s, &mut config, &mut live, &press(Key::M), false);
+        let up = drive(&mut s, &mut config, &mut live, &press(Key::G), false);
         assert!(!up.dirty);
         let notice = s.notice.as_ref().expect("the refusal reports");
-        assert_eq!(
-            notice.text,
-            "M is already bound to Run (move without engaging)"
-        );
+        assert_eq!(notice.text, "G is already bound to Run");
         assert!(notice.danger);
         assert_eq!(config.bindings.chord_for(Action::Patrol), before);
         // Navigation is not an action: the notice waits to be read.
@@ -1109,7 +1105,7 @@ mod tests {
                 .unwrap(),
         );
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
-        drive(&mut s, &mut config, &mut live, &press(Key::M), false);
+        drive(&mut s, &mut config, &mut live, &press(Key::G), false);
         assert!(s.notice.is_some());
         drive(&mut s, &mut config, &mut live, &press(Key::Escape), false);
         assert!(

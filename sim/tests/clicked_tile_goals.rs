@@ -77,7 +77,7 @@ fn ids(state: &State, player: u8) -> Vec<UnitId> {
 /// The goal of a unit's active walking order.
 fn goal(state: &State, id: UnitId) -> Option<Goal> {
     match state.unit(id)?.order {
-        Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => Some(goal),
+        Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
         Order::Unload { at } => Some(at),
         _ => None,
     }
@@ -88,7 +88,7 @@ fn explored(state: &State, player: u8, tile: TilePos) -> bool {
 }
 
 fn move_to(units: Vec<UnitId>, goal: TilePos) -> Command {
-    Command::Move {
+    Command::Run {
         units,
         goal,
         queue: false,
@@ -510,7 +510,7 @@ fn a_reissue_onto_a_new_slot_adopts_it_without_touching_the_path() {
     assert!(matches!(slotted.aim, oxide_sim::Aim::Slot(_)));
     state.inspect_command_phase(&[cmd(0, move_to(vec![group[1]], click))], |view| {
         let after = view.unit(group[1]).unwrap();
-        let Order::Move { goal } = after.order else {
+        let Order::Run { goal } = after.order else {
             panic!("still walking");
         };
         assert_eq!(goal, Goal::at(click), "alone, it takes the click itself");
@@ -535,7 +535,7 @@ fn an_engagement_resumes_toward_the_same_slot() {
     assert!(explored(&state, 0, click));
     let command = cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: group.clone(),
             goal: click,
             queue: false,
@@ -543,7 +543,7 @@ fn an_engagement_resumes_toward_the_same_slot() {
     );
     let march = state.inspect_command_phase(std::slice::from_ref(&command), |view| {
         match view.unit(group[1]).unwrap().order {
-            Order::AttackMove { goal } => goal,
+            Order::Hunt { goal } => goal,
             other => panic!("marching: {other:?}"),
         }
     });
@@ -560,10 +560,7 @@ fn an_engagement_resumes_toward_the_same_slot() {
         Some((click, march.aim))
     );
     run_until(&mut state, 600, |state, _| {
-        matches!(
-            state.unit(group[1]).unwrap().order,
-            Order::AttackMove { .. }
-        )
+        matches!(state.unit(group[1]).unwrap().order, Order::Hunt { .. })
     });
     let resumed = goal(&state, group[1]).unwrap();
     assert_eq!((resumed.tile(), resumed.aim), (click, march.aim));
@@ -591,12 +588,10 @@ fn patrol_legs_spread_per_unit() {
                 let unit = state.unit(id).unwrap();
                 let order = std::iter::once(&unit.order)
                     .chain(&unit.queue)
-                    .find(
-                        |order| matches!(order, Order::AttackMove { goal } if goal.tile() == click),
-                    )
+                    .find(|order| matches!(order, Order::Hunt { goal } if goal.tile() == click))
                     .copied()
                     .unwrap_or_else(|| panic!("unit {id} patrols {click}"));
-                let Order::AttackMove { goal } = order else {
+                let Order::Hunt { goal } = order else {
                     unreachable!()
                 };
                 assert!(!goal.is_pending());
@@ -651,7 +646,7 @@ fn a_condor_hands_off_only_once_its_click_is_explored() {
     run_until(&mut state, 800, |state, _| {
         let unit = state.unit(condor).unwrap();
         match unit.order {
-            Order::Move { goal } => {
+            Order::Run { goal } => {
                 if goal.is_pending() {
                     assert!(!explored(state, 0, click));
                     pending_in_reach +=
@@ -699,7 +694,7 @@ fn off_map_tile_goals_are_refused_without_a_trace() {
     ] {
         let commands: [Command; 6] = [
             move_to(vec![sentinel], tile),
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![sentinel],
                 goal: tile,
                 queue: false,

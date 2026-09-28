@@ -78,7 +78,7 @@ fn ground_cannot_cross_but_air_flies_straight_over() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![walker],
                 goal: TilePos::new(18, 5),
                 queue: false,
@@ -86,7 +86,7 @@ fn ground_cannot_cross_but_air_flies_straight_over() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![flyer],
                 goal: TilePos::new(18, 7),
                 queue: false,
@@ -269,7 +269,7 @@ fn ground_goals_on_the_void_snap_to_the_rim() {
     let walker = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![walker],
             goal: TilePos::new(12, 5),
             queue: false,
@@ -298,7 +298,7 @@ fn a_chasm_map_reproduces_bit_identically() {
     let orders = |state: &State| {
         vec![cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: state
                     .units()
                     .iter()

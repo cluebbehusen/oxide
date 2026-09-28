@@ -46,9 +46,9 @@ const SCRAP_CEILING: u32 = 1 << 24;
 /// Every [`Command`] variant, as a value the generator can draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandTag {
-    Move,
+    Run,
     Attack,
-    AttackMove,
+    Hunt,
     Harvest,
     Patrol,
     Stop,
@@ -77,9 +77,9 @@ enum CommandTag {
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
 const COMMAND_TAGS: [CommandTag; 24] = [
-    CommandTag::Move,
+    CommandTag::Run,
     CommandTag::Attack,
-    CommandTag::AttackMove,
+    CommandTag::Hunt,
     CommandTag::Harvest,
     CommandTag::Patrol,
     CommandTag::Stop,
@@ -117,9 +117,9 @@ const SURRENDER_KEEP_ODDS: u32 = 2_048;
 /// quietly never being drawn.
 fn tag_index(tag: CommandTag) -> usize {
     match tag {
-        CommandTag::Move => 0,
+        CommandTag::Run => 0,
         CommandTag::Attack => 1,
-        CommandTag::AttackMove => 2,
+        CommandTag::Hunt => 2,
         CommandTag::Harvest => 3,
         CommandTag::Patrol => 4,
         CommandTag::Stop => 5,
@@ -147,9 +147,9 @@ fn tag_index(tag: CommandTag) -> usize {
 /// One arm per [`Command`] variant: adding a verb breaks the build here.
 fn tag_of(command: &Command) -> CommandTag {
     match command {
-        Command::Move { .. } => CommandTag::Move,
+        Command::Run { .. } => CommandTag::Run,
         Command::Attack { .. } => CommandTag::Attack,
-        Command::AttackMove { .. } => CommandTag::AttackMove,
+        Command::Hunt { .. } => CommandTag::Hunt,
         Command::Harvest { .. } => CommandTag::Harvest,
         Command::Patrol { .. } => CommandTag::Patrol,
         Command::Stop { .. } => CommandTag::Stop,
@@ -467,7 +467,7 @@ fn queue(rng: &mut Pcg32) -> bool {
 
 fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
     match tag {
-        CommandTag::Move => Command::Move {
+        CommandTag::Run => Command::Run {
             units: units(rng, state),
             goal: tile(rng, state),
             queue: queue(rng),
@@ -477,7 +477,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             target: target(rng, state),
             queue: queue(rng),
         },
-        CommandTag::AttackMove => Command::AttackMove {
+        CommandTag::Hunt => Command::Hunt {
             units: units(rng, state),
             goal: tile(rng, state),
             queue: queue(rng),
@@ -747,7 +747,7 @@ fn exercise_cancel_order_reach(state: &mut State) {
         .enumerate()
         .map(|(leg, goal)| PlayerCommand {
             player,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![walker],
                 goal,
                 queue: leg > 0,

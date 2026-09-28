@@ -315,7 +315,7 @@ fn return_cargo_cancels_a_partial_harvest_and_can_be_overridden_by_move() {
         &state
             .tick(&[cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![worker],
                     goal: TilePos::new(17, 8),
                     queue: false,

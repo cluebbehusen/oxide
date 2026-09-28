@@ -253,7 +253,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     let (id, start_pos) = (mover.id, mover.pos);
     client.call(Request::SendCommand {
         player: PlayerId(0),
-        command: Command::Move {
+        command: Command::Run {
             queue: false,
             units: vec![UnitId(id)],
             goal: chassis::grid::TilePos::new(mover.tile[0] + 3, mover.tile[1] + 2),

@@ -317,7 +317,7 @@ fn a_decision_receives_only_its_seats_failures_since_the_last_one() {
         train(0, foundries(&state, PlayerId(0))[0]),
         PlayerCommand {
             player: PlayerId(0),
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![harvester],
                 goal: TilePos::new(9, 6),
                 queue: false,

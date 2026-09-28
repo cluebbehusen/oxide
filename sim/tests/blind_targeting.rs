@@ -117,7 +117,7 @@ fn automatic_avalanche_fires_without_pursuing_but_explicit_attack_pursues() {
     assert_eq!(state.unit(gun).unwrap().order, Order::Idle);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![gun],
             goal: TilePos::new(2, 27),
             queue: false,
@@ -163,7 +163,7 @@ fn lost_contact_clears_preference_and_returning_detection_has_a_new_id() {
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![enemy],
                 goal: TilePos::new(35, 8),
                 queue: false,
@@ -177,7 +177,7 @@ fn lost_contact_clears_preference_and_returning_detection_has_a_new_id() {
     assert!(state.attack_view(PlayerId(0), old).is_none());
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![enemy],
             goal: TilePos::new(14, 8),
             queue: false,
@@ -226,7 +226,7 @@ fn visible_attack_becomes_anonymous_when_only_radar_remains() {
         .id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 8),
             queue: false,
@@ -271,7 +271,7 @@ fn contact_histories_round_trip_and_replay_deterministically() {
     let enemy = state.units()[0].id;
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![enemy],
             goal: TilePos::new(18, 8),
             queue: false,
@@ -330,7 +330,7 @@ fn remembered_building_keeps_taking_fire_until_scouting_confirms_its_loss() {
         .unwrap();
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 3),
             queue: false,
@@ -366,7 +366,7 @@ fn remembered_building_keeps_taking_fire_until_scouting_confirms_its_loss() {
     assert!(state.attack_view(PlayerId(0), memory).is_some());
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(12, 3),
             queue: false,
@@ -431,7 +431,7 @@ fn every_ground_combat_chassis_can_act_on_a_building_memory() {
             .unwrap();
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![scout],
                 goal: TilePos::new(2, 3),
                 queue: false,
@@ -553,7 +553,7 @@ fn expired_queued_contact_cannot_bind_to_its_reappearance() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![gun],
                 goal: TilePos::new(2, 26),
                 queue: false,
@@ -569,7 +569,7 @@ fn expired_queued_contact_cannot_bind_to_its_reappearance() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![gun],
                 goal: TilePos::new(4, 26),
                 queue: true,
@@ -577,7 +577,7 @@ fn expired_queued_contact_cannot_bind_to_its_reappearance() {
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![enemy],
                 goal: TilePos::new(35, 8),
                 queue: false,
@@ -590,7 +590,7 @@ fn expired_queued_contact_cannot_bind_to_its_reappearance() {
     assert!(state.attack_view(PlayerId(0), old).is_none());
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![enemy],
             goal: TilePos::new(14, 8),
             queue: false,
@@ -773,7 +773,7 @@ fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
                 let scout = state.units()[1].id;
                 state.tick(&[cmd(
                     0,
-                    Command::Move {
+                    Command::Run {
                         units: vec![scout],
                         goal: TilePos::new(34, 25),
                         queue: false,
@@ -805,7 +805,7 @@ fn unreachable_blind_attacks_stall_once_and_clear_the_program() {
                 ),
                 cmd(
                     0,
-                    Command::Move {
+                    Command::Run {
                         units: vec![gun],
                         goal: TilePos::new(4, 10),
                         queue: true,

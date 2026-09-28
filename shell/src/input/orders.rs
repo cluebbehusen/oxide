@@ -398,7 +398,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     }
     // Default ground movement keeps formation intent: weapons take
     // already-available shots, but machines never stop or chase.
-    // Explicit attack-move is the F verb.
+    // Explicit hunt is the F verb.
     // Entity lookups above read the raw tile so a click in the edge
     // slack never binds to whatever sits on the edge; only the ground
     // goal clamps onto the map.

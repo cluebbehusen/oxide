@@ -3562,7 +3562,7 @@ mod tests {
             .record_dispatched_harvest(&obs, UnitId(3), node);
         assert_eq!(policy.state.work_experience.last_sent.len(), 1);
 
-        // A later queue-replacing Move/Scout owns the worker now. It must not
+        // A later queue-replacing Run/Scout owns the worker now. It must not
         // make the old source look like an immediate no-route bounce.
         policy
             .state
@@ -3940,7 +3940,7 @@ mod tests {
         assert_eq!(goal, TilePos::new(20, 4));
         assert!(
             goal.x > barrier.x + CONTESTED_HARVEST_RADIUS,
-            "the nearest home-side goal would make the ordinary Move route cross a second quarantine"
+            "the nearest home-side goal would make the ordinary Run route cross a second quarantine"
         );
         assert!(
             goal.x < worker_region.x - CONTESTED_HARVEST_RADIUS,

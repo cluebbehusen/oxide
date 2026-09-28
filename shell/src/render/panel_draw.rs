@@ -1821,16 +1821,10 @@ mod tests {
     }
 
     #[test]
-    fn narrow_cards_wrap_compound_orders_without_losing_the_hyphen() {
+    fn narrow_cards_keep_short_orders_on_one_line_and_wrap_long_names() {
         let width = |text: &str| text.len() as f32;
-        assert_eq!(
-            card_title_lines("Attack-move", width, 7.0),
-            ["Attack-", "move"]
-        );
-        assert_eq!(
-            card_title_lines("Attack-move", width, 11.0),
-            ["Attack-move"]
-        );
+        assert_eq!(card_title_lines("Hunt", width, 7.0), ["Hunt"]);
+        assert_eq!(card_title_lines("Hunt", width, 11.0), ["Hunt"]);
         assert_eq!(
             card_title_lines("Scuttle Charge", width, 8.0),
             ["Scuttle", "Charge"]

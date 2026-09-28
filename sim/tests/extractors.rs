@@ -253,7 +253,7 @@ fn an_unseen_enemy_claim_does_not_replace_the_remembered_frame() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(3, 7),
             queue: false,
@@ -313,7 +313,7 @@ fn enemy_provisional_extractor_keeps_the_visible_frame_available_until_activatio
     let enemy_builder = state.units()[1].id;
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![enemy_builder],
             goal: TilePos::new(26, 7),
             queue: false,

@@ -248,7 +248,7 @@ impl Executive {
                         if reserve {
                             out.push(PlayerCommand {
                                 player: me,
-                                command: Command::AttackMove {
+                                command: Command::Hunt {
                                     units: members.clone(),
                                     goal: *staging,
                                     queue: false,
@@ -345,7 +345,7 @@ impl Executive {
                         if !already_returned {
                             out.push(PlayerCommand {
                                 player: me,
-                                command: Command::Move {
+                                command: Command::Run {
                                     units: body.members.clone(),
                                     goal: mission.goal,
                                     queue: false,
@@ -381,7 +381,7 @@ impl Executive {
                         claimed.extend(draft.iter().copied());
                         out.push(PlayerCommand {
                             player: me,
-                            command: Command::AttackMove {
+                            command: Command::Hunt {
                                 units: draft.clone(),
                                 goal: *staging,
                                 queue: false,
@@ -456,7 +456,7 @@ impl Executive {
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
-                            command: Command::Move {
+                            command: Command::Run {
                                 units,
                                 goal: *goal,
                                 queue: false,
@@ -464,12 +464,12 @@ impl Executive {
                         });
                     }
                 }
-                Intent::AttackMoveUnits { units, goal } => {
+                Intent::HuntUnits { units, goal } => {
                     let units = self.claim_exact_units(&owned, units, &mut claimed);
                     if !units.is_empty() {
                         out.push(PlayerCommand {
                             player: me,
-                            command: Command::AttackMove {
+                            command: Command::Hunt {
                                 units,
                                 goal: *goal,
                                 queue: false,
@@ -560,7 +560,7 @@ impl Executive {
                     claimed.push(*unit);
                     out.push(PlayerCommand {
                         player: me,
-                        command: Command::Move {
+                        command: Command::Run {
                             units: vec![*unit],
                             goal: *to,
                             queue: false,
@@ -744,7 +744,7 @@ impl Executive {
                         claimed.extend(wings.iter().copied());
                         out.push(PlayerCommand {
                             player: me,
-                            command: Command::AttackMove {
+                            command: Command::Hunt {
                                 units: wings,
                                 goal: *target,
                                 queue: false,
@@ -1051,7 +1051,7 @@ mod tests {
                         units: [3, 1, 2, 1, 999].map(UnitId).into(),
                         goal,
                     },
-                    Intent::AttackMoveUnits {
+                    Intent::HuntUnits {
                         units: [4, 1, 7, 4].map(UnitId).into(),
                         goal,
                     },
@@ -1066,7 +1066,7 @@ mod tests {
                 [
                     PlayerCommand {
                         player: PlayerId(0),
-                        command: Command::Move {
+                        command: Command::Run {
                             units: vec![UnitId(1)],
                             goal,
                             queue: false
@@ -1074,7 +1074,7 @@ mod tests {
                     },
                     PlayerCommand {
                         player: PlayerId(0),
-                        command: Command::AttackMove {
+                        command: Command::Hunt {
                             units: vec![UnitId(4), UnitId(7)],
                             goal,
                             queue: false
@@ -1171,7 +1171,7 @@ mod tests {
         };
         let commands = executive.apply(obs.me, &obs, std::slice::from_ref(&intent));
         assert!(commands.iter().any(|command| matches!(&command.command,
-            Command::AttackMove { units, goal: destination, queue: false }
+            Command::Hunt { units, goal: destination, queue: false }
                 if units == &members && *destination == goal)));
         assert_eq!(executive.armies[0].target, Some(goal));
         assert_eq!(
@@ -1709,7 +1709,7 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert!(matches!(
             &commands[0].command,
-            Command::AttackMove { units, goal, queue }
+            Command::Hunt { units, goal, queue }
                 if units == &(100..=104).map(UnitId).collect::<Vec<_>>()
                     && *goal == target
                     && !queue
@@ -1800,7 +1800,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::AttackMove { units, goal, queue: false },
+                command: Command::Hunt { units, goal, queue: false },
                 ..
             }] if units == &[UnitId(100)] && *goal == expansion
         ));
@@ -1836,7 +1836,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::AttackMove { units, goal, queue: false },
+                command: Command::Hunt { units, goal, queue: false },
                 ..
             }] if units == &[UnitId(2)] && *goal == staging
         ));
@@ -1855,7 +1855,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::AttackMove { units, goal, queue: false },
+                command: Command::Hunt { units, goal, queue: false },
                 ..
             }] if units == &[UnitId(1)] && *goal == staging
         ));
@@ -1880,7 +1880,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::AttackMove { units, goal, queue: false },
+                command: Command::Hunt { units, goal, queue: false },
                 ..
             }] if units == &[UnitId(1), UnitId(2), UnitId(4), UnitId(5), UnitId(6)]
                 && *goal == target
@@ -1985,7 +1985,7 @@ mod tests {
             [
                 PlayerCommand {
                     player: PlayerId(0),
-                    command: Command::Move {
+                    command: Command::Run {
                         units: vec![UnitId(1)],
                         goal: stale_goal,
                         queue: false,
@@ -1993,7 +1993,7 @@ mod tests {
                 },
                 PlayerCommand {
                     player: PlayerId(0),
-                    command: Command::Move {
+                    command: Command::Run {
                         units: vec![UnitId(2)],
                         goal: claimed_goal,
                         queue: false,
@@ -2001,7 +2001,7 @@ mod tests {
                 },
                 PlayerCommand {
                     player: PlayerId(0),
-                    command: Command::Move {
+                    command: Command::Run {
                         units: vec![UnitId(3)],
                         goal: reserved_goal,
                         queue: false,
@@ -2240,7 +2240,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::Move {
+                command: Command::Run {
                     units,
                     goal: command_goal,
                     queue: false,
@@ -2289,7 +2289,7 @@ mod tests {
         );
         assert_eq!(commands.len(), 1);
         assert!(
-            matches!(&commands[0].command, Command::Move { units, .. } if units == &[UnitId(10)])
+            matches!(&commands[0].command, Command::Run { units, .. } if units == &[UnitId(10)])
         );
 
         let commands = Executive::new().apply_with_reservations(
@@ -2339,12 +2339,12 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert!(matches!(
             &commands[0].command,
-            Command::Move { units, goal, queue: false }
+            Command::Run { units, goal, queue: false }
                 if units == &[UnitId(1)] && *goal == rider_goal
         ));
         assert!(matches!(
             &commands[1].command,
-            Command::Move { units, goal, queue: false }
+            Command::Run { units, goal, queue: false }
                 if units == &[UnitId(10)] && *goal == transport_goal
         ));
     }
@@ -2391,7 +2391,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::Move { units, goal: command_goal, queue: false },
+                command: Command::Run { units, goal: command_goal, queue: false },
                 ..
             }] if units == &[UnitId(1), UnitId(2)] && *command_goal == goal
         ));
@@ -2441,7 +2441,7 @@ mod tests {
         ));
         assert!(matches!(
             &commands[1].command,
-            Command::Move { units, goal: command_goal, queue: false }
+            Command::Run { units, goal: command_goal, queue: false }
                 if units == &[UnitId(4)] && *command_goal == goal
         ));
     }
@@ -2488,7 +2488,7 @@ mod tests {
         assert!(matches!(
             commands.as_slice(),
             [PlayerCommand {
-                command: Command::Move { units, goal, queue: false },
+                command: Command::Run { units, goal, queue: false },
                 ..
             }] if units == &[UnitId(1), UnitId(2)] && *goal == at
         ));
