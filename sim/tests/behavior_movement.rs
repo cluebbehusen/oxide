@@ -4,7 +4,9 @@ mod common;
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::PlayerSpec;
-use oxide_sim::{Command, Event, Faction, Order, PlayerId, Scenario, State, UnitId, UnitKind};
+use oxide_sim::{
+    Command, Event, Faction, Order, PlayerId, Scenario, StallReason, State, UnitId, UnitKind,
+};
 
 use common::*;
 
@@ -474,14 +476,22 @@ fn queued_advance_executes_after_the_current_leg() {
         ),
     ]);
     assert_eq!(
-        state.unit(mover).unwrap().queue.front(),
-        Some(&Order::Advance { goal: advance_goal })
+        state
+            .unit(mover)
+            .unwrap()
+            .queue
+            .front()
+            .copied()
+            .map(commanded),
+        Some(Order::Advance {
+            goal: advance_goal.into()
+        })
     );
 
     run_until(&mut state, 300, |state, _| {
         matches!(
             state.unit(mover).unwrap().order,
-            Order::Advance { goal } if goal == advance_goal
+            Order::Advance { goal } if goal.tile() == advance_goal
         )
     });
     assert!(state.unit(mover).unwrap().queue.is_empty());
@@ -599,9 +609,9 @@ fn patrol_engages_on_the_way_and_resumes_the_circuit() {
 }
 
 #[test]
-fn stalled_leg_drops_the_whole_program() {
-    // The queued second leg targets a sealed pocket: no route. The stall
-    // must abandon the entire program, not limp to the next leg.
+fn an_unreachable_leg_ends_short_and_the_program_continues() {
+    // The queued second leg targets a sealed pocket. The walker gets as
+    // close as it can, reports that once, and runs the third leg.
     let scenario = Scenario {
         mode: Default::default(),
         name: "sealed-pocket".into(),
@@ -626,34 +636,57 @@ fn stalled_leg_drops_the_whole_program() {
     let mover = state.units()[0].id;
     let reachable = TilePos::new(10, 1);
     let pocket = TilePos::new(6, 3);
-    state.tick(&[
-        cmd(
-            0,
-            Command::Move {
-                units: vec![mover],
-                goal: reachable,
-                queue: false,
-            },
-        ),
-        cmd(
-            0,
-            Command::Move {
-                units: vec![mover],
-                goal: pocket,
-                queue: true,
-            },
-        ),
-    ]);
-    let events = run_until(&mut state, 600, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == mover))
-    });
-    assert!(!events.is_empty());
+    let after = TilePos::new(2, 7);
+    let mut events = state
+        .tick(&[
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![mover],
+                    goal: reachable,
+                    queue: false,
+                },
+            ),
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![mover],
+                    goal: pocket,
+                    queue: true,
+                },
+            ),
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![mover],
+                    goal: after,
+                    queue: true,
+                },
+            ),
+        ])
+        .events;
+    events.extend(run_until(&mut state, 600, |state, _| {
+        let u = state.unit(mover).unwrap();
+        u.order == Order::Idle && u.tile() == after
+    }));
+    let stalls: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::OrderStalled {
+                unit, pos, reason, ..
+            } if *unit == mover => Some((*reason, TilePos::containing(*pos))),
+            _ => None,
+        })
+        .collect();
+    // The pocket wall's nearest reachable tile is the one north of it, and
+    // it is reached only after the first leg completed.
+    assert_eq!(
+        stalls,
+        vec![(StallReason::NoRoute, TilePos::new(6, 1))],
+        "one report, where the second leg stopped"
+    );
     let u = state.unit(mover).unwrap();
-    assert_eq!(u.order, Order::Idle);
     assert!(u.queue.is_empty() && !u.looping);
-    assert_eq!(u.tile(), reachable, "stall happens after the first leg");
 }
 
 #[test]

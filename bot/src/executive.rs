@@ -69,8 +69,9 @@ pub struct Army {
     /// stalls past the patience re-stages in place.
     pub progress: Option<(i32, u64)>,
     /// The tick and vanguard tile of the last march order, so a later
-    /// think can tell a march that never started (every member idle
-    /// where it stood — the sim refused the order) from one under way.
+    /// think can tell a march that has run its course (every escort idle,
+    /// refused where it stood or stopped short of ground it cannot reach)
+    /// from one under way.
     pub issued: Option<(u64, TilePos)>,
     /// Consecutive march orders that bounced at issue. Two in a row is
     /// route testimony: the target is unreachable from here today.

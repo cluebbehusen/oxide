@@ -2,7 +2,7 @@
 mod common;
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
-use common::{cmd, open_arena, unit};
+use common::{cmd, commanded, open_arena, unit};
 use oxide_sim::{Command, Order, PlayerCommand, SIM_VERSION, Scenario, State, UnitKind};
 
 #[test]
@@ -22,7 +22,10 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
     let mut replay = Replay::<_, _, ()>::new(SIM_VERSION, scenario);
     replay.record(live.current_tick(), advance.clone());
     live.tick(&[advance]);
-    assert_eq!(live.unit(mover).unwrap().order, Order::Advance { goal });
+    assert_eq!(
+        commanded(live.unit(mover).unwrap().order),
+        Order::Advance { goal: goal.into() }
+    );
     for _ in 1..100 {
         live.tick(&[]);
     }
@@ -48,12 +51,18 @@ fn replay_roundtrip_executes_and_reproduces_advance() {
             .collect();
         replayed.tick(&commands);
         if tick == 0 {
-            assert_eq!(replayed.unit(mover).unwrap().order, Order::Advance { goal });
+            assert_eq!(
+                commanded(replayed.unit(mover).unwrap().order),
+                Order::Advance { goal: goal.into() }
+            );
         }
     }
     assert!(cursor.is_finished());
     assert_eq!(replayed.hash(), live_hash);
-    assert_eq!(replayed.unit(mover).unwrap().order, Order::Advance { goal });
+    assert_eq!(
+        commanded(replayed.unit(mover).unwrap().order),
+        Order::Advance { goal: goal.into() }
+    );
 }
 
 #[test]

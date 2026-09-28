@@ -702,7 +702,7 @@ fn unqueued_advance_replaces_an_acquired_attack_on_the_command_tick() {
     )]);
 
     let mover = state.unit(mover).unwrap();
-    assert_eq!(mover.order, Order::Advance { goal });
+    assert_eq!(commanded(mover.order), Order::Advance { goal: goal.into() });
     assert!(
         mover.path.is_some(),
         "the replacement starts routing immediately"
@@ -739,7 +739,7 @@ fn advance_moves_and_fires_without_replacing_its_route() {
 
     let mover = state.unit(mover).unwrap();
     assert!(mover.pos != before_pos, "the shot must not stop movement");
-    assert_eq!(mover.order, Order::Advance { goal });
+    assert_eq!(commanded(mover.order), Order::Advance { goal: goal.into() });
     assert!(
         mover.path.is_some(),
         "the advance route must survive firing"
@@ -873,8 +873,8 @@ fn advance_respects_cover_without_diverting_around_it() {
             .any(|event| matches!(event, Event::AttackHit { attacker, .. } if *attacker == mover))
     );
     assert_eq!(
-        state.unit(mover).unwrap().order,
-        Order::Advance { goal },
+        commanded(state.unit(mover).unwrap().order),
+        Order::Advance { goal: goal.into() },
         "cover cannot turn the route into a chase"
     );
 }

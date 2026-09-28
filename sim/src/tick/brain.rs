@@ -142,6 +142,7 @@ pub(super) fn run(
     let mut logistics_pending = logistics::Pending::default();
     let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
         (0..state.players.len()).map(|_| None).collect();
+    let mut reach = super::reach::Reach::new(state);
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -185,11 +186,12 @@ pub(super) fn run(
                 unit.landed = false;
             }
         }
+        let reported = events.len();
         match order {
             Order::Idle => idle(state, index, id),
-            Order::Move { goal } => {
-                if !land_at_destination(state, index, id, goal) {
-                    walk(state, index, id, goal, events);
+            Order::Move { .. } => {
+                if !land_at_destination(state, index, &mut reach, id, events) {
+                    walk(state, index, &mut reach, id, events);
                 }
             }
             Order::ReturnCargo { foundry, repair } => {
@@ -228,10 +230,11 @@ pub(super) fn run(
                     launches: &mut launches,
                 },
             ),
-            Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
+            Order::AttackMove { goal } => attack_move(state, index, &mut reach, id, goal, events),
             Order::Advance { goal } => advance(
                 state,
                 index,
+                &mut reach,
                 &motion,
                 id,
                 goal,
@@ -247,10 +250,16 @@ pub(super) fn run(
             Order::Board { transport } => {
                 logistics::board(state, id, transport, &mut logistics_pending, events)
             }
-            Order::Unload { at } => {
-                logistics::unload(state, id, at, &mut logistics_pending, events)
+            Order::Unload { .. } => {
+                logistics::unload(state, index, &mut reach, id, &mut logistics_pending, events)
             }
             Order::Land { goal } => land(state, index, id, goal, events),
+        }
+        if events[reported..]
+            .iter()
+            .any(|event| matches!(event, Event::NodeDepleted { .. }))
+        {
+            reach.forget_ground();
         }
         combat::normalize_order(state, id);
     }

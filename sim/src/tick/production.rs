@@ -241,9 +241,9 @@ fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -
     }
     let goal = super::domain_goal(state, rally, stats.domain)?;
     Some(if stats.can_fight() {
-        Order::AttackMove { goal }
+        Order::AttackMove { goal: goal.into() }
     } else {
-        Order::Move { goal }
+        Order::Move { goal: goal.into() }
     })
 }
 

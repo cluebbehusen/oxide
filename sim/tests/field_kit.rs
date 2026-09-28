@@ -3,13 +3,13 @@
 
 mod common;
 use common::wide_open_map as open_map;
-use common::{building, cmd, players, unit};
+use common::{building, cmd, players, run_until, unit};
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS};
-use oxide_sim::{Command, Event, PlayerId, Scenario, State, Target, UnitKind};
+use oxide_sim::{Command, Event, Order, PlayerId, Scenario, State, Target, UnitKind};
 
 fn arena(map: Vec<String>, units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
     Scenario {
@@ -575,23 +575,24 @@ fn a_barricade_closes_the_corridor() {
             queue: false,
         },
     )]);
-    let mut stalled = report.events.iter().any(|e| {
-        matches!(
-            e,
-            Event::CommandRejected {
-                reason: RejectReason::UnreachableGoal,
-                ..
-            } | Event::OrderStalled { .. }
-        )
-    });
-    for _ in 0..60 {
-        let report = state.tick(&[]);
-        stalled |= report
+    assert!(
+        !report
             .events
             .iter()
-            .any(|e| matches!(e, Event::OrderStalled { .. }));
-    }
-    assert!(stalled, "the bought wall closes the only road");
-    let tile = state.unit(walker).unwrap().tile();
-    assert!(tile.y <= 2, "nothing walked through the wall: at {tile:?}");
+            .any(|e| matches!(e, Event::CommandRejected { .. })),
+        "the far side is open ground, so the order is taken"
+    );
+    let events = run_until(&mut state, 600, |state, _| {
+        state.unit(walker).unwrap().order == Order::Idle
+    });
+    let stalls = events
+        .iter()
+        .filter(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == walker))
+        .count();
+    assert_eq!(stalls, 1, "the bought wall closes the only road");
+    assert_eq!(
+        state.unit(walker).unwrap().tile(),
+        TilePos::new(20, 2),
+        "the walker parks against the wall, nearest its goal"
+    );
 }

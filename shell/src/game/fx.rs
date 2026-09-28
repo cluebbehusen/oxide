@@ -1211,7 +1211,7 @@ impl Presentation {
                     // Own-state facts only — a stall reason must never
                     // whisper about what fog hides.
                     self.toast(match reason {
-                        oxide_sim::StallReason::NoRoute => "No route to that order",
+                        oxide_sim::StallReason::NoRoute => "Can't reach that",
                         oxide_sim::StallReason::NoFiringPosition => "No ground to fire from there",
                         oxide_sim::StallReason::InsufficientScrap => "Out of scrap",
                         oxide_sim::StallReason::GroundTaken => {

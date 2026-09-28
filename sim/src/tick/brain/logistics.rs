@@ -109,7 +109,7 @@ pub(super) fn board(
         }
         None => {
             let unit = state.unit_mut(id).expect("caller checked");
-            unit.clear_program();
+            unit.drop_active_order();
             events.push(Event::OrderStalled {
                 unit: id,
                 player,
@@ -143,43 +143,31 @@ fn boarding_route(
         .min_by_key(|(goal, waypoints)| (waypoints.len(), goal.y, goal.x))
 }
 
-/// Fly to the drop point; standing on it, ask to set the riders down.
+/// Fly to the drop point; standing on it, ask to set the riders down. A drop
+/// point out of reach sets them down where the flight ended instead and
+/// reports the shortfall.
 pub(super) fn unload(
     state: &mut State,
+    index: &super::super::spatial::UnitIndex,
+    reach: &mut super::super::reach::Reach,
     id: UnitId,
-    at: TilePos,
     pending: &mut Pending,
     events: &mut Vec<Event>,
 ) {
+    use super::locomotion::{Approach, Steer, steer};
+    let Steer::Done { short } = steer(state, index, reach, id, Approach::Exact) else {
+        return;
+    };
     let unit = state.unit(id).expect("caller checked");
-    let (pos, tile, kind, player) = (unit.pos, unit.tile(), unit.kind, unit.player);
-    if tile == at {
-        pending.landings.push((id, at));
-        return;
-    }
-    let has_fresh_path = unit.path.as_ref().is_some_and(|p| p.goal == at);
-    if has_fresh_path {
-        return;
-    }
-    match route_for(state, kind, tile, at) {
-        Some(waypoints) => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            unit.path = Some(PathFollow {
-                goal: at,
-                waypoints,
-                next: 0,
-            });
-        }
-        None => {
-            let unit = state.unit_mut(id).expect("caller checked");
-            unit.clear_program();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos,
-                reason: StallReason::NoRoute,
-            });
-        }
+    let (pos, tile, player, looping) = (unit.pos, unit.tile(), unit.player, unit.looping);
+    pending.landings.push((id, tile));
+    if short && !looping {
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
     }
 }
 

@@ -358,7 +358,7 @@ pub(super) fn sidearm_radar(
     });
 }
 
-fn complete(state: &mut State, id: UnitId, resume: Option<TilePos>) {
+fn complete(state: &mut State, id: UnitId, resume: Option<crate::state::Goal>) {
     state
         .unit_mut(id)
         .expect("live unit")
@@ -370,7 +370,7 @@ pub(in crate::tick::brain) fn attack_known(
     index: &super::super::super::spatial::UnitIndex,
     motion: &MotionSnapshot,
     id: UnitId,
-    program: (AttackTarget, Option<TilePos>, bool),
+    program: (AttackTarget, Option<crate::state::Goal>, bool),
     buffers: ShotBuffers<'_>,
 ) {
     let (target, resume, pursue) = program;

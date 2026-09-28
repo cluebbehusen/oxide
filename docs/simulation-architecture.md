@@ -157,7 +157,15 @@ immediately. Each unit has one active `Order`, a bounded FIFO queue, and a
 - a queued order appends behind it;
 - completing a plain program pops the next order or becomes idle;
 - a patrol rotates completed legs to the back until interrupted;
-- a stall or overriding command clears the abandoned program as one unit.
+- an overriding command clears the abandoned program as one unit;
+- a walk to an unreachable goal completes where it got as close as it could, and
+  the program continues;
+- any other order that cannot be routed drops only itself, except that a refused
+  chase, an empty bank, or a full sling still clears the whole program.
+
+Re-issuing the active order without queueing is a no-op past the queue wipe: the
+order, its path, and its progress survive. A walking order matches on its
+variant and commanded tile, so it also keeps the endpoint it has resolved.
 
 Movement stances are distinct contracts. `Move` walks without engaging,
 `Advance` keeps moving but may take already-visible in-range primary shots, and
@@ -166,6 +174,34 @@ commits to its target; idle self-acquisition and retaliation may carry a leash
 back to the unit's station. `Harvest`, `Build`, `Found`, `Repair`, `RepairUnit`,
 and `Salvage` are persistent work programs lowered by unit behavior over later
 ticks.
+
+`Move`, `AttackMove`, `Advance`, and `Unload` carry a `Goal`: the commanded tile
+plus an optional endpoint. When the target lies outside the unit's reachable
+ground, the unit routes to the reachable tile nearest it by squared distance
+instead, and stores that tile as the endpoint. Reachability comes from
+4-connected component labels over the same passability routes use, which match
+A* reachability because routes never cut corners; a unit standing on a closed
+tile reaches the components of its open cardinal neighbours. Ties on distance
+follow the spread-slot ring order, half-turned by the frame between the target
+and the unit, so mirrored units settle on mirrored tiles, and a recompute keeps
+a stored endpoint that is still reachable and tied. The endpoint is stored only
+while it differs from the target, so a reachable order serializes exactly as a
+plain tile did. The labels are brain-phase scratch rebuilt lazily; a scrap node
+running dry is the only passability write inside the brain phase and discards
+the ground labels.
+
+A walk is short when it arrives somewhere other than its target, when it is
+sealed in, when it already stands on its endpoint, or when the capped route to
+the endpoint fails. A short walk completes, advances the program, and reports
+`OrderStalled { NoRoute }` once unless the program loops; an ordinary arrival is
+never short. Because an endpoint sits on the edge of reachable ground, a short
+walk also completes when it touches a body that stood idle, pathless, and
+stopped at the start of the brain phase and connects, through a chain of such
+touching bodies within `CROWD_CHAIN_REACH`, to one within `ARRIVAL_NEAR` of the
+endpoint. Only bodies of the walker's own team count toward that chain, so a
+hostile body that may be out of sight never changes where a short walk stops. A
+crowd therefore never makes a goal count as unreachable. An unreachable `Unload`
+sets its riders down where the flight ended.
 
 ## Movement and collision
 
@@ -222,13 +258,15 @@ with a neighbouring footprint cannot hand the hit to the neighbour.
 Turn-limited aircraft land on any ordinary ground tile, and there is no landing
 command: a flier's ground destination is a landing. A move, attack-move, or
 advance with nothing queued behind it and no patrol loop hands over to an
-internal `Land` order once the airframe is within `LANDING_HANDOFF_REACH` of its
-goal and nothing is in acquisition range, snapping to the nearest clear landable
-tile within `GOAL_SNAP_RADIUS`; with an enemy in reach it keeps the ordinary
-arrival contract and fights as an idle unit would. A tile is landable only when
-some run-in bearing exists whose parked heading the airframe could fly out of
-again, either by a half turn or by straight flight into open ground; corner
-tiles therefore land only with the nose toward the field. The `Land` order flies
+internal `Land` order once the airframe is within `LANDING_HANDOFF_REACH` of
+where it is headed (the endpoint of an unreachable goal, resolved before the
+check) and nothing is in acquisition range, snapping to the nearest clear
+landable tile within `GOAL_SNAP_RADIUS`; a handoff that replaces a short walk
+reports the shortfall. With an enemy in reach it keeps the ordinary arrival
+contract and fights as an idle unit would. A tile is landable only when some
+run-in bearing exists whose parked heading the airframe could fly out of again,
+either by a half turn or by straight flight into open ground; corner tiles
+therefore land only with the nose toward the field. The `Land` order flies
 straight in on whatever bearing the tile lies whenever the nose can settle onto
 that line before reaching it; otherwise it flies a run-in entered from a fix
 twice as far out as the initial point on the same bearing, so the leg is joined
@@ -610,7 +648,7 @@ map rather than an exhaustive test inventory.
 | Placement, deferred founding, and upgrades         | `sim/src/state/placement.rs`, `sim/src/tick/commands.rs`, `sim/src/tick/brain.rs`, `sim/src/tick/brain/economy.rs`                                                     | `sim/tests/behavior_construction.rs`, `sim/tests/extractors.rs`, `sim/tests/upgrades.rs`, `sim/tests/foundries.rs`                  |
 | Tick scheduling, production, cleanup, and charges  | `sim/src/tick/mod.rs`, `sim/src/tick/production.rs`                                                                                                                    | `sim/tests/behavior_rules.rs`, `sim/tests/behavior_economy.rs`, `sim/tests/field_kit.rs`                                            |
 | Command vocabulary and set semantics               | `sim/src/command.rs`, `sim/src/tick/commands.rs`                                                                                                                       | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs`                                                                        |
-| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                                         | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
+| Unit programs, routing, movement, and collision    | `sim/src/tick/brain.rs`, `sim/src/tick/brain/locomotion.rs`, `sim/src/tick/reach.rs`, `sim/src/tick/movement.rs`, `chassis/src/path.rs`                                | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs`, `sim/tests/peaks.rs`, `sim/tests/pits.rs`                            |
 | Boarding and unloading                             | `sim/src/tick/brain/logistics.rs`                                                                                                                                      | `sim/tests/transports.rs`                                                                                                           |
 | Harvesting, income, salvage, and repair            | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs`                                                                                                          | `sim/tests/harvest_zones.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs`, `sim/tests/repair_bay.rs`, `sim/tests/smelter.rs` |
 | Weapons and simultaneous resolution                | `sim/src/stats.rs`, `sim/src/tick/brain/combat.rs`                                                                                                                     | `sim/tests/behavior_combat.rs`, `sim/tests/combat_edges.rs`, `sim/tests/shells.rs`, `sim/tests/peaks.rs`                            |

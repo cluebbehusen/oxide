@@ -1413,7 +1413,9 @@ mod tests {
                 path.waypoints[path.next as usize].center() - position,
             );
             unit.pos = position;
-            unit.order = Order::Move { goal: path.goal };
+            unit.order = Order::Move {
+                goal: path.goal.into(),
+            };
             unit.path = Some(path);
         }
         state
@@ -1444,7 +1446,7 @@ mod tests {
             let Order::Move { goal } = unit.order else {
                 panic!("test worker lost its move order")
             };
-            assert_eq!(unit.pos, goal.center());
+            assert_eq!(unit.pos, goal.tile().center());
             assert!(
                 unit.path.is_none(),
                 "the worker did not finish within the bound"
@@ -1579,7 +1581,9 @@ mod tests {
             unit.heading =
                 chassis::compass::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.pos = pos;
-            unit.order = Order::AttackMove { goal: path.goal };
+            unit.order = Order::AttackMove {
+                goal: path.goal.into(),
+            };
             unit.path = Some(path);
         }
         state
@@ -1961,7 +1965,7 @@ mod tests {
         let unit = &mut state.units[0];
         unit.pos = Vec2Fx::new(Fx::lit("5.9"), Fx::lit("2.5"));
         unit.order = Order::Move {
-            goal: TilePos::new(6, 2),
+            goal: TilePos::new(6, 2).into(),
         };
         unit.path = Some(PathFollow {
             goal: TilePos::new(6, 2),
@@ -2043,7 +2047,9 @@ mod tests {
                 chassis::compass::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.hp = UnitKind::Avalanche.stats().max_hp;
             unit.pos = pos;
-            unit.order = Order::Move { goal: path.goal };
+            unit.order = Order::Move {
+                goal: path.goal.into(),
+            };
             unit.path = Some(path);
         }
 

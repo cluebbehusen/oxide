@@ -1331,8 +1331,7 @@ fn replacing_the_only_builders_program_refunds_a_queued_site() {
 #[test]
 fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
     // A queued leg whose site vanished is a finished job, not a stall:
-    // the rest of the program must survive (OrderStalled clears whole
-    // programs, which is exactly wrong here).
+    // it pops without a report and the rest of the program survives.
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
         .build()
         .unwrap();
@@ -2035,7 +2034,7 @@ fn cancelling_a_queued_deferred_site_preserves_the_surrounding_program() {
 
     let (mut state, builder, spot) = deferred_founder_fixture();
     let later = Order::Move {
-        goal: TilePos::new(3, 5),
+        goal: TilePos::new(3, 5).into(),
     };
     let scrap_before = state.player(PlayerId(0)).scrap;
     state.tick(&[
@@ -2066,6 +2065,7 @@ fn cancelling_a_queued_deferred_site_preserves_the_surrounding_program() {
             .queue
             .iter()
             .copied()
+            .map(commanded)
             .collect::<Vec<_>>(),
         vec![
             Order::Found {
@@ -2092,7 +2092,12 @@ fn cancelling_a_queued_deferred_site_preserves_the_surrounding_program() {
     let worker = state.unit(builder).unwrap();
     assert_eq!(worker.order, active_before, "the active leg keeps running");
     assert_eq!(
-        worker.queue.iter().copied().collect::<Vec<_>>(),
+        worker
+            .queue
+            .iter()
+            .copied()
+            .map(commanded)
+            .collect::<Vec<_>>(),
         vec![later],
         "only the addressed promise leaves the queue"
     );
@@ -2133,7 +2138,7 @@ fn cancelling_an_active_deferred_site_promotes_the_next_leg() {
 
     let (mut state, builder, spot) = deferred_founder_fixture();
     let later = Order::Move {
-        goal: TilePos::new(3, 5),
+        goal: TilePos::new(3, 5).into(),
     };
     let scrap_before = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
@@ -2163,7 +2168,7 @@ fn cancelling_an_active_deferred_site_promotes_the_next_leg() {
         },
     )]);
     let worker = state.unit(builder).unwrap();
-    assert_eq!(worker.order, later);
+    assert_eq!(commanded(worker.order), later);
     assert!(worker.queue.is_empty());
     assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
     assert!(
@@ -2398,7 +2403,7 @@ fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
         .unwrap()
         .id;
     let later = Order::Move {
-        goal: TilePos::new(3, 2),
+        goal: TilePos::new(3, 2).into(),
     };
     state.tick(&[cmd(
         0,
@@ -2418,7 +2423,12 @@ fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
     let worker = state.unit(builder).unwrap();
     assert_eq!(worker.order, Order::Build { site: first });
     assert_eq!(
-        worker.queue.iter().copied().collect::<Vec<_>>(),
+        worker
+            .queue
+            .iter()
+            .copied()
+            .map(commanded)
+            .collect::<Vec<_>>(),
         vec![later],
         "the later leg survives the cancelled paid site"
     );
