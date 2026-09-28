@@ -93,12 +93,13 @@ fn resolve_new_match(
     out: WizardOut,
     draft: &NewMatchDraft,
     personality_seeds: &mut PersonalitySeedSource,
+    controller: BotController,
     bind: &str,
 ) -> Option<Result<NewMatch>> {
     match out {
         WizardOut::Home | WizardOut::Stay => None,
         WizardOut::Launch => {
-            let result = start_new_match(draft, personality_seeds.match_base(), bind);
+            let result = start_new_match(draft, personality_seeds.match_base(), controller, bind);
             if result.is_ok() {
                 personality_seeds.commit_launch();
             }
@@ -467,7 +468,13 @@ fn wizard_frame(app: &mut App, mut w: Wizard, events: &[RawEvent], rerun: &mut b
     let mut next: Option<Screen> = None;
     drop(input_scope);
     let bind = format!("0.0.0.0:{}", oxide_net::DEFAULT_PORT);
-    let launch_result = resolve_new_match(out, &app.draft, &mut app.personality_seeds, &bind);
+    let launch_result = resolve_new_match(
+        out,
+        &app.draft,
+        &mut app.personality_seeds,
+        app.config.opponent_ai,
+        &bind,
+    );
     match out {
         WizardOut::Home => {
             let home = HomeScreen::open();
@@ -1158,11 +1165,25 @@ mod tests {
         let draft = configured_new_match_draft();
 
         assert!(
-            resolve_new_match(WizardOut::Stay, &draft, &mut personality_seeds, LOOPBACK).is_none()
+            resolve_new_match(
+                WizardOut::Stay,
+                &draft,
+                &mut personality_seeds,
+                BotController::Scripted,
+                LOOPBACK
+            )
+            .is_none()
         );
         assert_eq!(personality_seeds.match_base(), first_base);
         assert!(
-            resolve_new_match(WizardOut::Home, &draft, &mut personality_seeds, LOOPBACK).is_none()
+            resolve_new_match(
+                WizardOut::Home,
+                &draft,
+                &mut personality_seeds,
+                BotController::Scripted,
+                LOOPBACK
+            )
+            .is_none()
         );
         assert_eq!(
             personality_seeds.match_base(),
@@ -1176,6 +1197,7 @@ mod tests {
             WizardOut::Launch,
             &invalid,
             &mut personality_seeds,
+            BotController::Scripted,
             LOOPBACK,
         )
         .expect("launch outcome has a result");
@@ -1186,9 +1208,14 @@ mod tests {
             "a launch refusal must leave the same seed window available for retry"
         );
 
-        let launched =
-            resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, LOOPBACK)
-                .expect("launch outcome has a result");
+        let launched = resolve_new_match(
+            WizardOut::Launch,
+            &draft,
+            &mut personality_seeds,
+            BotController::Scripted,
+            LOOPBACK,
+        )
+        .expect("launch outcome has a result");
         let Ok(NewMatch::Local(game)) = launched else {
             panic!("a valid draft launches locally");
         };
@@ -1216,13 +1243,25 @@ mod tests {
 
         let taken = std::net::TcpListener::bind(LOOPBACK).unwrap();
         let busy = taken.local_addr().unwrap().to_string();
-        let refused = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, &busy)
-            .expect("launch outcome has a result");
+        let refused = resolve_new_match(
+            WizardOut::Launch,
+            &draft,
+            &mut personality_seeds,
+            BotController::Scripted,
+            &busy,
+        )
+        .expect("launch outcome has a result");
         assert!(refused.is_err(), "the port is taken");
         assert_eq!(personality_seeds.match_base(), first_base);
 
-        let hosted = resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, LOOPBACK)
-            .expect("launch outcome has a result");
+        let hosted = resolve_new_match(
+            WizardOut::Launch,
+            &draft,
+            &mut personality_seeds,
+            BotController::Scripted,
+            LOOPBACK,
+        )
+        .expect("launch outcome has a result");
         let Ok(NewMatch::Hosted(lobby)) = hosted else {
             panic!("a remote chair hosts");
         };
@@ -1241,9 +1280,14 @@ mod tests {
     fn restart_and_rematch_rebuild_the_exact_opponents_without_rerolling() {
         let mut personality_seeds = PersonalitySeedSource::from_seed(41);
         let draft = configured_new_match_draft();
-        let launched =
-            resolve_new_match(WizardOut::Launch, &draft, &mut personality_seeds, LOOPBACK)
-                .expect("launch outcome has a result");
+        let launched = resolve_new_match(
+            WizardOut::Launch,
+            &draft,
+            &mut personality_seeds,
+            BotController::Scripted,
+            LOOPBACK,
+        )
+        .expect("launch outcome has a result");
         let Ok(NewMatch::Local(game)) = launched else {
             panic!("a valid draft launches locally");
         };
