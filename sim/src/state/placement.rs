@@ -199,7 +199,9 @@ impl State {
     /// scrap (conservative: nodes only shrink), remembered enemy
     /// buildings, live own/allied buildings (team-internal facts),
     /// and the issuer's own pending [`Order::Found`] claims; a
-    /// never-explored tile refuses as [`PlaceRefusal::Fog`]. Live
+    /// never-explored tile refuses as [`PlaceRefusal::Fog`], except on an
+    /// Extractor frame discovered through any footprint tile: its authored
+    /// footprint is already known to be clear ground. Live
     /// hostile units and unremembered enemy buildings on unseen ground
     /// are deliberately unreadable here — two states differing only in
     /// what fog hides return identical verdicts, so the amber ghost
@@ -235,14 +237,18 @@ impl State {
         }
         let vision = self.vision(player);
         let (w, h) = kind.base_stats().size;
-        // Never distinguish a hidden authored frame from ordinary unknown
-        // ground. Explored-but-unseen tiles remain eligible for a deferred
-        // intent and are checked from memory below.
-        for dy in 0..h {
-            for dx in 0..w {
-                let tile = anchor.offset(dx, dy);
-                if !vision.visible(tile) && !vision.explored(tile) {
-                    return Some(PlaceRefusal::Fog);
+        let known_frame = kind == BuildingKind::Extractor
+            && self.map.is_extractor_frame(anchor)
+            && (0..h).any(|dy| (0..w).any(|dx| vision.explored(anchor.offset(dx, dy))));
+        // Discovering any corner identifies the whole authored frame, but
+        // never expose a completely unknown frame through a placement verdict.
+        if !known_frame {
+            for dy in 0..h {
+                for dx in 0..w {
+                    let tile = anchor.offset(dx, dy);
+                    if !vision.visible(tile) && !vision.explored(tile) {
+                        return Some(PlaceRefusal::Fog);
+                    }
                 }
             }
         }
@@ -282,9 +288,6 @@ impl State {
                         return Some(PlaceRefusal::Building);
                     }
                     continue;
-                }
-                if !vision.explored(t) {
-                    return Some(PlaceRefusal::Fog);
                 }
                 let terrain = self.map.tile(t).map(|tile| tile.terrain);
                 if terrain != Some(crate::map::Terrain::Ground) || vision.remembered_scrap(t) > 0 {
