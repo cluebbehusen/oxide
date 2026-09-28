@@ -118,11 +118,12 @@ checkpoint field needs a design review.
 ## Own events
 
 The host session keeps each seat's own `OrderStalled` and `CommandRejected`
-events in a bounded, ordered buffer and passes it with the observation. The
-buffer is saved with checkpoints. A background decision reads it without
-draining it; events are consumed when that decision's result is installed. A
-rejection that cannot be tied unambiguously to one command triggers a check of
-the observed outcome; it never marks a particular purchase as failed.
+events in a bounded, ordered buffer and passes it with the observation; when the
+buffer is full, the oldest event is dropped. The buffer is saved with
+checkpoints. A background decision reads it without draining it; events are
+consumed when that decision's result is installed. A rejection that cannot be
+tied unambiguously to one command triggers a check of the observed outcome; it
+never marks a particular purchase as failed.
 
 ## Map knowledge
 
