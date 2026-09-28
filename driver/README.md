@@ -13,7 +13,9 @@ Build provenance belongs to this executable. Its build script watches the driver
 and shared dependency package trees plus shared build inputs, assets, and
 scenarios; shell-only edits and private workspace notes do not contribute to its
 dirty status. Reports retain both the original recording identity and this
-exporter's identity. Source archives report unknown provenance.
+exporter's identity. Source archives report unknown provenance. The build also
+embeds a digest of the `oxide-bot` sources, which evaluation records as its
+frozen reference.
 
 ## Main pieces
 
@@ -46,6 +48,20 @@ exporter's identity. Source archives report unknown provenance.
   leave hidden staging files or a partial replay set because arbitrary final
   paths cannot be published atomically; inspect and remove that incomplete
   batch, then rerun it under a fresh candidate.
+- Evaluation rows also record each seat's team and elimination tick, the
+  producing build and `oxide-bot` digest, omniscient failure detectors (repeated
+  impossible orders, abandoned paid construction, starved producers) and income
+  against a saturated-economy estimate. These are QA evidence computed from
+  authoritative state; they never reach a controller.
+- `bot_matrix` expands a manifest from `evaluation/` into head-to-head pairs of
+  `oxide-opponent` against `oxide-bot`, both sides sharing one personality seed,
+  plus one `oxide-bot` mirror leg per cell. Mirror rows are cached under the
+  `oxide-bot` digest and reused while it is unchanged. `bot-matrix` publishes
+  labelled rows and prints pair outcomes, the new bot's share of won legs with
+  Wilson intervals, decided rates, failure incidents and income, overall and by
+  difficulty, stance and map family; `bot-matrix-report` re-reads published
+  rows. Evaluation inputs live in `evaluation/`, not `scenarios/`, whose every
+  file the shell menu, map gates and golden sweeps read.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
   combat behavior.

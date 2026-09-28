@@ -80,6 +80,54 @@ average and p99 time per decision with total CPU, and the smoke-matrix
 comparison, including when they are unfavorable. Keep them out of the PR
 description.
 
+Run the smoke matrix locally before handoff; CI does not run it:
+
+```sh
+cargo run --release -p oxide-driver -- bot-matrix driver/evaluation/smoke.json --out <new directory>
+```
+
+It plays Skirmish, The Deep Cut and Severance at Standard and Prime, Balanced
+and Aggressive. Each cell is a head-to-head pair, this bot in seat zero and then
+seat one with one personality seed on both sides, plus one `oxide-bot` mirror
+leg. Mirror rows are cached per user under the digest of the frozen `bot/`
+sources (`--baseline-cache` moves the cache), so they rerun only when `bot/`,
+the simulation version, a map, a seed or the tick limit changes.
+`driver/evaluation/duels.json` is the full two-seat matrix.
+`bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
+same report as JSON.
+
+Read the report overall and by difficulty, stance and map family:
+
+- **Pairs**: this bot wins both legs, split, `oxide-bot` wins both, or undecided
+  (at least one leg without a winner).
+- **New share**: this bot's share of head-to-head legs that had a winner, with a
+  95% Wilson interval. Small matrices give wide intervals; compare runs, not
+  single cells.
+- **Decided new-old** against **decided old-old**: head-to-head legs should
+  decide at least as often as the mirror.
+- **Failure incidents** and **income**, per controller with seat-legs for scale.
+  `oxide-bot` numbers are the reference, not a target.
+
+## Failure detectors
+
+Evaluation rows carry omniscient QA detectors, checked every 12 ticks for every
+controlled seat. They never reach a controller.
+
+- **Repeated orders:** one unit stalls with the same reason 5 times within 1,200
+  ticks. The episode ends after a full window without that stall.
+- **Abandoned sites:** a paid, visible, unbuilt base-tier site makes no
+  construction progress for 1,200 ticks.
+- **Starved producers:** a built producer stays idle for 1,200 ticks while the
+  bank, less scrap this bot protects for a saving target, covers the cheapest
+  unit that producer may legally train. The trace does not report protected
+  scrap yet, so the whole bank counts.
+
+Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
+(deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation
+estimate: two Harvesters on every scrap node within 7 tiles of a completed
+Foundry at their straight-line round trip, plus those credits. Harvesters
+working fields beyond that zone can push income above the estimate.
+
 ## Review play
 
 Use `replay-summary` and the native shell through the oxide-live-qa skill. Give
