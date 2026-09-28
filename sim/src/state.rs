@@ -13,9 +13,11 @@
 //! - `result` is set at most once; once set, ticks are frozen no-ops.
 
 mod goal;
+mod order_key;
 mod placement;
 mod targeting;
 pub use goal::{Aim, Goal};
+pub use order_key::OrderKey;
 pub use targeting::AttackView;
 
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};

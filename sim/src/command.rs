@@ -209,8 +209,9 @@ pub enum Command {
         /// Owned completed armed buildings.
         buildings: Vec<BuildingId>,
     },
-    /// Cancel an unstarted construction site by kind and anchor, clearing
-    /// every crew commitment and refunding the full price once.
+    /// Cancel an own construction site by kind and anchor, clearing every
+    /// crew commitment. An unstarted site refunds its full price once; a
+    /// started one refunds what [`Command::Cancel`] would.
     CancelFound {
         /// The promised structure.
         kind: crate::stats::BuildingKind,
@@ -260,6 +261,27 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         repair: bool,
     },
+    /// Remove one order from the programs of `unit` and every unit in
+    /// `units` that has a matching one. Each drops its `from_end`-th match
+    /// of `key` counted back from the end of its program, so legs finished
+    /// before the command runs never shift which order goes.
+    ///
+    /// A patrol's legs rotate, so members whose circuits repeat a waypoint
+    /// can drop different visits to it when they are at different points of
+    /// the loop. The same holds for a repeated order queued to only part of
+    /// the units.
+    CancelOrder {
+        /// The unit whose program the order was picked from. It must be the
+        /// issuer's and still hold the match, or the command is refused.
+        unit: UnitId,
+        /// Which order.
+        key: crate::state::OrderKey,
+        /// How many later orders in `unit`'s program share `key`.
+        from_end: u8,
+        /// Other units to edit alike; those without a match are skipped.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        units: Vec<UnitId>,
+    },
 }
 
 /// A command attributed to its issuing player. Ownership checks are made
@@ -280,7 +302,8 @@ pub enum RejectReason {
     NoValidUnits,
     /// The referenced building is gone or not the issuer's.
     NotYourBuilding,
-    /// The target entity is gone, or is not an enemy.
+    /// The target entity is gone, or is not an enemy, or the order a
+    /// cancellation names is no longer in its unit's program.
     InvalidTarget,
     /// A Build site offers no reachable doorstep, a cargo delivery has no
     /// reachable drop-off, or a patrol route is empty or longer than an

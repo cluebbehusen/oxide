@@ -14,6 +14,7 @@ mod upgrade;
 use crate::action::{Action, BindingMap};
 use crate::bot_label::{BotLabelStyle, bot_label};
 use crate::game::Scene;
+use crate::game::projection::{Program, Projection};
 use crate::typography::entity_name;
 use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
@@ -103,6 +104,15 @@ pub enum CardAction {
     CancelSite(BuildingId),
     /// Cancel one unstarted paid site across its assigned Harvester crew.
     CancelFound(BuildingKind, chassis::grid::TilePos),
+    /// Remove one order from every selected own unit that still has it.
+    CancelOrder {
+        /// The unit whose chip was pressed.
+        unit: oxide_sim::UnitId,
+        /// Which order.
+        key: oxide_sim::OrderKey,
+        /// How many later orders of that unit's program share the key.
+        from_end: u8,
+    },
     /// Clear the selected producers' rally points.
     ClearRally,
     /// Lift a built own building one tier through its automatic rebuild.
@@ -135,6 +145,20 @@ impl CardAction {
             Self::UnloadHere(_) => Some(Action::Unload),
             _ => None,
         }
+    }
+
+    /// Whether pressing this dock chip throws away queued or started work:
+    /// an order, a construction site, a planned foundation, or a production
+    /// slot.
+    pub(crate) fn discards_work(self) -> bool {
+        matches!(
+            self,
+            Self::CancelOrder { .. }
+                | Self::CancelSite(_)
+                | Self::CancelFound(..)
+                | Self::CancelQueue(..)
+                | Self::CancelProduction(_)
+        )
     }
 }
 
@@ -464,11 +488,15 @@ fn bot_controller_label(game: &Scene<'_>, player: oxide_sim::PlayerId) -> Option
 fn order_subject(
     game: &Scene<'_>,
     order: &Order,
+    projection: Option<&Projection>,
 ) -> Option<(OrderSubject, String, bool, Option<f32>)> {
     let faction_of = |p| game.state.player(p).faction;
     match order {
         Order::Build { site } => {
-            let b = game.state.building(*site)?;
+            let b = projection.map_or_else(
+                || game.state.building(*site),
+                |projection| projection.building(game.state, *site),
+            )?;
             let ticks = b
                 .stats()
                 .construction
@@ -559,7 +587,13 @@ fn order_subject(
     }
 }
 
-fn order_card(game: &Scene<'_>, order: &Order, active: bool, own: bool) -> Card {
+fn order_card(
+    game: &Scene<'_>,
+    order: &Order,
+    active: bool,
+    own: bool,
+    projection: Option<&Projection>,
+) -> Card {
     let (icon, title, desc): (VerbIcon, &str, &str) = match order {
         Order::Idle => (
             VerbIcon::Idle,
@@ -642,7 +676,7 @@ fn order_card(game: &Scene<'_>, order: &Order, active: bool, own: bool) -> Card 
         ),
     };
     let subject = if own {
-        order_subject(game, order)
+        order_subject(game, order, projection)
     } else {
         None
     };
@@ -695,29 +729,60 @@ fn order_card(game: &Scene<'_>, order: &Order, active: bool, own: bool) -> Card 
     }
 }
 
-fn own_order_card(game: &Scene<'_>, order: &Order, active: bool) -> Card {
-    let mut card = order_card(game, order, active, true);
-    match order {
-        Order::Build { site }
-            if game
-                .state
-                .building(*site)
-                .is_some_and(|building| !building.built) =>
-        {
-            card.action = CardAction::CancelSite(*site);
+/// The chip for `program.orders[index]` of the dock's own subject. Pressing
+/// it removes that order from the selection; an unbuilt site and a planned
+/// one are cancelled outright instead, for every crew member.
+fn own_order_card(
+    game: &Scene<'_>,
+    subject: oxide_sim::UnitId,
+    program: &Program,
+    index: usize,
+    projection: &Projection,
+) -> Card {
+    let order = &program.orders[index];
+    let mut card = order_card(game, order, index == 0, true, Some(projection));
+    let unbuilt = match order {
+        Order::Build { site } => projection
+            .building(game.state, *site)
+            .filter(|building| !building.built),
+        _ => None,
+    };
+    match (order, unbuilt) {
+        (Order::Build { .. }, Some(site)) => {
+            // A site only the staged commands place has no settled id yet:
+            // other seats' commands, or batches before its own, can take the
+            // id it was projected with. It is named by kind and anchor.
+            card.action = if game.state.building(site.id).is_some() {
+                CardAction::CancelSite(site.id)
+            } else {
+                CardAction::CancelFound(site.kind, site.anchor)
+            };
             card.desc.push(format!(
                 "{} to cancel the site and recover its remaining value.",
                 crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
             ));
         }
-        Order::Found { kind, anchor } => {
+        (Order::Found { kind, anchor }, _) => {
             card.action = CardAction::CancelFound(*kind, *anchor);
             card.desc.push(format!(
                 "{} to cancel this planned site.",
                 crate::platform::tap_or_click_capitalized(crate::platform::TOUCH_ONLY)
             ));
         }
-        _ => {}
+        _ => {
+            let human = game.presentation.human;
+            if let Some(key) = order.key(game.state, human) {
+                let later = program.orders[index + 1..]
+                    .iter()
+                    .filter(|later| later.key(game.state, human) == Some(key))
+                    .count();
+                card.action = CardAction::CancelOrder {
+                    unit: subject,
+                    key,
+                    from_end: u8::try_from(later).unwrap_or(u8::MAX),
+                };
+            }
+        }
     }
     card
 }
@@ -964,6 +1029,7 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
                     },
                     true,
                     true,
+                    None,
                 ));
             } else {
                 panel.queue_label = production_queue_label(&building.queue, building.progress)
@@ -1074,9 +1140,11 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
         if !hostile && units.len() == 1 {
             panel
                 .queue
-                .push(order_card(game, &first.order, true, false));
+                .push(order_card(game, &first.order, true, false, None));
             for order in &first.queue {
-                panel.queue.push(order_card(game, order, false, false));
+                panel
+                    .queue
+                    .push(order_card(game, order, false, false, None));
             }
         }
         return Some(panel);
@@ -1320,11 +1388,18 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
     }
     // The first unit's program: what it is doing and what comes next.
     // An idle unit with nothing queued contributes no chips, so the
-    // orders dock vanishes instead of showing a lone "Idle" cell.
-    if !matches!(first.order, Order::Idle) || !first.queue.is_empty() {
-        panel.queue.push(own_order_card(game, &first.order, true));
-        for order in first.queue.iter().take(7) {
-            panel.queue.push(own_order_card(game, order, false));
+    // orders dock vanishes instead of showing a lone "Idle" cell. It is
+    // the program the staged commands will leave, so a chip pressed while
+    // commands wait names an order they have not already removed.
+    let projection = game.projection();
+    if let Some(program) = projection
+        .program(first.id)
+        .filter(|program| !program.is_idle())
+    {
+        for index in 0..program.orders.len().min(8) {
+            panel
+                .queue
+                .push(own_order_card(game, first.id, program, index, &projection));
         }
     }
     // The square answers for the whole selection, so it shows even when
@@ -1346,6 +1421,35 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
 mod tests {
     use super::*;
     use crate::game::Game;
+
+    #[test]
+    fn every_dock_chip_that_cancels_work_discards_it_and_nothing_else_does() {
+        let site = oxide_sim::BuildingId(3);
+        let tile = chassis::grid::TilePos::new(4, 5);
+        for action in [
+            CardAction::CancelOrder {
+                unit: oxide_sim::UnitId(1),
+                key: oxide_sim::OrderKey::Walk { tile },
+                from_end: 0,
+            },
+            CardAction::CancelSite(site),
+            CardAction::CancelFound(BuildingKind::Turret, tile),
+            CardAction::CancelQueue(site, 0),
+            CardAction::CancelProduction(UnitKind::Harvester),
+        ] {
+            assert!(action.discards_work(), "{action:?}");
+        }
+        for action in [
+            CardAction::Dispatch(Action::AttackMove),
+            CardAction::ArmRally,
+            CardAction::UnloadHere(oxide_sim::UnitId(1)),
+            CardAction::FilterKind(UnitKind::Harvester),
+            CardAction::None,
+            CardAction::Refused,
+        ] {
+            assert!(!action.discards_work(), "{action:?}");
+        }
+    }
 
     #[test]
     fn touch_copy_drops_keys_and_mouse_buttons_from_cards() {
@@ -2005,12 +2109,14 @@ mod tests {
         // the dock only exists when there is a program to show.
         assert!(panel.queue.is_empty(), "idle shows no dock");
         assert!(panel.stop.is_none(), "an idle unit has nothing to stop");
-        // Give it a program: the strip appears, and stays display-only.
+        // Give it a program: the strip appears, and its chip removes the
+        // order it shows.
+        let goal = chassis::grid::TilePos::new(8, 8);
         game.state.tick(&[oxide_sim::PlayerCommand {
             player: game.presentation.human,
             command: oxide_sim::Command::AttackMove {
                 units: vec![harvester],
-                goal: chassis::grid::TilePos::new(8, 8),
+                goal,
                 queue: false,
             },
         }]);
@@ -2018,8 +2124,11 @@ mod tests {
         assert_eq!(panel.queue.len(), 1);
         assert_eq!(
             panel.queue[0].action,
-            CardAction::None,
-            "orders are display-only"
+            CardAction::CancelOrder {
+                unit: harvester,
+                key: oxide_sim::OrderKey::Walk { tile: goal },
+                from_end: 0,
+            }
         );
         let stop = panel.stop.as_ref().expect("a busy unit can stop");
         assert_eq!(stop.action, CardAction::Dispatch(Action::StopOrScrap));
@@ -2142,17 +2251,150 @@ mod tests {
     fn deferred_build_chips_cancel_their_logical_sites() {
         use chassis::grid::TilePos;
 
-        let (game, _) = builder_game();
-        let order = Order::Found {
-            kind: BuildingKind::Bastion,
-            anchor: TilePos::new(11, 7),
+        let (game, harvester) = builder_game();
+        let program = Program {
+            orders: vec![Order::Found {
+                kind: BuildingKind::Bastion,
+                anchor: TilePos::new(11, 7),
+            }],
+            looping: false,
         };
-        let card = own_order_card(&game.view(), &order, false);
+        let card = own_order_card(&game.view(), harvester, &program, 0, &Projection::default());
         assert_eq!(
             card.action,
             CardAction::CancelFound(BuildingKind::Bastion, TilePos::new(11, 7))
         );
         assert!(card.desc.iter().any(|line| line.contains("planned site")));
+    }
+
+    /// Contiguous index per [`Order`] variant: a new order stops this
+    /// compiling until its chip is covered below.
+    fn order_kind(order: &Order) -> usize {
+        match order {
+            Order::Idle => 0,
+            Order::Move { .. } => 1,
+            Order::Harvest { .. } => 2,
+            Order::Attack { .. } => 3,
+            Order::Build { .. } => 4,
+            Order::Repair { .. } => 5,
+            Order::AttackMove { .. } => 6,
+            Order::Salvage { .. } => 7,
+            Order::Found { .. } => 8,
+            Order::RepairUnit { .. } => 9,
+            Order::Advance { .. } => 10,
+            Order::Board { .. } => 11,
+            Order::Unload { .. } => 12,
+            Order::Land { .. } => 13,
+            Order::ReturnCargo { .. } => 14,
+        }
+    }
+
+    #[test]
+    fn every_own_chip_removes_its_order_but_sites_cancel_outright() {
+        use chassis::grid::TilePos;
+        use oxide_sim::{AttackTarget, ContactId, Goal, OrderKey};
+
+        let (mut game, harvester) = builder_game();
+        let site = place(&mut game, harvester, BuildingKind::Turret, false);
+        let foundry = human_foundry(&game);
+        let tile = TilePos::new(9, 9);
+        let goal = Goal::at(tile);
+        let contact = AttackTarget::Contact(ContactId(7));
+        let planned = TilePos::new(11, 7);
+        let program = Program {
+            orders: vec![
+                Order::Idle,
+                Order::Move { goal },
+                Order::AttackMove { goal },
+                Order::Advance { goal },
+                Order::Attack {
+                    target: contact,
+                    pursue: false,
+                    resume: Some(goal),
+                },
+                Order::Land {
+                    goal: TilePos::new(3, 3),
+                    from: Some(tile),
+                },
+                Order::Land {
+                    goal: tile,
+                    from: None,
+                },
+                Order::Attack {
+                    target: contact,
+                    pursue: true,
+                    resume: None,
+                },
+                Order::Unload { at: goal },
+                Order::Harvest {
+                    node: TilePos::new(4, 4),
+                    anchor: Some(tile),
+                    retiring: false,
+                },
+                Order::ReturnCargo {
+                    foundry,
+                    repair: false,
+                },
+                Order::Build { site },
+                Order::Build { site: foundry },
+                Order::Found {
+                    kind: BuildingKind::Bastion,
+                    anchor: planned,
+                },
+                Order::Repair { building: foundry },
+                Order::Salvage { building: foundry },
+                Order::RepairUnit { unit: harvester },
+                Order::Board {
+                    transport: harvester,
+                },
+            ],
+            looping: false,
+        };
+        let mut kinds: Vec<usize> = program.orders.iter().map(order_kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds, (0..15).collect::<Vec<_>>(), "every order has a chip");
+
+        let view = game.view();
+        let actions: Vec<CardAction> = (0..program.orders.len())
+            .map(|index| {
+                own_order_card(&view, harvester, &program, index, &Projection::default()).action
+            })
+            .collect();
+        let remove = |key, from_end| CardAction::CancelOrder {
+            unit: harvester,
+            key,
+            from_end,
+        };
+        let walk = OrderKey::Walk { tile };
+        assert_eq!(
+            actions,
+            [
+                CardAction::None,
+                remove(walk, 4),
+                remove(walk, 3),
+                remove(walk, 2),
+                remove(walk, 1),
+                remove(walk, 0),
+                remove(OrderKey::Land { pad: tile }, 0),
+                remove(OrderKey::Attack { objective: contact }, 0),
+                remove(OrderKey::Unload { tile }, 0),
+                remove(OrderKey::Harvest { anchor: tile }, 0),
+                remove(OrderKey::ReturnCargo, 0),
+                CardAction::CancelSite(site),
+                remove(OrderKey::Build { site: foundry }, 0),
+                CardAction::CancelFound(BuildingKind::Bastion, planned),
+                remove(OrderKey::Repair { building: foundry }, 0),
+                remove(OrderKey::Salvage { building: foundry }, 0),
+                remove(OrderKey::RepairUnit { unit: harvester }, 0),
+                remove(
+                    OrderKey::Board {
+                        transport: harvester
+                    },
+                    0
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -2163,7 +2405,7 @@ mod tests {
         let dangling = Order::Repair {
             building: BuildingId(9999),
         };
-        let card = order_card(&game.view(), &dangling, true, true);
+        let card = order_card(&game.view(), &dangling, true, true, None);
         assert_eq!(card.icon, CardIcon::Verb(VerbIcon::Repair));
         assert_eq!(card.title, "Repair (now)");
         assert!(card.progress.is_none());
@@ -2181,7 +2423,7 @@ mod tests {
         let own = build_for_palette(&game.view(), &BindingMap::classic(), false).expect("panel");
         assert!(matches!(own.queue[0].icon, CardIcon::Order { .. }));
         let order = game.state.unit(harvester).expect("builder").order;
-        let bare = order_card(&game.view(), &order, true, false);
+        let bare = order_card(&game.view(), &order, true, false, None);
         assert_eq!(bare.icon, CardIcon::Verb(VerbIcon::Build));
         assert_eq!(bare.title, "Build (now)");
         assert!(bare.progress.is_none());

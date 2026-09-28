@@ -314,6 +314,7 @@ fn command_bytes(command: &Command) -> usize {
         | Command::Advance { units, .. }
         | Command::Load { units, .. } => (units.len(), 0),
         Command::Patrol { units, waypoints } => (units.len(), waypoints.len()),
+        Command::CancelOrder { units, .. } => (units.len() + 1, 0),
         Command::FocusFire { buildings, .. } | Command::ClearFocus { buildings } => {
             (buildings.len(), 0)
         }

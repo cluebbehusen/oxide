@@ -1909,6 +1909,26 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         crate::panel::CardAction::CancelFound(kind, anchor) => {
             game.issue(Command::CancelFound { kind, anchor });
         }
+        crate::panel::CardAction::CancelOrder {
+            unit,
+            key,
+            from_end,
+        } => {
+            let units = game
+                .presentation
+                .selection
+                .units
+                .iter()
+                .copied()
+                .filter(|&id| id != unit)
+                .collect();
+            game.issue(Command::CancelOrder {
+                unit,
+                key,
+                from_end,
+                units,
+            });
+        }
         crate::panel::CardAction::Upgrade => crate::building_actions::upgrade(game),
         crate::panel::CardAction::ScrapSites => crate::building_actions::scrap_sites(game),
         crate::panel::CardAction::UnloadHere(transport) => {

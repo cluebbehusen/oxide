@@ -93,6 +93,7 @@ pub(crate) use presentation::{Presentation, Salvage, Scene};
 pub(crate) mod checkpoint;
 pub(crate) mod network;
 mod projectiles;
+pub(crate) mod projection;
 pub(crate) use projectiles::LaunchPose;
 
 pub(crate) use fx::UnitBody;
