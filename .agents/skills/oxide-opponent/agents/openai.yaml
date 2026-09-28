@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Opponent"
+  short_description: "Build and evaluate oxide-opponent, the reactive best-effort bot"
+  default_prompt: "Use $oxide-opponent to build or evaluate Oxide's reactive best-effort opponent under its specification and working rules."

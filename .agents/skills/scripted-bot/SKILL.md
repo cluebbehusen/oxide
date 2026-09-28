@@ -1,14 +1,19 @@
 ---
 name: scripted-bot
 description:
-  Design, change, debug, and evaluate Oxide's fair rules-based opponent. Use for
-  Brain, UtilityPolicy, Dials, Observation, Intent, Executive, SeatBot,
-  BotConfig, scripted openings, economy, scouting, tech, combat, expansion, team
-  conduct, liveness, bot replays, bot difficulty proposals, or whether a match
-  looks credible and fun.
+  Design, change, debug, and evaluate oxide-bot, Oxide's current fair
+  rules-based opponent. Use for oxide-bot's Brain, UtilityPolicy, Dials,
+  Observation, Intent, Executive, SeatBot, BotConfig, scripted openings,
+  economy, scouting, tech, combat, expansion, team conduct, liveness, bot
+  replays, bot difficulty proposals, or whether a match looks credible and fun.
+  Not for oxide-opponent; use the oxide-opponent skill for that.
 ---
 
 # Oxide scripted bot
+
+This skill applies only to `oxide-bot`. Work on `oxide-opponent` follows the
+oxide-opponent skill and [its specification](../../../docs/oxide-opponent.md)
+instead.
 
 Build a credible opponent under ordinary game rules. Automated metrics identify
 failures and candidates; human play and replay review decide whether it is fun.

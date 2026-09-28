@@ -1,5 +1,8 @@
 # Bot architecture
 
+This document applies only to `oxide-bot`. [`oxide-opponent`](oxide-opponent.md)
+has its own specification.
+
 Oxide has one fog-honest controller. [Bot strategy](bot-strategy.md) defines its
 intended behavior; this page maps the implementation's owners and boundaries.
 Detailed domain contracts live in the focused references below. Rust types own
