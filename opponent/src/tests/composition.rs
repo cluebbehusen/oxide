@@ -149,7 +149,10 @@ fn raiders_are_never_line_units() {
 
 #[test]
 fn busy_producers_ask_for_another() {
-    let mut state = armed(&[], &[]).build().unwrap();
+    let scenario = armed(&[], &[]);
+    let mut state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let memory = Memory::default();
     let busy = PlayerCommand {
         player: PlayerId(0),
         command: Command::Train {
@@ -162,6 +165,8 @@ fn busy_producers_ask_for_another() {
     let wants = |income: u32, spendable: u32| {
         investments::candidates(&Situation {
             observation: &observation,
+            map: &model,
+            memory: &memory,
             traits: PersonalityTraits {
                 air: 50,
                 siege: 50,

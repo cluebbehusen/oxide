@@ -319,9 +319,13 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
     });
     let state = scenario.build().unwrap();
     let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let model = map(&scenario);
+    let memory = Memory::default();
     let wants = |observation: &ObservationData| {
         investments::candidates(&Situation {
             observation,
+            map: &model,
+            memory: &memory,
             traits: traits(),
             saturation: 1_000,
             income: 400,
@@ -351,7 +355,7 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
 }
 
 #[test]
-fn opponents_tech_up_without_rejected_orders() {
+fn opponents_invest_without_rejected_orders() {
     let mut scenario = Scenario::skirmish();
     for seat in &mut scenario.players {
         seat.bot = true;
@@ -375,15 +379,22 @@ fn opponents_tech_up_without_rejected_orders() {
         );
     }
     for player in [PlayerId(0), PlayerId(1)] {
-        for kind in [BuildingKind::Fabricator, BuildingKind::Airworks] {
-            assert!(
-                state
-                    .buildings()
-                    .iter()
-                    .any(|building| building.player == player && building.kind == kind),
-                "{player:?} {kind:?}"
-            );
-        }
+        let owned: Vec<BuildingKind> = state
+            .buildings()
+            .iter()
+            .filter(|building| building.player == player)
+            .map(|building| building.kind)
+            .collect();
+        assert!(
+            owned.contains(&BuildingKind::Fabricator),
+            "{player:?} {owned:?}"
+        );
+        assert!(
+            owned
+                .iter()
+                .any(|kind| !matches!(kind, BuildingKind::Foundry | BuildingKind::Fabricator)),
+            "{player:?} invested beyond its first tech: {owned:?}"
+        );
     }
 }
 

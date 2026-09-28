@@ -1,7 +1,11 @@
 //! What the seat could invest in, how much it wants each, and the next
 //! purchase toward it. The list is recomputed every decision.
 
+use crate::expansion;
+use crate::map::MapModel;
+use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
+use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
 use oxide_sim::{BuildingId, BuildingKind};
 use serde::{Deserialize, Serialize};
@@ -23,6 +27,10 @@ pub enum Investment {
     Reclaimer,
     /// Upgrading this Reclaimer to a Refinery.
     Refinery(BuildingId),
+    /// A Foundry at this expansion site of the map model.
+    Expansion(u16),
+    /// An Extractor on this frame.
+    Extractor(TilePos),
 }
 
 /// The next purchase toward an investment.
@@ -45,6 +53,8 @@ pub(crate) struct Candidate {
 /// What the scores read besides the observation.
 pub(crate) struct Situation<'a> {
     pub(crate) observation: &'a ObservationData,
+    pub(crate) map: &'a MapModel,
+    pub(crate) memory: &'a Memory,
     pub(crate) traits: PersonalityTraits,
     /// Harvesters as a per-mille share of those wanted.
     pub(crate) saturation: u32,
@@ -97,8 +107,22 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
             ));
         }
     }
+    let growth = expansion::candidates(
+        observation,
+        situation.map,
+        situation.memory,
+        traits.greed,
+        situation.depletion,
+    );
+    let stranded = !growth
+        .iter()
+        .any(|(investment, _)| matches!(investment, Investment::Expansion(_)));
+    list.extend(growth);
     if tick >= 2_400 {
-        let base = 150 + 3 * u32::from(traits.greed) + situation.depletion * 400 / 1_000;
+        let base = 150
+            + 3 * u32::from(traits.greed)
+            + situation.depletion * 400 / 1_000
+            + 300 * u32::from(stranded);
         let reclaimers = u32::try_from(owned(BuildingKind::Reclaimer)).unwrap_or(u32::MAX);
         list.push((
             Investment::Reclaimer,
@@ -126,6 +150,8 @@ pub(crate) fn step(observation: &ObservationData, investment: Investment) -> Opt
     match investment {
         Investment::Tech(kind) | Investment::Capacity(kind) => build_step(observation, kind, 3),
         Investment::Reclaimer => build_step(observation, BuildingKind::Reclaimer, 3),
+        Investment::Expansion(_) => build_step(observation, BuildingKind::Foundry, 3),
+        Investment::Extractor(_) => build_step(observation, BuildingKind::Extractor, 3),
         Investment::Refinery(id) => {
             let reclaimer = observation.my_buildings.iter().find(|building| {
                 building.id == id && building.kind == BuildingKind::Reclaimer && building.built
@@ -149,7 +175,28 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
         (Investment::Tech(kind) | Investment::Capacity(kind), Step::Build(built)) => kind == built,
         (Investment::Reclaimer, Step::Build(built)) => built == BuildingKind::Reclaimer,
         (Investment::Refinery(id), Step::Upgrade(upgraded)) => id == upgraded,
+        (Investment::Expansion(_), Step::Build(built)) => built == BuildingKind::Foundry,
+        (Investment::Extractor(_), Step::Build(built)) => built == BuildingKind::Extractor,
         _ => false,
+    }
+}
+
+/// Where a building step toward `investment` may go: the expansion site's
+/// anchors for its Foundry, the frame for an Extractor, and otherwise the
+/// seat's home spots.
+pub(crate) fn anchors(
+    map: &MapModel,
+    observation: &ObservationData,
+    investment: Investment,
+    kind: BuildingKind,
+) -> Vec<TilePos> {
+    match (investment, kind) {
+        (Investment::Expansion(site), BuildingKind::Foundry) => map
+            .sites()
+            .get(usize::from(site))
+            .map_or_else(Vec::new, |site| site.anchors.clone()),
+        (Investment::Extractor(frame), BuildingKind::Extractor) => vec![frame],
+        _ => map.spots(observation.me).to_vec(),
     }
 }
 

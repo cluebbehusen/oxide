@@ -4,6 +4,7 @@ mod checkpoint;
 mod composition;
 mod decision;
 mod events;
+mod expansion;
 mod frame;
 mod income;
 mod investments;

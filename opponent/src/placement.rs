@@ -93,7 +93,12 @@ pub(crate) fn check(
     {
         return Err(Refusal::Occupied);
     }
-    let clearance = footprint.grown();
+    // Frames sit where the map put them, so an Extractor keeps no gap.
+    let clearance = if kind == BuildingKind::Extractor {
+        footprint
+    } else {
+        footprint.grown()
+    };
     if observation
         .my_buildings
         .iter()
@@ -119,7 +124,7 @@ pub(crate) fn check(
             return Err(Refusal::Claimed);
         }
     }
-    let egress = clearance.tiles().any(|tile| {
+    let egress = footprint.grown().tiles().any(|tile| {
         !footprint.contains(tile)
             && observation.explored(tile)
             && !blocked(observation, tile)
