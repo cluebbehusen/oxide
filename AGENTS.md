@@ -13,6 +13,7 @@ Read the README for the crate you are changing:
 | [`chassis`](chassis/README.md)         | Reusable deterministic primitives. No game rules or engine dependencies.             |
 | [`oxide-sim`](sim/README.md)           | Game rules and player-knowledge projection.                                          |
 | [`oxide-bot`](bot/README.md)           | Observation-driven opponent policy and command production.                           |
+| [`oxide-opponent`](opponent/README.md) | Reactive, best-effort opponent controller alongside `oxide-bot`.                     |
 | [`oxide-protocol`](protocol/README.md) | Debug wire types, framing, input events, and state views.                            |
 | [`oxide-kit`](kit/README.md)           | Shared replay, statistics, fixture, and CPU-rendering services.                      |
 | [`oxide-net`](net/README.md)           | Lockstep multiplayer: wire messages, session core, start barrier, and TCP transport. |

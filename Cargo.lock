@@ -693,6 +693,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide-opponent"
+version = "0.17.0"
+dependencies = [
+ "chassis",
+ "oxide-sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxide-protocol"
 version = "0.17.0"
 dependencies = [

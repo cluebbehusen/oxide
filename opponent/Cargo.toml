@@ -1,0 +1,23 @@
+[package]
+name = "oxide-opponent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Reactive, best-effort, fog-honest opponent controller"
+
+[dependencies]
+chassis = { workspace = true }
+oxide-sim = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+float_arithmetic = "deny"
+disallowed_types = "deny"
