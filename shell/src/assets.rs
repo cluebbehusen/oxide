@@ -35,7 +35,7 @@ pub struct Sprites {
     turret_t2: [Rect; 3],
     flak_turret_t1: [Rect; 3],
     reclaimer_t1: [Rect; 3],
-    reclaimer_t1_work: [[Rect; 3]; 3],
+    reclaimer_t1_work: [[Rect; 3]; 12],
     array_t1: [Rect; 3],
     turret_barrel: [Rect; 3],
     turret_barrel_t1: [Rect; 3],
@@ -396,6 +396,10 @@ const ACTION_SUFFIXES_9: [&str; 9] = [
 const WORK_SUFFIXES_3: [&str; 3] = ["_work1", "_work2", "_work3"];
 const WORK_SUFFIXES_4: [&str; 4] = ["_work1", "_work2", "_work3", "_work4"];
 const WORK_SUFFIXES_6: [&str; 6] = ["_work1", "_work2", "_work3", "_work4", "_work5", "_work6"];
+const WORK_SUFFIXES_12: [&str; 12] = [
+    "_work1", "_work2", "_work3", "_work4", "_work5", "_work6", "_work7", "_work8", "_work9",
+    "_work10", "_work11", "_work12",
+];
 const HARVESTER_CARGO_LEVELS: usize = 5;
 const EXCAVATOR_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
@@ -649,7 +653,8 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
         | BuildingKind::RepairBay
         | BuildingKind::Extractor => &WORK_SUFFIXES_4,
         BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer | BuildingKind::Crucible => &WORK_SUFFIXES_3,
+        BuildingKind::Reclaimer => &WORK_SUFFIXES_12,
+        BuildingKind::Crucible => &WORK_SUFFIXES_3,
         BuildingKind::Airworks => &WORK_SUFFIXES_4,
         BuildingKind::Turret
         | BuildingKind::FlakTurret
@@ -737,7 +742,7 @@ fn atlas_keys() -> Vec<String> {
     ] {
         keys.extend(variant_keys(stem, ""));
     }
-    for suffix in WORK_SUFFIXES_3 {
+    for suffix in WORK_SUFFIXES_12 {
         keys.extend(variant_keys("reclaimer_t1", suffix));
     }
     for suffix in WORK_SUFFIXES_6 {
@@ -901,7 +906,7 @@ impl Sprites {
             turret_t2: variant_row(&rects, "turret_t2", "")?,
             flak_turret_t1: variant_row(&rects, "flak_turret_t1", "")?,
             reclaimer_t1: variant_row(&rects, "reclaimer_t1", "")?,
-            reclaimer_t1_work: variant_rows(&rects, "reclaimer_t1", WORK_SUFFIXES_3)?,
+            reclaimer_t1_work: variant_rows(&rects, "reclaimer_t1", WORK_SUFFIXES_12)?,
             array_t1: variant_row(&rects, "array_t1", "")?,
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
             turret_barrel_t1: variant_row(&rects, TURRET_BARREL_T1_STEM, "")?,
@@ -2137,7 +2142,7 @@ mod tests {
         }
         let refinery = sprite_image("reclaimer_t1_ferrous");
         let mut changed = false;
-        for suffix in WORK_SUFFIXES_3 {
+        for suffix in WORK_SUFFIXES_12 {
             assert_animation_variant("reclaimer_t1", suffix);
             changed |=
                 sprite_image(&format!("reclaimer_t1_ferrous{suffix}")).bytes != refinery.bytes;

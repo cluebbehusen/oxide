@@ -90,7 +90,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             frames = {}
             mechanical_final.install_machines(frames, Path(directory))
-        self.assertEqual(len(frames), 501)
+        self.assertEqual(len(frames), 537)
         digest = hashlib.sha256()
         for key, image in sorted(frames.items()):
             self.assertEqual(self.registry[key].tobytes(), image.tobytes(), key)
@@ -98,8 +98,28 @@ class ProductionSpriteSourceTests(unittest.TestCase):
             digest.update(image.tobytes())
         self.assertEqual(
             digest.hexdigest(),
-            "59df58b74a652e69a5ce90d5b610fc946cc320ba54ef05fa615cb5fc63a9c365",
+            "4b32ac77374bbbb84705cce5123e39712ec1c308a5a3066eefbd03483759312b",
         )
+
+    def test_reclaimer_rollers_advance_evenly_across_the_loop_seam(self) -> None:
+        for stem in ("reclaimer", "reclaimer_t1"):
+            for faction in gen.FACTIONS:
+                frames = [
+                    self.registry[f"{stem}_{faction}_work{phase}"]
+                    for phase in range(1, 13)
+                ]
+                for phase, (before, after) in enumerate(
+                    zip(frames, frames[1:] + frames[:1], strict=True)
+                ):
+                    with self.subTest(stem=stem, faction=faction, phase=phase):
+                        self.assertEqual(
+                            before.crop((54, 54, 73, 59)).tobytes(),
+                            after.crop((55, 54, 74, 59)).tobytes(),
+                        )
+                        self.assertEqual(
+                            before.crop((55, 72, 74, 77)).tobytes(),
+                            after.crop((54, 72, 73, 77)).tobytes(),
+                        )
 
     def test_promoted_quarry_matches_approved_pixels(self) -> None:
         digest = hashlib.sha256()

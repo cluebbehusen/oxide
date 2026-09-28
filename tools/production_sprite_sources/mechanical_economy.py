@@ -1,5 +1,7 @@
 """Coordinated machine study using the Extractor's open industrial construction."""
 
+from PIL import Image, ImageDraw
+
 from tools import gen_sprites as gen
 from tools.production_sprite_sources import extractor_reclaimer_final as metal
 
@@ -10,6 +12,7 @@ IRON = gen.IRON
 DARK = gen.IRON_DARK
 LIGHT = gen.IRON_LIGHT
 EDGE = (112, 111, 119)
+RECLAIMER_WORK_FRAMES = 12
 
 
 def box(draw, bounds, color, radius=0):
@@ -50,7 +53,8 @@ def foundation(draw, faction):
         box(draw, (x + 4, 34, x + 12, 51), gen.FACTIONS[faction]["dark"])
 
 
-def crusher(draw, faction, phase):
+def crusher(image, draw, faction, phase):
+    cycle = (phase - 1) % RECLAIMER_WORK_FRAMES if phase else None
     accent = gen.FACTIONS[faction]["dark"]
     # Hopper -> opposed corrugated jaws -> open outlet.
     polygon(draw, ((33, 20), (95, 20), (86, 49), (42, 49)), DARK)
@@ -58,34 +62,44 @@ def crusher(draw, faction, phase):
     line(draw, ((37, 22), (91, 22)), accent, 3)
     line(draw, ((38, 25), (45, 43)), LIGHT, 2)
     line(draw, ((89, 25), (83, 43)), IRON, 2)
-    chunk_y = (30, 34, 39, 43)[phase]
+    # Clip the feed to the hopper opening so a new piece enters from above
+    # and disappears inside the crusher before the next piece arrives.
+    ore = Image.new("RGBA", (22 * S, 23 * S))
+    ore_draw = ImageDraw.Draw(ore)
+    chunk_y = (30 if cycle is None else 22 + cycle * 3) - 24
     polygon(
-        draw,
-        ((57, chunk_y), (65, chunk_y - 2), (72, chunk_y + 2), (64, chunk_y + 6)),
+        ore_draw,
+        ((3, chunk_y), (11, chunk_y - 2), (18, chunk_y + 2), (10, chunk_y + 6)),
         gen.SCRAP_DARK,
     )
-    line(draw, ((58, chunk_y), (65, chunk_y - 1)), gen.SCRAP, 1)
+    line(ore_draw, ((4, chunk_y), (11, chunk_y - 1)), gen.SCRAP, 1)
+    image.alpha_composite(ore, (54 * S, 24 * S))
     box(draw, (35, 47, 93, 83), VOID, 3)
     for y, direction in ((51, 1), (69, -1)):
         box(draw, (41, y, 87, y + 11), DARK, 4)
         box(draw, (44, y + 2, 84, y + 8), IRON, 2)
         line(draw, ((46, y + 2), (82, y + 2)), LIGHT, 2)
-        offset = direction * (0, 2, 4, 6)[phase]
+        offset = direction * (cycle or 0)
         for x in (49, 61, 73):
             ridge = 46 + (x - 46 + offset) % 36
             line(draw, ((ridge, y + 3), (ridge + 2, y + 7)), EDGE, 2)
         for x in (36, 87):
             plate(draw, (x, y - 1, x + 5, y + 12), accent, 1)
     # The working gap stays dark; only the material advances through it.
-    if phase in (1, 2):
+    if cycle is not None and 4 <= cycle <= 8:
         box(draw, (59, 63, 69, 67), gen.SCRAP_DARK, 1)
 
 
 def render_reclaimer(faction, phase):
     image, draw = metal._new_sprite(128)
     foundation(draw, faction)
-    crusher(draw, faction, phase)
-    metal._belt(draw, (50, 82, 78, 103), phase, faction=faction)
+    crusher(image, draw, faction, phase)
+    cycle = (phase - 1) % RECLAIMER_WORK_FRAMES if phase else 0
+    metal._belt(draw, (50, 82, 78, 103), cycle, faction=faction, step=2)
+    if phase and cycle >= 6:
+        y = 83 + (cycle - 6) * 3
+        polygon(draw, ((59, y), (64, y - 1), (69, y + 2), (62, y + 3)), gen.SCRAP_DARK)
+        line(draw, ((60, y), (64, y)), gen.SCRAP)
     metal._hopper(draw, (42, 100, 86, 117), faction)
     polygon(
         draw, ((53, 109), (63, 106), (75, 110), (73, 113), (52, 113)), gen.SCRAP_DARK
@@ -100,13 +114,14 @@ def render_refinery(faction, phase):
     accent = gen.FACTIONS[faction]["dark"]
     plate(draw, (14, 22, 35, 103), accent)
     plate(draw, (93, 67, 115, 103), accent)
-    crusher(draw, faction, phase)
+    crusher(image, draw, faction, phase)
     # The same crusher feeds a heated finishing press and an ingot tray.
     plate(draw, (32, 80, 96, 109), accent)
     box(draw, (39, 85, 89, 105), DEEP, 2)
     box(draw, (44, 87, 84, 95), VOID)
     box(draw, (49, 89, 79, 93), metal.AMBER)
-    press = (0, 2, 4, 1)[phase]
+    cycle = (phase - 1) % RECLAIMER_WORK_FRAMES if phase else 0
+    press = (0, 0, 0, 0, 1, 2, 3, 4, 4, 3, 2, 1)[cycle]
     plate(draw, (44, 96 - press, 84, 104 - press), IRON, 1)
     metal._hopper(draw, (43, 105, 85, 119), faction)
     for x in (52, 65):
