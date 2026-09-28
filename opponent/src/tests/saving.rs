@@ -472,7 +472,7 @@ fn a_harvester_sealed_off_from_the_site_never_builds_it() {
     scenario.map[9].replace_range(5..8, "###");
     let sealed = harvester(0, 6, 8);
     scenario.units = vec![
-        sealed.clone(),
+        sealed,
         harvester(0, 12, 3),
         harvester(0, 13, 3),
         harvester(0, 12, 4),
