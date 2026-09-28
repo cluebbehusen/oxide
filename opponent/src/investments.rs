@@ -180,8 +180,8 @@ pub(crate) fn completes(investment: Investment, step: Step) -> bool {
 }
 
 /// Where a building step toward `investment` may go: the expansion site's
-/// anchors for its Foundry, the frame for an Extractor, and otherwise the
-/// seat's home spots.
+/// anchors on the seat's home ground for its Foundry, the frame for an
+/// Extractor, and otherwise the seat's home spots.
 pub(crate) fn anchors(
     map: &MapModel,
     observation: &ObservationData,
@@ -192,7 +192,9 @@ pub(crate) fn anchors(
         (Investment::Expansion(site), BuildingKind::Foundry) => map
             .sites()
             .get(usize::from(site))
-            .map_or_else(Vec::new, |site| site.anchors.clone()),
+            .map_or_else(Vec::new, |site| {
+                expansion::anchors(map, observation.me, site)
+            }),
         (Investment::Extractor(frame), BuildingKind::Extractor) => vec![frame],
         _ => map.spots(observation.me).to_vec(),
     }

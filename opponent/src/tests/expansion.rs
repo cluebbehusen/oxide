@@ -216,3 +216,105 @@ fn a_free_frame_near_home_gets_an_extractor() {
     }
     assert!(placed);
 }
+
+#[test]
+fn only_frames_the_seat_has_seen_add_to_a_site() {
+    let mut scenario = frontier(0);
+    scenario.map[9].replace_range(16..18, "E.");
+    let model = map(&scenario);
+    let state = scenario.build().unwrap();
+    let (_, safe) = site_with(&model, TilePos::new(12, 10));
+    assert!(safe.frames.contains(&TilePos::new(16, 9)), "premise");
+    let mut observation = ObservationData::omniscient(&state, PlayerId(0));
+    let memory = Memory::default();
+    let seen = expansion::value(&observation, &model, &memory, safe, 50).unwrap();
+    observation.known_frames.clear();
+    let hidden = expansion::value(&observation, &model, &memory, safe, 50).unwrap();
+    assert!(seen > hidden);
+}
+
+#[test]
+fn a_site_is_valued_and_built_from_anchors_on_home_ground() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios/severance.json");
+    let scenario = Scenario::load(path).unwrap();
+    let model = map(&scenario);
+    let state = scenario.build().unwrap();
+    for (player, node) in [
+        (PlayerId(0), TilePos::new(30, 21)),
+        (PlayerId(1), TilePos::new(33, 22)),
+    ] {
+        let observation = ObservationData::omniscient(&state, player);
+        let (index, site) = site_with(&model, node);
+        let home = model.start(player).and_then(|start| model.component(start));
+        assert_ne!(
+            model.component(site.anchors[0]),
+            home,
+            "premise: the best anchor is off home"
+        );
+        let reachable = expansion::anchors(&model, player, site);
+        assert!(!reachable.is_empty(), "{player:?}");
+        assert!(
+            reachable
+                .iter()
+                .all(|anchor| model.component(*anchor) == home)
+        );
+        assert!(expansion::value(&observation, &model, &Memory::default(), site, 50).is_some());
+        let placed = crate::investments::anchors(
+            &model,
+            &observation,
+            Investment::Expansion(index as u16),
+            BuildingKind::Foundry,
+        );
+        assert_eq!(placed, reachable);
+    }
+}
+
+#[test]
+fn a_half_explored_footprint_is_still_scouted() {
+    let mut scenario = frontier(1_000);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 6,
+        y: 8,
+    });
+    let model = map(&scenario);
+    let state = scenario.build().unwrap();
+    let (index, far) = site_with(&model, TilePos::new(26, 10));
+    let nearer: Vec<serde_json::Value> = [TilePos::new(12, 2), TilePos::new(12, 10)]
+        .into_iter()
+        .flat_map(|node| site_with(&model, node).1.anchors.clone())
+        .map(|anchor| serde_json::json!({"kind": "foundry", "anchor": anchor, "at": 0}))
+        .collect();
+    let mut checkpoint = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    checkpoint["memory"]["failures"] = serde_json::Value::Array(nearer);
+    checkpoint["saving"] = serde_json::json!({
+        "protected": 0,
+        "target": {"investment": {"expansion": index}, "attempt": null},
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(checkpoint).unwrap();
+    let opponent = Opponent::restore(&checkpoint, &scenario, &state, model.clone()).unwrap();
+
+    let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let anchor = far.anchors[0];
+    let index_of =
+        |tile: TilePos| usize::try_from(tile.y * observation.map_width + tile.x).unwrap();
+    let explored = index_of(anchor);
+    observation.explored[explored] = true;
+    let mut persistent = opponent.persistent.clone();
+    let decision = crate::decision::decide(
+        &observation,
+        false,
+        &model,
+        opponent.profile(),
+        &mut persistent,
+    );
+    assert!(
+        decision.commands.iter().any(|command| matches!(
+            &command.command,
+            Command::Move { goal, .. } if *goal == anchor
+        )),
+        "{:?}",
+        decision.commands
+    );
+}

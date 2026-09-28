@@ -325,8 +325,8 @@ fn buy(
     }
 }
 
-/// Sends the nearest free Harvester toward the first of `anchors` it has
-/// never seen, so the footprint can be checked once it is explored.
+/// Sends the nearest free Harvester toward the first of `anchors` whose
+/// footprint it has not fully seen, so it can be checked once explored.
 fn scout(
     observation: &ObservationData,
     map: &MapModel,
@@ -335,11 +335,10 @@ fn scout(
     kind: BuildingKind,
     ledger: &mut Ledger,
 ) {
-    let Some(anchor) = anchors
-        .iter()
-        .copied()
-        .find(|anchor| !observation.explored(*anchor))
-    else {
+    let (width, height) = kind.base_stats().size;
+    let Some(anchor) = anchors.iter().copied().find(|anchor| {
+        (0..height).any(|dy| (0..width).any(|dx| !observation.explored(anchor.offset(dx, dy))))
+    }) else {
         return;
     };
     let centre = footprint_centre(kind, anchor);

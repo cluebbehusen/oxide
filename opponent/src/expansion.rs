@@ -8,8 +8,8 @@ use crate::investments::Investment;
 use crate::map::{MapModel, Site, UNREACHABLE};
 use crate::memory::Memory;
 use chassis::grid::TilePos;
-use oxide_sim::BuildingKind;
 use oxide_sim::observation::ObservationData;
+use oxide_sim::{BuildingKind, PlayerId};
 
 /// Chebyshev reach around a site or frame that counts toward its danger.
 const DANGER_REACH: i32 = 10;
@@ -72,11 +72,21 @@ pub(crate) fn candidates(
     list
 }
 
+/// The site's anchors on the seat's home ground, best first.
+pub(crate) fn anchors(map: &MapModel, player: PlayerId, site: &Site) -> Vec<TilePos> {
+    let home = map.start(player).and_then(|start| map.component(start));
+    site.anchors
+        .iter()
+        .copied()
+        .filter(|anchor| home.is_some() && map.component(*anchor) == home)
+        .collect()
+}
+
 /// A site's value: what it would yield, weighted up by greed, less its
 /// distance from home, how much nearer an enemy start is, and the danger
 /// around it, weighted down by greed. `None` for a site the seat cannot or
-/// should not take: off its home ground, already held, or failed at every
-/// anchor.
+/// should not take: with no anchor on its home ground, already held, or
+/// failed at every such anchor.
 pub(crate) fn value(
     observation: &ObservationData,
     map: &MapModel,
@@ -85,12 +95,10 @@ pub(crate) fn value(
     greed: u8,
 ) -> Option<i64> {
     let me = observation.me;
-    let anchor = *site.anchors.first()?;
-    let home = map.start(me).and_then(|start| map.component(start));
-    if map.component(anchor) != home
-        || claimed(observation, site)
-        || site
-            .anchors
+    let reachable = anchors(map, me, site);
+    let anchor = *reachable.first()?;
+    if claimed(observation, site)
+        || reachable
             .iter()
             .all(|anchor| memory.failed(BuildingKind::Foundry, *anchor, observation.tick))
     {
@@ -116,7 +124,7 @@ pub(crate) fn value(
     let frames = site
         .frames
         .iter()
-        .filter(|frame| !held(observation, **frame, -1))
+        .filter(|frame| observation.known_frames.contains(frame) && !held(observation, **frame, -1))
         .count() as i64;
     let resource = scrap.min(3_200) / 4 + 150 * frames;
     let distance = i64::from(distance);
