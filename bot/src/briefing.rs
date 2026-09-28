@@ -110,7 +110,9 @@ impl PublicMapBriefing {
         }
     }
 
-    pub(super) fn prepare_navigation(&self) {
+    /// Prepares region navigation for every home orientation once, so seats
+    /// sharing this briefing do not each build it on their first decision.
+    pub fn prepare_navigation(&self) {
         for home in [
             TilePos::new(0, 0),
             TilePos::new(self.map_width - 1, 0),

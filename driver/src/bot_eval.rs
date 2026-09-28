@@ -5,8 +5,9 @@
 //! decided, and emits one compact row suitable for JSONL comparison.
 
 use anyhow::{Context, Result, ensure};
-use oxide_bot::{DecisionTrace, PublicMapBriefing, ResolvedProfile, SeatBot};
+use oxide_bot::{PublicMapBriefing, ResolvedProfile};
 use oxide_kit::GameReplay;
+use oxide_kit::controller::{SeatController, SeatTrace};
 use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::Serialize;
@@ -78,9 +79,13 @@ impl EvaluationController {
         }
     }
 
-    fn seat_bot(self, player: PlayerId, public_map: &Arc<PublicMapBriefing>) -> SeatBot {
+    fn seat_controller(
+        self,
+        player: PlayerId,
+        public_map: &Arc<PublicMapBriefing>,
+    ) -> SeatController {
         match self {
-            Self::Scripted { config } => SeatBot::scripted(player, config, Arc::clone(public_map)),
+            Self::Scripted { config } => SeatController::configured(player, config, public_map),
         }
     }
 }
@@ -220,7 +225,7 @@ impl EvaluationPlan {
         Ok(())
     }
 
-    fn seat_bots(&self) -> Result<Vec<SeatBot>> {
+    fn seat_controllers(&self) -> Result<Vec<SeatController>> {
         let public_map = Arc::new(
             PublicMapBriefing::from_scenario(&self.scenario)
                 .context("building evaluation public map briefing")?,
@@ -231,7 +236,8 @@ impl EvaluationPlan {
             .copied()
             .enumerate()
             .filter_map(|(seat, controller)| {
-                controller.map(|controller| controller.seat_bot(PlayerId(seat as u8), &public_map))
+                controller
+                    .map(|controller| controller.seat_controller(PlayerId(seat as u8), &public_map))
             })
             .collect())
     }
@@ -506,7 +512,7 @@ pub struct EvaluationTraceRow {
     /// Simulation tick observed by the controller.
     pub tick: u64,
     /// Player-facing decision diagnostic.
-    pub trace: DecisionTrace,
+    pub trace: SeatTrace,
 }
 
 type EvaluationTraceSink<'a> = &'a mut dyn FnMut(&EvaluationTraceRow) -> Result<()>;
@@ -618,7 +624,7 @@ fn evaluate_plan_artifact_impl(
     let mut state = scenario
         .build()
         .context("building bot evaluation scenario")?;
-    let mut bots = plan.seat_bots()?;
+    let mut bots = plan.seat_controllers()?;
     let mut replay = GameReplay::new(SIM_VERSION, scenario.clone());
     replay.meta.kind = Some("bot-eval".into());
     let controllers = serde_json::to_string(&plan.controllers)
@@ -643,8 +649,8 @@ fn evaluate_plan_artifact_impl(
                     candidate: candidate.to_string(),
                     evaluation_fingerprint: evaluation_fingerprint.clone(),
                     leg: plan.leg,
-                    seat: trace.player.0,
-                    tick: trace.tick,
+                    seat: trace.player().0,
+                    tick: trace.tick(),
                     trace,
                 };
                 on_trace(&row)?;
@@ -1692,8 +1698,8 @@ mod tests {
             );
             assert_eq!(row.leg, traced_row.leg);
             assert!(row.seat < 2);
-            assert_eq!(row.seat, row.trace.player.0);
-            assert_eq!(row.tick, row.trace.tick);
+            assert_eq!(row.seat, row.trace.player().0);
+            assert_eq!(row.tick, row.trace.tick());
             assert!(row.tick < traced_row.duration_ticks);
         }
     }

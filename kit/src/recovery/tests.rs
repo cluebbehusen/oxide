@@ -14,9 +14,9 @@ fn start(root: PathBuf) -> Result<RecoveryWriter> {
 #[test]
 fn checkpoint_recovery_consumes_pending_input_once_and_preserves_controller_future() {
     use crate::checkpoint::SessionCheckpoint;
-    let scenario = Scenario::skirmish();
+    let scenario = crate::controller::mixed_skirmish();
     let mut state = scenario.build().unwrap();
-    let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let mut bots = crate::controller::seat_controllers(&scenario).unwrap();
     let mut stats = crate::stats::LiveMatchStats::new(&state);
     for _ in 0..37 {
         let report = crate::runner::step(&mut state, &mut bots, None);
@@ -116,7 +116,7 @@ fn checkpoint_recovery_rejects_missing_pending_inputs_and_truncated_completion()
     let scenario = Scenario::skirmish();
     let mut state = scenario.build().unwrap();
     state.tick(&[]);
-    let bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let bots = crate::controller::seat_controllers(&scenario).unwrap();
     let checkpoint =
         crate::checkpoint::SessionCheckpoint::capture(&scenario, &state, &bots, &[command()], None)
             .unwrap();

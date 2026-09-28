@@ -343,7 +343,8 @@ Restoration rejects changes to either side of that pairing, including a seed
 changed in both the session and its companion recorder. Capture trusts the host
 to supply the world's original scenario; this consistency fingerprint is not
 authentication or proof that historical commands produced the snapshot. Session
-revision 2 requires the fingerprint and rejects revision 1 checkpoints.
+revision 3 tags each seat's controller memory with its implementation and must
+match the scenario's controller roster; earlier revisions are rejected.
 Simulation serialization and hashes are unchanged.
 
 The headless session serde adapter uses `RecordedCheckpoint`, retaining its

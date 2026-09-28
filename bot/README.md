@@ -47,11 +47,11 @@ route cost into free-flow ticks for a unit kind.
 contracts.
 
 Internal operation planners and utility policy are not host entry points. Hosts
-use `SeatBot`; observation-driven tooling can use `Brain`, and diagnostics
-retain public trace and operation value types. Omniscient observation
-construction is explicit QA infrastructure, never a configurable opponent
-capability. Component tests supply admission inputs to the same planning
-implementation as production.
+use `SeatBot` through `oxide-kit`'s `SeatController`; observation-driven tooling
+can use `Brain`, and diagnostics retain public trace and operation value types.
+Omniscient observation construction is explicit QA infrastructure, never a
+configurable opponent capability. Component tests supply admission inputs to the
+same planning implementation as production.
 
 ## Development
 

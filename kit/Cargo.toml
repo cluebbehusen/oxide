@@ -8,6 +8,7 @@ description = "Shared engine-side toolkit: playback, replay stats, software rend
 
 [dependencies]
 oxide-bot = { workspace = true }
+oxide-opponent = { workspace = true }
 rayon = "1.11"
 chassis = { workspace = true }
 oxide-sim = { workspace = true }

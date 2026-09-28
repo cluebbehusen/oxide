@@ -136,13 +136,13 @@ on that crate follows its specification and the oxide-opponent skill, not
 cross-domain allocation, production forecasts, plan search or planning state
 that spans decisions.
 
-Normal matches use one configurable rules-based controller. Scrapheap, Standard,
-Veteran, and Prime alter fair macro competence plus cognitive and execution
-limits such as opening army commitment, attention, reaction time, memory,
-estimate accuracy, and hesitation. Turtle, Balanced, and Aggressive bound its
-strategic posture. A deterministic per-seat seed varies air, siege, support,
-fortification, greed, and guile priorities; it never changes capabilities or
-unit strength.
+Normal matches default to `oxide-bot`, a configurable rules-based controller;
+`oxide-opponent` can be selected per seat. Scrapheap, Standard, Veteran, and
+Prime alter fair macro competence plus cognitive and execution limits such as
+opening army commitment, attention, reaction time, memory, estimate accuracy,
+and hesitation. Turtle, Balanced, and Aggressive bound its strategic posture. A
+deterministic per-seat seed varies air, siege, support, fortification, greed,
+and guile priorities; it never changes capabilities or unit strength.
 
 Every difficulty retains the complete strategic repertoire. Automated metrics
 surface candidates and failures; human play and replay judgment decide whether

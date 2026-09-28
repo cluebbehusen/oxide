@@ -3,14 +3,15 @@
 //! This is an internal checkpoint contract, independent of player save files and
 //! replay origins. Controller memory is part of continuation, not world state.
 
+use crate::controller::{ControllerCheckpoint, SeatController};
 use crate::{GameReplay, stats::LiveMatchStats};
 use anyhow::{Context, Result, ensure};
-use oxide_bot::{SeatBot, checkpoint::BotCheckpoint};
-use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
+use oxide_sim::scenario::BotController;
+use oxide_sim::{PlayerCommand, PlayerId, SIM_VERSION, Scenario, State};
 use serde::{Deserialize, Serialize};
 
 /// Session envelope revision, separate from simulation and controller revisions.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// Encoded checkpoint load bound, including the optional legacy command history.
 pub const MAX_BYTES: usize = 256 * 1024 * 1024;
 
@@ -23,7 +24,7 @@ pub struct SessionCheckpoint {
     scenario: Scenario,
     state: State,
     snapshot_binding: u64,
-    bots: Vec<BotCheckpoint>,
+    bots: Vec<ControllerCheckpoint>,
     pending: Vec<PlayerCommand>,
     stats: Option<LiveMatchStats>,
 }
@@ -35,7 +36,7 @@ pub struct RestoredSession {
     /// Exact world at the saved boundary.
     pub state: State,
     /// Controllers in canonical seat order.
-    pub bots: Vec<SeatBot>,
+    pub bots: Vec<SeatController>,
     /// Inputs that have not executed or entered the command record yet.
     pub pending: Vec<PlayerCommand>,
     /// Incremental statistics, when the host tracks them.
@@ -145,7 +146,7 @@ impl SessionCheckpoint {
     pub fn capture(
         scenario: &Scenario,
         state: &State,
-        bots: &[SeatBot],
+        bots: &[SeatController],
         pending: &[PlayerCommand],
         stats: Option<&LiveMatchStats>,
     ) -> Result<Self> {
@@ -157,7 +158,7 @@ impl SessionCheckpoint {
             snapshot_binding: snapshot_binding(scenario, state),
             bots: bots
                 .iter()
-                .map(SeatBot::checkpoint)
+                .map(SeatController::checkpoint)
                 .collect::<Result<_, _>>()
                 .map_err(anyhow::Error::msg)?,
             pending: pending.to_vec(),
@@ -165,19 +166,22 @@ impl SessionCheckpoint {
         };
         checkpoint.validate_world()?;
         ensure!(
-            bots.iter().map(SeatBot::player).collect::<Vec<_>>() == checkpoint.expected_seats(),
+            roster(bots) == checkpoint.expected_seats(),
             "controller roster mismatch"
         );
         Ok(checkpoint)
     }
 
-    fn expected_seats(&self) -> Vec<oxide_sim::PlayerId> {
+    fn expected_seats(&self) -> Vec<(PlayerId, BotController)> {
         self.scenario
             .players
             .iter()
             .enumerate()
-            .filter(|(_, seat)| seat.bot && seat.bot_config.is_some())
-            .map(|(seat, _)| oxide_sim::PlayerId(seat as u8))
+            .filter(|(_, seat)| seat.bot)
+            .filter_map(|(seat, spec)| {
+                spec.bot_config
+                    .map(|config| (PlayerId(seat as u8), config.controller))
+            })
             .collect()
     }
 
@@ -223,11 +227,11 @@ impl SessionCheckpoint {
         let bots = self
             .bots
             .iter()
-            .map(|checkpoint| SeatBot::from_checkpoint(checkpoint, &self.scenario, &self.state))
+            .map(|checkpoint| SeatController::restore(checkpoint, &self.scenario, &self.state))
             .collect::<Result<Vec<_>, _>>()
             .map_err(anyhow::Error::msg)?;
         ensure!(
-            bots.iter().map(SeatBot::player).collect::<Vec<_>>() == self.expected_seats(),
+            roster(&bots) == self.expected_seats(),
             "controller seat order mismatch"
         );
         Ok(RestoredSession {
@@ -238,6 +242,12 @@ impl SessionCheckpoint {
             stats: self.stats,
         })
     }
+}
+
+fn roster(bots: &[SeatController]) -> Vec<(PlayerId, BotController)> {
+    bots.iter()
+        .map(|bot| (bot.player(), bot.controller()))
+        .collect()
 }
 
 pub(crate) fn validate_setup(scenario: &Scenario, state: &State) -> Result<()> {
@@ -388,7 +398,7 @@ mod tests {
     #[test]
     fn checkpoint_rejects_incompatible_or_inconsistent_parts() {
         let original = checkpoint();
-        for version in [1, VERSION + 1] {
+        for version in [1, 2, VERSION + 1] {
             let mut bad = original.clone();
             bad.session.version = version;
             assert!(bad.restore().is_err());
@@ -457,5 +467,61 @@ mod tests {
                 .to_string()
                 .contains("scenario/world binding mismatch")
         );
+    }
+
+    #[test]
+    fn mixed_controllers_round_trip_and_reject_forged_rosters() {
+        let scenario = crate::controller::mixed_skirmish();
+        let mut state = scenario.build().unwrap();
+        let mut bots = crate::controller::seat_controllers(&scenario).unwrap();
+        for _ in 0..150 {
+            crate::runner::step(&mut state, &mut bots, None);
+        }
+        let captured = SessionCheckpoint::capture(&scenario, &state, &bots, &[], None).unwrap();
+        let json = serde_json::to_value(&captured).unwrap();
+        assert_eq!(
+            json["bots"][0],
+            serde_json::json!({"opponent": {"player": 0}})
+        );
+        assert!(json["bots"][1]["scripted"].is_object());
+
+        let mut restored = serde_json::from_value::<SessionCheckpoint>(json.clone())
+            .unwrap()
+            .restore()
+            .unwrap();
+        assert_eq!(roster(&restored.bots), roster(&bots));
+        let mut issued = [0; 2];
+        for _ in 0..300 {
+            let commands = crate::bot_execution::commands(&state, &mut bots);
+            let resumed = crate::bot_execution::commands(&restored.state, &mut restored.bots);
+            assert_eq!(commands, resumed);
+            for command in &commands {
+                issued[usize::from(command.player.0)] += 1;
+            }
+            assert_eq!(
+                state.tick(&commands).events,
+                restored.state.tick(&resumed).events
+            );
+        }
+        assert_eq!(state.hash(), restored.state.hash());
+        assert!(issued.iter().all(|count| *count > 0), "{issued:?}");
+
+        let forged = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut bad = json.clone();
+            edit(&mut bad);
+            serde_json::from_value::<SessionCheckpoint>(bad)
+                .map_err(anyhow::Error::from)
+                .and_then(SessionCheckpoint::restore)
+                .err()
+                .expect("a forged controller roster must not restore")
+        };
+        forged(&|bad| bad["bots"].as_array_mut().unwrap().swap(0, 1));
+        forged(&|bad| bad["bots"][1] = serde_json::json!({"opponent": {"player": 1}}));
+        forged(&|bad| bad["bots"][0] = bad["bots"][1].clone());
+        forged(&|bad| bad["bots"].as_array_mut().unwrap().truncate(1));
+        forged(&|bad| bad["bots"][0] = serde_json::json!({"oracle": {"player": 0}}));
+        let mut reassigned = captured;
+        reassigned.scenario.players[0].bot_config = reassigned.scenario.players[1].bot_config;
+        assert!(reassigned.restore().is_err());
     }
 }

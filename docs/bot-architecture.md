@@ -3,10 +3,11 @@
 This document applies only to `oxide-bot`. [`oxide-opponent`](oxide-opponent.md)
 has its own specification.
 
-Oxide has one fog-honest controller. [Bot strategy](bot-strategy.md) defines its
-intended behavior; this page maps the implementation's owners and boundaries.
-Detailed domain contracts live in the focused references below. Rust types own
-schema details, the
+`oxide-bot` is the default of Oxide's two fog-honest controllers; each
+configured seat selects one, and `oxide-kit` hosts both behind one seat type.
+[Bot strategy](bot-strategy.md) defines its intended behavior; this page maps
+the implementation's owners and boundaries. Detailed domain contracts live in
+the focused references below. Rust types own schema details, the
 [scripted-bot skill](../.agents/skills/scripted-bot/SKILL.md) owns repeatable
 procedures, and agent notes retain historical investigations.
 

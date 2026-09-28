@@ -1,6 +1,6 @@
 use super::*;
+use crate::controller::seat_controllers;
 use crate::{GameReplay, recovery};
-use oxide_bot::seat_bots;
 use oxide_sim::{SIM_VERSION, Scenario};
 use std::path::PathBuf;
 
@@ -51,10 +51,15 @@ fn observed_parallel_and_serial_commands_match_the_ordinary_controller() {
             seat as u64 + 7,
         ));
     }
+    scenario.players[0].bot_config = Some(oxide_sim::scenario::BotConfig::opponent(
+        oxide_sim::scenario::BotDifficulty::Prime,
+        oxide_sim::scenario::BotStance::Balanced,
+        7,
+    ));
     for serial in [false, true] {
         let mut plain = scenario.build().unwrap();
         let mut observed = plain.clone();
-        let mut a = seat_bots(&scenario).unwrap();
+        let mut a = seat_controllers(&scenario).unwrap();
         let mut b = a.clone();
         assert_eq!(a.len(), scenario.players.len());
         let mut emitted = 0;

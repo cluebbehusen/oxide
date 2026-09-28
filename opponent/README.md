@@ -23,7 +23,8 @@ mirrored seats make mirrored choices.
 ## Selection
 
 A seat runs this controller when its scenario `bot_config` names
-`"controller": "opponent"`.
+`"controller": "opponent"`. `oxide-kit` hosts it next to `oxide-bot`, so live,
+headless, saved and recovered sessions build it from the same scenario data.
 
 ## Checkpoint and trace
 

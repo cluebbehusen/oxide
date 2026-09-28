@@ -19,7 +19,7 @@
 use crate::runner::{self, GameReplay};
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
-use oxide_bot::{SeatBot, seat_bots};
+use oxide_kit::controller::{SeatController, seat_controllers};
 use oxide_protocol::framing::{IncomingRequest, Limits, incoming};
 use oxide_protocol::{
     AdvancedView, DebugSession, PresentedView, Reply, Request, ResponseEnvelope, SavedView,
@@ -34,7 +34,7 @@ use std::time::Duration;
 pub struct Session {
     scenario: Scenario,
     state: State,
-    bots: Vec<SeatBot>,
+    bots: Vec<SeatController>,
     recorder: GameReplay,
     /// Commands staged for the next tick — the socket's funnel, exactly
     /// like a paused shell staging for the *next* tick.
@@ -80,7 +80,7 @@ impl Session {
     /// Opens a session on a scenario.
     pub fn new(scenario: Scenario) -> Result<Self> {
         let state = scenario.build().context("building scenario")?;
-        let bots = seat_bots(&scenario).context("building public bot map briefing")?;
+        let bots = seat_controllers(&scenario).context("building public bot map briefing")?;
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         Ok(Self {
             scenario,
@@ -124,7 +124,8 @@ impl Session {
         // and its outputs are discarded — the recorded commands are the
         // truth. The resumed session then continues exactly as the
         // unsaved one would have.
-        let mut bots = seat_bots(&scenario).context("building replay public bot map briefing")?;
+        let mut bots =
+            seat_controllers(&scenario).context("building replay public bot map briefing")?;
         let mut cursor = replay.cursor();
         for _ in 0..total {
             for bot in &mut bots {
@@ -401,6 +402,11 @@ mod tests {
             seat.bot = true;
             seat.bot_config = Some(oxide_sim::scenario::BotConfig::default());
         }
+        scenario.players[0].bot_config = Some(oxide_sim::scenario::BotConfig::opponent(
+            Default::default(),
+            Default::default(),
+            0,
+        ));
         let mut original = Session::new(scenario).unwrap();
         for _ in 0..121 {
             original.step();
@@ -428,6 +434,15 @@ mod tests {
             serde_json::to_vec(&restored.recorder.commands).unwrap()
         );
         assert!(original.recorder.commands.len() > 1);
+        for seat in [PlayerId(0), PlayerId(1)] {
+            assert!(
+                original
+                    .recorder
+                    .commands
+                    .iter()
+                    .any(|timed| timed.command.player == seat)
+            );
+        }
     }
 
     fn human_scenario(name: &str) -> Scenario {

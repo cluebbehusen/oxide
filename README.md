@@ -144,6 +144,8 @@ its own README with its purpose, main modules, and focused development commands.
   rule; `State::tick(&[PlayerCommand])` is its only state transition.
 - [`bot/`](bot/README.md) owns the command-producing opponent. It reads
   simulation-owned observations and keeps policy and planning outside the rules.
+- [`opponent/`](opponent/README.md) is `oxide-opponent`, a reactive, best-effort
+  opponent a seat can select instead of `oxide-bot`. It is currently a stub.
 - [`protocol/`](protocol/README.md) defines the JSON-lines debug contract,
   hardware-neutral input events, state views, fog-honest views, and transport
   shared by live and windowless sessions.
