@@ -344,6 +344,7 @@ impl Game {
                 .map(|t| t.command.clone())
                 .collect();
             let report = state.tick(&commands);
+            oxide_kit::controller::record_events(&mut bots, &report);
             boundary_fog.observe(&state, game.presentation.human);
             projectile_releases.observe(&state, &report.events);
             live_stats.observe(&state, &report.events);
@@ -531,6 +532,7 @@ impl Game {
             .expect("bot decision retained the world after collection")
             .tick(commands);
         drop(sim_scope);
+        oxide_kit::controller::record_events(&mut self.bots, &report);
         if let Some(recovery) = &self.recovery {
             recovery.completed(self.state.current_tick());
         }

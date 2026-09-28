@@ -7,9 +7,9 @@
 use oxide_bot::checkpoint::BotCheckpoint;
 use oxide_bot::observer::PhaseObserver;
 use oxide_bot::{DecisionTrace, PublicMapBriefing, SeatBot, TracedBotAct};
-use oxide_opponent::Opponent;
+use oxide_opponent::{Opponent, OwnEvents};
 use oxide_sim::scenario::{BotConfig, BotController, ScenarioError};
-use oxide_sim::{PlayerCommand, PlayerId, Scenario, State};
+use oxide_sim::{PlayerCommand, PlayerId, Scenario, State, TickReport};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -18,8 +18,14 @@ use std::sync::Arc;
 pub enum SeatController {
     /// `oxide-bot`.
     Scripted(SeatBot),
-    /// `oxide-opponent`.
-    Opponent(Opponent),
+    /// `oxide-opponent`, beside the own order failures its host has recorded
+    /// since the seat's last decision.
+    Opponent {
+        /// The seat's policy.
+        controller: Opponent,
+        /// Consumed by the seat's next decision.
+        events: OwnEvents,
+    },
 }
 
 /// One controller's decision diagnostic. Untagged, so each controller's trace
@@ -53,12 +59,17 @@ impl SeatTrace {
 
 /// One seat's continuation, tagged by controller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControllerCheckpoint {
     /// `oxide-bot` memory and planning progress.
     Scripted(BotCheckpoint),
-    /// `oxide-opponent` state.
-    Opponent(oxide_opponent::Checkpoint),
+    /// `oxide-opponent` state and its undelivered own events.
+    Opponent {
+        /// The seat's policy state.
+        controller: oxide_opponent::Checkpoint,
+        /// Events recorded since the seat's last decision.
+        events: OwnEvents,
+    },
 }
 
 impl SeatController {
@@ -72,7 +83,10 @@ impl SeatController {
             BotController::Scripted => {
                 Self::Scripted(SeatBot::scripted(player, config, Arc::clone(public_map)))
             }
-            BotController::Opponent => Self::Opponent(Opponent::new(player, config)),
+            BotController::Opponent => Self::Opponent {
+                controller: Opponent::new(player, config),
+                events: OwnEvents::default(),
+            },
         }
     }
 
@@ -80,7 +94,7 @@ impl SeatController {
     pub fn player(&self) -> PlayerId {
         match self {
             Self::Scripted(bot) => bot.player(),
-            Self::Opponent(opponent) => opponent.player(),
+            Self::Opponent { controller, .. } => controller.player(),
         }
     }
 
@@ -88,7 +102,7 @@ impl SeatController {
     pub fn controller(&self) -> BotController {
         match self {
             Self::Scripted(_) => BotController::Scripted,
-            Self::Opponent(_) => BotController::Opponent,
+            Self::Opponent { .. } => BotController::Opponent,
         }
     }
 
@@ -97,7 +111,7 @@ impl SeatController {
     pub fn decision_due(&self, state: &State) -> bool {
         match self {
             Self::Scripted(bot) => bot.decision_due(state),
-            Self::Opponent(opponent) => opponent.decision_due(state),
+            Self::Opponent { controller, .. } => controller.decision_due(state),
         }
     }
 
@@ -105,7 +119,7 @@ impl SeatController {
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
         match self {
             Self::Scripted(bot) => bot.act(state),
-            Self::Opponent(opponent) => opponent.act(state),
+            Self::Opponent { controller, events } => controller.act(state, events),
         }
     }
 
@@ -118,7 +132,7 @@ impl SeatController {
     ) -> Vec<PlayerCommand> {
         match self {
             Self::Scripted(bot) => bot.act_observed(state, observer),
-            Self::Opponent(opponent) => opponent.act(state),
+            Self::Opponent { controller, events } => controller.act(state, events),
         }
     }
 
@@ -132,8 +146,8 @@ impl SeatController {
                     trace.map(|trace| SeatTrace::Scripted(Box::new(trace))),
                 )
             }
-            Self::Opponent(opponent) => {
-                let (commands, trace) = opponent.act_traced(state);
+            Self::Opponent { controller, events } => {
+                let (commands, trace) = controller.act_traced(state, events);
                 (commands, trace.map(SeatTrace::Opponent))
             }
         }
@@ -143,7 +157,10 @@ impl SeatController {
     pub fn checkpoint(&self) -> Result<ControllerCheckpoint, String> {
         match self {
             Self::Scripted(bot) => bot.checkpoint().map(ControllerCheckpoint::Scripted),
-            Self::Opponent(opponent) => Ok(ControllerCheckpoint::Opponent(opponent.checkpoint())),
+            Self::Opponent { controller, events } => Ok(ControllerCheckpoint::Opponent {
+                controller: controller.checkpoint(),
+                events: events.clone(),
+            }),
         }
     }
 
@@ -157,9 +174,23 @@ impl SeatController {
             ControllerCheckpoint::Scripted(checkpoint) => {
                 SeatBot::from_checkpoint(checkpoint, scenario, state).map(Self::Scripted)
             }
-            ControllerCheckpoint::Opponent(checkpoint) => {
-                Opponent::restore(checkpoint, scenario, state).map(Self::Opponent)
+            ControllerCheckpoint::Opponent { controller, events } => {
+                Opponent::restore(controller, scenario, state).map(|controller| Self::Opponent {
+                    controller,
+                    events: events.clone(),
+                })
             }
+        }
+    }
+}
+
+/// Hands each `oxide-opponent` seat its own order failures from a completed
+/// tick. Hosts call this after every tick that runs with these controllers,
+/// including fast-forwards whose bot commands they discard.
+pub fn record_events(bots: &mut [SeatController], report: &TickReport) {
+    for bot in bots {
+        if let SeatController::Opponent { controller, events } = bot {
+            events.record(controller.player(), &report.events);
         }
     }
 }
@@ -235,7 +266,10 @@ mod tests {
         let mut scripted = oxide_bot::seat_bots(&scenario).unwrap();
         let mut opponent = Opponent::new(PlayerId(0), scenario.players[0].bot_config.unwrap());
         assert!(seats.iter().all(|seat| seat.decision_due(&state)));
-        assert_eq!(seats[0].act(&state), opponent.act(&state));
+        assert_eq!(
+            seats[0].act(&state),
+            opponent.act(&state, &mut OwnEvents::default())
+        );
         assert_eq!(seats[1].act(&state), scripted[0].act(&state));
 
         scenario.players[0].bot_config = None;
@@ -262,7 +296,7 @@ mod tests {
         );
 
         let (commands, trace) = seats[0].act_traced(&state);
-        let (direct_commands, direct) = opponent.act_traced(&state);
+        let (direct_commands, direct) = opponent.act_traced(&state, &mut OwnEvents::default());
         assert_eq!(commands, direct_commands);
         let trace = trace.unwrap();
         assert_eq!((trace.player(), trace.tick()), (PlayerId(0), 0));
@@ -282,7 +316,10 @@ mod tests {
             .map(|seat| seat.checkpoint().unwrap())
             .collect();
         let json = serde_json::to_value(&checkpoints).unwrap();
-        assert_eq!(json[0], serde_json::json!({"opponent": {"player": 0}}));
+        assert_eq!(
+            json[0],
+            serde_json::json!({"opponent": {"controller": {"player": 0}, "events": []}})
+        );
         assert!(json[1]["scripted"].is_object());
         let decoded: Vec<ControllerCheckpoint> = serde_json::from_value(json).unwrap();
         for (seat, checkpoint) in seats.iter().zip(&decoded) {
@@ -299,6 +336,54 @@ mod tests {
         for checkpoint in &decoded {
             assert!(SeatController::restore(checkpoint, &swapped, &state).is_err());
         }
+    }
+
+    #[test]
+    fn opponent_seats_hear_only_their_own_failures_at_their_next_decision() {
+        let scenario = mixed_skirmish();
+        let mut state = scenario.build().unwrap();
+        let mut seats = seat_controllers(&scenario).unwrap();
+        let stop = |player: u8| PlayerCommand {
+            player: PlayerId(player),
+            command: oxide_sim::Command::Stop { units: Vec::new() },
+        };
+        let saved = |seats: &[SeatController]| {
+            seats
+                .iter()
+                .map(|seat| serde_json::to_value(seat.checkpoint().unwrap()).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let mut commands: Vec<_> = seats.iter_mut().flat_map(|seat| seat.act(&state)).collect();
+        commands.extend([stop(1), stop(0)]);
+        let report = state.tick(&commands);
+        let scripted = saved(&seats)[1].clone();
+        record_events(&mut seats, &report);
+        let rejected =
+            serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}]);
+        let before = saved(&seats);
+        assert_eq!(before[0]["opponent"]["events"], rejected);
+        assert_eq!(before[1], scripted);
+
+        let mut traces = Vec::new();
+        while state.current_tick() <= 12 {
+            let mut commands = Vec::new();
+            for seat in &mut seats {
+                let (issued, trace) = seat.act_traced(&state);
+                commands.extend(issued);
+                traces.extend(trace.filter(|trace| trace.player() == PlayerId(0)));
+            }
+            let report = state.tick(&commands);
+            record_events(&mut seats, &report);
+        }
+        let [SeatTrace::Opponent(trace)] = traces.as_slice() else {
+            panic!("one opponent decision: {traces:?}");
+        };
+        assert_eq!(trace.tick, 12);
+        assert_eq!(serde_json::to_value(&trace.events).unwrap(), rejected);
+        assert_eq!(
+            saved(&seats)[0]["opponent"]["events"],
+            serde_json::json!([])
+        );
     }
 
     #[test]

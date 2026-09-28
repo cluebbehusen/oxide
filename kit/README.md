@@ -13,7 +13,11 @@ while reusable game-independent primitives stay in `chassis`.
 - `controller` hosts `oxide-bot` and `oxide-opponent` behind one
   `SeatController` enum. `seat_controllers` builds each configured seat's
   selected controller in seat order from one shared public map briefing; its
-  checkpoints and decision traces keep each controller's own format.
+  checkpoints and decision traces keep each controller's own format. Each
+  `oxide-opponent` seat also holds a bounded buffer of its own `OrderStalled`
+  and `CommandRejected` events. Hosts call `record_events` after every tick that
+  runs with controllers, fast-forwards included; the seat's next decision
+  consumes the buffer and its checkpoint saves it. `oxide-bot` seats have none.
 - `checkpoint` captures a completed tick boundary: scenario, validated world,
   canonical controller roster, pending inputs, and optional incremental
   statistics. Each seat's controller must match the scenario's configuration.
@@ -39,7 +43,8 @@ while reusable game-independent primitives stay in `chassis`.
   retain the same admission permit until completion, including when their
   session discards the result. Collection validates the world/tick/roster and
   installs complete controllers before returning commands; snapshots remain
-  available for saves while work runs.
+  available for saves while work runs. Speculation drains own-event buffers only
+  in its clones, so events are consumed when its result is installed.
 
 - `recovery` keeps a bounded incremental command journal, distinguishes prepared
   commands from completed ticks, and exports verified replay prefixes with build

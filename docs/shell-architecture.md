@@ -62,6 +62,9 @@ save when the host is lost or a desync halts the match.
 Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in
 input seat order before commands are recorded. `State::tick` remains serial.
+After every tick, replay reconstruction included, `Game` hands the report to
+`oxide_kit::controller::record_events`, which buffers each `oxide-opponent`
+seat's own order failures for its next decision.
 
 Between ordinary live ticks, `Game` may submit one background decision. It keeps
 the pre-decision controllers and gives the worker a cloned working set plus an

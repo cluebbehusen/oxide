@@ -14,11 +14,20 @@ the price. It does not attack, scout, build or expand.
 ## Boundary
 
 The crate depends on `oxide-sim` and `chassis`, never on `oxide-bot`. It reads
-only its seat's fog-honest `ObservationData` and emits ordinary
-`PlayerCommand`s. It decides on its difficulty's interval and stays silent once
-the match is decided, after its seat surrenders, or while it has no built
-Foundry. Equal-distance choices are broken in the seat's home-relative frame, so
-mirrored seats make mirrored choices.
+only its seat's fog-honest `ObservationData` and its own order events, and emits
+ordinary `PlayerCommand`s. It decides on its difficulty's interval and stays
+silent once the match is decided, after its seat surrenders, or while it has no
+built Foundry. Equal-distance choices are broken in the seat's home-relative
+frame, so mirrored seats make mirrored choices.
+
+## Own events
+
+Each decision also receives the seat's own `OrderStalled` and `CommandRejected`
+events since its previous decision, oldest first. `OwnEvents` holds them: the
+host keeps one per seat beside the controller and calls `record` after every
+tick, and a decision takes them all. A buffer holds at most 64 events and drops
+the oldest first. A tick without a decision leaves the buffer untouched. The
+stub only reports the events in its trace.
 
 ## Selection
 
@@ -28,9 +37,11 @@ headless, saved and recovered sessions build it from the same scenario data.
 
 ## Checkpoint and trace
 
-`Checkpoint` holds only the seat. Restoring it checks that the seat is a
-configured `oxide-opponent` bot in the bound scenario and world, and rebuilds
-the profile and decision interval from the scenario.
+`Checkpoint` holds only the seat; the host saves the seat's `OwnEvents` beside
+it. Restoring it checks that the seat is a configured `oxide-opponent` bot in
+the bound scenario and world, and rebuilds the profile and decision interval
+from the scenario. A saved buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
-committed spending, purchases and unit-order count. Traces are diagnostics only.
+received own events, committed spending, purchases and unit-order count. Traces
+are diagnostics only.

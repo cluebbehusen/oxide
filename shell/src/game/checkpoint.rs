@@ -174,6 +174,7 @@ impl RestoredGame {
                     .map(|timed| timed.command.clone())
                     .collect();
                 let report = state.tick(&commands);
+                oxide_kit::controller::record_events(&mut bots, &report);
                 stats.observe(&state, &report.events);
                 boundary_fog.observe(&state, human);
             }
@@ -444,11 +445,27 @@ mod tests {
         let mut original = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
         assert!(matches!(
             original.bots.as_slice(),
-            [SeatController::Opponent(_)]
+            [SeatController::Opponent { .. }]
         ));
         original.advance_ticks(121);
+        original.stage(oxide_sim::PlayerCommand {
+            player: PlayerId(1),
+            command: Command::Stop { units: Vec::new() },
+        });
+        original.do_tick();
         let mut replay = original.recorder.clone();
         replay.meta.ticks = Some(original.state.current_tick());
+        let controllers = |game: &Game| {
+            game.bots
+                .iter()
+                .map(|bot| serde_json::to_value(bot.checkpoint().unwrap()).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let pending = controllers(&original);
+        assert_eq!(
+            pending[0]["opponent"]["events"],
+            serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}])
+        );
 
         let saved: Game = serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
         let recovered = RestoredGame::recover(
@@ -468,6 +485,9 @@ mod tests {
         .install();
         let resumed = Game::from_replay(replay).unwrap();
         let mut continuations = [saved, recovered, resumed];
+        for game in &continuations {
+            assert_eq!(controllers(game), pending);
+        }
         for _ in 0..240 {
             let events = original.do_tick().events;
             for game in &mut continuations {
@@ -476,6 +496,7 @@ mod tests {
         }
         for game in &continuations {
             assert_eq!(game.state.hash(), original.state.hash());
+            assert_eq!(controllers(game), controllers(&original));
         }
         assert!(
             original

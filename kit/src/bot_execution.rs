@@ -271,7 +271,7 @@ impl Drop for Permit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::seat_controllers;
+    use crate::controller::{record_events, seat_controllers};
     use oxide_sim::{
         Command, PlayerId, Scenario,
         scenario::{BotConfig, BotDifficulty, BotStance},
@@ -300,6 +300,15 @@ mod tests {
             bots.reverse();
             let mut expected_bots = bots.clone();
             let executor = BotExecutor::new(workers);
+            let saved = |bots: &[SeatController]| {
+                serde_json::to_vec(
+                    &bots
+                        .iter()
+                        .map(|bot| bot.checkpoint().unwrap())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap()
+            };
             for tick in 0..180 {
                 let mut commands = executor.commands(&state, &mut bots);
                 let mut serial: Vec<_> = expected_bots
@@ -315,7 +324,20 @@ mod tests {
                     serial.insert(0, surrender);
                 }
                 assert_eq!(commands, serial);
-                assert_eq!(state.tick(&commands).events, expected.tick(&serial).events);
+                if tick % 30 == 5 {
+                    let stops = [0, 1].map(|seat| PlayerCommand {
+                        player: PlayerId(seat),
+                        command: Command::Stop { units: vec![] },
+                    });
+                    commands.extend(stops.clone());
+                    serial.extend(stops);
+                }
+                let report = state.tick(&commands);
+                let expected_report = expected.tick(&serial);
+                assert_eq!(report.events, expected_report.events);
+                record_events(&mut bots, &report);
+                record_events(&mut expected_bots, &expected_report);
+                assert_eq!(saved(&bots), saved(&expected_bots));
                 assert_eq!(
                     serde_json::to_vec(&state).unwrap(),
                     serde_json::to_vec(&expected).unwrap()
