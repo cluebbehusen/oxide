@@ -56,6 +56,60 @@ fn identity(root: &Path, paths: &[String]) -> (String, String) {
     (revision, dirty.into())
 }
 
+/// Digest of the compiled `oxide-bot` sources as they are on disk. Evaluation
+/// treats that controller as a frozen reference, so its results can be reused
+/// for as long as this digest is unchanged.
+fn bot_digest(root: &Path) -> String {
+    fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                collect(&path, files);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    let bot = root.join("bot");
+    let mut files = vec![bot.join("Cargo.toml")];
+    collect(&bot.join("src"), &mut files);
+    let mut named: Vec<(String, PathBuf)> = files
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            (name, path)
+        })
+        .collect();
+    named.sort();
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for (name, path) in named {
+        let contents = std::fs::read(&path).unwrap_or_default();
+        feed(name.as_bytes());
+        feed(&[0]);
+        feed(&(contents.len() as u64).to_le_bytes());
+        feed(&contents);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
 /// Emit executable identity and its source watch inputs for Cargo.
 pub fn configure(host: &str) {
     let manifest =
@@ -87,6 +141,7 @@ pub fn configure(host: &str) {
     let (revision, dirty) = identity(root, &paths);
     println!("cargo:rustc-env=OXIDE_BUILD_REVISION={revision}");
     println!("cargo:rustc-env=OXIDE_BUILD_DIRTY={dirty}");
+    println!("cargo:rustc-env=OXIDE_BOT_DIGEST={}", bot_digest(root));
 }
 
 #[cfg(test)]
@@ -182,6 +237,26 @@ mod tests {
         fs::write(repo.0.join("net/src/lib.rs"), "// changed transport").unwrap();
         assert_eq!(identity(&repo.0, &inputs("shell")).1, "true");
         assert_eq!(identity(&repo.0, &inputs("driver")).1, "false");
+    }
+
+    #[test]
+    fn the_bot_digest_follows_only_compiled_bot_sources() {
+        let repo = Repository::new();
+        let initial = bot_digest(&repo.0);
+        assert!(initial.starts_with("fnv1a64:"));
+        assert_eq!(bot_digest(&repo.0), initial);
+        fs::write(repo.0.join("driver/src/lib.rs"), "// driver edit").unwrap();
+        fs::write(repo.0.join("bot/README.md"), "notes").unwrap();
+        fs::write(repo.0.join("bot/src/.lib.rs.swp"), "editor state").unwrap();
+        assert_eq!(bot_digest(&repo.0), initial);
+        fs::create_dir_all(repo.0.join("bot/src/nested")).unwrap();
+        fs::write(repo.0.join("bot/src/nested/new.rs"), "// new module").unwrap();
+        let added = bot_digest(&repo.0);
+        assert_ne!(added, initial);
+        fs::write(repo.0.join("bot/src/lib.rs"), "// changed policy").unwrap();
+        assert_ne!(bot_digest(&repo.0), added);
+        fs::write(repo.0.join("bot/src/lib.rs"), "// initial source\n").unwrap();
+        assert_eq!(bot_digest(&repo.0), added);
     }
 
     #[test]

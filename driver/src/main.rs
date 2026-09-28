@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, builder::TypedValueParser};
+use oxide_driver::build_identity;
 use oxide_driver::client::Client;
 use oxide_driver::runner;
 use oxide_driver::{render, smoke};
@@ -518,7 +519,7 @@ fn main() -> Result<()> {
         Cmd::RecoveryInspect { directory, export } => {
             let record = oxide_kit::recovery::inspect(&directory)?;
             if let Some(destination) = export {
-                oxide_kit::recovery::export(&directory, &destination, &crate::build_identity())?;
+                oxide_kit::recovery::export(&directory, &destination, &build_identity())?;
             }
             println!(
                 "{}",
@@ -1155,14 +1156,6 @@ fn main() -> Result<()> {
         Cmd::Ios { device, list } => oxide_driver::ios::run(device.as_deref(), list)?,
     }
     Ok(())
-}
-
-fn build_identity() -> oxide_kit::recovery::BuildIdentity {
-    oxide_kit::recovery::BuildIdentity::new(
-        env!("CARGO_PKG_VERSION"),
-        env!("OXIDE_BUILD_REVISION"),
-        env!("OXIDE_BUILD_DIRTY"),
-    )
 }
 
 #[cfg(test)]

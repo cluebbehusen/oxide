@@ -10,7 +10,7 @@ use oxide_kit::GameReplay;
 use oxide_kit::controller::{SeatController, SeatTrace};
 use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -18,12 +18,29 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 mod batch;
+mod failures;
+mod income;
 pub use batch::{EvaluationBatchOptions, EvaluationBatchResult, evaluate_batch};
+pub use failures::{
+    FAILURE_WINDOW_TICKS, FailureIncident, FailureTally, MAX_FAILURE_EXAMPLES,
+    REPEATED_ORDER_STALLS, SeatFailures,
+};
+pub use income::{
+    HARVESTERS_PER_NODE, INCOME_CHECKPOINTS, INCOME_WINDOW_TICKS, IncomeSample,
+    saturation_per_minute,
+};
 
 const MAX_CANDIDATE_LEN: usize = 128;
 
+/// Digest of the frozen `oxide-bot` sources this driver was built with.
+/// Reference results stay comparable while it is unchanged.
+pub const OXIDE_BOT_DIGEST: &str = env!("OXIDE_BOT_DIGEST");
+
+/// Ticks between failure-detector and passive-income checks.
+pub const QA_CHECK_PERIOD: u64 = 12;
+
 /// Which half of a seat-paired evaluation produced a row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationLeg {
     /// One ordinary evaluation with no profile exchange.
@@ -46,7 +63,7 @@ impl EvaluationLeg {
 }
 
 /// Controller family used by one evaluation seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationControllerKind {
     /// No automated command source occupies this seat.
@@ -267,7 +284,7 @@ impl EvaluationPlan {
 }
 
 /// Why an evaluation stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Termination {
     /// The simulation declared a result.
@@ -406,6 +423,8 @@ pub struct SeatConfiguration {
     pub controller: EvaluationControllerKind,
     /// Faction roster bound to the physical seat.
     pub faction: Faction,
+    /// Team the seat plays for; seats sharing one are allies.
+    pub team: u8,
     /// The configured built-in controller, or `None` for an empty chair.
     pub config: Option<BotConfig>,
     /// Fully resolved hidden personality, included for exact comparison.
@@ -423,7 +442,7 @@ pub enum SeatProfile {
     Opponent(oxide_opponent::ResolvedProfile),
 }
 
-/// Compact command failure evidence for one seat.
+/// Compact command failure and QA evidence for one seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SeatEvidence {
     /// Player seat.
@@ -441,6 +460,12 @@ pub struct SeatEvidence {
     /// Per-unit stall reasons, so a large total can be traced to one stuck
     /// order instead of being mistaken for a controller-wide command storm.
     pub stall_units: BTreeMap<u32, BTreeMap<String, u64>>,
+    /// Tick the seat resigned or lost its last Foundry; absent while it stands.
+    pub eliminated_at: Option<u64>,
+    /// Consequential failures found by omniscient detectors.
+    pub failures: SeatFailures,
+    /// Actual income against a saturation estimate at each checkpoint reached.
+    pub income: Vec<IncomeSample>,
 }
 
 impl SeatEvidence {
@@ -453,6 +478,9 @@ impl SeatEvidence {
             stalls: 0,
             stall_reasons: BTreeMap::new(),
             stall_units: BTreeMap::new(),
+            eliminated_at: None,
+            failures: SeatFailures::default(),
+            income: Vec::new(),
         }
     }
 
@@ -486,6 +514,10 @@ impl SeatEvidence {
 pub struct EvaluationRow {
     /// Simulation version that produced the record.
     pub sim_version: &'static str,
+    /// Digest of the frozen `oxide-bot` sources in the producing build.
+    pub oxide_bot_digest: &'static str,
+    /// The driver build that produced the record.
+    pub build: oxide_kit::recovery::BuildIdentity,
     /// User-supplied candidate or build identifier.
     pub candidate: String,
     /// Scenario display name.
@@ -684,6 +716,12 @@ fn evaluate_plan_artifact_impl(
     let mut evidence: Vec<SeatEvidence> =
         (0..scenario.players.len()).map(SeatEvidence::new).collect();
     let mut trace_count = 0_u64;
+    let watched: Vec<bool> = plan.controllers.iter().map(Option::is_some).collect();
+    let mut failures = failures::FailureDetectors::new(watched.iter().copied());
+    let mut income = income::IncomeTracker::new(&state, watched);
+    // Scrap each seat's controller reports holding back for a saving target.
+    // No controller reports it yet, so starvation weighs the whole bank.
+    let protected = vec![0_u32; scenario.players.len()];
 
     let mut stall_loop = None;
     'run: while state.current_tick() < tick_limit && state.result().is_none() {
@@ -706,20 +744,37 @@ fn evaluate_plan_artifact_impl(
         } else {
             oxide_kit::runner::step(&mut state, &mut bots, Some(&mut replay))
         };
+        let tick = state.current_tick();
         for event in &report.events {
-            if let Some(sample) = record_evidence_event(&mut evidence, event)
-                && stall_loop_limit.is_some_and(|limit| sample.count >= limit)
-            {
+            let Some(sample) = record_evidence_event(&mut evidence, event) else {
+                continue;
+            };
+            failures.record_stall(sample.seat, sample.unit, &sample.reason, tick);
+            if stall_loop_limit.is_some_and(|limit| sample.count >= limit) {
                 stall_loop = Some(StallLoop {
                     seat: sample.seat,
                     unit: sample.unit,
                     reason: sample.reason,
                     count: sample.count,
-                    tick: state.current_tick(),
+                    tick,
                 });
                 break 'run;
             }
         }
+        income.observe(&state, &report.events, QA_CHECK_PERIOD);
+        if tick.is_multiple_of(QA_CHECK_PERIOD) {
+            failures.check(&state, tick, &protected);
+        }
+    }
+    for (seat, ((evidence, failures), income)) in evidence
+        .iter_mut()
+        .zip(failures.finish())
+        .zip(income.finish())
+        .enumerate()
+    {
+        evidence.eliminated_at = state.players()[seat].eliminated_at;
+        evidence.failures = failures;
+        evidence.income = income;
     }
 
     replay.meta.ticks = Some(state.current_tick());
@@ -732,6 +787,8 @@ fn evaluate_plan_artifact_impl(
 
     let row = EvaluationRow {
         sim_version: SIM_VERSION,
+        oxide_bot_digest: OXIDE_BOT_DIGEST,
+        build: crate::build_identity(),
         candidate: candidate.to_string(),
         scenario: scenario.name.clone(),
         scenario_fingerprint,
@@ -753,6 +810,7 @@ fn evaluate_plan_artifact_impl(
                     .map(EvaluationController::kind)
                     .unwrap_or(EvaluationControllerKind::None),
                 faction: player.faction,
+                team: state.players()[seat].team,
                 config: plan.controllers[seat].map(EvaluationController::config),
                 profile: plan.controllers[seat].map(EvaluationController::profile),
             })
@@ -905,7 +963,11 @@ pub fn write_jsonl(rows: &[EvaluationRow], path: &Path) -> Result<()> {
     write_serialized_jsonl(rows, path, "bot evaluation JSONL")
 }
 
-fn write_serialized_jsonl<T: Serialize>(rows: &[T], path: &Path, label: &str) -> Result<()> {
+pub(crate) fn write_serialized_jsonl<T: Serialize>(
+    rows: &[T],
+    path: &Path,
+    label: &str,
+) -> Result<()> {
     chassis::fsx::write_atomic(path, |writer| -> Result<()> {
         for row in rows {
             serde_json::to_writer(&mut *writer, row)?;
@@ -1013,10 +1075,10 @@ impl EvidenceBatch {
         })
     }
 
-    /// Stages the JSONL index next to its eventual destination.
-    pub fn stage_jsonl(&mut self, rows: &[EvaluationRow], destination: &Path) -> Result<()> {
+    /// Stages a JSONL index next to its eventual destination.
+    pub fn stage_jsonl<T: Serialize>(&mut self, rows: &[T], destination: &Path) -> Result<()> {
         let staged = self.reserve_stage(destination)?;
-        write_jsonl(rows, &staged)
+        write_serialized_jsonl(rows, &staged, "evaluation JSONL")
             .with_context(|| format!("staging evidence index for {}", destination.display()))
     }
 
@@ -2065,6 +2127,63 @@ mod tests {
             row.evidence.iter().map(|seat| seat.commands).sum::<u64>(),
             0
         );
+    }
+
+    #[test]
+    fn rows_record_teams_eliminations_detectors_income_and_provenance() {
+        let row = evaluate(
+            &firing_squad(),
+            3_000,
+            EvaluationLeg::Single,
+            "test-build",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            row.seats.iter().map(|seat| seat.team).collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(row.evidence[0].eliminated_at, None);
+        assert_eq!(row.evidence[1].eliminated_at, Some(row.duration_ticks - 1));
+        assert!(
+            row.evidence
+                .iter()
+                .all(|seat| seat.failures == SeatFailures::default() && seat.income.is_empty()),
+            "seats without a controller are not watched"
+        );
+        assert_eq!(row.oxide_bot_digest, OXIDE_BOT_DIGEST);
+        assert!(OXIDE_BOT_DIGEST.starts_with("fnv1a64:"));
+        assert_eq!(row.build, crate::build_identity());
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["seats"][1]["team"], 1);
+        assert_eq!(
+            json["evidence"][0]["eliminated_at"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            json["evidence"][0]["failures"]["starved_producers"]["incidents"],
+            0
+        );
+
+        let plan = configured_matchup_plans(
+            &Scenario::skirmish(),
+            73,
+            ProfileMatchup::uniform(BotDifficulty::Standard, BotStance::Balanced),
+            8_100,
+            false,
+            EvaluationFactionCell::Authored,
+            EvaluationGeometry::Authored,
+        )
+        .unwrap()
+        .remove(0);
+        let (row, _) = evaluate_plan_artifact(&plan, INCOME_CHECKPOINTS[0], "test-build").unwrap();
+        for seat in &row.evidence {
+            let [sample] = seat.income.as_slice() else {
+                panic!("one checkpoint is reached: {:?}", seat.income);
+            };
+            assert_eq!(sample.tick, INCOME_CHECKPOINTS[0]);
+            assert!(sample.actual_per_minute > 0 && sample.saturation_per_minute > 0);
+        }
     }
 
     #[test]

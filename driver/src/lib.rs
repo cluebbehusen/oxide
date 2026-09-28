@@ -21,5 +21,14 @@ pub mod sweep;
 // the split unchanged.
 pub use oxide_kit::{playback, render, runner, stats};
 
+/// Provenance of this driver build.
+pub fn build_identity() -> oxide_kit::recovery::BuildIdentity {
+    oxide_kit::recovery::BuildIdentity::new(
+        env!("CARGO_PKG_VERSION"),
+        env!("OXIDE_BUILD_REVISION"),
+        env!("OXIDE_BUILD_DIRTY"),
+    )
+}
+
 #[cfg(test)]
 mod test_support;
