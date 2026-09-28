@@ -75,49 +75,45 @@ pub enum EvaluationControllerKind {
     Opponent,
 }
 
-/// Exact evaluation-only command source for one seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum EvaluationController {
-    /// One exact `oxide-bot` configuration.
-    Scripted {
-        /// Difficulty, stance, and deterministic personality seed.
-        config: BotConfig,
-    },
-    /// One exact `oxide-opponent` configuration.
-    Opponent {
-        /// Difficulty, stance, and deterministic personality seed.
-        config: BotConfig,
-    },
+/// Exact evaluation-only command source for one seat: one configuration,
+/// whose controller selects `oxide-bot` or `oxide-opponent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvaluationController {
+    config: BotConfig,
+}
+
+impl Serialize for EvaluationController {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut controller = serializer.serialize_struct("EvaluationController", 2)?;
+        controller.serialize_field("kind", &self.kind())?;
+        controller.serialize_field("config", &self.config)?;
+        controller.end()
+    }
 }
 
 impl EvaluationController {
     /// The evaluation source for one configuration, chosen by its controller.
     pub fn configured(config: BotConfig) -> Self {
-        match config.controller {
-            BotController::Scripted => Self::Scripted { config },
-            BotController::Opponent => Self::Opponent { config },
-        }
+        Self { config }
     }
 
     fn kind(self) -> EvaluationControllerKind {
-        match self {
-            Self::Scripted { .. } => EvaluationControllerKind::Scripted,
-            Self::Opponent { .. } => EvaluationControllerKind::Opponent,
+        match self.config.controller {
+            BotController::Scripted => EvaluationControllerKind::Scripted,
+            BotController::Opponent => EvaluationControllerKind::Opponent,
         }
     }
 
     fn config(self) -> BotConfig {
-        match self {
-            Self::Scripted { config } | Self::Opponent { config } => config,
-        }
+        self.config
     }
 
     fn profile(self) -> SeatProfile {
-        match self {
-            Self::Scripted { config } => SeatProfile::Scripted(ResolvedProfile::resolve(config)),
-            Self::Opponent { config } => {
-                SeatProfile::Opponent(oxide_opponent::ResolvedProfile::resolve(config))
+        match self.config.controller {
+            BotController::Scripted => SeatProfile::Scripted(ResolvedProfile::resolve(self.config)),
+            BotController::Opponent => {
+                SeatProfile::Opponent(oxide_opponent::ResolvedProfile::resolve(self.config))
             }
         }
     }
@@ -1504,9 +1500,7 @@ mod tests {
     }
 
     fn opponent_controller() -> EvaluationController {
-        EvaluationController::Scripted {
-            config: opponent_config(),
-        }
+        EvaluationController::configured(opponent_config())
     }
 
     fn one_evaluation_trace() -> EvaluationTraceRow {
@@ -1554,16 +1548,24 @@ mod tests {
         assert_eq!(
             plans[0].controllers,
             [
-                Some(EvaluationController::Opponent { config: opponent }),
-                Some(EvaluationController::Scripted { config: scripted }),
+                Some(EvaluationController::configured(opponent)),
+                Some(EvaluationController::configured(scripted)),
             ]
         );
         assert_eq!(
             plans[1].controllers,
             [
-                Some(EvaluationController::Scripted { config: scripted }),
-                Some(EvaluationController::Opponent { config: opponent }),
+                Some(EvaluationController::configured(scripted)),
+                Some(EvaluationController::configured(opponent)),
             ]
+        );
+        assert_eq!(
+            serde_json::to_value(plans[0].controllers[0]).unwrap(),
+            serde_json::json!({
+                "kind": "opponent",
+                "config": serde_json::to_value(opponent).unwrap(),
+            }),
+            "plan fingerprints keep the controller's tagged form"
         );
 
         for (plan, opponent_seat) in plans.iter().zip([0, 1]) {
@@ -1662,9 +1664,7 @@ mod tests {
         assert_eq!(
             forward.controllers,
             [
-                Some(EvaluationController::Scripted {
-                    config: prime_config()
-                }),
+                Some(EvaluationController::configured(prime_config())),
                 Some(opponent_controller()),
             ]
         );
@@ -1672,9 +1672,7 @@ mod tests {
             swapped.controllers,
             [
                 Some(opponent_controller()),
-                Some(EvaluationController::Scripted {
-                    config: prime_config()
-                }),
+                Some(EvaluationController::configured(prime_config())),
             ]
         );
         assert_eq!(source, Scenario::skirmish(), "planning mutated the source");
