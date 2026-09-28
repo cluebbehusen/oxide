@@ -15,7 +15,8 @@ scenarios; shell-only edits and private workspace notes do not contribute to its
 dirty status. Reports retain both the original recording identity and this
 exporter's identity. Source archives report unknown provenance. The build also
 embeds a reference digest of the `oxide-bot`, simulation and `chassis` sources,
-which evaluation records as the frozen reference it compares against.
+the `kit` code that hosts `oxide-bot`, and `Cargo.lock`, which evaluation
+records as the frozen reference it compares against.
 
 ## Main pieces
 

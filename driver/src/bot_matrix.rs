@@ -7,8 +7,8 @@
 //! sides sharing one personality seed. Each pair has one baseline leg with
 //! `oxide-bot` in both seats; exchanging two identical seats would repeat that
 //! match exactly. Baseline rows are cached under the reference digest of the
-//! `bot/`, `sim/` and `chassis/` sources, so a change that leaves those
-//! untouched reuses them.
+//! `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts `oxide-bot`,
+//! and `Cargo.lock`, so a change that leaves those untouched reuses them.
 
 mod report;
 pub use report::{

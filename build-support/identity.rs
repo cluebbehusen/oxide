@@ -60,8 +60,17 @@ fn identity(root: &Path, paths: &[String]) -> (String, String) {
 /// plays: the controller and the simulation it runs on.
 const REFERENCE_PACKAGES: [&str; 3] = ["bot", "sim", "chassis"];
 
-/// Digest of the [`REFERENCE_PACKAGES`] manifests and sources as they are on
-/// disk. Evaluation reuses reference results for as long as it is unchanged.
+/// Other files that decide how the reference plays: the host code that seats
+/// it and collects its commands, and the locked dependency versions.
+const REFERENCE_FILES: [&str; 3] = [
+    "kit/src/controller.rs",
+    "kit/src/bot_execution.rs",
+    "Cargo.lock",
+];
+
+/// Digest of the [`REFERENCE_PACKAGES`] manifests and sources and the
+/// [`REFERENCE_FILES`] as they are on disk. Evaluation reuses reference results
+/// for as long as it is unchanged.
 fn reference_digest(root: &Path) -> String {
     fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(directory) else {
@@ -85,6 +94,7 @@ fn reference_digest(root: &Path) -> String {
         files.push(package.join("Cargo.toml"));
         collect(&package.join("src"), &mut files);
     }
+    files.extend(REFERENCE_FILES.map(|file| root.join(file)));
     let mut named: Vec<(String, PathBuf)> = files
         .into_iter()
         .map(|path| {
@@ -249,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn the_reference_digest_follows_only_compiled_reference_sources() {
+    fn the_reference_digest_follows_only_reference_inputs() {
         let repo = Repository::new();
         let initial = reference_digest(&repo.0);
         assert!(initial.starts_with("fnv1a64:"));
@@ -277,6 +287,13 @@ mod tests {
             fs::write(&manifest, "[package]").unwrap();
             assert_ne!(reference_digest(&repo.0), added, "{package} manifest");
             fs::remove_file(&manifest).unwrap();
+            assert_eq!(reference_digest(&repo.0), added);
+        }
+        for file in REFERENCE_FILES {
+            let path = repo.0.join(file);
+            fs::write(&path, "changed host").unwrap();
+            assert_ne!(reference_digest(&repo.0), added, "{file}");
+            fs::remove_file(&path).unwrap();
             assert_eq!(reference_digest(&repo.0), added);
         }
     }

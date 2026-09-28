@@ -90,9 +90,10 @@ It plays Skirmish, The Deep Cut and Severance at Standard and Prime, Balanced
 and Aggressive, three seed runs each. Each cell is a head-to-head pair, this bot
 in seat zero and then seat one with one personality seed on both sides, plus one
 `oxide-bot` mirror leg. Mirror rows are cached per user under the reference
-digest of the `bot/`, `sim/` and `chassis/` sources (`--baseline-cache` moves
-the cache), so they rerun only when those sources, a map, a seed or the tick
-limit change. `driver/evaluation/duels.json` is the full two-seat matrix.
+digest of the `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts
+`oxide-bot`, and `Cargo.lock` (`--baseline-cache` moves the cache), so they
+rerun only when those inputs, a map, a seed or the tick limit change.
+`driver/evaluation/duels.json` is the full two-seat matrix.
 `bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
 same report as JSON.
 
