@@ -80,6 +80,17 @@ average and p99 time per decision with total CPU, and the smoke-matrix
 comparison, including when they are unfavorable. Keep them out of the PR
 description.
 
+- **Lines:** `uv run tools/line_report.py <base>` prints the net production and
+  test line change per top-level directory from the merge base; `--help` defines
+  what counts. `--working-tree` includes uncommitted files.
+- **CPU:**
+  `cargo run --release --locked -p oxide-driver -- bot-cost <workload> --controller opponent`
+  for each of `duel`, `skyhook` and `mature-armies` reports average and p99 time
+  per decision and total CPU per seat and controller, with the observation build
+  beside them. Run it on the branch and on its base, on one machine with no
+  competing builds or benchmarks. `--controller scripted` gives `oxide-bot`'s
+  figures for reference; `--json` gives the same report as data.
+
 ## Review play
 
 Use `replay-summary` and the native shell through the oxide-live-qa skill. Give
