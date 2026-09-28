@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod checkpoint;
+mod composition;
 mod decision;
 mod events;
 mod frame;

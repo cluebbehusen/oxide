@@ -1,7 +1,7 @@
 //! Harvesters: how many the seat wants, training them, and sending idle ones
 //! to work.
 
-use crate::decision::{Foundry, Ledger};
+use crate::decision::{Ledger, Producer};
 use crate::frame::{HomeFrame, doubled, footprint_centre};
 use crate::map::MapModel;
 use chassis::grid::TilePos;
@@ -44,7 +44,7 @@ pub(crate) fn staffing(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    foundries: &[Foundry<'_>],
+    foundries: &[Producer<'_>],
 ) -> Staffing {
     Staffing {
         worked: worked_nodes(observation, map, frame, foundries),
@@ -56,7 +56,7 @@ pub(crate) fn staffing(
 /// behind other work, from protected scrap if it must.
 pub(crate) fn recover(
     observation: &ObservationData,
-    foundries: &[Foundry<'_>],
+    foundries: &[Producer<'_>],
     ledger: &mut Ledger,
 ) {
     if harvesters(observation) > 0 {
@@ -74,7 +74,7 @@ pub(crate) fn run(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    foundries: &[Foundry<'_>],
+    foundries: &[Producer<'_>],
     staffing: &Staffing,
     ledger: &mut Ledger,
 ) {
@@ -171,7 +171,7 @@ fn worked_nodes(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    foundries: &[Foundry<'_>],
+    foundries: &[Producer<'_>],
 ) -> Vec<TilePos> {
     let mut worked: Vec<TilePos> = Vec::new();
     for foundry in foundries {

@@ -7,6 +7,7 @@ use oxide_sim::scenario::{
 use oxide_sim::{BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind};
 use std::sync::Arc;
 
+mod composition;
 mod placement;
 mod saving;
 

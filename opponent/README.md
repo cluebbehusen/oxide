@@ -13,19 +13,40 @@ protected scrap if it must. Each built Foundry works the four nearest live known
 scrap nodes its ground can reach within twelve tiles, none shared with another
 Foundry, and idle Foundries train Harvesters until there are two per worked
 node. Paid sites nobody is building get the nearest free Harvester, and idle
-Harvesters go to the reachable worked node with the fewest Harvesters. Idle
-Foundries then train Sentinels. Difficulty caps the unit orders one decision
-issues; purchases do not count against that allowance. It does not yet choose
-units by need, attack, scout or expand.
+Harvesters go to the reachable worked node with the fewest Harvesters. Every
+idle producer then trains toward the army's needs. Difficulty caps the unit
+orders one decision issues; purchases do not count against that allowance. It
+does not yet attack, defend, scout or expand.
+
+## Army composition
+
+The seat remembers enemy units it has seen for 600 ticks, trusting them less as
+they age and forgetting one when its last spot is in sight and empty. Enemy
+buildings need no memory of its own: the observation keeps their ghosts.
+
+From that knowledge and its own army, alive and queued, it sets a deficit for
+each role: line fighters to match the enemy's ground army or two fifths of its
+own, siege for known enemy defenses and by preference, anti-air to answer three
+quarters of the enemy air it has seen (a seen enemy Airworks counts as air), and
+air strikes by preference once it has or is saving for an Airworks. Each idle
+producer trains for the most wanted role it can serve, or line units when
+nothing is wanted, choosing among its units by coarse suitability: reach against
+the enemy's usual reach, durability for the price, covering both enemy domains,
+splash against clustered enemies, affordability at the seat's income, and
+personality. Raiders, support units, scouts and transports are left to later
+behavior. A role it needs but cannot train at all adds to the investment score
+of the cheapest building that would let it.
 
 ## Investments and saving
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
-more Reclaimers, and Refinery upgrades. Saturated harvesting, time, income, home
-depletion and personality set the scores. The seat saves for one target at a
-time. It starts saving only for an investment that scores well, keeps it while
-it still scores, and switches only for one that scores clearly higher.
-Prerequisites come first: saving for Airworks buys a Fabricator.
+another Fabricator or Airworks when all of that kind are busy and income and
+unprotected scrap could keep one more working, more Reclaimers, and Refinery
+upgrades. Saturated harvesting, time, income, home depletion, army needs and
+personality set the scores. The seat saves for one target at a time. It starts
+saving only for an investment that scores well, keeps it while it still scores,
+and switches only for one that scores clearly higher. Prerequisites come first:
+saving for Airworks buys a Fabricator.
 
 While saving, a share of the seat's estimated income is protected from ordinary
 spending, up to the next purchase's price. Stance and greed set the share, and
@@ -72,14 +93,14 @@ headless, saved and recovered sessions build it from the same scenario data.
 
 ## Checkpoint and trace
 
-`Checkpoint` holds the seat and what carries between its decisions: footprints
-it recently failed to claim, its income sample, and its saving target with the
-protected amount and any purchase awaiting confirmation. The host saves the
-seat's `OwnEvents` beside it. Restoring it checks that the seat is a configured
-`oxide-opponent` bot in the bound scenario and world and that nothing it
-remembers is from a later tick, rebuilds the profile and decision interval from
-the scenario, and takes the map model built from it. A saved buffer over the cap
-does not load.
+`Checkpoint` holds the seat and what carries between its decisions: remembered
+enemy units, footprints it recently failed to claim, its income sample, and its
+saving target with the protected amount and any purchase awaiting confirmation.
+The host saves the seat's `OwnEvents` beside it. Restoring it checks that the
+seat is a configured `oxide-opponent` bot in the bound scenario and world and
+that nothing it remembers is from a later tick, rebuilds the profile and
+decision interval from the scenario, and takes the map model built from it. A
+saved buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,
