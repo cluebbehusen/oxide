@@ -7,20 +7,26 @@
 //! repeated id among them, which [`canonical_units`] folds away at dispatch
 //! before any handler sees the list.
 
-use super::domain_goal;
+use super::goals::{self, spread_scan_reversed};
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
 use crate::ids::{AttackTarget, BuildingId, PlayerId, UnitId};
-use crate::state::{Order, State, Unit};
+use crate::state::{Goal, Order, OrderKey, State, Unit};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
 
-/// Whether a commanded coordinate is sane: on the map or within snap
+/// Whether a Build anchor or Harvest node is sane: on the map or within snap
 /// distance of it. Rejecting here keeps hostile i32 extremes away from the
 /// neighborhood scans (whose offset arithmetic is unchecked by design).
 fn in_envelope(state: &State, pos: TilePos) -> bool {
     let r = GOAL_SNAP_RADIUS;
     pos.x >= -r && pos.y >= -r && pos.x < state.map.width() + r && pos.y < state.map.height() + r
+}
+
+/// Whether a tile goal lies on the map. A goal keeps the tile it names, and
+/// only a tile on the map can ever be explored and take its spread slot.
+fn on_map(state: &State, pos: TilePos) -> bool {
+    pos.x >= 0 && pos.y >= 0 && pos.x < state.map.width() && pos.y < state.map.height()
 }
 
 pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut Vec<Event>) {
@@ -147,6 +153,19 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 at,
                 queue,
             } => apply_unload(state, pc.player, *transport, *at, *queue),
+            Command::CancelOrder {
+                unit,
+                key,
+                from_end,
+                units,
+            } => apply_cancel_order(
+                state,
+                pc.player,
+                *unit,
+                *key,
+                *from_end,
+                &canonical_units(units),
+            ),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -279,12 +298,7 @@ fn end_station_keeping(unit: &mut crate::state::Unit) {
 /// completion.
 fn remove_active_order(unit: &mut crate::state::Unit) {
     end_station_keeping(unit);
-    unit.order = unit.queue.pop_front().unwrap_or(Order::Idle);
-    if matches!(unit.order, Order::Idle) {
-        unit.looping = false;
-    }
-    unit.path = None;
-    unit.progress = 0;
+    unit.drop_active_order();
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
@@ -304,13 +318,15 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     if !queue {
         unit.queue.clear();
         unit.looping = false;
-        // Reissuing the exact current order is a no-op past the queue
-        // wipe: progress and path survive. Resetting them let a
-        // re-commanded welder heal forever without ever crossing a
-        // billing tick, dropped a re-clicked harvester's half-extracted
-        // scrap, and threw away perfectly good paths on every army
-        // re-push.
-        if unit.order == order {
+        // Reissuing the current order continues it past the queue wipe:
+        // progress and path survive. Resetting them let a re-commanded
+        // welder heal forever without ever crossing a billing tick,
+        // dropped a re-clicked harvester's half-extracted scrap, and
+        // threw away perfectly good paths on every army re-push. A walk
+        // matches on its clicked tile and takes the new aim; a path to a
+        // superseded destination is replanned by the walk itself.
+        if unit.order.reissue_matches(&order) {
+            unit.order.reissue(order);
             return true;
         }
     }
@@ -334,122 +350,6 @@ fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = 
     unit.progress = 0;
 }
 
-/// The first tiles open to `domain`, ring-scanned outward from `center` in
-/// the commanded group's approach frame. Mirrored groups therefore receive
-/// mirrored slots instead of inheriting an absolute northwest-first bias.
-fn spread_goals(
-    state: &State,
-    center: TilePos,
-    count: usize,
-    domain: Domain,
-    reverse: bool,
-) -> Vec<TilePos> {
-    spread_goals_by(center, count, reverse, |t| state.passable_for(domain, t))
-}
-
-/// [`spread_goals`] over any notion of an open tile.
-fn spread_goals_by(
-    center: TilePos,
-    count: usize,
-    reverse: bool,
-    legal: impl Fn(TilePos) -> bool,
-) -> Vec<TilePos> {
-    let mut out = Vec::with_capacity(count);
-    'scan: for r in 0..=GOAL_SNAP_RADIUS + 3 {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
-                let t = center.offset(dx, dy);
-                if legal(t) {
-                    out.push(t);
-                    if out.len() == count {
-                        break 'scan;
-                    }
-                }
-            }
-        }
-    }
-    while out.len() < count {
-        out.push(out.last().copied().unwrap_or(center));
-    }
-    out
-}
-
-/// Whether the canonical spread scan needs a half-turn for this group's
-/// approach. The first selected unit not already at the goal defines the
-/// frame; an owned Foundry is the deterministic fallback for a stacked group.
-fn spread_scan_reversed(state: &State, center: TilePos, ids: &[UnitId]) -> bool {
-    let player = state
-        .unit(ids[0])
-        .expect("a spread has at least one accepted unit")
-        .player;
-    let foundry = state
-        .buildings
-        .iter()
-        .find(|building| {
-            building.player == player
-                && !building.provisional
-                && building.kind == crate::stats::BuildingKind::Foundry
-        })
-        .map(|building| (building.anchor, building.kind.base_stats().size));
-    super::group_spread_scan_reversed(
-        center,
-        ids.iter()
-            .map(|id| state.unit(*id).expect("accepted spread unit exists").tile()),
-        foundry,
-        (state.map.width(), state.map.height()),
-        player,
-    )
-}
-
-/// Resolve a blocked group-command center in the same approach frame used
-/// to spread its individual slots.
-fn group_domain_goal(
-    state: &State,
-    goal: TilePos,
-    domain: Domain,
-    reverse: bool,
-) -> Option<TilePos> {
-    let (center, radius) = match domain {
-        Domain::Ground => (goal, GOAL_SNAP_RADIUS),
-        Domain::Air => (
-            TilePos::new(
-                goal.x.clamp(0, state.map.width() - 1),
-                goal.y.clamp(0, state.map.height() - 1),
-            ),
-            GOAL_SNAP_RADIUS + 3,
-        ),
-    };
-    group_goal_by(center, radius, reverse, |t| state.passable_for(domain, t))
-}
-
-/// [`group_domain_goal`] over any notion of an open tile.
-fn group_goal_by(
-    center: TilePos,
-    radius: i32,
-    reverse: bool,
-    legal: impl Fn(TilePos) -> bool,
-) -> Option<TilePos> {
-    for r in 0..=radius {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let (dx, dy) = if reverse { (-dx, -dy) } else { (dx, dy) };
-                let candidate = center.offset(dx, dy);
-                if legal(candidate) {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Splits accepted unit ids by movement domain, preserving id order —
 /// each half gets goals its own domain can actually stand on.
 fn split_domains(state: &State, ids: Vec<UnitId>) -> [(Vec<UnitId>, Domain); 2] {
@@ -459,18 +359,18 @@ fn split_domains(state: &State, ids: Vec<UnitId>) -> [(Vec<UnitId>, Domain); 2] 
     [(ground, Domain::Ground), (air, Domain::Air)]
 }
 
-/// Sends a group toward one clicked tile: each movement domain snaps the goal
-/// to ground it can stand on and spreads its units around it, and `order_for`
-/// picks the order each unit takes to its own tile.
+/// Sends a group toward one clicked tile: each movement domain's half takes
+/// its spread slots around it (see [`goals`]), and `order_for` picks the
+/// order each unit takes there.
 fn apply_group_goal(
     state: &mut State,
     player: PlayerId,
     units: &[UnitId],
     goal: TilePos,
     queue: bool,
-    order_for: impl Fn(&Unit, TilePos) -> Order,
+    order_for: impl Fn(&Unit, Goal) -> Order,
 ) -> Result<(), RejectReason> {
-    if !in_envelope(state, goal) {
+    if !on_map(state, goal) {
         return Err(RejectReason::OutOfBounds);
     }
     let accepted = accepted_units(state, player, units);
@@ -478,27 +378,19 @@ fn apply_group_goal(
         return Err(RejectReason::NoValidUnits);
     }
     let mut landed = 0;
-    let mut routed = false;
     for (ids, domain) in split_domains(state, accepted) {
         if ids.is_empty() {
             continue;
         }
         let reverse = spread_scan_reversed(state, goal, &ids);
-        let Some(snapped) = group_domain_goal(state, goal, domain, reverse) else {
-            continue; // nowhere for this half to stand; the other may fly
-        };
-        routed = true;
-        let goals = spread_goals(state, snapped, ids.len(), domain, reverse);
-        for (id, goal) in ids.into_iter().zip(goals) {
+        let issue = goals::issue(state, player, goal, domain, reverse);
+        for (rank, id) in ids.into_iter().enumerate() {
             let unit = state.unit_mut(id).expect("filtered above");
-            let order = order_for(unit, goal);
+            let order = order_for(unit, issue.goal(rank));
             if assign(unit, order, queue) {
                 landed += 1;
             }
         }
-    }
-    if !routed {
-        return Err(RejectReason::UnreachableGoal);
     }
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
@@ -530,20 +422,29 @@ fn apply_attack(
         .ok_or(RejectReason::InvalidTarget)?;
     let target_tile = chassis::grid::TilePos::containing(view.position);
     let victim_domain = view.domain;
-    let walk_goals = [
-        domain_goal(state, target_tile, Domain::Ground),
-        domain_goal(state, target_tile, Domain::Air),
-    ];
+    // A demolition machine carries no gun, but its charge covers ground the
+    // same way a weapon would.
+    let covers = |stats: &crate::stats::UnitStats| {
+        victim_domain.map_or(!stats.weapons.is_empty() || stats.demolition, |domain| {
+            stats.can_target(domain) || (stats.demolition && domain == Domain::Ground)
+        })
+    };
+    // Machines that cannot hit the target walk to its tile instead, each
+    // movement domain sharing the one tile its first slot names.
+    let walkers = accepted_units(state, player, units)
+        .into_iter()
+        .filter(|id| !covers(state.unit(*id).expect("accepted").kind.stats()))
+        .collect();
+    let walk_goals = split_domains(state, walkers).map(|(ids, domain)| {
+        (!ids.is_empty()).then(|| {
+            let reverse = spread_scan_reversed(state, target_tile, &ids);
+            goals::issue(state, player, target_tile, domain, reverse).goal(0)
+        })
+    });
     let mut landed = 0;
     let applied = for_owned_units(state, player, units, |u| {
         let stats = u.kind.stats();
-        // A demolition machine carries no gun, but its charge covers
-        // ground the same way a weapon would.
-        let covers = victim_domain
-            .map_or(!stats.weapons.is_empty() || stats.demolition, |domain| {
-                stats.can_target(domain) || (stats.demolition && domain == Domain::Ground)
-            });
-        if covers {
+        if covers(stats) {
             if assign(
                 u,
                 Order::Attack {
@@ -644,9 +545,9 @@ fn apply_harvest(
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
-/// Walk a looping circuit: every waypoint must snap to open ground, and
-/// the whole route is one program — combat units attack-move each leg,
-/// pacifists walk them obliviously.
+/// Walk a looping circuit, the whole route one program: each leg spreads
+/// the group over its waypoint like a group move — combat units attack-move
+/// each leg, pacifists walk them obliviously.
 fn apply_patrol(
     state: &mut State,
     player: PlayerId,
@@ -656,30 +557,29 @@ fn apply_patrol(
     if waypoints.is_empty() || waypoints.len() > ORDER_QUEUE_CAP {
         return Err(RejectReason::UnreachableGoal);
     }
-    if waypoints.iter().any(|w| !in_envelope(state, *w)) {
+    if waypoints.iter().any(|w| !on_map(state, *w)) {
         return Err(RejectReason::OutOfBounds);
     }
     let accepted = accepted_units(state, player, units);
     if accepted.is_empty() {
         return Err(RejectReason::NoValidUnits);
     }
-    let mut routed = false;
     for (ids, domain) in split_domains(state, accepted) {
         if ids.is_empty() {
             continue;
         }
-        let snapped: Vec<TilePos> = waypoints
+        let legs: Vec<_> = waypoints
             .iter()
-            .filter_map(|w| domain_goal(state, *w, domain))
+            .map(|&waypoint| {
+                let reverse = spread_scan_reversed(state, waypoint, &ids);
+                goals::issue(state, player, waypoint, domain, reverse)
+            })
             .collect();
-        if snapped.len() != waypoints.len() {
-            continue; // a leg this domain can't stand on grounds the route
-        }
-        routed = true;
-        for id in ids {
+        for (rank, id) in ids.into_iter().enumerate() {
             let unit = state.unit_mut(id).expect("filtered above");
             let can_fight = unit.kind.stats().can_fight();
-            let legs = snapped.iter().map(|&goal| {
+            let legs = legs.iter().map(|leg| {
+                let goal = leg.goal(rank);
                 if can_fight {
                     Order::AttackMove { goal }
                 } else {
@@ -688,9 +588,6 @@ fn apply_patrol(
             });
             assign_circuit(unit, legs);
         }
-    }
-    if !routed {
-        return Err(RejectReason::UnreachableGoal);
     }
     Ok(())
 }
@@ -1260,26 +1157,18 @@ fn apply_unload(
     at: TilePos,
     queue: bool,
 ) -> Result<(), RejectReason> {
-    if !in_envelope(state, at) {
+    if !on_map(state, at) {
         return Err(RejectReason::OutOfBounds);
     }
     let t = state.unit(transport).ok_or(RejectReason::InvalidTarget)?;
     if t.player != player || t.hp == 0 || t.kind.stats().transport_capacity == 0 {
         return Err(RejectReason::InvalidTarget);
     }
-    // Lower the destination through the same goal snap every air route
-    // takes. Storing a raw peak (or off-map) goal would leave the order
-    // pointing at ground the flyer can never occupy: routing snaps the
-    // flight, arrival never matches the order, and the transport orbits
-    // its endpoint without unloading.
+    // The drop point snaps like a lone unit's move, so it names sky the
+    // transport can occupy once the tile is explored.
     let domain = t.kind.stats().domain;
-    let at = if state.passable_for(domain, at) {
-        at
-    } else if domain == crate::stats::Domain::Air {
-        super::snap_air_goal(state, at).ok_or(RejectReason::OutOfBounds)?
-    } else {
-        return Err(RejectReason::OutOfBounds);
-    };
+    let reverse = spread_scan_reversed(state, at, &[transport]);
+    let at = goals::issue(state, player, at, domain, reverse).goal(0);
     let unit = state.unit_mut(transport).expect("just seen");
     if assign(unit, Order::Unload { at }, queue) {
         Ok(())
@@ -1361,6 +1250,62 @@ fn apply_cancel_train(
     Ok(())
 }
 
+/// Where `unit`'s `from_end`-th match of `key`, counted back from the end
+/// of its program, sits: 0 is the active order and `i` is `queue[i - 1]`.
+fn program_match(
+    state: &State,
+    player: PlayerId,
+    unit: &Unit,
+    key: OrderKey,
+    from_end: u8,
+) -> Option<usize> {
+    (0..=unit.queue.len())
+        .rev()
+        .filter(|&slot| {
+            let order = if slot == 0 {
+                &unit.order
+            } else {
+                &unit.queue[slot - 1]
+            };
+            order.key(state, player) == Some(key)
+        })
+        .nth(usize::from(from_end))
+}
+
+/// Removes one order from each unit's program. The subject is checked
+/// before anything changes; every other unit edits only if it holds a
+/// match.
+fn apply_cancel_order(
+    state: &mut State,
+    player: PlayerId,
+    subject: UnitId,
+    key: OrderKey,
+    from_end: u8,
+    units: &[UnitId],
+) -> Result<(), RejectReason> {
+    let unit = state
+        .unit(subject)
+        .filter(|unit| unit.player == player)
+        .ok_or(RejectReason::NoValidUnits)?;
+    let slot =
+        program_match(state, player, unit, key, from_end).ok_or(RejectReason::InvalidTarget)?;
+    let mut edits = vec![(subject, slot)];
+    edits.extend(units.iter().filter(|&&id| id != subject).filter_map(|&id| {
+        let unit = state.unit(id).filter(|unit| unit.player == player)?;
+        Some((id, program_match(state, player, unit, key, from_end)?))
+    }));
+    for (id, slot) in edits {
+        let unit = state.unit_mut(id).expect("matched above");
+        if slot == 0 {
+            remove_active_order(unit);
+        } else {
+            end_station_keeping(unit);
+            unit.queue.remove(slot - 1);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn apply_cancel_found(
     state: &mut State,
     player: PlayerId,
@@ -1368,19 +1313,19 @@ pub(super) fn apply_cancel_found(
     anchor: TilePos,
     events: &mut Vec<Event>,
 ) -> Result<(), RejectReason> {
-    if let Some(id) = state
+    if let Some((id, started)) = state
         .buildings
         .iter()
         .find(|b| {
-            b.player == player
-                && b.kind == kind
-                && b.anchor == anchor
-                && !b.built
-                && b.tier == 0
-                && b.progress == 0
+            b.player == player && b.kind == kind && b.anchor == anchor && !b.built && b.tier == 0
         })
-        .map(|b| b.id)
+        .map(|b| (b.id, b.progress > 0))
     {
+        // A site placed by a command still in flight can be under way by
+        // the time this lands; it then cancels like any started site.
+        if started {
+            return apply_cancel(state, player, id, events);
+        }
         super::construction::refund(state, id, events);
         return Ok(());
     }
@@ -1475,7 +1420,7 @@ fn apply_set_rally(
     rally: Option<TilePos>,
 ) -> Result<(), RejectReason> {
     if let Some(rally) = rally
-        && !in_envelope(state, rally)
+        && !on_map(state, rally)
     {
         return Err(RejectReason::OutOfBounds);
     }
@@ -1488,8 +1433,9 @@ fn apply_set_rally(
     if !b.built || b.stats().produces.is_empty() {
         return Err(RejectReason::InvalidTarget);
     }
-    // Any tile is a legal rally — spawns snap to walkable ground later, and
-    // a scrap-node rally is exactly how auto-harvest is asked for.
+    // Any tile on the map is a legal rally — each newborn resolves it like
+    // a move of its own, and a scrap-node rally is exactly how auto-harvest
+    // is asked for.
     b.rally = rally;
     Ok(())
 }

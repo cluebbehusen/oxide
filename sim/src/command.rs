@@ -19,8 +19,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
-    /// Send units walking to a tile. Impassable goals snap to the nearest
-    /// open tile within [`crate::stats::GOAL_SNAP_RADIUS`].
+    /// Send units walking to a tile on the map. Once the issuer's team has
+    /// explored the tile, an impassable one snaps to the nearest open tile
+    /// within [`crate::stats::GOAL_SNAP_RADIUS`] and the group spreads
+    /// around it; until then every unit heads for the tile itself.
     Move {
         /// The units to move (non-owned and dead ids are skipped).
         units: Vec<UnitId>,
@@ -70,7 +72,8 @@ pub enum Command {
     Patrol {
         /// The units to commit.
         units: Vec<UnitId>,
-        /// The circuit, visited in order and then from the top.
+        /// The circuit, visited in order and then from the top. Each
+        /// waypoint spreads the group like a move goal.
         waypoints: Vec<TilePos>,
     },
     /// Clear orders; units stop in place.
@@ -206,8 +209,9 @@ pub enum Command {
         /// Owned completed armed buildings.
         buildings: Vec<BuildingId>,
     },
-    /// Cancel an unstarted construction site by kind and anchor, clearing
-    /// every crew commitment and refunding the full price once.
+    /// Cancel an own construction site by kind and anchor, clearing every
+    /// crew commitment. An unstarted site refunds its full price once; a
+    /// started one refunds what [`Command::Cancel`] would.
     CancelFound {
         /// The promised structure.
         kind: crate::stats::BuildingKind,
@@ -257,6 +261,27 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         repair: bool,
     },
+    /// Remove one order from the programs of `unit` and every unit in
+    /// `units` that has a matching one. Each drops its `from_end`-th match
+    /// of `key` counted back from the end of its program, so legs finished
+    /// before the command runs never shift which order goes.
+    ///
+    /// A patrol's legs rotate, so members whose circuits repeat a waypoint
+    /// can drop different visits to it when they are at different points of
+    /// the loop. The same holds for a repeated order queued to only part of
+    /// the units.
+    CancelOrder {
+        /// The unit whose program the order was picked from. It must be the
+        /// issuer's and still hold the match, or the command is refused.
+        unit: UnitId,
+        /// Which order.
+        key: crate::state::OrderKey,
+        /// How many later orders in `unit`'s program share `key`.
+        from_end: u8,
+        /// Other units to edit alike; those without a match are skipped.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        units: Vec<UnitId>,
+    },
 }
 
 /// A command attributed to its issuing player. Ownership checks are made
@@ -277,17 +302,23 @@ pub enum RejectReason {
     NoValidUnits,
     /// The referenced building is gone or not the issuer's.
     NotYourBuilding,
-    /// The target entity is gone, or is not an enemy.
+    /// The target entity is gone, or is not an enemy, or the order a
+    /// cancellation names is no longer in its unit's program.
     InvalidTarget,
-    /// The tile can't be walked to (no open tile near it).
+    /// A Build site offers no reachable doorstep, a cargo delivery has no
+    /// reachable drop-off, or a patrol route is empty or longer than an
+    /// order queue holds. Tile goals are never refused as unreachable: a
+    /// walk that cannot reach its goal ends as close as it can get.
     UnreachableGoal,
     /// The building can't train that unit kind (or isn't finished yet).
     CannotProduce,
     /// The footprint isn't fully explored, open, and unoccupied — or the
     /// kind isn't buildable at all.
     BadSite,
-    /// A coordinate lies outside the map's command envelope. Hostile or
-    /// corrupt input — honest clients clamp to the map.
+    /// A tile goal (a walk, patrol waypoint, drop point, or rally) lies off
+    /// the map, or a Build anchor or Harvest node lies outside the map's
+    /// command envelope. Hostile or corrupt input — honest clients clamp to
+    /// the map.
     OutOfBounds,
     /// The issuer has been eliminated (no buildings left); spectators
     /// don't give orders.

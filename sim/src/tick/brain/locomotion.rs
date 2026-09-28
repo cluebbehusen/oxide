@@ -2,6 +2,7 @@
 //! plain walking, contact-propagated arrival, and doorstep approach.
 
 use super::super::landing::{self, Pick, RunIn};
+use super::super::reach::Reach;
 use super::super::{
     flight, rect_adjacent_tiles, rect_approach_key_from, rect_approach_origin, route_for,
     route_for_position, tile_adjacent_to_rect,
@@ -9,7 +10,7 @@ use super::super::{
 use super::combat::{acquire_target, acquire_target_from};
 use crate::event::{Event, StallReason};
 use crate::ids::UnitId;
-use crate::state::{Order, PathFollow, State};
+use crate::state::{Goal, Order, PathFollow, State};
 use chassis::grid::TilePos;
 
 /// Idle combat units pick fights on their own — on a tether. The
@@ -83,9 +84,10 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
                 crate::stats::AUTO_LAND_SCAN_RADIUS,
                 None,
                 Pick::StraightIn,
+                None,
             ) {
                 let unit = state.unit_mut(id).expect("caller checked");
-                unit.order = Order::Land { goal };
+                unit.order = Order::Land { goal, from: None };
                 unit.path = None;
             }
         }
@@ -96,12 +98,14 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
 /// Touchdown belongs here, not to the steering ring: the final leg is
 /// never accepted early, so a pass either meets the center within
 /// [`crate::stats::LANDING_TOUCHDOWN`] or flies through and comes around
-/// for another run.
+/// for another run. A go-around keeps `from`, the clicked tile of the walk
+/// the landing took over.
 pub(super) fn land(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
     id: UnitId,
     goal: TilePos,
+    from: Option<TilePos>,
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit(id).expect("caller checked");
@@ -143,16 +147,17 @@ pub(super) fn land(
                 crate::stats::LANDING_REPLAN_RADIUS,
                 Some(goal),
                 Pick::StraightIn,
+                None,
             );
             let unit = state.unit_mut(id).expect("caller checked");
             match next {
                 Some(goal) => {
-                    unit.order = Order::Land { goal };
+                    unit.order = Order::Land { goal, from };
                     unit.path = None;
                 }
                 None => {
                     let (player, pos) = (unit.player, unit.pos);
-                    unit.clear_program();
+                    unit.drop_active_order();
                     events.push(Event::OrderStalled {
                         unit: id,
                         player,
@@ -242,7 +247,7 @@ pub(super) fn land(
         }
         None => {
             let (player, pos) = (unit.player, unit.pos);
-            unit.clear_program();
+            unit.drop_active_order();
             events.push(Event::OrderStalled {
                 unit: id,
                 player,
@@ -258,8 +263,9 @@ pub(super) fn land(
 pub(super) fn attack_move(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
+    reach: &mut Reach,
     id: UnitId,
-    goal: TilePos,
+    goal: Goal,
     events: &mut Vec<Event>,
 ) {
     if let Some(target) = acquire_target(state, index, id) {
@@ -272,107 +278,263 @@ pub(super) fn attack_move(
         unit.path = None;
         return;
     }
-    if land_at_destination(state, index, id, goal) {
+    if land_at_destination(state, index, reach, id, events) {
         return;
     }
-    walk(state, index, id, goal, events);
+    walk(state, index, reach, id, events);
 }
 
 /// A flier's ground destination is a landing. Once the last step of its
-/// program is within run-in reach of the goal and nothing is in
-/// acquisition range, the flight hands over to a landing on that tile, or
-/// on the nearest landable one. Returns false when the order stands: a
-/// queued follow-up, a patrol loop, an enemy in reach, or no ground to
-/// park on all keep the plain arrival contract.
+/// program is within run-in reach of where it is actually headed and
+/// nothing is in acquisition range, the flight hands over to a landing on
+/// that tile, or on the nearest landable one. Returns false when the order
+/// stands: a queued follow-up, a patrol loop, an enemy in reach, or no
+/// ground to park on all keep the plain arrival contract.
+///
+/// Without a live route, the destination is resolved first, so an
+/// unreachable goal never picks its pad around the target itself. A landing
+/// that replaces a walk short of its target reports the shortfall the walk
+/// would have.
+///
+/// The pad is chosen only among tiles the owner's team has explored, and
+/// only once the goal has taken its slot: until its clicked tile is
+/// explored the flier keeps flying toward it. The landing keeps the clicked
+/// tile as `from`.
 pub(super) fn land_at_destination(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
+    reach: &mut Reach,
     id: UnitId,
-    goal: TilePos,
+    events: &mut Vec<Event>,
 ) -> bool {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
     if stats.turn_rate == 0 || unit.looping || !unit.queue.is_empty() {
         return false;
     }
-    let reach = crate::stats::LANDING_HANDOFF_REACH;
-    if unit.pos.dist_sq(goal.center()) > reach * reach {
+    let Some(mut goal) = unit.order.walk_goal() else {
+        return false;
+    };
+    if goal.is_pending() {
         return false;
     }
-    if acquire_target_from(state, index, id, goal.center()).is_some() {
+    let routed = unit
+        .path
+        .as_ref()
+        .is_some_and(|p| p.goal == goal.destination());
+    if !routed && let Some(endpoint) = reach.endpoint(state, id, goal.target(), goal.endpoint) {
+        goal.settle_for(endpoint);
+        store_goal(state, id, goal);
+    }
+    let destination = goal.destination();
+    let unit = state.unit(id).expect("caller checked");
+    let handoff = crate::stats::LANDING_HANDOFF_REACH;
+    if unit.pos.dist_sq(destination.center()) > handoff * handoff {
         return false;
     }
-    let (pos, heading) = (unit.pos, unit.heading);
+    if acquire_target_from(state, index, id, destination.center()).is_some() {
+        return false;
+    }
+    let (pos, heading, player) = (unit.pos, unit.heading, unit.player);
     let pad = landing::nearest_landable(
         state,
         stats,
         id,
-        goal,
+        destination,
         pos,
         heading,
         crate::stats::GOAL_SNAP_RADIUS,
         None,
         Pick::Nearest,
+        Some(player),
     );
     let Some(pad) = pad else {
         return false;
     };
     let unit = state.unit_mut(id).expect("caller checked");
-    unit.order = Order::Land { goal: pad };
+    unit.order = Order::Land {
+        goal: pad,
+        from: Some(goal.tile()),
+    };
     unit.path = None;
+    if goal.short() {
+        let (player, pos) = (unit.player, unit.pos);
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
+    }
     true
 }
 
-/// Walks toward an exact goal tile; going idle on arrival or when no route
-/// exists. A unit close to the goal that bumps into an already-settled
-/// arrival also counts as arrived — the whole group parks instead of
-/// churning around the click point forever.
+/// Walks the active order toward its goal and completes it on arrival.
+/// A unit close to the goal that bumps into an already-settled arrival also
+/// counts as arrived — the whole group parks instead of churning around the
+/// click point forever. A goal out of reach completes where the unit got as
+/// close as it could.
 pub(super) fn walk(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
+    reach: &mut Reach,
     id: UnitId,
-    goal: TilePos,
     events: &mut Vec<Event>,
 ) {
+    if let Steer::Done { short } = steer(state, index, reach, id, Approach::Settle) {
+        finish(state, id, short, events);
+    }
+}
+
+/// Ends a walk: the program advances, and an order that ended short of its
+/// target reports it once. Patrol laps stay silent, since a looping leg
+/// would otherwise report on every pass.
+fn finish(state: &mut State, id: UnitId, short: bool, events: &mut Vec<Event>) {
+    let unit = state.unit_mut(id).expect("caller checked");
+    let (looping, player, pos) = (unit.looping, unit.player, unit.pos);
+    unit.advance_queue();
+    if short && !looping {
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
+    }
+}
+
+/// How a walking order decides it has arrived.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Approach {
+    /// The exact tile, a turn-limited flier's acceptance ring, or a settled
+    /// crowd; routes start from the body's exact position.
+    Settle,
+    /// The exact tile only; routes start from the tile center. A transport
+    /// disgorges where it stands, so it must stand on the tile.
+    Exact,
+}
+
+/// Where a walking order stands after one tick of steering.
+pub(super) enum Steer {
+    /// A route is planned or kept.
+    Walking,
+    /// The walk is over.
+    Done {
+        /// The walk ended away from its target: the target is out of
+        /// reach, or no route to the nearest reachable tile exists.
+        short: bool,
+    },
+}
+
+/// Steers the active walking order (Move, AttackMove, Advance, or Unload)
+/// toward its destination.
+///
+/// Routes go to the target while it is reachable, and otherwise to the
+/// nearest reachable tile, which the order stores as its endpoint only
+/// while it differs from the target. A reachable walk therefore leaves its
+/// order untouched. An arrival short of the target resolves once more in
+/// case ground has opened since.
+pub(super) fn steer(
+    state: &mut State,
+    index: &super::super::spatial::UnitIndex,
+    reach: &mut Reach,
+    id: UnitId,
+    approach: Approach,
+) -> Steer {
     let unit = state.unit(id).expect("caller checked");
-    let tile = unit.tile();
-    // A bounded-turn flier cannot promise an exact tile center — the
-    // ring the steering integrator accepts is the arrival contract.
-    let arced_in = unit.kind.stats().turn_rate > 0 && {
-        let accept = unit.kind.stats().turn_acceptance();
-        unit.pos.dist_sq(goal.center()) <= accept * accept
+    let Some(mut goal) = unit.order.walk_goal() else {
+        return Steer::Done { short: false };
     };
-    if tile == goal || arced_in || touching_settled_arrival(state, index, id, goal) {
-        state.unit_mut(id).expect("caller checked").advance_queue();
-        return;
+    let target = goal.target();
+    if arrived(state, index, reach, id, goal, approach) {
+        if !goal.short() {
+            return Steer::Done { short: false };
+        }
+        let destination = goal.destination();
+        match reach.endpoint(state, id, target, goal.endpoint) {
+            Some(endpoint) if endpoint != destination => {
+                goal.settle_for(endpoint);
+                store_goal(state, id, goal);
+            }
+            _ => return Steer::Done { short: true },
+        }
     }
     let unit = state.unit(id).expect("caller checked");
-    let has_fresh_path = unit.path.as_ref().is_some_and(|p| p.goal == goal);
-    if has_fresh_path {
-        return;
+    if unit
+        .path
+        .as_ref()
+        .is_some_and(|p| p.goal == goal.destination())
+    {
+        return Steer::Walking;
+    }
+    let Some(endpoint) = reach.endpoint(state, id, target, goal.endpoint) else {
+        return Steer::Done { short: true };
+    };
+    goal.settle_for(endpoint);
+    store_goal(state, id, goal);
+    let unit = state.unit(id).expect("caller checked");
+    if unit.tile() == endpoint {
+        return Steer::Done {
+            short: endpoint != target,
+        };
     }
     let (pos, kind) = (unit.pos, unit.kind);
-    let path = route_for_position(state, kind, pos, goal);
-    let unit = state.unit_mut(id).expect("caller checked");
-    match path {
+    let from = match approach {
+        Approach::Settle => pos,
+        Approach::Exact => unit.tile().center(),
+    };
+    match route_for_position(state, kind, from, endpoint) {
         Some(waypoints) => {
-            unit.path = Some(PathFollow {
-                goal,
+            state.unit_mut(id).expect("caller checked").path = Some(PathFollow {
+                goal: endpoint,
                 waypoints,
                 next: 0,
             });
+            Steer::Walking
         }
-        None => {
-            let (player, pos) = (unit.player, unit.pos);
-            unit.clear_program();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos,
-                reason: StallReason::NoRoute,
-            });
-        }
+        None => Steer::Done { short: true },
     }
+}
+
+/// Writes a resolved goal back onto the active walking order.
+fn store_goal(state: &mut State, id: UnitId, goal: Goal) {
+    if let Some(slot) = state
+        .unit_mut(id)
+        .expect("caller checked")
+        .order
+        .walk_goal_mut()
+    {
+        *slot = goal;
+    }
+}
+
+/// Whether the walker has reached its destination under `approach`.
+fn arrived(
+    state: &State,
+    index: &super::super::spatial::UnitIndex,
+    reach: &mut Reach,
+    id: UnitId,
+    goal: Goal,
+    approach: Approach,
+) -> bool {
+    let unit = state.unit(id).expect("caller checked");
+    let destination = goal.destination();
+    if unit.tile() == destination {
+        return true;
+    }
+    if approach == Approach::Exact {
+        return false;
+    }
+    // A bounded-turn flier cannot promise an exact tile center — the
+    // ring the steering integrator accepts is the arrival contract.
+    let stats = unit.kind.stats();
+    let arced_in = stats.turn_rate > 0 && {
+        let accept = stats.turn_acceptance();
+        unit.pos.dist_sq(destination.center()) <= accept * accept
+    };
+    arced_in
+        || touching_settled_arrival(state, index, id, destination)
+        || (goal.short() && reach.crowd_touches(state, index, id, destination))
 }
 
 /// Whether this near-goal unit is in contact with a settled (idle,
@@ -524,7 +686,7 @@ mod tests {
                 for (slot, unit) in state.units.iter_mut().enumerate().skip(1) {
                     unit.landed = phase % 2 == 0 && unit.kind == UnitKind::Condor;
                     unit.order = if (slot + phase) % 3 == 0 {
-                        Order::Move { goal }
+                        Order::Move { goal: goal.into() }
                     } else {
                         Order::Idle
                     };
@@ -570,7 +732,7 @@ mod tests {
         let goal = TilePos::new(12, 8);
         for unit in &mut state.units {
             unit.kind = crate::UnitKind::Sentinel;
-            unit.order = Order::Move { goal };
+            unit.order = Order::Move { goal: goal.into() };
             unit.path = Some(PathFollow {
                 goal,
                 waypoints: vec![goal],
@@ -587,18 +749,257 @@ mod tests {
 
         let mut index = super::super::super::spatial::UnitIndex::new();
         index.rebuild(&state.units);
-        walk(&mut state, &index, leader, goal, &mut events);
+        let mut reach = super::super::super::reach::Reach::new(&state);
+        walk(&mut state, &index, &mut reach, leader, &mut events);
         assert!(state.units[0].path.is_none());
         assert!(state.units[0].drive_speed > Fx::ZERO);
         assert_ne!(state.units[1].tile(), goal);
         assert!(!touching_settled_arrival(&state, &index, follower, goal));
-        walk(&mut state, &index, follower, goal, &mut events);
-        assert_eq!(state.units[1].order, Order::Move { goal });
+        walk(&mut state, &index, &mut reach, follower, &mut events);
+        assert_eq!(state.units[1].order, Order::Move { goal: goal.into() });
 
         state.units[0].drive_speed = Fx::ZERO;
         assert!(touching_settled_arrival(&state, &index, follower, goal));
-        walk(&mut state, &index, follower, goal, &mut events);
+        walk(&mut state, &index, &mut reach, follower, &mut events);
         assert_eq!(state.units[1].order, Order::Idle);
+    }
+
+    /// A sandbox over `map` holding one seat and the given units.
+    fn sandbox(map: &[&str], units: &[(crate::UnitKind, i32, i32)]) -> crate::State {
+        crate::Scenario {
+            mode: crate::scenario::ScenarioMode::Sandbox,
+            name: "locomotion".into(),
+            seed: 5,
+            map: map.iter().map(|row| (*row).to_owned()).collect(),
+            players: vec![crate::scenario::PlayerSpec {
+                name: "p0".into(),
+                faction: crate::Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            }],
+            units: units
+                .iter()
+                .map(|&(kind, x, y)| crate::scenario::UnitSpec {
+                    player: 0,
+                    kind,
+                    x,
+                    y,
+                })
+                .collect(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("locomotion fixture builds")
+    }
+
+    /// The shape walking orders had when their goal was a bare tile.
+    #[derive(serde::Serialize)]
+    #[serde(tag = "order", rename_all = "snake_case")]
+    enum LegacyOrder {
+        Move { goal: chassis::grid::TilePos },
+        AttackMove { goal: chassis::grid::TilePos },
+        Advance { goal: chassis::grid::TilePos },
+        Unload { at: chassis::grid::TilePos },
+    }
+
+    #[test]
+    fn a_reachable_routed_walk_serializes_exactly_like_the_legacy_tile_order() {
+        use crate::{Command, Order, PlayerCommand, PlayerId, UnitKind};
+        use chassis::grid::TilePos;
+        let map = [".............."; 8];
+        let goal = TilePos::new(6, 4);
+        type Issue = fn(Vec<crate::UnitId>) -> Command;
+        let commands: [(Issue, LegacyOrder); 3] = [
+            (
+                |units| Command::Move {
+                    units,
+                    goal: TilePos::new(6, 4),
+                    queue: false,
+                },
+                LegacyOrder::Move { goal },
+            ),
+            (
+                |units| Command::AttackMove {
+                    units,
+                    goal: TilePos::new(6, 4),
+                    queue: false,
+                },
+                LegacyOrder::AttackMove { goal },
+            ),
+            (
+                |units| Command::Advance {
+                    units,
+                    goal: TilePos::new(6, 4),
+                    queue: false,
+                },
+                LegacyOrder::Advance { goal },
+            ),
+        ];
+        for (command, legacy) in commands {
+            let mut state = sandbox(&map, &[(UnitKind::Sentinel, 1, 1)]);
+            assert!(
+                state.vision(PlayerId(0)).explored(goal),
+                "premise: an explored click resolves at issue"
+            );
+            let walker = state.units()[0].id;
+            state.tick(&[PlayerCommand {
+                player: PlayerId(0),
+                command: command(vec![walker]),
+            }]);
+            let unit = state.unit(walker).unwrap();
+            assert!(unit.path.is_some(), "premise: the walk routed");
+            assert_eq!(unit.order.walk_goal().unwrap().endpoint, None);
+            assert_eq!(
+                chassis::hash::state_hash(&unit.order),
+                chassis::hash::state_hash(&legacy)
+            );
+            assert_eq!(
+                serde_json::to_value(unit.order).unwrap(),
+                serde_json::to_value(&legacy).unwrap()
+            );
+        }
+
+        let mut state = sandbox(&map, &[(UnitKind::Skyhook, 1, 1)]);
+        assert!(state.vision(PlayerId(0)).explored(goal));
+        let sling = state.units()[0].id;
+        state.tick(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Unload {
+                transport: sling,
+                at: goal,
+                queue: false,
+            },
+        }]);
+        let unit = state.unit(sling).unwrap();
+        assert!(unit.path.is_some(), "premise: the flight routed");
+        assert!(matches!(unit.order, Order::Unload { at } if at.endpoint.is_none()));
+        assert_eq!(
+            chassis::hash::state_hash(&unit.order),
+            chassis::hash::state_hash(&LegacyOrder::Unload { at: goal })
+        );
+    }
+
+    #[test]
+    fn a_hovering_flier_sent_onto_a_raw_peak_stops_beside_it() {
+        use crate::{Event, Order, StallReason, UnitKind};
+        use chassis::grid::TilePos;
+        let map = [
+            "............",
+            "............",
+            "....^^^.....",
+            "....^^^.....",
+            "....^^^.....",
+            "............",
+            "............",
+        ];
+        let peak = TilePos::new(5, 3);
+        for kind in [UnitKind::Wisp, UnitKind::Skyhook] {
+            let mut state = sandbox(&map, &[(kind, 1, 1)]);
+            let flier = state.units()[0].id;
+            // Commands snap peaks away; a forged or legacy order may not.
+            state.unit_mut(flier).unwrap().order = Order::Move { goal: peak.into() };
+            let mut stalls = 0;
+            for _ in 0..100 {
+                let report = state.tick(&[]);
+                stalls += report
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            Event::OrderStalled {
+                                reason: StallReason::NoRoute,
+                                ..
+                            }
+                        )
+                    })
+                    .count();
+                if state.unit(flier).unwrap().order == Order::Idle {
+                    break;
+                }
+            }
+            let unit = state.unit(flier).unwrap();
+            assert_eq!(unit.order, Order::Idle, "{kind:?} never settled");
+            assert_eq!(stalls, 1, "{kind:?} reports the shortfall once");
+            assert_eq!(unit.tile(), TilePos::new(5, 1), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_short_walk_ends_on_meeting_the_crowd_parked_at_its_endpoint() {
+        use crate::{Event, Goal, Order, StallReason, UnitKind};
+        use chassis::fx::{Fx, Vec2Fx};
+        use chassis::grid::TilePos;
+        // Rock fills columns 10-13, so (9, 1) is the reachable tile nearest
+        // the target (12, 1).
+        let map = ["..........####"; 3];
+        let endpoint = TilePos::new(9, 1);
+        let target = TilePos::new(12, 1);
+        let home = TilePos::new(0, 0);
+        // Four parked bodies run west from the endpoint in touching steps.
+        // The walker touches only the last, more than ARRIVAL_NEAR out.
+        let run = |goal: Goal, crowd: bool| {
+            let bodies = if crowd { 4 } else { 0 };
+            let units = vec![(UnitKind::Sentinel, 0, 1); bodies + 1];
+            let mut state = sandbox(&map, &units);
+            let step = UnitKind::Sentinel.stats().radius * 2;
+            for (slot, unit) in state.units.iter_mut().enumerate() {
+                let steps = if slot == bodies { 4 } else { slot as i32 };
+                unit.pos = endpoint.center() - Vec2Fx::new(step * Fx::from_num(steps), Fx::ZERO);
+            }
+            let walker = state.units[bodies].id;
+            let walker_pos = state.units[bodies].pos;
+            assert!(
+                walker_pos.dist(endpoint.center()) > crate::stats::ARRIVAL_NEAR,
+                "premise: the ordinary arrival wave cannot reach the walker"
+            );
+            let unit = state.unit_mut(walker).unwrap();
+            unit.order = Order::Move { goal };
+            unit.queue.push_back(Order::Move { goal: home.into() });
+            let mut index = super::super::super::spatial::UnitIndex::new();
+            index.rebuild(&state.units);
+            let mut reach = super::super::super::reach::Reach::new(&state);
+            let mut events = Vec::new();
+            super::walk(&mut state, &index, &mut reach, walker, &mut events);
+            let stalls = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Event::OrderStalled { unit, reason: StallReason::NoRoute, .. }
+                            if *unit == walker
+                    )
+                })
+                .count();
+            (state.unit(walker).unwrap().order, events.len(), stalls)
+        };
+        let mut short = Goal::at(target);
+        short.endpoint = Some(endpoint);
+
+        assert_eq!(
+            run(short, true),
+            (Order::Move { goal: home.into() }, 1, 1),
+            "meeting the crowd ends the walk once, and the program carries on"
+        );
+        assert_eq!(
+            run(Goal::at(endpoint), true),
+            (
+                Order::Move {
+                    goal: endpoint.into()
+                },
+                0,
+                0
+            ),
+            "a reachable goal keeps its ordinary arrival reach"
+        );
+        assert_eq!(
+            run(short, false),
+            (Order::Move { goal: short }, 0, 0),
+            "a walker touching nothing keeps walking"
+        );
     }
 
     #[test]

@@ -399,10 +399,11 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::InvalidStallTicks(_) => 77,
         E::InvalidLeashClock(_) => 78,
         E::SandboxElimination => 79,
+        E::NonCanonicalGoal(_) => 80,
     }
 }
 
-const ROWS: usize = 80;
+const ROWS: usize = 81;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -495,6 +496,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::InvalidStallTicks(UnitId(0)),
         E::InvalidLeashClock(UnitId(0)),
         E::SandboxElimination,
+        E::NonCanonicalGoal(UnitId(0)),
     ]
 }
 
@@ -925,6 +927,116 @@ fn every_checklist_row_refuses_its_forgery() {
                 d["units"][0]["order"]["node"] = json!({"x": 15, "y": 8});
             },
             "unit u0 names a harvest source outside its work zone",
+        ),
+        (
+            "a walk endpoint at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["order"] = json!({
+                    "order": "move",
+                    "goal": {"x": 3, "y": 3, "endpoint": {"x": i32::MAX, "y": 3}},
+                });
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "an unload drop point at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["queue"] =
+                    json!([{"order": "unload", "at": {"x": 3, "y": i32::MIN}}]);
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "an attack resuming toward an endpoint at the far end of the coordinate space",
+            |d| {
+                let victim = d["units"][2]["id"].clone();
+                d["units"][0]["order"] = json!({
+                    "order": "attack",
+                    "target": {"kind": "unit", "id": victim},
+                    "resume": {"x": 3, "y": 3, "endpoint": {"x": 3, "y": i32::MIN}},
+                });
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "a walk storing its own target as its endpoint",
+            |d| {
+                d["units"][0]["queue"] = json!([{
+                    "order": "attack_move",
+                    "goal": {"x": 6, "y": 2, "endpoint": {"x": 6, "y": 2}},
+                }]);
+            },
+            "unit u0 stores a slot or endpoint equal to its own goal",
+        ),
+        (
+            "an attack resuming toward its own target as its endpoint",
+            |d| {
+                let victim = d["units"][2]["id"].clone();
+                d["units"][0]["order"] = json!({
+                    "order": "attack",
+                    "target": {"kind": "unit", "id": victim},
+                    "resume": {"x": 6, "y": 2, "endpoint": {"x": 6, "y": 2}},
+                });
+            },
+            "unit u0 stores a slot or endpoint equal to its own goal",
+        ),
+        (
+            "a walk slot at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["order"] = json!({
+                    "order": "move",
+                    "goal": {"x": 3, "y": 3, "aim": {"slot": {"x": i32::MAX, "y": 3}}},
+                });
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "an attack resuming toward a slot at the far end of the coordinate space",
+            |d| {
+                let victim = d["units"][2]["id"].clone();
+                d["units"][0]["order"] = json!({
+                    "order": "attack",
+                    "target": {"kind": "unit", "id": victim},
+                    "resume": {"x": 3, "y": 3, "aim": {"slot": {"x": 3, "y": i32::MIN}}},
+                });
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "a walk slot on its own clicked tile",
+            |d| {
+                d["units"][0]["queue"] = json!([{
+                    "order": "advance",
+                    "goal": {"x": 6, "y": 2, "aim": {"slot": {"x": 6, "y": 2}}},
+                }]);
+            },
+            "unit u0 stores a slot or endpoint equal to its own goal",
+        ),
+        (
+            "a walk endpoint on its own slot",
+            |d| {
+                d["units"][0]["order"] = json!({
+                    "order": "unload",
+                    "at": {
+                        "x": 6,
+                        "y": 2,
+                        "aim": {"slot": {"x": 7, "y": 2}},
+                        "endpoint": {"x": 7, "y": 2},
+                    },
+                });
+            },
+            "unit u0 stores a slot or endpoint equal to its own goal",
+        ),
+        (
+            "a landing taken over from a click at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["queue"] = json!([{
+                    "order": "land",
+                    "goal": {"x": 6, "y": 2},
+                    "from": {"x": i32::MIN, "y": 2},
+                }]);
+            },
+            "unit u0 names a coordinate outside the envelope",
         ),
         (
             "an order against an id the run never minted",
@@ -1405,11 +1517,29 @@ fn a_ticked_state_survives_a_json_round_trip() {
 /// than reality fails here on the tick it becomes wrong.
 #[test]
 fn a_full_verb_run_stays_valid_every_tick() {
-    let mut state = arena().build().unwrap();
-    let (harvester, bombard, sentinel) = (
+    let mut scenario = arena();
+    scenario.units.extend([
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Condor,
+            x: 2,
+            y: 9,
+        },
+        UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 2,
+            y: 6,
+        },
+    ]);
+    let mut state = scenario.build().unwrap();
+    let (harvester, bombard, sentinel, stray, condor, walker) = (
         state.units()[0].id,
         state.units()[1].id,
         state.units()[2].id,
+        state.units()[3].id,
+        state.units()[4].id,
+        state.units()[5].id,
     );
     let fabricator = BuildingId(state.buildings()[2].id.0);
     let tile = chassis::grid::TilePos::new;
@@ -1448,20 +1578,54 @@ fn a_full_verb_run_stays_valid_every_tick() {
                         kind: UnitKind::Lancer,
                     },
                 ),
+                // Its owner has never seen this tile, so the goal waits for
+                // exposure and then takes a slot beside the turret site
+                // placed there at tick 40.
+                cmd(
+                    1,
+                    Command::Move {
+                        units: vec![stray],
+                        goal: tile(3, 4),
+                        queue: false,
+                    },
+                ),
+                // In handoff reach and well clear of every enemy, so the
+                // flight hands over to a landing at once.
+                cmd(
+                    0,
+                    Command::Move {
+                        units: vec![condor],
+                        goal: tile(6, 6),
+                        queue: false,
+                    },
+                ),
             ],
         ),
         (
             40,
-            vec![cmd(
-                0,
-                Command::Build {
-                    units: vec![harvester],
-                    kind: BuildingKind::Turret,
-                    anchor: tile(3, 4),
-                    queue: false,
-                    defer: false,
-                },
-            )],
+            vec![
+                // Explored, so the goal resolves to the open tile at issue;
+                // the site placed right after covers it before the walker
+                // arrives, so the walk ends beside it.
+                cmd(
+                    0,
+                    Command::Move {
+                        units: vec![walker],
+                        goal: tile(3, 4),
+                        queue: false,
+                    },
+                ),
+                cmd(
+                    0,
+                    Command::Build {
+                        units: vec![harvester],
+                        kind: BuildingKind::Turret,
+                        anchor: tile(3, 4),
+                        queue: false,
+                        defer: false,
+                    },
+                ),
+            ],
         ),
         (
             120,
@@ -1498,7 +1662,8 @@ fn a_full_verb_run_stays_valid_every_tick() {
     ];
 
     let (mut saw_shell, mut saw_site, mut saw_strip, mut saw_weld) = (false, false, false, false);
-    let mut saw_haul = false;
+    let (mut saw_haul, mut saw_short) = (false, false);
+    let (mut saw_pending, mut saw_handoff) = (false, false);
     let mut last_hp = state.building(fabricator).map(|b| b.hp);
     for tick in 0..1_200u32 {
         let commands = script
@@ -1506,10 +1671,26 @@ fn a_full_verb_run_stays_valid_every_tick() {
             .find(|(at, _)| *at == tick)
             .map(|(_, c)| c.clone())
             .unwrap_or_default();
-        state.tick(&commands);
+        let report = state.tick(&commands);
         state.validate_invariants().unwrap_or_else(|err| {
             panic!("tick {tick} produced a state the validator refuses: {err}")
         });
+        saw_short |= report.events.iter().any(|event| {
+            matches!(
+                event,
+                oxide_sim::Event::OrderStalled {
+                    unit,
+                    reason: oxide_sim::StallReason::NoRoute,
+                    ..
+                } if *unit == walker
+            )
+        });
+        saw_pending |= state.unit(stray).is_some_and(
+            |u| matches!(u.order, oxide_sim::Order::Move { goal } if goal.is_pending()),
+        );
+        saw_handoff |= state.unit(condor).is_some_and(
+            |u| matches!(u.order, oxide_sim::Order::Land { from, .. } if from == Some(tile(6, 6))),
+        );
         saw_shell |= !state.shells().is_empty();
         saw_haul |= state.units().iter().any(|u| u.carrying > 0);
         saw_site |= state.buildings().iter().any(|b| !b.built);
@@ -1524,12 +1705,103 @@ fn a_full_verb_run_stays_valid_every_tick() {
     assert!(saw_site, "premise: a site stood unfinished");
     assert!(saw_strip, "premise: the Fabricator was stripped");
     assert!(saw_weld, "premise: the Fabricator was welded back");
+    assert!(saw_short, "premise: a walk ended short of a covered goal");
+    assert!(
+        saw_pending,
+        "premise: a walk waited for its click to be seen"
+    );
+    assert!(saw_handoff, "premise: a flight handed over to a landing");
     assert!(
         state
             .building(fabricator)
             .is_some_and(|b| b.salvage_drained > 0 && b.salvage_credited > 0),
         "premise: the salvage ledger carries a real entry"
     );
+}
+
+#[test]
+fn an_off_map_ground_unit_with_an_unreachable_move_ticks_without_panicking() {
+    use chassis::fx::{Fx, Vec2Fx};
+    let mut base = snapshot();
+    // The accepted coordinate envelope reaches well past the map, so a
+    // body out there is a legal state that the endpoint scan must survive.
+    base["units"][0]["pos"] =
+        serde_json::to_value(Vec2Fx::new(Fx::from_num(-300), Fx::from_num(4))).unwrap();
+    base["units"][0]["order"] = json!({"order": "move", "goal": {"x": 6, "y": 2}});
+    base["units"][0]["queue"] = json!([{"order": "move", "goal": {"x": -2_000, "y": 2_000}}]);
+    for key in ["path", "leash", "stall_ticks", "drive_speed"] {
+        base["units"][0].as_object_mut().unwrap().remove(key);
+    }
+    let mut state: State = serde_json::from_value(base).expect("an off-map body is legal");
+    let stray = state.units()[0].id;
+    let mut reports = 0;
+    for _ in 0..5 {
+        let report = state.tick(&[]);
+        state.validate_invariants().unwrap();
+        reports += report
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    oxide_sim::Event::OrderStalled {
+                        unit,
+                        reason: oxide_sim::StallReason::NoRoute,
+                        ..
+                    } if *unit == stray
+                )
+            })
+            .count();
+    }
+    let unit = state.unit(stray).expect("the stray survives");
+    assert_eq!(unit.order, oxide_sim::Order::Idle);
+    assert_eq!(reports, 2, "each sealed leg ends short once");
+}
+
+#[test]
+fn a_pending_rank_past_every_slot_is_accepted_and_walks_to_the_last_one() {
+    // Ranks and frames only choose among a click's slots, so a forged one
+    // changes play, not coherence: every rank past the last slot shares it.
+    let click = chassis::grid::TilePos::new(8, 3);
+    for reverse in [false, true] {
+        let resolve = |rank: u8| {
+            let mut base = snapshot();
+            base["units"][0]["order"] = json!({
+                "order": "move",
+                "goal": {"x": 8, "y": 3, "aim": {"pending": {"rank": rank, "reverse": reverse}}},
+            });
+            for key in ["path", "stall_ticks", "drive_speed"] {
+                base["units"][0].as_object_mut().unwrap().remove(key);
+            }
+            let mut state: State = serde_json::from_value(base).expect("any rank is accepted");
+            assert!(state.vision(PlayerId(0)).explored(click), "premise");
+            let walker = state.units()[0].id;
+            state.tick(&[]);
+            state.validate_invariants().unwrap();
+            let oxide_sim::Order::Move { goal } = state.unit(walker).unwrap().order else {
+                panic!("the walk stands");
+            };
+            assert!(
+                !goal.is_pending(),
+                "the explored click resolves on the first tick"
+            );
+            (state, walker, goal)
+        };
+        let (mut state, walker, goal) = resolve(u8::MAX);
+        let (_, _, last) = resolve(168);
+        let (_, _, first) = resolve(0);
+        assert_eq!(goal, last, "rank 255 shares the last of the 169 slots");
+        assert_ne!(goal.target(), first.target());
+        for _ in 0..400 {
+            if state.unit(walker).unwrap().order == oxide_sim::Order::Idle {
+                break;
+            }
+            state.tick(&[]);
+            state.validate_invariants().unwrap();
+        }
+        assert_eq!(state.unit(walker).unwrap().order, oxide_sim::Order::Idle);
+        assert_eq!(state.unit(walker).unwrap().tile(), goal.destination());
+    }
 }
 
 #[test]

@@ -9,7 +9,8 @@ use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec};
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{
-    BuildingId, Command, Event, Faction, Order, PlayerId, Scenario, State, Target, UnitId, UnitKind,
+    BuildingId, Command, Event, Faction, Order, OrderKey, PlayerId, Scenario, State, Target,
+    UnitId, UnitKind,
 };
 
 use common::{cmd, run_until, unit};
@@ -42,10 +43,11 @@ fn command_tag(command: &Command) -> usize {
         Command::Unload { .. } => 20,
         Command::ClearFocus { .. } => 21,
         Command::ReturnCargo { .. } => 22,
+        Command::CancelOrder { .. } => 23,
     }
 }
 
-const COMMAND_VARIANTS: usize = 23;
+const COMMAND_VARIANTS: usize = 24;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
@@ -65,6 +67,10 @@ const UNIT_ONLY_TAGS: [usize; 1] = [20];
 
 /// The verbs that name no entity at all — nothing to canonicalize.
 const OPERANDLESS_TAGS: [usize; 1] = [13];
+
+/// The one verb that names a subject unit beside a list of others: the list
+/// canonicalizes, and the subject edits once even when the list repeats it.
+const SUBJECT_WITH_UNITS_TAGS: [usize; 1] = [23];
 
 /// A quiet field with a legal target for every unit-bearing verb: a guard
 /// that can see an enemy without being in aggro of it, a worker beside a
@@ -369,12 +375,13 @@ fn every_verb_is_sorted_into_a_tag_list() {
         .chain(SITE_ONLY_TAGS)
         .chain(UNIT_ONLY_TAGS)
         .chain(OPERANDLESS_TAGS)
+        .chain(SUBJECT_WITH_UNITS_TAGS)
         .collect();
     all.sort_unstable();
     assert_eq!(
         all,
         (0..COMMAND_VARIANTS).collect::<Vec<_>>(),
-        "every command is unit-bearing, site-only, building-bearing, building-only, or operandless"
+        "every command is unit-bearing, subject-with-units, site-only, building-bearing, building-only, or operandless"
     );
 }
 
@@ -483,4 +490,86 @@ fn a_tripled_foreign_id_is_still_no_valid_units() {
             assert_eq!(rejects, refusal, "{} with {count} unowned ids", family.name);
         }
     }
+}
+
+fn walk_program(state: &State, id: UnitId) -> Vec<TilePos> {
+    let unit = state.unit(id).unwrap();
+    std::iter::once(&unit.order)
+        .chain(&unit.queue)
+        .map(|order| match order.key(state, unit.player) {
+            Some(OrderKey::Walk { tile }) => tile,
+            other => panic!("the staged program walks, not {other:?}"),
+        })
+        .collect()
+}
+
+/// A subject repeated inside its own list, and another unit repeated there,
+/// must each edit once: on the staged `[A, B, A]`, removing the first visit
+/// to A a second time would take the other visit as well.
+#[test]
+fn a_repeated_cancellation_subject_edits_once() {
+    let stage = stage();
+    let (subject, other) = (stage.guard, stage.worker);
+    let (a, b) = (stage.ground, TilePos::new(9, 9));
+    let mut state = stage.state.clone();
+    let legs: Vec<_> = [a, b, a]
+        .into_iter()
+        .enumerate()
+        .map(|(leg, goal)| {
+            cmd(
+                0,
+                Command::Move {
+                    units: vec![subject, other],
+                    goal,
+                    queue: leg > 0,
+                },
+            )
+        })
+        .collect();
+    state.tick(&legs);
+    for id in [subject, other] {
+        assert_eq!(walk_program(&state, id), [a, b, a], "test premise");
+    }
+    let cancel = |units: Vec<UnitId>| {
+        cmd(
+            0,
+            Command::CancelOrder {
+                unit: subject,
+                key: OrderKey::Walk { tile: a },
+                from_end: 1,
+                units,
+            },
+        )
+    };
+
+    let mut once = state.clone();
+    once.tick(&[cancel(vec![other])]);
+    let mut repeated = state.clone();
+    repeated.tick(&[cancel(vec![other, subject, other, subject, other])]);
+    assert_eq!(once.hash(), repeated.hash());
+    for id in [subject, other] {
+        assert_eq!(walk_program(&repeated, id), [b, a]);
+    }
+
+    let Target::Unit(foreign) = stage.enemy else {
+        unreachable!("the staged enemy is a unit")
+    };
+    // A foreign subject refuses the whole command, however often the list
+    // names a unit that holds the order.
+    let mut control = state.clone();
+    control.tick(&[]);
+    let report = state.tick(&[cmd(
+        0,
+        Command::CancelOrder {
+            unit: foreign,
+            key: OrderKey::Walk { tile: a },
+            from_end: 0,
+            units: vec![subject, other, subject, other],
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(0),
+        reason: RejectReason::NoValidUnits,
+    }));
+    assert_eq!(state.hash(), control.hash());
 }

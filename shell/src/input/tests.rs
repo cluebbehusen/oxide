@@ -6,6 +6,12 @@ use oxide_sim::{PlayerCommand, UnitKind};
 
 mod double_click;
 
+/// The waypoints `unit` draws in `game`'s current frame.
+fn crumbs(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usize, Vec2, macroquad::color::Color)> {
+    let view = game.view();
+    crate::render::entities::breadcrumb_points(&view, &view.projection(), unit)
+}
+
 fn headless_game() -> Game {
     Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
         .expect("embedded skirmish builds")
@@ -2184,6 +2190,13 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
             .any(|row| row.label == "Speed" && row.value == "2.5 tiles/s")
     );
     assert!(!panel.queue.is_empty(), "the ally's orders show");
+    assert!(
+        panel
+            .queue
+            .iter()
+            .all(|chip| chip.action == crate::panel::CardAction::None),
+        "an ally's chips remove nothing"
+    );
     assert_eq!(
         panel.faction,
         oxide_sim::Faction::Cupric,
@@ -2270,7 +2283,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();
     assert!(
-        crate::render::entities::breadcrumb_points(&game.view(), unit).is_empty(),
+        crumbs(&game, unit).is_empty(),
         "a foreign program draws no waypoints"
     );
 }
@@ -2917,8 +2930,8 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
         "the lift never arms what the press never saw"
     );
 
-    // A production queue that shifts while the finger reads its chip:
-    // slot 0 keeps its action but now holds a different unit.
+    // A production queue that shifts under a pressed chip: slot 0 keeps
+    // its action but now holds a different unit.
     let foundry = game
         .state
         .buildings()
@@ -2958,7 +2971,7 @@ fn a_card_that_changes_under_a_resting_finger_activates_nothing() {
             queue.remove(0);
             queue[0].action = crate::panel::CardAction::CancelQueue(foundry, 0);
         }
-        input.now += 2.0;
+        input.now += 0.1;
         apply_events(&mut game, &mut input, &[touch_up(2, slot.center())]);
         let cancelled = game
             .pending
@@ -4179,6 +4192,7 @@ fn chrome_born_touches_never_drive_world_gestures() {
     );
 }
 
+mod order_chips;
 mod top_bar;
 
 #[test]
@@ -5294,7 +5308,7 @@ fn a_full_queue_refuses_the_opening_shift_stamp() {
 }
 
 #[test]
-fn a_fogged_leg_leaves_a_gap_in_the_waypoint_numbers() {
+fn a_fogged_leg_draws_at_its_click_in_program_order() {
     let mut game = headless_game();
     let fighter = game
         .state
@@ -5304,8 +5318,8 @@ fn a_fogged_leg_leaves_a_gap_in_the_waypoint_numbers() {
         .expect("skirmish authors a sentinel")
         .id;
     game.presentation.selection.units = vec![fighter];
-    // First leg into unexplored ground (its goal draws nothing), then
-    // a leg back onto explored home turf.
+    // First leg into unexplored ground, then a leg back onto explored
+    // home turf.
     let fogged = {
         let map = game.state.map();
         let mut found = None;
@@ -5341,13 +5355,166 @@ fn a_fogged_leg_leaves_a_gap_in_the_waypoint_numbers() {
     ]);
     let unit = game.state.unit(fighter).unwrap();
     assert_eq!(unit.queue.len(), 1, "two-leg program");
-    let points = crate::render::entities::breadcrumb_points(&game.view(), unit);
-    assert_eq!(points.len(), 1, "the fogged leg draws nothing");
-    assert_eq!(
-        points[0].0, 1,
-        "the survivor wears its PROGRAM position — chip 2 is waypoint 2, \
-         never renumbered down into chip 1's seat"
+    assert!(
+        !game.my_vision().explored(fogged),
+        "premise: the first leg is still fogged"
     );
+    let at = |tile: TilePos| {
+        game.presentation
+            .camera
+            .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5))
+    };
+    let points: Vec<_> = crumbs(&game, unit)
+        .into_iter()
+        .map(|(index, point, _)| (index, point))
+        .collect();
+    assert_eq!(
+        points,
+        vec![(0, at(fogged)), (1, at(home))],
+        "the fogged leg draws at the tile the player clicked, and chip 2 \
+         stays waypoint 2"
+    );
+}
+
+/// A long corridor whose eastern half lies beyond the western seat's sight,
+/// with a lone rock at (36, 4), and `units` of `kind` for the western seat.
+fn fog_corridor_game(kind: &str, units: impl IntoIterator<Item = (i32, i32)>) -> Game {
+    let units: Vec<_> = units
+        .into_iter()
+        .map(|(x, y)| serde_json::json!({"player": 0, "kind": kind, "x": x, "y": y}))
+        .collect();
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Corridor",
+            "seed": 11,
+            "players": [
+                {"name": "Walker", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "################################################",
+                "#1...........................................2.#",
+                "#..............................................#",
+                "#..............................................#",
+                "#...................................#..........#",
+                "#..............................................#",
+                "#..............................................#",
+                "#..............................................#",
+                "################################################"
+            ],
+            "units": units
+        })
+        .to_string(),
+    )
+    .expect("corridor parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds")
+}
+
+#[test]
+fn a_group_sent_into_fog_draws_its_click_for_every_member() {
+    let mut game = fog_corridor_game("sentinel", (4..8).map(|x| (x, 5)));
+    let human = game.presentation.human;
+    let group: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == human)
+        .map(|u| u.id)
+        .collect();
+    game.presentation.selection.units = group.clone();
+    let clicked = TilePos::new(30, 4);
+    assert!(
+        !game.my_vision().explored(clicked),
+        "premise: the click lands in fog"
+    );
+    game.state.tick(&[PlayerCommand {
+        player: human,
+        command: Command::Move {
+            units: group.clone(),
+            goal: clicked,
+            queue: false,
+        },
+    }]);
+    let goals = |game: &Game| -> Vec<oxide_sim::Goal> {
+        group
+            .iter()
+            .map(|id| match game.state.unit(*id).unwrap().order {
+                oxide_sim::Order::Move { goal } => goal,
+                other => panic!("unit {id} left its walk: {other:?}"),
+            })
+            .collect()
+    };
+    let draws_the_click = |game: &Game| {
+        let at = game
+            .presentation
+            .camera
+            .to_screen(vec2(clicked.x as f32 + 0.5, clicked.y as f32 + 0.5));
+        for id in &group {
+            let unit = game.state.unit(*id).unwrap();
+            let points: Vec<_> = crumbs(game, unit)
+                .into_iter()
+                .map(|(index, point, _)| (index, point))
+                .collect();
+            assert_eq!(points, vec![(0, at)], "unit {id} marks the click");
+        }
+    };
+
+    assert!(goals(&game).iter().all(|goal| goal.is_pending()));
+    draws_the_click(&game);
+
+    let mut exposed = false;
+    for _ in 0..600 {
+        game.state.tick(&[]);
+        if goals(&game).iter().all(|goal| !goal.is_pending()) {
+            exposed = true;
+            break;
+        }
+    }
+    assert!(exposed, "the walk explores its click on the way");
+    let mut targets: Vec<_> = goals(&game).iter().map(|goal| goal.target()).collect();
+    targets.sort_unstable_by_key(|tile| (tile.y, tile.x));
+    targets.dedup();
+    assert_eq!(targets.len(), group.len(), "each member took its own slot");
+    draws_the_click(&game);
+}
+
+#[test]
+fn a_landing_that_took_over_a_walk_draws_at_its_click() {
+    let mut game = fog_corridor_game("condor", [(4, 4)]);
+    let human = game.presentation.human;
+    let condor = game.state.units()[0].id;
+    game.presentation.selection.units = vec![condor];
+    // A rock takes no landing, so the pad lies beside the click.
+    let clicked = TilePos::new(36, 4);
+    assert!(!game.state.passable(clicked), "premise: the click is rock");
+    game.state.tick(&[PlayerCommand {
+        player: human,
+        command: Command::Move {
+            units: vec![condor],
+            goal: clicked,
+            queue: false,
+        },
+    }]);
+    let mut pad = None;
+    for _ in 0..1_500 {
+        game.state.tick(&[]);
+        if let oxide_sim::Order::Land { goal, from } = game.state.unit(condor).unwrap().order {
+            assert_eq!(from, Some(clicked), "the landing keeps the walk's click");
+            pad = Some(goal);
+            break;
+        }
+    }
+    assert_ne!(pad.expect("the walk hands over to a landing"), clicked);
+    let unit = game.state.unit(condor).unwrap();
+    let points: Vec<_> = crumbs(&game, unit)
+        .into_iter()
+        .map(|(index, point, _)| (index, point))
+        .collect();
+    let at = game
+        .presentation
+        .camera
+        .to_screen(vec2(clicked.x as f32 + 0.5, clicked.y as f32 + 0.5));
+    assert_eq!(points, vec![(0, at)], "the marker stays on the click");
 }
 
 #[test]

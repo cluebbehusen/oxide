@@ -845,21 +845,21 @@ pub(super) fn acquire_target_from(
 pub(super) fn advance(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
+    reach: &mut super::super::reach::Reach,
     motion: &MotionSnapshot,
     id: UnitId,
-    goal: TilePos,
+    goal: crate::state::Goal,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
 ) {
-    if super::locomotion::land_at_destination(state, index, id, goal) {
+    if super::locomotion::land_at_destination(state, index, reach, id, events) {
         return;
     }
-    walk(state, index, id, goal, events);
-    if !state
-        .unit(id)
-        .is_some_and(|u| matches!(u.order, Order::Advance { goal: current } if current == goal))
-    {
+    walk(state, index, reach, id, events);
+    if !state.unit(id).is_some_and(
+        |u| matches!(u.order, Order::Advance { goal: current } if current.tile() == goal.tile()),
+    ) {
         return;
     }
 
@@ -1004,7 +1004,7 @@ fn sapper_attack(
     state: &mut State,
     id: UnitId,
     target: Target,
-    resume: Option<TilePos>,
+    resume: Option<crate::state::Goal>,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
 ) {
@@ -1171,7 +1171,7 @@ fn bomber_attack(
     motion: &MotionSnapshot,
     id: UnitId,
     target: Target,
-    resume: Option<TilePos>,
+    resume: Option<crate::state::Goal>,
     events: &mut Vec<Event>,
     launches: &mut Vec<crate::state::Shell>,
 ) {
@@ -1426,7 +1426,7 @@ pub(super) fn attack(
     motion: &MotionSnapshot,
     id: UnitId,
     target: Target,
-    resume: Option<TilePos>,
+    resume: Option<crate::state::Goal>,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
@@ -1647,7 +1647,9 @@ pub(super) fn attack(
         if leash.anchor.center().dist_sq(pos) > radius_sq {
             if leash.patience == 0 {
                 let unit = state.unit_mut(id).expect("caller checked");
-                unit.order = Order::Move { goal: leash.anchor };
+                unit.order = Order::Move {
+                    goal: leash.anchor.into(),
+                };
                 unit.path = None;
                 return;
             }
@@ -1746,7 +1748,7 @@ pub(super) fn attack(
 fn stall_attack(
     state: &mut State,
     id: UnitId,
-    resume: Option<TilePos>,
+    resume: Option<crate::state::Goal>,
     reason: StallReason,
     events: &mut Vec<Event>,
 ) {
@@ -1757,7 +1759,9 @@ fn stall_attack(
     if resume.is_none()
         && let Some(leash) = unit.leash
     {
-        unit.order = Order::Move { goal: leash.anchor };
+        unit.order = Order::Move {
+            goal: leash.anchor.into(),
+        };
         unit.path = None;
         return;
     }

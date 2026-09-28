@@ -2245,8 +2245,9 @@ pub const HARVEST_MOBILE_DANGER_MARGIN: Fx = Fx::lit("3");
 /// danger margin can stay tighter than a mobile threat's.
 pub const HARVEST_STATIC_DANGER_MARGIN: Fx = Fx::lit("1");
 
-/// When a Move command lands on an impassable tile, the goal snaps to the
-/// nearest passable tile within this radius (else the command is rejected).
+/// When a ground group's explored tile goal is impassable, the group spreads
+/// around the nearest passable tile within this radius. With none, it heads
+/// for the tile itself and ends as close as it can get.
 pub const GOAL_SNAP_RADIUS: i32 = 3;
 
 /// How far the footprint-eviction pre-pass ring-scans for a walkable
@@ -2301,6 +2302,11 @@ pub const ROUTE_LOOKAHEAD: usize = 6;
 /// neighbor counts as arriving — crowds settle instead of churning on the
 /// click point.
 pub const ARRIVAL_NEAR: Fx = Fx::lit("1.5");
+
+/// How far from an unreachable goal's endpoint a parked crowd may extend and
+/// still end a walk that touches it. Endpoints sit on the edge of reachable
+/// ground, where [`ARRIVAL_NEAR`] alone leaves room for only a few bodies.
+pub const CROWD_CHAIN_REACH: Fx = Fx::lit("16");
 
 /// Collision share taken by an anchored unit (extracting or firing from a
 /// hold); the mover takes the rest. Passers-by flow around workers.

@@ -9,9 +9,9 @@
 
 use super::{rect_adjacent_tiles, spawn_doorstep_key};
 use crate::event::Event;
-use crate::ids::PlayerId;
+use crate::ids::{PlayerId, UnitId};
 use crate::state::{Order, State};
-use crate::stats::{BuildingKind, Domain, UnitKind};
+use crate::stats::{BuildingKind, Domain};
 use chassis::grid::TilePos;
 
 /// Arms each newly stranded seat from the state that existed at the tick
@@ -206,11 +206,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             kind,
             player,
         });
-        if let Some(rally) = rally
-            && let Some(order) = rally_order(state, player, kind, rally)
-            && let Some(newborn) = state.unit_mut(unit)
-        {
-            newborn.order = order;
+        if let Some(rally) = rally {
+            let order = rally_order(state, unit, rally);
+            state.unit_mut(unit).expect("just spawned").order = order;
         }
         let b = state.building_mut(id).expect("still standing");
         b.queue.pop_front();
@@ -218,33 +216,44 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     }
 }
 
-/// What a rally means to a fresh unit: harvesters mine a rallied node,
-/// fighters attack-move, everyone else walks. `None` (unwalkable rally
-/// area) leaves the unit idle at the doorstep.
+/// What a rally means to the fresh unit `newborn`: harvesters mine a
+/// rallied node, fighters attack-move, everyone else walks. The walk
+/// resolves the rally like a move of the newborn's own, so it heads for the
+/// rally tile until its owner's team has explored it, and an unreachable
+/// rally ends as close as it can get.
+///
+/// A rally is clamped onto the map first: a rally the command envelope
+/// once admitted off the map could never be explored.
 ///
 /// "Node" is judged by the owner's *remembered* scrap, not the live map —
 /// it refreshes while the ground is visible and freezes when sight is
 /// lost, so a rally can neither probe unexplored tiles nor know a distant
 /// node ran dry. Stale beliefs resolve honestly: the newborn walks out
 /// and discovers.
-fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -> Option<Order> {
-    let stats = kind.stats();
+fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
+    let unit = state.unit(newborn).expect("just spawned");
+    let (owner, stats) = (unit.player, unit.kind.stats());
+    let rally = TilePos::new(
+        rally.x.clamp(0, state.map.width() - 1),
+        rally.y.clamp(0, state.map.height() - 1),
+    );
     if stats.harvest.is_some()
         && (state.vision(owner).remembered_scrap(rally) > 0
             || state.vision(owner).remembered_wreck(rally) > 0)
     {
-        return Some(Order::Harvest {
+        return Order::Harvest {
             node: rally,
             anchor: Some(rally),
             retiring: false,
-        });
+        };
     }
-    let goal = super::domain_goal(state, rally, stats.domain)?;
-    Some(if stats.can_fight() {
+    let reverse = super::goals::spread_scan_reversed(state, rally, &[newborn]);
+    let goal = super::goals::issue(state, owner, rally, stats.domain, reverse).goal(0);
+    if stats.can_fight() {
         Order::AttackMove { goal }
     } else {
         Order::Move { goal }
-    })
+    }
 }
 
 /// Phase 3.5: abandoned construction sites rust away.

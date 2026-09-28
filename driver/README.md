@@ -64,6 +64,13 @@ records as the frozen reference it compares against.
   difficulty, stance and map family; `bot-matrix-report` re-reads published
   rows. Evaluation inputs live in `evaluation/`, not `scenarios/`, whose every
   file the shell menu, map gates and golden sweeps read.
+- `bot_cost` times controller decisions on named workloads: a Skirmish duel, the
+  seven-bot Skyhook game, and a staged mature-army match kept under
+  `tests/fixtures/performance/` so it stays out of the shipped pool. It reports
+  average and p99 wall time per decision, total CPU, and the fog-honest
+  observation and `oxide-bot` orientation costs, per seat and per controller.
+  Seats decide serially with tracing off; its command and final hashes equal an
+  untimed run.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
   combat behavior.

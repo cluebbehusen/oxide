@@ -1,6 +1,7 @@
 //! Opt-in decision diagnostics. Traces are output only: never controller
 //! memory, simulation state or replay input.
 
+use crate::OwnEvent;
 use oxide_sim::{BuildingId, PlayerId, UnitKind};
 use serde::Serialize;
 
@@ -13,6 +14,8 @@ pub struct Trace {
     pub player: PlayerId,
     /// Scrap on hand when the decision started.
     pub bank: u32,
+    /// The seat's own order failures since its previous decision, oldest first.
+    pub events: Vec<OwnEvent>,
     /// Scrap the decision's purchases committed.
     pub spent: u32,
     /// Units queued, in command order.

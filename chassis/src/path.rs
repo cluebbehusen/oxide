@@ -426,6 +426,53 @@ pub fn astar_with_distances(
     }
 }
 
+/// Labels every tile with its 4-connected component under `open`.
+///
+/// The result is row-major, `width * height` long: 0 marks a closed tile and
+/// components are numbered from 1 in row-major order of their first tile.
+/// Because [`astar`] never cuts a corner, two open tiles share a label exactly
+/// when an A* search from one can reach the other. A search that starts on a
+/// closed tile reaches the components of its open cardinal neighbours only.
+pub fn cardinal_components(
+    width: i32,
+    height: i32,
+    mut open: impl FnMut(TilePos) -> bool,
+) -> Vec<u32> {
+    let (Ok(w), Ok(h)) = (usize::try_from(width), usize::try_from(height)) else {
+        return Vec::new();
+    };
+    let mut labels = vec![0u32; w * h];
+    let mut closed = vec![false; w * h];
+    for (index, closed) in closed.iter_mut().enumerate() {
+        *closed = !open(TilePos::new((index % w) as i32, (index / w) as i32));
+    }
+    let mut next_label = 0u32;
+    let mut frontier = Vec::new();
+    for start in 0..labels.len() {
+        if closed[start] || labels[start] != 0 {
+            continue;
+        }
+        next_label += 1;
+        labels[start] = next_label;
+        frontier.push(start);
+        while let Some(index) = frontier.pop() {
+            let tile = TilePos::new((index % w) as i32, (index / w) as i32);
+            for (dx, dy) in CARDINALS {
+                let next = tile.offset(dx, dy);
+                if next.x < 0 || next.y < 0 || next.x >= width || next.y >= height {
+                    continue;
+                }
+                let next_index = (next.y as usize) * w + next.x as usize;
+                if !closed[next_index] && labels[next_index] == 0 {
+                    labels[next_index] = next_label;
+                    frontier.push(next_index);
+                }
+            }
+        }
+    }
+    labels
+}
+
 fn astar_inner<const PRUNE: bool>(
     (width, height): (i32, i32),
     start: TilePos,
@@ -758,6 +805,60 @@ mod tests {
         }
     }
     use crate::grid::Grid;
+
+    /// Component labels agree with an A* oracle on random masks: two open
+    /// tiles share a label exactly when A* connects them, and a closed start
+    /// reaches exactly the components of its open cardinal neighbours.
+    #[test]
+    fn cardinal_components_match_astar_reachability() {
+        let mut rng = crate::rng::Pcg32::new(0x00C0_FFEE, 3);
+        for case in 0..120u32 {
+            let width = 1 + rng.next_below(9) as i32;
+            let height = 1 + rng.next_below(7) as i32;
+            let density = rng.next_below(60);
+            let walls: Vec<bool> = (0..width * height)
+                .map(|_| rng.next_below(100) < density)
+                .collect();
+            let open = |p: TilePos| !walls[(p.y * width + p.x) as usize];
+            let labels = cardinal_components(width, height, open);
+            assert_eq!(labels.len(), (width * height) as usize);
+            let label = |p: TilePos| labels[(p.y * width + p.x) as usize];
+            let tiles: Vec<TilePos> = (0..height)
+                .flat_map(|y| (0..width).map(move |x| TilePos::new(x, y)))
+                .collect();
+            let mut seen = 0;
+            for &tile in &tiles {
+                assert_eq!(label(tile) == 0, !open(tile), "case {case}: {tile:?}");
+                if label(tile) > seen {
+                    assert_eq!(label(tile), seen + 1, "labels number in discovery order");
+                    seen = label(tile);
+                }
+            }
+            for &start in &tiles {
+                let reachable: Vec<u32> = if open(start) {
+                    vec![label(start)]
+                } else {
+                    CARDINALS
+                        .iter()
+                        .map(|&(dx, dy)| start.offset(dx, dy))
+                        .filter(|t| t.x >= 0 && t.y >= 0 && t.x < width && t.y < height)
+                        .map(label)
+                        .filter(|&l| l != 0)
+                        .collect()
+                };
+                for &goal in &tiles {
+                    let routed = astar(width, height, start, goal, open, 10_000).is_some();
+                    let labelled = start == goal || reachable.contains(&label(goal));
+                    assert_eq!(
+                        routed, labelled,
+                        "case {case}: {width}x{height} {start:?} -> {goal:?}"
+                    );
+                }
+            }
+        }
+        assert!(cardinal_components(0, 3, |_| true).is_empty());
+        assert!(cardinal_components(-1, 3, |_| true).is_empty());
+    }
 
     /// Builds a passability closure from ASCII rows ('#' blocked).
     fn arena(rows: &[&str]) -> (Grid<bool>, i32, i32) {

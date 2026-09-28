@@ -616,7 +616,7 @@ fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
     );
     assert!(matches!(
         state.unit(launcher).unwrap().order,
-        oxide_sim::Order::Advance { goal: current } if current == goal
+        oxide_sim::Order::Advance { goal: current } if current.tile() == goal
     ));
 }
 

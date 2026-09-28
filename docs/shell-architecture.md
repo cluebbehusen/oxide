@@ -62,6 +62,9 @@ save when the host is lost or a desync halts the match.
 Live ticks and replay reconstruction use `oxide_kit::bot_execution`. Due bots
 may think concurrently against the same immutable state; their work joins in
 input seat order before commands are recorded. `State::tick` remains serial.
+After every tick, replay reconstruction included, `Game` hands the report to
+`oxide_kit::controller::record_events`, which buffers each `oxide-opponent`
+seat's own order failures for its next decision.
 
 Between ordinary live ticks, `Game` may submit one background decision. It keeps
 the pre-decision controllers and gives the worker a cloned working set plus an
@@ -222,11 +225,30 @@ chip column's width and names itself where the chips do. A single factory's dock
 is headed by the time left on its queue, or "Ready" while a finished head waits
 for an exit.
 
+A unit's orders dock and the selection's waypoint chain show programs with every
+staged command applied. `Presentation` caches that projection for the tick, the
+staged-command count, and the decorated selection; only a staged batch costs an
+`inspect_command_phase` call, and it keeps the sites staged Build orders claim.
+Pressing an own chip stages `CancelOrder` with the chip's key and how many later
+chips share it, sending the rest of the selection along, so the order leaves
+every selected own unit that still has it and the dock and waypoints renumber at
+once. A chip for an unbuilt site or a planned one cancels the whole site
+instead; a site only staged commands place is cancelled by kind and anchor,
+since other seats' commands or earlier batches may take the id it was projected
+with. An ally's chips do nothing.
+
 Ground orders name whole tiles. Move, attack-move, advance, patrol, and rally
 clicks clamp the cursor's tile onto the map, since the camera's edge slack lets
 it rest past the edge, and their acknowledgment ring draws at that tile's
 centre, where the waypoint marker sits. Entity lookups keep the unclamped tile,
 so a slack click never binds to whatever stands on the edge.
+
+The selection's waypoint chain draws an own unit's walks, patrol legs, and drop
+points at the tile the player clicked, explored or not, rather than at the slot
+or endpoint the simulation resolved around it; a landing that took over a walk
+still marks the walk's click. Markers are numbered by program position like the
+dock's chips, so a leg with nothing left to draw at, such as a lost attack
+contact, leaves a gap. A foreign unit's program draws nothing.
 
 Toasts report refusals and outcomes, not armed modes, which the ribbon already
 names, or their cancellation; only Patrol coaches its two-step start.
@@ -271,10 +293,13 @@ touches never fire a long-press, so lifting in place still activates the card,
 and a finger that lands on one card or group slot and lifts on another activates
 neither. The one exception is a control-group slot, where a long-press saves the
 selection to that group and spends the finger so its lift does not also recall.
-A world-born or group-slot finger draws a filling ring from the same rest
-threshold until its long-press fires; the slot's ring draws above the HUD and
-minimap. Disabled cards publish `CardAction::Refused`, so a tap or click toasts
-the reason their hotkey gives.
+A dock chip that discards work, whether an order, a site, a planned foundation,
+or a production slot, ignores a lift after a hold: a finger held past the
+long-press threshold was reading its preview, so it lifts without cancelling
+anything. A world-born or group-slot finger draws a filling ring from the same
+rest threshold until its long-press fires; the slot's ring draws above the HUD
+and minimap. Disabled cards publish `CardAction::Refused`, so a tap or click
+toasts the reason their hotkey gives.
 
 Gameplay touch lives in `input::touch`. Each finger records where it landed
 (`TouchBorn`: world, minimap, other chrome, or the placement ghost), and that

@@ -1,6 +1,8 @@
 //! Army lifecycle, marching, contact, and strength assessment.
 
 use super::*;
+use crate::PublicMapBriefing;
+use crate::navigation::commands::RouteProjection;
 #[cfg(test)]
 use crate::observation::ObservationData;
 use crate::query_work::QueryPurpose;
@@ -18,8 +20,12 @@ const PULLBACK_DEN: u32 = 100;
 const WITHDRAW_MARGIN_NUM: u32 = 1;
 const WITHDRAW_MARGIN_DEN: u32 = 2;
 /// A marching or withdrawing army that has not bettered its best
-/// distance to its goal for this long is wedged — usually ordered
-/// across terrain with no route — and re-stages where it stands.
+/// distance to its goal for this long is wedged: a march is released and
+/// a withdrawal re-stages where it stands. This is the fallback for
+/// stoppages the executive cannot prove from its own knowledge, such as a
+/// jam, an unseen blocker, or a route only unexplored ground could still
+/// open. A march that visibly ended short of ground no escort can reach is
+/// released as soon as the body comes to rest.
 /// Staging reopens the trained-legal verbs (Scout for staged members,
 /// Push, reinforcement), so the operations head never goes dark
 /// behind an unroutable order. Matches the recovery patience scale.
@@ -45,10 +51,13 @@ pub(super) struct CentroidFrame {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MaintenanceMode {
+struct MaintenanceMode<'m> {
     centroid_frame: Option<CentroidFrame>,
     coordinated_focus: bool,
     coordinated_defense_focus: bool,
+    /// World-frame public terrain for judging whether a stopped march could
+    /// still reach its goal, the terrain mission admission routes over.
+    public_map: Option<&'m PublicMapBriefing>,
 }
 
 impl CentroidFrame {
@@ -152,9 +161,12 @@ impl Executive {
         obs: &Observation,
         rear: TilePos,
     ) -> Vec<PlayerCommand> {
-        self.maintain_player_facing_with_tactics(me, obs, rear, true, false)
+        self.maintain_player_facing_with_tactics(me, obs, rear, true, false, None)
     }
 
+    /// Player-facing maintenance with explicit tactics. `public_map` is the
+    /// world-frame briefing; without it, unexplored terrain counts as open
+    /// when judging whether a stopped march could still reach its goal.
     pub(crate) fn maintain_player_facing_with_tactics(
         &mut self,
         me: PlayerId,
@@ -162,6 +174,7 @@ impl Executive {
         rear: TilePos,
         coordinated_focus: bool,
         coordinated_defense_focus: bool,
+        public_map: Option<&PublicMapBriefing>,
     ) -> Vec<PlayerCommand> {
         let frame = self
             .player_frame
@@ -178,6 +191,7 @@ impl Executive {
                 centroid_frame: Some(frame),
                 coordinated_focus,
                 coordinated_defense_focus,
+                public_map,
             },
         )
     }
@@ -187,7 +201,7 @@ impl Executive {
         me: PlayerId,
         obs: &Observation,
         rear: TilePos,
-        mode: MaintenanceMode,
+        mode: MaintenanceMode<'_>,
     ) -> Vec<PlayerCommand> {
         let roster = UnitRoster::new(&obs.my_units);
         self.maintain_with_roster(me, obs, rear, mode, &roster)
@@ -198,13 +212,14 @@ impl Executive {
         me: PlayerId,
         obs: &'a Observation,
         rear: TilePos,
-        mode: MaintenanceMode,
+        mode: MaintenanceMode<'_>,
         roster: &impl UnitLookup<'a>,
     ) -> Vec<PlayerCommand> {
         let MaintenanceMode {
             centroid_frame,
             coordinated_focus,
             coordinated_defense_focus,
+            public_map,
         } = mode;
         let mut out = Vec::new();
         self.maintain_defense_focus(me, obs, coordinated_defense_focus, &mut out);
@@ -391,6 +406,14 @@ impl Executive {
                         });
                     if obs.tick >= mission.deadline
                         || bounced
+                        || (!in_contact
+                            && march_ended_short(
+                                obs,
+                                army.issued,
+                                &members,
+                                mission.goal,
+                                public_map,
+                            ))
                         || wedged(
                             &mut army.progress,
                             centroid.chebyshev(mission.goal),
@@ -421,17 +444,19 @@ impl Executive {
                 ArmyState::Pushing => {
                     let vanguard = vanguard_centroid_for(&members, centroid_frame);
                     // Judged on the escorts, the units the march order
-                    // actually names: artillery takes a separate routable
-                    // side-move to staging, and counting it kept a refused
-                    // march from ever reading as idle.
+                    // actually names: artillery takes its own separate
+                    // order, and counting it kept a march that went nowhere
+                    // from ever reading as idle.
                     let all_idle = members
                         .iter()
                         .filter(|unit| !is_artillery(unit))
                         .all(|unit| unit.idle);
-                    // A march order the sim refused leaves every member
-                    // idle exactly where it stood. Checked only on a LATER
-                    // think than the order, since this think's commands
-                    // have not executed yet.
+                    // Escorts waiting on a walking gun take the next leg. A
+                    // siege screen's leg is paced by its guns, so it is no
+                    // march to judge and the issue record is cleared. Any
+                    // other leg sends the escorts at the objective itself
+                    // and is recorded, so a body stopped short of ground no
+                    // escort can reach is released once its guns rest.
                     if !in_contact
                         && all_idle
                         && artillery_has_escort_quorum_with_roster(army, roster)
@@ -439,8 +464,15 @@ impl Executive {
                         && let Some(target) = army.target
                     {
                         march_with_roster(me, obs, army, target, &mut out, roster);
-                        army.issued = None;
+                        army.issued =
+                            (!siege_objective(obs, target)).then_some((obs.tick, vanguard));
                     }
+                    // A march that ended at once, because the escorts
+                    // already stood as close to its goal as they can get,
+                    // leaves every escort idle where it stood. The sim
+                    // refuses no march for an unreachable goal. Checked
+                    // only on a LATER think than the order, since this
+                    // think's commands have not executed yet.
                     let bounced = all_idle
                         && army.issued.is_some_and(|(at, from)| {
                             obs.tick > at && vanguard.chebyshev(from) <= 1
@@ -465,12 +497,18 @@ impl Executive {
                             army.issued = None;
                             army.bounces = 0;
                         }
+                    } else if let Some(target) = army.target
+                        && march_ended_short(obs, army.issued, &members, target, public_map)
+                    {
+                        // Marching again would only walk the body back to
+                        // where it stopped.
+                        army.members.clear();
                     } else if bounced {
-                        // Two refused orders in a row are route testimony
-                        // on the first think a wedge clock would only begin
-                        // counting — an order refused at issue never
-                        // marches, so it never stalls. Two immediate
-                        // bounces are enough to stop repeating it.
+                        // Two marches in a row that ended where they began
+                        // are route testimony on the first think a wedge
+                        // clock would only begin counting — a march that
+                        // ends at once never stalls. Two immediate bounces
+                        // are enough to stop repeating it.
                         army.issued = None;
                         army.bounces = army.bounces.saturating_add(1);
                         if army.bounces >= 2 && army.target.is_some() {
@@ -500,6 +538,15 @@ impl Executive {
                             army.progress = None;
                             if let Some(target) = army.target {
                                 march_with_roster(me, obs, army, target, &mut out, roster);
+                                // Recorded like a lowered march. Long guns
+                                // alone are parked at staging instead, which
+                                // is no march to judge.
+                                if members.iter().any(|unit| !is_artillery(unit)) {
+                                    army.issued = Some((
+                                        obs.tick,
+                                        vanguard_centroid_for(&members, centroid_frame),
+                                    ));
+                                }
                             }
                         }
                     } else if mine * u64::from(WITHDRAW_MARGIN_DEN)
@@ -734,6 +781,7 @@ impl Executive {
                 centroid_frame,
                 coordinated_focus: true,
                 coordinated_defense_focus: false,
+                public_map: None,
             },
             &roster,
         )
@@ -892,6 +940,60 @@ fn artillery_has_escort_quorum_with_roster<'a>(army: &Army, roster: &impl UnitLo
     escorts * 3 >= army.members.len()
 }
 
+/// Whether a body at rest has stopped short of a march goal that none of
+/// its escorts can reach.
+///
+/// The simulation walks a march it cannot complete as close as it can and
+/// ends it there, so a hopeless march leaves its escorts idle short of the
+/// goal rather than refused where they stood. The verdict needs a march
+/// issued on an earlier think, at least one escort, and the whole body at
+/// rest: a gun still walking may be what a screen is waiting on. For each
+/// escort movement domain, no escort may reach any tile the goal could
+/// snap to. Artillery takes no part in that test: a siege shoots at ground
+/// its guns need not enter.
+fn march_ended_short(
+    obs: &Observation,
+    issued: Option<(u64, TilePos)>,
+    members: &[&UnitObs],
+    goal: TilePos,
+    public_map: Option<&PublicMapBriefing>,
+) -> bool {
+    if !issued.is_some_and(|(at, _)| obs.tick > at)
+        || !members.iter().all(|unit| unit.idle)
+        || members.iter().all(|unit| is_artillery(unit))
+    {
+        return false;
+    }
+    [Domain::Ground, Domain::Air].into_iter().all(|domain| {
+        let starts: Vec<TilePos> = members
+            .iter()
+            .filter(|unit| !is_artillery(unit) && unit.kind.stats().domain == domain)
+            .map(|unit| unit.tile)
+            .collect();
+        starts.is_empty() || {
+            let routes = match public_map {
+                Some(map) => RouteProjection::with_public_terrain(
+                    QueryPurpose::ArmyMovement,
+                    obs,
+                    domain,
+                    map,
+                ),
+                None => RouteProjection::new(QueryPurpose::ArmyMovement, obs, domain),
+            };
+            !routes.command_goal_reachable_from(&starts, goal)
+        }
+    })
+}
+
+/// Whether a push on `target` with guns is a siege: a known live enemy
+/// building stands at the objective, so the escorts screen the guns rather
+/// than march on it.
+fn siege_objective(obs: &Observation, target: TilePos) -> bool {
+    obs.enemy_buildings
+        .iter()
+        .any(|building| building.hp > 0 && building.anchor.chebyshev(target) <= 2)
+}
+
 /// How far short of the push target artillery parks — inside its own
 /// reach of the target, outside a defending turret's.
 const ARTY_STANDOFF: i32 = 7;
@@ -922,12 +1024,7 @@ fn march_with_roster<'a>(
         .members
         .iter()
         .partition(|id| roster.get(**id).is_some_and(is_artillery));
-    if !arty.is_empty()
-        && obs
-            .enemy_buildings
-            .iter()
-            .any(|building| building.hp > 0 && building.anchor.chebyshev(target) <= 2)
-    {
+    if !arty.is_empty() && siege_objective(obs, target) {
         let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
         let distance = dx.abs().max(dy.abs());
         let mut routes = crate::navigation::commands::RouteProjection::new(
@@ -1873,8 +1970,14 @@ mod tests {
         let mut executive = Executive::default();
         let rear = TilePos::new(2, 2);
 
-        let initial =
-            executive.maintain_player_facing_with_tactics(PlayerId(0), &obs, rear, false, true);
+        let initial = executive.maintain_player_facing_with_tactics(
+            PlayerId(0),
+            &obs,
+            rear,
+            false,
+            true,
+            None,
+        );
         assert_eq!(
             initial,
             vec![PlayerCommand {
@@ -1890,7 +1993,7 @@ mod tests {
         obs.enemy_units[1].hp = 1;
         assert!(
             executive
-                .maintain_player_facing_with_tactics(PlayerId(0), &obs, rear, false, true,)
+                .maintain_player_facing_with_tactics(PlayerId(0), &obs, rear, false, true, None)
                 .is_empty(),
             "a still-legal focus must not churn when another target becomes weaker"
         );
@@ -1898,7 +2001,14 @@ mod tests {
         obs.tick = 24;
         obs.enemy_units.remove(0);
         assert_eq!(
-            executive.maintain_player_facing_with_tactics(PlayerId(0), &obs, rear, false, true,),
+            executive.maintain_player_facing_with_tactics(
+                PlayerId(0),
+                &obs,
+                rear,
+                false,
+                true,
+                None
+            ),
             vec![PlayerCommand {
                 player: PlayerId(0),
                 command: Command::FocusFire {
@@ -1929,7 +2039,7 @@ mod tests {
         let mut executive = Executive::default();
         assert!(
             executive
-                .maintain_player_facing_with_tactics(PlayerId(0), &single, rear, false, true,)
+                .maintain_player_facing_with_tactics(PlayerId(0), &single, rear, false, true, None)
                 .is_empty(),
             "one ground defense is ordinary acquisition, not coordination"
         );
@@ -1940,7 +2050,7 @@ mod tests {
         hidden.visible[index] = false;
         assert!(
             Executive::default()
-                .maintain_player_facing_with_tactics(PlayerId(0), &hidden, rear, false, true,)
+                .maintain_player_facing_with_tactics(PlayerId(0), &hidden, rear, false, true, None)
                 .is_empty(),
             "an omniscient fixture must not make a hidden target legal"
         );
@@ -1956,7 +2066,14 @@ mod tests {
         let harmless = two_ground_defenses(vec![harmless_aa]);
         assert!(
             Executive::default()
-                .maintain_player_facing_with_tactics(PlayerId(0), &harmless, rear, false, true,)
+                .maintain_player_facing_with_tactics(
+                    PlayerId(0),
+                    &harmless,
+                    rear,
+                    false,
+                    true,
+                    None
+                )
                 .is_empty(),
             "static ground defense must not be distracted by an AA-only crawler"
         );
@@ -1996,6 +2113,7 @@ mod tests {
             TilePos::new(2, 2),
             false,
             true,
+            None,
         );
 
         assert_eq!(
@@ -2032,6 +2150,7 @@ mod tests {
             TilePos::new(2, 2),
             false,
             true,
+            None,
         );
         let right_command = Executive::default().maintain_player_facing_with_tactics(
             PlayerId(1),
@@ -2039,6 +2158,7 @@ mod tests {
             half_turn(TilePos::new(2, 2), map_size),
             false,
             true,
+            None,
         );
 
         assert_eq!(left_command.len(), 1);
@@ -2664,7 +2784,7 @@ mod tests {
         let mut uncoordinated = executive.clone();
         assert!(
             uncoordinated
-                .maintain_player_facing_with_tactics(PlayerId(0), &obs, staging, false, false)
+                .maintain_player_facing_with_tactics(PlayerId(0), &obs, staging, false, false, None)
                 .is_empty(),
             "an easier army should let the simulation's ordinary acquisition choose each unit's target"
         );
@@ -3805,6 +3925,7 @@ mod tests {
                     centroid_frame: None,
                     coordinated_focus: false,
                     coordinated_defense_focus: false,
+                    public_map: None,
                 },
                 &roster,
             );
@@ -3991,5 +4112,534 @@ mod tests {
         obs.my_units.remove(0);
         executive.maintain_player_facing(obs.me, &obs, staging);
         assert_eq!(executive.armies[0].state, ArmyState::Withdrawing);
+    }
+
+    /// Known rock four tiles out from `center`, which encloses the whole
+    /// ground snap disc of a march on it, less an optional `gap`.
+    fn rock_ring(center: TilePos, gap: Option<TilePos>) -> Vec<TilePos> {
+        (-4..=4)
+            .flat_map(|dy| (-4..=4).map(move |dx| center.offset(dx, dy)))
+            .filter(|tile| tile.chebyshev(center) == 4 && Some(*tile) != gap)
+            .collect()
+    }
+
+    fn with_known_rock(obs: &mut Observation, mut rock: Vec<TilePos>) {
+        rock.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        rock.dedup();
+        obs.known_rock = rock;
+    }
+
+    #[test]
+    fn a_re_march_that_ends_short_of_a_sealed_objective_is_released_in_both_seats() {
+        let map_size = (48, 30);
+        let turn = |player: u8, tile: TilePos| {
+            if player == 0 {
+                tile
+            } else {
+                half_turn(tile, map_size)
+            }
+        };
+        let target = TilePos::new(36, 8);
+        let gap = target.offset(-4, 0);
+        let fought = [
+            TilePos::new(24, 9),
+            TilePos::new(24, 10),
+            TilePos::new(25, 9),
+        ];
+        let stopped = [
+            TilePos::new(31, 8),
+            TilePos::new(31, 9),
+            TilePos::new(30, 8),
+        ];
+        let view = |player: u8, tiles: &[TilePos], idle: bool, tick: u64, sealed: bool| {
+            let units = tiles
+                .iter()
+                .enumerate()
+                .map(|(rank, tile)| {
+                    unit(
+                        rank as u32 + 1,
+                        PlayerId(player),
+                        UnitKind::Sentinel,
+                        turn(player, *tile),
+                        UnitKind::Sentinel.stats().max_hp,
+                        idle,
+                    )
+                })
+                .collect();
+            let mut obs = observation(tick, map_size, units, Vec::new());
+            obs.me = PlayerId(player);
+            let gap = (!sealed).then_some(gap);
+            with_known_rock(
+                &mut obs,
+                rock_ring(target, gap)
+                    .into_iter()
+                    .chain(rock_ring(turn(1, target), gap.map(|tile| turn(1, tile))))
+                    .collect(),
+            );
+            // The objective inside the pocket is out of sight, so it is
+            // never observed cleared.
+            let objective = turn(player, target);
+            let index = usize::try_from(objective.y * map_size.0 + objective.x).unwrap();
+            obs.visible[index] = false;
+            obs
+        };
+        let rear = |player: u8| turn(player, TilePos::new(3, 26));
+        let mut seats: Vec<Executive> = (0..2)
+            .map(|player| {
+                let mut body = army(
+                    0,
+                    vec![UnitId(1), UnitId(2), UnitId(3)],
+                    ArmyState::Engaging,
+                    turn(player, TilePos::new(6, 20)),
+                );
+                body.target = Some(turn(player, target));
+                Executive {
+                    armies: vec![body],
+                    next_army: 1,
+                    ..Executive::default()
+                }
+            })
+            .collect();
+
+        let won = 500;
+        let mut issued = Vec::new();
+        for (player, executive) in (0..).zip(&mut seats) {
+            let commands = executive.maintain_player_facing(
+                PlayerId(player),
+                &view(player, &fought, false, won, true),
+                rear(player),
+            );
+            assert!(
+                matches!(
+                    commands.as_slice(),
+                    [PlayerCommand { command: Command::AttackMove { goal, .. }, .. }]
+                        if *goal == turn(player, target)
+                ),
+                "the won fight re-marches on the objective: {commands:?}"
+            );
+            assert_eq!(executive.armies[0].state, ArmyState::Pushing);
+            let (at, from) = executive.armies[0]
+                .issued
+                .expect("the re-march is recorded like a lowered march");
+            assert_eq!(at, won);
+            issued.push(from);
+        }
+        assert_eq!(issued[1], half_turn(issued[0], map_size));
+
+        let stopped_at = won + 40;
+        for (player, executive) in (0..).zip(&seats) {
+            let mut walking = executive.clone();
+            assert!(
+                walking
+                    .maintain_player_facing(
+                        PlayerId(player),
+                        &view(player, &stopped, false, stopped_at, true),
+                        rear(player),
+                    )
+                    .is_empty()
+            );
+            assert_eq!(
+                walking.armies.len(),
+                1,
+                "escorts still under way are not stranded"
+            );
+            let mut open = executive.clone();
+            assert!(
+                open.maintain_player_facing(
+                    PlayerId(player),
+                    &view(player, &stopped, true, stopped_at, false),
+                    rear(player),
+                )
+                .is_empty()
+            );
+            assert_eq!(
+                open.armies.len(),
+                1,
+                "a gap into the pocket leaves the march to the wedge clock"
+            );
+            assert_eq!(open.armies[0].state, ArmyState::Pushing);
+        }
+        for (player, executive) in (0..).zip(&mut seats) {
+            assert!(
+                executive
+                    .maintain_player_facing(
+                        PlayerId(player),
+                        &view(player, &stopped, true, stopped_at, true),
+                        rear(player),
+                    )
+                    .is_empty()
+            );
+            assert!(
+                executive.armies.is_empty(),
+                "seat {player} must release a body stranded short of a sealed objective \
+                 long before the {ARMY_PROGRESS_PATIENCE_TICKS}-tick wedge"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recovery_stranded_short_of_a_sealed_fallback_is_released() {
+        let goal = TilePos::new(30, 12);
+        let issued_from = TilePos::new(10, 12);
+        let stopped = TilePos::new(25, 12);
+        let recovering = |sealed: bool| {
+            let mut obs = observation(
+                60,
+                (40, 30),
+                vec![unit(
+                    1,
+                    PlayerId(0),
+                    UnitKind::Sentinel,
+                    stopped,
+                    UnitKind::Sentinel.stats().max_hp,
+                    true,
+                )],
+                Vec::new(),
+            );
+            with_known_rock(
+                &mut obs,
+                rock_ring(goal, (!sealed).then_some(goal.offset(-4, 0))),
+            );
+            let mut body = army(0, vec![UnitId(1)], ArmyState::Staging, goal);
+            body.issued = Some((12, issued_from));
+            body.mission = Some(ArmyMission {
+                purpose: ArmyPurpose::Recover,
+                goal,
+                accepted_at: 12,
+                deadline: 1812,
+                score: 0,
+            });
+            let mut executive = Executive {
+                armies: vec![body],
+                next_army: 1,
+                ..Executive::default()
+            };
+            assert!(
+                executive
+                    .maintain_player_facing(PlayerId(0), &obs, issued_from)
+                    .is_empty()
+            );
+            executive
+        };
+
+        assert_eq!(
+            recovering(false).armies.len(),
+            1,
+            "a return that can still reach its fallback keeps its members"
+        );
+        assert!(
+            recovering(true).armies.is_empty(),
+            "a return stopped short of a sealed fallback frees its members"
+        );
+    }
+
+    #[test]
+    fn a_march_short_of_an_objective_sealed_by_briefed_rock_is_released_only_with_the_briefing() {
+        let staging = TilePos::new(4, 10);
+        let target = TilePos::new(30, 10);
+        let ring = rock_ring(target, None);
+        let escort = |id: u32, tile: TilePos| {
+            unit(
+                id,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                tile,
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            )
+        };
+        let mut obs = observation(
+            90,
+            (40, 24),
+            vec![
+                escort(1, TilePos::new(25, 10)),
+                escort(2, TilePos::new(25, 11)),
+            ],
+            Vec::new(),
+        );
+        // The ring is authored rock the seat has never explored, so only the
+        // public briefing knows it is there.
+        for tile in ring.iter().chain([&target]) {
+            let index = usize::try_from(tile.y * obs.map_width + tile.x).unwrap();
+            obs.explored[index] = false;
+            obs.visible[index] = false;
+        }
+        assert!(obs.known_rock.is_empty());
+        let briefing = PublicMapBriefing {
+            regions: Default::default(),
+            map_width: obs.map_width,
+            map_height: obs.map_height,
+            starting_foundries: Vec::new(),
+            teams: Vec::new(),
+            non_ground_terrain: ring
+                .iter()
+                .map(|&tile| (tile, oxide_sim::map::Terrain::Rock))
+                .collect(),
+            extractor_frames: Vec::new(),
+            initial_scrap: Vec::new(),
+        };
+        let survivors = |public_map: Option<&PublicMapBriefing>| {
+            let mut body = army(0, vec![UnitId(1), UnitId(2)], ArmyState::Pushing, staging);
+            body.target = Some(target);
+            body.issued = Some((60, TilePos::new(8, 10)));
+            let mut executive = Executive {
+                armies: vec![body],
+                next_army: 1,
+                ..Executive::default()
+            };
+            executive.maintain_player_facing_with_tactics(
+                PlayerId(0),
+                &obs,
+                staging,
+                true,
+                false,
+                public_map,
+            );
+            executive.armies.len()
+        };
+
+        assert_eq!(
+            survivors(None),
+            1,
+            "without the briefing, unexplored ground may still open a route"
+        );
+        assert_eq!(
+            survivors(Some(&briefing)),
+            0,
+            "the briefed rock seals the objective, so the stopped body is released"
+        );
+    }
+
+    #[test]
+    fn a_body_short_of_an_open_building_objective_is_not_released() {
+        let staging = TilePos::new(4, 10);
+        let target = TilePos::new(30, 10);
+        let escorts = vec![
+            unit(
+                1,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                TilePos::new(20, 10),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            ),
+            unit(
+                2,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                TilePos::new(20, 11),
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            ),
+        ];
+        let mut obs = observation(90, (40, 24), escorts, Vec::new());
+        obs.enemy_buildings
+            .push(building(50, PlayerId(1), BuildingKind::Foundry, target));
+        let routes = RouteProjection::new(QueryPurpose::ArmyMovement, &obs, Domain::Ground);
+        assert!(
+            !routes.reaches(TilePos::new(20, 10), target),
+            "premise: the objective's anchor lies inside its own footprint"
+        );
+        let mut body = army(0, vec![UnitId(1), UnitId(2)], ArmyState::Pushing, staging);
+        body.target = Some(target);
+        body.issued = Some((60, TilePos::new(8, 10)));
+        let mut executive = Executive {
+            armies: vec![body],
+            next_army: 1,
+            ..Executive::default()
+        };
+
+        assert!(
+            executive
+                .maintain_player_facing(PlayerId(0), &obs, staging)
+                .is_empty()
+        );
+        assert_eq!(
+            executive.armies.len(),
+            1,
+            "open ground around the footprint keeps the objective reachable"
+        );
+        assert_eq!(executive.armies[0].state, ArmyState::Pushing);
+        assert_eq!(executive.armies[0].progress, Some((10, 90)));
+    }
+
+    #[test]
+    fn a_gun_paced_march_stopped_short_of_a_sealed_objective_is_released_once_its_guns_rest() {
+        let staging = TilePos::new(4, 10);
+        let target = TilePos::new(29, 10);
+        // A pit two tiles wide cuts the whole map. No building stands at the
+        // objective, so the escorts march on it rather than screen the gun.
+        let world = |tick: u64, gun_walking: bool| {
+            let body = |id: u32, kind: UnitKind, tile: TilePos, idle: bool| {
+                unit(id, PlayerId(0), kind, tile, kind.stats().max_hp, idle)
+            };
+            let mut obs = observation(
+                tick,
+                (40, 24),
+                vec![
+                    body(1, UnitKind::Bombard, TilePos::new(14, 10), !gun_walking),
+                    body(2, UnitKind::Sentinel, TilePos::new(23, 9), true),
+                    body(3, UnitKind::Sentinel, TilePos::new(23, 11), true),
+                ],
+                Vec::new(),
+            );
+            let pit: Vec<_> = (0..24)
+                .flat_map(|y| [TilePos::new(24, y), TilePos::new(25, y)])
+                .collect();
+            with_known_rock(&mut obs, pit);
+            obs.known_pits = obs.known_rock.clone();
+            obs
+        };
+        let mut body = army(
+            0,
+            vec![UnitId(1), UnitId(2), UnitId(3)],
+            ArmyState::Pushing,
+            staging,
+        );
+        body.target = Some(target);
+        body.issued = Some((90, staging));
+        let mut executive = Executive {
+            armies: vec![body],
+            next_army: 1,
+            ..Executive::default()
+        };
+
+        for tick in [100, 110] {
+            let commands =
+                executive.maintain_player_facing(PlayerId(0), &world(tick, true), staging);
+            assert!(
+                commands.iter().any(|command| matches!(
+                    &command.command,
+                    Command::AttackMove { units, goal, .. }
+                        if units == &vec![UnitId(2), UnitId(3)] && *goal == target
+                )),
+                "escorts waiting on the walking gun take the next leg: {commands:?}"
+            );
+            assert_eq!(executive.armies.len(), 1, "the gun is still walking");
+            assert_eq!(
+                executive.armies[0].issued.map(|(at, _)| at),
+                Some(tick),
+                "the leg is recorded like any march"
+            );
+        }
+        executive.maintain_player_facing(PlayerId(0), &world(120, false), staging);
+        assert!(
+            executive.armies.is_empty(),
+            "once the gun rests, the body stranded short of the sealed objective is released \
+             long before the {ARMY_PROGRESS_PATIENCE_TICKS}-tick wedge"
+        );
+    }
+
+    #[test]
+    fn a_siege_screen_is_not_released_short_of_ground_only_its_guns_can_strike() {
+        let staging = TilePos::new(4, 10);
+        let target = TilePos::new(29, 10);
+        let gun = |id: u32, tile: TilePos, idle: bool| {
+            unit(
+                id,
+                PlayerId(0),
+                UnitKind::Bombard,
+                tile,
+                UnitKind::Bombard.stats().max_hp,
+                idle,
+            )
+        };
+        let escort = |id: u32, tile: TilePos| {
+            unit(
+                id,
+                PlayerId(0),
+                UnitKind::Sentinel,
+                tile,
+                UnitKind::Sentinel.stats().max_hp,
+                true,
+            )
+        };
+        // A pit two tiles wide cuts the whole map; the objective stands on
+        // the far side, within a Bombard's reach of the near bank.
+        let world = |units: Vec<UnitObs>| {
+            let mut obs = observation(100, (40, 24), units, Vec::new());
+            let pit: Vec<_> = (0..24)
+                .flat_map(|y| [TilePos::new(24, y), TilePos::new(25, y)])
+                .collect();
+            with_known_rock(&mut obs, pit);
+            let pits = obs.known_rock.clone();
+            obs.known_pits = pits;
+            obs.enemy_buildings
+                .push(building(50, PlayerId(1), BuildingKind::Foundry, target));
+            obs
+        };
+        let pushing = |members: Vec<UnitId>| {
+            let mut body = army(0, members, ArmyState::Pushing, staging);
+            body.target = Some(target);
+            body.issued = Some((99, staging));
+            Executive {
+                armies: vec![body],
+                next_army: 1,
+                ..Executive::default()
+            }
+        };
+        let screen = [TilePos::new(16, 10), TilePos::new(16, 11)];
+
+        // Escorts wait at their screen while the gun walks: they take the
+        // next leg, and the fresh leg is not a march to judge.
+        let obs = world(vec![
+            gun(1, TilePos::new(12, 10), false),
+            escort(2, screen[0]),
+            escort(3, screen[1]),
+        ]);
+        let mut screened = pushing(vec![UnitId(1), UnitId(2), UnitId(3)]);
+        let commands = screened.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert!(
+            commands.iter().any(|command| matches!(
+                &command.command,
+                Command::AttackMove { units, .. } if units == &vec![UnitId(1)]
+            )),
+            "the walking gun keeps its siege order: {commands:?}"
+        );
+        assert_eq!(screened.armies.len(), 1);
+        assert_eq!(screened.armies[0].state, ArmyState::Pushing);
+        assert_eq!(screened.armies[0].issued, None);
+
+        // Without an escort quorum no leg is reissued; the walking gun
+        // alone keeps the resting escort from reading as stranded.
+        let parked = |walking: bool| {
+            world(vec![
+                gun(1, TilePos::new(8, 10), !walking),
+                escort(2, screen[0]),
+                gun(3, TilePos::new(7, 10), true),
+                gun(4, TilePos::new(7, 11), true),
+            ])
+        };
+        let members = vec![UnitId(1), UnitId(2), UnitId(3), UnitId(4)];
+        let mut waiting = pushing(members.clone());
+        assert!(
+            waiting
+                .maintain_player_facing(PlayerId(0), &parked(true), staging)
+                .is_empty()
+        );
+        assert_eq!(waiting.armies.len(), 1, "a gun is still walking");
+        let mut resting = pushing(members);
+        resting.maintain_player_facing(PlayerId(0), &parked(false), staging);
+        assert!(
+            resting.armies.is_empty(),
+            "once every gun rests, the stranded body is released"
+        );
+
+        // Long guns alone never make a vacuous verdict.
+        let mut guns_only = pushing(vec![UnitId(3), UnitId(4)]);
+        guns_only.maintain_player_facing(PlayerId(0), &parked(false), staging);
+        assert_eq!(guns_only.armies.len(), 1);
+        assert_eq!(guns_only.armies[0].state, ArmyState::Pushing);
+
+        // A gun in reach of the seen objective engages it across the pit.
+        let obs = world(vec![
+            gun(1, TilePos::new(23, 10), true),
+            escort(2, TilePos::new(22, 9)),
+            escort(3, TilePos::new(22, 11)),
+        ]);
+        let mut firing = pushing(vec![UnitId(1), UnitId(2), UnitId(3)]);
+        firing.maintain_player_facing(PlayerId(0), &obs, staging);
+        assert_eq!(firing.armies.len(), 1);
+        assert_eq!(firing.armies[0].state, ArmyState::Engaging);
     }
 }

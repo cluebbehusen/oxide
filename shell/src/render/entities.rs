@@ -112,21 +112,26 @@ pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprit
 /// Queued waypoints of the selection, drawn as a faint chain; a patrol
 /// closes the loop. While arming a patrol (`R`), the collected route
 /// draws in scrap-amber instead.
-/// The screen-space waypoints one selected unit's program draws — pure,
-/// so the fog rules are testable: a FOREIGN unit yields no points at
+/// The screen-space waypoints one selected unit's program draws, as the
+/// staged commands will leave it — pure, so the fog rules are testable: a
+/// unit outside the decorated selection or a FOREIGN unit yields no points at
 /// all (an ally's or enemy's order chain is intent the viewer has no
-/// license to read — fog holds positions, never plans), and own goals
-/// draw only on explored ground (the harvest brain can retarget to a
-/// node the player has never seen). Each verb speaks its own color:
-/// bone walks, danger fights, scrap-gold harvests, patina builds,
-/// welds, and strips.
+/// license to read — fog holds positions, never plans). An own walk
+/// draws at the tile its player clicked, explored or not, never at the
+/// slot or endpoint the simulation resolved around it. Each verb speaks
+/// its own color: bone walks, danger fights, scrap-gold harvests,
+/// patina builds, welds, and strips.
 pub(crate) fn breadcrumb_points(
     game: &crate::game::Scene<'_>,
+    projection: &crate::game::projection::Projection,
     unit: &oxide_sim::Unit,
 ) -> Vec<(usize, Vec2, Color)> {
     if unit.player != game.presentation.human {
         return Vec::new();
     }
+    let Some(program) = projection.program(unit.id) else {
+        return Vec::new();
+    };
     let verb_color = |order: &oxide_sim::Order| match order {
         oxide_sim::Order::Move { .. } => BONE_FAINT,
         oxide_sim::Order::Advance { .. } => Color::new(0.95, 0.76, 0.28, 0.62),
@@ -152,10 +157,10 @@ pub(crate) fn breadcrumb_points(
         let goal = match order {
             oxide_sim::Order::Move { goal }
             | oxide_sim::Order::Advance { goal }
-            | oxide_sim::Order::AttackMove { goal } => *goal,
+            | oxide_sim::Order::AttackMove { goal } => goal.tile(),
             oxide_sim::Order::Harvest { node, .. } => *node,
             oxide_sim::Order::ReturnCargo { foundry, .. } => game.state.building(*foundry)?.anchor,
-            oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
+            oxide_sim::Order::Build { site } => projection.building(game.state, *site)?.anchor,
             oxide_sim::Order::Found { anchor, .. } => *anchor,
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
                 game.state.building(*building)?.anchor
@@ -163,8 +168,9 @@ pub(crate) fn breadcrumb_points(
             // A weld patient is the viewer's own machine — always seen.
             oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
-            oxide_sim::Order::Unload { at } => *at,
-            oxide_sim::Order::Land { goal } => *goal,
+            oxide_sim::Order::Unload { at } => at.tile(),
+            // A landing that took over a walk marks the walk's click.
+            oxide_sim::Order::Land { goal, from } => from.unwrap_or(*goal),
             oxide_sim::Order::Attack { target, .. } => {
                 let view = game.state.attack_view(game.presentation.human, *target)?;
                 return Some((
@@ -174,18 +180,15 @@ pub(crate) fn breadcrumb_points(
             }
             oxide_sim::Order::Idle => return None,
         };
-        (game.presentation.all_seeing() || game.my_vision().explored(goal))
-            .then_some((goal, verb_color(order)))
+        Some((goal, verb_color(order)))
     };
     // Each point carries its PROGRAM position (0 = the active order,
     // i = queue[i-1]) — the same order the dock pushes chips in, so a
-    // fogged leg leaves a numbering gap instead of renumbering the
-    // rest out of agreement with the chips.
+    // leg whose target the viewer can no longer place (a lost contact,
+    // a razed building) leaves a numbering gap instead of renumbering
+    // the rest out of agreement with the chips.
     let mut points: Vec<(usize, Vec2, Color)> = Vec::new();
-    for (i, order) in std::iter::once(&unit.order)
-        .chain(unit.queue.iter())
-        .enumerate()
-    {
+    for (i, order) in program.orders.iter().enumerate() {
         if let Some((g, c)) = goal_of(order) {
             points.push((
                 i,
@@ -240,11 +243,12 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
     // trail draws full strength and numbered, the rest of the
     // selection's trails dim to context.
     let subject = crate::panel::subject_unit(game);
+    let projection = game.projection();
     for id in decor_units(game) {
-        let Some(unit) = game.state.unit(id) else {
+        let (Some(unit), Some(program)) = (game.state.unit(id), projection.program(id)) else {
             continue;
         };
-        let points = breadcrumb_points(game, unit);
+        let points = breadcrumb_points(game, &projection, unit);
         if points.is_empty() {
             continue;
         }
@@ -261,10 +265,10 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
         let s = ui_scale();
-        // Numbered by PROGRAM position, not by how many survived the
-        // fog filter — a fogged leg leaves a gap, it never renumbers
-        // the rest away from the dock's chips.
-        let numbered = is_subject && !unit.queue.is_empty();
+        // Numbered by PROGRAM position, not by how many legs drew — a
+        // leg with no place to draw leaves a gap, it never renumbers the
+        // rest away from the dock's chips.
+        let numbered = is_subject && program.orders.len() > 1;
         let mut prev = start;
         for (idx, p, color) in &points {
             let color = fade(*color);
@@ -282,7 +286,7 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
             prev = *p;
         }
         // A patrol is a circuit: close it.
-        if unit.looping && points.len() > 1 {
+        if program.looping && points.len() > 1 {
             let (_, first, color) = points[0];
             let color = fade(color);
             line_between(prev, first, 1.0, color);

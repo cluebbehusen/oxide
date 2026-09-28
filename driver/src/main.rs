@@ -176,8 +176,9 @@ enum Cmd {
     },
     /// Run a manifest's head-to-head matrix of oxide-opponent against the
     /// frozen oxide-bot, publish its rows and print the report. Baseline legs
-    /// (oxide-bot against itself) are reused from a cache while the `bot/`,
-    /// `sim/` and `chassis/` sources are unchanged.
+    /// (oxide-bot against itself) are reused from a cache while the reference
+    /// digest is unchanged: the `bot/`, `sim/` and `chassis/` sources, the
+    /// `kit` code that hosts oxide-bot, and `Cargo.lock`.
     BotMatrix {
         /// Matrix manifest; its map paths resolve against its directory.
         manifest: PathBuf,
@@ -205,6 +206,37 @@ enum Cmd {
         #[arg(required = true)]
         rows: Vec<PathBuf>,
         /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Time bot decisions on a fixed workload: average and p99 wall time per
+    /// decision and total CPU, per seat and per controller, beside the
+    /// fog-honest observation build and oxide-bot's orientation. Seats decide
+    /// serially in seat order with tracing off, so total CPU is the sum of
+    /// decision wall times on one thread. Ticks without a due decision are
+    /// excluded. Timing never changes commands: the reported command and
+    /// final hashes equal an untimed run.
+    BotCost {
+        /// Named workload: `duel` (Skirmish, both seats, 6,000 ticks),
+        /// `skyhook` (Skyhook Anchorage's seven bot seats, 20,000 ticks) or
+        /// `mature-armies` (mirrored staged armies on Basalt Spine, 3,000
+        /// ticks). Every bot seat plays Standard, Balanced, personality seed 0.
+        #[arg(required_unless_present = "scenario", conflicts_with = "scenario")]
+        workload: Option<oxide_driver::bot_cost::Workload>,
+        /// Custom scenario path, or "skirmish", in place of a named workload.
+        /// Its authored bot seats and profiles play.
+        #[arg(long, requires = "ticks")]
+        scenario: Option<String>,
+        /// Ticks from the scenario start; defaults to the workload's window.
+        /// A match result ends the run early.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: Option<u64>,
+        /// Controller for every bot seat. Named workloads default to
+        /// `scripted`; a custom scenario keeps its authored controllers unless
+        /// this is given.
+        #[arg(long)]
+        controller: Option<oxide_sim::scenario::BotController>,
+        /// Emit JSON instead of the table.
         #[arg(long)]
         json: bool,
     },
@@ -859,6 +891,42 @@ fn main() -> Result<()> {
             print_matrix_report(&[rows_path], json)?;
         }
         Cmd::BotMatrixReport { rows, json } => print_matrix_report(&rows, json)?,
+        Cmd::BotCost {
+            workload,
+            scenario,
+            ticks,
+            controller,
+            json,
+        } => {
+            let (label, scenario, window) = match (workload, scenario) {
+                (Some(workload), _) => (
+                    workload.to_string(),
+                    workload.scenario(controller.unwrap_or_default()),
+                    ticks.unwrap_or(workload.ticks()),
+                ),
+                (None, Some(path)) => {
+                    let mut scenario = runner::load_scenario(&path)?;
+                    if let Some(controller) = controller {
+                        for config in scenario
+                            .players
+                            .iter_mut()
+                            .filter_map(|seat| seat.bot_config.as_mut())
+                        {
+                            config.controller = controller;
+                        }
+                    }
+                    let window = ticks.context("--scenario requires --ticks")?;
+                    (path, scenario, window)
+                }
+                (None, None) => bail!("name a workload or pass --scenario"),
+            };
+            let report = oxide_driver::bot_cost::measure(&label, &scenario, window)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.table());
+            }
+        }
         Cmd::Replay {
             path,
             ticks,
@@ -1441,6 +1509,67 @@ mod tests {
         assert_eq!(jobs.get(), 4);
         assert_eq!((candidate, baseline_cache, json), (None, None, false));
         assert!(Cli::try_parse_from(["oxide-driver", "bot-matrix-report"]).is_err());
+    }
+
+    #[test]
+    fn bot_cost_takes_a_named_workload_or_a_scenario_with_a_window() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "bot-cost",
+            "mature-armies",
+            "--controller",
+            "opponent",
+            "--json",
+        ])
+        .expect("named workload parses");
+        let Cmd::BotCost {
+            workload,
+            scenario,
+            ticks,
+            controller,
+            json,
+        } = cli.cmd
+        else {
+            panic!("bot-cost parsed as another command")
+        };
+        assert_eq!(
+            workload,
+            Some(oxide_driver::bot_cost::Workload::MatureArmies)
+        );
+        assert_eq!((scenario, ticks), (None, None));
+        assert_eq!(
+            controller,
+            Some(oxide_sim::scenario::BotController::Opponent)
+        );
+        assert!(json);
+
+        assert!(
+            Cli::try_parse_from([
+                "oxide-driver",
+                "bot-cost",
+                "--scenario",
+                "a.json",
+                "--ticks",
+                "9"
+            ])
+            .is_ok()
+        );
+        for invalid in [
+            &["oxide-driver", "bot-cost"][..],
+            &["oxide-driver", "bot-cost", "--scenario", "a.json"],
+            &[
+                "oxide-driver",
+                "bot-cost",
+                "duel",
+                "--scenario",
+                "a.json",
+                "--ticks",
+                "9",
+            ],
+            &["oxide-driver", "bot-cost", "marathon"],
+        ] {
+            assert!(Cli::try_parse_from(invalid).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]

@@ -438,6 +438,29 @@ impl<'a> RouteProjection<'a> {
         })
     }
 
+    /// Whether a unit standing on any of `starts` could reach the tile an
+    /// ordinary Move or AttackMove on `goal` snaps to.
+    ///
+    /// The simulation snaps a group's goal to the first open tile of a ring
+    /// scan whose direction depends on the group's approach, so every open
+    /// tile within the domain's snap radius is a candidate. A `false` answer
+    /// therefore holds whichever tile the command chose, in either seat's
+    /// frame, and a goal inside a building footprint still counts as
+    /// reachable through the open ground around it. It also holds before an
+    /// unexplored goal has been snapped: the group heads for the goal itself
+    /// until then, and that tile lies within the same disc.
+    pub(crate) fn command_goal_reachable_from(&self, starts: &[TilePos], goal: TilePos) -> bool {
+        let Some((center, radius)) = command_snap(self.obs, self.domain, goal) else {
+            return false;
+        };
+        (-radius..=radius).any(|dy| {
+            (-radius..=radius).any(|dx| {
+                let tile = center.offset(dx, dy);
+                starts.iter().any(|start| self.reaches(*start, tile))
+            })
+        })
+    }
+
     /// Whether every slot an eventual group command may assign is reachable
     /// from one known source component. Before exact members exist, their
     /// approach cannot determine the authoritative forward/reverse scan, so
@@ -1462,6 +1485,19 @@ struct CommandGoalProjection<'a> {
     orientation: Option<Orientation>,
 }
 
+/// The tiles a group Move or AttackMove on `goal` assigns its `count`
+/// members in canonical order: the snapped center, then the ring-scanned
+/// spread around it, padded with the last. `None` when nothing within the
+/// snap radius is open to the domain; the simulation then walks the group
+/// at the goal to end as close as it can, which callers treat as unroutable.
+///
+/// On a goal the seat has explored this reproduces the simulation, which
+/// resolves such a click when the command is issued, as far as the seat's
+/// memory of that ground is current. The simulation spreads a group over an
+/// unexplored goal only once the seat's team explores it, sending every
+/// member at the goal itself until then, and reads the ground it finds
+/// there; the projection assumes unexplored ground as the observation
+/// presents it, so it stays approximate for such a goal.
 fn command_goals(
     query_purpose: QueryPurpose,
     projection: CommandGoalProjection<'_>,
@@ -1512,42 +1548,26 @@ fn command_center(
     reverse: bool,
 ) -> Option<TilePos> {
     let world_goal = command_frame_tile(goal, projection.orientation);
-    match projection.domain {
-        Domain::Ground => ring_open(
-            query_purpose,
-            projection,
-            world_goal,
-            GOAL_SNAP_RADIUS,
-            reverse,
-        ),
-        Domain::Air => {
-            if projection.obs.map_width <= 0 || projection.obs.map_height <= 0 {
-                return None;
-            }
-            let clamped = TilePos::new(
-                world_goal.x.clamp(0, projection.obs.map_width - 1),
-                world_goal.y.clamp(0, projection.obs.map_height - 1),
-            );
-            let oriented_clamped = command_frame_tile(clamped, projection.orientation);
-            command_goal_open(
-                query_purpose,
-                projection.obs,
-                projection.public_map,
-                Domain::Air,
-                oriented_clamped,
-                projection.require_explored,
+    let (center, radius) = command_snap(projection.obs, projection.domain, world_goal)?;
+    ring_open(query_purpose, projection, center, radius, reverse)
+}
+
+/// Where a group command's goal snap starts and how far it scans: ground
+/// scans around the goal itself, air around the goal clamped onto the map.
+/// A half-turn or mirror of the map maps one disc onto the other, so either
+/// frame yields the same set of tiles.
+fn command_snap(obs: &Observation, domain: Domain, goal: TilePos) -> Option<(TilePos, i32)> {
+    match domain {
+        Domain::Ground => Some((goal, GOAL_SNAP_RADIUS)),
+        Domain::Air => (obs.map_width > 0 && obs.map_height > 0).then(|| {
+            (
+                TilePos::new(
+                    goal.x.clamp(0, obs.map_width - 1),
+                    goal.y.clamp(0, obs.map_height - 1),
+                ),
+                GOAL_SNAP_RADIUS + 3,
             )
-            .then_some(oriented_clamped)
-            .or_else(|| {
-                ring_open(
-                    query_purpose,
-                    projection,
-                    clamped,
-                    GOAL_SNAP_RADIUS + 3,
-                    reverse,
-                )
-            })
-        }
+        }),
     }
 }
 
@@ -3031,6 +3051,165 @@ mod tests {
             ),
             vec![UnitId(1), UnitId(2)]
         );
+    }
+
+    #[test]
+    fn explored_group_goals_match_the_simulation_slot_for_slot() {
+        use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
+        use oxide_sim::{Command, Faction, Order, PlayerCommand, Scenario};
+
+        // Rock, peaks and a pit around open ground, all in a central
+        // Kestrel's sight, so every click is explored and resolves at issue.
+        let map = [
+            "...........",
+            ".##.....^^.",
+            ".##.....^^.",
+            "....#......",
+            "...###.....",
+            "....#......",
+            "...........",
+            ".~~.....##.",
+            "...........",
+        ];
+        let state = Scenario {
+            mode: ScenarioMode::Sandbox,
+            name: "parity".into(),
+            seed: 5,
+            map: map.iter().map(|row| (*row).to_owned()).collect(),
+            players: vec![PlayerSpec {
+                name: "p0".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            }],
+            units: [
+                (UnitKind::Kestrel, 5, 4),
+                (UnitKind::Sentinel, 0, 0),
+                (UnitKind::Sentinel, 10, 8),
+                (UnitKind::Kestrel, 10, 0),
+                (UnitKind::Sentinel, 0, 8),
+                (UnitKind::Sentinel, 6, 6),
+                (UnitKind::Kestrel, 0, 4),
+            ]
+            .into_iter()
+            .map(|(kind, x, y)| UnitSpec {
+                player: 0,
+                kind,
+                x,
+                y,
+            })
+            .collect(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("the parity fixture builds");
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let ids: Vec<UnitId> = obs.my_units.iter().map(|unit| unit.id).collect();
+        for y in 0..obs.map_height {
+            for x in 0..obs.map_width {
+                let goal = TilePos::new(x, y);
+                assert!(obs.explored(goal), "premise: {goal} is explored");
+                let issued = state.inspect_command_phase(
+                    &[PlayerCommand {
+                        player: PlayerId(0),
+                        command: Command::Move {
+                            units: ids.clone(),
+                            goal,
+                            queue: false,
+                        },
+                    }],
+                    |view| {
+                        view.units()
+                            .iter()
+                            .map(|unit| match unit.order {
+                                Order::Move { goal } => (unit.id, goal.target()),
+                                other => panic!("unit {} got {other:?}", unit.id),
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                );
+                for domain in [Domain::Ground, Domain::Air] {
+                    let members: Vec<_> = canonical_members(&obs, &ids)
+                        .into_iter()
+                        .filter(|unit| unit.kind.stats().domain == domain)
+                        .collect();
+                    let reverse = spread_scan_reversed(&obs, goal, &members, None);
+                    let projected = command_goals(
+                        QueryPurpose::NavigationTest,
+                        CommandGoalProjection {
+                            obs: &obs,
+                            public_map: None,
+                            domain,
+                            require_explored: false,
+                            orientation: None,
+                        },
+                        goal,
+                        members.len(),
+                        reverse,
+                    )
+                    .expect("premise: open ground near every click");
+                    for (unit, tile) in members.iter().zip(projected) {
+                        assert_eq!(
+                            issued
+                                .iter()
+                                .find(|(id, _)| *id == unit.id)
+                                .map(|(_, t)| *t),
+                            Some(tile),
+                            "unit {} on a click at {goal}",
+                            unit.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn command_goal_reachability_counts_every_tile_the_snap_could_choose() {
+        let mut obs = Observation::from_data(ObservationData {
+            map_width: 30,
+            map_height: 16,
+            visible: vec![true; 30 * 16],
+            explored: vec![true; 30 * 16],
+            ..crate::test_support::observation_data()
+        });
+        // Peaks across the whole map at x = 14 part both domains.
+        let wall: Vec<_> = (0..16).map(|y| TilePos::new(14, y)).collect();
+        obs.known_peaks.clone_from(&wall);
+        obs.known_rock = wall;
+        let objective = TilePos::new(20, 6);
+        obs.enemy_buildings
+            .push(building(9, 1, BuildingKind::Foundry, objective, true));
+        let west = [TilePos::new(3, 8)];
+        let east = [TilePos::new(24, 12)];
+        let ground = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Ground);
+        let air = RouteProjection::new(QueryPurpose::NavigationTest, &obs, Domain::Air);
+
+        assert!(!ground.reaches(east[0], objective));
+        assert!(
+            ground.command_goal_reachable_from(&east, objective),
+            "a goal inside a footprint is reached through the open ground around it"
+        );
+        assert!(!ground.command_goal_reachable_from(&west, objective));
+        assert!(
+            ground.command_goal_reachable_from(&west, TilePos::new(16, 8)),
+            "any open tile within the snap radius could be the command goal"
+        );
+        assert!(!ground.command_goal_reachable_from(&west, TilePos::new(18, 8)));
+        assert!(
+            air.command_goal_reachable_from(&west, TilePos::new(18, 8)),
+            "air snaps three tiles further out"
+        );
+        assert!(!air.command_goal_reachable_from(&west, TilePos::new(21, 8)));
+        assert!(
+            air.command_goal_reachable_from(&east, TilePos::new(40, 8)),
+            "air snaps around the goal clamped onto the map"
+        );
+        assert!(!air.command_goal_reachable_from(&west, TilePos::new(40, 8)));
+        assert!(!ground.command_goal_reachable_from(&[], TilePos::new(4, 8)));
     }
 
     #[test]

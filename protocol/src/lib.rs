@@ -5,7 +5,7 @@ pub mod input;
 pub mod session;
 pub mod view;
 
-use oxide_sim::{Command, Event, PlayerId};
+use oxide_sim::{Command, Event, OrderKey, PlayerId};
 use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
@@ -428,21 +428,34 @@ fn reject_unknown_command_value_fields(
             reject_unknown_object_fields(wire.get("goal"), "command.goal", &["x", "y"])
         }
         Command::Attack { target, .. } | Command::FocusFire { target, .. } => {
-            reject_unknown_object_fields(wire.get("target"), "command.target", &["kind", "id"])?;
-            if matches!(target, oxide_sim::AttackTarget::RememberedBuilding(_)) {
-                let memory = wire.get("target").and_then(|target| target.get("id"));
-                reject_unknown_object_fields(
-                    memory,
-                    "command.target.id",
-                    &["owner", "building_kind", "anchor"],
-                )?;
-                reject_unknown_object_fields(
-                    memory.and_then(|v| v.get("anchor")),
-                    "command.target.id.anchor",
-                    &["x", "y"],
-                )?;
+            reject_unknown_attack_target_fields(wire.get("target"), "command.target", target)
+        }
+        Command::CancelOrder { key, .. } => {
+            let wire = wire.get("key");
+            reject_unknown_object_fields(wire, "command.key", order_key_wire_fields(key))?;
+            let field = |name| wire.and_then(|key| key.get(name));
+            match key {
+                OrderKey::Walk { .. } | OrderKey::Unload { .. } => {
+                    reject_unknown_object_fields(field("tile"), "command.key.tile", &["x", "y"])
+                }
+                OrderKey::Land { .. } => {
+                    reject_unknown_object_fields(field("pad"), "command.key.pad", &["x", "y"])
+                }
+                OrderKey::Harvest { .. } | OrderKey::Found { .. } => {
+                    reject_unknown_object_fields(field("anchor"), "command.key.anchor", &["x", "y"])
+                }
+                OrderKey::Attack { objective } => reject_unknown_attack_target_fields(
+                    field("objective"),
+                    "command.key.objective",
+                    objective,
+                ),
+                OrderKey::ReturnCargo
+                | OrderKey::Build { .. }
+                | OrderKey::Repair { .. }
+                | OrderKey::Salvage { .. }
+                | OrderKey::RepairUnit { .. }
+                | OrderKey::Board { .. } => Ok(()),
             }
-            Ok(())
         }
         Command::Harvest { .. } => {
             reject_unknown_object_fields(wire.get("node"), "command.node", &["x", "y"])
@@ -482,6 +495,45 @@ fn reject_unknown_command_value_fields(
         | Command::UpgradeBuilding { .. }
         | Command::Load { .. }
         | Command::ClearFocus { .. } => Ok(()),
+    }
+}
+
+fn reject_unknown_attack_target_fields(
+    value: Option<&serde_json::Value>,
+    path: &str,
+    target: &oxide_sim::AttackTarget,
+) -> Result<(), String> {
+    reject_unknown_object_fields(value, path, &["kind", "id"])?;
+    if matches!(target, oxide_sim::AttackTarget::RememberedBuilding(_)) {
+        let memory = value.and_then(|target| target.get("id"));
+        reject_unknown_object_fields(
+            memory,
+            &format!("{path}.id"),
+            &["owner", "building_kind", "anchor"],
+        )?;
+        reject_unknown_object_fields(
+            memory.and_then(|v| v.get("anchor")),
+            &format!("{path}.id.anchor"),
+            &["x", "y"],
+        )?;
+    }
+    Ok(())
+}
+
+fn order_key_wire_fields(key: &OrderKey) -> &'static [&'static str] {
+    match key {
+        OrderKey::Walk { tile: _ } | OrderKey::Unload { tile: _ } => &["order", "tile"],
+        OrderKey::Attack { objective: _ } => &["order", "objective"],
+        OrderKey::Land { pad: _ } => &["order", "pad"],
+        OrderKey::Harvest { anchor: _ } => &["order", "anchor"],
+        OrderKey::ReturnCargo => &["order"],
+        OrderKey::Build { site: _ } => &["order", "site"],
+        OrderKey::Found { kind: _, anchor: _ } => &["order", "kind", "anchor"],
+        OrderKey::Repair { building: _ } | OrderKey::Salvage { building: _ } => {
+            &["order", "building"]
+        }
+        OrderKey::RepairUnit { unit: _ } => &["order", "unit"],
+        OrderKey::Board { transport: _ } => &["order", "transport"],
     }
 }
 
@@ -590,6 +642,12 @@ fn command_wire_fields(command: &Command) -> &'static [&'static str] {
             at: _,
             queue: _,
         } => &["type", "transport", "at", "queue"],
+        Command::CancelOrder {
+            unit: _,
+            key: _,
+            from_end: _,
+            units: _,
+        } => &["type", "unit", "key", "from_end", "units"],
     }
 }
 
@@ -812,10 +870,11 @@ mod tests {
             Command::Unload { .. } => 20,
             Command::ClearFocus { .. } => 21,
             Command::ReturnCargo { .. } => 22,
+            Command::CancelOrder { .. } => 23,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 23;
+    const COMMAND_VARIANTS: usize = 24;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -1051,6 +1110,14 @@ mod tests {
                 at: TilePos::new(11, 3),
                 queue: true,
             },
+            Command::CancelOrder {
+                unit: UnitId(3),
+                key: oxide_sim::OrderKey::Walk {
+                    tile: TilePos::new(6, 2),
+                },
+                from_end: 1,
+                units: vec![UnitId(4), UnitId(5)],
+            },
         ];
         assert_every_tag_sampled(
             commands.iter().map(command_tag),
@@ -1267,6 +1334,26 @@ mod tests {
             (
                 r#"{"id":14,"method":"send_command","params":{"player":0,"command":{"type":"unload","transport":2,"at":{"x":3,"y":4,"spread":2},"queue":false}}}"#,
                 "command.at",
+            ),
+            (
+                r#"{"id":17,"method":"send_command","params":{"player":0,"command":{"type":"cancel_order","unit":1,"key":{"order":"walk","tile":{"x":3,"y":4},"verb":"move"},"from_end":0}}}"#,
+                "command.key",
+            ),
+            (
+                r#"{"id":18,"method":"send_command","params":{"player":0,"command":{"type":"cancel_order","unit":1,"key":{"order":"walk","tile":{"x":3,"y":4,"z":1}},"from_end":0}}}"#,
+                "command.key.tile",
+            ),
+            (
+                r#"{"id":19,"method":"send_command","params":{"player":0,"command":{"type":"cancel_order","unit":1,"key":{"order":"found","kind":"turret","anchor":{"x":3,"y":4,"w":2}},"from_end":0}}}"#,
+                "command.key.anchor",
+            ),
+            (
+                r#"{"id":20,"method":"send_command","params":{"player":0,"command":{"type":"cancel_order","unit":1,"key":{"order":"attack","objective":{"kind":"remembered_building","id":{"owner":1,"building_kind":"reclaimer","anchor":{"x":3,"y":4,"z":0}}}},"from_end":0}}}"#,
+                "command.key.objective.id.anchor",
+            ),
+            (
+                r#"{"id":21,"method":"send_command","params":{"player":0,"command":{"type":"cancel_order","unit":1,"key":{"order":"attack","objective":{"kind":"contact","id":0,"domain":"air"}},"from_end":0}}}"#,
+                "command.key.objective",
             ),
         ] {
             let error = serde_json::from_str::<RequestEnvelope>(line)

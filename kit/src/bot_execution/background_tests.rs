@@ -1,6 +1,6 @@
 use super::*;
 use crate::checkpoint::SessionCheckpoint;
-use crate::controller::seat_controllers;
+use crate::controller::{record_events, seat_controllers};
 use oxide_sim::{
     Command, PlayerId, Scenario,
     scenario::{BotConfig, BotDifficulty, BotStance},
@@ -15,6 +15,13 @@ fn checkpoint(bots: &[SeatController]) -> Vec<u8> {
             .collect::<Vec<_>>(),
     )
     .unwrap()
+}
+
+fn stop(player: u8) -> PlayerCommand {
+    PlayerCommand {
+        player: PlayerId(player),
+        command: Command::Stop { units: vec![] },
+    }
 }
 
 // Occupy the existing pool without sleeps or production dispatch hooks.
@@ -137,7 +144,7 @@ fn mixed_controllers_background_and_serial_continue_identically() {
     for _ in 0..180 {
         let job = executor.prepare(&state, &bots, None);
         let due = job.is_some();
-        let commands = if let Some(job) = job {
+        let mut commands = if let Some(job) = job {
             job.finish(&state, &mut bots, None)
         } else {
             executor.commands(&state, &mut bots)
@@ -147,9 +154,56 @@ fn mixed_controllers_background_and_serial_continue_identically() {
         }
         assert_eq!(commands, serial_commands(&state, &mut expected, None));
         assert_eq!(checkpoint(&bots), checkpoint(&expected));
-        Arc::get_mut(&mut state).unwrap().tick(&commands);
+        if state.current_tick() % 30 == 7 {
+            commands.extend([stop(0), stop(1)]);
+        }
+        let report = Arc::get_mut(&mut state).unwrap().tick(&commands);
+        record_events(&mut bots, &report);
+        record_events(&mut expected, &report);
     }
     assert!(empty_decisions > 0);
+}
+
+#[test]
+fn own_events_are_consumed_only_when_a_decision_is_installed() {
+    let scenario = crate::controller::mixed_skirmish();
+    let executor = BotExecutor::new(2);
+    let mut state = Arc::new(scenario.build().unwrap());
+    let mut bots = seat_controllers(&scenario).unwrap();
+    while state.current_tick() < 12 {
+        let mut commands = serial_commands(&state, &mut bots, None);
+        if state.current_tick() == 11 {
+            commands.push(stop(0));
+        }
+        let report = Arc::get_mut(&mut state).unwrap().tick(&commands);
+        record_events(&mut bots, &report);
+    }
+    let events = |bots: &[SeatController]| {
+        let saved: serde_json::Value = serde_json::from_slice(&checkpoint(bots)).unwrap();
+        saved[0]["opponent"]["events"].clone()
+    };
+    let rejected = serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}]);
+    let before = checkpoint(&bots);
+    assert_eq!(events(&bots), rejected);
+
+    drop(executor.prepare(&state, &bots, None).unwrap());
+    while executor.busy.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+    assert_eq!(checkpoint(&bots), before);
+
+    let (_, trace) = bots.clone()[0].act_traced(&state);
+    let Some(crate::controller::SeatTrace::Opponent(trace)) = trace else {
+        panic!("the opponent seat decides at tick 12");
+    };
+    assert_eq!(serde_json::to_value(trace.events).unwrap(), rejected);
+    let mut serial = bots.clone();
+    let commands = serial_commands(&state, &mut serial, None);
+    let job = executor.prepare(&state, &bots, None).unwrap();
+    assert_eq!(checkpoint(&bots), before);
+    assert_eq!(job.finish(&state, &mut bots, None), commands);
+    assert_eq!(checkpoint(&bots), checkpoint(&serial));
+    assert_eq!(events(&bots), serde_json::json!([]));
 }
 
 #[test]

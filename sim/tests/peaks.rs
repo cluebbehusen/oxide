@@ -96,7 +96,7 @@ fn no_route_crosses_a_full_ridge() {
             },
         ),
     ]);
-    run(&mut state, 400);
+    let events = run(&mut state, 400);
     assert!(
         state.unit(walker).unwrap().tile().x < 12,
         "the ground half stays ground-half"
@@ -105,6 +105,21 @@ fn no_route_crosses_a_full_ridge() {
         state.unit(flyer).unwrap().tile().x < 12,
         "the sky is walled too"
     );
+    // Each idles beside the ridge, nearest its goal, having said so once.
+    for (unit, beside) in [(walker, TilePos::new(11, 5)), (flyer, TilePos::new(11, 7))] {
+        let u = state.unit(unit).unwrap();
+        assert_eq!(u.order, oxide_sim::Order::Idle);
+        assert_eq!(u.tile(), beside);
+        assert_eq!(
+            events
+                .iter()
+                .filter(
+                    |e| matches!(e, Event::OrderStalled { unit: stalled, .. } if *stalled == unit)
+                )
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

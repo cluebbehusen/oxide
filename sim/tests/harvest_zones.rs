@@ -442,7 +442,7 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
     run_until(
         &mut state,
         1_000,
-        |state, _| matches!(state.unit(worker).unwrap().order, Order::Move { goal: g } if g == goal),
+        |state, _| matches!(state.unit(worker).unwrap().order, Order::Move { goal: g } if g.tile() == goal),
     );
     let unit = state.unit(worker).unwrap();
     assert_eq!(unit.carrying, 0, "the queued leg starts only after deposit");
@@ -461,7 +461,7 @@ fn retirement_deposits_then_advances_one_queued_order_at_the_foundry() {
 
     state.tick(&[]);
     assert!(
-        matches!(state.unit(worker).unwrap().order, Order::Move { goal: g } if g == goal),
+        matches!(state.unit(worker).unwrap().order, Order::Move { goal: g } if g.tile() == goal),
         "retirement cannot pop the newly active order a second time"
     );
 }

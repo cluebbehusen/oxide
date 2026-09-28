@@ -31,7 +31,9 @@
 //!    cadence tick pays its first salvage immediately.
 //! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates). Newly visible
-//!    provisional sites activate or refund against the revealed ground.
+//!    provisional sites activate or refund against the revealed ground, and
+//!    tile goals whose clicked tile the owner's team has now explored take
+//!    their spread slots.
 //! 10. **Victory** — a player with no Foundry (or who conceded) is out;
 //!     last standing wins immediately; remaining aircraft crashes are discarded.
 //!
@@ -49,9 +51,11 @@ mod commands;
 pub(crate) mod construction;
 mod damage;
 pub(crate) mod flight;
+mod goals;
 pub(crate) mod landing;
 mod movement;
 mod production;
+mod reach;
 mod spatial;
 
 use crate::command::PlayerCommand;
@@ -212,6 +216,7 @@ impl State {
             if charges::cancel_discovered(self, &mut events) {
                 self.reconcile_attack_knowledge();
             }
+            goals::expose(self);
             movement::forget_stalls_without_routes(self);
             victory(self, &mut events);
         }
@@ -438,10 +443,10 @@ pub(crate) fn route_for_position(
         crate::stats::Domain::Ground => astar_for(state, from_tile, to),
         crate::stats::Domain::Air => {
             // Goals ring-snap off peaks here, at the one funnel every
-            // air route passes: group orders pre-snap via spread_goals,
-            // but patrol waypoints and rally tiles arrive raw — and
-            // line_blocked ignores endpoints by design, so an unsnapped
-            // peak goal would hand the flyer the mountain itself.
+            // air route passes: walks already route to open sky, but other
+            // callers may name a peak — and line_blocked ignores endpoints
+            // by design, so an unsnapped peak goal would hand the flyer the
+            // mountain itself.
             let to = if state.passable_for(crate::stats::Domain::Air, to) {
                 to
             } else {
@@ -573,56 +578,6 @@ pub(crate) fn tile_adjacent_to_rect(tile: TilePos, anchor: TilePos, size: (i32, 
         && tile.y >= anchor.y - 1
         && tile.x <= anchor.x + w
         && tile.y <= anchor.y + h
-}
-
-/// The tile a commanded goal actually means to one movement domain:
-/// ground snaps to the nearest walkable tile, air clamps onto the map —
-/// any tile flies, rock included.
-pub(crate) fn domain_goal(
-    state: &State,
-    goal: TilePos,
-    domain: crate::stats::Domain,
-) -> Option<TilePos> {
-    match domain {
-        crate::stats::Domain::Ground => {
-            find_nearby_passable(state, goal, crate::stats::GOAL_SNAP_RADIUS)
-        }
-        crate::stats::Domain::Air => {
-            // Clamp to the map, then off any peak: this is the funnel
-            // patrol waypoints and rally orders lower through, and a
-            // stored peak goal deadlocks the flyer — it reaches the
-            // route's snapped endpoint, compares against the original
-            // order goal, and repaths to the same tile forever.
-            let clamped = TilePos::new(
-                goal.x.clamp(0, state.map.width() - 1),
-                goal.y.clamp(0, state.map.height() - 1),
-            );
-            if state.passable_for(crate::stats::Domain::Air, clamped) {
-                Some(clamped)
-            } else {
-                snap_air_goal(state, clamped)
-            }
-        }
-    }
-}
-
-/// The nearest passable tile to `goal` within `radius`, scanning rings
-/// outward, row-major within a ring — a deterministic "snap to walkable".
-pub(crate) fn find_nearby_passable(state: &State, goal: TilePos, radius: i32) -> Option<TilePos> {
-    for r in 0..=radius {
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx.abs().max(dy.abs()) != r {
-                    continue;
-                }
-                let t = goal.offset(dx, dy);
-                if state.passable(t) {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1041,6 +996,44 @@ mod tests {
         )
     }
 
+    /// Mirrored goals name mirrored clicked tiles, slots and endpoints. A
+    /// pending pair shares its rank and scans in opposite frames, which is
+    /// what makes the slots it later takes mirror.
+    fn assert_goals_mirror(stage: &str, state: &State, left: crate::Goal, right: crate::Goal) {
+        use crate::Aim;
+
+        assert_eq!(
+            mirror_tile(state, left.tile()),
+            right.tile(),
+            "{stage}: clicked tile"
+        );
+        match (left.aim, right.aim) {
+            (Aim::Tile, Aim::Tile) => {}
+            (
+                Aim::Pending {
+                    rank: left_rank,
+                    reverse: left_reverse,
+                },
+                Aim::Pending {
+                    rank: right_rank,
+                    reverse: right_reverse,
+                },
+            ) => {
+                assert_eq!(left_rank, right_rank, "{stage}: pending rank");
+                assert_ne!(left_reverse, right_reverse, "{stage}: pending frame");
+            }
+            (Aim::Slot(left_slot), Aim::Slot(right_slot)) => {
+                assert_eq!(mirror_tile(state, left_slot), right_slot, "{stage}: slot");
+            }
+            aims => panic!("{stage}: aims are not paired: {aims:?}"),
+        }
+        assert_eq!(
+            left.endpoint.map(|tile| mirror_tile(state, tile)),
+            right.endpoint,
+            "{stage}: endpoint"
+        );
+    }
+
     fn assert_calibration_open_symmetry(
         stage: &str,
         state: &State,
@@ -1099,12 +1092,35 @@ mod tests {
                     );
                     assert_eq!(left_retiring, right_retiring, "{stage}: retirement");
                 }
-                (Order::AttackMove { goal: left_goal }, Order::AttackMove { goal: right_goal }) => {
+                (Order::AttackMove { goal: left_goal }, Order::AttackMove { goal: right_goal })
+                | (Order::Move { goal: left_goal }, Order::Move { goal: right_goal }) => {
+                    assert_goals_mirror(stage, state, left_goal, right_goal);
+                }
+                (
+                    Order::Attack {
+                        target: left_target,
+                        pursue: left_pursue,
+                        resume: left_resume,
+                    },
+                    Order::Attack {
+                        target: right_target,
+                        pursue: right_pursue,
+                        resume: right_resume,
+                    },
+                ) => {
                     assert_eq!(
-                        mirror_tile(state, left_goal),
-                        right_goal,
-                        "{stage}: attack-move goal"
-                    )
+                        std::mem::discriminant(&left_target),
+                        std::mem::discriminant(&right_target),
+                        "{stage}: attack target kind"
+                    );
+                    assert_eq!(left_pursue, right_pursue, "{stage}: pursuit");
+                    match (left_resume, right_resume) {
+                        (None, None) => {}
+                        (Some(left_goal), Some(right_goal)) => {
+                            assert_goals_mirror(stage, state, left_goal, right_goal);
+                        }
+                        resumes => panic!("{stage}: resumes are not paired: {resumes:?}"),
+                    }
                 }
                 (Order::Idle, Order::Idle) => {}
                 orders => panic!("{stage}: orders are not paired: {orders:?}"),
@@ -1223,6 +1239,8 @@ mod tests {
         if charges::cancel_discovered(state, &mut events) {
             state.reconcile_attack_knowledge();
         }
+        goals::expose(state);
+        assert_calibration_open_symmetry(&stage("exposure"), state, unit_pairs);
         victory(state, &mut events);
         assert_calibration_open_symmetry(&stage("cleanup"), state, unit_pairs);
         state.tick += 1;
@@ -1599,5 +1617,127 @@ mod tests {
 
         assert_calibration_open_symmetry("before group order", &state, &unit_pairs);
         run_calibration_open_tick(&mut state, &commands, &mut unit_pairs);
+    }
+
+    #[test]
+    fn mirrored_groups_sent_beyond_sight_take_mirrored_slots_on_exposure() {
+        use crate::scenario::UnitSpec;
+        use crate::{Aim, Command, Order, PlayerId, UnitId, UnitKind};
+
+        let mut scenario = calibration_open_cupric();
+        scenario.units.extend(
+            [
+                (0, 9, 9),
+                (1, 38, 20),
+                (0, 8, 9),
+                (1, 39, 20),
+                (0, 9, 7),
+                (1, 38, 22),
+                (0, 7, 9),
+                (1, 40, 20),
+                (0, 7, 7),
+                (1, 40, 22),
+            ]
+            .map(|(player, x, y)| UnitSpec {
+                player,
+                kind: UnitKind::Sentinel,
+                x,
+                y,
+            }),
+        );
+        let mut state = scenario.build().expect("the mirrored scenario builds");
+        let mut unit_pairs = Vec::from(
+            [
+                (0, 4),
+                (1, 5),
+                (2, 6),
+                (3, 7),
+                (8, 9),
+                (10, 11),
+                (12, 13),
+                (14, 15),
+                (16, 17),
+            ]
+            .map(|(left, right)| (UnitId(left), UnitId(right))),
+        );
+        // A rock tile just beyond the western group's sight, far from every
+        // enemy, and its mirror: the click snaps and spreads only once seen.
+        let clicked = TilePos::new(20, 8);
+        assert!(!state.passable(clicked), "premise: the click lands on rock");
+        assert!(!state.vision(PlayerId(0)).explored(clicked));
+        assert!(
+            !state
+                .vision(PlayerId(1))
+                .explored(mirror_tile(&state, clicked))
+        );
+        let groups = [
+            [3, 8, 10, 12, 14, 16].map(UnitId),
+            [7, 9, 11, 13, 15, 17].map(UnitId),
+        ];
+        let commands = vec![
+            PlayerCommand {
+                player: PlayerId(0),
+                command: Command::AttackMove {
+                    units: groups[0].into(),
+                    goal: clicked,
+                    queue: false,
+                },
+            },
+            PlayerCommand {
+                player: PlayerId(1),
+                command: Command::AttackMove {
+                    units: groups[1].into(),
+                    goal: mirror_tile(&state, clicked),
+                    queue: false,
+                },
+            },
+        ];
+        let goal = |state: &State, id| match state.unit(id).expect("sentinel lives").order {
+            Order::AttackMove { goal } => Some(goal),
+            Order::Idle => None,
+            other => panic!("unit {id} left its march: {other:?}"),
+        };
+
+        run_calibration_open_tick(&mut state, &commands, &mut unit_pairs);
+        for (rank, id) in groups[0].into_iter().enumerate() {
+            let goal = goal(&state, id).expect("marching");
+            assert_eq!(goal.target(), clicked, "every member heads for the click");
+            assert!(matches!(goal.aim, Aim::Pending { rank: r, .. } if usize::from(r) == rank));
+        }
+
+        let mut exposed = None;
+        for _ in 0..400 {
+            run_calibration_open_tick(&mut state, &[], &mut unit_pairs);
+            let goals: Vec<_> = groups[0].iter().map(|&id| goal(&state, id)).collect();
+            if exposed.is_none() && goals.iter().flatten().all(|goal| !goal.is_pending()) {
+                exposed = Some(goals);
+            }
+            if groups
+                .iter()
+                .flatten()
+                .all(|&id| goal(&state, id).is_none())
+            {
+                break;
+            }
+        }
+        let exposed = exposed.expect("the click was explored on the way");
+        let mut targets: Vec<_> = exposed
+            .iter()
+            .map(|goal| goal.expect("still marching when exposed").target())
+            .collect();
+        assert!(
+            targets.iter().all(|&target| target != clicked),
+            "rock is no slot"
+        );
+        targets.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        targets.dedup();
+        assert_eq!(targets.len(), 6, "the members spread over their own slots");
+        assert!(
+            groups
+                .iter()
+                .flatten()
+                .all(|&id| goal(&state, id).is_none()),
+            "both groups arrived"
+        );
     }
 }

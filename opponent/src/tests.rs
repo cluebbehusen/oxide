@@ -1,9 +1,10 @@
 use super::*;
 use chassis::grid::TilePos;
+use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{
     BotController, BotStance, BuildingSpec, PlayerSpec, ScenarioMode, UnitSpec,
 };
-use oxide_sim::{BuildingId, Command, Event, Faction, Scenario, UnitId, UnitKind};
+use oxide_sim::{BuildingId, Command, Event, Faction, Scenario, StallReason, UnitId, UnitKind};
 
 /// A half-turn-symmetric arena. Each seat's Harvester stands equally far from
 /// its two nearby scrap nodes, so the choice depends on the tie-break.
@@ -113,7 +114,7 @@ fn a_staged_foundry_harvests_and_trains() {
     assert_eq!(opponent.player(), PlayerId(0));
     assert_eq!(opponent.profile(), &ResolvedProfile::resolve(config()));
 
-    let (commands, trace) = opponent.act_traced(&state);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
     let mut harvesters = seat_units(&state, PlayerId(0));
     harvesters.sort_unstable();
     let foundry = foundries(&state, PlayerId(0))[0];
@@ -143,6 +144,7 @@ fn a_staged_foundry_harvests_and_trains() {
             tick: 0,
             player: PlayerId(0),
             bank: 200,
+            events: Vec::new(),
             spent: UnitKind::Harvester.stats().cost,
             purchases: vec![Purchase {
                 building: foundry,
@@ -160,13 +162,18 @@ fn a_staged_foundry_harvests_and_trains() {
         "{:?}",
         report.events
     );
-    assert_eq!(opponent.act(&state), Vec::new(), "off-cadence tick");
+    assert_eq!(
+        opponent.act(&state, &mut OwnEvents::default()),
+        Vec::new(),
+        "off-cadence tick"
+    );
 }
 
 #[test]
 fn an_empty_bank_harvests_without_training() {
     let state = arena(0).build().unwrap();
-    let (commands, trace) = Opponent::new(PlayerId(0), config()).act_traced(&state);
+    let (commands, trace) =
+        Opponent::new(PlayerId(0), config()).act_traced(&state, &mut OwnEvents::default());
     assert!(trains(&commands).is_empty());
     assert!(
         commands
@@ -189,7 +196,7 @@ fn the_running_total_pays_for_one_unit_across_two_foundries() {
     });
     let state = scenario.build().unwrap();
     assert_eq!(foundries(&state, PlayerId(0)).len(), 2);
-    let commands = Opponent::new(PlayerId(0), config()).act(&state);
+    let commands = Opponent::new(PlayerId(0), config()).act(&state, &mut OwnEvents::default());
     assert_eq!(
         trains(&commands),
         [(foundries(&state, PlayerId(0))[0], UnitKind::Harvester)]
@@ -208,7 +215,7 @@ fn harvesters_fill_six_per_foundry_before_sentinels() {
     scenario.units.extend((1..=9).map(|x| harvester(0, x, 10)));
     let state = scenario.build().unwrap();
     let homes = foundries(&state, PlayerId(0));
-    let commands = Opponent::new(PlayerId(0), config()).act(&state);
+    let commands = Opponent::new(PlayerId(0), config()).act(&state, &mut OwnEvents::default());
     assert_eq!(
         trains(&commands),
         [
@@ -238,7 +245,10 @@ fn decisions_follow_the_difficulty_interval_and_stop_after_the_result() {
     advance_to(&mut state, 36, &[surrender(1)]);
     assert!(state.result().is_some());
     assert!(!standard.decision_due(&state));
-    assert_eq!(standard.act_traced(&state), (Vec::new(), None));
+    assert_eq!(
+        standard.act_traced(&state, &mut OwnEvents::default()),
+        (Vec::new(), None)
+    );
 }
 
 #[test]
@@ -250,8 +260,15 @@ fn a_surrendered_or_foundry_less_seat_stays_silent() {
     assert!(state.result().is_none() && state.player(PlayerId(0)).resigned);
     let mut resigned = Opponent::new(PlayerId(0), config());
     assert!(resigned.decision_due(&state));
-    assert_eq!(resigned.act_traced(&state), (Vec::new(), None));
-    assert!(!Opponent::new(PlayerId(1), config()).act(&state).is_empty());
+    assert_eq!(
+        resigned.act_traced(&state, &mut OwnEvents::default()),
+        (Vec::new(), None)
+    );
+    assert!(
+        !Opponent::new(PlayerId(1), config())
+            .act(&state, &mut OwnEvents::default())
+            .is_empty()
+    );
 
     for row in &mut scenario.map {
         *row = row.replace('1', ".");
@@ -259,9 +276,70 @@ fn a_surrendered_or_foundry_less_seat_stays_silent() {
     let state = scenario.build().unwrap();
     assert!(foundries(&state, PlayerId(0)).is_empty());
     assert_eq!(
-        Opponent::new(PlayerId(0), config()).act_traced(&state),
+        Opponent::new(PlayerId(0), config()).act_traced(&state, &mut OwnEvents::default()),
         (Vec::new(), None)
     );
+}
+
+#[test]
+fn a_decision_receives_only_its_seats_failures_since_the_last_one() {
+    let mut scenario = arena(0);
+    for (row, walls) in [(1, "###"), (2, "#.#"), (3, "###")] {
+        scenario.map[row].replace_range(10..13, walls);
+    }
+    let mut state = scenario.build().unwrap();
+    let mut opponent = Opponent::new(PlayerId(0), config());
+    let mut events = OwnEvents::default();
+    let tick = |state: &mut State, events: &mut OwnEvents, commands: &[PlayerCommand]| {
+        events.record(PlayerId(0), &state.tick(commands).events);
+    };
+    let commands = opponent.act(&state, &mut events);
+    tick(&mut state, &mut events, &commands);
+
+    let harvester = seat_units(&state, PlayerId(0))[0];
+    let train = |player: u8, building: BuildingId| PlayerCommand {
+        player: PlayerId(player),
+        command: Command::Train {
+            building,
+            kind: UnitKind::Harvester,
+        },
+    };
+    let staged = [
+        train(1, foundries(&state, PlayerId(1))[0]),
+        train(0, foundries(&state, PlayerId(0))[0]),
+        PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Move {
+                units: vec![harvester],
+                goal: TilePos::new(11, 2),
+                queue: false,
+            },
+        },
+    ];
+    tick(&mut state, &mut events, &staged);
+    while state.current_tick() < 12 {
+        assert_eq!(opponent.act_traced(&state, &mut events), (Vec::new(), None));
+        tick(&mut state, &mut events, &[]);
+    }
+
+    let received = opponent.act_traced(&state, &mut events).1.unwrap().events;
+    assert!(
+        matches!(
+            received.as_slice(),
+            [
+                OwnEvent::CommandRejected {
+                    reason: RejectReason::NotEnoughScrap
+                },
+                OwnEvent::OrderStalled {
+                    unit,
+                    reason: StallReason::NoRoute,
+                    ..
+                },
+            ] if *unit == harvester
+        ),
+        "{received:?}"
+    );
+    assert_eq!(events, OwnEvents::default());
 }
 
 #[test]
@@ -287,7 +365,7 @@ fn unexplored_scrap_is_never_targeted() {
     );
     assert!(
         Opponent::new(PlayerId(0), config())
-            .act(&state)
+            .act(&state, &mut OwnEvents::default())
             .iter()
             .all(|command| !matches!(command.command, Command::Harvest { .. }))
     );
@@ -296,8 +374,8 @@ fn unexplored_scrap_is_never_targeted() {
 #[test]
 fn mirrored_seats_issue_mirrored_commands() {
     let state = arena(200).build().unwrap();
-    let west = Opponent::new(PlayerId(0), config()).act(&state);
-    let east = Opponent::new(PlayerId(1), config()).act(&state);
+    let west = Opponent::new(PlayerId(0), config()).act(&state, &mut OwnEvents::default());
+    let east = Opponent::new(PlayerId(1), config()).act(&state, &mut OwnEvents::default());
     assert!(!west.is_empty());
 
     let rank = |player: PlayerId, unit: UnitId| {
@@ -358,7 +436,10 @@ fn identical_runs_and_a_mid_game_clone_repeat_commands_and_hash() {
         ];
         let mut history = Vec::new();
         for _ in 0..ticks {
-            let commands: Vec<_> = seats.iter_mut().flat_map(|seat| seat.act(&state)).collect();
+            let commands: Vec<_> = seats
+                .iter_mut()
+                .flat_map(|seat| seat.act(&state, &mut OwnEvents::default()))
+                .collect();
             history.extend(commands.iter().cloned());
             state.tick(&commands);
         }
@@ -379,10 +460,13 @@ fn identical_runs_and_a_mid_game_clone_repeat_commands_and_hash() {
     let mut clone_state = state.clone();
     let mut clone_seats = seats.clone();
     for _ in 0..300 {
-        let commands: Vec<_> = seats.iter_mut().flat_map(|seat| seat.act(&state)).collect();
+        let commands: Vec<_> = seats
+            .iter_mut()
+            .flat_map(|seat| seat.act(&state, &mut OwnEvents::default()))
+            .collect();
         let cloned: Vec<_> = clone_seats
             .iter_mut()
-            .flat_map(|seat| seat.act(&clone_state))
+            .flat_map(|seat| seat.act(&clone_state, &mut OwnEvents::default()))
             .collect();
         assert_eq!(commands, cloned);
         state.tick(&commands);
@@ -405,7 +489,10 @@ fn checkpoints_round_trip_and_restore_only_opponent_seats() {
     let mut restored = Opponent::restore(&decoded, &scenario, &state).unwrap();
     assert_eq!(restored.player(), opponent.player());
     assert_eq!(restored.profile(), opponent.profile());
-    assert_eq!(restored.act(&state), opponent.clone().act(&state));
+    assert_eq!(
+        restored.act(&state, &mut OwnEvents::default()),
+        opponent.clone().act(&state, &mut OwnEvents::default())
+    );
     assert!(serde_json::from_str::<Checkpoint>(r#"{"player":1,"memory":[]}"#).is_err());
 
     let rejected = |scenario: &Scenario, player: u8| {

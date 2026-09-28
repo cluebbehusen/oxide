@@ -71,7 +71,8 @@ exact-allocation, forecasting or planning-progress requirements.
   opponent-only runs end at `--ticks`.
 - **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
   writes one JSONL row per decision. Opponent seats' rows carry this crate's
-  `Trace`: tick, player, bank, spent, purchases and unit-order count.
+  `Trace`: tick, player, bank, received own events, spent, purchases and
+  unit-order count.
 
 ## Report at handoff
 
@@ -79,6 +80,17 @@ When handing off a PR, tell Connor its net production and test line change,
 average and p99 time per decision with total CPU, and the smoke-matrix
 comparison, including when they are unfavorable. Keep them out of the PR
 description.
+
+- **Lines:** `uv run tools/line_report.py <base>` prints the net production and
+  test line change per top-level directory from the merge base; `--help` defines
+  what counts. `--working-tree` includes uncommitted files.
+- **CPU:**
+  `cargo run --release --locked -p oxide-driver -- bot-cost <workload> --controller opponent`
+  for each of `duel`, `skyhook` and `mature-armies` reports average and p99 time
+  per decision and total CPU per seat and controller, with the observation build
+  beside them. Run it on the branch and on its base, on one machine with no
+  competing builds or benchmarks. `--controller scripted` gives `oxide-bot`'s
+  figures for reference; `--json` gives the same report as data.
 
 Run the smoke matrix locally before handoff; CI does not run it:
 

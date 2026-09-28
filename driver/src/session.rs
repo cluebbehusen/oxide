@@ -19,7 +19,7 @@
 use crate::runner::{self, GameReplay};
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
-use oxide_kit::controller::{SeatController, seat_controllers};
+use oxide_kit::controller::{SeatController, record_events, seat_controllers};
 use oxide_protocol::framing::{IncomingRequest, Limits, incoming};
 use oxide_protocol::{
     AdvancedView, DebugSession, PresentedView, Reply, Request, ResponseEnvelope, SavedView,
@@ -136,7 +136,8 @@ impl Session {
                 .iter()
                 .map(|t| t.command.clone())
                 .collect();
-            state.tick(&commands);
+            let report = state.tick(&commands);
+            record_events(&mut bots, &report);
         }
         anyhow::ensure!(
             cursor.is_finished(),
@@ -168,7 +169,9 @@ impl Session {
             self.recorder
                 .record(self.state.current_tick(), command.clone());
         }
-        self.state.tick(&commands).events
+        let report = self.state.tick(&commands);
+        record_events(&mut self.bots, &report);
+        report.events
     }
 
     /// Answers one request. The shared surface (state reads, the driven
@@ -428,6 +431,20 @@ mod tests {
             }
             assert_eq!(original.step(), restored.step());
             assert_eq!(original.state.hash(), restored.state.hash());
+            if index == 0 {
+                let controllers = |session: &Session| {
+                    serde_json::to_value(session).unwrap()["session"]["bots"].clone()
+                };
+                let pending = controllers(&original);
+                assert_eq!(
+                    pending[0]["opponent"]["events"],
+                    serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}])
+                );
+                let mut snapshot = original.recorder.clone();
+                snapshot.meta.ticks = Some(original.state.current_tick());
+                assert_eq!(controllers(&restored), pending);
+                assert_eq!(controllers(&Session::resume(snapshot).unwrap()), pending);
+            }
         }
         assert_eq!(
             serde_json::to_vec(&original.recorder.commands).unwrap(),

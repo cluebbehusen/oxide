@@ -35,6 +35,26 @@ three route steps ahead of the rearmost gun, then waits for it before
 approaching the shared firing position. Artillery with a visible target in range
 remains engaged rather than being discarded as a stalled march.
 
+The simulation walks a march it cannot complete as close as it can and ends it
+there, so a hopeless march leaves its escorts idle short of the goal rather than
+refused where they stood. A marching or recovering body is released once a march
+issued on an earlier think has left every escort idle and no gun walking, while
+out of contact, and no escort of any escort movement domain can reach an open
+tile within that domain's command snap radius of the goal. Every tile the snap
+could choose counts, so the verdict does not depend on the spread direction or
+the seat's frame, and a building objective stays reachable through the ground
+around its footprint. The check routes over the public terrain briefing, as
+mission admission does. A post-fight re-march is recorded like a lowered march,
+and so is an escort leg reissued at the objective while guns walk, so that body
+is judged once its guns rest. A siege screen's leg is not recorded, because its
+artillery paces it, so a screen waiting on its guns is never judged stranded,
+and long guns without escorts are never judged at all. The rule also covers a
+goal with no open ground within its snap radius, which the simulation walks
+toward rather than refusing. A march that ends where it began still counts as a
+bounce, and the no-progress wedge remains the fallback for stoppages the
+executive cannot prove, such as a jam, an unseen blocker, or a route that
+unexplored ground might still open.
+
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early
 economy-recovery path, before preparing new investment alternatives. Spatial

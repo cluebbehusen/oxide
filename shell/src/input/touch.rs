@@ -471,7 +471,7 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
                 let card = pressed_card(game, p, input.ui);
                 let badge = layout.idle_badge;
                 if let Some(card) = card {
-                    if lifted.card == Some(card) {
+                    if lift_presses(input, &lifted, card) {
                         press_card(game, input, card.hit);
                     }
                 } else if badge.w > 0.0 && crate::layout::touch_pad(badge, input.ui).contains(p) {
@@ -510,6 +510,15 @@ pub(super) fn up(game: &mut Game, input: &mut InputState, id: u64, p: Vec2) {
         }
         _ => {}
     }
+}
+
+/// Whether lifting `finger` over `card` presses it: only the card it landed
+/// on, and a chip that discards work only if it was not held. A finger held
+/// past the long-press threshold on such a chip was reading its preview, and
+/// lifting must not cost the order, site, or production slot it names.
+fn lift_presses(input: &InputState, finger: &TouchPoint, card: PressedCard) -> bool {
+    let held = (input.now - finger.down_at) * 1000.0 >= f64::from(input.touch_prefs.long_press_ms);
+    finger.card == Some(card) && !(held && card.hit.action.discards_work())
 }
 
 /// A still tap on the battlefield selects, and a quick second tap on a
@@ -558,7 +567,8 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     // Chrome owns its ground for the held finger too: a long-press on
     // the minimap or panel band must not order the army to the world
     // point hiding under the HUD. A chrome finger is never spent, so
-    // lifting it after reading a card's preview still activates it.
+    // lifting it after reading a card's preview still activates it, except
+    // an order chip held past the long-press threshold (see `lift_presses`).
     let Some(tp) = world_hold(input) else {
         return;
     };

@@ -178,10 +178,10 @@ fn discovering_a_mine_cancels_travelling_and_queued_crews_with_a_full_refund() {
         }
         assert_eq!(refunded, 40);
         assert_eq!(state.player(PlayerId(0)).scrap, bank);
-        assert_eq!(
+        assert!(matches!(
             state.unit(worker).unwrap().order,
-            Order::Move { goal: next }
-        );
+            Order::Move { goal } if goal.tile() == next
+        ));
         assert!(
             !state
                 .buildings()

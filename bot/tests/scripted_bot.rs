@@ -584,11 +584,11 @@ fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
         "the mapped reconnaissance command must be accepted: {:?}",
         report.events
     );
-    assert_eq!(
-        state.unit(scout).expect("the scout remains alive").order,
-        Order::Move {
-            goal: expected_goal,
-        },
+    assert!(
+        matches!(
+            state.unit(scout).expect("the scout remains alive").order,
+            Order::Move { goal } if goal.tile() == expected_goal
+        ),
         "State must receive the same world-space goal emitted by the rotated Brain"
     );
 }
@@ -3841,6 +3841,204 @@ fn scripted_lift_launches_three_full_manifests_together_and_returns_every_carrie
         rejected.is_empty(),
         "the complete wave must use only legal player commands: {rejected:?}"
     );
+}
+
+/// The lift plans its drops over explored peaks only, so a drop inside a
+/// mesa whose far rim nobody has seen looks reachable. The simulation flies
+/// each carrier as close as the sky allows, sets its riders down there, and
+/// reports NoRoute once, so an impossible drop still trips the no-route
+/// check of the full ferry cycle above.
+#[test]
+fn scripted_lift_to_a_sealed_drop_disgorges_at_the_nearest_open_sky() {
+    let mut scenario = Scenario::skirmish();
+    scenario.name = "Sealed drop".to_owned();
+    scenario.seed = 0x0A16_0004;
+    scenario.map = sealed_drop_map();
+    scenario.meta = None;
+    scenario.players[0].scrap = 0;
+    scenario.players[0].bot = true;
+    scenario.players[0].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Balanced,
+        17,
+    ));
+    scenario.players[1].scrap = 0;
+    scenario.players[1].bot = false;
+    scenario.players[1].bot_config = None;
+    scenario.buildings = vec![
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Array,
+            x: 7,
+            y: 10,
+        },
+        BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Array,
+            x: 27,
+            y: 7,
+        },
+    ];
+    scenario.units = vec![UnitSpec {
+        player: 0,
+        kind: UnitKind::Kestrel,
+        x: 18,
+        y: 7,
+    }];
+    scenario.units.extend((0..3).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Skyhook,
+        x: 3 + index,
+        y: 8,
+    }));
+    scenario.units.extend((0..20).map(|index| UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 3 + index % 6,
+        y: 14 + index / 6,
+    }));
+    let mut state = scenario.build().expect("sealed drop scenario builds");
+    // The mesa, rim and enclosed ground, spans x 22..=31 and y 3..=12.
+    let mesa = |tile: TilePos| (22..=31).contains(&tile.x) && (3..=12).contains(&tile.y);
+    let inside = |tile: TilePos| (23..=30).contains(&tile.x) && (4..=11).contains(&tile.y);
+    let mut carriers: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Skyhook)
+        .map(|unit| unit.id)
+        .collect();
+    carriers.sort_unstable();
+    let mut brain = Brain::scripted(
+        PlayerId(0),
+        scenario.players[0].bot_config.unwrap(),
+        public_map(&scenario),
+    );
+    let mut drops: BTreeMap<_, Vec<TilePos>> = BTreeMap::new();
+    let mut assault_goals = Vec::new();
+    let mut boarded = Vec::new();
+    let mut unloaded = Vec::new();
+    let mut stopped = BTreeMap::new();
+    let mut rejected = Vec::new();
+
+    for _ in 0..3_000 {
+        let commands = brain.act(&state);
+        for command in &commands {
+            match &command.command {
+                Command::Unload { transport, at, .. } => {
+                    drops.entry(*transport).or_default().push(*at);
+                }
+                Command::AttackMove { goal, .. } => assault_goals.push(*goal),
+                _ => {}
+            }
+        }
+        let report = state.tick(&commands);
+        for event in report.events {
+            match event {
+                Event::UnitBoarded { unit, .. } => boarded.push(unit),
+                Event::UnitUnloaded {
+                    transport,
+                    unit,
+                    at,
+                    ..
+                } => unloaded.push((transport, unit, at)),
+                Event::OrderStalled {
+                    unit,
+                    player: PlayerId(0),
+                    pos,
+                    reason: oxide_sim::event::StallReason::NoRoute,
+                } if carriers.contains(&unit) => {
+                    assert!(
+                        stopped.insert(unit, TilePos::containing(pos)).is_none(),
+                        "a carrier reports its shortfall once"
+                    );
+                }
+                Event::CommandRejected {
+                    player: PlayerId(0),
+                    reason,
+                } => rejected.push(reason),
+                _ => {}
+            }
+        }
+        if stopped.len() == carriers.len()
+            && carriers.iter().all(|carrier| {
+                state
+                    .unit(*carrier)
+                    .is_some_and(|unit| unit.cargo.is_empty())
+            })
+        {
+            break;
+        }
+    }
+
+    assert_eq!(
+        stopped.keys().copied().collect::<Vec<_>>(),
+        carriers,
+        "every carrier sent into the mesa reports NoRoute; drops={drops:?}"
+    );
+    for (carrier, stop) in &stopped {
+        let [drop] = drops[carrier].as_slice() else {
+            panic!("carrier {carrier:?} must not retry its drop: {drops:?}");
+        };
+        assert!(
+            inside(*drop),
+            "premise: the lift planned {drop:?} inside the mesa"
+        );
+        let dist_sq = |tile: TilePos| (tile.x - drop.x).pow(2) + (tile.y - drop.y).pow(2);
+        let nearest = (0..24)
+            .flat_map(|y| (0..40).map(move |x| TilePos::new(x, y)))
+            .filter(|tile| !mesa(*tile))
+            .map(dist_sq)
+            .min()
+            .unwrap();
+        assert!(!mesa(*stop));
+        assert_eq!(
+            dist_sq(*stop),
+            nearest,
+            "carrier {carrier:?} stops as close to {drop:?} as the sky allows"
+        );
+    }
+    boarded.sort_unstable();
+    let mut riders: Vec<_> = unloaded.iter().map(|(_, rider, _)| *rider).collect();
+    riders.sort_unstable();
+    assert_eq!(boarded.len(), 12, "the wave boards before launch");
+    assert_eq!(riders, boarded, "every rider is set down");
+    for (carrier, rider, at) in &unloaded {
+        assert!(
+            !mesa(*at) && at.chebyshev(stopped[carrier]) <= oxide_sim::stats::UNLOAD_SCAN_RADIUS,
+            "rider {rider:?} lands around its carrier's stop, outside the mesa, not at {at:?}"
+        );
+    }
+    assert!(
+        assault_goals.iter().all(|goal| !inside(*goal)),
+        "riders stranded outside the mesa are not sent at it: {assault_goals:?}"
+    );
+    assert!(rejected.is_empty(), "{rejected:?}");
+}
+
+/// A pit parts the seats. A ring of peaks seals a mesa off from ground and
+/// sky alike; the enemy Foundry stands in the open far corner.
+fn sealed_drop_map() -> Vec<String> {
+    let mut rows = vec![vec!['.'; 40]; 24];
+    rows.first_mut().expect("map has a north edge").fill('#');
+    rows.last_mut().expect("map has a south edge").fill('#');
+    for (y, row) in rows.iter_mut().enumerate() {
+        row[0] = '#';
+        row[39] = '#';
+        if (1..23).contains(&y) {
+            row[14] = '~';
+        }
+        if y == 3 || y == 12 {
+            row[22..=31].fill('^');
+        } else if (3..=12).contains(&y) {
+            row[22] = '^';
+            row[31] = '^';
+        }
+    }
+    rows[11][2] = '1';
+    rows[20][36] = '2';
+    rows.into_iter()
+        .map(|row| row.into_iter().collect())
+        .collect()
 }
 
 fn open_air_operation_map() -> Vec<String> {
