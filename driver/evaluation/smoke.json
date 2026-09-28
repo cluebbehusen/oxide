@@ -1,0 +1,14 @@
+{
+  "name": "smoke",
+  "tick_limit": 60000,
+  "runs": 3,
+  "scenario_seed_base": 7000,
+  "personality_seed_base": 9000,
+  "difficulties": ["standard", "prime"],
+  "stances": ["balanced", "aggressive"],
+  "maps": [
+    { "path": "../../scenarios/skirmish.json", "family": "open" },
+    { "path": "../../scenarios/the-deep-cut.json", "family": "constrained" },
+    { "path": "../../scenarios/severance.json", "family": "severed" }
+  ]
+}

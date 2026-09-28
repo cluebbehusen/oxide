@@ -265,6 +265,18 @@ pub(crate) fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
     (!sorted.is_empty()).then(|| sorted[(sorted.len() * num / den).min(sorted.len() - 1)])
 }
 
+/// The 95% Wilson score interval for `wins` of `n` — the interval that
+/// stays inside 0..1 and stays honest at small counts.
+pub(crate) fn wilson(wins: u32, n: u32) -> [f64; 2] {
+    const Z: f64 = 1.959_963_984_540_054;
+    let n = f64::from(n);
+    let p = f64::from(wins) / n;
+    let denominator = 1.0 + Z * Z / n;
+    let centre = (p + Z * Z / (2.0 * n)) / denominator;
+    let half = Z / denominator * (p * (1.0 - p) / n + Z * Z / (4.0 * n * n)).sqrt();
+    [(centre - half).max(0.0), (centre + half).min(1.0)]
+}
+
 pub(crate) fn serialize_bot_config<S: serde::Serializer>(
     config: &oxide_sim::scenario::BotConfig,
     serializer: S,
@@ -328,6 +340,17 @@ mod tests {
         assert_eq!(report.victories + report.draws + report.undecided, 2);
         assert_eq!(report.matches[0].seed, 7_000);
         assert_eq!(report.matches[1].seed, 7_001);
+    }
+
+    /// The interval brackets the point estimate and never leaves 0..1.
+    #[test]
+    fn the_wilson_interval_stays_inside_the_unit_range() {
+        for (wins, n) in [(0u32, 1u32), (1, 1), (0, 8), (8, 8), (3, 7), (40, 95)] {
+            let [lo, hi] = wilson(wins, n);
+            let p = f64::from(wins) / f64::from(n);
+            assert!((0.0..=1.0).contains(&lo) && (0.0..=1.0).contains(&hi));
+            assert!(lo <= p && p <= hi, "{wins}/{n} -> [{lo}, {hi}]");
+        }
     }
 
     /// Nearest rank, and both quantiles collapse onto a single sample.

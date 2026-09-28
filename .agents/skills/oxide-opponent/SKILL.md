@@ -92,6 +92,59 @@ description.
   competing builds or benchmarks. `--controller scripted` gives `oxide-bot`'s
   figures for reference; `--json` gives the same report as data.
 
+Run the smoke matrix locally before handoff; CI does not run it:
+
+```sh
+cargo run --release -p oxide-driver -- bot-matrix driver/evaluation/smoke.json --out <new directory>
+```
+
+It plays Skirmish, The Deep Cut and Severance at Standard and Prime, Balanced
+and Aggressive, three seed runs each. Each cell is a head-to-head pair, this bot
+in seat zero and then seat one with one personality seed on both sides, plus one
+`oxide-bot` mirror leg. Mirror rows are cached per user under the reference
+digest of the `bot/`, `sim/` and `chassis/` sources, the `kit` code that hosts
+`oxide-bot`, and `Cargo.lock` (`--baseline-cache` moves the cache), so they
+rerun only when those inputs, a map, a seed or the tick limit change.
+`driver/evaluation/duels.json` is the full two-seat matrix.
+`bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
+same report as JSON.
+
+Read the report overall and by difficulty, stance and map family:
+
+- **Pairs**: this bot wins both legs, split, `oxide-bot` wins both, or undecided
+  (at least one leg without a winner).
+- **New share**: this bot's share of head-to-head legs that had a winner, with a
+  95% Wilson interval. Small matrices give wide intervals; compare runs, not
+  single cells.
+- **Decided new-old** against **decided old-old**: head-to-head legs should
+  decide at least as often as the mirror.
+- **Failure incidents** and **income**, per controller with seat-legs for scale.
+  `oxide-bot` numbers are the reference, not a target.
+
+## Failure detectors
+
+Evaluation rows carry omniscient QA detectors, checked every 12 ticks for every
+controlled seat. They never reach a controller.
+
+- **Repeated orders:** one unit stalls with the same reason 5 times within 1,200
+  ticks. The episode ends after a full window without that stall. Danger holds
+  are exempt: a harvest line waiting out danger re-reports every 100 ticks by
+  design. They still count in the row's stall evidence.
+- **Abandoned sites:** a paid, visible, unbuilt base-tier site makes no
+  construction progress for 1,200 ticks.
+- **Starved production:** every built producer of the seat stays idle for 1,200
+  ticks while the bank, less scrap this bot protects for a saving target, covers
+  the cheapest unit any of them may legally train. Queueing anything ends the
+  episode. The trace does not report protected scrap yet, so the whole bank
+  counts. Rows also list each producer's idle, affordable ticks as a diagnostic,
+  not an incident.
+
+Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
+(deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation
+estimate: two Harvesters on each of the four nearest scrap nodes that still hold
+scrap for every completed Foundry, at their straight-line round trip, plus those
+credits. No node counts for two Foundries.
+
 ## Review play
 
 Use `replay-summary` and the native shell through the oxide-live-qa skill. Give

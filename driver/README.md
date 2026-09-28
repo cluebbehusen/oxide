@@ -13,7 +13,10 @@ Build provenance belongs to this executable. Its build script watches the driver
 and shared dependency package trees plus shared build inputs, assets, and
 scenarios; shell-only edits and private workspace notes do not contribute to its
 dirty status. Reports retain both the original recording identity and this
-exporter's identity. Source archives report unknown provenance.
+exporter's identity. Source archives report unknown provenance. The build also
+embeds a reference digest of the `oxide-bot`, simulation and `chassis` sources,
+the `kit` code that hosts `oxide-bot`, and `Cargo.lock`, which evaluation
+records as the frozen reference it compares against.
 
 ## Main pieces
 
@@ -46,6 +49,21 @@ exporter's identity. Source archives report unknown provenance.
   leave hidden staging files or a partial replay set because arbitrary final
   paths cannot be published atomically; inspect and remove that incomplete
   batch, then rerun it under a fresh candidate.
+- Evaluation rows also record each seat's team and elimination tick, the
+  producing build and reference digest, omniscient failure detectors (repeated
+  impossible orders, abandoned paid construction, starved production) with
+  per-producer idle diagnostics, and income against a saturated-economy
+  estimate. These are QA evidence computed from authoritative state; they never
+  reach a controller.
+- `bot_matrix` expands a manifest from `evaluation/` into head-to-head pairs of
+  `oxide-opponent` against `oxide-bot`, both sides sharing one personality seed,
+  plus one `oxide-bot` mirror leg per cell. Mirror rows are cached under the
+  reference digest and reused while it is unchanged. `bot-matrix` publishes
+  labelled rows and prints pair outcomes, the new bot's share of won legs with
+  Wilson intervals, decided rates, failure incidents and income, overall and by
+  difficulty, stance and map family; `bot-matrix-report` re-reads published
+  rows. Evaluation inputs live in `evaluation/`, not `scenarios/`, whose every
+  file the shell menu, map gates and golden sweeps read.
 - `bot_cost` times controller decisions on named workloads: a Skirmish duel, the
   seven-bot Skyhook game, and a staged mature-army match kept under
   `tests/fixtures/performance/` so it stays out of the shipped pool. It reports
