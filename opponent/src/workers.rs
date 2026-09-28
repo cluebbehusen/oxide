@@ -90,18 +90,21 @@ pub(crate) fn run(
             count += 1;
         }
     }
-    resume_sites(observation, frame, ledger);
+    resume_sites(observation, map, frame, ledger);
     assign_idle(observation, map, frame, &staffing.worked, ledger);
 }
 
-/// The nearest Harvester to `centre` that is not constructing and has no work
-/// from this decision yet.
+/// The nearest Harvester to `centre` that stands on the same ground as
+/// `site`, is not constructing, and has no work from this decision yet.
 pub(crate) fn builder(
     observation: &ObservationData,
+    map: &MapModel,
     frame: HomeFrame,
+    site: TilePos,
     centre: (i64, i64),
     ledger: &Ledger,
 ) -> Option<UnitId> {
+    let ground = map.component(site)?;
     observation
         .my_units
         .iter()
@@ -109,6 +112,7 @@ pub(crate) fn builder(
             unit.kind == UnitKind::Harvester
                 && unit.site.is_none()
                 && unit.founding.is_none()
+                && map.component(unit.tile) == Some(ground)
                 && !ledger.employs(unit.id)
         })
         .min_by_key(|unit| (frame.rank(centre, doubled(unit.tile)), unit.id))
@@ -118,7 +122,12 @@ pub(crate) fn builder(
 /// Sends the nearest free Harvester to every paid base-tier site nobody is
 /// building. Upgrades rebuild themselves and provisional scaffolds already
 /// have their founder.
-fn resume_sites(observation: &ObservationData, frame: HomeFrame, ledger: &mut Ledger) {
+fn resume_sites(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    ledger: &mut Ledger,
+) {
     for site in &observation.my_buildings {
         let attended = observation
             .my_units
@@ -128,8 +137,8 @@ fn resume_sites(observation: &ObservationData, frame: HomeFrame, ledger: &mut Le
             continue;
         }
         let centre = footprint_centre(site.kind, site.anchor);
-        let Some(builder) = builder(observation, frame, centre, ledger) else {
-            return;
+        let Some(builder) = builder(observation, map, frame, site.anchor, centre, ledger) else {
+            continue;
         };
         let command = Command::Build {
             units: vec![builder],

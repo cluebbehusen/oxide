@@ -427,3 +427,84 @@ fn a_restored_seat_continues_its_saving_exactly() {
         state.tick(&original);
     }
 }
+
+#[test]
+fn a_scaffold_stays_pending_until_its_ground_is_confirmed() {
+    let state = saturated(400).build().unwrap();
+    let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let fabricator = Investment::Tech(BuildingKind::Fabricator);
+    let candidates = [Candidate {
+        investment: fabricator,
+        score: 400,
+    }];
+    let mut memory = Memory::default();
+    let mut saving = Saving::default();
+    saving.settle(&observation, &candidates, 500, 0, &mut memory);
+    let anchor = TilePos::new(9, 8);
+    saving.attempted(Step::Build(BuildingKind::Fabricator), anchor, 0);
+
+    let mut scaffold = observation.my_buildings[0].clone();
+    scaffold.id = BuildingId(99);
+    scaffold.kind = BuildingKind::Fabricator;
+    scaffold.anchor = anchor;
+    scaffold.built = false;
+    scaffold.provisional = true;
+    observation.my_buildings.push(scaffold);
+    observation.tick = 12;
+    saving.settle(&observation, &candidates, 500, 0, &mut memory);
+    assert!(saving.pending(), "a scaffold is not yet a site");
+    assert_eq!(saving.investment(), Some(fabricator));
+
+    observation.my_buildings.pop();
+    observation.tick = 24;
+    saving.settle(&observation, &candidates, 500, 0, &mut memory);
+    assert!(!saving.pending());
+    assert!(
+        memory.failed(BuildingKind::Fabricator, anchor, 24),
+        "revealed and refunded"
+    );
+    assert_eq!(saving.investment(), Some(fabricator), "the target stays");
+}
+
+#[test]
+fn a_harvester_sealed_off_from_the_site_never_builds_it() {
+    let mut scenario = arena(400);
+    scenario.map[7].replace_range(5..8, "###");
+    scenario.map[8].replace_range(5..8, "#.#");
+    scenario.map[9].replace_range(5..8, "###");
+    let sealed = harvester(0, 6, 8);
+    scenario.units = vec![
+        sealed,
+        harvester(0, 12, 3),
+        harvester(0, 13, 3),
+        harvester(0, 12, 4),
+        harvester(1, 16, 5),
+        harvester(1, 17, 5),
+    ];
+    let state = scenario.build().unwrap();
+    let sealed = state
+        .units()
+        .iter()
+        .find(|unit| unit.tile() == TilePos::new(sealed.x, sealed.y))
+        .unwrap()
+        .id;
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let (builders, anchor) = commands
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::Build { units, anchor, .. } => Some((units.clone(), *anchor)),
+            _ => None,
+        })
+        .expect("the target is bought");
+    let nearest = |unit: &oxide_sim::state::Unit| unit.tile().chebyshev(anchor);
+    let sealed_distance = nearest(state.unit(sealed).unwrap());
+    assert!(
+        state
+            .units()
+            .iter()
+            .filter(|unit| unit.player == PlayerId(0) && unit.id != sealed)
+            .all(|unit| nearest(unit) > sealed_distance),
+        "premise: the sealed Harvester is nearest the site"
+    );
+    assert!(!builders.contains(&sealed));
+}
