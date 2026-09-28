@@ -179,7 +179,7 @@ pub enum Intent {
         goal: TilePos,
     },
     /// March one exact strategic group toward a tile while engaging.
-    AttackMoveUnits {
+    HuntUnits {
         /// Exact operation members.
         units: Vec<UnitId>,
         /// Destination tile.

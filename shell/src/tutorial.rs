@@ -102,12 +102,12 @@ pub const STEPS: [Step; 6] = [
         desktop: &[
             "Right-click ground with a combat unit selected.",
             "Units keep moving and fire at enemies already in range.",
-            "Press {attack} for attack-move when you want them to stop and chase.",
+            "Press {hunt} for Hunt when you want them to stop and chase.",
         ],
         touch: &[
             "Long-press ground with a combat unit selected.",
             "Units keep moving and fire at enemies already in range.",
-            "Tap Attack-move first when you want them to stop and chase.",
+            "Tap Hunt first when you want them to stop and chase.",
         ],
     },
     Step {

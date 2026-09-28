@@ -127,8 +127,8 @@ pub fn cmd(player: u8, command: Command) -> PlayerCommand {
 pub fn commanded(order: Order) -> Order {
     let tile = |goal: Goal| Goal::at(goal.tile());
     match order {
-        Order::Move { goal } => Order::Move { goal: tile(goal) },
-        Order::AttackMove { goal } => Order::AttackMove { goal: tile(goal) },
+        Order::Run { goal } => Order::Run { goal: tile(goal) },
+        Order::Hunt { goal } => Order::Hunt { goal: tile(goal) },
         Order::Advance { goal } => Order::Advance { goal: tile(goal) },
         Order::Unload { at } => Order::Unload { at: tile(at) },
         Order::Attack {

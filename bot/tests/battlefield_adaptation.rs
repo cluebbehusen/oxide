@@ -274,7 +274,7 @@ fn observed_displacement_changes_history_without_projecting_a_hidden_trajectory(
         let commands = if tick == 0 {
             vec![PlayerCommand {
                 player: PlayerId(1),
-                command: Command::Move {
+                command: Command::Run {
                     units: vec![enemy],
                     goal: TilePos::new(50, 5),
                     queue: false,

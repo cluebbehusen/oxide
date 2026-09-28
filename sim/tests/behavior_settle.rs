@@ -71,7 +71,7 @@ fn a_parked_crowd_goes_fully_stationary() {
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: ids,
             goal: TilePos::new(9, 2),
             queue: false,

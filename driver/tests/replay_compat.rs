@@ -110,7 +110,7 @@ fn checkpoint_exploration_deltas_count_only_new_scouting() {
         .id;
     let command = PlayerCommand {
         player: PlayerId(0),
-        command: Command::Move {
+        command: Command::Run {
             units: vec![unit],
             goal: TilePos::new(18, 8),
             queue: false,

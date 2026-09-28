@@ -598,7 +598,7 @@ impl Game {
                     Command::Harvest { .. } => self.demo.harvested = true,
                     Command::Build { .. } => self.demo.built = true,
                     // The march lesson teaches the default zero-chase advance;
-                    // explicit attack-move is a different stance.
+                    // explicit hunt is a different stance.
                     Command::Advance { .. } => self.demo.advanced = true,
                     _ => {}
                 }
@@ -957,7 +957,7 @@ mod tests {
             .find(|unit| unit.player == PlayerId(0))
             .unwrap()
             .id;
-        original.issue(Command::Move {
+        original.issue(Command::Run {
             units: vec![unit],
             goal: chassis::grid::TilePos::new(8, 6),
             queue: false,
@@ -1184,7 +1184,7 @@ mod tests {
         let ids = [game.state.units()[0].id, game.state.units()[1].id];
         game.present_ticks(1);
         for (id, x) in [(ids[0], 22), (ids[1], 12)] {
-            game.issue(Command::Move {
+            game.issue(Command::Run {
                 units: vec![id],
                 goal: chassis::grid::TilePos::new(x, 12),
                 queue: false,
@@ -1253,7 +1253,7 @@ mod tests {
             let mut game = rotor_game(kind);
             let id = game.state.units()[0].id;
             game.present_ticks(1);
-            game.issue(Command::Move {
+            game.issue(Command::Run {
                 units: vec![id],
                 goal: chassis::grid::TilePos::new(28, 12),
                 queue: false,
@@ -1261,7 +1261,7 @@ mod tests {
             game.present_ticks(20);
             let before = game.view().draw_hull_heading(id, 1.0);
             let position = game.state.unit(id).unwrap().pos;
-            game.issue(Command::Move {
+            game.issue(Command::Run {
                 units: vec![id],
                 goal: chassis::grid::TilePos::new(8, 12),
                 queue: false,

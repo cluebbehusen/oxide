@@ -65,7 +65,7 @@ impl SupportDeployment {
                 goal: self.goal,
             };
         }
-        Intent::AttackMoveUnits {
+        Intent::HuntUnits {
             units: vec![self.unit],
             goal: self.goal,
         }
@@ -789,7 +789,7 @@ mod tests {
             .tile = goal;
         assert_eq!(
             observe(&mut policy, &obs),
-            vec![Intent::AttackMoveUnits {
+            vec![Intent::HuntUnits {
                 units: vec![worker],
                 goal
             }]

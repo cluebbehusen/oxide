@@ -224,7 +224,7 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
     // The foundry-less seat is a spectator; its teammate plays on.
     let report = state.tick(&[cmd(
         2,
-        Command::Move {
+        Command::Run {
             units: vec![survivor],
             goal: TilePos::new(12, 6),
             queue: false,
@@ -250,7 +250,7 @@ fn victory_takes_every_enemy_foundry_and_spectators_stay_muted() {
         .id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(18, 9),
             queue: false,

@@ -1,5 +1,5 @@
 //! Paired arena duels: two hand-picked armies on flat ground, no economy,
-//! attack-moved into each other — a controlled counter experiment. The
+//! huntd into each other — a controlled counter experiment. The
 //! verdict reads surviving purchase value: useful when callers choose
 //! comparable starting budgets, but cost equality is not enforced. A
 //! remaining-HP-weighted value rides beside it as a second number and
@@ -358,7 +358,7 @@ fn verdict(a_value: u64, b_value: u64) -> DuelVerdict {
 }
 
 /// Runs a seat-neutral duel on an open arena: armies deploy in mirrored
-/// lines and attack-move through each other's positions, then exchange
+/// lines and hunt through each other's positions, then exchange
 /// seats and initial ID ranges for the second leg.
 pub fn duel(a: &Army, b: &Army, arena: &Arena) -> Result<DuelOutcome> {
     siege(a, b, &[], arena)
@@ -557,7 +557,7 @@ fn siege_leg(
     if !player_0_ids.is_empty() {
         opening.push(PlayerCommand {
             player: PlayerId(0),
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: player_0_ids,
                 goal: TilePos::new(33, 12),
                 queue: false,
@@ -567,7 +567,7 @@ fn siege_leg(
     if !player_1_ids.is_empty() {
         opening.push(PlayerCommand {
             player: PlayerId(1),
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: player_1_ids,
                 // The exact image of player 0's goal.
                 goal: TilePos::new(width - 1 - 33, height - 1 - 12),

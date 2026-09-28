@@ -276,7 +276,7 @@ pub enum Key {
     D,
     /// See [`Key::C`].
     E,
-    /// Arm attack-move in the classic profile.
+    /// Arm hunt in the classic profile.
     F,
     /// See [`Key::C`].
     G,

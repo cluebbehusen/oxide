@@ -268,7 +268,7 @@ fn focus_clears_as_soon_as_fresh_true_sight_loses_the_target() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![spotter],
                 goal: TilePos::new(5, 14),
                 queue: false,

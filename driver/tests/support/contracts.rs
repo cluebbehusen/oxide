@@ -325,7 +325,7 @@ fn ground() -> BTreeMap<String, String> {
     let victim = p.unit(1, UnitKind::Harvester);
     p.command(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![fighter],
             goal: TilePos::new(14, 10),
             queue: false,
@@ -333,7 +333,7 @@ fn ground() -> BTreeMap<String, String> {
     );
     p.command(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![fighter],
             goal: TilePos::new(17, 10),
             queue: true,
@@ -413,7 +413,7 @@ fn air() -> BTreeMap<String, String> {
     p.mark("delivered");
     p.command(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![bomber],
             goal: TilePos::new(19, 15),
             queue: false,
@@ -491,7 +491,7 @@ fn fog() -> BTreeMap<String, String> {
     assert!(p.state.can_see(PlayerId(0), site));
     p.command(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 27),
             queue: false,

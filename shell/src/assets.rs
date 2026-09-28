@@ -22,7 +22,7 @@ pub struct Sprites {
     array_rig: Option<ArrayRig>,
     /// Verb pictograms for cards and order chips, indexed by
     /// [`crate::panel::VerbIcon`].
-    verb_icons: [Rect; 12],
+    verb_icons: [Rect; 14],
     ground: [Rect; 6],
     quarry_dressing: Option<[Rect; 12]>,
     rock: [Rect; 23],
@@ -201,10 +201,10 @@ const SINGLE_KEYS: [&str; 10] = [
 ];
 
 /// Verb pictograms, ordered to match [`crate::panel::VerbIcon`].
-const VERB_ICON_KEYS: [&str; 12] = [
+const VERB_ICON_KEYS: [&str; 14] = [
     "icon_stop",
     "icon_move",
-    "icon_attack_move",
+    "icon_advance",
     "icon_attack",
     "icon_patrol",
     "icon_harvest",
@@ -214,6 +214,8 @@ const VERB_ICON_KEYS: [&str; 12] = [
     "icon_cancel",
     "icon_rally",
     "icon_idle",
+    "icon_run",
+    "icon_hunt",
 ];
 
 const GROUND_KEYS: [&str; 6] = [

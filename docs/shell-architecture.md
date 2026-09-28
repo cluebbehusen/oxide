@@ -213,17 +213,17 @@ loads, and building income remain private. Placement and support previews use
 authoritative queries rather than duplicating game rules. Unknown concealed
 mines cannot alter player-visible picking or placement feedback.
 
-A unit panel offers only the verbs its selection can use: Run and Attack-move
-need a unit that can fight, while Patrol stays for unarmed scouts. Stop is not a
-card. `Panel.stop` is a button in its own box above the orders or production
-dock, published as `LayoutModel.queue_stop` and hit-tested with the cards. It
-stops the selection while any selected unit has orders, even when the dock's
-subject is idle, and clears a defense's target preference. Over production it
-cancels every selected producer's queue with full refunds, last job first, so
-each `CancelTrain` index still names its job when it runs. The button takes the
-chip column's width and names itself where the chips do. A single factory's dock
-is headed by the time left on its queue, or "Ready" while a finished head waits
-for an exit.
+A unit panel offers only the verbs its selection can use: Run and Hunt need a
+unit that can fight, while Patrol stays for unarmed scouts. Stop is not a card.
+`Panel.stop` is a button in its own box above the orders or production dock,
+published as `LayoutModel.queue_stop` and hit-tested with the cards. It stops
+the selection while any selected unit has orders, even when the dock's subject
+is idle, and clears a defense's target preference. Over production it cancels
+every selected producer's queue with full refunds, last job first, so each
+`CancelTrain` index still names its job when it runs. The button takes the chip
+column's width and names itself where the chips do. A single factory's dock is
+headed by the time left on its queue, or "Ready" while a finished head waits for
+an exit.
 
 A unit's orders dock and the selection's waypoint chain show programs with every
 staged command applied. `Presentation` caches that projection for the tick, the
@@ -237,11 +237,11 @@ instead; a site only staged commands place is cancelled by kind and anchor,
 since other seats' commands or earlier batches may take the id it was projected
 with. An ally's chips do nothing.
 
-Ground orders name whole tiles. Move, attack-move, advance, patrol, and rally
-clicks clamp the cursor's tile onto the map, since the camera's edge slack lets
-it rest past the edge, and their acknowledgment ring draws at that tile's
-centre, where the waypoint marker sits. Entity lookups keep the unclamped tile,
-so a slack click never binds to whatever stands on the edge.
+Ground orders name whole tiles. Run, hunt, advance, patrol, and rally clicks
+clamp the cursor's tile onto the map, since the camera's edge slack lets it rest
+past the edge, and their acknowledgment ring draws at that tile's centre, where
+the waypoint marker sits. Entity lookups keep the unclamped tile, so a slack
+click never binds to whatever stands on the edge.
 
 The selection's waypoint chain draws an own unit's walks, patrol legs, and drop
 points at the tile the player clicked, explored or not, rather than at the slot

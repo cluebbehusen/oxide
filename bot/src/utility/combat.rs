@@ -61,7 +61,7 @@ impl UtilityPolicy {
     /// Air-raid channel: once a wing of idle ground-attack flyers has
     /// gathered, throw it at the enemy's harvest line — unless known
     /// anti-air stands over the target. Wings are spent, not managed:
-    /// the raid is an attack-move and whatever comes back rejoins the
+    /// the raid is an hunt and whatever comes back rejoins the
     /// idle pool.
     pub(super) fn air_raid(
         &mut self,

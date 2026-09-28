@@ -139,7 +139,7 @@ fn buying_an_upgrade_does_not_touch_worker_programs() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![worker],
                 goal: TilePos::new(4, 3),
                 queue: false,
@@ -147,7 +147,7 @@ fn buying_an_upgrade_does_not_touch_worker_programs() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![worker],
                 goal: TilePos::new(4, 6),
                 queue: true,

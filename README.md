@@ -67,8 +67,8 @@ shortcuts cover the core loop:
 | Shift + click / drag                     | Add to or remove from the current selection. Shift-click a kind in the selection panel to drop that kind.                 |
 | Right click                              | Give the contextual order: harvest scrap, attack an enemy, repair an ally, or advance to ground.                          |
 | Shift + right click                      | Queue the contextual order.                                                                                               |
-| `F`, then ground                         | Attack-move and engage along the route.                                                                                   |
-| `M`, then ground                         | Move without engaging.                                                                                                    |
+| `F`, then ground                         | Hunt and engage along the route.                                                                                          |
+| `G`, then ground                         | Run without engaging.                                                                                                     |
 | `R`                                      | Mark patrol points; press `R` again to start the loop.                                                                    |
 | `B`                                      | Open construction; select an available worker if needed. Press again to return to categories or close.                    |
 | `B`, then Q/E/R/T, then Q/E/R/T          | Choose a construction category, then a building.                                                                          |

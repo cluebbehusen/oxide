@@ -247,7 +247,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             .pos;
         harness.command(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(21, 10),
                 queue: false,
@@ -600,7 +600,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let condor = unit_kind(&flight, 0, UnitKind::Condor)?;
     harness.command(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(21, 10),
             queue: false,
@@ -635,7 +635,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         let mover = unit_kind(&movement, 0, kind)?;
         harness.command(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(21, 10),
                 queue: false,
@@ -748,7 +748,7 @@ fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
         let mover = unit_kind(&movement, 0, kind)?;
         harness.command(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(21, 10),
                 queue: false,

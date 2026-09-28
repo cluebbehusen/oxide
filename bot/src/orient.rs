@@ -308,7 +308,7 @@ impl Orientation {
                     units,
                     goal: self.tile(goal),
                 },
-                Intent::AttackMoveUnits { units, goal } => Intent::AttackMoveUnits {
+                Intent::HuntUnits { units, goal } => Intent::HuntUnits {
                     units,
                     goal: self.tile(goal),
                 },
@@ -683,7 +683,7 @@ mod tests {
                 units: vec![UnitId(2)],
                 goal: position,
             },
-            Intent::AttackMoveUnits {
+            Intent::HuntUnits {
                 units: vec![UnitId(3)],
                 goal: position,
             },
@@ -725,7 +725,7 @@ mod tests {
                     units: vec![UnitId(2)],
                     goal: tile,
                 },
-                Intent::AttackMoveUnits {
+                Intent::HuntUnits {
                     units: vec![UnitId(3)],
                     goal: tile,
                 },

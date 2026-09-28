@@ -253,7 +253,7 @@ impl SoundKind {
 /// What an order-acknowledgment ping means (decides its color).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PingKind {
-    /// Move / advance / attack-move destination.
+    /// Move / advance / hunt destination.
     Move,
     /// Attack target.
     Attack,
@@ -2707,7 +2707,7 @@ mod tests {
         game.update_fx(crate::game::TICK_DT);
         let report = game.state.tick(&[oxide_sim::PlayerCommand {
             player: oxide_sim::PlayerId(1),
-            command: oxide_sim::Command::Move {
+            command: oxide_sim::Command::Run {
                 units: vec![target],
                 goal: chassis::grid::TilePos::new(14, 14),
                 queue: false,
@@ -2755,7 +2755,7 @@ mod tests {
         face_south(&mut game, target);
         let report = game.state.tick(&[oxide_sim::PlayerCommand {
             player: oxide_sim::PlayerId(1),
-            command: oxide_sim::Command::Move {
+            command: oxide_sim::Command::Run {
                 units: vec![target],
                 goal: chassis::grid::TilePos::new(16, 14),
                 queue: false,

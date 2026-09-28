@@ -3521,7 +3521,7 @@ fn assembly_aborts_before_moving_the_force_when_unexplored_staging_is_air_inacce
     )));
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -3580,7 +3580,7 @@ fn ready_artillery_staging_still_recovers_when_the_final_scout_route_is_sealed()
     )));
     assert!(failed.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     observation.tick += 1;
@@ -3622,7 +3622,7 @@ fn connected_strike_refuses_an_air_route_blocked_only_in_the_public_briefing() {
     let optimistic_decision = think(&mut optimistic, &observation, &intelligence);
     assert!(optimistic_decision.intents.iter().any(|intent| matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     let mut guarded = with_operation(AirOperationPhase::Strike, observation.tick);
@@ -3647,7 +3647,7 @@ fn connected_strike_refuses_an_air_route_blocked_only_in_the_public_briefing() {
     );
     assert!(guarded_decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -3800,7 +3800,7 @@ fn known_peak_wall_blocks_bomber_commitment() {
     );
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { units, .. } | Intent::AttackMoveUnits { units, .. }
+        Intent::AttackUnits { units, .. } | Intent::HuntUnits { units, .. }
             if units.contains(&UnitId(3)) || units.contains(&UnitId(4))
     )));
 }
@@ -3826,7 +3826,7 @@ fn strike_aborts_before_bomber_commitment_when_staging_recon_loses_its_air_route
     assert_eq!(operation.strike_issued_at, None);
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -3882,7 +3882,7 @@ fn connected_recovery_releases_a_survivor_stranded_by_public_peaks() {
 }
 
 #[test]
-fn attack_move_fallback_requires_current_corridor_sight() {
+fn hunt_fallback_requires_current_corridor_sight() {
     let mut visible = obs(400);
     visible.enemy_buildings.clear();
     see_approach(&mut visible);
@@ -3892,7 +3892,7 @@ fn attack_move_fallback_requires_current_corridor_sight() {
     assert!(
         think(&mut planner, &visible, &intel)
             .intents
-            .contains(&Intent::AttackMoveUnits {
+            .contains(&Intent::HuntUnits {
                 units: vec![UnitId(3), UnitId(4)],
                 goal: TARGET,
             })
@@ -3906,7 +3906,7 @@ fn attack_move_fallback_requires_current_corridor_sight() {
         !think(&mut planner, &dark, &intel)
             .intents
             .iter()
-            .any(|intent| matches!(intent, Intent::AttackMoveUnits { .. }))
+            .any(|intent| matches!(intent, Intent::HuntUnits { .. }))
     );
 }
 
@@ -4226,7 +4226,7 @@ fn losing_the_primary_keeps_the_committed_identity_and_moves_the_focus() {
     assert_eq!(obligation.identity(), admitted_identity);
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     let revision = planner
@@ -5563,13 +5563,13 @@ fn connected_operation_survives_the_primary_and_completes_at_the_remaining_ancho
     battle.enemy_buildings.clear();
     intelligence.update(&battle);
     let follow_through = think(&mut planner, &battle, &intelligence);
-    assert!(follow_through.intents.contains(&Intent::AttackMoveUnits {
+    assert!(follow_through.intents.contains(&Intent::HuntUnits {
         units: vec![UnitId(3), UnitId(4)],
         goal: secondary,
     }));
     assert!(follow_through.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackMoveUnits { goal, .. } if *goal == TARGET
+        Intent::HuntUnits { goal, .. } if *goal == TARGET
     )));
 
     battle.tick += 20;
@@ -5577,7 +5577,7 @@ fn connected_operation_survives_the_primary_and_completes_at_the_remaining_ancho
     let completed = think(&mut planner, &battle, &intelligence);
     assert!(completed.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
     let operation = planner
         .air_operation()
@@ -6074,7 +6074,7 @@ fn connected_verify_keeps_a_remembered_selected_anchor_in_aa_clearance() {
     assert!(operation.scout_dispatch.is_some());
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     let mut cleared = hidden;
@@ -6374,7 +6374,7 @@ fn precommit_rederivation_reports_and_recovers_from_untargetable_air_defense() {
     );
     assert!(result.decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -6432,7 +6432,7 @@ fn current_air_defense_first_seen_on_the_deadline_prevents_stale_force_freeze() 
     assert_eq!(operation.membership_frozen_at, None);
     assert!(result.decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -7479,7 +7479,7 @@ fn a_wealthy_island_bot_reconnoiters_a_stale_building_ghost() {
     )));
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
     assert!(operation.artillery.is_empty());
     assert!(operation.strike_aircraft.is_empty());
@@ -7717,7 +7717,7 @@ fn remembered_recon_aborts_when_the_scout_cannot_cross_known_peaks() {
     );
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
     assert_eq!(decision.committed_scrap(), 0);
 }
@@ -8469,7 +8469,7 @@ fn airborne_corridor_actions_distinguish_current_remembered_and_absent_static_aa
     );
     assert!(remembered_decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     let mut absent = remembered.clone();
@@ -8503,7 +8503,7 @@ fn airborne_corridor_actions_distinguish_current_remembered_and_absent_static_aa
     }));
     assert!(absent_decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -8547,7 +8547,7 @@ fn ground_suppression_requires_fresh_negative_evidence_across_the_air_corridor()
     );
     assert!(current_decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { units, .. } | Intent::AttackMoveUnits { units, .. }
+        Intent::AttackUnits { units, .. } | Intent::HuntUnits { units, .. }
             if units.contains(&UnitId(3)) || units.contains(&UnitId(4))
     )));
     assert!(current_decision.intents.contains(&Intent::MoveUnits {
@@ -8583,7 +8583,7 @@ fn ground_suppression_requires_fresh_negative_evidence_across_the_air_corridor()
     );
     assert!(remembered_decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { units, .. } | Intent::AttackMoveUnits { units, .. }
+        Intent::AttackUnits { units, .. } | Intent::HuntUnits { units, .. }
             if units.contains(&UnitId(3)) || units.contains(&UnitId(4))
     )));
 
@@ -8845,7 +8845,7 @@ fn a_wealthy_airborne_wave_rejects_overwhelming_mobile_aa_before_and_after_suppr
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+            Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
         )));
     }
 }
@@ -9093,7 +9093,7 @@ fn a_strike_keeps_its_exact_attack_until_current_sight_loses_the_target() {
         first
             .intents
             .iter()
-            .all(|intent| !matches!(intent, Intent::AttackMoveUnits { .. }))
+            .all(|intent| !matches!(intent, Intent::HuntUnits { .. }))
     );
 
     battle.tick += 1;
@@ -9107,14 +9107,14 @@ fn a_strike_keeps_its_exact_attack_until_current_sight_loses_the_target() {
         still_current
             .intents
             .iter()
-            .all(|intent| !matches!(intent, Intent::AttackMoveUnits { .. }))
+            .all(|intent| !matches!(intent, Intent::HuntUnits { .. }))
     );
 
     battle.enemy_buildings.clear();
     battle.tick += 1;
     intel.update(&battle);
     let target_lost = think(&mut planner, &battle, &intel);
-    assert!(target_lost.intents.contains(&Intent::AttackMoveUnits {
+    assert!(target_lost.intents.contains(&Intent::HuntUnits {
         units: vec![UnitId(3), UnitId(4)],
         goal: TARGET,
     }));
@@ -9228,7 +9228,7 @@ fn an_exact_strike_validates_the_selected_cluster_target_not_the_operation_ancho
 }
 
 #[test]
-fn exact_attacks_do_not_require_attack_move_spread_slots() {
+fn exact_attacks_do_not_require_hunt_spread_slots() {
     let mut battle = obs(5_000);
     battle.my_units = (0..4)
         .map(|index| {
@@ -9295,7 +9295,7 @@ fn surviving_screen_cannot_hide_the_loss_of_an_airborne_bomber_force() {
     );
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { units, .. } | Intent::AttackMoveUnits { units, .. }
+        Intent::AttackUnits { units, .. } | Intent::HuntUnits { units, .. }
             if units.contains(&UnitId(30)) || units.contains(&UnitId(31))
     )));
 }
@@ -9395,7 +9395,7 @@ fn airborne_assembly_fails_closed_when_known_peaks_seal_scout_ingress() {
     );
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -9419,7 +9419,7 @@ fn a_new_airborne_operation_releases_its_roster_when_scout_ingress_is_sealed() {
     );
     assert!(refused.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     battle.tick += 1;
@@ -9533,7 +9533,7 @@ fn losing_the_scout_after_assembly_aborts_before_any_bomber_commitment() {
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+            Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
         )));
     }
 }
@@ -9658,7 +9658,7 @@ fn connected_operation_recovers_from_airborne_aa_that_artillery_cannot_suppress(
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+            Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
         )));
     }
 }
@@ -9864,7 +9864,7 @@ fn suppression_without_flak_still_fails_closed_when_scout_ingress_is_sealed() {
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+            Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
         )));
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
@@ -9920,7 +9920,7 @@ fn airborne_suppression_aborts_from_clear_and_uncertain_corridors_when_recon_is_
         );
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+            Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
         )));
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
@@ -9971,7 +9971,7 @@ fn airborne_verification_never_commits_while_its_recon_route_is_sealed() {
         assert_eq!(operation.strike_issued_at, None);
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+            Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
         )));
     }
 }
@@ -10143,7 +10143,7 @@ fn destroyed_target_completes_the_strike_and_releases_a_waiting_lift() {
     );
     assert!(completion.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 
     battle.tick += 1;
@@ -10188,7 +10188,7 @@ fn a_visible_missing_objective_aborts_before_the_bombers_commit() {
     );
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 
@@ -10236,7 +10236,7 @@ fn a_strike_aborts_when_its_previously_viable_staging_area_is_severed() {
     );
     assert!(decision.intents.iter().all(|intent| !matches!(
         intent,
-        Intent::AttackUnits { .. } | Intent::AttackMoveUnits { .. }
+        Intent::AttackUnits { .. } | Intent::HuntUnits { .. }
     )));
 }
 

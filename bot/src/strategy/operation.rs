@@ -90,7 +90,7 @@ pub(super) struct AirDispatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) enum AirStrikeDispatch {
     Attack { target: BuildingId, anchor: TilePos },
-    AttackMove(TilePos),
+    Hunt(TilePos),
 }
 
 impl AirPlan {
@@ -553,9 +553,9 @@ impl AirDispatch {
             Some(SuppressionDispatch::Attack { .. }) | None => true,
         };
         let strike = match self.strike {
-            Some(
-                AirStrikeDispatch::Attack { anchor, .. } | AirStrikeDispatch::AttackMove(anchor),
-            ) => on_map(map, anchor),
+            Some(AirStrikeDispatch::Attack { anchor, .. } | AirStrikeDispatch::Hunt(anchor)) => {
+                on_map(map, anchor)
+            }
             None => true,
         };
         suppression && strike

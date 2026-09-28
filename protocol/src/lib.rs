@@ -424,7 +424,7 @@ fn reject_unknown_command_value_fields(
     wire: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
     match command {
-        Command::Move { .. } | Command::AttackMove { .. } | Command::Advance { .. } => {
+        Command::Run { .. } | Command::Hunt { .. } | Command::Advance { .. } => {
             reject_unknown_object_fields(wire.get("goal"), "command.goal", &["x", "y"])
         }
         Command::Attack { target, .. } | Command::FocusFire { target, .. } => {
@@ -554,12 +554,12 @@ fn reject_unknown_object_fields(
 fn command_wire_fields(command: &Command) -> &'static [&'static str] {
     match command {
         Command::ClearFocus { .. } => &["type", "buildings"],
-        Command::Move {
+        Command::Run {
             units: _,
             goal: _,
             queue: _,
         }
-        | Command::AttackMove {
+        | Command::Hunt {
             units: _,
             goal: _,
             queue: _,
@@ -847,9 +847,9 @@ mod tests {
     /// sample test stops passing until it is exercised on the wire.
     fn command_tag(command: &Command) -> usize {
         match command {
-            Command::Move { .. } => 0,
+            Command::Run { .. } => 0,
             Command::Attack { .. } => 1,
-            Command::AttackMove { .. } => 2,
+            Command::Hunt { .. } => 2,
             Command::Harvest { .. } => 3,
             Command::Patrol { .. } => 4,
             Command::Stop { .. } => 5,
@@ -1016,7 +1016,7 @@ mod tests {
                 foundry: Some(BuildingId(0)),
                 repair: true,
             },
-            Command::Move {
+            Command::Run {
                 units: vec![UnitId(1)],
                 goal: TilePos::new(3, 4),
                 queue: true,
@@ -1026,7 +1026,7 @@ mod tests {
                 target: Target::Building(BuildingId(1)).into(),
                 queue: false,
             },
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![UnitId(3)],
                 goal: TilePos::new(5, 6),
                 queue: false,
@@ -1308,7 +1308,7 @@ mod tests {
                 "command.target",
             ),
             (
-                r#"{"id":8,"method":"send_command","params":{"player":0,"command":{"type":"move","units":[],"goal":{"x":3,"y":4,"z":99}}}}"#,
+                r#"{"id":8,"method":"send_command","params":{"player":0,"command":{"type":"run","units":[],"goal":{"x":3,"y":4,"z":99}}}}"#,
                 "command.goal",
             ),
             (
