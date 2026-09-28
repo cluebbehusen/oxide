@@ -128,6 +128,7 @@ impl SessionCheckpoint {
             }
             let _ = crate::bot_execution::commands(&session.state, &mut session.bots);
             let report = session.state.tick(&commands);
+            crate::controller::record_events(&mut session.bots, &report);
             if let Some(stats) = &mut session.stats {
                 stats.observe(&session.state, &report.events);
             }
@@ -470,6 +471,69 @@ mod tests {
     }
 
     #[test]
+    fn a_save_between_an_own_event_and_the_next_decision_resumes_identically() {
+        use crate::controller::{SeatTrace, record_events, seat_controllers};
+        let scenario = crate::controller::mixed_skirmish();
+        let mut state = scenario.build().unwrap();
+        let mut bots = seat_controllers(&scenario).unwrap();
+        for _ in 0..25 {
+            crate::runner::step(&mut state, &mut bots, None);
+        }
+        let origin = SessionCheckpoint::capture(&scenario, &state, &bots, &[], None).unwrap();
+        let mut suffix = origin.recording().unwrap();
+        let mut commands = crate::bot_execution::commands(&state, &mut bots);
+        commands.extend([0, 1].map(|seat| PlayerCommand {
+            player: PlayerId(seat),
+            command: Command::Stop { units: vec![] },
+        }));
+        let report = crate::runner::record_and_tick(&mut state, commands, Some(&mut suffix));
+        record_events(&mut bots, &report);
+        suffix.meta.ticks = Some(state.current_tick());
+
+        let rejected =
+            serde_json::json!([{"event": "command_rejected", "reason": "no_valid_units"}]);
+        let json = serde_json::to_value(
+            SessionCheckpoint::capture(&scenario, &state, &bots, &[], None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["bots"][0]["opponent"]["events"], rejected);
+        let mut restored = serde_json::from_value::<SessionCheckpoint>(json.clone())
+            .unwrap()
+            .restore()
+            .unwrap();
+        let mut recovered = origin.resume_recording(&suffix).unwrap();
+        let rebuilt = SessionCheckpoint::capture(
+            &scenario,
+            &recovered.state,
+            &recovered.bots,
+            &recovered.pending,
+            None,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(rebuilt).unwrap(), json);
+
+        let mut received = Vec::new();
+        for _ in 0..60 {
+            let original = crate::runner::step_traced(&mut state, &mut bots, None);
+            for session in [&mut restored, &mut recovered] {
+                let resumed =
+                    crate::runner::step_traced(&mut session.state, &mut session.bots, None);
+                assert_eq!(resumed.report, original.report);
+                assert_eq!(resumed.traces, original.traces);
+            }
+            received.extend(original.traces.into_iter().filter_map(|trace| match trace {
+                SeatTrace::Opponent(trace) if !trace.events.is_empty() => {
+                    Some((trace.tick, serde_json::to_value(trace.events).unwrap()))
+                }
+                _ => None,
+            }));
+        }
+        assert_eq!(received.first(), Some(&(36, rejected)));
+        assert_eq!(restored.state.hash(), state.hash());
+        assert_eq!(recovered.state.hash(), state.hash());
+    }
+
+    #[test]
     fn mixed_controllers_round_trip_and_reject_forged_rosters() {
         let scenario = crate::controller::mixed_skirmish();
         let mut state = scenario.build().unwrap();
@@ -481,7 +545,7 @@ mod tests {
         let json = serde_json::to_value(&captured).unwrap();
         assert_eq!(
             json["bots"][0],
-            serde_json::json!({"opponent": {"player": 0}})
+            serde_json::json!({"opponent": {"controller": {"player": 0}, "events": []}})
         );
         assert!(json["bots"][1]["scripted"].is_object());
 
@@ -516,7 +580,11 @@ mod tests {
                 .expect("a forged controller roster must not restore")
         };
         forged(&|bad| bad["bots"].as_array_mut().unwrap().swap(0, 1));
-        forged(&|bad| bad["bots"][1] = serde_json::json!({"opponent": {"player": 1}}));
+        forged(&|bad| {
+            bad["bots"][1] =
+                serde_json::json!({"opponent": {"controller": {"player": 1}, "events": []}})
+        });
+        forged(&|bad| bad["bots"][0]["opponent"]["memory"] = serde_json::json!([]));
         forged(&|bad| bad["bots"][0] = bad["bots"][1].clone());
         forged(&|bad| bad["bots"].as_array_mut().unwrap().truncate(1));
         forged(&|bad| bad["bots"][0] = serde_json::json!({"oracle": {"player": 0}}));

@@ -1,6 +1,6 @@
 //! Headless execution of scenarios and replays.
 
-use crate::controller::{SeatController, SeatTrace, seat_controllers};
+use crate::controller::{SeatController, SeatTrace, record_events, seat_controllers};
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
@@ -37,7 +37,9 @@ pub fn step(
     replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
     let commands = crate::bot_execution::commands(state, bots);
-    record_and_tick(state, commands, replay)
+    let report = record_and_tick(state, commands, replay);
+    record_events(bots, &report);
+    report
 }
 
 /// Advances one tick while collecting fresh player-facing decision traces.
@@ -61,6 +63,7 @@ pub fn step_traced(
         }
     }
     let report = record_and_tick(state, commands, replay);
+    record_events(bots, &report);
     TracedStep { report, traces }
 }
 

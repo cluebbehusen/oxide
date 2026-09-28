@@ -444,7 +444,7 @@ mod tests {
         let mut original = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
         assert!(matches!(
             original.bots.as_slice(),
-            [SeatController::Opponent(_)]
+            [SeatController::Opponent { .. }]
         ));
         original.advance_ticks(121);
         let mut replay = original.recorder.clone();
