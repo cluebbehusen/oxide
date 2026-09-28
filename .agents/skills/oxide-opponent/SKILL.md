@@ -57,6 +57,21 @@ exact-allocation, forecasting or planning-progress requirements.
     callers.
 12. **Docs describe behavior and boundaries, not algorithms.**
 
+## Run it
+
+- **Shell:** Settings > **Opponent AI: New** seats `oxide-opponent` in every bot
+  seat of the next New Match; **Classic** keeps `oxide-bot`. Rematches, saves
+  and replays keep the choice recorded in their scenario.
+- **Evaluation:**
+  `cargo run --release -p oxide-driver -- bot-eval skirmish --controller opponent --opponent-controller scripted --ticks 6000`
+  duels this bot against `oxide-bot`; `--controller` sets every seat and
+  `--opponent-controller` overrides seat one. Add `--paired` for a second leg
+  with the two configurations exchanged. The stub never attacks, so
+  opponent-only runs end at `--ticks`.
+- **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
+  writes one JSONL row per decision. Opponent seats' rows carry this crate's
+  `Trace`: tick, player, bank, spent, purchases and unit-order count.
+
 ## Report on every PR
 
 State these first in the PR description, including when they are unfavorable:
