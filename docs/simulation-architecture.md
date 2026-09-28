@@ -103,7 +103,8 @@ Phase order is game behavior. `State::tick` currently performs:
 12. Apply wreck decay on its global cadence.
 13. Rebuild team-shared visibility and reconcile fog memory. Activate or refund
     newly visible provisional sites. Newly discovered mines cancel unstarted
-    sites before the next command.
+    sites before the next command. Tile goals whose clicked tile the owner's
+    team has now explored take their spread slots.
 14. Determine victory or draw from surviving, non-resigned teams and discard any
     remaining pending crashes when the match ends.
 
@@ -163,9 +164,11 @@ immediately. Each unit has one active `Order`, a bounded FIFO queue, and a
 - any other order that cannot be routed drops only itself, except that a refused
   chase, an empty bank, or a full sling still clears the whole program.
 
-Re-issuing the active order without queueing is a no-op past the queue wipe: the
-order, its path, and its progress survive. A walking order matches on its
-variant and commanded tile, so it also keeps the endpoint it has resolved.
+Re-issuing the active order without queueing continues it past the queue wipe:
+its path and progress survive. A walking order matches on its variant and
+clicked tile and takes the re-issue's aim, keeping its resolved endpoint only
+while its target is unchanged; the walk replans a path whose destination was
+superseded.
 
 Movement stances are distinct contracts. `Move` walks without engaging,
 `Advance` keeps moving but may take already-visible in-range primary shots, and
@@ -175,20 +178,40 @@ back to the unit's station. `Harvest`, `Build`, `Found`, `Repair`, `RepairUnit`,
 and `Salvage` are persistent work programs lowered by unit behavior over later
 ticks.
 
-`Move`, `AttackMove`, `Advance`, and `Unload` carry a `Goal`: the commanded tile
-plus an optional endpoint. When the target lies outside the unit's reachable
-ground, the unit routes to the reachable tile nearest it by squared distance
-instead, and stores that tile as the endpoint. Reachability comes from
-4-connected component labels over the same passability routes use, which match
-A* reachability because routes never cut corners; a unit standing on a closed
-tile reaches the components of its open cardinal neighbours. Ties on distance
-follow the spread-slot ring order, half-turned by the frame between the target
-and the unit, so mirrored units settle on mirrored tiles, and a recompute keeps
-a stored endpoint that is still reachable and tied. The endpoint is stored only
-while it differs from the target, so a reachable order serializes exactly as a
-plain tile did. The labels are brain-phase scratch rebuilt lazily; a scrap node
-running dry is the only passability write inside the brain phase and discards
-the ground labels.
+`Move`, `AttackMove`, `Advance`, and `Unload`, and the march an `Attack`
+resumes, carry a `Goal`: the clicked tile, the spread slot the unit aims for
+around it, and an optional endpoint. A tile goal must lie on the map, and an
+off-map one is refused as `OutOfBounds`; a goal that cannot be reached is never
+refused. Each movement domain's half of a group snaps the clicked tile to the
+nearest open tile within `GOAL_SNAP_RADIUS` (air clamps onto the map and scans
+three tiles further), then gives its members, in id order, the open tiles
+ring-scanned outward from that center; members past the last open tile share it,
+and with no open tile near the click every member's target stays the clicked
+tile. That resolution happens when the command is issued if the issuer's team
+has explored the clicked tile. Otherwise every member heads for the clicked tile
+itself, keeping its rank and the scan frame fixed at issue, and the end-of-tick
+exposure pass hands each its slot on the first tick its owner's team has
+explored the tile, in active and queued orders and in the marches engagements
+will resume. Resolution reads the real map, like every route; only its trigger
+is player knowledge, so a group never spreads before its owner's team has seen
+the clicked tile. Patrols spread each leg the same way. A rally walk, the walk a
+unit that cannot hit an attack target takes to that target's tile, and an
+`Unload` drop point each resolve as rank 0, so a rally's newborns and a group's
+pacifists share one tile.
+
+When the target lies outside the unit's reachable ground, the unit routes to the
+reachable tile nearest it by squared distance instead, and stores that tile as
+the endpoint. Reachability comes from 4-connected component labels over the same
+passability routes use, which match A* reachability because routes never cut
+corners; a unit standing on a closed tile reaches the components of its open
+cardinal neighbours. Ties on distance follow the spread-slot ring order,
+half-turned by the frame between the target and the unit, so mirrored units
+settle on mirrored tiles, and a recompute keeps a stored endpoint that is still
+reachable and tied. A slot is stored only while it differs from the clicked tile
+and an endpoint only while it differs from the target, so a reachable order
+aimed at its clicked tile serializes exactly as a plain tile did. The labels are
+brain-phase scratch rebuilt lazily; a scrap node running dry is the only
+passability write inside the brain phase and discards the ground labels.
 
 A walk is short when it arrives somewhere other than its target, when it is
 sealed in, when it already stands on its endpoint, or when the capped route to
@@ -301,6 +324,13 @@ scrap: a flyer downed over the tile deposits wreck salvage there, so that state
 is reachable in play even though a landing never starts on scrap. A parked
 airframe is a legal weld patient; the torch ends when it lifts off.
 
+A walk still waiting for its clicked tile to be explored never hands over to a
+landing, and a handoff picks its pad only among tiles the owner's team has
+explored, since the pad is written into an order the player can see. The `Land`
+order keeps the walk's clicked tile as `from`, and a go-around carries it
+forward; an automatic landing picks its pad around the airframe itself and has
+none.
+
 A path is advisory rather than a reservation. Every ground step rechecks its
 next waypoint because construction can claim ground after the path was made; an
 invalid path is dropped and behavior may route again on the next tick. When a
@@ -344,7 +374,11 @@ Group `Move`, `Advance`, and `AttackMove` commands likewise resolve a blocked
 center and spread per-unit destinations in the approaching body's half-turn
 frame. The same orientation governs both decisions: mirroring a group, its
 requested center, and the map therefore mirrors every lowered unit goal even
-when the requested tile is occupied.
+when the requested tile is occupied. Patrol legs, rallies, pacifist walks, and
+drop points take their frames the same way. The frame is fixed when the command
+is issued and kept with a goal still waiting for its tile to be explored, so
+mirrored groups whose clicks are explored on the same tick take mirrored slots
+however far their units have walked since.
 
 Units never make tiles impassable to pathfinding. They are physical bodies,
 however, and deterministic relaxation passes separate overlapping units after

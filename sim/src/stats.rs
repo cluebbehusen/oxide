@@ -2245,8 +2245,9 @@ pub const HARVEST_MOBILE_DANGER_MARGIN: Fx = Fx::lit("3");
 /// danger margin can stay tighter than a mobile threat's.
 pub const HARVEST_STATIC_DANGER_MARGIN: Fx = Fx::lit("1");
 
-/// When a Move command lands on an impassable tile, the goal snaps to the
-/// nearest passable tile within this radius (else the command is rejected).
+/// When a ground group's explored tile goal is impassable, the group spreads
+/// around the nearest passable tile within this radius. With none, it heads
+/// for the tile itself and ends as close as it can get.
 pub const GOAL_SNAP_RADIUS: i32 = 3;
 
 /// How far the footprint-eviction pre-pass ring-scans for a walkable

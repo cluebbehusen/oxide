@@ -7,8 +7,11 @@
 `bot::navigation` owns all bot path, cost, connectivity, and distance-field
 searches, including their scratch storage, cache invalidation, and retention.
 Command projection preserves orientation, goal spreading, and Build doorstep
-selection. Service connectivity, safe travel costs, work-distance queries, and
-producer-exit certificates retain answers within their navigation contexts.
+selection. Goal spreading matches the simulation for explored goals; the
+simulation spreads a group over an unexplored goal only once the seat's team
+explores it, so projections of such goals stay approximate. Service
+connectivity, safe travel costs, work-distance queries, and producer-exit
+certificates retain answers within their navigation contexts.
 
 Each `Observation` owns lazily prepared navigation inputs. Its serialized
 `ObservationData` remains player knowledge only; derived inputs do not affect

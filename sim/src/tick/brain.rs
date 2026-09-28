@@ -253,7 +253,7 @@ pub(super) fn run(
             Order::Unload { .. } => {
                 logistics::unload(state, index, &mut reach, id, &mut logistics_pending, events)
             }
-            Order::Land { goal } => land(state, index, id, goal, events),
+            Order::Land { goal, from } => land(state, index, id, goal, from, events),
         }
         if events[reported..]
             .iter()

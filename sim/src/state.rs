@@ -15,7 +15,7 @@
 mod goal;
 mod placement;
 mod targeting;
-pub use goal::Goal;
+pub use goal::{Aim, Goal};
 pub use targeting::AttackView;
 
 use crate::ids::{BuildingId, PlayerId, Target, UnitId};
@@ -103,7 +103,7 @@ pub enum Order {
     Idle,
     /// Walk to a tile, then go idle.
     Move {
-        /// Destination, or the nearest reachable tile to it.
+        /// The clicked tile, and where around it this unit is headed.
         goal: Goal,
     },
     /// Work a bounded salvage zone, hauling to the nearest Foundry until
@@ -150,7 +150,7 @@ pub enum Order {
     /// stance for actually fighting, as opposed to [`Order::Move`]'s
     /// oblivious walk.
     AttackMove {
-        /// Destination, or the nearest reachable tile to it.
+        /// The clicked tile, and where around it this unit is headed.
         goal: Goal,
     },
     /// Walk adjacent to an own built building and strip it down for a
@@ -181,7 +181,7 @@ pub enum Order {
     /// Move to a tile without chasing or stopping, taking only
     /// primary-weapon shots that are already in range and visible.
     Advance {
-        /// Destination, or the nearest reachable tile to it.
+        /// The clicked tile, and where around it this unit is headed.
         goal: Goal,
     },
     /// Walk within [`crate::stats::LOAD_REACH`] of an own transport and
@@ -202,6 +202,10 @@ pub enum Order {
     Land {
         /// The tile to park on.
         goal: TilePos,
+        /// The clicked tile of the walk this landing took over, when it
+        /// took one over. Automatic landings have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<TilePos>,
     },
     /// Deliver carried scrap to this Foundry, optionally welding it afterward.
     ReturnCargo {
@@ -235,10 +239,10 @@ impl Order {
         }
     }
 
-    /// Whether issuing `other` to a unit already running `self` changes
-    /// nothing. A walking order matches on its variant and commanded tile,
-    /// so a re-issue keeps the endpoint it has already resolved; every
-    /// other order must match exactly.
+    /// Whether issuing `other` to a unit already running `self` continues
+    /// the same order rather than starting a new one. A walking order
+    /// matches on its variant and clicked tile, and [`Order::reissue`] then
+    /// takes the new aim; every other order must match exactly.
     pub(crate) fn reissue_matches(&self, other: &Order) -> bool {
         match (self, other) {
             (Order::Move { goal: a }, Order::Move { goal: b })
@@ -246,6 +250,15 @@ impl Order {
             | (Order::Advance { goal: a }, Order::Advance { goal: b })
             | (Order::Unload { at: a }, Order::Unload { at: b }) => a.tile() == b.tile(),
             _ => self == other,
+        }
+    }
+
+    /// Continues this order as the matching re-issue `other`: a walk takes
+    /// the new aim and keeps its endpoint only while its target is
+    /// unchanged. Callers check [`Order::reissue_matches`] first.
+    pub(crate) fn reissue(&mut self, other: Order) {
+        if let (Some(goal), Some(new)) = (self.walk_goal_mut(), other.walk_goal()) {
+            goal.adopt(new);
         }
     }
 }
@@ -430,7 +443,7 @@ impl Unit {
     pub(crate) fn stays_parked(&self) -> bool {
         match self.order {
             Order::Idle => true,
-            Order::Land { goal } => goal == self.tile(),
+            Order::Land { goal, .. } => goal == self.tile(),
             _ => false,
         }
     }
@@ -2069,14 +2082,18 @@ fn point_inside_envelope(p: Vec2Fx) -> bool {
     p.x >= lo && p.x <= hi && p.y >= lo && p.y <= hi
 }
 
-/// Whether a goal's commanded tile and endpoint sit inside the envelope.
-/// Neither needs to be on the map: endpoint scans clamp onto it.
+/// Whether a goal's clicked tile, slot, and endpoint sit inside the
+/// envelope. None needs to be on the map: endpoint scans clamp onto it. A
+/// pending slot's rank and frame need no bound, since any rank names a slot.
 fn goal_inside_envelope(goal: &Goal) -> bool {
-    tile_inside_envelope(goal.tile()) && goal.endpoint.is_none_or(tile_inside_envelope)
+    tile_inside_envelope(goal.tile())
+        && tile_inside_envelope(goal.target())
+        && goal.endpoint.is_none_or(tile_inside_envelope)
 }
 
-/// Whether every goal an order carries keeps its endpoint distinct from its
-/// target, the shape that keeps reachable orders byte-identical to legacy.
+/// Whether every goal an order carries keeps its slot distinct from its
+/// clicked tile and its endpoint distinct from its target, the shapes that
+/// keep reachable orders byte-identical to legacy.
 fn order_goals_canonical(order: &Order) -> bool {
     match order {
         Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
@@ -2109,7 +2126,9 @@ fn order_inside_envelope(order: &Order) -> bool {
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
         Order::Board { .. } => true,
         Order::Unload { at } => goal_inside_envelope(at),
-        Order::Land { goal } => tile_inside_envelope(*goal),
+        Order::Land { goal, from } => {
+            tile_inside_envelope(*goal) && from.is_none_or(tile_inside_envelope)
+        }
     }
 }
 
@@ -2460,9 +2479,9 @@ pub enum StateIntegrityError {
     /// the sanity envelope.
     #[error("unit {0} names a coordinate outside the envelope")]
     UnitOutsideEnvelope(UnitId),
-    /// A walking order stores an endpoint equal to its own target; a
-    /// reachable target keeps no endpoint.
-    #[error("unit {0} stores an endpoint equal to its own goal")]
+    /// A walking order stores a slot on its own clicked tile, or an
+    /// endpoint equal to its own target; neither is ever stored.
+    #[error("unit {0} stores a slot or endpoint equal to its own goal")]
     NonCanonicalGoal(UnitId),
     /// An anchored Harvest order names a source outside its bounded work zone.
     #[error("unit {0} names a harvest source outside its work zone")]

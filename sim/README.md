@@ -28,6 +28,11 @@ provisional, nonblocking scaffolds until full visibility verifies the ground.
 Invalid sites and sites abandoned by their last worker before work starts refund
 in full; activation keeps the same site identity and never charges again.
 
+Tile goals keep the tile the player clicked, which must lie on the map. When the
+issuer's team has explored it, a group spreads over the open ground around it at
+once; otherwise every member heads for the tile itself and takes its spread slot
+at the end of the tick its team explores the tile.
+
 A walk whose goal cannot be reached stops on the reachable tile nearest it,
 completes, and lets its program continue, reporting `OrderStalled { NoRoute }`
 once. Other orders that cannot be routed drop only themselves; a refused chase,
