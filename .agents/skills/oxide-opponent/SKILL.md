@@ -87,12 +87,12 @@ cargo run --release -p oxide-driver -- bot-matrix driver/evaluation/smoke.json -
 ```
 
 It plays Skirmish, The Deep Cut and Severance at Standard and Prime, Balanced
-and Aggressive. Each cell is a head-to-head pair, this bot in seat zero and then
-seat one with one personality seed on both sides, plus one `oxide-bot` mirror
-leg. Mirror rows are cached per user under the digest of the frozen `bot/`
-sources (`--baseline-cache` moves the cache), so they rerun only when `bot/`,
-the simulation version, a map, a seed or the tick limit changes.
-`driver/evaluation/duels.json` is the full two-seat matrix.
+and Aggressive, three seed runs each. Each cell is a head-to-head pair, this bot
+in seat zero and then seat one with one personality seed on both sides, plus one
+`oxide-bot` mirror leg. Mirror rows are cached per user under the reference
+digest of the `bot/`, `sim/` and `chassis/` sources (`--baseline-cache` moves
+the cache), so they rerun only when those sources, a map, a seed or the tick
+limit change. `driver/evaluation/duels.json` is the full two-seat matrix.
 `bot-matrix-report <rows.jsonl>...` re-reads published rows; `--json` prints the
 same report as JSON.
 
@@ -114,19 +114,23 @@ Evaluation rows carry omniscient QA detectors, checked every 12 ticks for every
 controlled seat. They never reach a controller.
 
 - **Repeated orders:** one unit stalls with the same reason 5 times within 1,200
-  ticks. The episode ends after a full window without that stall.
+  ticks. The episode ends after a full window without that stall. Danger holds
+  are exempt: a harvest line waiting out danger re-reports every 100 ticks by
+  design. They still count in the row's stall evidence.
 - **Abandoned sites:** a paid, visible, unbuilt base-tier site makes no
   construction progress for 1,200 ticks.
-- **Starved producers:** a built producer stays idle for 1,200 ticks while the
-  bank, less scrap this bot protects for a saving target, covers the cheapest
-  unit that producer may legally train. The trace does not report protected
-  scrap yet, so the whole bank counts.
+- **Starved production:** every built producer of the seat stays idle for 1,200
+  ticks while the bank, less scrap this bot protects for a saving target, covers
+  the cheapest unit any of them may legally train. Queueing anything ends the
+  episode. The trace does not report protected scrap yet, so the whole bank
+  counts. Rows also list each producer's idle, affordable ticks as a diagnostic,
+  not an incident.
 
 Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation
-estimate: two Harvesters on every scrap node within 7 tiles of a completed
-Foundry at their straight-line round trip, plus those credits. Harvesters
-working fields beyond that zone can push income above the estimate.
+estimate: two Harvesters on each of the four nearest scrap nodes that still hold
+scrap for every completed Foundry, at their straight-line round trip, plus those
+credits. No node counts for two Foundries.
 
 ## Review play
 

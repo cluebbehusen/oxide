@@ -94,7 +94,7 @@ fn a_matrix_writes_rows_reuses_its_baseline_and_reports_its_own_rows() {
         assert_eq!(row["matrix"]["manifest"], "cli");
         assert_eq!(row["tick_limit"], 24);
         assert!(
-            row["oxide_bot_digest"]
+            row["reference_digest"]
                 .as_str()
                 .unwrap()
                 .starts_with("fnv1a64:")

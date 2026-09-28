@@ -22,8 +22,8 @@ pub struct ScoredRow {
     pub matrix: MatrixLabel,
     /// Candidate that produced the row.
     pub candidate: String,
-    /// Frozen `oxide-bot` digest of the producing build.
-    pub oxide_bot_digest: String,
+    /// Reference digest of the producing build.
+    pub reference_digest: String,
     /// Producing build.
     pub build: BuildIdentity,
     /// Seat-pair leg.
@@ -153,8 +153,8 @@ pub struct ControllerTally {
     pub repeated_orders: u64,
     /// Abandoned paid-construction episodes.
     pub abandoned_sites: u64,
-    /// Production-starvation episodes.
-    pub starved_producers: u64,
+    /// Seat-level production-starvation episodes.
+    pub starved_production: u64,
     /// Income medians by checkpoint.
     pub income: Vec<IncomeMedian>,
 }
@@ -192,7 +192,7 @@ pub struct MatrixReport {
     pub head_to_head_legs: u32,
     /// Baseline legs.
     pub baseline_legs: u32,
-    /// Frozen `oxide-bot` digests.
+    /// Reference digests: the frozen `oxide-bot` and simulation sources.
     pub references: Vec<Provenance>,
     /// Producing builds.
     pub builds: Vec<Provenance>,
@@ -244,7 +244,7 @@ struct ControllerBuilder {
     seat_legs: u32,
     repeated_orders: u64,
     abandoned_sites: u64,
-    starved_producers: u64,
+    starved_production: u64,
     income: BTreeMap<u64, Vec<(u32, u32)>>,
 }
 
@@ -324,7 +324,7 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
                 controller.seat_legs += 1;
                 controller.repeated_orders += evidence.failures.repeated_orders.incidents;
                 controller.abandoned_sites += evidence.failures.abandoned_sites.incidents;
-                controller.starved_producers += evidence.failures.starved_producers.incidents;
+                controller.starved_production += evidence.failures.starved_production.incidents;
                 for sample in &evidence.income {
                     controller
                         .income
@@ -360,7 +360,7 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
     Ok(MatrixReport {
         head_to_head_legs,
         baseline_legs,
-        references: provenance(rows, |row| row.oxide_bot_digest.clone()),
+        references: provenance(rows, |row| row.reference_digest.clone()),
         builds: provenance(rows, |row| {
             let build = &row.build;
             format!(
@@ -424,7 +424,7 @@ fn finish(key: GroupKey, builder: GroupBuilder) -> GroupReport {
             seat_legs: tally.seat_legs,
             repeated_orders: tally.repeated_orders,
             abandoned_sites: tally.abandoned_sites,
-            starved_producers: tally.starved_producers,
+            starved_production: tally.starved_production,
             income: tally
                 .income
                 .into_iter()
@@ -485,7 +485,7 @@ impl MatrixReport {
             self.head_to_head_legs, self.baseline_legs
         );
         for (label, values) in [
-            ("oxide-bot", &self.references),
+            ("reference", &self.references),
             ("build", &self.builds),
             ("candidate", &self.candidates),
         ] {
@@ -541,7 +541,7 @@ impl MatrixReport {
             "seat-legs",
             "repeated orders",
             "abandoned sites",
-            "starved producers"
+            "starved production"
         );
         for group in &self.groups {
             for tally in &group.controllers {
@@ -553,7 +553,7 @@ impl MatrixReport {
                     tally.seat_legs,
                     tally.repeated_orders,
                     tally.abandoned_sites,
-                    tally.starved_producers
+                    tally.starved_production
                 );
             }
         }
@@ -647,7 +647,7 @@ mod tests {
         ScoredEvidence {
             seat,
             failures: SeatFailures {
-                starved_producers: FailureTally {
+                starved_production: FailureTally {
                     incidents: starved,
                     examples: Vec::new(),
                 },
@@ -682,7 +682,7 @@ mod tests {
         ScoredRow {
             matrix: label,
             candidate: "unit".into(),
-            oxide_bot_digest: "fnv1a64:1".into(),
+            reference_digest: "fnv1a64:1".into(),
             build: build(),
             leg,
             termination: if winner.is_some() {
@@ -820,7 +820,7 @@ mod tests {
         };
         assert_eq!(new.controller, EvaluationControllerKind::Opponent);
         assert_eq!(new.seat_legs, 8);
-        assert_eq!(new.starved_producers, 4 + 2 * 4);
+        assert_eq!(new.starved_production, 4 + 2 * 4);
         assert_eq!(old.seat_legs, 8 + 4);
         assert_eq!(
             new.income,

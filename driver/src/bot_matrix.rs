@@ -6,8 +6,9 @@
 //! head-to-head pair, the new bot in seat zero and then in seat one, with both
 //! sides sharing one personality seed. Each pair has one baseline leg with
 //! `oxide-bot` in both seats; exchanging two identical seats would repeat that
-//! match exactly. Baseline rows are cached under the frozen bot digest, so a
-//! change that leaves `bot/` untouched reuses them.
+//! match exactly. Baseline rows are cached under the reference digest of the
+//! `bot/`, `sim/` and `chassis/` sources, so a change that leaves those
+//! untouched reuses them.
 
 mod report;
 pub use report::{
@@ -17,7 +18,7 @@ pub use report::{
 
 use crate::bot_eval::{
     DEFAULT_STALL_LOOP_LIMIT, EvaluationBatchOptions, EvaluationFactionCell, EvaluationGeometry,
-    EvaluationPlan, EvidenceBatch, OXIDE_BOT_DIGEST, ProfileMatchup, configured_matchup_plans,
+    EvaluationPlan, EvidenceBatch, ProfileMatchup, REFERENCE_DIGEST, configured_matchup_plans,
     ensure_unique_execution_plans, evaluate_batch, execution_fingerprint, preflight_destinations,
 };
 use anyhow::{Context, Result, ensure};
@@ -267,7 +268,7 @@ pub fn expand(manifest: &MatrixManifest, scenarios: &[Scenario]) -> Result<Vec<M
     Ok(legs)
 }
 
-/// Baseline rows on disk, keyed by the frozen bot digest and each leg's exact
+/// Baseline rows on disk, keyed by the reference digest and each leg's exact
 /// execution. Entries from another digest, simulation version, tick limit or
 /// stall-loop limit are never read.
 pub struct BaselineCache {
@@ -275,12 +276,12 @@ pub struct BaselineCache {
 }
 
 impl BaselineCache {
-    /// A cache under `root`, in a directory for this build's bot digest.
+    /// A cache under `root`, in a directory for this build's reference digest.
     pub fn new(root: &Path) -> Self {
-        let digest = OXIDE_BOT_DIGEST
+        let digest = REFERENCE_DIGEST
             .rsplit(':')
             .next()
-            .unwrap_or(OXIDE_BOT_DIGEST);
+            .unwrap_or(REFERENCE_DIGEST);
         Self {
             directory: root.join(digest),
         }
@@ -291,7 +292,7 @@ impl BaselineCache {
         let key = serde_json::to_vec(&(
             BASELINE_CACHE_VERSION,
             SIM_VERSION,
-            OXIDE_BOT_DIGEST,
+            REFERENCE_DIGEST,
             &execution,
             ticks,
             stall,
@@ -327,7 +328,7 @@ impl BaselineCache {
             && row["tick_limit"] == ticks
             && row["stall_loop_limit"] == serde_json::to_value(stall)?
             && row["sim_version"] == SIM_VERSION
-            && row["oxide_bot_digest"] == OXIDE_BOT_DIGEST;
+            && row["reference_digest"] == REFERENCE_DIGEST;
         Ok(matches.then_some(row))
     }
 
@@ -645,7 +646,7 @@ mod tests {
             .entry(baseline, 30, Some(DEFAULT_STALL_LOOP_LIMIT))
             .unwrap();
         let mut forged = first.rows[2].row.clone();
-        forged["oxide_bot_digest"] = "fnv1a64:0000000000000000".into();
+        forged["reference_digest"] = "fnv1a64:0000000000000000".into();
         std::fs::write(&entry.path, serde_json::to_vec(&forged).unwrap()).unwrap();
         assert!(
             cache

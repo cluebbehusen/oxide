@@ -56,10 +56,13 @@ fn identity(root: &Path, paths: &[String]) -> (String, String) {
     (revision, dirty.into())
 }
 
-/// Digest of the compiled `oxide-bot` sources as they are on disk. Evaluation
-/// treats that controller as a frozen reference, so its results can be reused
-/// for as long as this digest is unchanged.
-fn bot_digest(root: &Path) -> String {
+/// Packages whose compiled sources decide how the frozen `oxide-bot` reference
+/// plays: the controller and the simulation it runs on.
+const REFERENCE_PACKAGES: [&str; 3] = ["bot", "sim", "chassis"];
+
+/// Digest of the [`REFERENCE_PACKAGES`] manifests and sources as they are on
+/// disk. Evaluation reuses reference results for as long as it is unchanged.
+fn reference_digest(root: &Path) -> String {
     fn collect(directory: &Path, files: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(directory) else {
             return;
@@ -76,9 +79,12 @@ fn bot_digest(root: &Path) -> String {
             }
         }
     }
-    let bot = root.join("bot");
-    let mut files = vec![bot.join("Cargo.toml")];
-    collect(&bot.join("src"), &mut files);
+    let mut files = Vec::new();
+    for package in REFERENCE_PACKAGES {
+        let package = root.join(package);
+        files.push(package.join("Cargo.toml"));
+        collect(&package.join("src"), &mut files);
+    }
     let mut named: Vec<(String, PathBuf)> = files
         .into_iter()
         .map(|path| {
@@ -141,7 +147,10 @@ pub fn configure(host: &str) {
     let (revision, dirty) = identity(root, &paths);
     println!("cargo:rustc-env=OXIDE_BUILD_REVISION={revision}");
     println!("cargo:rustc-env=OXIDE_BUILD_DIRTY={dirty}");
-    println!("cargo:rustc-env=OXIDE_BOT_DIGEST={}", bot_digest(root));
+    println!(
+        "cargo:rustc-env=OXIDE_REFERENCE_DIGEST={}",
+        reference_digest(root)
+    );
 }
 
 #[cfg(test)]
@@ -240,23 +249,36 @@ mod tests {
     }
 
     #[test]
-    fn the_bot_digest_follows_only_compiled_bot_sources() {
+    fn the_reference_digest_follows_only_compiled_reference_sources() {
         let repo = Repository::new();
-        let initial = bot_digest(&repo.0);
+        let initial = reference_digest(&repo.0);
         assert!(initial.starts_with("fnv1a64:"));
-        assert_eq!(bot_digest(&repo.0), initial);
+        assert_eq!(reference_digest(&repo.0), initial);
         fs::write(repo.0.join("driver/src/lib.rs"), "// driver edit").unwrap();
+        fs::write(repo.0.join("opponent/src/lib.rs"), "// new bot edit").unwrap();
+        fs::write(repo.0.join("kit/src/lib.rs"), "// host edit").unwrap();
         fs::write(repo.0.join("bot/README.md"), "notes").unwrap();
         fs::write(repo.0.join("bot/src/.lib.rs.swp"), "editor state").unwrap();
-        assert_eq!(bot_digest(&repo.0), initial);
+        assert_eq!(reference_digest(&repo.0), initial);
         fs::create_dir_all(repo.0.join("bot/src/nested")).unwrap();
         fs::write(repo.0.join("bot/src/nested/new.rs"), "// new module").unwrap();
-        let added = bot_digest(&repo.0);
+        let added = reference_digest(&repo.0);
         assert_ne!(added, initial);
         fs::write(repo.0.join("bot/src/lib.rs"), "// changed policy").unwrap();
-        assert_ne!(bot_digest(&repo.0), added);
+        assert_ne!(reference_digest(&repo.0), added);
         fs::write(repo.0.join("bot/src/lib.rs"), "// initial source\n").unwrap();
-        assert_eq!(bot_digest(&repo.0), added);
+        assert_eq!(reference_digest(&repo.0), added);
+        for package in ["sim", "chassis"] {
+            let source = repo.0.join(package).join("src/lib.rs");
+            fs::write(&source, "// changed rules").unwrap();
+            assert_ne!(reference_digest(&repo.0), added, "{package} source");
+            fs::write(&source, "// initial source\n").unwrap();
+            let manifest = repo.0.join(package).join("Cargo.toml");
+            fs::write(&manifest, "[package]").unwrap();
+            assert_ne!(reference_digest(&repo.0), added, "{package} manifest");
+            fs::remove_file(&manifest).unwrap();
+            assert_eq!(reference_digest(&repo.0), added);
+        }
     }
 
     #[test]

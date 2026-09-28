@@ -176,8 +176,8 @@ enum Cmd {
     },
     /// Run a manifest's head-to-head matrix of oxide-opponent against the
     /// frozen oxide-bot, publish its rows and print the report. Baseline legs
-    /// (oxide-bot against itself) are reused from a cache while `bot/` is
-    /// unchanged.
+    /// (oxide-bot against itself) are reused from a cache while the `bot/`,
+    /// `sim/` and `chassis/` sources are unchanged.
     BotMatrix {
         /// Matrix manifest; its map paths resolve against its directory.
         manifest: PathBuf,

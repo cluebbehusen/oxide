@@ -8,7 +8,7 @@ use chassis::grid::TilePos;
 use oxide_kit::stats::LiveMatchStats;
 use oxide_sim::stats::{
     EXTRACTOR_REMOTE_INCOME_PER_MINUTE, EXTRACTOR_SUPPORTED_INCOME_PER_MINUTE, FOUNDRY_DRIP_PERIOD,
-    FOUNDRY_DRIP_START_TICK, HARVEST_ZONE_RADIUS, RECLAIMER_PERIOD, REFINERY_PERIOD,
+    FOUNDRY_DRIP_START_TICK, RECLAIMER_PERIOD, REFINERY_PERIOD,
 };
 use oxide_sim::{Building, BuildingKind, Event, ExtractorIncome, PlayerId, State, UnitKind};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,11 @@ pub const INCOME_CHECKPOINTS: [u64; 3] = [6_000, 12_000, 24_000];
 /// Ticks of actual income measured before each checkpoint: one minute.
 pub const INCOME_WINDOW_TICKS: u64 = TICKS_PER_MINUTE as u64;
 
-/// Harvesters the estimate assigns to each scrap node near a Foundry.
+/// Scrap nodes the estimate assigns to each completed Foundry: its nearest
+/// ones that still hold scrap.
+pub const NODES_PER_FOUNDRY: usize = 4;
+
+/// Harvesters the estimate assigns to each of those nodes.
 pub const HARVESTERS_PER_NODE: u32 = 2;
 
 /// One seat's income at one checkpoint.
@@ -103,9 +107,10 @@ impl IncomeTracker {
 }
 
 /// Scrap per minute a saturated seat would earn from its standing works:
-/// [`HARVESTERS_PER_NODE`] Harvesters on every scrap node within the work zone
-/// of a completed Foundry, each cycling between the node and the nearest such
-/// Foundry in a straight line, plus passive credits.
+/// [`HARVESTERS_PER_NODE`] Harvesters on each of the [`NODES_PER_FOUNDRY`]
+/// nearest scrap nodes of every completed Foundry, each cycling between node
+/// and Foundry in a straight line, plus passive credits. Nodes go to the
+/// closest Foundry pairs first, so none is counted twice.
 pub fn saturation_per_minute(state: &State, player: PlayerId) -> u32 {
     harvest_per_minute(state, player).saturating_add(passive_per_minute(state, player))
 }
@@ -121,38 +126,38 @@ fn harvest_per_minute(state: &State, player: PlayerId) -> u32 {
                 && building.hp > 0
         })
         .collect();
-    let harvester = UnitKind::Harvester.stats();
-    let harvest = harvester.harvest.expect("Harvesters harvest");
-    let mut nodes: Vec<TilePos> = Vec::new();
-    for foundry in &foundries {
-        let (width, height) = foundry.stats().size;
-        for y in
-            foundry.anchor.y - HARVEST_ZONE_RADIUS..foundry.anchor.y + height + HARVEST_ZONE_RADIUS
-        {
-            for x in foundry.anchor.x - HARVEST_ZONE_RADIUS
-                ..foundry.anchor.x + width + HARVEST_ZONE_RADIUS
-            {
-                let tile = TilePos::new(x, y);
-                if state.map().scrap_at(tile) > 0 {
-                    nodes.push(tile);
-                }
+    if foundries.is_empty() {
+        return 0;
+    }
+    let map = state.map();
+    let mut pairs: Vec<(Fx, usize, i32, i32)> = Vec::new();
+    for y in 0..map.height() {
+        for x in 0..map.width() {
+            let node = TilePos::new(x, y);
+            if map.scrap_at(node) == 0 {
+                continue;
+            }
+            let center = node.center();
+            for (index, foundry) in foundries.iter().enumerate() {
+                let distance = center.dist(foundry.closest_point_to(center));
+                pairs.push((distance, index, y, x));
             }
         }
     }
-    nodes.sort_unstable_by_key(|tile| (tile.y, tile.x));
-    nodes.dedup();
+    pairs.sort_unstable();
+    let harvester = UnitKind::Harvester.stats();
+    let harvest = harvester.harvest.expect("Harvesters harvest");
     let extraction = Fx::from_num(harvest.capacity * harvest.ticks_per_scrap);
     let delivered = Fx::from_num(HARVESTERS_PER_NODE * harvest.capacity * TICKS_PER_MINUTE);
+    let mut assigned = vec![0_usize; foundries.len()];
+    let mut claimed: Vec<(i32, i32)> = Vec::new();
     let mut total = Fx::ZERO;
-    for node in nodes {
-        let center = node.center();
-        let Some(distance) = foundries
-            .iter()
-            .map(|foundry| center.dist(foundry.closest_point_to(center)))
-            .min()
-        else {
+    for (distance, index, y, x) in pairs {
+        if assigned[index] == NODES_PER_FOUNDRY || claimed.contains(&(y, x)) {
             continue;
-        };
+        }
+        assigned[index] += 1;
+        claimed.push((y, x));
         total += delivered / (extraction + distance * 2 / harvester.speed);
     }
     total.to_num::<u32>()
@@ -233,23 +238,83 @@ mod tests {
                 + distance * 2 / UnitKind::Harvester.stats().speed)
     }
 
+    /// Summed node rates at distances given in tenths of a tile.
+    fn rates(tenths: [i64; 4]) -> u32 {
+        tenths
+            .into_iter()
+            .map(|tenths| node_rate(Fx::from_num(tenths) / 10))
+            .fold(Fx::ZERO, |sum, rate| sum + rate)
+            .to_num::<u32>()
+    }
+
     #[test]
-    fn saturation_counts_zone_nodes_once_at_their_round_trip() {
-        // Foundry 1 at (2,2) covers tiles 0..=10 by Chebyshev distance. The
-        // node at (5,3) sits 1.5 tiles beyond its east face; the node at
-        // (10,2) is 6.5 tiles out; the node at (11,2) lies outside the zone.
+    fn saturation_counts_each_foundrys_nearest_remaining_nodes() {
+        // Foundry 1's footprint spans x and y from 2 to 4. Its nodes sit 1.5,
+        // 6.5, 7.5, 8.5 and 16.5 tiles beyond the east face; only the nearest
+        // four count, and a mined-out node is skipped.
         let mut map = vec![".".repeat(30); 14];
-        map[2] = row(30, &[(2, '1'), (10, 's'), (11, 's'), (26, '2')]);
+        map[2] = row(
+            30,
+            &[
+                (2, '1'),
+                (10, 's'),
+                (11, 's'),
+                (12, 's'),
+                (20, 's'),
+                (26, '2'),
+            ],
+        );
         map[3] = row(30, &[(5, 's')]);
-        let state = scenario(map, Vec::new()).build().unwrap();
-        let expected = (node_rate(Fx::lit("1.5")) + node_rate(Fx::lit("6.5"))).to_num::<u32>();
-        assert_eq!(saturation_per_minute(&state, PlayerId(0)), expected);
+        let state = scenario(map.clone(), Vec::new()).build().unwrap();
+        let expected = rates([15, 65, 75, 85]);
         assert!(expected > 0);
+        assert_eq!(saturation_per_minute(&state, PlayerId(0)), expected);
         assert_eq!(
             passive_per_minute(&state, PlayerId(0)),
             0,
             "the drip has not started at tick zero"
         );
+
+        map[3] = ".".repeat(30);
+        let depleted = scenario(map, Vec::new()).build().unwrap();
+        assert_eq!(
+            saturation_per_minute(&depleted, PlayerId(0)),
+            rates([65, 75, 85, 165])
+        );
+    }
+
+    #[test]
+    fn two_foundries_never_count_one_node_twice() {
+        let mut map = vec![".".repeat(30); 14];
+        map[2] = row(30, &[(2, '1'), (10, 's'), (11, 's'), (26, '2')]);
+        map[3] = row(30, &[(5, 's')]);
+        map[9] = row(30, &[(14, 's')]);
+        let expansion = BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Foundry,
+            x: 12,
+            y: 6,
+        };
+        let state = scenario(map, vec![expansion]).build().unwrap();
+        let foundries: Vec<&Building> = state
+            .buildings()
+            .iter()
+            .filter(|building| building.player == PlayerId(0))
+            .collect();
+        assert_eq!(foundries.len(), 2);
+        let nearest = |node: TilePos| {
+            foundries
+                .iter()
+                .map(|foundry| node.center().dist(foundry.closest_point_to(node.center())))
+                .min()
+                .unwrap()
+        };
+        let expected = [(5, 3), (10, 2), (11, 2), (14, 9)]
+            .into_iter()
+            .map(|(x, y)| node_rate(nearest(TilePos::new(x, y))))
+            .fold(Fx::ZERO, |sum, rate| sum + rate)
+            .to_num::<u32>();
+        assert_eq!(saturation_per_minute(&state, PlayerId(0)), expected);
     }
 
     #[test]

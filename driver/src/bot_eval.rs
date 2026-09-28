@@ -22,19 +22,20 @@ mod failures;
 mod income;
 pub use batch::{EvaluationBatchOptions, EvaluationBatchResult, evaluate_batch};
 pub use failures::{
-    FAILURE_WINDOW_TICKS, FailureIncident, FailureTally, MAX_FAILURE_EXAMPLES,
-    REPEATED_ORDER_STALLS, SeatFailures,
+    EXEMPT_STALL_REASON, FAILURE_WINDOW_TICKS, FailureIncident, FailureTally, MAX_FAILURE_EXAMPLES,
+    ProducerIdle, REPEATED_ORDER_STALLS, SeatFailures,
 };
 pub use income::{
-    HARVESTERS_PER_NODE, INCOME_CHECKPOINTS, INCOME_WINDOW_TICKS, IncomeSample,
+    HARVESTERS_PER_NODE, INCOME_CHECKPOINTS, INCOME_WINDOW_TICKS, IncomeSample, NODES_PER_FOUNDRY,
     saturation_per_minute,
 };
 
 const MAX_CANDIDATE_LEN: usize = 128;
 
-/// Digest of the frozen `oxide-bot` sources this driver was built with.
-/// Reference results stay comparable while it is unchanged.
-pub const OXIDE_BOT_DIGEST: &str = env!("OXIDE_BOT_DIGEST");
+/// Digest of the sources that decide how the frozen `oxide-bot` reference
+/// plays in this build: `bot/`, `sim/` and `chassis/`. Reference results stay
+/// comparable while it is unchanged.
+pub const REFERENCE_DIGEST: &str = env!("OXIDE_REFERENCE_DIGEST");
 
 /// Ticks between failure-detector and passive-income checks.
 pub const QA_CHECK_PERIOD: u64 = 12;
@@ -464,6 +465,8 @@ pub struct SeatEvidence {
     pub eliminated_at: Option<u64>,
     /// Consequential failures found by omniscient detectors.
     pub failures: SeatFailures,
+    /// Diagnostic: producers that sat idle while the bank could pay for them.
+    pub idle_producers: Vec<ProducerIdle>,
     /// Actual income against a saturation estimate at each checkpoint reached.
     pub income: Vec<IncomeSample>,
 }
@@ -480,6 +483,7 @@ impl SeatEvidence {
             stall_units: BTreeMap::new(),
             eliminated_at: None,
             failures: SeatFailures::default(),
+            idle_producers: Vec::new(),
             income: Vec::new(),
         }
     }
@@ -514,8 +518,8 @@ impl SeatEvidence {
 pub struct EvaluationRow {
     /// Simulation version that produced the record.
     pub sim_version: &'static str,
-    /// Digest of the frozen `oxide-bot` sources in the producing build.
-    pub oxide_bot_digest: &'static str,
+    /// [`REFERENCE_DIGEST`] of the producing build.
+    pub reference_digest: &'static str,
     /// The driver build that produced the record.
     pub build: oxide_kit::recovery::BuildIdentity,
     /// User-supplied candidate or build identifier.
@@ -766,7 +770,7 @@ fn evaluate_plan_artifact_impl(
             failures.check(&state, tick, &protected);
         }
     }
-    for (seat, ((evidence, failures), income)) in evidence
+    for (seat, ((evidence, (failures, idle_producers)), income)) in evidence
         .iter_mut()
         .zip(failures.finish())
         .zip(income.finish())
@@ -774,6 +778,7 @@ fn evaluate_plan_artifact_impl(
     {
         evidence.eliminated_at = state.players()[seat].eliminated_at;
         evidence.failures = failures;
+        evidence.idle_producers = idle_producers;
         evidence.income = income;
     }
 
@@ -787,7 +792,7 @@ fn evaluate_plan_artifact_impl(
 
     let row = EvaluationRow {
         sim_version: SIM_VERSION,
-        oxide_bot_digest: OXIDE_BOT_DIGEST,
+        reference_digest: REFERENCE_DIGEST,
         build: crate::build_identity(),
         candidate: candidate.to_string(),
         scenario: scenario.name.clone(),
@@ -2151,8 +2156,8 @@ mod tests {
                 .all(|seat| seat.failures == SeatFailures::default() && seat.income.is_empty()),
             "seats without a controller are not watched"
         );
-        assert_eq!(row.oxide_bot_digest, OXIDE_BOT_DIGEST);
-        assert!(OXIDE_BOT_DIGEST.starts_with("fnv1a64:"));
+        assert_eq!(row.reference_digest, REFERENCE_DIGEST);
+        assert!(REFERENCE_DIGEST.starts_with("fnv1a64:"));
         assert_eq!(row.build, crate::build_identity());
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["seats"][1]["team"], 1);
@@ -2161,7 +2166,7 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(
-            json["evidence"][0]["failures"]["starved_producers"]["incidents"],
+            json["evidence"][0]["failures"]["starved_production"]["incidents"],
             0
         );
 
