@@ -18,7 +18,7 @@ pub(crate) struct GameCheckpoint {
 pub(crate) struct SaveCapture {
     scenario: Scenario,
     state: Arc<State>,
-    bots: Vec<SeatBot>,
+    bots: Vec<SeatController>,
     pending: Vec<oxide_sim::PlayerCommand>,
     stats: oxide_kit::stats::LiveMatchStats,
     human: PlayerId,
@@ -161,7 +161,7 @@ impl RestoredGame {
             let mut state = scenario.build()?;
             let human = Game::local_seat(&scenario);
             let mut boundary_fog = crate::boundary_fog::BoundaryFog::new(&state, human);
-            let mut bots = seat_bots(&scenario)?;
+            let mut bots = seat_controllers(&scenario)?;
             let mut stats = oxide_kit::stats::LiveMatchStats::new(&state);
             let mut cursor = record.replay.cursor();
             let end = oxide_kit::bounded_replay_duration(&record.replay)?;
@@ -430,6 +430,61 @@ mod tests {
             serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
         assert_eq!(original.state.hash(), finished.state.hash());
         assert_eq!(original.end_stats, finished.end_stats);
+    }
+
+    #[test]
+    fn an_opponent_seat_continues_through_save_recovery_and_replay_resume() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[1].bot = true;
+        scenario.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::opponent(
+            oxide_sim::scenario::BotDifficulty::Standard,
+            oxide_sim::scenario::BotStance::Balanced,
+            17,
+        ));
+        let mut original = Game::with_viewport(scenario, vec2(1280.0, 720.0)).unwrap();
+        assert!(matches!(
+            original.bots.as_slice(),
+            [SeatController::Opponent(_)]
+        ));
+        original.advance_ticks(121);
+        let mut replay = original.recorder.clone();
+        replay.meta.ticks = Some(original.state.current_tick());
+
+        let saved: Game = serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+        let recovered = RestoredGame::recover(
+            oxide_kit::recovery::Inspection {
+                kind: oxide_kit::recovery::RecordingKind::LiveMatch,
+                build: Default::default(),
+                session: "opponent".into(),
+                replay: replay.clone(),
+                checkpoint: None,
+                prepared: None,
+                issue: None,
+                clean: false,
+            },
+            || false,
+        )
+        .unwrap()
+        .install();
+        let resumed = Game::from_replay(replay).unwrap();
+        let mut continuations = [saved, recovered, resumed];
+        for _ in 0..240 {
+            let events = original.do_tick().events;
+            for game in &mut continuations {
+                assert_eq!(game.do_tick().events, events);
+            }
+        }
+        for game in &continuations {
+            assert_eq!(game.state.hash(), original.state.hash());
+        }
+        assert!(
+            original
+                .recorder
+                .commands
+                .iter()
+                .any(|timed| timed.command.player == PlayerId(1)),
+            "the opponent seat must actually play"
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Headless execution of scenarios and replays.
 
+use crate::controller::{SeatController, SeatTrace, seat_controllers};
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
-use oxide_bot::{DecisionTrace, SeatBot, TracedBotAct, seat_bots};
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
 
 /// The concrete replay type for Oxide sessions.
@@ -25,7 +25,7 @@ pub struct TracedStep {
     /// The simulation report produced by the tick.
     pub report: oxide_sim::TickReport,
     /// Fresh player-facing traces in bot-seat order; empty chairs contribute no rows.
-    pub traces: Vec<DecisionTrace>,
+    pub traces: Vec<SeatTrace>,
 }
 
 /// Advances one tick: bots think, commands are recorded, the sim steps.
@@ -33,7 +33,7 @@ pub struct TracedStep {
 /// look like this.
 pub fn step(
     state: &mut State,
-    bots: &mut [SeatBot],
+    bots: &mut [SeatController],
     replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
     let commands = crate::bot_execution::commands(state, bots);
@@ -48,16 +48,13 @@ pub fn step(
 /// collection runs serially; ordinary steps may think across seats in parallel.
 pub fn step_traced(
     state: &mut State,
-    bots: &mut [SeatBot],
+    bots: &mut [SeatController],
     replay: Option<&mut GameReplay>,
 ) -> TracedStep {
     let mut commands: Vec<PlayerCommand> = Vec::new();
     let mut traces = Vec::with_capacity(bots.len());
     for bot in bots.iter_mut() {
-        let TracedBotAct {
-            commands: bot_commands,
-            trace,
-        } = bot.act_traced(state);
+        let (bot_commands, trace) = bot.act_traced(state);
         commands.extend(bot_commands);
         if let Some(trace) = trace {
             traces.push(trace);
@@ -91,7 +88,7 @@ pub fn run_scenario(
 ) -> Result<RunOutcome> {
     let mut state = scenario.build().context("building scenario")?;
     let mut bots = if with_bots {
-        seat_bots(scenario).context("building public bot map briefing")?
+        seat_controllers(scenario).context("building public bot map briefing")?
     } else {
         Vec::new()
     };
@@ -180,38 +177,44 @@ mod tests {
 
     #[test]
     fn traced_step_preserves_the_authoritative_command_and_tick_path() {
-        let scenario = Scenario::skirmish();
-        let mut ordinary_state = scenario.build().unwrap();
-        let mut traced_state = scenario.build().unwrap();
-        let mut ordinary_bots = seat_bots(&scenario).unwrap();
-        let mut traced_bots = seat_bots(&scenario).unwrap();
-        let mut ordinary_replay = GameReplay::new(SIM_VERSION, scenario.clone());
-        let mut traced_replay = GameReplay::new(SIM_VERSION, scenario);
-        let mut traces = Vec::new();
+        for (scenario, seats) in [
+            (Scenario::skirmish(), vec![1]),
+            (crate::controller::mixed_skirmish(), vec![0, 1]),
+        ] {
+            let mut ordinary_state = scenario.build().unwrap();
+            let mut traced_state = scenario.build().unwrap();
+            let mut ordinary_bots = seat_controllers(&scenario).unwrap();
+            let mut traced_bots = seat_controllers(&scenario).unwrap();
+            let mut ordinary_replay = GameReplay::new(SIM_VERSION, scenario.clone());
+            let mut traced_replay = GameReplay::new(SIM_VERSION, scenario);
+            let mut traces = Vec::new();
 
-        for _ in 0..25 {
-            let ordinary_report = step(
-                &mut ordinary_state,
-                &mut ordinary_bots,
-                Some(&mut ordinary_replay),
+            for _ in 0..25 {
+                let ordinary_report = step(
+                    &mut ordinary_state,
+                    &mut ordinary_bots,
+                    Some(&mut ordinary_replay),
+                );
+                let traced = step_traced(
+                    &mut traced_state,
+                    &mut traced_bots,
+                    Some(&mut traced_replay),
+                );
+                assert_eq!(traced.report, ordinary_report);
+                traces.extend(traced.traces);
+            }
+
+            let mut traced_seats: Vec<u8> = traces.iter().map(|trace| trace.player().0).collect();
+            traced_seats.sort_unstable();
+            traced_seats.dedup();
+            assert_eq!(traced_seats, seats, "every configured bot should think");
+            assert!(traces.iter().all(|trace| trace.tick() < 25));
+            assert_eq!(traced_state.hash(), ordinary_state.hash());
+            assert_eq!(
+                serde_json::to_vec(&traced_replay).unwrap(),
+                serde_json::to_vec(&ordinary_replay).unwrap(),
+                "diagnostics must not alter replay commands"
             );
-            let traced = step_traced(
-                &mut traced_state,
-                &mut traced_bots,
-                Some(&mut traced_replay),
-            );
-            assert_eq!(traced.report, ordinary_report);
-            traces.extend(traced.traces);
         }
-
-        assert!(!traces.is_empty(), "the configured bot should think");
-        assert!(traces.iter().all(|trace| trace.player.0 == 1));
-        assert!(traces.iter().all(|trace| trace.tick < 25));
-        assert_eq!(traced_state.hash(), ordinary_state.hash());
-        assert_eq!(
-            serde_json::to_vec(&traced_replay).unwrap(),
-            serde_json::to_vec(&ordinary_replay).unwrap(),
-            "diagnostics must not alter replay commands"
-        );
     }
 }

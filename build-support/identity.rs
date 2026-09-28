@@ -30,7 +30,7 @@ fn inputs(host: &str) -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    paths.extend(["chassis", "sim", "bot", "protocol", "kit", host].map(str::to_owned));
+    paths.extend(["chassis", "sim", "bot", "opponent", "protocol", "kit", host].map(str::to_owned));
     // Only the shell links the multiplayer crate.
     if host == "shell" {
         paths.push("net".to_owned());
@@ -110,7 +110,7 @@ mod tests {
             let repo = Self(path);
             repo.run(&["init", "-q"]);
             for package in [
-                "chassis", "sim", "bot", "protocol", "kit", "net", "shell", "driver",
+                "chassis", "sim", "bot", "opponent", "protocol", "kit", "net", "shell", "driver",
             ] {
                 fs::create_dir_all(repo.0.join(package).join("src")).unwrap();
                 fs::write(

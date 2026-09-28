@@ -171,6 +171,48 @@ fn retired_controller_flags_are_rejected() {
 }
 
 #[test]
+fn an_opponent_controller_duels_the_scripted_bot() {
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "bot-eval",
+            "skirmish",
+            "--controller",
+            "opponent",
+            "--opponent-controller",
+            "scripted",
+            "--ticks",
+            "600",
+        ])
+        .output()
+        .expect("run a mixed-controller evaluation");
+    assert!(
+        output.status.success(),
+        "bot-eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("JSONL is UTF-8");
+    let rows: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    for (seat, controller) in [(0, "opponent"), (1, "scripted")] {
+        assert_eq!(row["seats"][seat]["controller"], controller);
+        assert_eq!(row["seats"][seat]["config"]["controller"], controller);
+        assert!(row["seats"][seat]["profile"].is_object());
+        assert!(row["evidence"][seat]["commands"].as_u64().unwrap() > 0);
+    }
+}
+
+#[test]
+fn an_unknown_controller_is_refused() {
+    for flag in ["--controller", "--opponent-controller"] {
+        assert_skirmish_bot_eval_refuses(&[flag, "oracle"], &["expected scripted or opponent"]);
+    }
+}
+
+#[test]
 fn controlled_exact_seed_lists_refuse_bases() {
     for (args, exact_option, base_option) in [
         (

@@ -662,6 +662,7 @@ dependencies = [
  "oxide-bot",
  "oxide-kit",
  "oxide-net",
+ "oxide-opponent",
  "oxide-protocol",
  "oxide-sim",
  "serde",
@@ -676,6 +677,7 @@ dependencies = [
  "anyhow",
  "chassis",
  "oxide-bot",
+ "oxide-opponent",
  "oxide-sim",
  "rayon",
  "serde",
@@ -687,6 +689,16 @@ dependencies = [
 name = "oxide-net"
 version = "0.17.0"
 dependencies = [
+ "oxide-sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxide-opponent"
+version = "0.17.0"
+dependencies = [
+ "chassis",
  "oxide-sim",
  "serde",
  "serde_json",
@@ -711,7 +723,6 @@ dependencies = [
  "ciborium",
  "clap",
  "macroquad",
- "oxide-bot",
  "oxide-kit",
  "oxide-net",
  "oxide-protocol",

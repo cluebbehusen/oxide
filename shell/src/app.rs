@@ -41,6 +41,7 @@ use oxide_protocol::{
     CameraView, Key, MouseButton, OverlayView, RawEvent, Reply, Request, ResponseEnvelope,
     SavedView, ScreenshotView, UiView,
 };
+use oxide_sim::scenario::BotController;
 use oxide_sim::{PlayerCommand, Scenario};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -233,8 +234,12 @@ impl PersonalitySeedSource {
 }
 
 /// Builds the game a filled-in draft describes.
-fn launch(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Game> {
-    Game::new(draft_scenario(draft, personality_seed_base)?)
+fn launch(
+    draft: &NewMatchDraft,
+    personality_seed_base: u64,
+    controller: BotController,
+) -> Result<Game> {
+    Game::new(draft_scenario(draft, personality_seed_base, controller)?)
 }
 
 /// What starting a draft built.
@@ -250,15 +255,17 @@ enum NewMatch {
 fn start_new_match(
     draft: &NewMatchDraft,
     personality_seed_base: u64,
+    controller: BotController,
     bind: &str,
 ) -> Result<NewMatch> {
     if !screens::wizard::draft_hosts(draft) {
         return Ok(NewMatch::Local(Box::new(launch(
             draft,
             personality_seed_base,
+            controller,
         )?)));
     }
-    let scenario = draft_scenario(draft, personality_seed_base)?;
+    let scenario = draft_scenario(draft, personality_seed_base, controller)?;
     let host = oxide_sim::PlayerId(draft.seat_choice.min(scenario.players.len() - 1) as u8);
     let lobby =
         crate::netplay::HostLobby::new(bind, scenario, host, &crate::build_identity().revision)?;
@@ -266,10 +273,14 @@ fn start_new_match(
 }
 
 /// The scenario a filled-in draft describes.
-fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<Scenario> {
+fn draft_scenario(
+    draft: &NewMatchDraft,
+    personality_seed_base: u64,
+    controller: BotController,
+) -> Result<Scenario> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
     // One consumer, one source: the per-seat vector the setup screen filled.
-    // Every opponent uses the same fog-honest controller with its chosen
+    // Every opponent runs the Settings-selected controller with its chosen
     // difficulty and stance. This launch base gives each chair a distinct
     // hidden identity; after this point it is ordinary scenario/replay data.
     anyhow::ensure!(
@@ -284,12 +295,11 @@ fn draft_scenario(draft: &NewMatchDraft, personality_seed_base: u64) -> Result<S
     for (i, player) in scenario.players.iter_mut().enumerate() {
         let plan = draft.seats[i];
         player.bot = i != seat_choice && !plan.remote;
-        player.bot_config = player.bot.then(|| {
-            oxide_sim::scenario::BotConfig::scripted(
-                plan.difficulty,
-                plan.stance,
-                personality_seed_base.wrapping_add(i as u64),
-            )
+        player.bot_config = player.bot.then(|| oxide_sim::scenario::BotConfig {
+            controller,
+            difficulty: plan.difficulty,
+            stance: plan.stance,
+            personality_seed: personality_seed_base.wrapping_add(i as u64),
         });
     }
     // Per-seat faction chips (the setup screen's): Auto keeps the
@@ -2118,7 +2128,7 @@ mod tests {
         draft.seats[0].remote = true;
         draft.seats[1].remote = true;
         draft.seat_choice = 1;
-        let scenario = draft_scenario(&draft, 0x1000).expect("builds");
+        let scenario = draft_scenario(&draft, 0x1000, BotController::Scripted).expect("builds");
         assert!(scenario.players.iter().all(|player| !player.bot));
         assert!(
             scenario
@@ -2127,12 +2137,31 @@ mod tests {
                 .all(|player| player.bot_config.is_none())
         );
         draft.seats[0].remote = false;
-        let scenario = draft_scenario(&draft, 0x1000).expect("builds");
+        let scenario = draft_scenario(&draft, 0x1000, BotController::Scripted).expect("builds");
         assert!(scenario.players[0].bot && scenario.players[0].bot_config.is_some());
         assert!(
             !scenario.players[1].bot,
             "the human's chair ignores its remote flag"
         );
+    }
+
+    #[test]
+    fn the_opponent_ai_setting_drives_every_bot_seat_of_a_new_match() {
+        let mut draft = team_draft();
+        draft.seat_choice = 1;
+        let scenario = draft_scenario(&draft, 0x1000, BotController::Opponent).expect("builds");
+        for (i, player) in scenario.players.iter().enumerate() {
+            let config = player.bot_config;
+            if i == 1 {
+                assert!(config.is_none());
+            } else {
+                assert_eq!(
+                    config.map(|config| config.controller),
+                    Some(BotController::Opponent)
+                );
+            }
+        }
+        Game::new(scenario).expect("an opponent-controlled match launches");
     }
 
     #[test]
@@ -2143,7 +2172,7 @@ mod tests {
         draft.seats[0].stance = oxide_sim::scenario::BotStance::Aggressive;
         draft.seats[5].difficulty = oxide_sim::scenario::BotDifficulty::Scrapheap;
         draft.seats[5].stance = oxide_sim::scenario::BotStance::Turtle;
-        let game = launch(&draft, 0x1000).expect("launches");
+        let game = launch(&draft, 0x1000, BotController::Scripted).expect("launches");
         let players = &game.scenario.players;
         assert!(!players[2].bot, "the chosen chair is the human's");
         assert_eq!(game.presentation.human, oxide_sim::PlayerId(2));
@@ -2229,13 +2258,13 @@ mod tests {
         draft.seats[4].difficulty = oxide_sim::scenario::BotDifficulty::Prime;
         draft.seats[4].stance = oxide_sim::scenario::BotStance::Aggressive;
 
-        let first = launch(&draft, 0xABC0).expect("first launch");
-        let repeated = launch(&draft, 0xABC0).expect("repeated launch");
+        let first = launch(&draft, 0xABC0, BotController::Scripted).expect("first launch");
+        let repeated = launch(&draft, 0xABC0, BotController::Scripted).expect("repeated launch");
         assert_eq!(first.scenario, repeated.scenario);
         assert_eq!(first.hash_hex(), repeated.hash_hex());
         assert_eq!(first.recorder.setup, repeated.recorder.setup);
 
-        let rerolled = launch(&draft, 0xDEF0).expect("rerolled launch");
+        let rerolled = launch(&draft, 0xDEF0, BotController::Scripted).expect("rerolled launch");
         assert_eq!(first.hash_hex(), rerolled.hash_hex());
         for seat in 0..first.scenario.players.len() {
             let left = &first.scenario.players[seat];
@@ -2262,7 +2291,7 @@ mod tests {
         let mut draft = team_draft();
         draft.seats[1].difficulty = oxide_sim::scenario::BotDifficulty::Prime;
         draft.seats[1].stance = oxide_sim::scenario::BotStance::Aggressive;
-        let game = launch(&draft, 0xCAFE_F000).expect("launch");
+        let game = launch(&draft, 0xCAFE_F000, BotController::Scripted).expect("launch");
         let expected = game.scenario.clone();
 
         // Restart and Rematch both use this exact construction path.
@@ -2303,7 +2332,8 @@ mod tests {
 
         let mut backdrop_draft = NewMatchDraft::default();
         backdrop_draft.set_scenario(scenario.clone(), None);
-        let mut backdrop = launch(&backdrop_draft, 0x2000).expect("backdrop match");
+        let mut backdrop =
+            launch(&backdrop_draft, 0x2000, BotController::Scripted).expect("backdrop match");
         backdrop.presentation.camera.pan(vec2(-1000.0, -1000.0));
         backdrop.presentation.paused = true;
         backdrop.presentation.speed = 4.0;
@@ -2314,7 +2344,7 @@ mod tests {
         draft.set_scenario(scenario, None);
         draft.seat_choice = 1;
         let mut game = keep_flags(
-            launch(&draft, 0x3000).expect("swapped-seat match"),
+            launch(&draft, 0x3000, BotController::Scripted).expect("swapped-seat match"),
             &backdrop,
         );
 
@@ -2352,7 +2382,7 @@ mod tests {
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(scenario, None);
         assert!(
-            launch(&draft, 0x4000).is_err(),
+            launch(&draft, 0x4000, BotController::Scripted).is_err(),
             "an empty seat list is a launch error, not a crash"
         );
     }
@@ -2365,8 +2395,8 @@ mod tests {
         // "North West Cupric" flips Ferrous — its retinted label
         // collides with seat 0's "North West Ferrous".
         draft.seats[1].faction_choice = 1;
-        let game =
-            launch(&draft, 0x5000).expect("a legitimate faction choice never refuses to launch");
+        let game = launch(&draft, 0x5000, BotController::Scripted)
+            .expect("a legitimate faction choice never refuses to launch");
         let players = &game.scenario.players;
         assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
         assert_eq!(
@@ -2384,7 +2414,7 @@ mod tests {
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(Scenario::skirmish(), None);
         draft.seats[0].faction_choice = 2; // the human goes Cupric
-        let game = launch(&draft, 0x6000).expect("launches");
+        let game = launch(&draft, 0x6000, BotController::Scripted).expect("launches");
         let players = &game.scenario.players;
         assert_eq!(players[0].faction, oxide_sim::Faction::Cupric);
         assert_eq!(
@@ -2403,7 +2433,7 @@ mod tests {
         // Untouched dials reproduce the authored grouping — the
         // scenario (and so every save and replay) carries the teams.
         let draft = team_draft(); // trident-plateau: teams 0,0,0 / 1,1,1
-        let game = launch(&draft, 0x7000).expect("launches");
+        let game = launch(&draft, 0x7000, BotController::Scripted).expect("launches");
         let teams: Vec<Option<u8>> = game.scenario.players.iter().map(|p| p.team).collect();
         assert_eq!(
             teams,
@@ -2424,7 +2454,7 @@ mod tests {
             .collect();
         draft.seats[0].team_choice = 0; // FFA
         draft.seats[3].team_choice = 1; // crosses to Team 1
-        let game = launch(&draft, 0x8000).expect("launches");
+        let game = launch(&draft, 0x8000, BotController::Scripted).expect("launches");
         let players = &game.scenario.players;
         assert_eq!(players[0].team, None, "the FFA seat drops its team");
         assert_eq!(players[3].team, Some(0), "the moved seat joined Team 1");
@@ -2450,7 +2480,10 @@ mod tests {
         for plan in &mut draft.seats {
             plan.team_choice = 1;
         }
-        assert!(launch(&draft, 0x9000).is_err(), "one team can never launch");
+        assert!(
+            launch(&draft, 0x9000, BotController::Scripted).is_err(),
+            "one team can never launch"
+        );
     }
 
     #[test]
@@ -2459,7 +2492,7 @@ mod tests {
         // contract is Err, never panic, on a draft out of step.
         let mut draft = team_draft();
         draft.seats.truncate(2);
-        assert!(launch(&draft, 0xA000).is_err());
+        assert!(launch(&draft, 0xA000, BotController::Scripted).is_err());
     }
 
     #[test]

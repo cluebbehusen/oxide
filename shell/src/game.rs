@@ -4,7 +4,7 @@
 use anyhow::Result;
 use chassis::replay::Replay;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_bot::{SeatBot, seat_bots};
+use oxide_kit::controller::{SeatController, seat_controllers};
 use oxide_protocol::hash_hex;
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
@@ -114,7 +114,7 @@ pub struct Game {
     /// The sim. Mutable access stays inside `Game` outside test fixtures.
     pub(crate) state: ReadOnlyState,
     /// Command sources for bot-flagged players.
-    bots: Vec<SeatBot>,
+    bots: Vec<SeatController>,
     bot_decision: Option<oxide_kit::bot_execution::PendingDecision>,
     /// Every command of the session, tick-stamped — always recording.
     pub recorder: GameReplay,
@@ -252,7 +252,7 @@ impl Game {
         let state = scenario.build()?;
         let live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let bots = if run_bots {
-            seat_bots(&scenario)?
+            seat_controllers(&scenario)?
         } else {
             Vec::new()
         };
@@ -327,7 +327,7 @@ impl Game {
         // The fast-forward lets bots observe every tick to rebuild controller
         // memory. Their generated commands are discarded because the record
         // remains authoritative.
-        let mut bots = seat_bots(&scenario)?;
+        let mut bots = seat_controllers(&scenario)?;
         let mut cursor = replay.cursor();
         let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let mut projectile_releases = projectiles::ProjectileReleases::default();

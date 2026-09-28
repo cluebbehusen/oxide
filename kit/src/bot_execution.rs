@@ -8,7 +8,7 @@ use std::sync::{
 };
 use std::time::Instant;
 
-use oxide_bot::SeatBot;
+use crate::controller::SeatController;
 use oxide_sim::{PlayerCommand, State};
 use rayon::prelude::*;
 
@@ -35,14 +35,14 @@ pub fn serially<T>(work: impl FnOnce() -> T) -> T {
 /// Two or more due seats may share a process-wide pool of at most four workers.
 /// Single-seat ticks, unavailable workers, and concurrent matches use the serial
 /// path. Worker availability never changes command ordering or bot inputs.
-pub fn commands(state: &State, bots: &mut [SeatBot]) -> Vec<PlayerCommand> {
+pub fn commands(state: &State, bots: &mut [SeatController]) -> Vec<PlayerCommand> {
     commands_observed(state, bots, None)
 }
 
 /// Preserve ordinary scheduling while optionally observing each seat on its worker.
 pub fn commands_observed(
     state: &State,
-    bots: &mut [SeatBot],
+    bots: &mut [SeatController],
     observer: Option<&crate::diagnostics::Recorder>,
 ) -> Vec<PlayerCommand> {
     if !parallel_due(state, bots) {
@@ -64,7 +64,7 @@ fn executor() -> &'static BotExecutor {
 /// until it finishes, so abandoned sessions cannot accumulate queued jobs.
 pub fn prepare(
     state: &Arc<State>,
-    bots: &[SeatBot],
+    bots: &[SeatController],
     observer: Option<Arc<crate::diagnostics::Recorder>>,
 ) -> Option<PendingDecision> {
     if may_prepare(state, bots) {
@@ -75,7 +75,7 @@ pub fn prepare(
 }
 
 struct Decision {
-    bots: Vec<SeatBot>,
+    bots: Vec<SeatController>,
     commands: Vec<PlayerCommand>,
     completed: Instant,
 }
@@ -94,7 +94,7 @@ impl PendingDecision {
     pub fn finish(
         self,
         state: &Arc<State>,
-        bots: &mut Vec<SeatBot>,
+        bots: &mut Vec<SeatController>,
         observer: Option<&crate::diagnostics::Recorder>,
     ) -> Vec<PlayerCommand> {
         assert!(
@@ -109,8 +109,8 @@ impl PendingDecision {
         let decision = result.unwrap_or_else(|failure| std::panic::resume_unwind(failure));
         assert!(
             bots.iter()
-                .map(SeatBot::player)
-                .eq(decision.bots.iter().map(SeatBot::player)),
+                .map(SeatController::player)
+                .eq(decision.bots.iter().map(SeatController::player)),
             "bot batch roster changed"
         );
         if let Some(observer) = observer {
@@ -124,11 +124,11 @@ impl PendingDecision {
     }
 }
 
-fn may_prepare(state: &State, bots: &[SeatBot]) -> bool {
+fn may_prepare(state: &State, bots: &[SeatController]) -> bool {
     !SERIAL.get() && bots.iter().any(|bot| bot.decision_due(state))
 }
 
-fn parallel_due(state: &State, bots: &[SeatBot]) -> bool {
+fn parallel_due(state: &State, bots: &[SeatController]) -> bool {
     !SERIAL.get()
         && bots
             .iter()
@@ -140,7 +140,7 @@ fn parallel_due(state: &State, bots: &[SeatBot]) -> bool {
 
 fn serial_commands(
     state: &State,
-    bots: &mut [SeatBot],
+    bots: &mut [SeatController],
     observer: Option<&crate::diagnostics::Recorder>,
 ) -> Vec<PlayerCommand> {
     bots.iter_mut()
@@ -150,7 +150,7 @@ fn serial_commands(
 
 fn act(
     state: &State,
-    bot: &mut SeatBot,
+    bot: &mut SeatController,
     observer: Option<&crate::diagnostics::Recorder>,
 ) -> Vec<PlayerCommand> {
     if let Some(observer) = observer {
@@ -192,7 +192,7 @@ impl BotExecutor {
     fn prepare(
         &self,
         state: &Arc<State>,
-        bots: &[SeatBot],
+        bots: &[SeatController],
         observer: Option<Arc<crate::diagnostics::Recorder>>,
     ) -> Option<PendingDecision> {
         if !may_prepare(state, bots) {
@@ -233,14 +233,14 @@ impl BotExecutor {
     }
 
     #[cfg(test)]
-    fn commands(&self, state: &State, bots: &mut [SeatBot]) -> Vec<PlayerCommand> {
+    fn commands(&self, state: &State, bots: &mut [SeatController]) -> Vec<PlayerCommand> {
         self.commands_observed(state, bots, None)
     }
 
     fn commands_observed(
         &self,
         state: &State,
-        bots: &mut [SeatBot],
+        bots: &mut [SeatController],
         observer: Option<&crate::diagnostics::Recorder>,
     ) -> Vec<PlayerCommand> {
         if parallel_due(state, bots)
@@ -271,31 +271,32 @@ impl Drop for Permit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_bot::seat_bots;
+    use crate::controller::seat_controllers;
     use oxide_sim::{
         Command, PlayerId, Scenario,
         scenario::{BotConfig, BotDifficulty, BotStance},
     };
 
     #[test]
-    fn mixed_cadences_and_post_result_preserve_commands_and_state() {
+    fn mixed_controllers_cadences_and_post_result_preserve_commands_and_state() {
         for workers in [0, 1, 2, 4] {
             let mut scenario = Scenario::skirmish();
-            for (index, player) in scenario.players.iter_mut().enumerate() {
+            for player in &mut scenario.players {
                 player.bot = true;
-                player.bot_config = Some(BotConfig::scripted(
-                    if index == 0 {
-                        BotDifficulty::Scrapheap
-                    } else {
-                        BotDifficulty::Prime
-                    },
-                    BotStance::Balanced,
-                    9000 + index as u64,
-                ));
             }
+            scenario.players[0].bot_config = Some(BotConfig::opponent(
+                BotDifficulty::Scrapheap,
+                BotStance::Balanced,
+                9000,
+            ));
+            scenario.players[1].bot_config = Some(BotConfig::scripted(
+                BotDifficulty::Prime,
+                BotStance::Balanced,
+                9001,
+            ));
             let mut state = scenario.build().unwrap();
             let mut expected = state.clone();
-            let mut bots = seat_bots(&scenario).unwrap();
+            let mut bots = seat_controllers(&scenario).unwrap();
             bots.reverse();
             let mut expected_bots = bots.clone();
             let executor = BotExecutor::new(workers);
@@ -329,7 +330,7 @@ mod tests {
             player.bot = true;
         }
         let mut state = scenario.build().unwrap();
-        let mut bots = seat_bots(&scenario).unwrap();
+        let mut bots = seat_controllers(&scenario).unwrap();
         let mut expected_bots = bots.clone();
         let executor = BotExecutor::new(16);
         let pool = executor.pool.as_ref().unwrap();

@@ -400,7 +400,7 @@ impl Recorder {
     pub fn bot_commands(
         &self,
         state: &oxide_sim::State,
-        bot: &mut oxide_bot::SeatBot,
+        bot: &mut crate::controller::SeatController,
     ) -> Vec<oxide_sim::PlayerCommand> {
         if !self.enabled() {
             return bot.act(state);

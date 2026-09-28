@@ -16,7 +16,9 @@ crate-level rustdoc.
   cross-screen transitions and draws one active screen.
 - `screens/wizard` owns New Match seat, team, faction, and opponent choices;
   `bot_label` keeps configured opponent names consistent across the wizard, HUD,
-  and result report.
+  and result report. The Settings **Opponent AI** row picks the controller for
+  every bot seat of a new match, Classic (`oxide-bot`) or New
+  (`oxide-opponent`); rematches, saves and replays keep their recorded choice.
 - `game` owns one live session, its recorder, and bots. `game::Presentation`
   holds camera, interpolation, effects, and UI state; rendering borrows the
   active live or replay world through `game::Scene`. Its checkpoint adapter

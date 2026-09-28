@@ -5,9 +5,10 @@
 //! decided, and emits one compact row suitable for JSONL comparison.
 
 use anyhow::{Context, Result, ensure};
-use oxide_bot::{DecisionTrace, PublicMapBriefing, ResolvedProfile, SeatBot};
+use oxide_bot::{PublicMapBriefing, ResolvedProfile};
 use oxide_kit::GameReplay;
-use oxide_sim::scenario::{BotConfig, BotDifficulty, BotStance};
+use oxide_kit::controller::{SeatController, SeatTrace};
+use oxide_sim::scenario::{BotConfig, BotController, BotDifficulty, BotStance};
 use oxide_sim::{Event, Faction, GameResult, PlayerId, SIM_VERSION, Scenario};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -50,38 +51,61 @@ impl EvaluationLeg {
 pub enum EvaluationControllerKind {
     /// No automated command source occupies this seat.
     None,
-    /// The configurable opponent exposed to players.
+    /// `oxide-bot`, the default configurable opponent.
     Scripted,
+    /// `oxide-opponent`, the reactive best-effort opponent.
+    Opponent,
 }
 
-/// Exact evaluation-only command source for one seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum EvaluationController {
-    /// One exact player-facing configuration.
-    Scripted {
-        /// Difficulty, stance, and deterministic personality seed.
-        config: BotConfig,
-    },
+/// Exact evaluation-only command source for one seat: one configuration,
+/// whose controller selects `oxide-bot` or `oxide-opponent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvaluationController {
+    config: BotConfig,
+}
+
+impl Serialize for EvaluationController {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut controller = serializer.serialize_struct("EvaluationController", 2)?;
+        controller.serialize_field("kind", &self.kind())?;
+        controller.serialize_field("config", &self.config)?;
+        controller.end()
+    }
 }
 
 impl EvaluationController {
+    /// The evaluation source for one configuration, chosen by its controller.
+    pub fn configured(config: BotConfig) -> Self {
+        Self { config }
+    }
+
     fn kind(self) -> EvaluationControllerKind {
-        match self {
-            Self::Scripted { .. } => EvaluationControllerKind::Scripted,
+        match self.config.controller {
+            BotController::Scripted => EvaluationControllerKind::Scripted,
+            BotController::Opponent => EvaluationControllerKind::Opponent,
         }
     }
 
-    fn config(self) -> Option<BotConfig> {
-        match self {
-            Self::Scripted { config } => Some(config),
+    fn config(self) -> BotConfig {
+        self.config
+    }
+
+    fn profile(self) -> SeatProfile {
+        match self.config.controller {
+            BotController::Scripted => SeatProfile::Scripted(ResolvedProfile::resolve(self.config)),
+            BotController::Opponent => {
+                SeatProfile::Opponent(oxide_opponent::ResolvedProfile::resolve(self.config))
+            }
         }
     }
 
-    fn seat_bot(self, player: PlayerId, public_map: &Arc<PublicMapBriefing>) -> SeatBot {
-        match self {
-            Self::Scripted { config } => SeatBot::scripted(player, config, Arc::clone(public_map)),
-        }
+    fn seat_controller(
+        self,
+        player: PlayerId,
+        public_map: &Arc<PublicMapBriefing>,
+    ) -> SeatController {
+        SeatController::configured(player, self.config(), public_map)
     }
 }
 
@@ -198,7 +222,7 @@ impl EvaluationPlan {
                 (player.bot)
                     .then_some(player.bot_config)
                     .flatten()
-                    .map(|config| EvaluationController::Scripted { config })
+                    .map(EvaluationController::configured)
             })
             .collect();
         Self {
@@ -220,7 +244,7 @@ impl EvaluationPlan {
         Ok(())
     }
 
-    fn seat_bots(&self) -> Result<Vec<SeatBot>> {
+    fn seat_controllers(&self) -> Result<Vec<SeatController>> {
         let public_map = Arc::new(
             PublicMapBriefing::from_scenario(&self.scenario)
                 .context("building evaluation public map briefing")?,
@@ -231,7 +255,8 @@ impl EvaluationPlan {
             .copied()
             .enumerate()
             .filter_map(|(seat, controller)| {
-                controller.map(|controller| controller.seat_bot(PlayerId(seat as u8), &public_map))
+                controller
+                    .map(|controller| controller.seat_controller(PlayerId(seat as u8), &public_map))
             })
             .collect())
     }
@@ -288,6 +313,10 @@ struct StallSample {
 /// two-seat features so a comparison never has an ambiguous "opponent".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileMatchup {
+    /// Controller assigned to the primary seat.
+    pub controller: BotController,
+    /// Optional controller assigned to seat one.
+    pub opponent_controller: Option<BotController>,
     /// Difficulty assigned to the primary seat.
     pub difficulty: BotDifficulty,
     /// Stance assigned to the primary seat.
@@ -304,6 +333,8 @@ impl ProfileMatchup {
     /// A uniform matchup with distinct consecutive personality seeds.
     pub const fn uniform(difficulty: BotDifficulty, stance: BotStance) -> Self {
         Self {
+            controller: BotController::Scripted,
+            opponent_controller: None,
             difficulty,
             stance,
             opponent_difficulty: None,
@@ -337,21 +368,28 @@ impl ProfileMatchup {
 
     fn requires_two_seats(self, paired: bool) -> bool {
         paired
+            || self.opponent_controller.is_some()
             || self.opponent_difficulty.is_some()
             || self.opponent_stance.is_some()
             || self.same_personality_seed
     }
 
     fn config_for_seat(self, seat: usize, personality_seed: u64) -> BotConfig {
-        let (difficulty, stance) = if seat == 1 {
+        let (controller, difficulty, stance) = if seat == 1 {
             (
+                self.opponent_controller.unwrap_or(self.controller),
                 self.opponent_difficulty.unwrap_or(self.difficulty),
                 self.opponent_stance.unwrap_or(self.stance),
             )
         } else {
-            (self.difficulty, self.stance)
+            (self.controller, self.difficulty, self.stance)
         };
-        BotConfig::scripted(difficulty, stance, personality_seed)
+        BotConfig {
+            controller,
+            difficulty,
+            stance,
+            personality_seed,
+        }
     }
 }
 
@@ -368,7 +406,17 @@ pub struct SeatConfiguration {
     pub config: Option<BotConfig>,
     /// Fully resolved hidden personality, included for exact comparison.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile: Option<ResolvedProfile>,
+    pub profile: Option<SeatProfile>,
+}
+
+/// One seat's resolved personality, in its controller's own format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum SeatProfile {
+    /// An `oxide-bot` profile.
+    Scripted(ResolvedProfile),
+    /// An `oxide-opponent` profile.
+    Opponent(oxide_opponent::ResolvedProfile),
 }
 
 /// Compact command failure evidence for one seat.
@@ -506,7 +554,7 @@ pub struct EvaluationTraceRow {
     /// Simulation tick observed by the controller.
     pub tick: u64,
     /// Player-facing decision diagnostic.
-    pub trace: DecisionTrace,
+    pub trace: SeatTrace,
 }
 
 type EvaluationTraceSink<'a> = &'a mut dyn FnMut(&EvaluationTraceRow) -> Result<()>;
@@ -618,7 +666,7 @@ fn evaluate_plan_artifact_impl(
     let mut state = scenario
         .build()
         .context("building bot evaluation scenario")?;
-    let mut bots = plan.seat_bots()?;
+    let mut bots = plan.seat_controllers()?;
     let mut replay = GameReplay::new(SIM_VERSION, scenario.clone());
     replay.meta.kind = Some("bot-eval".into());
     let controllers = serde_json::to_string(&plan.controllers)
@@ -643,8 +691,8 @@ fn evaluate_plan_artifact_impl(
                     candidate: candidate.to_string(),
                     evaluation_fingerprint: evaluation_fingerprint.clone(),
                     leg: plan.leg,
-                    seat: trace.player.0,
-                    tick: trace.tick,
+                    seat: trace.player().0,
+                    tick: trace.tick(),
                     trace,
                 };
                 on_trace(&row)?;
@@ -701,10 +749,8 @@ fn evaluate_plan_artifact_impl(
                     .map(EvaluationController::kind)
                     .unwrap_or(EvaluationControllerKind::None),
                 faction: player.faction,
-                config: plan.controllers[seat].and_then(EvaluationController::config),
-                profile: plan.controllers[seat]
-                    .and_then(EvaluationController::config)
-                    .map(ResolvedProfile::resolve),
+                config: plan.controllers[seat].map(EvaluationController::config),
+                profile: plan.controllers[seat].map(EvaluationController::profile),
             })
             .collect(),
         termination: if stall_loop.is_some() {
@@ -1368,6 +1414,8 @@ mod tests {
 
     fn prime_matchup() -> ProfileMatchup {
         ProfileMatchup {
+            controller: BotController::Scripted,
+            opponent_controller: None,
             difficulty: BotDifficulty::Prime,
             stance: BotStance::Balanced,
             opponent_difficulty: Some(BotDifficulty::Standard),
@@ -1385,9 +1433,7 @@ mod tests {
     }
 
     fn opponent_controller() -> EvaluationController {
-        EvaluationController::Scripted {
-            config: opponent_config(),
-        }
+        EvaluationController::configured(opponent_config())
     }
 
     fn one_evaluation_trace() -> EvaluationTraceRow {
@@ -1411,6 +1457,101 @@ mod tests {
         })
         .unwrap();
         trace.expect("Prime emits one trace at tick zero")
+    }
+
+    #[test]
+    fn controller_choices_map_swap_and_trace_in_their_own_formats() {
+        let matchup = ProfileMatchup {
+            controller: BotController::Opponent,
+            opponent_controller: Some(BotController::Scripted),
+            ..prime_matchup()
+        };
+        let plans = configured_matchup_plans(
+            &Scenario::skirmish(),
+            73,
+            matchup,
+            8_100,
+            true,
+            EvaluationFactionCell::Authored,
+            EvaluationGeometry::Authored,
+        )
+        .unwrap();
+        let opponent = BotConfig::opponent(BotDifficulty::Prime, BotStance::Balanced, 8_100);
+        let scripted = BotConfig::scripted(BotDifficulty::Standard, BotStance::Balanced, 8_101);
+        assert_eq!(
+            plans[0].controllers,
+            [
+                Some(EvaluationController::configured(opponent)),
+                Some(EvaluationController::configured(scripted)),
+            ]
+        );
+        assert_eq!(
+            plans[1].controllers,
+            [
+                Some(EvaluationController::configured(scripted)),
+                Some(EvaluationController::configured(opponent)),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(plans[0].controllers[0]).unwrap(),
+            serde_json::json!({
+                "kind": "opponent",
+                "config": serde_json::to_value(opponent).unwrap(),
+            }),
+            "plan fingerprints keep the controller's tagged form"
+        );
+
+        for (plan, opponent_seat) in plans.iter().zip([0, 1]) {
+            let mut traces = Vec::new();
+            let (row, replay, _) =
+                evaluate_plan_artifact_traced_with(plan, 25, None, "candidate-a", |row| {
+                    traces.push(row.clone());
+                    Ok(())
+                })
+                .unwrap();
+            let json = serde_json::to_value(&row).unwrap();
+            let scripted_seat = 1 - opponent_seat;
+            assert_eq!(json["seats"][opponent_seat]["controller"], "opponent");
+            assert_eq!(
+                json["seats"][opponent_seat]["config"],
+                serde_json::to_value(opponent).unwrap()
+            );
+            assert_eq!(
+                json["seats"][opponent_seat]["profile"],
+                serde_json::to_value(oxide_opponent::ResolvedProfile::resolve(opponent)).unwrap()
+            );
+            assert_eq!(json["seats"][scripted_seat]["controller"], "scripted");
+            assert_eq!(
+                json["seats"][scripted_seat]["profile"],
+                serde_json::to_value(ResolvedProfile::resolve(scripted)).unwrap()
+            );
+            assert!(row.evidence.iter().all(|seat| seat.commands > 0));
+            assert!(
+                replay
+                    .meta
+                    .description
+                    .as_deref()
+                    .unwrap()
+                    .contains("\"kind\":\"opponent\"")
+            );
+
+            for trace in &traces {
+                let opponent_row = usize::from(trace.seat) == opponent_seat;
+                assert_eq!(matches!(trace.trace, SeatTrace::Opponent(_)), opponent_row);
+                let json = serde_json::to_value(trace).unwrap();
+                assert_eq!(json["trace"]["unit_orders"].is_u64(), opponent_row);
+            }
+            assert!(
+                traces
+                    .iter()
+                    .any(|trace| usize::from(trace.seat) == opponent_seat)
+            );
+            assert!(
+                traces
+                    .iter()
+                    .any(|trace| usize::from(trace.seat) == scripted_seat)
+            );
+        }
     }
 
     #[test]
@@ -1456,9 +1597,7 @@ mod tests {
         assert_eq!(
             forward.controllers,
             [
-                Some(EvaluationController::Scripted {
-                    config: prime_config()
-                }),
+                Some(EvaluationController::configured(prime_config())),
                 Some(opponent_controller()),
             ]
         );
@@ -1466,9 +1605,7 @@ mod tests {
             swapped.controllers,
             [
                 Some(opponent_controller()),
-                Some(EvaluationController::Scripted {
-                    config: prime_config()
-                }),
+                Some(EvaluationController::configured(prime_config())),
             ]
         );
         assert_eq!(source, Scenario::skirmish(), "planning mutated the source");
@@ -1623,7 +1760,10 @@ mod tests {
                 assert_eq!(seat.controller, controller);
                 assert_eq!(seat.faction, faction);
                 assert_eq!(seat.config, config);
-                assert_eq!(seat.profile, config.map(ResolvedProfile::resolve));
+                assert_eq!(
+                    seat.profile,
+                    config.map(|config| SeatProfile::Scripted(ResolvedProfile::resolve(config)))
+                );
             }
             assert!(
                 row.evidence.iter().all(|seat| seat.commands > 0),
@@ -1692,8 +1832,8 @@ mod tests {
             );
             assert_eq!(row.leg, traced_row.leg);
             assert!(row.seat < 2);
-            assert_eq!(row.seat, row.trace.player.0);
-            assert_eq!(row.tick, row.trace.tick);
+            assert_eq!(row.seat, row.trace.player().0);
+            assert_eq!(row.tick, row.trace.tick());
             assert!(row.tick < traced_row.duration_ticks);
         }
     }
@@ -1942,6 +2082,8 @@ mod tests {
     #[test]
     fn saved_replay_preserves_the_exact_compared_configs() {
         let matchup = ProfileMatchup {
+            controller: BotController::Scripted,
+            opponent_controller: None,
             difficulty: BotDifficulty::Prime,
             stance: BotStance::Aggressive,
             opponent_difficulty: Some(BotDifficulty::Veteran),
@@ -1985,6 +2127,8 @@ mod tests {
             &source,
             13,
             ProfileMatchup {
+                controller: BotController::Scripted,
+                opponent_controller: None,
                 difficulty: BotDifficulty::Prime,
                 stance: BotStance::Balanced,
                 opponent_difficulty: Some(BotDifficulty::Scrapheap),
@@ -1999,6 +2143,8 @@ mod tests {
             &source,
             13,
             ProfileMatchup {
+                controller: BotController::Scripted,
+                opponent_controller: None,
                 difficulty: BotDifficulty::Veteran,
                 stance: BotStance::Balanced,
                 opponent_difficulty: Some(BotDifficulty::Standard),
@@ -2388,6 +2534,8 @@ mod tests {
     #[test]
     fn cross_difficulty_legs_share_identity_and_swap_complete_configs() {
         let matchup = ProfileMatchup {
+            controller: BotController::Scripted,
+            opponent_controller: None,
             difficulty: BotDifficulty::Prime,
             stance: BotStance::Balanced,
             opponent_difficulty: Some(BotDifficulty::Scrapheap),
@@ -2508,6 +2656,14 @@ mod tests {
                 "shared personality",
                 ProfileMatchup {
                     same_personality_seed: true,
+                    ..uniform
+                },
+                false,
+            ),
+            (
+                "opponent controller",
+                ProfileMatchup {
+                    opponent_controller: Some(BotController::Opponent),
                     ..uniform
                 },
                 false,

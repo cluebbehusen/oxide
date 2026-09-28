@@ -1,13 +1,13 @@
 use super::*;
 use crate::checkpoint::SessionCheckpoint;
-use oxide_bot::seat_bots;
+use crate::controller::seat_controllers;
 use oxide_sim::{
     Command, PlayerId, Scenario,
     scenario::{BotConfig, BotDifficulty, BotStance},
 };
 use std::sync::Barrier;
 
-fn checkpoint(bots: &[SeatBot]) -> Vec<u8> {
+fn checkpoint(bots: &[SeatController]) -> Vec<u8> {
     serde_json::to_vec(
         &bots
             .iter()
@@ -39,7 +39,7 @@ fn snapshots_save_and_recover_while_running_and_ready() {
     let scenario = Scenario::skirmish();
     let executor = BotExecutor::new(2);
     let mut state = Arc::new(scenario.build().unwrap());
-    let mut bots = seat_bots(&scenario).unwrap();
+    let mut bots = seat_controllers(&scenario).unwrap();
     for _ in 0..120 {
         let commands = executor.commands(&state, &mut bots);
         Arc::get_mut(&mut state).unwrap().tick(&commands);
@@ -51,7 +51,7 @@ fn snapshots_save_and_recover_while_running_and_ready() {
             kind: oxide_sim::UnitKind::Harvester,
         },
     }];
-    let capture = |bots: &[SeatBot]| {
+    let capture = |bots: &[SeatController]| {
         SessionCheckpoint::capture(&scenario, &state, bots, &human, None).unwrap()
     };
     let idle = capture(&bots);
@@ -113,23 +113,24 @@ fn snapshots_save_and_recover_while_running_and_ready() {
 }
 
 #[test]
-fn mixed_cadences_background_and_serial_continue_identically() {
+fn mixed_controllers_background_and_serial_continue_identically() {
     let mut scenario = Scenario::skirmish();
-    for (i, seat) in scenario.players.iter_mut().enumerate() {
+    for seat in &mut scenario.players {
         seat.bot = true;
-        seat.bot_config = Some(BotConfig::scripted(
-            if i == 0 {
-                BotDifficulty::Scrapheap
-            } else {
-                BotDifficulty::Prime
-            },
-            BotStance::Balanced,
-            i as u64,
-        ));
     }
+    scenario.players[0].bot_config = Some(BotConfig::opponent(
+        BotDifficulty::Scrapheap,
+        BotStance::Balanced,
+        0,
+    ));
+    scenario.players[1].bot_config = Some(BotConfig::scripted(
+        BotDifficulty::Prime,
+        BotStance::Balanced,
+        1,
+    ));
     let executor = BotExecutor::new(4);
     let mut state = Arc::new(scenario.build().unwrap());
-    let mut bots = seat_bots(&scenario).unwrap();
+    let mut bots = seat_controllers(&scenario).unwrap();
     bots.reverse();
     let mut expected = bots.clone();
     let mut empty_decisions = 0;
@@ -156,7 +157,7 @@ fn discarded_work_holds_admission_until_finished() {
     let scenario = Scenario::skirmish();
     let executor = BotExecutor::new(2);
     let state = Arc::new(scenario.build().unwrap());
-    let bots = seat_bots(&scenario).unwrap();
+    let bots = seat_controllers(&scenario).unwrap();
     let release = block(&executor);
     drop(executor.prepare(&state, &bots, None).unwrap());
     assert!(executor.prepare(&state, &bots, None).is_none());
@@ -177,7 +178,7 @@ fn discarded_work_holds_admission_until_finished() {
 fn unavailable_serial_and_empty_sessions_do_not_dispatch() {
     let scenario = Scenario::skirmish();
     let state = Arc::new(scenario.build().unwrap());
-    let bots = seat_bots(&scenario).unwrap();
+    let bots = seat_controllers(&scenario).unwrap();
     assert!(
         BotExecutor::default()
             .prepare(&state, &bots, None)
@@ -192,7 +193,7 @@ fn unavailable_serial_and_empty_sessions_do_not_dispatch() {
 fn wrong_world_tick_roster_and_worker_failure_reject_without_installing() {
     let scenario = Scenario::skirmish();
     let state = Arc::new(scenario.build().unwrap());
-    let bots = seat_bots(&scenario).unwrap();
+    let bots = seat_controllers(&scenario).unwrap();
     for kind in 0..4 {
         let mut live = bots.clone();
         let before = checkpoint(&live);
@@ -236,7 +237,7 @@ fn seven_seats_keep_input_order_and_controller_continuation() {
         player.bot = i != 0;
         player.bot_config = player.bot.then_some(BotConfig::default());
     }
-    let mut bots = seat_bots(&scenario).unwrap();
+    let mut bots = seat_controllers(&scenario).unwrap();
     assert_eq!(bots.len(), 7);
     bots.reverse();
     let mut expected = bots.clone();

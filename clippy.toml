@@ -1,6 +1,6 @@
 # Determinism guardrails. Only crates that deny `clippy::disallowed_types`
-# (chassis, oxide-sim, oxide-bot, oxide-net) actually enforce this list; shell and driver may use
-# hash maps freely.
+# (chassis, oxide-sim, oxide-bot, oxide-opponent, oxide-net) actually enforce
+# this list; shell and driver may use hash maps freely.
 disallowed-types = [
     { path = "std::collections::HashMap", reason = "iteration order is nondeterministic — use BTreeMap or a Vec with stable ids" },
     { path = "std::collections::HashSet", reason = "iteration order is nondeterministic — use BTreeSet or a sorted Vec" },

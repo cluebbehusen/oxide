@@ -5,6 +5,7 @@
 
 use chassis::rng::Pcg32;
 use oxide_bot::{PublicMapBriefing, SeatBot};
+use oxide_kit::controller::{SeatController, seat_controllers};
 use oxide_kit::{GameReplay, bot_execution, runner};
 use oxide_net::{
     ClientEnd, ClientSession, Connection, DropReason, HostEvent, HostSession, JoinMessage,
@@ -149,7 +150,7 @@ impl Machine {
 struct Host {
     session: HostSession,
     machine: Machine,
-    bots: Vec<SeatBot>,
+    bots: Vec<SeatController>,
     next_due: Duration,
     frozen: bool,
     blocked: usize,
@@ -221,7 +222,7 @@ impl Net {
         let host = Host {
             session: HostSession::new(HOST, &CLIENTS, Duration::ZERO),
             machine: Machine::new(&scenario, HOST),
-            bots: oxide_bot::seat_bots(&scenario).unwrap(),
+            bots: seat_controllers(&scenario).unwrap(),
             next_due: Duration::ZERO,
             frozen: false,
             blocked: 0,
@@ -555,7 +556,7 @@ fn a_match_starts_and_stays_in_sync_over_tcp() {
     }
 
     let mut host = Machine::new(&scenario, HOST);
-    let mut bots = oxide_bot::seat_bots(&scenario).unwrap();
+    let mut bots = seat_controllers(&scenario).unwrap();
     let mut barrier = StartBarrier::new(
         &scenario,
         HOST,

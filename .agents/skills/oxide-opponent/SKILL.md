@@ -32,19 +32,20 @@ exact-allocation, forecasting or planning-progress requirements.
    one.
 4. **Planning never spans decisions.** Missions and their phases may. Background
    decision execution stays as it is.
-5. **Report performance** in every PR: average and p99 time per decision and
+5. **Measure performance** for every PR: average and p99 time per decision and
    total CPU on the defined workloads. The bots-to-simulation ratio is a
    diagnostic, not a gate.
 6. **Behavior may change.** Simplifying code or improving play justifies a
    behavior change. Fixtures driven by this bot live in their own file, separate
-   from simulation-only hashes. Rebless them yourself, with a smoke-matrix
-   comparison in the PR. Simulation rule changes still need Connor's approval.
+   from simulation-only hashes. Rebless them yourself after checking the
+   smoke-matrix comparison. Simulation rule changes still need Connor's
+   approval.
 7. **Tests check what the bot does.** Every reactive behavior gets a
    command-level acceptance test in a staged scenario. Focused tests of memory,
    ranking, geometry, symmetry and bookkeeping are welcome. Do not pin tuning
    constants, incidental ordering or intermediate plans. Fairness, determinism
    and save-resume are always tested.
-8. **Size is reported, not gated.** Every PR reports its net production and test
+8. **Size is reported, not gated.** Measure every PR's net production and test
    line change, including code this bot adds anywhere (kit, simulation, driver).
    Growth past about 15,000 production lines triggers a design review, not a
    failure.
@@ -57,13 +58,27 @@ exact-allocation, forecasting or planning-progress requirements.
     callers.
 12. **Docs describe behavior and boundaries, not algorithms.**
 
-## Report on every PR
+## Run it
 
-State these first in the PR description, including when they are unfavorable:
+- **Shell:** Settings > **Opponent AI: New** seats `oxide-opponent` in every bot
+  seat of the next New Match; **Classic** keeps `oxide-bot`. Rematches, saves
+  and replays keep the choice recorded in their scenario.
+- **Evaluation:**
+  `cargo run --release -p oxide-driver -- bot-eval skirmish --controller opponent --opponent-controller scripted --ticks 6000`
+  duels this bot against `oxide-bot`; `--controller` sets every seat and
+  `--opponent-controller` overrides seat one. Add `--paired` for a second leg
+  with the two configurations exchanged. The stub never attacks, so
+  opponent-only runs end at `--ticks`.
+- **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
+  writes one JSONL row per decision. Opponent seats' rows carry this crate's
+  `Trace`: tick, player, bank, spent, purchases and unit-order count.
 
-- net production and test line change;
-- average and p99 time per decision, and total CPU;
-- the smoke-matrix comparison.
+## Report at handoff
+
+When handing off a PR, tell Connor its net production and test line change,
+average and p99 time per decision with total CPU, and the smoke-matrix
+comparison, including when they are unfavorable. Keep them out of the PR
+description.
 
 ## Review play
 

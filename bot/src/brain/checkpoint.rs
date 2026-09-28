@@ -108,8 +108,10 @@ impl Brain {
             .ok_or("invalid controller seat")?;
         let config = seat
             .bot_config
-            .filter(|_| seat.bot)
-            .ok_or("checkpoint seat is not a configured bot")?;
+            .filter(|config| {
+                seat.bot && config.controller == oxide_sim::scenario::BotController::Scripted
+            })
+            .ok_or("checkpoint seat is not a configured scripted bot")?;
         let map = PublicMapBriefing::from_scenario(scenario).map_err(|error| error.to_string())?;
         if state.map().width() != map.map_width() || state.map().height() != map.map_height() {
             return Err("controller checkpoint map mismatch".into());
@@ -270,6 +272,16 @@ mod tests {
         wire.player = PlayerId(0);
         bad.payload = encode(&wire).unwrap();
         assert!(Brain::from_checkpoint(&bad, &scenario, &state).is_err());
+        let mut reassigned = scenario.clone();
+        reassigned.players[1].bot_config = Some(oxide_sim::scenario::BotConfig::opponent(
+            Default::default(),
+            Default::default(),
+            0,
+        ));
+        assert_eq!(
+            Brain::from_checkpoint(&checkpoint, &reassigned, &state).err(),
+            Some("checkpoint seat is not a configured scripted bot".into())
+        );
     }
 
     #[test]

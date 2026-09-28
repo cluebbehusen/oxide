@@ -3,6 +3,7 @@
 pub mod bench;
 pub mod bot_execution;
 pub mod checkpoint;
+pub mod controller;
 pub mod matchup;
 pub mod perceptual;
 pub mod playback;

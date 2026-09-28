@@ -3,6 +3,7 @@ use crate::{
     Brain, Dials, Executive, Observation, PublicMapBriefing, ResolvedProfile, TracedBotAct,
     observer,
 };
+use oxide_sim::scenario::BotController;
 use std::sync::Arc;
 /// A bot seat as the shell and driver run it.
 #[derive(Debug, Clone)]
@@ -113,32 +114,33 @@ impl SeatBot {
     }
 }
 
-/// Every bot a scenario asks for, honoring each seat's `bot_config`.
+/// Every `oxide-bot` seat a scenario asks for, honoring each seat's `bot_config`.
 ///
-/// A configured seat receives the fair rules-based opponent. A `bot`
-/// seat without a config remains an empty chair rather than silently
-/// selecting a controller.
+/// A seat configured for the scripted controller receives the fair
+/// rules-based opponent. Seats configured for another controller are left to
+/// their own host, and a `bot` seat without a config remains an empty chair
+/// rather than silently selecting a controller.
 pub fn seat_bots(
     scenario: &oxide_sim::Scenario,
 ) -> Result<Vec<SeatBot>, oxide_sim::scenario::ScenarioError> {
     let public_map = Arc::new(PublicMapBriefing::from_scenario(scenario)?);
-    if scenario
-        .players
-        .iter()
-        .any(|player| player.bot && player.bot_config.is_some())
-    {
-        public_map.prepare_navigation();
-    }
-    Ok(scenario
+    let scripted: Vec<_> = scenario
         .players
         .iter()
         .enumerate()
         .filter(|(_, p)| p.bot)
         .filter_map(|(i, p)| {
-            let player = oxide_sim::ids::PlayerId(i as u8);
             p.bot_config
-                .map(|config| SeatBot::scripted(player, config, Arc::clone(&public_map)))
+                .filter(|config| config.controller == BotController::Scripted)
+                .map(|config| (oxide_sim::ids::PlayerId(i as u8), config))
         })
+        .collect();
+    if !scripted.is_empty() {
+        public_map.prepare_navigation();
+    }
+    Ok(scripted
+        .into_iter()
+        .map(|(player, config)| SeatBot::scripted(player, config, Arc::clone(&public_map)))
         .collect())
 }
 
@@ -253,6 +255,32 @@ mod tests {
             state.hash(),
             unchanged,
             "asking every seat to act must not mutate the authoritative world"
+        );
+    }
+
+    #[test]
+    fn seating_leaves_other_controllers_to_their_own_host() {
+        let mut scenario = Scenario::skirmish();
+        let scripted = BotConfig::scripted(BotDifficulty::Prime, BotStance::Turtle, 5);
+        scenario.players[0].bot = true;
+        scenario.players[0].bot_config = Some(BotConfig::opponent(
+            BotDifficulty::Prime,
+            BotStance::Turtle,
+            5,
+        ));
+        scenario.players[1].bot = true;
+        scenario.players[1].bot_config = Some(scripted);
+
+        let seated = seat_bots(&scenario).expect("the skirmish has a briefing");
+        assert_eq!(seated.len(), 1);
+        assert_eq!(seated[0].player(), PlayerId(1));
+        assert_eq!(seated[0].profile(), &ResolvedProfile::resolve(scripted));
+
+        scenario.players[1].bot_config = scenario.players[0].bot_config;
+        assert!(
+            seat_bots(&scenario)
+                .expect("the skirmish has a briefing")
+                .is_empty()
         );
     }
 

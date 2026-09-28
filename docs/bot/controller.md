@@ -22,14 +22,14 @@ does not invalidate the simulation crate's compiled code.
 Bots live outside `State::tick`. A bot reads a state-derived observation and
 emits ordinary `PlayerCommand` values, which the shell or runner records before
 the simulation sees them. A configured seat carries one strict `BotConfig` with
-a difficulty, stance, and personality seed. `seat_bots` passes that exact setup
-and one shared immutable scenario briefing to the fog-honest `Brain::scripted`
-controller. Player-facing decisions stop when the own seat resigns or has no
-remaining Foundry, even while teammates keep the match alive; remnant units
-continue their ordinary simulation programs without new bot commands.
-Scenario-origin replay continuation rebuilds the briefing and observes the
-recorded command history; player checkpoints restore retained memory directly.
-Neither path consults ambient input.
+a controller, difficulty, stance, and personality seed. For each `scripted`
+seat, `seat_bots` passes that exact setup and one shared immutable scenario
+briefing to the fog-honest `Brain::scripted` controller. Player-facing decisions
+stop when the own seat resigns or has no remaining Foundry, even while teammates
+keep the match alive; remnant units continue their ordinary simulation programs
+without new bot commands. Scenario-origin replay continuation rebuilds the
+briefing and observes the recorded command history; player checkpoints restore
+retained memory directly. Neither path consults ambient input.
 
 Profile resolution turns the seed into six bounded preferences: air, siege,
 support, fortification, greed, and guile. Stance bounds their strategic posture;
@@ -88,16 +88,17 @@ tactical minimum and no personality eligibility or group-size cap.
 
 ## Configuration and replay
 
-The current wire format deliberately has one maintained controller, `scripted`;
-only difficulty, stance, and personality seed are stored, not the resolved
-traits or planner memory. Replays record the commands a bot emitted, so
-read-only playback does not rerun that controller. Replay compatibility remains
-governed by the simulation version rather than by retaining obsolete bot
-implementations. Authored scenarios and current-version replays accept only the
-current shape. The Oxide replay loader recognizes known retired
-bot-configuration shapes only inside a replay stamped with another simulation
-version, normalizing that setup metadata so deliberate archaeology can reach the
-version check. Serialization emits only the current shape.
+A configuration's `controller` names the implementation: `scripted` selects
+`oxide-bot`, and `opponent` selects `oxide-opponent`, which `seat_bots` leaves
+to its own host. Only the controller, difficulty, stance, and personality seed
+are stored, not the resolved traits or planner memory. Replays record the
+commands a bot emitted, so read-only playback does not rerun that controller.
+Replay compatibility remains governed by the simulation version rather than by
+retaining obsolete bot implementations. Authored scenarios and current-version
+replays accept only the current shape. The Oxide replay loader recognizes known
+retired bot-configuration shapes only inside a replay stamped with another
+simulation version, normalizing that setup metadata so deliberate archaeology
+can reach the version check. Serialization emits only the current shape.
 
 ## Controller checkpoints
 
