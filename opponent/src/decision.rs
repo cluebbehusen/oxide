@@ -253,6 +253,9 @@ fn buy(
     let Some(investment) = persistent.saving.investment() else {
         return;
     };
+    if persistent.saving.pending() {
+        return;
+    }
     let Some((step, price)) = investments::step(observation, investment) else {
         return;
     };
@@ -288,7 +291,8 @@ fn buy(
                 return;
             };
             let centre = footprint_centre(kind, anchor);
-            let Some(builder) = workers::builder(observation, frame, centre, ledger) else {
+            let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger)
+            else {
                 return;
             };
             ledger.build(builder, kind, anchor, allowed.defer, price);
