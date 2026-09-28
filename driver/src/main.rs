@@ -74,8 +74,8 @@ enum Cmd {
         #[arg(long)]
         map: bool,
     },
-    /// Evaluate the player-facing rules bot and emit one compact JSONL row
-    /// per exact seed/profile leg, stopping at the match result.
+    /// Evaluate player-facing bots and emit one compact JSONL row per exact
+    /// seed/profile leg, stopping at the match result.
     BotEval {
         /// Scenario paths, or "skirmish" for the built-in map.
         #[arg(required = true)]
@@ -115,6 +115,14 @@ enum Cmd {
         /// simulation seed in a controlled comparison.
         #[arg(long, value_delimiter = ',', conflicts_with = "personality_seed_base")]
         personality_seeds: Vec<u64>,
+        /// Controller implementation: `scripted` (oxide-bot) or `opponent`
+        /// (oxide-opponent).
+        #[arg(long, default_value_t = oxide_sim::scenario::BotController::Scripted)]
+        controller: oxide_sim::scenario::BotController,
+        /// Controller for seat one. Supplying this requires a two-seat
+        /// scenario; omit it to use `--controller` for both seats.
+        #[arg(long)]
+        opponent_controller: Option<oxide_sim::scenario::BotController>,
         /// Player-facing skill rung.
         #[arg(long, default_value_t = oxide_sim::scenario::BotDifficulty::Standard)]
         difficulty: oxide_sim::scenario::BotDifficulty,
@@ -563,6 +571,8 @@ fn main() -> Result<()> {
             scenario_seeds,
             personality_seed_base,
             personality_seeds,
+            controller,
+            opponent_controller,
             difficulty,
             stance,
             opponent_difficulty,
@@ -587,6 +597,8 @@ fn main() -> Result<()> {
                 None => "ad-hoc".to_string(),
             };
             let matchup = oxide_driver::bot_eval::ProfileMatchup {
+                controller,
+                opponent_controller,
                 difficulty,
                 stance,
                 opponent_difficulty,
@@ -1201,6 +1213,8 @@ mod tests {
             runs,
             scenario_seed_base,
             personality_seed_base,
+            controller,
+            opponent_controller,
             difficulty,
             stance,
             opponent_difficulty,
@@ -1214,6 +1228,10 @@ mod tests {
             panic!("bot-eval parsed as another command")
         };
         assert_eq!(scenarios, ["skirmish", "scenarios/powder-keg.json"]);
+        assert_eq!(
+            (controller, opponent_controller),
+            (oxide_sim::scenario::BotController::Scripted, None)
+        );
         assert_eq!((ticks, runs), (50_000, 1));
         assert_eq!(scenario_seed_base, Some(71));
         assert_eq!(personality_seed_base, Some(900));
@@ -1224,6 +1242,43 @@ mod tests {
         assert!(!same_personality_seed);
         assert!(paired);
         assert_eq!(candidate.as_deref(), Some("build-a"));
+    }
+
+    #[test]
+    fn bot_eval_parses_controller_choices_by_name() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "bot-eval",
+            "skirmish",
+            "--controller",
+            "opponent",
+            "--opponent-controller",
+            "scripted",
+        ])
+        .expect("controller choices parse");
+        let Cmd::BotEval {
+            controller,
+            opponent_controller,
+            ..
+        } = cli.cmd
+        else {
+            panic!("bot-eval parsed as another command")
+        };
+        assert_eq!(controller, oxide_sim::scenario::BotController::Opponent);
+        assert_eq!(
+            opponent_controller,
+            Some(oxide_sim::scenario::BotController::Scripted)
+        );
+        assert!(
+            Cli::try_parse_from([
+                "oxide-driver",
+                "bot-eval",
+                "skirmish",
+                "--controller",
+                "oracle"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

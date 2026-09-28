@@ -662,6 +662,7 @@ dependencies = [
  "oxide-bot",
  "oxide-kit",
  "oxide-net",
+ "oxide-opponent",
  "oxide-protocol",
  "oxide-sim",
  "serde",

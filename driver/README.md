@@ -31,19 +31,21 @@ exporter's identity. Source archives report unknown provenance.
   absolute tick, and summaries and inactivity windows cover only that segment.
   Inspection schema 2 and summary schema 4 expose this boundary; inspection
   rejects requests for unavailable earlier ticks.
-- `bot_eval` runs the player-facing controller to a decision, tick ceiling, or
+- `bot_eval` runs the player-facing controllers to a decision, tick ceiling, or
   stall-loop anomaly, and emits compact JSONL with candidate, scenario,
-  tick-ceiling, exact-profile, and anomaly provenance. It can exchange complete
-  controller configurations between seats for paired personality or difficulty
-  comparisons, including crossed exact simulation seeds, personality seeds,
-  faction assignments, and geometry cells. Persisted batches are staged and
-  never replace earlier evidence. Optional decision traces stream fog-honest
-  controller diagnostics to a separate JSONL sidecar without entering compact
-  rows or replays. A returned publication error rolls back files created by that
-  invocation. Abrupt process termination can leave hidden staging files or a
-  partial replay set because arbitrary final paths cannot be published
-  atomically; inspect and remove that incomplete batch, then rerun it under a
-  fresh candidate.
+  tick-ceiling, exact-profile, and anomaly provenance. `--controller` selects
+  `scripted` (`oxide-bot`, the default) or `opponent` (`oxide-opponent`), and
+  `--opponent-controller` overrides seat one of a two-seat scenario. It can
+  exchange complete controller configurations between seats for paired
+  controller, personality or difficulty comparisons, including crossed exact
+  simulation seeds, personality seeds, faction assignments, and geometry cells.
+  Persisted batches are staged and never replace earlier evidence. Optional
+  decision traces stream fog-honest controller diagnostics to a separate JSONL
+  sidecar without entering compact rows or replays. A returned publication error
+  rolls back files created by that invocation. Abrupt process termination can
+  leave hidden staging files or a partial replay set because arbitrary final
+  paths cannot be published atomically; inspect and remove that incomplete
+  batch, then rerun it under a fresh candidate.
 - `audit`, `sweep`, `pace`, and `factorial`, plus the `matchup` CLI backed by
   `oxide-kit`, measure map geometry, configured-bot pacing, seat effects, and
   combat behavior.
