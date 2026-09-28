@@ -240,7 +240,7 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
                 BuildingBodyFrame::Work(cycle_index(cycle, 6))
             }
             BuildingActivity::Extracting { cycle } => {
-                BuildingBodyFrame::Work(cycle_index(cycle, 3))
+                BuildingBodyFrame::Work(cycle_index(cycle, 4))
             }
             BuildingActivity::Reclaiming { cycle } => {
                 BuildingBodyFrame::Work(cycle_index(cycle, 3))
@@ -973,7 +973,7 @@ mod tests {
         state.activity = BuildingActivity::Extracting { cycle: 0.99 };
         assert_eq!(
             building_frame(BuildingKind::Extractor, state).body,
-            BuildingBodyFrame::Work(2)
+            BuildingBodyFrame::Work(3)
         );
         state.activity = BuildingActivity::Reclaiming { cycle: 0.99 };
         assert_eq!(

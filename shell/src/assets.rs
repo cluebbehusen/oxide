@@ -642,13 +642,12 @@ fn building_art(rects: &Manifest) -> Result<Vec<BuildingArt>> {
 
 fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
     match kind {
-        BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::RepairBay => {
-            &WORK_SUFFIXES_4
-        }
+        BuildingKind::Foundry
+        | BuildingKind::Fabricator
+        | BuildingKind::RepairBay
+        | BuildingKind::Extractor => &WORK_SUFFIXES_4,
         BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer | BuildingKind::Extractor | BuildingKind::Crucible => {
-            &WORK_SUFFIXES_3
-        }
+        BuildingKind::Reclaimer | BuildingKind::Crucible => &WORK_SUFFIXES_3,
         BuildingKind::Airworks => &WORK_SUFFIXES_4,
         BuildingKind::Turret
         | BuildingKind::FlakTurret
