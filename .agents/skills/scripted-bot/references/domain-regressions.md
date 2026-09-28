@@ -46,10 +46,11 @@ above the floor. Existing operations may advance without buying; new admission
 stays closed. Test current-threat emergency ground and ground-attack-air
 evidence against memory, radar, public-prior and pure air-to-air negatives.
 
-Exercise the exact authored home frame, living starting Foundry, full footprint
-exploration and safe builder. Keep rally points off known frames. Cover shallow
-Sentinel timing, exact remaining escrow, no reachable ground objective, and
-preservation of paid queues and foundations after core loss.
+Exercise the exact authored home frame, living starting Foundry, any-corner
+discovery (including remembered corners) and safe builder. Keep rally points off
+known frames. Cover shallow Sentinel timing, exact remaining escrow, no
+reachable ground objective, and preservation of paid queues and foundations
+after core loss.
 
 For investment and Foundry changes, cover finite safe work, initial worker
 travel, useful prerequisite demand, missing-chain costs, capacity bottlenecks,

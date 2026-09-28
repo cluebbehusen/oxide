@@ -212,6 +212,11 @@ fn a_known_frame_snaps_every_visible_tile_without_revealing_an_unknown_one() {
 #[test]
 fn placement_reasons_do_not_disclose_frames_in_unexplored_ground() {
     let state = fog_arena(vec![]).build().unwrap();
+    assert!(
+        oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0))
+            .known_frames
+            .is_empty()
+    );
     let unknown_elsewhere = TilePos::new(23, 4);
 
     for anchor in [FOG_FRAME, FOG_FRAME.offset(1, 1), unknown_elsewhere] {
@@ -266,6 +271,11 @@ fn one_explored_corner_allows_deferred_extractor_construction() {
                 .filter(|tile| state.vision(PlayerId(0)).explored(*tile))
                 .collect();
             assert_eq!(explored.len(), 1, "only one corner was discovered");
+            assert_eq!(
+                oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0))
+                    .known_frames,
+                vec![FOG_FRAME]
+            );
             assert_eq!(state.vision(PlayerId(0)).visible(explored[0]), !remembered);
             assert_eq!(
                 state.canonical_build_anchor(PlayerId(0), BuildingKind::Extractor, explored[0]),

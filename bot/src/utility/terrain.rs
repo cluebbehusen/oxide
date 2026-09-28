@@ -277,7 +277,7 @@ impl UtilityPolicy {
             (0..height).all(|dy| {
                 let tile = anchor.offset(dx, dy);
                 in_bounds(tile)
-                    && obs.explored(tile)
+                    && (kind == BuildingKind::Extractor || obs.explored(tile))
                     && (kind.is_stealthy()
                         || !self
                             .state
