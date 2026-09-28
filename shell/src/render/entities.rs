@@ -115,11 +115,11 @@ pub(crate) fn draw_pending_founds(game: &crate::game::Scene<'_>, sprites: &Sprit
 /// The screen-space waypoints one selected unit's program draws — pure,
 /// so the fog rules are testable: a FOREIGN unit yields no points at
 /// all (an ally's or enemy's order chain is intent the viewer has no
-/// license to read — fog holds positions, never plans), and own goals
-/// draw only on explored ground (the harvest brain can retarget to a
-/// node the player has never seen). Each verb speaks its own color:
-/// bone walks, danger fights, scrap-gold harvests, patina builds,
-/// welds, and strips.
+/// license to read — fog holds positions, never plans). An own walk
+/// draws at the tile its player clicked, explored or not, never at the
+/// slot or endpoint the simulation resolved around it. Each verb speaks
+/// its own color: bone walks, danger fights, scrap-gold harvests,
+/// patina builds, welds, and strips.
 pub(crate) fn breadcrumb_points(
     game: &crate::game::Scene<'_>,
     unit: &oxide_sim::Unit,
@@ -164,7 +164,8 @@ pub(crate) fn breadcrumb_points(
             oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Board { transport } => game.state.unit(*transport)?.tile(),
             oxide_sim::Order::Unload { at } => at.tile(),
-            oxide_sim::Order::Land { goal } => *goal,
+            // A landing that took over a walk marks the walk's click.
+            oxide_sim::Order::Land { goal, from } => from.unwrap_or(*goal),
             oxide_sim::Order::Attack { target, .. } => {
                 let view = game.state.attack_view(game.presentation.human, *target)?;
                 return Some((
@@ -174,13 +175,13 @@ pub(crate) fn breadcrumb_points(
             }
             oxide_sim::Order::Idle => return None,
         };
-        (game.presentation.all_seeing() || game.my_vision().explored(goal))
-            .then_some((goal, verb_color(order)))
+        Some((goal, verb_color(order)))
     };
     // Each point carries its PROGRAM position (0 = the active order,
     // i = queue[i-1]) — the same order the dock pushes chips in, so a
-    // fogged leg leaves a numbering gap instead of renumbering the
-    // rest out of agreement with the chips.
+    // leg whose target the viewer can no longer place (a lost contact,
+    // a razed building) leaves a numbering gap instead of renumbering
+    // the rest out of agreement with the chips.
     let mut points: Vec<(usize, Vec2, Color)> = Vec::new();
     for (i, order) in std::iter::once(&unit.order)
         .chain(unit.queue.iter())
@@ -261,9 +262,9 @@ pub(crate) fn draw_breadcrumbs(game: &crate::game::Scene<'_>, input: &InputState
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
         let s = ui_scale();
-        // Numbered by PROGRAM position, not by how many survived the
-        // fog filter — a fogged leg leaves a gap, it never renumbers
-        // the rest away from the dock's chips.
+        // Numbered by PROGRAM position, not by how many legs drew — a
+        // leg with no place to draw leaves a gap, it never renumbers the
+        // rest away from the dock's chips.
         let numbered = is_subject && !unit.queue.is_empty();
         let mut prev = start;
         for (idx, p, color) in &points {

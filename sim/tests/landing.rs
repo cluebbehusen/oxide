@@ -547,13 +547,13 @@ fn a_corner_tile_is_snapped_to_ground_the_airframe_can_leave() {
     let condor = state.units()[0].id;
     state.tick(&[]);
     let report = state.tick(&[land(0, condor, 22, 14)]);
-    if report
-        .events
-        .iter()
-        .any(|e| matches!(e, Event::CommandRejected { .. }))
-    {
-        return;
-    }
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. })),
+        "a tile goal on the map is never refused"
+    );
     let flight = fly_and_watch(&mut state, condor, 1_500, true);
     assert!(flight.landed_at.is_some());
     assert_eq!(flight.pinned, 0);

@@ -84,9 +84,10 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
                 crate::stats::AUTO_LAND_SCAN_RADIUS,
                 None,
                 Pick::StraightIn,
+                None,
             ) {
                 let unit = state.unit_mut(id).expect("caller checked");
-                unit.order = Order::Land { goal };
+                unit.order = Order::Land { goal, from: None };
                 unit.path = None;
             }
         }
@@ -97,12 +98,14 @@ pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, 
 /// Touchdown belongs here, not to the steering ring: the final leg is
 /// never accepted early, so a pass either meets the center within
 /// [`crate::stats::LANDING_TOUCHDOWN`] or flies through and comes around
-/// for another run.
+/// for another run. A go-around keeps `from`, the clicked tile of the walk
+/// the landing took over.
 pub(super) fn land(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
     id: UnitId,
     goal: TilePos,
+    from: Option<TilePos>,
     events: &mut Vec<Event>,
 ) {
     let unit = state.unit(id).expect("caller checked");
@@ -144,11 +147,12 @@ pub(super) fn land(
                 crate::stats::LANDING_REPLAN_RADIUS,
                 Some(goal),
                 Pick::StraightIn,
+                None,
             );
             let unit = state.unit_mut(id).expect("caller checked");
             match next {
                 Some(goal) => {
-                    unit.order = Order::Land { goal };
+                    unit.order = Order::Land { goal, from };
                     unit.path = None;
                 }
                 None => {
@@ -291,6 +295,11 @@ pub(super) fn attack_move(
 /// unreachable goal never picks its pad around the target itself. A landing
 /// that replaces a walk short of its target reports the shortfall the walk
 /// would have.
+///
+/// The pad is chosen only among tiles the owner's team has explored, and
+/// only once the goal has taken its slot: until its clicked tile is
+/// explored the flier keeps flying toward it. The landing keeps the clicked
+/// tile as `from`.
 pub(super) fn land_at_destination(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
@@ -306,6 +315,9 @@ pub(super) fn land_at_destination(
     let Some(mut goal) = unit.order.walk_goal() else {
         return false;
     };
+    if goal.is_pending() {
+        return false;
+    }
     let routed = unit
         .path
         .as_ref()
@@ -323,7 +335,7 @@ pub(super) fn land_at_destination(
     if acquire_target_from(state, index, id, destination.center()).is_some() {
         return false;
     }
-    let (pos, heading) = (unit.pos, unit.heading);
+    let (pos, heading, player) = (unit.pos, unit.heading, unit.player);
     let pad = landing::nearest_landable(
         state,
         stats,
@@ -334,12 +346,16 @@ pub(super) fn land_at_destination(
         crate::stats::GOAL_SNAP_RADIUS,
         None,
         Pick::Nearest,
+        Some(player),
     );
     let Some(pad) = pad else {
         return false;
     };
     let unit = state.unit_mut(id).expect("caller checked");
-    unit.order = Order::Land { goal: pad };
+    unit.order = Order::Land {
+        goal: pad,
+        from: Some(goal.tile()),
+    };
     unit.path = None;
     if goal.short() {
         let (player, pos) = (unit.player, unit.pos);
@@ -794,13 +810,13 @@ mod tests {
         use crate::{Command, Order, PlayerCommand, PlayerId, UnitKind};
         use chassis::grid::TilePos;
         let map = [".............."; 8];
-        let goal = TilePos::new(11, 6);
+        let goal = TilePos::new(6, 4);
         type Issue = fn(Vec<crate::UnitId>) -> Command;
         let commands: [(Issue, LegacyOrder); 3] = [
             (
                 |units| Command::Move {
                     units,
-                    goal: TilePos::new(11, 6),
+                    goal: TilePos::new(6, 4),
                     queue: false,
                 },
                 LegacyOrder::Move { goal },
@@ -808,7 +824,7 @@ mod tests {
             (
                 |units| Command::AttackMove {
                     units,
-                    goal: TilePos::new(11, 6),
+                    goal: TilePos::new(6, 4),
                     queue: false,
                 },
                 LegacyOrder::AttackMove { goal },
@@ -816,7 +832,7 @@ mod tests {
             (
                 |units| Command::Advance {
                     units,
-                    goal: TilePos::new(11, 6),
+                    goal: TilePos::new(6, 4),
                     queue: false,
                 },
                 LegacyOrder::Advance { goal },
@@ -824,6 +840,10 @@ mod tests {
         ];
         for (command, legacy) in commands {
             let mut state = sandbox(&map, &[(UnitKind::Sentinel, 1, 1)]);
+            assert!(
+                state.vision(PlayerId(0)).explored(goal),
+                "premise: an explored click resolves at issue"
+            );
             let walker = state.units()[0].id;
             state.tick(&[PlayerCommand {
                 player: PlayerId(0),
@@ -843,6 +863,7 @@ mod tests {
         }
 
         let mut state = sandbox(&map, &[(UnitKind::Skyhook, 1, 1)]);
+        assert!(state.vision(PlayerId(0)).explored(goal));
         let sling = state.units()[0].id;
         state.tick(&[PlayerCommand {
             player: PlayerId(0),

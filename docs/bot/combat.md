@@ -48,10 +48,12 @@ mission admission does. A post-fight re-march is recorded like a lowered march,
 and so is an escort leg reissued at the objective while guns walk, so that body
 is judged once its guns rest. A siege screen's leg is not recorded, because its
 artillery paces it, so a screen waiting on its guns is never judged stranded,
-and long guns without escorts are never judged at all. A march refused at issue
-still counts as a bounce, and the no-progress wedge remains the fallback for
-stoppages the executive cannot prove, such as a jam, an unseen blocker, or a
-route that unexplored ground might still open.
+and long guns without escorts are never judged at all. The rule also covers a
+goal with no open ground within its snap radius, which the simulation walks
+toward rather than refusing. A march that ends where it began still counts as a
+bounce, and the no-progress wedge remains the fallback for stoppages the
+executive cannot prove, such as a jam, an unseen blocker, or a route that
+unexplored ground might still open.
 
 Player-facing maintenance advances tactical armies first. The decision then
 observes battlefield evidence and work outcomes once, including on the early

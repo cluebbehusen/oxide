@@ -109,7 +109,10 @@ exits, artillery staging, reconnaissance, and strike routes must remain viable
 through public terrain and observed dynamic blockers. Route preflight reproduces
 the authoritative command geometry: seat orientation, center snapping, group
 spreading, producer doorsteps, and a reachable legal firing stand for every
-exact suppression `Attack` member. Each production command still spends only the
+exact suppression `Attack` member. Snapping and spreading match exactly only for
+explored goals: the simulation spreads a group over an unexplored goal once the
+seat's team explores it, on ground preflight could only assume, so a projected
+spread there stays approximate. Each production command still spends only the
 spendable current bank, uses an exact completed producer, and must fit that
 producer's conservative queue and egress bound.
 

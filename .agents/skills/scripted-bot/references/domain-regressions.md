@@ -88,11 +88,15 @@ clearance only once every member is observed gone, and a blind strike only
 without known anti-air en route.
 
 Preflight must reproduce authoritative orientation, center snapping, group
-spreading, producer doorsteps and legal firing stands. Scheduled suppression
-members without positions require both possible spread scans; exact Attack
-members do not use group spread. Do not double-count mandatory mobile anti-air
-suppression as optional collateral. Cover bounded abort and recovery through
-both pure planner and composed controller tests.
+spreading, producer doorsteps and legal firing stands. Assert exact snap and
+spread parity only on explored goals: the simulation spreads a group over an
+unexplored goal once the seat's team explores it, from ground the projection
+could only assume. An unreachable goal is walked toward, never refused, so
+recovery must read the stopped body rather than a rejection. Scheduled
+suppression members without positions require both possible spread scans; exact
+Attack members do not use group spread. Do not double-count mandatory mobile
+anti-air suppression as optional collateral. Cover bounded abort and recovery
+through both pure planner and composed controller tests.
 
 ## Reconnaissance, support and battlefield memory
 

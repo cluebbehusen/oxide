@@ -467,11 +467,12 @@ impl Executive {
                         army.issued =
                             (!siege_objective(obs, target)).then_some((obs.tick, vanguard));
                     }
-                    // A march the sim refused, or one that ended at once
-                    // because the escorts already stood as close as they
-                    // can get, leaves every escort idle where it stood.
-                    // Checked only on a LATER think than the order, since
-                    // this think's commands have not executed yet.
+                    // A march that ended at once, because the escorts
+                    // already stood as close to its goal as they can get,
+                    // leaves every escort idle where it stood. The sim
+                    // refuses no march for an unreachable goal. Checked
+                    // only on a LATER think than the order, since this
+                    // think's commands have not executed yet.
                     let bounced = all_idle
                         && army.issued.is_some_and(|(at, from)| {
                             obs.tick > at && vanguard.chebyshev(from) <= 1
@@ -503,11 +504,11 @@ impl Executive {
                         // where it stopped.
                         army.members.clear();
                     } else if bounced {
-                        // Two refused orders in a row are route testimony
-                        // on the first think a wedge clock would only begin
-                        // counting — an order refused at issue never
-                        // marches, so it never stalls. Two immediate
-                        // bounces are enough to stop repeating it.
+                        // Two marches in a row that ended where they began
+                        // are route testimony on the first think a wedge
+                        // clock would only begin counting — a march that
+                        // ends at once never stalls. Two immediate bounces
+                        // are enough to stop repeating it.
                         army.issued = None;
                         army.bounces = army.bounces.saturating_add(1);
                         if army.bounces >= 2 && army.target.is_some() {

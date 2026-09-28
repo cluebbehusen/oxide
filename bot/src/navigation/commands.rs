@@ -446,7 +446,9 @@ impl<'a> RouteProjection<'a> {
     /// tile within the domain's snap radius is a candidate. A `false` answer
     /// therefore holds whichever tile the command chose, in either seat's
     /// frame, and a goal inside a building footprint still counts as
-    /// reachable through the open ground around it.
+    /// reachable through the open ground around it. It also holds before an
+    /// unexplored goal has been snapped: the group heads for the goal itself
+    /// until then, and that tile lies within the same disc.
     pub(crate) fn command_goal_reachable_from(&self, starts: &[TilePos], goal: TilePos) -> bool {
         let Some((center, radius)) = command_snap(self.obs, self.domain, goal) else {
             return false;
@@ -1483,6 +1485,19 @@ struct CommandGoalProjection<'a> {
     orientation: Option<Orientation>,
 }
 
+/// The tiles a group Move or AttackMove on `goal` assigns its `count`
+/// members in canonical order: the snapped center, then the ring-scanned
+/// spread around it, padded with the last. `None` when nothing within the
+/// snap radius is open to the domain; the simulation then walks the group
+/// at the goal to end as close as it can, which callers treat as unroutable.
+///
+/// On a goal the seat has explored this reproduces the simulation, which
+/// resolves such a click when the command is issued, as far as the seat's
+/// memory of that ground is current. The simulation spreads a group over an
+/// unexplored goal only once the seat's team explores it, sending every
+/// member at the goal itself until then, and reads the ground it finds
+/// there; the projection assumes unexplored ground as the observation
+/// presents it, so it stays approximate for such a goal.
 fn command_goals(
     query_purpose: QueryPurpose,
     projection: CommandGoalProjection<'_>,
@@ -3036,6 +3051,120 @@ mod tests {
             ),
             vec![UnitId(1), UnitId(2)]
         );
+    }
+
+    #[test]
+    fn explored_group_goals_match_the_simulation_slot_for_slot() {
+        use oxide_sim::scenario::{PlayerSpec, ScenarioMode, UnitSpec};
+        use oxide_sim::{Command, Faction, Order, PlayerCommand, Scenario};
+
+        // Rock, peaks and a pit around open ground, all in a central
+        // Kestrel's sight, so every click is explored and resolves at issue.
+        let map = [
+            "...........",
+            ".##.....^^.",
+            ".##.....^^.",
+            "....#......",
+            "...###.....",
+            "....#......",
+            "...........",
+            ".~~.....##.",
+            "...........",
+        ];
+        let state = Scenario {
+            mode: ScenarioMode::Sandbox,
+            name: "parity".into(),
+            seed: 5,
+            map: map.iter().map(|row| (*row).to_owned()).collect(),
+            players: vec![PlayerSpec {
+                name: "p0".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            }],
+            units: [
+                (UnitKind::Kestrel, 5, 4),
+                (UnitKind::Sentinel, 0, 0),
+                (UnitKind::Sentinel, 10, 8),
+                (UnitKind::Kestrel, 10, 0),
+                (UnitKind::Sentinel, 0, 8),
+                (UnitKind::Sentinel, 6, 6),
+                (UnitKind::Kestrel, 0, 4),
+            ]
+            .into_iter()
+            .map(|(kind, x, y)| UnitSpec {
+                player: 0,
+                kind,
+                x,
+                y,
+            })
+            .collect(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("the parity fixture builds");
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let ids: Vec<UnitId> = obs.my_units.iter().map(|unit| unit.id).collect();
+        for y in 0..obs.map_height {
+            for x in 0..obs.map_width {
+                let goal = TilePos::new(x, y);
+                assert!(obs.explored(goal), "premise: {goal} is explored");
+                let issued = state.inspect_command_phase(
+                    &[PlayerCommand {
+                        player: PlayerId(0),
+                        command: Command::Move {
+                            units: ids.clone(),
+                            goal,
+                            queue: false,
+                        },
+                    }],
+                    |view| {
+                        view.units()
+                            .iter()
+                            .map(|unit| match unit.order {
+                                Order::Move { goal } => (unit.id, goal.target()),
+                                other => panic!("unit {} got {other:?}", unit.id),
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                );
+                for domain in [Domain::Ground, Domain::Air] {
+                    let members: Vec<_> = canonical_members(&obs, &ids)
+                        .into_iter()
+                        .filter(|unit| unit.kind.stats().domain == domain)
+                        .collect();
+                    let reverse = spread_scan_reversed(&obs, goal, &members, None);
+                    let projected = command_goals(
+                        QueryPurpose::NavigationTest,
+                        CommandGoalProjection {
+                            obs: &obs,
+                            public_map: None,
+                            domain,
+                            require_explored: false,
+                            orientation: None,
+                        },
+                        goal,
+                        members.len(),
+                        reverse,
+                    )
+                    .expect("premise: open ground near every click");
+                    for (unit, tile) in members.iter().zip(projected) {
+                        assert_eq!(
+                            issued
+                                .iter()
+                                .find(|(id, _)| *id == unit.id)
+                                .map(|(_, t)| *t),
+                            Some(tile),
+                            "unit {} on a click at {goal}",
+                            unit.id
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

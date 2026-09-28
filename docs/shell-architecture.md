@@ -228,6 +228,13 @@ it rest past the edge, and their acknowledgment ring draws at that tile's
 centre, where the waypoint marker sits. Entity lookups keep the unclamped tile,
 so a slack click never binds to whatever stands on the edge.
 
+The selection's waypoint chain draws an own unit's walks, patrol legs, and drop
+points at the tile the player clicked, explored or not, rather than at the slot
+or endpoint the simulation resolved around it; a landing that took over a walk
+still marks the walk's click. Markers are numbered by program position like the
+dock's chips, so a leg with nothing left to draw at, such as a lost attack
+contact, leaves a gap. A foreign unit's program draws nothing.
+
 Toasts report refusals and outcomes, not armed modes, which the ribbon already
 names, or their cancellation; only Patrol coaches its two-step start.
 `Presentation::toast` and the tooltip's refusal line capitalize the first

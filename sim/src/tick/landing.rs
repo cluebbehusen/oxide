@@ -317,6 +317,11 @@ pub(crate) fn landing_clear(
 /// within a ring, by how little the aircraft would have to turn to head
 /// for it. Bearings are taken relative to the current heading, so a
 /// mirrored aircraft on a mirrored map picks the mirrored tile.
+///
+/// With `explored_by`, only tiles that player's team has explored are
+/// candidates: a pad picked around a distant goal is written into an order
+/// the player can see, so it must not be chosen from ground they never saw.
+/// A pad picked around the airframe itself lies within its own sight.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn nearest_landable(
     state: &State,
@@ -328,7 +333,10 @@ pub(crate) fn nearest_landable(
     radius: i32,
     exclude: Option<TilePos>,
     pick: Pick,
+    explored_by: Option<crate::ids::PlayerId>,
 ) -> Option<TilePos> {
+    let known =
+        |tile: TilePos| explored_by.is_none_or(|player| state.vision(player).explored(tile));
     let passes: &[bool] = match pick {
         Pick::Nearest => &[false],
         Pick::StraightIn => &[true, false],
@@ -343,6 +351,7 @@ pub(crate) fn nearest_landable(
                     }
                     let tile = around.offset(dx, dy);
                     if exclude == Some(tile)
+                        || !known(tile)
                         || !landing_clear(state, stats, me, tile, tile.center())
                         || (straight && !straight_in(state, stats, pos, heading, tile))
                     {
@@ -425,6 +434,43 @@ mod tests {
         }
         .build()
         .expect("the mirror arena builds")
+    }
+
+    #[test]
+    fn a_handoff_pad_is_chosen_only_from_ground_its_side_has_explored() {
+        let state = arena();
+        let condor = &state.units[0];
+        let player = condor.player;
+        let vision = state.vision(player);
+        let around = TilePos::new(13, 5);
+        assert!(
+            !vision.explored(around),
+            "premise: the destination lies past the fog line"
+        );
+        let pick = |explored_by| {
+            super::nearest_landable(
+                &state,
+                condor.kind.stats(),
+                condor.id,
+                around,
+                condor.pos,
+                condor.heading,
+                3,
+                None,
+                super::Pick::Nearest,
+                explored_by,
+            )
+        };
+        assert_eq!(
+            pick(None),
+            Some(around),
+            "premise: unfiltered, the destination itself is the nearest pad"
+        );
+        let pad = pick(Some(player)).expect("explored ground lies within reach");
+        assert!(
+            vision.explored(pad),
+            "a handoff never picks a pad its side has not seen"
+        );
     }
 
     /// Two aircraft placed as half-turn images of each other, given
