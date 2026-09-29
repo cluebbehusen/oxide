@@ -150,7 +150,7 @@ impl UtilityPolicy {
         obs.navigation().known_roads(obs, home)
     }
 
-    /// The per-unit goals a ground AttackMove would fan out over under the
+    /// The per-unit goals a ground Hunt would fan out over under the
     /// same known-world passability projection. Mirroring the simulation's
     /// spread matters at barriers: the snapped center can be reachable while
     /// a later unit's assigned tile is across the wall.
@@ -277,7 +277,7 @@ impl UtilityPolicy {
             (0..height).all(|dy| {
                 let tile = anchor.offset(dx, dy);
                 in_bounds(tile)
-                    && obs.explored(tile)
+                    && (kind == BuildingKind::Extractor || obs.explored(tile))
                     && (kind.is_stealthy()
                         || !self
                             .state

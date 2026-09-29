@@ -158,7 +158,7 @@ fn air_flies_straight_over_rock_and_may_park_on_it() {
     let flyer = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![flyer],
             goal: TilePos::new(9, 4),
             queue: false,
@@ -178,7 +178,7 @@ fn air_flies_straight_over_rock_and_may_park_on_it() {
     // A rock tile is a legal destination for a flyer.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![flyer],
             goal: TilePos::new(6, 3),
             queue: false,
@@ -206,7 +206,7 @@ fn collision_pairs_only_within_a_domain() {
     // Both flyers head for the sentinel's tile.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![buzzard, wisp],
             goal: TilePos::new(4, 2),
             queue: false,
@@ -262,7 +262,7 @@ fn weapon_masks_gate_acquisition_both_ways() {
     // Send the wisp overhead: flak acquires and deletes it unanswered.
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![wisp],
             goal: TilePos::new(5, 5),
             queue: false,
@@ -502,7 +502,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     // must hold fire through this whole window.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![spotter],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -549,7 +549,7 @@ fn attack_orders_on_uncoverable_targets_walk_instead() {
         },
     )]);
     assert!(
-        matches!(state.unit(flak).unwrap().order, Order::Move { .. }),
+        matches!(state.unit(flak).unwrap().order, Order::Run { .. }),
         "no covering weapon lowers the attack to a walk"
     );
 }
@@ -779,7 +779,7 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
     // Walking into true sight converts the blip into a sighting.
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![intruder],
             goal: TilePos::new(6, 2),
             queue: false,
@@ -886,7 +886,7 @@ fn ground_anti_air_reaches_a_flyer_parked_over_rock() {
     // Park the wisp on the rock at (6,3)-(7,4).
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![wisp],
             goal: TilePos::new(7, 4),
             queue: false,

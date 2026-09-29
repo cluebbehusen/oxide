@@ -426,7 +426,7 @@ fn cost_par_outcome(
     };
     state.tick(&[cmd(
         attacker,
-        Command::AttackMove {
+        Command::Hunt {
             units: attackers.clone(),
             goal,
             queue: false,

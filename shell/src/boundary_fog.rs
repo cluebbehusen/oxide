@@ -227,7 +227,7 @@ mod tests {
         let id = game.state.units()[0].id;
         game.pending.push(PlayerCommand {
             player: game.presentation.human,
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![id],
                 goal: TilePos::new(15, 15),
                 queue: false,

@@ -144,7 +144,7 @@ fn discovering_a_mine_cancels_travelling_and_queued_crews_with_a_full_refund() {
         state.tick(&[
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![worker],
                     goal: next,
                     queue: true,
@@ -152,7 +152,7 @@ fn discovering_a_mine_cancels_travelling_and_queued_crews_with_a_full_refund() {
             ),
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![scout],
                     goal: SITE,
                     queue: false,
@@ -180,7 +180,7 @@ fn discovering_a_mine_cancels_travelling_and_queued_crews_with_a_full_refund() {
         assert_eq!(state.player(PlayerId(0)).scrap, bank);
         assert!(matches!(
             state.unit(worker).unwrap().order,
-            Order::Move { goal } if goal.tile() == next
+            Order::Run { goal } if goal.tile() == next
         ));
         assert!(
             !state
@@ -317,7 +317,7 @@ fn unfinished_mines_are_visible_and_block_placement_then_leave_frozen_memory() {
     let scout = state.units()[2].id;
     let command = cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: SITE,
             queue: false,
@@ -493,7 +493,7 @@ fn discovery_removes_every_queued_crew_commitment_without_reclaiming_the_site() 
         let goal = TilePos::new(5, 15);
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: crew.clone(),
                 goal,
                 queue: false,
@@ -516,7 +516,7 @@ fn discovery_removes_every_queued_crew_commitment_without_reclaiming_the_site() 
             ),
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![scout],
                     goal: SITE,
                     queue: false,
@@ -630,7 +630,7 @@ fn artillery_hits_the_scaffold_above_a_concealed_mine() {
         state.tick(&[
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![worker],
                     goal: TilePos::new(3, 21),
                     queue: false,
@@ -867,7 +867,7 @@ fn a_hostile_scaffold_does_not_disprove_a_remembered_mine() {
         .unwrap();
     state.tick(&[cmd(
         2,
-        Command::Move {
+        Command::Run {
             units: vec![site_builder],
             goal: TilePos::new(14, 11),
             queue: false,

@@ -73,7 +73,7 @@ pub(crate) enum ArmedMode {
     /// Move without engaging.
     Run,
     /// Fight and pursue along a route.
-    AttackMove,
+    Hunt,
     /// Collect this many patrol waypoints.
     Patrol(usize),
 }
@@ -87,7 +87,7 @@ impl ArmedMode {
             Self::Salvage => "Salvage".to_string(),
             Self::Weld => "Weld".to_string(),
             Self::Run => "Run".to_string(),
-            Self::AttackMove => "Attack-move".to_string(),
+            Self::Hunt => "Hunt".to_string(),
             Self::Patrol(0) => "Patrol".to_string(),
             Self::Patrol(count) => format!("Patrol \u{b7} {count}"),
         }
@@ -171,9 +171,9 @@ pub struct InputState {
     /// Armed run: the next ground click sends the selection walking
     /// obliviously — no engaging, no auto-acquire en route.
     pub(crate) running: bool,
-    /// Armed attack-move: the next ground click sends the selection on
+    /// Armed hunt: the next ground click sends the selection on
     /// a fighting march that chases enemies along its route.
-    pub(crate) attacking: bool,
+    pub(crate) hunting: bool,
     /// Producers whose rally point the next world/minimap click sets.
     pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
@@ -427,7 +427,7 @@ impl InputState {
             salvaging: false,
             repairing: false,
             running: false,
-            attacking: false,
+            hunting: false,
             rallying: Vec::new(),
             build_menu: false,
             build_category: None,
@@ -502,7 +502,7 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     /// One armed left-click verb at a time: arming placement, salvage,
-    /// repair, run, attack-move, rally, or patrol stands the others down. `armed_click`
+    /// repair, run, hunt, rally, or patrol stands the others down. `armed_click`
     /// resolves modes in a fixed priority order, so two live at once
     /// would make the next click do something other than what the toast
     /// promised — press M while placing and the click would still stamp
@@ -513,7 +513,7 @@ impl InputState {
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
-        self.attacking = false;
+        self.hunting = false;
         self.rallying.clear();
     }
 
@@ -539,7 +539,7 @@ impl InputState {
             .or_else(|| self.salvaging.then_some(ArmedMode::Salvage))
             .or_else(|| self.repairing.then_some(ArmedMode::Weld))
             .or_else(|| self.running.then_some(ArmedMode::Run))
-            .or_else(|| self.attacking.then_some(ArmedMode::AttackMove))
+            .or_else(|| self.hunting.then_some(ArmedMode::Hunt))
             .or_else(|| {
                 self.patrol_route
                     .as_ref()
@@ -565,7 +565,7 @@ impl InputState {
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
-        self.attacking = false;
+        self.hunting = false;
         self.rallying.clear();
         self.build_menu = false;
         self.build_category = None;
@@ -1080,7 +1080,7 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
         || input.salvaging
         || input.repairing
         || input.running
-        || input.attacking
+        || input.hunting
         || !input.rallying.is_empty()
     {
         return CursorIcon::Crosshair;
@@ -1285,7 +1285,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 input.mouse = vec2(x, y);
                 // A contextual order is a new intent, so it also exits
                 // any one-shot mode left armed by a prior build/salvage/
-                // weld/run/attack-move gesture. In particular, a move
+                // weld/run/hunt gesture. In particular, a move
                 // away from a deferred Found order must not leave a
                 // placement ghost stuck to the cursor. Patrol is the
                 // exception: its right-clicks are collecting the route.
@@ -1658,7 +1658,7 @@ fn place_at(
 }
 
 /// The armed left-click verbs after placement: salvage, weld, run, and
-/// attack-move.
+/// hunt.
 fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
     if input.salvaging {
         // The same manners placement keeps: minimap jumps the camera,
@@ -1770,7 +1770,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             let world = game.presentation.camera.to_world(p);
             let goal = ground_tile(&game.state, world);
             let units = game.presentation.selection.units.clone();
-            game.issue(Command::Move {
+            game.issue(Command::Run {
                 units,
                 goal,
                 queue: input.queue_held(),
@@ -1783,7 +1783,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         }
         return true;
     }
-    if input.attacking {
+    if input.hunting {
         // Explicit fighting march: minimap jumps the camera, HUD
         // swallows, and Shift chains legs while keeping the verb armed.
         if let Some(world) = crate::render::minimap_world_at(&game.view(), p) {
@@ -1793,7 +1793,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             let world = game.presentation.camera.to_world(p);
             let goal = ground_tile(&game.state, world);
             let units = game.presentation.selection.units.clone();
-            game.issue(Command::AttackMove {
+            game.issue(Command::Hunt {
                 units,
                 goal,
                 queue: input.queue_held(),
@@ -1801,7 +1801,7 @@ fn armed_verb_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.presentation
                 .ping_order(tile_center(goal), PingKind::Attack, input.queue_held());
             if !input.queue_held() {
-                input.attacking = false;
+                input.hunting = false;
             }
         }
         return true;

@@ -81,7 +81,7 @@ fn no_route_crosses_a_full_ridge() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![walker],
                 goal: TilePos::new(18, 5),
                 queue: false,
@@ -89,7 +89,7 @@ fn no_route_crosses_a_full_ridge() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![flyer],
                 goal: TilePos::new(18, 7),
                 queue: false,
@@ -130,7 +130,7 @@ fn air_reroutes_through_the_gap() {
     let flyer = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![flyer],
             goal: TilePos::new(18, 8),
             queue: false,
@@ -160,7 +160,7 @@ fn a_peak_goal_snaps_to_open_sky() {
     let flyer = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![flyer],
             goal: TilePos::new(12, 5),
             queue: false,
@@ -301,7 +301,7 @@ fn a_ridge_match_stays_bit_identical() {
         state.tick(&[
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![w],
                     goal: TilePos::new(18, 8),
                     queue: false,
@@ -309,7 +309,7 @@ fn a_ridge_match_stays_bit_identical() {
             ),
             cmd(
                 1,
-                Command::Move {
+                Command::Run {
                     units: vec![d],
                     goal: TilePos::new(5, 8),
                     queue: false,

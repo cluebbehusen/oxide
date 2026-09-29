@@ -178,7 +178,7 @@ fn bastion_does_not_read_a_path_established_later_this_tick() {
 
     let report = state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![target],
             goal: TilePos::new(13, 12),
             queue: false,
@@ -216,7 +216,7 @@ fn bastion_keeps_a_legal_aim_when_prediction_enters_its_dead_zone() {
 
     let report = state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![target],
             goal: TilePos::new(7, 7),
             queue: false,
@@ -263,7 +263,7 @@ fn radar_contacts_enable_bastion_fire_without_acquiring_building_ghosts() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 14),
             queue: false,

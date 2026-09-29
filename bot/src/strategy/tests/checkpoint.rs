@@ -36,7 +36,7 @@ fn island() -> StrategicPlanner {
     let mut plan = AirPlan::island(&profile(), &wealthy_island_obs(ADMITTED, 1));
     let island = plan.island_mut();
     island.screen = vec![UnitId(30), UnitId(31)];
-    island.dispatch.strike = Some(AirStrikeDispatch::AttackMove(TARGET));
+    island.dispatch.strike = Some(AirStrikeDispatch::Hunt(TARGET));
     let mut op = operation(AirOperationPhase::Strike, TICK);
     op.strike_issued_at = Some(TICK);
     planner_with_operation(op, plan)

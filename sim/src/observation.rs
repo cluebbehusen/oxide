@@ -209,8 +209,8 @@ pub struct ObservationData {
     /// Sorted by (y, x).
     #[serde(default)]
     pub known_pits: Vec<TilePos>,
-    /// Derelict Extractor frame anchors on explored ground (all of
-    /// them, omnisciently). Frames are map facts and never move.
+    /// Derelict Extractor frame anchors discovered through any footprint
+    /// tile (all of them, omnisciently). Frames are map facts and never move.
     #[serde(default)]
     pub known_frames: Vec<TilePos>,
     /// Explored peak terrain, also present in `known_rock`. This separate
@@ -538,7 +538,7 @@ impl ObservationData {
         // Frames are authored in row-major order, the same order the
         // per-tile walk produced them in.
         for frame in state.map().extractor_frames() {
-            if vision.explored(*frame) {
+            if (0..2).any(|dy| (0..2).any(|dx| vision.explored(frame.offset(dx, dy)))) {
                 obs.known_frames.push(*frame);
             }
         }
@@ -1067,7 +1067,7 @@ mod tests {
 
         state.tick(&[PlayerCommand {
             player: PlayerId(0),
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![condor],
                 goal,
                 queue: false,
@@ -1213,7 +1213,7 @@ mod tests {
             .unit_mut(own_workers[0])
             .expect("the first own Harvester exists")
             .queue
-            .push_back(Order::Move {
+            .push_back(Order::Run {
                 goal: TilePos::new(8, 8).into(),
             });
         state
@@ -1224,7 +1224,7 @@ mod tests {
             .unit_mut(hostile_worker)
             .expect("the hostile Harvester exists")
             .queue
-            .push_back(Order::Move {
+            .push_back(Order::Run {
                 goal: TilePos::new(30, 15).into(),
             });
 

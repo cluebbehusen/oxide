@@ -152,7 +152,7 @@ fn positioned_intents_flip_and_positionless_ones_pass() {
             units: vec![UnitId(1), UnitId(2)],
             goal: TilePos::new(5, 4),
         },
-        Intent::AttackMoveUnits {
+        Intent::HuntUnits {
             units: vec![UnitId(3)],
             goal: TilePos::new(6, 4),
         },
@@ -184,7 +184,7 @@ fn positioned_intents_flip_and_positionless_ones_pass() {
     );
     assert_eq!(
         emitted[2],
-        Intent::AttackMoveUnits {
+        Intent::HuntUnits {
             units: vec![UnitId(3)],
             goal: orientation.tile(TilePos::new(6, 4)),
         }
@@ -386,7 +386,7 @@ fn a_pushed_army_holds_its_artillery_at_standoff() {
     let goals: Vec<TilePos> = commands
         .iter()
         .filter_map(|c| match &c.command {
-            oxide_sim::Command::AttackMove { goal, units, .. } => Some((*goal, units.clone())),
+            oxide_sim::Command::Hunt { goal, units, .. } => Some((*goal, units.clone())),
             _ => None,
         })
         .map(|(g, _)| g)
@@ -412,13 +412,13 @@ fn a_pushed_army_holds_its_artillery_at_standoff() {
     let commands = exec.apply(PlayerId(0), &obs, &[Intent::PushArmy { army, target }]);
     assert!(commands.iter().any(|command| matches!(
         &command.command,
-        Command::AttackMove { units, goal, queue: false }
+        Command::Hunt { units, goal, queue: false }
             if units == &vec![UnitId(0)] && *goal == target
     )));
     let mut parked = commands
         .iter()
         .find_map(|command| match &command.command {
-            Command::Move {
+            Command::Run {
                 units,
                 goal,
                 queue: false,
@@ -529,7 +529,7 @@ fn player_facing_defense_does_not_overwrite_an_army_withdrawal() {
     assert!(matches!(
         retreat.as_slice(),
         [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
+            command: Command::Hunt { units, goal, queue: false },
             ..
         }] if units == &vec![UnitId(1)] && *goal == staging
     ));
@@ -702,7 +702,7 @@ fn player_facing_army_at_a_live_objective_is_not_reissued_every_think() {
             Intent::PushArmy { army, target: next }
                 if *army == army_id && *next == target
         )),
-        "the standing attack-move must keep owning the live objective: {player_facing:?}"
+        "the standing hunt must keep owning the live objective: {player_facing:?}"
     );
 }
 
@@ -799,7 +799,7 @@ fn player_facing_completed_forward_army_rejoins_the_safe_muster() {
     assert!(matches!(
         commands.as_slice(),
         [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
+            command: Command::Hunt { units, goal, queue: false },
             ..
         }] if units == &vec![UnitId(1), UnitId(2)] && *goal == home_staging
     ));
@@ -974,7 +974,7 @@ fn player_facing_ground_armies_do_not_pursue_aircraft_over_unstandable_ground() 
     // Salvo-priced fight strength reads the Moth's full bombing stick as
 
     // Attack: it withdraws to its own staging ground through an
-    // attack-move that answers fire on the way, and never paths onto the
+    // hunt that answers fire on the way, and never paths onto the
     // aircraft's unstandable tile.
 }
 
@@ -1030,7 +1030,7 @@ fn player_facing_muster_drafts_only_fighters_with_a_known_ground_route() {
     assert!(matches!(
         commands.as_slice(),
         [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
+            command: Command::Hunt { units, goal, queue: false },
             ..
         }] if units == &vec![UnitId(0), UnitId(1)] && *goal == staging
     ));
@@ -1080,7 +1080,7 @@ fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
     assert!(matches!(
         commands.as_slice(),
         [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
+            command: Command::Hunt { units, goal, queue: false },
             ..
         }] if units == &vec![UnitId(2)] && *goal == staging
     ));
@@ -1102,7 +1102,7 @@ fn player_facing_reinforcement_skips_an_unknown_gulf_until_a_route_is_mapped() {
     assert!(matches!(
         commands.as_slice(),
         [oxide_sim::PlayerCommand {
-            command: Command::AttackMove { units, goal, queue: false },
+            command: Command::Hunt { units, goal, queue: false },
             ..
         }] if units == &vec![UnitId(1)] && *goal == staging
     ));
@@ -1128,7 +1128,7 @@ fn muster_extends_a_nearby_staged_body() {
         player_facing.apply_with_reservations(PlayerId(0), &obs, &intents(nearby, 4), &[]);
     assert!(
         commands.iter().any(|command| matches!(&command.command,
-            Command::AttackMove { units, goal, .. } if units.len() == 2 && *goal == nearby)),
+            Command::Hunt { units, goal, .. } if units.len() == 2 && *goal == nearby)),
         "new members must move to the requested nearby muster"
     );
     assert_eq!(player_facing.armies().len(), 1);
@@ -1211,7 +1211,7 @@ fn player_facing_rear_wait_keeps_unrepaired_units_out_of_voluntary_musters() {
     let retreat = player_facing.maintain_player_facing(PlayerId(0), &obs, rear);
     assert!(retreat.iter().any(|command| matches!(
         &command.command,
-        Command::Move { units, goal, queue: false }
+        Command::Run { units, goal, queue: false }
             if units == &vec![UnitId(0)] && *goal == rear
     )));
 
@@ -1246,7 +1246,7 @@ fn player_facing_rear_wait_keeps_unrepaired_units_out_of_voluntary_musters() {
         player_facing.armies()[0].members.contains(&UnitId(0))
             && commands.iter().any(|command| matches!(
                 &command.command,
-                Command::AttackMove { units, goal, queue: false }
+                Command::Hunt { units, goal, queue: false }
                     if units.contains(&UnitId(0)) && *goal == staging
             )),
         "a genuinely repaired machine must become eligible for the next voluntary muster"
@@ -1287,7 +1287,7 @@ fn exact_group_intents_lower_canonical_live_owned_members_only() {
                 ],
                 goal: move_goal,
             },
-            Intent::AttackMoveUnits {
+            Intent::HuntUnits {
                 units: vec![UnitId(1)],
                 goal: march_goal,
             },
@@ -1307,7 +1307,7 @@ fn exact_group_intents_lower_canonical_live_owned_members_only() {
         vec![
             oxide_sim::PlayerCommand {
                 player: PlayerId(0),
-                command: Command::Move {
+                command: Command::Run {
                     units: vec![UnitId(5), UnitId(11)],
                     goal: move_goal,
                     queue: false,
@@ -1315,7 +1315,7 @@ fn exact_group_intents_lower_canonical_live_owned_members_only() {
             },
             oxide_sim::PlayerCommand {
                 player: PlayerId(0),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: vec![UnitId(1)],
                     goal: march_goal,
                     queue: false,
@@ -1385,7 +1385,7 @@ fn exact_reservations_survive_an_earlier_army_draft_and_transfer_ownership() {
     assert!(!exec.armies()[0].members.contains(&UnitId(2)));
     assert!(commands.iter().any(|command| matches!(
         &command.command,
-        Command::AttackMove { units, goal, queue: false }
+        Command::Hunt { units, goal, queue: false }
             if units.len() == 2
                 && units.contains(&UnitId(0))
                 && units.contains(&UnitId(1))
@@ -1393,14 +1393,14 @@ fn exact_reservations_survive_an_earlier_army_draft_and_transfer_ownership() {
     )));
     assert!(commands.iter().any(|command| matches!(
         &command.command,
-        Command::Move { units, goal, queue: false }
+        Command::Run { units, goal, queue: false }
             if units == &vec![UnitId(2)] && *goal == operation_goal
     )));
 
     let _ = exec.apply(
         PlayerId(0),
         &obs,
-        &[Intent::AttackMoveUnits {
+        &[Intent::HuntUnits {
             units: vec![UnitId(1)],
             goal: operation_goal,
         }],
@@ -1515,7 +1515,7 @@ fn boarding_riders_leave_the_army_before_its_next_order() {
     ));
     assert!(commands.iter().any(|command| matches!(
         &command.command,
-        Command::AttackMove { units, goal, queue: false }
+        Command::Hunt { units, goal, queue: false }
             if units == &vec![UnitId(3)] && *goal == target
     )));
     assert_eq!(exec.armies()[0].members, vec![UnitId(3)]);
@@ -1551,7 +1551,7 @@ fn exact_loading_uses_its_reservations_without_stealing_same_think_claims() {
 
     assert!(matches!(
         commands.first().map(|command| &command.command),
-        Some(Command::Move { units, goal, queue: false })
+        Some(Command::Run { units, goal, queue: false })
             if units == &vec![UnitId(1)] && *goal == strategic_goal
     ));
     assert!(matches!(

@@ -369,8 +369,16 @@ fn a_surrendered_or_foundry_less_seat_stays_silent() {
 #[test]
 fn a_decision_receives_only_its_seats_failures_since_the_last_one() {
     let mut scenario = arena(0);
-    for (row, walls) in [(1, "###"), (2, "#.#"), (3, "###")] {
-        scenario.map[row].replace_range(10..13, walls);
+    // The sealed goal's nearest reachable tile is the Harvester's own, so its
+    // walk ends short on the tick it is ordered, inside the decision window.
+    for (row, col, walls) in [
+        (4, 9, "#"),
+        (5, 8, "###"),
+        (6, 8, "#.##"),
+        (7, 8, "###"),
+        (8, 9, "#"),
+    ] {
+        scenario.map[row].replace_range(col..col + walls.len(), walls);
     }
     let mut state = scenario.build().unwrap();
     let mut opponent = seat(&scenario, 0);
@@ -394,9 +402,9 @@ fn a_decision_receives_only_its_seats_failures_since_the_last_one() {
         train(0, foundries(&state, PlayerId(0))[0]),
         PlayerCommand {
             player: PlayerId(0),
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![harvester],
-                goal: TilePos::new(11, 2),
+                goal: TilePos::new(9, 6),
                 queue: false,
             },
         },

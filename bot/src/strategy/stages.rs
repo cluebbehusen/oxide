@@ -515,7 +515,7 @@ pub(super) fn strike(
             plan,
             obs,
             &attackers,
-            AirStrikeDispatch::AttackMove(cleared_anchor),
+            AirStrikeDispatch::Hunt(cleared_anchor),
             out,
         );
         op.strike_issued_at.get_or_insert(obs.tick);
@@ -531,7 +531,7 @@ pub(super) fn strike(
             plan,
             obs,
             &attackers,
-            AirStrikeDispatch::AttackMove(remembered.anchor),
+            AirStrikeDispatch::Hunt(remembered.anchor),
             out,
         );
         op.strike_issued_at.get_or_insert(obs.tick);
@@ -567,7 +567,7 @@ fn dispatch_air_strike(
             units,
             target: Target::Building(target),
         },
-        AirStrikeDispatch::AttackMove(goal) => Intent::AttackMoveUnits { units, goal },
+        AirStrikeDispatch::Hunt(goal) => Intent::HuntUnits { units, goal },
     });
 }
 

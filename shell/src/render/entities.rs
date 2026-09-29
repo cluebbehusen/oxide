@@ -133,13 +133,13 @@ pub(crate) fn breadcrumb_points(
         return Vec::new();
     };
     let verb_color = |order: &oxide_sim::Order| match order {
-        oxide_sim::Order::Move { .. } => BONE_FAINT,
+        oxide_sim::Order::Run { .. } => BONE_FAINT,
         oxide_sim::Order::Advance { .. } => Color::new(0.95, 0.76, 0.28, 0.62),
         // A chase and a march are different promises: the chase burns
         // crimson at its victim, the fighting march runs ember toward
         // ground.
         oxide_sim::Order::Attack { .. } => Color::new(0.85, 0.32, 0.29, 0.55),
-        oxide_sim::Order::AttackMove { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
+        oxide_sim::Order::Hunt { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
         oxide_sim::Order::ReturnCargo { .. } | oxide_sim::Order::Harvest { .. } => {
             Color::new(0.85, 0.64, 0.25, 0.55)
         }
@@ -155,9 +155,9 @@ pub(crate) fn breadcrumb_points(
     };
     let goal_of = |order: &oxide_sim::Order| {
         let goal = match order {
-            oxide_sim::Order::Move { goal }
+            oxide_sim::Order::Run { goal }
             | oxide_sim::Order::Advance { goal }
-            | oxide_sim::Order::AttackMove { goal } => goal.tile(),
+            | oxide_sim::Order::Hunt { goal } => goal.tile(),
             oxide_sim::Order::Harvest { node, .. } => *node,
             oxide_sim::Order::ReturnCargo { foundry, .. } => game.state.building(*foundry)?.anchor,
             oxide_sim::Order::Build { site } => projection.building(game.state, *site)?.anchor,

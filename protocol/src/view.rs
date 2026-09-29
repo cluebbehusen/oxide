@@ -734,7 +734,7 @@ mod tests {
         let own_tile = state.units()[0].tile();
         state.tick(&[oxide_sim::PlayerCommand {
             player: oxide_sim::PlayerId(1),
-            command: oxide_sim::Command::Move {
+            command: oxide_sim::Command::Run {
                 units: vec![intruder],
                 goal: own_tile,
                 queue: false,
@@ -835,7 +835,7 @@ mod tests {
             .id;
         state.tick(&[oxide_sim::PlayerCommand {
             player: PlayerId(1),
-            command: oxide_sim::Command::Move {
+            command: oxide_sim::Command::Run {
                 units: vec![condor],
                 goal: TilePos::new(13, 8),
                 queue: false,
