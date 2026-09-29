@@ -19,6 +19,7 @@ mod placement;
 mod saving;
 mod scouting;
 mod strike;
+mod support;
 
 /// A half-turn-symmetric arena. Each seat's Harvesters stand equally far from
 /// their two nearby scrap nodes, so the split depends on the tie-break.

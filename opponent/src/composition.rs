@@ -146,7 +146,7 @@ pub(crate) struct Needs {
 }
 
 /// Per-mille weight of a 0..=100 trait.
-fn weight(trait_value: u8) -> u64 {
+pub(crate) fn weight(trait_value: u8) -> u64 {
     750 + 5 * u64::from(trait_value)
 }
 

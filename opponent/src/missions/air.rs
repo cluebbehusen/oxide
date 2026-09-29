@@ -17,7 +17,7 @@ const DETOUR: i32 = 8;
 const CLEARANCE: i32 = 2;
 
 /// Something that shoots at a domain, as a disc in doubled coordinates.
-pub(super) struct Hazard {
+pub(crate) struct Hazard {
     centre: (i64, i64),
     reach: i64,
     pub(super) value: u64,
@@ -25,7 +25,7 @@ pub(super) struct Hazard {
 
 impl Hazard {
     /// Whether `point`, in doubled coordinates, lies within reach.
-    pub(super) fn covers(&self, point: (i64, i64)) -> bool {
+    pub(crate) fn covers(&self, point: (i64, i64)) -> bool {
         distance2(self.centre, point) <= self.reach * self.reach
     }
 }
@@ -100,7 +100,7 @@ pub(super) fn route(
 
 /// Known enemies that fire at `domain`: remembered units by confidence and
 /// known buildings by health, each reaching its weapon range plus clearance.
-pub(super) fn hazards(
+pub(crate) fn hazards(
     observation: &ObservationData,
     memory: &Memory,
     domain: Domain,

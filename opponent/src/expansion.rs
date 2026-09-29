@@ -52,6 +52,7 @@ pub(crate) fn candidates(
         if held(observation, *frame, -1)
             || memory.failed(BuildingKind::Extractor, *frame, observation.tick)
             || map.component(*frame) != home
+            || contested(observation, *frame)
         {
             continue;
         }
@@ -167,6 +168,15 @@ fn held(observation: &ObservationData, anchor: TilePos, reach: i32) -> bool {
                 building.kind.base_stats().size,
             ) <= reach
         })
+}
+
+/// Whether an armed enemy in sight stands near the two-by-two footprint at
+/// `anchor`: an Extractor lost there, or a new one, waits until it leaves.
+fn contested(observation: &ObservationData, anchor: TilePos) -> bool {
+    observation.enemy_units.iter().any(|enemy| {
+        !enemy.kind.stats().weapons.is_empty()
+            && gap(anchor, WORKS, enemy.tile, (1, 1)) <= DANGER_REACH
+    })
 }
 
 /// Remembered enemy units near the two-by-two footprint at `anchor`, weighted

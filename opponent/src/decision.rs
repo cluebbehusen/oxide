@@ -17,7 +17,7 @@ use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
-use oxide_sim::stats::Role;
+use oxide_sim::stats::{Domain, Role};
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, UnitId, UnitKind};
 
 /// What one decision emits.
@@ -175,7 +175,10 @@ impl Ledger {
             .any(|command| match &command.command {
                 Command::Harvest { units, .. }
                 | Command::Build { units, .. }
-                | Command::Run { units, .. } => units.contains(&unit),
+                | Command::Run { units, .. }
+                | Command::Repair { units, .. }
+                | Command::RepairUnit { units, .. }
+                | Command::Salvage { units, .. } => units.contains(&unit),
                 _ => false,
             })
     }
@@ -293,14 +296,22 @@ pub(crate) fn decide(
     }
     // A short defense leaves scrap to the army: only the recovery Harvester
     // above is trained while it lasts.
+    if !short {
+        workers::train(
+            observation,
+            &foundries,
+            &staffing,
+            profile.traits.greed,
+            &mut ledger,
+        );
+    }
     workers::run(
         observation,
         map,
         frame,
-        &foundries,
+        &persistent.memory,
         &staffing,
         &mut ledger,
-        !short,
     );
     if let Some((kind, anchor)) = persistent.missions.lift(
         observation,
@@ -333,6 +344,9 @@ pub(crate) fn decide(
     persistent
         .missions
         .focus(observation, frame, profile.difficulty, &mut ledger);
+    persistent
+        .missions
+        .tend(observation, map, frame, &mut ledger);
     let scout =
         persistent
             .missions
@@ -342,6 +356,9 @@ pub(crate) fn decide(
     if !carrying {
         if scout {
             train_scout(observation, &producers, &mut ledger);
+        }
+        if !short {
+            train_tenders(observation, profile, &producers, &mut ledger);
         }
         produce(observation, &producers, &mut needs, &mut ledger);
     }
@@ -554,6 +571,56 @@ fn train_scout(observation: &ObservationData, producers: &[Producer<'_>], ledger
     ledger.train(producer.building.id, kind);
 }
 
+/// Keeps a Tender, alive or queued, for so much missing health among the
+/// seat's armed ground units, more the more it leans on support, up to two,
+/// training one at an idle producer that can.
+fn train_tenders(
+    observation: &ObservationData,
+    profile: &ResolvedProfile,
+    producers: &[Producer<'_>],
+    ledger: &mut Ledger,
+) {
+    let wounds: u64 = observation
+        .my_units
+        .iter()
+        .filter(|unit| {
+            let stats = unit.kind.stats();
+            stats.domain == Domain::Ground && !stats.weapons.is_empty()
+        })
+        .map(|unit| {
+            let stats = unit.kind.stats();
+            let max = u64::from(stats.max_hp.max(1));
+            u64::from(stats.cost) * max.saturating_sub(u64::from(unit.hp)) / max
+        })
+        .sum();
+    let per = WOUNDS_PER_TENDER * 1_000 / composition::weight(profile.traits.support);
+    let wanted = (wounds / per).min(TENDERS);
+    let have = observation
+        .my_units
+        .iter()
+        .map(|unit| unit.kind)
+        .chain(observation.my_queues.iter().flatten().copied())
+        .filter(|kind| *kind == UnitKind::Tender)
+        .count() as u64
+        + ledger.queued(UnitKind::Tender) as u64;
+    if have >= wanted {
+        return;
+    }
+    let producer = producers.iter().find(|producer| {
+        producer.idle
+            && !ledger.queued_at(producer.building.id)
+            && producer
+                .building
+                .kind
+                .base_stats()
+                .produces
+                .contains(&UnitKind::Tender)
+    });
+    if let Some(producer) = producer {
+        ledger.train(producer.building.id, UnitKind::Tender);
+    }
+}
+
 /// Built producers, nearest home first.
 fn producers(observation: &ObservationData, frame: HomeFrame) -> Vec<Producer<'_>> {
     let mut producers: Vec<Producer<'_>> = observation
@@ -668,6 +735,13 @@ fn depletion(observation: &ObservationData, map: &MapModel) -> u32 {
         .sum();
     (1_000 - left.min(initial) * 1_000 / initial) as u32
 }
+
+/// Scrap of missing health among the seat's armed ground units per Tender
+/// a seat of middling support keeps.
+const WOUNDS_PER_TENDER: u64 = 500;
+
+/// Tenders a seat keeps, at most.
+const TENDERS: u64 = 2;
 
 /// The value per transport slot assumed with no line or siege unit at home.
 const EMPTY_SLOT_VALUE: u64 = 90;

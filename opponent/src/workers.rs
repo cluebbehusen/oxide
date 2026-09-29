@@ -1,12 +1,17 @@
-//! Harvesters: how many the seat wants, training them, and sending idle ones
-//! to work.
+//! Workers (Harvesters and Excavators): how many the seat wants, training
+//! them, keeping them out of harm, and sending free ones to build, weld and
+//! harvest.
 
 use crate::decision::{Ledger, Producer};
-use crate::frame::{HomeFrame, doubled, footprint_centre};
+use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
+use crate::memory::Memory;
+use crate::missions::{self, Hazard};
 use chassis::grid::TilePos;
-use oxide_sim::observation::ObservationData;
+use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
+use oxide_sim::stats::{Domain, FOUNDRY_REPAIR_PRICE};
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
+use std::cmp::Reverse;
 
 /// Scrap nodes each Foundry's Harvesters work, nearest first.
 const NODES_PER_FOUNDRY: usize = 4;
@@ -18,10 +23,31 @@ const HARVESTERS_PER_NODE: usize = 2;
 /// tile of octile distance.
 const HAUL_REACH: i64 = 120;
 
-/// The nodes the seat's Foundries work and the Harvesters it has for them.
+/// Workers welding buildings at once, at most.
+const WELDERS: usize = 2;
+
+/// Per mille of its health a building must miss before workers weld it.
+const WELD_DAMAGE: u32 = 100;
+
+/// Scrap the seat keeps spendable before starting a weld, which bills as it
+/// goes.
+const WELD_FLOOR: u32 = 100;
+
+/// Empty tiles around a building inside which an armed enemy in sight keeps
+/// workers from welding it.
+const WELD_CLEARANCE: i32 = 12;
+
+/// Tiles from an armed enemy in sight inside which a worker away from home
+/// runs back to its Foundry.
+const FLEE_TILES: i32 = 6;
+
+/// Empty tiles from an own Foundry inside which a worker counts as home.
+const HOME_TILES: i32 = 8;
+
+/// The nodes the seat's Foundries work and the worker slots it fills.
 pub(crate) struct Staffing {
     worked: Vec<TilePos>,
-    harvesters: usize,
+    crew: usize,
 }
 
 impl Staffing {
@@ -29,17 +55,33 @@ impl Staffing {
         self.worked.len() * HARVESTERS_PER_NODE
     }
 
-    /// Harvesters as a per-mille share of those wanted.
+    /// Filled worker slots as a per-mille share of those wanted.
     pub(crate) fn saturation(&self) -> u32 {
         let wanted = self.wanted();
         if wanted == 0 {
             return 1_000;
         }
-        (self.harvesters.min(wanted) * 1_000 / wanted) as u32
+        (self.crew.min(wanted) * 1_000 / wanted) as u32
     }
 }
 
-/// Counts the worked nodes and the Harvesters alive, carried or queued.
+/// Whether `kind` harvests, builds and welds: a Harvester or an Excavator.
+pub(crate) fn worker(kind: UnitKind) -> bool {
+    kind.stats().harvest.is_some()
+}
+
+/// Harvester slots a worker of `kind` fills: an Excavator mines at twice a
+/// Harvester's rate.
+fn slots(kind: UnitKind) -> usize {
+    match kind {
+        UnitKind::Excavator => 2,
+        kind if worker(kind) => 1,
+        _ => 0,
+    }
+}
+
+/// Counts the worked nodes and the worker slots filled by workers alive,
+/// carried or queued.
 pub(crate) fn staffing(
     observation: &ObservationData,
     map: &MapModel,
@@ -48,18 +90,18 @@ pub(crate) fn staffing(
 ) -> Staffing {
     Staffing {
         worked: worked_nodes(observation, map, frame, foundries),
-        harvesters: harvesters(observation),
+        crew: crew(observation),
     }
 }
 
-/// With no Harvester alive or queued, the nearest Foundry queues one even
-/// behind other work, from protected scrap if it must.
+/// With no worker alive or queued, the nearest Foundry queues a Harvester
+/// even behind other work, from protected scrap if it must.
 pub(crate) fn recover(
     observation: &ObservationData,
     foundries: &[Producer<'_>],
     ledger: &mut Ledger,
 ) {
-    if harvesters(observation) > 0 {
+    if crew(observation) > 0 {
         return;
     }
     if let Some(foundry) = foundries.first() {
@@ -67,36 +109,196 @@ pub(crate) fn recover(
     }
 }
 
-/// Trains Harvesters at idle Foundries up to two per worked node when
-/// `train` allows, sends a Harvester to each unattended construction site,
-/// then sends idle Harvesters to the least-worked node they can reach.
+/// Trains workers at idle Foundries up to two Harvesters' worth per worked
+/// node.
+pub(crate) fn train(
+    observation: &ObservationData,
+    foundries: &[Producer<'_>],
+    staffing: &Staffing,
+    greed: u8,
+    ledger: &mut Ledger,
+) {
+    let mut count = staffing.crew
+        + ledger.queued(UnitKind::Harvester)
+        + slots(UnitKind::Excavator) * ledger.queued(UnitKind::Excavator);
+    for foundry in foundries {
+        if count >= staffing.wanted() {
+            break;
+        }
+        if !foundry.idle || ledger.queued_at(foundry.building.id) {
+            continue;
+        }
+        let kind = if excavate(observation, staffing.wanted() - count, greed, ledger) {
+            UnitKind::Excavator
+        } else {
+            UnitKind::Harvester
+        };
+        if ledger.train(foundry.building.id, kind) {
+            count += slots(kind);
+        }
+    }
+}
+
+/// Brings workers away from home back from armed enemies in sight, sends a
+/// worker to each unattended construction site, welds a damaged building,
+/// then sends idle workers to the least-worked node they can reach clear of
+/// known danger.
 pub(crate) fn run(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    foundries: &[Producer<'_>],
+    memory: &Memory,
     staffing: &Staffing,
     ledger: &mut Ledger,
-    train: bool,
 ) {
-    let mut count = staffing.harvesters + ledger.queued(UnitKind::Harvester);
-    for foundry in foundries.iter().filter(|_| train) {
-        if count >= staffing.wanted() {
-            break;
-        }
-        if foundry.idle
-            && !ledger.queued_at(foundry.building.id)
-            && ledger.train(foundry.building.id, UnitKind::Harvester)
-        {
-            count += 1;
-        }
-    }
+    let hazards = missions::hazards(observation, memory, Domain::Ground);
+    flee(observation, map, frame, ledger);
     resume_sites(observation, map, frame, ledger);
-    assign_idle(observation, map, frame, &staffing.worked, ledger);
+    weld(observation, map, frame, &hazards, ledger);
+    assign_idle(observation, map, frame, &staffing.worked, &hazards, ledger);
 }
 
-/// The nearest Harvester to `centre` that stands on the same ground as
-/// `site`, is not constructing, and has no work from this decision yet.
+/// Whether the next worker is an Excavator: once a Fabricator stands, when
+/// two Harvesters' slots are open and the seat can pay with scrap to spare,
+/// less to spare the greedier it is.
+fn excavate(observation: &ObservationData, open: usize, greed: u8, ledger: &Ledger) -> bool {
+    let fabricator = observation
+        .my_buildings
+        .iter()
+        .any(|building| building.kind == BuildingKind::Fabricator && building.built);
+    let spare = 2 * (100 - u32::from(greed.min(100)));
+    fabricator
+        && open >= slots(UnitKind::Excavator)
+        && ledger.spendable() >= UnitKind::Excavator.stats().cost + spare
+}
+
+/// Sends each harvesting or idle worker away from home that an armed enemy
+/// in sight stands near back beside the nearest own Foundry on its ground.
+fn flee(observation: &ObservationData, map: &MapModel, frame: HomeFrame, ledger: &mut Ledger) {
+    let foundries: Vec<&BuildingObs> = observation
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
+        .collect();
+    let armed: Vec<&UnitObs> = observation
+        .enemy_units
+        .iter()
+        .filter(|enemy| {
+            enemy
+                .kind
+                .stats()
+                .weapons
+                .iter()
+                .any(|weapon| weapon.targets.ground)
+        })
+        .collect();
+    if armed.is_empty() {
+        return;
+    }
+    let size = BuildingKind::Foundry.base_stats().size;
+    for unit in &observation.my_units {
+        let working = unit.idle || unit.harvesting.is_some();
+        if !worker(unit.kind) || !working || ledger.employs(unit.id) {
+            continue;
+        }
+        let threatened = armed
+            .iter()
+            .any(|enemy| enemy.tile.chebyshev(unit.tile) <= FLEE_TILES);
+        let home = foundries
+            .iter()
+            .any(|foundry| gap(foundry.anchor, size, unit.tile, (1, 1)) <= HOME_TILES);
+        if !threatened || home {
+            continue;
+        }
+        let ground = map.component(unit.tile);
+        let from = doubled(unit.tile);
+        let refuge = foundries
+            .iter()
+            .flat_map(|foundry| ring(foundry.anchor, size))
+            .filter(|tile| ground.is_some() && map.component(*tile) == ground)
+            .min_by_key(|tile| (frame.rank(from, doubled(*tile)), *tile));
+        let Some(refuge) = refuge else {
+            continue;
+        };
+        if !ledger.order(Command::Run {
+            units: vec![unit.id],
+            goal: refuge,
+            queue: false,
+        }) {
+            return;
+        }
+    }
+}
+
+/// Sends the nearest free worker to weld the damaged own building missing
+/// the most value, while no armed enemy in sight stands near it, no known
+/// enemy weapon reaches it, and the seat has scrap to pay for it, with at
+/// most two welding at a time.
+fn weld(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    hazards: &[Hazard],
+    ledger: &mut Ledger,
+) {
+    let welding = observation
+        .my_units
+        .iter()
+        .filter(|unit| worker(unit.kind) && unit.repairing)
+        .count();
+    if welding >= WELDERS || ledger.spendable() < WELD_FLOOR {
+        return;
+    }
+    let patient = observation
+        .my_buildings
+        .iter()
+        .filter(|building| building.built && !building.provisional)
+        .filter_map(|building| {
+            let stats = building.kind.tier_stats(building.tier);
+            let (hp, max) = (u64::from(building.hp), u64::from(stats.max_hp.max(1)));
+            if hp * 1_000 > max * u64::from(1_000 - WELD_DAMAGE) {
+                return None;
+            }
+            let size = building.kind.base_stats().size;
+            let threatened = observation.enemy_units.iter().any(|enemy| {
+                !enemy.kind.stats().weapons.is_empty()
+                    && gap(building.anchor, size, enemy.tile, (1, 1)) <= WELD_CLEARANCE
+            });
+            let centre = footprint_centre(building.kind, building.anchor);
+            if threatened || hazards.iter().any(|hazard| hazard.covers(centre)) {
+                return None;
+            }
+            let price = building
+                .kind
+                .base_stats()
+                .construction
+                .as_ref()
+                .map_or(FOUNDRY_REPAIR_PRICE, |construction| construction.cost);
+            let missing = u64::from(price) * (max - hp) / max;
+            Some((missing, centre, building))
+        })
+        .max_by_key(|(missing, centre, building)| {
+            (
+                *missing,
+                Reverse(frame.rank(frame.home, *centre)),
+                Reverse(building.id),
+            )
+        });
+    let Some((_, centre, building)) = patient else {
+        return;
+    };
+    let Some(welder) = builder(observation, map, frame, building.anchor, centre, ledger) else {
+        return;
+    };
+    ledger.order(Command::Repair {
+        units: vec![welder],
+        building: building.id,
+        queue: false,
+    });
+}
+
+/// The nearest worker to `centre` that stands on the same ground as `site`,
+/// is not constructing or welding, and has no work from this decision yet.
 pub(crate) fn builder(
     observation: &ObservationData,
     map: &MapModel,
@@ -110,9 +312,10 @@ pub(crate) fn builder(
         .my_units
         .iter()
         .filter(|unit| {
-            unit.kind == UnitKind::Harvester
+            worker(unit.kind)
                 && unit.site.is_none()
                 && unit.founding.is_none()
+                && !unit.repairing
                 && map.component(unit.tile) == Some(ground)
                 && !ledger.employs(unit.id)
         })
@@ -120,7 +323,7 @@ pub(crate) fn builder(
         .map(|unit| unit.id)
 }
 
-/// Sends the nearest free Harvester to every paid base-tier site nobody is
+/// Sends the nearest free worker to every paid base-tier site nobody is
 /// building. Upgrades rebuild themselves and provisional scaffolds already
 /// have their founder.
 fn resume_sites(
@@ -154,25 +357,16 @@ fn resume_sites(
     }
 }
 
-/// Harvesters alive, carried or queued.
-fn harvesters(observation: &ObservationData) -> usize {
-    let alive = observation
+/// Worker slots filled by workers alive, carried or queued.
+fn crew(observation: &ObservationData) -> usize {
+    observation
         .my_units
         .iter()
-        .filter(|unit| unit.kind == UnitKind::Harvester)
-        .count();
-    let carried = observation
-        .my_carried_units
-        .iter()
-        .filter(|unit| unit.kind == UnitKind::Harvester)
-        .count();
-    let queued = observation
-        .my_queues
-        .iter()
-        .flatten()
-        .filter(|kind| **kind == UnitKind::Harvester)
-        .count();
-    alive + carried + queued
+        .map(|unit| unit.kind)
+        .chain(observation.my_carried_units.iter().map(|unit| unit.kind))
+        .chain(observation.my_queues.iter().flatten().copied())
+        .map(slots)
+        .sum()
 }
 
 /// The live known nodes each Foundry works: the nearest few its ground can
@@ -206,18 +400,24 @@ fn worked_nodes(
     worked
 }
 
-/// Sends each idle Harvester, nearest home first, to the reachable worked
-/// node with the fewest Harvesters, or to its nearest reachable known node
-/// when none is worked. One order per node.
+/// Sends each idle worker, nearest home first, to the reachable worked
+/// node with the fewest workers, or to its nearest reachable known node when
+/// none is worked, never to a node inside known danger. One order per node.
 fn assign_idle(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
     worked: &[TilePos],
+    hazards: &[Hazard],
     ledger: &mut Ledger,
 ) {
+    let safe = |node: &TilePos| {
+        let point = doubled(*node);
+        !hazards.iter().any(|hazard| hazard.covers(point))
+    };
     let mut miners: Vec<(TilePos, usize)> = worked
         .iter()
+        .filter(|node| safe(node))
         .map(|node| {
             let working = observation
                 .my_units
@@ -230,7 +430,7 @@ fn assign_idle(
     let mut idle: Vec<_> = observation
         .my_units
         .iter()
-        .filter(|unit| unit.idle && unit.kind == UnitKind::Harvester && !ledger.employs(unit.id))
+        .filter(|unit| unit.idle && worker(unit.kind) && !ledger.employs(unit.id))
         .collect();
     idle.sort_by_key(|unit| (frame.rank(frame.home, doubled(unit.tile)), unit.id));
     let mut assignments: Vec<(TilePos, UnitId)> = Vec::new();
@@ -252,7 +452,9 @@ fn assign_idle(
                 let nearest = observation
                     .known_scrap
                     .iter()
-                    .filter(|(node, amount)| *amount > 0 && map.touches(*node, component))
+                    .filter(|(node, amount)| {
+                        *amount > 0 && map.touches(*node, component) && safe(node)
+                    })
                     .map(|(node, _)| *node)
                     .min_by_key(|node| frame.rank(from, doubled(*node)));
                 let Some(node) = nearest else {
