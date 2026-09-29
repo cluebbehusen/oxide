@@ -157,11 +157,23 @@ impl Phase {
 
 impl Mission {
     /// Whether the mission keeps its units from a defense: everything but a
-    /// recovering defense, and an attack only once it is fighting.
-    fn holds(&self) -> bool {
+    /// recovering defense, and an attack only once it is fighting. A
+    /// travelling attack may have met the enemy since the last decision.
+    fn holds(&self, observation: &ObservationData) -> bool {
         match self.kind {
             MissionKind::Defend { .. } => self.phase != Phase::Recover,
-            MissionKind::Attack { .. } => self.phase == Phase::Engage,
+            MissionKind::Attack { .. } => match self.phase {
+                Phase::Engage => true,
+                Phase::Travel => {
+                    let members: Vec<&UnitObs> = self
+                        .units
+                        .iter()
+                        .filter_map(|id| mine(observation, *id))
+                        .collect();
+                    attack::contact(observation, &members)
+                }
+                Phase::Gather | Phase::Withdraw | Phase::Recover => false,
+            },
         }
     }
 }
@@ -245,7 +257,7 @@ impl Missions {
         let mut owned: Vec<UnitId> = self
             .list
             .iter()
-            .filter(|mission| mission.holds())
+            .filter(|mission| mission.holds(observation))
             .flat_map(|mission| mission.units.iter().copied())
             .collect();
         owned.sort_unstable();
@@ -315,7 +327,7 @@ impl Missions {
             short |= have[0] < need[0] || have[1] < need[1];
 
             let Some(index) = index else {
-                if recruits.is_empty() || self.list.len() == MISSION_CAP {
+                if recruits.is_empty() || self.list.len() >= MISSION_CAP {
                     continue;
                 }
                 recruits.sort_unstable();
@@ -421,8 +433,12 @@ impl Missions {
                 return Err("checkpoint mission units are malformed".into());
             }
             let on_map =
-                (0..width).contains(&mission.goal.x) && (0..height).contains(&mission.goal.y);
-            if mission.since > now || !on_map {
+                |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
+            let target_on_map = match mission.kind {
+                MissionKind::Attack { anchor, .. } => on_map(anchor),
+                MissionKind::Defend { .. } => true,
+            };
+            if mission.since > now || !on_map(mission.goal) || !target_on_map {
                 return Err("checkpoint mission could not have been recorded".into());
             }
         }

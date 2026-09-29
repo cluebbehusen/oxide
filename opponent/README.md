@@ -40,17 +40,19 @@ units that exist; production never works for a mission.
 
 ## Attack
 
-An attack forms when the free line, siege and anti-air units at half health or
-better are worth at least the stance's minimum army and outweigh a reachable
-target's known local defense by a margin set by difficulty. The target is the
-most valuable known enemy building for its distance by ground, or a hostile
-start when none is known; a better one replaces it only while the army gathers
-or recovers, and only when clearly better. The army gathers at a rally near home
-toward the target's owner, travels, and fights. It withdraws to the rally when
-the enemies it knows of around it, remembered or seen, outweigh what it has
-left, and recovers there to go again or disband. Having taken its target it
-pushes on to the next only while strong enough for it. A target it withdrew
-from, could not reach, or stood idle beside is skipped for a while.
+An attack forms from the free line, siege and anti-air units at half health or
+better when those that can hit ground are worth at least the stance's minimum
+army and outweigh a reachable target's known local defense by a margin set by
+difficulty; anti-air units recruited along the way escort the army but do not
+count toward that. The target is the most valuable known enemy building for its
+distance by ground, or a hostile start when none is known; a better one replaces
+it only while the army gathers or recovers, and only when clearly better. The
+army gathers at a rally near home toward the target's owner, travels, and
+fights. It withdraws to the rally when the enemies it knows of around it,
+remembered or seen, outweigh what it has left, and recovers there to go again or
+disband. Having taken its target it pushes on to the next only while strong
+enough for it. A target it withdrew from, could not reach, or stood idle beside
+is skipped for a while.
 
 Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While an army that

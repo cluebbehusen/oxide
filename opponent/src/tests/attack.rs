@@ -265,12 +265,12 @@ fn missions_live_their_lifecycle() {
     scenario.units.extend([
         unit(1, UnitKind::Scuttler, 10, 11),
         unit(1, UnitKind::Scuttler, 10, 12),
-        unit(1, UnitKind::Sentinel, 12, 22),
-        unit(1, UnitKind::Sentinel, 13, 22),
+        unit(1, UnitKind::Sentinel, 3, 22),
+        unit(1, UnitKind::Sentinel, 4, 22),
     ]);
     let mut state = scenario.build().unwrap();
     let scuttlers = vec![at(&state, 10, 11), at(&state, 10, 12)];
-    let raiders = vec![at(&state, 12, 22), at(&state, 13, 22)];
+    let raiders = vec![at(&state, 3, 22), at(&state, 4, 22)];
     let mut opponent = seat(&scenario, 0);
     let mut traces: Vec<Trace> = Vec::new();
     let mut raided = None;
@@ -391,6 +391,13 @@ fn checkpoints_reject_impossible_attacks() {
     );
     assert_eq!(
         rejected(&|missions| {
+            missions["list"][0]["kind"]["anchor"] = serde_json::json!({"x": i32::MIN, "y": 0});
+        }),
+        "checkpoint mission could not have been recorded",
+        "a target off the map"
+    );
+    assert_eq!(
+        rejected(&|missions| {
             let mut second = missions["list"][0].clone();
             second["id"] = 1.into();
             second["units"] = serde_json::json!([9_999]);
@@ -404,5 +411,160 @@ fn checkpoints_reject_impossible_attacks() {
             missions["list"][0]["kind"] = serde_json::json!({"mission": "defend", "asset": 0});
         }),
         "checkpoint mission is in a phase its kind lacks"
+    );
+}
+
+/// A restored West seat at tick 12 on `scenario`, with `missions` staged.
+fn staged(scenario: &Scenario, missions: serde_json::Value) -> (State, Opponent) {
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, 12, &[]);
+    let mut json = serde_json::to_value(seat(scenario, 0).checkpoint()).unwrap();
+    json["missions"] = missions;
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let opponent = Opponent::restore(&checkpoint, scenario, &state, map(scenario)).unwrap();
+    (state, opponent)
+}
+
+#[test]
+fn anti_air_alone_never_counts_as_an_attack() {
+    let mut scenario = field();
+    for (x, y) in WEST {
+        scenario.units.push(unit(0, UnitKind::Flakhound, x, y));
+    }
+    let state = scenario.build().unwrap();
+    let (_, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    assert!(attack(&trace.unwrap().missions).is_none());
+}
+
+#[test]
+fn a_failed_placement_does_not_spare_the_building_there() {
+    let scenario = armed(8, &[]);
+    let state = scenario.build().unwrap();
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["memory"]["failures"] = serde_json::json!([
+        {"kind": "foundry", "anchor": {"x": 43, "y": 11}, "at": 0}
+    ]);
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    assert_eq!(
+        attack(&trace.unwrap().missions).map(|mission| mission.kind),
+        Some(east_start())
+    );
+}
+
+#[test]
+fn the_mission_cap_holds_back_an_attack() {
+    let mut scenario = armed(8, &[]);
+    for index in 0..16 {
+        scenario
+            .units
+            .push(unit(0, UnitKind::Sentinel, 6 + index % 8, 14 + index / 8));
+    }
+    let state = scenario.build().unwrap();
+    let home = foundries(&state, PlayerId(0))[0];
+    let list: Vec<serde_json::Value> = (0..16)
+        .map(|index: i32| {
+            let id = at(&state, 6 + index % 8, 14 + index / 8);
+            serde_json::json!({
+                "id": index,
+                "kind": {"mission": "defend", "asset": home.0},
+                "phase": "engage",
+                "since": 0,
+                "units": [id],
+                "goal": {"x": 6, "y": 11},
+            })
+        })
+        .collect();
+    let (state, mut opponent) = staged(&scenario, serde_json::json!({"next": 16, "list": list}));
+    let (_, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let missions = trace.unwrap().missions;
+    assert_eq!(missions.len(), 16);
+    assert!(attack(&missions).is_none());
+    let checkpoint = opponent.checkpoint();
+    assert!(Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).is_ok());
+}
+
+#[test]
+fn a_travelling_attack_in_contact_keeps_its_units_from_a_defense() {
+    let mut scenario = field();
+    for (x, y) in [
+        (20, 11),
+        (21, 11),
+        (20, 12),
+        (21, 12),
+        (22, 11),
+        (22, 12),
+        (23, 11),
+    ] {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, y));
+    }
+    scenario.units.extend([
+        unit(1, UnitKind::Sentinel, 28, 11),
+        unit(1, UnitKind::Sentinel, 8, 11),
+    ]);
+    let state = scenario.build().unwrap();
+    let mut members: Vec<UnitId> = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .collect();
+    members.sort_unstable();
+    let missions = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "kind": {"mission": "attack", "owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
+            "phase": "travel",
+            "since": 0,
+            "units": members,
+            "goal": {"x": 42, "y": 11},
+        }],
+    });
+    let (state, mut opponent) = staged(&scenario, missions);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    assert!(
+        hunts(&commands)
+            .iter()
+            .all(|(units, _)| units.iter().all(|id| !members.contains(id))
+                || units.len() == members.len())
+    );
+    let mission = attack(&trace.unwrap().missions).unwrap();
+    assert_eq!(
+        mission.units as usize,
+        members.len(),
+        "no fighting attacker was taken"
+    );
+}
+
+#[test]
+fn reinforcements_gather_before_the_attack_sets_out() {
+    let scenario = armed(8, &[]);
+    let state = scenario.build().unwrap();
+    let mut gathered: Vec<UnitId> = WEST[..6].iter().map(|(x, y)| at(&state, *x, *y)).collect();
+    gathered.sort_unstable();
+    let missions = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "kind": {"mission": "attack", "owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
+            "phase": "gather",
+            "since": 0,
+            "units": gathered,
+            "goal": {"x": 11, "y": 11},
+        }],
+    });
+    let (state, mut opponent) = staged(&scenario, missions);
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let sent = hunts(&commands);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(
+        sent[0].0.iter().all(|id| !gathered.contains(id)),
+        "only the recruits move"
+    );
+    assert_eq!(
+        attack(&trace.unwrap().missions).unwrap().phase,
+        Phase::Gather
     );
 }
