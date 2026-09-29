@@ -72,9 +72,32 @@ impl UnitBody {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct BuildingHit {
+    pub id: oxide_sim::BuildingId,
+    pub kind: oxide_sim::BuildingKind,
+    pub tier: u8,
+    pub faction: oxide_sim::Faction,
+    pub anchor: Vec2,
+    pub facts: crate::presentation_animation::BuildingAnimationFacts,
+}
+
+impl BuildingHit {
+    pub(crate) fn capture(state: &State, building: &oxide_sim::Building) -> Self {
+        Self {
+            id: building.id,
+            kind: building.kind,
+            tier: building.tier,
+            faction: state.player(building.player).faction,
+            anchor: Vec2::new(building.anchor.x as f32, building.anchor.y as f32),
+            facts: crate::presentation_animation::BuildingAnimationFacts::capture(state, building),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PreviousEffects {
-    buildings: Vec<(oxide_sim::BuildingId, CollapseBody)>,
+    buildings: Vec<(oxide_sim::BuildingId, Option<CollapseBody>, BuildingHit)>,
     shells: Vec<oxide_sim::state::Shell>,
     units: Vec<(oxide_sim::UnitId, UnitBody, Vec2)>,
     visible_crash_contacts: Vec<oxide_sim::UnitId>,
@@ -100,7 +123,7 @@ impl PreviousEffects {
                 .buildings()
                 .iter()
                 .filter(|b| {
-                    b.built
+                    !b.provisional
                         && (b.player == game.human
                             || game.all_seeing()
                             || (b.tiles().any(|t| state.vision(game.human).visible(t))
@@ -109,13 +132,14 @@ impl PreviousEffects {
                 .map(|b| {
                     (
                         b.id,
-                        CollapseBody {
+                        b.built.then_some(CollapseBody {
                             kind: b.kind,
                             tier: b.tier,
                             player: b.player,
                             faction: state.player(b.player).faction,
                             rotation: game.aim_buildings.get(&b.id.0).map_or(0.0, |pose| pose.0),
-                        },
+                        }),
+                        BuildingHit::capture(state, b),
                     )
                 })
                 .collect(),
@@ -488,6 +512,8 @@ pub enum EffectKind {
         to: Vec2,
         /// Splash radius, if this logical hit has one.
         splash: Option<f32>,
+        /// Visible target geometry survives a lethal hit for this report.
+        building: Option<BuildingHit>,
         /// Simulation tick immediately after the hit was reported.
         completed_tick: u64,
     },
@@ -569,6 +595,7 @@ fn push_direct_report(
     to: Vec2,
     splash: Option<f32>,
     completed_tick: u64,
+    building: Option<BuildingHit>,
 ) {
     effects.push(Effect {
         kind: EffectKind::DirectShot {
@@ -577,6 +604,7 @@ fn push_direct_report(
             to,
             splash,
             completed_tick,
+            building,
         },
         age: 0.0,
     });
@@ -712,6 +740,33 @@ impl Presentation {
         self.scorches.retain(|(_, age)| *age < 20.0);
     }
 
+    fn building_hit(
+        &self,
+        state: &State,
+        target: Option<oxide_sim::Target>,
+    ) -> Option<BuildingHit> {
+        let oxide_sim::Target::Building(id) = target? else {
+            return None;
+        };
+        state
+            .building(id)
+            .filter(|b| {
+                !b.provisional
+                    && (self.all_seeing()
+                        || b.player == self.human
+                        || b.tiles().any(|t| state.vision(self.human).visible(t))
+                            && state.building_apparent(self.human, b))
+            })
+            .map(|b| BuildingHit::capture(state, b))
+            .or_else(|| {
+                self.fx_previous
+                    .buildings
+                    .iter()
+                    .find(|(bid, _, _)| *bid == id)
+                    .map(|(_, _, hit)| *hit)
+            })
+    }
+
     /// Turns a tick's events into flashes and queued clips. Explosions can be
     /// heard through fog; the camera mixer bounds their audible distance.
     /// Visual effects retain their independent sight rules.
@@ -815,6 +870,7 @@ impl Presentation {
                             });
                         }
                     } else {
+                        let building = self.building_hit(state, *target);
                         push_direct_report(
                             &mut self.fx,
                             unit_shot_style(*attacker_kind, *weapon),
@@ -826,6 +882,7 @@ impl Presentation {
                             world_vec(*target_pos),
                             splash,
                             state.current_tick(),
+                            building,
                         );
                     }
                 }
@@ -868,6 +925,7 @@ impl Presentation {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
+                    let building = self.building_hit(state, *target);
                     push_direct_report(
                         &mut self.fx,
                         defense_shot_style(*kind, *tier),
@@ -879,6 +937,7 @@ impl Presentation {
                         world_vec(*target_pos),
                         splash,
                         state.current_tick(),
+                        building,
                     );
                 }
                 Event::BuildingCompleted {
@@ -1000,8 +1059,8 @@ impl Presentation {
                         .fx_previous
                         .buildings
                         .iter()
-                        .find(|(id, _)| id == building)
-                        .map(|(_, body)| *body);
+                        .find(|(id, _, _)| id == building)
+                        .and_then(|(_, body, _)| *body);
                     self.fx.push(Effect {
                         kind: body.map_or(
                             EffectKind::Puff {
@@ -1311,6 +1370,85 @@ mod tests {
     use super::*;
     use crate::game::Game;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
+
+    #[test]
+    fn building_reports_keep_surface_facts_through_the_lethal_tick() {
+        for lethal in [false, true] {
+            let scenario = serde_json::from_value(serde_json::json!({
+                "name": "Building strike", "mode": "sandbox", "seed": 1,
+                "map": vec![".............................."; 22],
+                "players": [
+                    {"name": "Local", "faction": "ferrous", "scrap": 0, "bot": false},
+                    {"name": "Target", "faction": "cupric", "scrap": 0, "bot": false}
+                ],
+                "units": [{"player": 0, "kind": "sentinel", "x": 11, "y": 7}],
+                "buildings": [{"player": 1, "kind": "fabricator", "x": 13, "y": 9}]
+            }))
+            .unwrap();
+            let mut game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+            if lethal {
+                let mut wire = serde_json::to_value(&*game.state).unwrap();
+                wire["buildings"][0]["hp"] = serde_json::json!(1);
+                game.state.0 = std::sync::Arc::new(serde_json::from_value(wire).unwrap());
+            }
+            let mut reference = (*game.state).clone();
+            let command = oxide_sim::Command::Attack {
+                units: vec![UnitId(0)],
+                target: Target::Building(BuildingId(0)).into(),
+                queue: false,
+            };
+            game.issue(command.clone());
+            let expected = reference.tick(&[oxide_sim::PlayerCommand {
+                player: game.presentation.human,
+                command,
+            }]);
+            let report = game.do_tick();
+            assert_eq!(game.state.hash(), reference.hash());
+            assert_eq!(report.events, expected.events);
+            assert_eq!(game.state.building(BuildingId(0)).is_none(), lethal);
+            let hit = game
+                .presentation
+                .fx
+                .iter()
+                .find_map(|effect| match effect.kind {
+                    EffectKind::DirectShot {
+                        building: Some(hit),
+                        ..
+                    } => Some(hit),
+                    _ => None,
+                })
+                .expect("ordinary and lethal hits both retain the building outline");
+            assert_eq!(hit.kind, BuildingKind::Fabricator);
+            assert_eq!(hit.anchor, Vec2::new(13., 9.));
+            assert_eq!(hit.faction, oxide_sim::Faction::Cupric);
+            assert!(
+                game.presentation
+                    .building_hit(&game.state, Some(Target::Unit(UnitId(0))))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn unseen_buildings_do_not_supply_surface_facts() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.units.clear();
+        for player in &mut scenario.players {
+            player.bot_config = None;
+        }
+        let game = Game::with_viewport(scenario, Vec2::new(1280., 800.)).unwrap();
+        let hidden = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.player != game.presentation.human)
+            .unwrap();
+        assert!(
+            game.presentation
+                .building_hit(&game.state, Some(Target::Building(hidden.id)))
+                .is_none()
+        );
+    }
 
     fn blind_bulwark_scene(victim: UnitKind) -> Game {
         let mut scenario = oxide_sim::Scenario::skirmish();
@@ -2382,6 +2520,7 @@ mod tests {
             Vec2::ONE,
             Some(1.25),
             42,
+            None,
         );
 
         assert_eq!(effects.len(), 1, "one hit creates one flak report");
@@ -2408,6 +2547,7 @@ mod tests {
                 to: Vec2::ONE,
                 splash: None,
                 completed_tick: 100,
+                building: None,
             },
             age: 0.0,
         };
@@ -2527,6 +2667,7 @@ mod tests {
                 to: Vec2::ONE,
                 splash: None,
                 completed_tick,
+                building: None,
             },
             age: 0.0,
         });

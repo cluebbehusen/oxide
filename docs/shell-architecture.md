@@ -564,6 +564,13 @@ visuals cannot reveal unseen events. Authoritative crash trajectories and impact
 timing remain simulation-owned; rendering observes them without adding damage
 rules.
 
+Direct-fire building reports extend their cosmetic trajectory to the solid
+pixels of the rendered body frame. Compact contact regions derive from atlas
+alpha at load time and are shared by all instances. Reports retain visible
+building facts through lethal hits; live targets use their current animation
+frame. Simulation footprint targeting, damage, shell arrivals, and splash
+centers remain authoritative and unchanged.
+
 `assets` loads the generated sprite atlas. Its manifest covers every resolved
 sprite key; the renderer does not load individual sprite textures. Optional rigs
 may fall back to composite sprites, but incomplete rig families are rejected.

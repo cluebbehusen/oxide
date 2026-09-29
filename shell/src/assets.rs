@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use macroquad::audio::{Sound, load_sound_from_bytes};
 use macroquad::prelude::{
-    Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, draw_texture_ex,
+    Color, DrawTextureParams, FilterMode, Image, Rect, Texture2D, Vec2, draw_texture_ex,
 };
 use oxide_sim::{BuildingKind, Faction, UnitKind};
 
@@ -958,6 +958,17 @@ impl Sprites {
             debris: pick(&rects, DEBRIS_KEYS)?,
             excavator_cargo: excavator_cargo_rows(&rects)?,
         })
+    }
+
+    pub(crate) fn building_contact(
+        &self,
+        source: Rect,
+        from: Vec2,
+        aim: Vec2,
+        origin: Vec2,
+        size: Vec2,
+    ) -> Option<Vec2> {
+        self.entity_lod.contact(source, from, aim, origin, size)
     }
 
     /// Draw an atlas region from its page while preserving its authored canvas.
