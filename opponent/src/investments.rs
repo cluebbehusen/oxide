@@ -8,7 +8,7 @@ use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
 use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
-use oxide_sim::{BuildingId, BuildingKind};
+use oxide_sim::{BuildingId, BuildingKind, PlayerId};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 
@@ -143,7 +143,11 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
     // mirrored seats pick mirrored sites and frames.
     let frame = HomeFrame::of(observation, situation.map);
     list.sort_by_key(|candidate| {
-        let rank = frame.zip(location(situation.map, candidate.investment));
+        let rank = frame.zip(location(
+            situation.map,
+            observation.me,
+            candidate.investment,
+        ));
         (
             Reverse(candidate.score),
             rank.map(|(frame, centre)| frame.rank(frame.home, centre)),
@@ -152,15 +156,16 @@ pub(crate) fn candidates(situation: &Situation<'_>) -> Vec<Candidate> {
     list
 }
 
-/// Where a located investment would stand, as a footprint centre.
-fn location(map: &MapModel, investment: Investment) -> Option<(i64, i64)> {
+/// Where a located investment would stand, as a footprint centre: an
+/// expansion at the first anchor `me` could build it on.
+fn location(map: &MapModel, me: PlayerId, investment: Investment) -> Option<(i64, i64)> {
     match investment {
         Investment::Extractor(frame) => Some(footprint_centre(BuildingKind::Extractor, frame)),
         Investment::Expansion(site) => map
             .sites()
             .get(usize::from(site))
-            .and_then(|site| site.anchors.first())
-            .map(|anchor| footprint_centre(BuildingKind::Foundry, *anchor)),
+            .and_then(|site| expansion::anchors(map, me, site).first().copied())
+            .map(|anchor| footprint_centre(BuildingKind::Foundry, anchor)),
         Investment::Tech(_)
         | Investment::Capacity(_)
         | Investment::Reclaimer

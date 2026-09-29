@@ -428,3 +428,17 @@ fn checkpoints_reject_impossible_missions() {
         "checkpoint holds too many missions"
     );
 }
+
+#[test]
+fn an_exhausted_mission_counter_is_rejected_at_any_tick() {
+    let missions: crate::missions::Missions = serde_json::from_value(serde_json::json!({
+        "next": u64::MAX,
+        "list": [],
+        "waiting": null,
+    }))
+    .unwrap();
+    assert_eq!(
+        missions.validate(u64::MAX / 2, 48, 24, 1).err().unwrap(),
+        "checkpoint mission ids are out of order"
+    );
+}
