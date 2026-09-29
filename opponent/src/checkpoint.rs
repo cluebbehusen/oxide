@@ -61,11 +61,11 @@ impl Opponent {
         }
         let now = state.current_tick();
         let points = crate::missions::points(&map, checkpoint.player).len();
-        checkpoint.memory.validate(now, points)?;
+        let (width, height) = (state.map().width(), state.map().height());
+        checkpoint.memory.validate(now, width, height, points)?;
         checkpoint.income.validate(now)?;
-        checkpoint
-            .missions
-            .validate(now, state.map().width(), state.map().height(), points)?;
+        checkpoint.saving.validate(width, height)?;
+        checkpoint.missions.validate(now, width, height, points)?;
         let mut restored = Self::new(checkpoint.player, config, map);
         *restored.persistent = Persistent {
             memory: (*checkpoint.memory).clone(),
