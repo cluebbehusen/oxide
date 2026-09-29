@@ -185,14 +185,16 @@ flying around known anti-air. Sappers, up to four, go after the most valuable
 known enemy building for its distance with little known defense and blow it up.
 Scuttlers and aircraft turn back once one is lost or badly hurt, once the known
 fire reaching them outweighs them, or once they have been at the target a while;
-Sappers turn back only when outweighed on the way. A raided target is skipped
-for a while, which spaces raids out, and one raid runs at a time.
+Sappers turn back only when outweighed on the way. Raids skip a raided target
+for a while, which spaces them out, while attacks, lifts and strikes may still
+go after it; one raid runs at a time.
 
 The seat keeps two Scuttlers, alive or queued, once its income reaches a level
 that falls with guile, and a Sapper for each known enemy defense that can hit
 ground, up to three, once it has scrap to spare, less the more it leans on
 siege. An attack on a target with such defenses takes free Sappers along while
-it gathers or recovers, and once it fights sends each at the defense nearest it.
+it gathers or recovers, and once it fights sends each at the nearest such
+defense on its ground, leaving them to it when the rest of the army moves on.
 
 ## Scouting
 

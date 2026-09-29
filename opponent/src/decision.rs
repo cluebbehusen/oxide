@@ -8,7 +8,7 @@ use crate::income::Income;
 use crate::investments::{self, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
-use crate::missions::Missions;
+use crate::missions::{Lost, Missions};
 use crate::placement;
 use crate::profile::ResolvedProfile;
 use crate::saving::Saving;
@@ -283,8 +283,11 @@ pub(crate) fn decide(
                 .map(|(step, price)| NextPurchase { step, price }),
         });
 
-    for (kind, anchor) in persistent.missions.prune(observation) {
-        persistent.memory.abandon(kind, anchor, tick);
+    for lost in persistent.missions.prune(observation) {
+        match lost {
+            Lost::Mission(kind, anchor) => persistent.memory.abandon(kind, anchor, tick),
+            Lost::Raid(kind, anchor) => persistent.memory.raid(kind, anchor, tick),
+        }
     }
     let short = persistent
         .missions
@@ -351,7 +354,7 @@ pub(crate) fn decide(
         &persistent.memory,
         &mut ledger,
     ) {
-        persistent.memory.abandon(kind, anchor, tick);
+        persistent.memory.raid(kind, anchor, tick);
     }
     persistent
         .missions
@@ -646,7 +649,7 @@ fn train_raiders(
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) {
-    let scuttlers = if income + 4 * u32::from(profile.traits.guile) >= RAID_INCOME {
+    let scuttlers = if income.saturating_add(4 * u32::from(profile.traits.guile)) >= RAID_INCOME {
         SCUTTLERS
     } else {
         0

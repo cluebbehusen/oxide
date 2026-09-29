@@ -13,7 +13,7 @@ use super::{
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
-use crate::frame::{HomeFrame, doubled, footprint_centre, gap};
+use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
@@ -369,8 +369,10 @@ impl Missions {
                     .iter()
                     .filter(|unit| unit.kind == UnitKind::Sapper)
                     .count();
-                let sappers =
-                    plan.sappers(target, rally, component, SAPPERS.saturating_sub(sapping));
+                let room = SAPPERS
+                    .saturating_sub(sapping)
+                    .min(UNIT_CAP.saturating_sub(mission.units.len()));
+                let sappers = plan.sappers(target, rally, component, room);
                 if !sappers.is_empty() && ledger.order(run(sappers.clone(), rally)) {
                     for sapper in sappers {
                         insert(&mut mission.units, sapper);
@@ -417,16 +419,27 @@ impl Missions {
                 None
             }
             AttackPhase::Engage { .. } => {
+                // Sappers sent at a defense keep that order whatever the rest
+                // of the army is told next.
+                let mut blasting = Vec::new();
                 for sapper in members
                     .iter()
                     .filter(|unit| unit.kind == UnitKind::Sapper && unit.idle)
                 {
-                    if let Some(defense) = plan.nearest_defense(target, sapper) {
-                        ledger.order(blast(vec![sapper.id], aim(defense)));
+                    if let Some(defense) = plan.nearest_defense(target, sapper)
+                        && ledger.order(blast(vec![sapper.id], aim(defense)))
+                    {
+                        blasting.push(sapper.id);
                     }
                 }
+                let army: Vec<UnitId> = mission
+                    .units
+                    .iter()
+                    .copied()
+                    .filter(|id| !blasting.contains(id))
+                    .collect();
                 if strength < plan.opposition(&members) {
-                    if ledger.order(run(mission.units.clone(), rally)) {
+                    if ledger.order(run(army.clone(), rally)) {
                         mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
                         return Some((target.building, target.anchor));
                     }
@@ -442,12 +455,12 @@ impl Missions {
                             >= plan.need(*next)
                 });
                 if let Some(next) = next {
-                    if ledger.order(hunt(mission.units.clone(), next.approach)) {
+                    if ledger.order(hunt(army, next.approach)) {
                         mission.attack_phase(next, AttackPhase::Travel, now, Some(next.approach));
                     }
                     return None;
                 }
-                if ledger.order(run(mission.units.clone(), rally)) {
+                if ledger.order(run(army, rally)) {
                     mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
                     if standing {
                         return Some((target.building, target.anchor));
@@ -513,11 +526,16 @@ impl<'a> Plan<'a> {
             })
     }
 
-    /// The known defense around `target` nearest `sapper`, else the target
-    /// itself while the seat knows it.
+    /// The known defense around `target` on `sapper`'s ground nearest it,
+    /// else the target itself while the seat knows it.
     fn nearest_defense(&self, target: Target, sapper: &UnitObs) -> Option<&'a BuildingObs> {
         let from = doubled(sapper.tile);
+        let ground = self.map.component(sapper.tile);
         self.defenses(target)
+            .filter(|building| {
+                ring(building.anchor, building.kind.base_stats().size)
+                    .any(|tile| ground.is_some() && self.map.component(tile) == ground)
+            })
             .min_by_key(|building| {
                 (
                     self.frame

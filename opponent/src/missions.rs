@@ -131,6 +131,15 @@ enum AttackPhase {
     Recover,
 }
 
+/// A target a mission was wiped out going after.
+pub(crate) enum Lost {
+    /// An attack, lift or strike target, left alone by every such mission
+    /// for a while.
+    Mission(BuildingKind, TilePos),
+    /// A raid target, left alone by raids for a while.
+    Raid(BuildingKind, TilePos),
+}
+
 /// An enemy building a mission goes after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -396,7 +405,7 @@ impl Mission {
 
     /// The target of an attack, lift, strike or raid lost while committed to
     /// it.
-    fn lost_target(&self) -> Option<(BuildingKind, TilePos)> {
+    fn lost_target(&self) -> Option<Lost> {
         match self.task {
             Task::Attack {
                 target,
@@ -409,11 +418,11 @@ impl Mission {
             | Task::Strike {
                 target,
                 phase: StrikePhase::Travel | StrikePhase::Engage { .. },
-            }
-            | Task::Raid {
+            } => Some(Lost::Mission(target.building, target.anchor)),
+            Task::Raid {
                 target,
                 phase: RaidPhase::Travel | RaidPhase::Strike,
-            } => Some((target.building, target.anchor)),
+            } => Some(Lost::Raid(target.building, target.anchor)),
             _ => None,
         }
     }
@@ -441,7 +450,7 @@ impl Missions {
     /// Returns the targets of attacks, lifts and strikes wiped out while
     /// committed, so
     /// the seat tries something else for a while.
-    pub(crate) fn prune(&mut self, observation: &ObservationData) -> Vec<(BuildingKind, TilePos)> {
+    pub(crate) fn prune(&mut self, observation: &ObservationData) -> Vec<Lost> {
         let mut carried: Vec<UnitId> = observation
             .my_carried_units
             .iter()
