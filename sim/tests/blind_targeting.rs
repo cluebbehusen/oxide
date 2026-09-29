@@ -950,9 +950,13 @@ fn legacy_focus_still_rejects_friendly_hidden_and_incompatible_units() {
 }
 
 /// Two masts each exactly ten tiles from a different corner of a hostile
-/// Fabricator, so only the footprint's radial frame can break the tie. With
-/// `rotated`, the whole world turns 180 degrees and the seats trade places.
-fn building_radar_scene(rotated: bool) -> oxide_sim::State {
+/// Fabricator, so distance alone cannot choose its blip. With `rotated`, the
+/// whole world turns 180 degrees and the seats trade places.
+fn building_radar_scene(
+    rotated: bool,
+    masts: [(i32, i32); 2],
+    fabricator: (i32, i32),
+) -> oxide_sim::State {
     let (width, height) = (40, 30);
     let (me, them) = if rotated { (1, 0) } else { (0, 1) };
     let place = |player, kind: BuildingKind, x: i32, y: i32| {
@@ -965,9 +969,9 @@ fn building_radar_scene(rotated: bool) -> oxide_sim::State {
     };
     let mut scenario = open_arena(width as usize, height as usize, Vec::new());
     scenario.buildings = vec![
-        place(me, BuildingKind::Array, 8, 14),
-        place(me, BuildingKind::Array, 29, 15),
-        place(them, BuildingKind::Fabricator, 18, 14),
+        place(me, BuildingKind::Array, masts[0].0, masts[0].1),
+        place(me, BuildingKind::Array, masts[1].0, masts[1].1),
+        place(them, BuildingKind::Fabricator, fabricator.0, fabricator.1),
         // Inside the radar ring but beyond both masts' charge detection.
         place(them, BuildingKind::ScuttleCharge, 18, 24),
     ];
@@ -979,7 +983,8 @@ fn building_radar_scene(rotated: bool) -> oxide_sim::State {
 
 #[test]
 fn radar_reports_one_mirrored_blip_per_apparent_hostile_building() {
-    let state = building_radar_scene(false);
+    let scene = |rotated| building_radar_scene(rotated, [(8, 14), (29, 15)], (18, 14));
+    let state = scene(false);
     let viewer = PlayerId(0);
     let charge = state
         .buildings()
@@ -1005,13 +1010,33 @@ fn radar_reports_one_mirrored_blip_per_apparent_hostile_building() {
         2
     );
 
-    let rotated = building_radar_scene(true);
-    let mut mirrored: Vec<_> = contacts
+    assert_eq!(
+        scene(true).vision(PlayerId(1)).contacts(),
+        mirror(&contacts)
+    );
+}
+
+fn mirror(tiles: &[TilePos]) -> Vec<TilePos> {
+    let mut mirrored: Vec<_> = tiles
         .iter()
         .map(|t| TilePos::new(39 - t.x, 29 - t.y))
         .collect();
     mirrored.sort_unstable_by_key(|t| (t.y, t.x));
-    assert_eq!(rotated.vision(PlayerId(1)).contacts(), mirrored);
+    mirrored
+}
+
+#[test]
+fn a_map_centered_building_ties_toward_its_owner_foundry() {
+    // The Fabricator's center is the map's, so the radial frame is empty and
+    // the half-turn-symmetric masts tie two opposite corners. The tie resolves
+    // toward the owner's Foundry, which the half turn also mirrors.
+    let scene = |rotated| building_radar_scene(rotated, [(9, 14), (30, 15)], (19, 14));
+    let contacts = scene(false).vision(PlayerId(0)).contacts().to_vec();
+    assert_eq!(contacts, [TilePos::new(20, 15), TilePos::new(37, 27)]);
+    assert_eq!(
+        scene(true).vision(PlayerId(1)).contacts(),
+        mirror(&contacts)
+    );
 }
 
 #[test]

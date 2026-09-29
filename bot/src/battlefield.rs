@@ -296,7 +296,7 @@ impl Battlefield {
             }
         }
         for &tile in &obs.blips {
-            if blip_on_known_footprint(obs, uncleared_starts, tile) {
+            if blip_explained_by_known_building(obs, uncleared_starts, tile) {
                 continue;
             }
             if let Some(asset) = nearest_asset(&assets, tile) {
@@ -565,26 +565,33 @@ fn distance_to_building(tile: TilePos, building: &BuildingObs) -> i32 {
     tile.chebyshev(closest)
 }
 
-/// Whether a radar blip sits on a footprint this seat already accounts for: a
-/// visible or remembered enemy building, or a public hostile start without
-/// negative evidence. Radar reports one footprint tile of each detected
-/// hostile building as an ordinary contact, so such a blip poses no new
-/// reconnaissance question.
-pub(crate) fn blip_on_known_footprint(
+/// Whether a radar blip is the return of a building this seat already
+/// accounts for: a remembered enemy building or a public hostile start without
+/// negative evidence. Radar reports exactly one footprint tile of a detected
+/// hostile building, and none while any of its footprint is in sight. A buried
+/// charge returns a blip only while detected, so it explains none. Any further
+/// blip on the footprint is another contact.
+pub(crate) fn blip_explained_by_known_building(
     obs: &Observation,
     uncleared_starts: &[StartingFoundry],
     tile: TilePos,
 ) -> bool {
-    let covers = |anchor: TilePos, (width, height): (i32, i32)| {
-        (anchor.x..anchor.x + width).contains(&tile.x)
-            && (anchor.y..anchor.y + height).contains(&tile.y)
+    let explains = |anchor: TilePos, (width, height): (i32, i32)| {
+        let covers = |t: TilePos| {
+            (anchor.x..anchor.x + width).contains(&t.x)
+                && (anchor.y..anchor.y + height).contains(&t.y)
+        };
+        covers(tile)
+            && obs.blips.iter().filter(|&&blip| covers(blip)).count() == 1
+            && !(0..height).any(|dy| (0..width).any(|dx| obs.visible(anchor.offset(dx, dy))))
     };
     obs.enemy_buildings
         .iter()
-        .any(|building| covers(building.anchor, building.kind.base_stats().size))
+        .filter(|building| !building.kind.is_stealthy())
+        .any(|building| explains(building.anchor, building.kind.base_stats().size))
         || uncleared_starts
             .iter()
-            .any(|start| covers(start.anchor, BuildingKind::Foundry.base_stats().size))
+            .any(|start| explains(start.anchor, BuildingKind::Foundry.base_stats().size))
 }
 
 #[cfg(test)]
@@ -779,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn radar_on_a_known_footprint_asks_nothing() {
+    fn only_the_return_a_known_building_could_produce_is_explained() {
         let mut obs = fixture();
         obs.enemy_units.clear();
         let foundry = obs.enemy_buildings[0].clone();
@@ -795,22 +802,41 @@ mod tests {
         obs.my_buildings.push(outpost);
         obs.visible.fill(false);
         obs.blips = vec![on_footprint];
-        let questions = |obs: &Observation, starts: &[StartingFoundry]| {
+        let asked = |obs: &Observation, starts: &[StartingFoundry]| {
             let mut battlefield = Battlefield::default();
             battlefield.observe(obs, &[], tuning(), None, starts);
-            battlefield.assessment.questions
+            assert!(battlefield.assessment.questions.iter().all(|q| q.anonymous));
+            battlefield
+                .assessment
+                .questions
+                .iter()
+                .map(|question| question.anchor)
+                .collect::<Vec<_>>()
         };
         // A remembered building and an uncleared public start each explain
-        // the blip; with neither, it is an unknown contact.
-        assert!(questions(&obs, &[]).is_empty());
-        obs.enemy_buildings.clear();
-        assert!(questions(&obs, &[start]).is_empty());
-        let unknown = questions(&obs, &[]);
-        assert_eq!(unknown.len(), 1);
-        assert!(unknown[0].anonymous);
-        assert_eq!(unknown[0].anchor, on_footprint);
-        obs.blips = vec![foundry.anchor.offset(2, 0)];
-        assert_eq!(questions(&obs, &[start]).len(), 1);
+        // their one return; with neither, the blip is an unknown contact.
+        assert!(asked(&obs, &[]).is_empty());
+        let mut unknown = obs.clone();
+        unknown.enemy_buildings.clear();
+        assert!(asked(&unknown, &[start]).is_empty());
+        assert_eq!(asked(&unknown, &[]), [on_footprint]);
+        unknown.blips = vec![foundry.anchor.offset(2, 0)];
+        assert_eq!(asked(&unknown, &[start]), unknown.blips);
+
+        // A building returns one blip, none while any of it is in sight, and
+        // a buried charge none unless detected, so none of these is explained.
+        let mut second = obs.clone();
+        second.blips = vec![foundry.anchor, on_footprint];
+        assert_eq!(asked(&second, &[start]), second.blips);
+        let mut glimpsed = obs.clone();
+        let seen = foundry.anchor;
+        let width = glimpsed.map_width;
+        glimpsed.visible[(seen.y * width + seen.x) as usize] = true;
+        assert_eq!(asked(&glimpsed, &[]), [on_footprint]);
+        let mut charge = obs;
+        charge.enemy_buildings[0].kind = BuildingKind::ScuttleCharge;
+        charge.enemy_buildings[0].anchor = on_footprint;
+        assert_eq!(asked(&charge, &[]), [on_footprint]);
     }
 
     #[test]

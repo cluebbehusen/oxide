@@ -676,7 +676,7 @@ impl UtilityPolicy {
             );
         }
         for blip in obs.blips.iter().filter(|&&blip| {
-            !crate::battlefield::blip_on_known_footprint(obs, &uncleared_starts, blip)
+            !crate::battlefield::blip_explained_by_known_building(obs, &uncleared_starts, blip)
         }) {
             if let Some(asset) = obs
                 .my_buildings

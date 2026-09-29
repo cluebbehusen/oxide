@@ -61,9 +61,10 @@ economy-recovery path, before preparing new investment alternatives. Spatial
 contact bins distinguish physical and target domains. Movement history stores
 two actual observations and their ticks, never an extrapolated position. Radar
 contributes unresolved regions rather than identified units. Radar reports
-buildings like units, so a blip on a visible or remembered enemy building, or on
-a public hostile start without negative evidence, is already explained and asks
-no question. Reachable local service is credited once when describing uncovered
+buildings like units, so the one blip an out-of-sight remembered enemy building
+or an uncleared public hostile start could return is already explained and asks
+no question. A buried charge or a further blip on the same footprint is still a
+contact. Reachable local service is credited once when describing uncovered
 asset pressure.
 
 Utility work journals own dispatched harvest probes, construction attempts,

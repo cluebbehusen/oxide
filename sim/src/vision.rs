@@ -1020,12 +1020,9 @@ pub(crate) fn refresh(state: &mut State) {
                     view.contacts.push(t);
                 }
             }
-            // A building returns one blip, like a unit of any size: the
-            // footprint tile nearest a mast. Distance ties rank in the
-            // footprint's radial frame so mirrored seats report mirrored
-            // tiles. An undetected charge or hostile provisional site is
-            // not apparent and returns nothing.
-            let map_size = (state.map.width(), state.map.height());
+            // A building returns one blip, like a unit of any size. An
+            // undetected charge or hostile provisional site is not apparent
+            // and returns nothing.
             let viewer = PlayerId(index as u8);
             for b in state
                 .buildings
@@ -1035,15 +1032,7 @@ pub(crate) fn refresh(state: &mut State) {
                 if b.tiles().any(|t| view.visible(t)) {
                     continue;
                 }
-                let size = b.stats().size;
-                let nearest = b
-                    .tiles()
-                    .filter_map(|t| {
-                        let key = crate::geometry::spawn_doorstep_key(map_size, b.anchor, size, t);
-                        ring_distance(t).map(|d| ((d, key), t))
-                    })
-                    .min_by_key(|&(key, _)| key);
-                if let Some((_, t)) = nearest {
+                if let Some(t) = radar_return(state, b, ring_distance) {
                     view.contacts.push(t);
                 }
             }
@@ -1055,6 +1044,67 @@ pub(crate) fn refresh(state: &mut State) {
         view.tracking = tracking;
     }
     state.vision = vision;
+}
+
+/// The footprint tile a building's radar return reports: the one nearest a
+/// mast, with distance ties ranked in the footprint's radial map frame. A
+/// footprint centered on the map has no radial frame, so its remaining ties
+/// rank toward the owner's first Foundry and then by seat parity, the fallback
+/// order group spreads use. Mirrored seats therefore report mirrored tiles.
+fn radar_return(
+    state: &State,
+    building: &crate::state::Building,
+    ring_distance: impl Fn(TilePos) -> Option<i32>,
+) -> Option<TilePos> {
+    let map_size = (state.map.width(), state.map.height());
+    let (anchor, size) = (building.anchor, building.stats().size);
+    let ranked: Vec<_> = building
+        .tiles()
+        .filter_map(|t| {
+            let radial = crate::geometry::spawn_doorstep_key(map_size, anchor, size, t);
+            ring_distance(t).map(|d| ((d, radial), t))
+        })
+        .collect();
+    let best = ranked.iter().map(|&(key, _)| key).min()?;
+    let tied: Vec<TilePos> = ranked
+        .into_iter()
+        .filter(|&(key, _)| key == best)
+        .map(|(_, t)| t)
+        .collect();
+    if let [only] = tied[..] {
+        return Some(only);
+    }
+    // Doubled coordinates keep even footprint centers exact.
+    let center = (
+        i64::from(anchor.x) * 2 + i64::from(size.0),
+        i64::from(anchor.y) * 2 + i64::from(size.1),
+    );
+    let toward_home = state
+        .buildings
+        .iter()
+        .filter(|b| {
+            b.player == building.player && !b.provisional && b.kind == BuildingKind::Foundry
+        })
+        .min_by_key(|b| b.id)
+        .map(|foundry| {
+            let (w, h) = foundry.stats().size;
+            (
+                i64::from(foundry.anchor.x) * 2 + i64::from(w) - center.0,
+                i64::from(foundry.anchor.y) * 2 + i64::from(h) - center.1,
+            )
+        })
+        .filter(|&ray| ray != (0, 0));
+    match toward_home {
+        Some((rx, ry)) => tied.into_iter().max_by_key(|t| {
+            let (cx, cy) = (
+                i64::from(t.x) * 2 + 1 - center.0,
+                i64::from(t.y) * 2 + 1 - center.1,
+            );
+            (rx * cx + ry * cy, rx * cy - ry * cx)
+        }),
+        None if building.player.0 % 2 == 1 => tied.last().copied(),
+        None => tied.first().copied(),
+    }
 }
 
 /// Initialize pre-contact snapshots from their validated, stored observations.
