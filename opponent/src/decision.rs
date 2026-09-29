@@ -292,6 +292,16 @@ pub(crate) fn decide(
         &mut persistent.memory,
         &mut ledger,
     );
+    if let Some((kind, anchor)) = persistent.missions.strike(
+        observation,
+        map,
+        frame,
+        profile,
+        &persistent.memory,
+        &mut ledger,
+    ) {
+        persistent.memory.abandon(kind, anchor, tick);
+    }
     persistent
         .missions
         .focus(observation, frame, profile.difficulty, &mut ledger);

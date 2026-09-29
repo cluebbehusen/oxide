@@ -8,9 +8,9 @@ working rules.
 
 Each decision spends through one running total in a fixed precedence: defense
 and other emergencies, then an affordable saving target, then workers, then
-lifts, attacks, focus fire and scouting, then production. Missions only give
-orders; what they need, such as a scout or carriers, production buys. A seat
-with no Harvester alive or queued queues one even behind other work, from
+lifts, attacks and strikes, focus fire and scouting, then production. Missions
+only give orders; what they need, such as a scout or carriers, production buys.
+A seat with no Harvester alive or queued queues one even behind other work, from
 protected scrap if it must. Each built Foundry works the four nearest live known
 scrap nodes its ground can reach within twelve tiles, none shared with another
 Foundry, and idle Foundries train Harvesters until there are two per worked
@@ -100,6 +100,19 @@ island. Nothing brings them home. A carrier that comes home still loaded sets
 its riders down and lets them go. A target the lift lost its units to, or stood
 idle beside, is skipped for a while. One lift runs at a time, and a defense may
 take its units only while they board.
+
+## Strikes
+
+Free Buzzards, Darters, Condors and Moths at half health or better strike the
+most valuable known enemy building or hostile start for its distance, whether or
+not ground reaches it, when those that can hit ground are worth the stance's
+minimum and outweigh the known anti-air reaching over the target by the attack
+margin. They gather beside home on the side facing the target, fly at it around
+known anti-air, and fight; having taken it they go on to the next target they
+can, and otherwise fly home. They withdraw once the known anti-air reaching them
+outweighs them. A target a strike withdrew from, lost its aircraft to, or stood
+idle beside is skipped for a while. One strike runs at a time, and a defense may
+take its aircraft while they gather or withdraw.
 
 ## Scouting
 
@@ -208,11 +221,11 @@ headless, saved and recovered sessions build it from the same scenario data.
 
 `Checkpoint` holds the seat and what carries between its decisions: remembered
 enemy units, footprints it recently failed to claim, enemy buildings it recently
-gave up attacking or lifting to, its income sample, and its saving target with
-the protected amount and any purchase awaiting confirmation, its missions with
-their phases, members, goals and focus, since when it has gone without
-attacking, and when it last saw each scouting point. The host saves the seat's
-`OwnEvents` beside it. Restoring it checks that the seat is a configured
+gave up attacking, lifting to or striking, its income sample, and its saving
+target with the protected amount and any purchase awaiting confirmation, its
+missions with their phases, members, goals and focus, since when it has gone
+without attacking, and when it last saw each scouting point. The host saves the
+seat's `OwnEvents` beside it. Restoring it checks that the seat is a configured
 `oxide-opponent` bot in the bound scenario and world and that nothing it
 remembers is from a later tick or off the map, rebuilds the profile and decision
 interval from the scenario, and takes the map model built from it. A saved

@@ -52,7 +52,7 @@ const LIFT: [(UnitKind, i32, i32); 10] = [
 const EAST_START: TilePos = TilePos::new(35, 11);
 
 /// The strait with West's tech and lift force.
-fn strait() -> Scenario {
+pub(super) fn strait() -> Scenario {
     let mut scenario = field();
     scenario.map = STRAIT.map(str::to_owned).to_vec();
     for (kind, x, y) in TECH {

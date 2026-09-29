@@ -4,9 +4,11 @@
 //! carriers and passengers. Production keeps a stock of carriers, and nothing
 //! waits on a carrier that is not built.
 
-use super::attack::{FIT, building_value, defense, healthy, margin, minimum, striking};
+use super::air::{self, Hazard};
+use super::attack::{FIT, defense, healthy, margin, minimum, striking};
 use super::{
-    LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, approach, hunt, mine, run,
+    LiftPhase, MISSION_CAP, Mission, Missions, Objective, Task, approach, hunt, mine, objectives,
+    run, standing,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -31,12 +33,6 @@ const LANDING_GAP: i32 = 4;
 
 /// Tiles around the landing over which unloaded units spread.
 const SPREAD: i32 = 4;
-
-/// Tiles a detour swings the route out from its middle.
-const DETOUR: i32 = 8;
-
-/// Tiles beyond a weapon's reach a route or landing keeps clear of.
-const CLEARANCE: i32 = 2;
 
 /// Tiles a carrier looks around for open ground to wait over.
 const CLEARING: i32 = 4;
@@ -71,38 +67,11 @@ pub(crate) fn needed(observation: &ObservationData, map: &MapModel, frame: HomeF
         })
 }
 
-/// Known enemy buildings and hostile starts.
-fn objectives(observation: &ObservationData, map: &MapModel) -> Vec<Objective> {
-    observation
-        .enemy_buildings
-        .iter()
-        .map(|building| Objective {
-            owner: building.player,
-            building: building.kind,
-            anchor: building.anchor,
-        })
-        .chain(map.hostiles(observation.me).filter_map(|owner| {
-            Some(Objective {
-                owner,
-                building: BuildingKind::Foundry,
-                anchor: map.start(owner)?,
-            })
-        }))
-        .collect()
-}
-
 /// A place to fly a payload to.
 #[derive(Clone, Copy)]
 struct Drop {
     target: Objective,
     landing: TilePos,
-}
-
-/// Something that shoots at a domain, as a disc in doubled coordinates.
-struct Hazard {
-    centre: (i64, i64),
-    reach: i64,
-    value: u64,
 }
 
 /// The lift under way, as this decision sees it.
@@ -157,8 +126,8 @@ impl Missions {
             memory,
             profile,
             home,
-            air: hazards(observation, memory, Domain::Air),
-            ground: hazards(observation, memory, Domain::Ground),
+            air: air::hazards(observation, memory, Domain::Air),
+            ground: air::hazards(observation, memory, Domain::Ground),
         };
         match self
             .list
@@ -470,7 +439,7 @@ impl Missions {
         if !flight.grounded.iter().all(|unit| unit.idle) {
             return None;
         }
-        if lifting.standing(target) {
+        if standing(lifting.observation, target) {
             self.list.remove(flight.index);
             return Some((target.building, target.anchor));
         }
@@ -602,7 +571,7 @@ impl Lifting<'_> {
                     .air
                     .iter()
                     .chain(&self.ground)
-                    .filter(|hazard| distance2(hazard.centre, point) <= hazard.reach * hazard.reach)
+                    .filter(|hazard| hazard.covers(point))
                     .map(|hazard| hazard.value)
                     .sum();
                 (
@@ -662,6 +631,14 @@ impl Lifting<'_> {
             })
     }
 
+    fn pad(&self, landing: TilePos) -> Option<TilePos> {
+        air::pad(self.observation, self.map, self.frame, doubled(landing))
+    }
+
+    fn route(&self, from: TilePos, to: TilePos) -> Option<TilePos> {
+        air::route(self.observation, self.frame, &self.air, from, to)
+    }
+
     /// The tile beside `target` on its island nearest `from`.
     fn hunt_tile(&self, target: Objective, from: TilePos) -> Option<TilePos> {
         let island = self.map.component(target.anchor)?;
@@ -674,142 +651,6 @@ impl Lifting<'_> {
                 )
             })
     }
-
-    /// Where carriers leave from and come back to: beside the seat's start,
-    /// on its side nearest `landing`.
-    fn pad(&self, landing: TilePos) -> Option<TilePos> {
-        let start = self.map.start(self.observation.me)?;
-        ring(start, BuildingKind::Foundry.base_stats().size)
-            .filter(|tile| self.map.component(*tile) == Some(self.home))
-            .min_by_key(|tile| {
-                (
-                    tile.chebyshev(landing),
-                    self.frame.rank(self.frame.home, doubled(*tile)),
-                )
-            })
-    }
-
-    /// A via-point around known anti-air between `from` and `to`, or `None`
-    /// when the straight line is clear or nothing does better. A route that
-    /// cannot be made clear is flown anyway.
-    fn route(&self, from: TilePos, to: TilePos) -> Option<TilePos> {
-        let (a, b) = (doubled(from), doubled(to));
-        let direct = exposure(&self.air, a, b);
-        if direct == 0 {
-            return None;
-        }
-        let (width, height) = (self.observation.map_width, self.observation.map_height);
-        let xs = [(from.x + to.x) / 2, (from.x + to.x + 1) / 2];
-        let ys = [(from.y + to.y) / 2, (from.y + to.y + 1) / 2];
-        let offsets = [
-            (-DETOUR, -DETOUR),
-            (0, -DETOUR),
-            (DETOUR, -DETOUR),
-            (-DETOUR, 0),
-            (DETOUR, 0),
-            (-DETOUR, DETOUR),
-            (0, DETOUR),
-            (DETOUR, DETOUR),
-        ];
-        xs.into_iter()
-            .flat_map(|x| ys.into_iter().map(move |y| TilePos::new(x, y)))
-            .flat_map(|middle| {
-                offsets
-                    .into_iter()
-                    .map(move |(dx, dy)| middle.offset(dx, dy))
-            })
-            .map(|via| TilePos::new(via.x.clamp(0, width - 1), via.y.clamp(0, height - 1)))
-            .map(|via| {
-                let v = doubled(via);
-                let risk = exposure(&self.air, a, v) + exposure(&self.air, v, b);
-                let length = from.chebyshev(via) + via.chebyshev(to);
-                (via, risk, length)
-            })
-            .filter(|(_, risk, _)| *risk < direct)
-            .min_by_key(|(via, risk, length)| {
-                (
-                    *risk,
-                    *length,
-                    self.frame.rank(self.frame.home, doubled(*via)),
-                )
-            })
-            .map(|(via, _, _)| via)
-    }
-
-    /// Whether `target` may still stand: it is known, or its ground is out of
-    /// sight.
-    fn standing(&self, target: Objective) -> bool {
-        let known = self.observation.enemy_buildings.iter().any(|building| {
-            (building.player, building.kind, building.anchor)
-                == (target.owner, target.building, target.anchor)
-        });
-        let (width, height) = target.building.base_stats().size;
-        let seen = (0..height)
-            .any(|dy| (0..width).any(|dx| self.observation.visible(target.anchor.offset(dx, dy))));
-        known || !seen
-    }
-}
-
-/// Known enemies that fire at `domain`: remembered units by confidence and
-/// known buildings by health, each reaching its weapon range plus clearance.
-fn hazards(observation: &ObservationData, memory: &Memory, domain: Domain) -> Vec<Hazard> {
-    let now = observation.tick;
-    let reach = |weapons: &[oxide_sim::stats::WeaponStats]| {
-        weapons
-            .iter()
-            .filter(|weapon| weapon.targets.covers(domain))
-            .map(|weapon| weapon.range.ceil().to_num::<i32>())
-            .max()
-    };
-    let units = memory.units().iter().filter_map(|unit| {
-        let range = reach(unit.kind.stats().weapons)?;
-        Some(Hazard {
-            centre: doubled(unit.tile),
-            reach: i64::from(2 * (range + CLEARANCE)),
-            value: unit.value(now),
-        })
-    });
-    let buildings = observation.enemy_buildings.iter().filter_map(|building| {
-        let stats = building.kind.base_stats();
-        let range = reach(stats.weapons)?;
-        let (width, height) = stats.size;
-        Some(Hazard {
-            centre: footprint_centre(building.kind, building.anchor),
-            reach: i64::from(2 * (range + CLEARANCE) + width.max(height)),
-            value: building_value(building),
-        })
-    });
-    units.chain(buildings).collect()
-}
-
-/// Value of the hazards whose reach the segment from `a` to `b` crosses, in
-/// doubled coordinates. Exact integer arithmetic keeps it mirror-symmetric.
-fn exposure(hazards: &[Hazard], a: (i64, i64), b: (i64, i64)) -> u64 {
-    hazards
-        .iter()
-        .filter(|hazard| meets(hazard, a, b))
-        .map(|hazard| hazard.value.max(1))
-        .sum()
-}
-
-fn meets(hazard: &Hazard, a: (i64, i64), b: (i64, i64)) -> bool {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let (px, py) = (hazard.centre.0 - a.0, hazard.centre.1 - a.1);
-    let reach2 = hazard.reach * hazard.reach;
-    let length2 = dx * dx + dy * dy;
-    let along = px * dx + py * dy;
-    if length2 == 0 || along <= 0 {
-        return px * px + py * py <= reach2;
-    }
-    if along >= length2 {
-        return distance2(hazard.centre, b) <= reach2;
-    }
-    let cross = px * dy - py * dx;
-    cross * cross <= reach2 * length2
-}
-
-fn distance2(a: (i64, i64), b: (i64, i64)) -> i64 {
-    (a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)
 }
 
 /// Assigns `riders` in order to the first carrier with room, each carrier

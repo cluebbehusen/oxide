@@ -3,7 +3,7 @@
 //! Missions own only units that exist; production never works for one.
 //!
 //! Missions take units in a fixed order each decision: defense first, then
-//! lift, then attacks, then scouting. Each takes from what
+//! lift, then attacks and strikes, then scouting. Each takes from what
 //! [`Missions::available`] leaves free when it runs.
 
 use crate::frame::{HomeFrame, doubled, ring};
@@ -14,11 +14,13 @@ use oxide_sim::stats::Domain;
 use oxide_sim::{BuildingId, BuildingKind, Command, PlayerId, UnitId};
 use serde::{Deserialize, Serialize};
 
+mod air;
 mod attack;
 mod defense;
 mod focus;
 mod lift;
 mod scouting;
+mod strike;
 
 pub(crate) use attack::minimum;
 pub(crate) use lift::{carrier, needed as lift_needed, rides};
@@ -74,6 +76,19 @@ enum Task {
         target: Objective,
         phase: LiftPhase,
     },
+    Strike {
+        target: Objective,
+        phase: StrikePhase,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum StrikePhase {
+    Gather,
+    Travel,
+    Engage { focus: Option<UnitId> },
+    Withdraw,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +157,15 @@ pub enum MissionKind {
         /// Its footprint anchor.
         anchor: TilePos,
     },
+    /// Sends ground-attack aircraft at a known or presumed enemy building.
+    Strike {
+        /// The building's owner.
+        owner: PlayerId,
+        /// What it is.
+        building: BuildingKind,
+        /// Its footprint anchor.
+        anchor: TilePos,
+    },
 }
 
 /// Where a mission stands, as reports see it.
@@ -195,6 +219,7 @@ impl MissionKind {
             Self::Attack { .. } => "attack",
             Self::Scout { .. } => "scout",
             Self::Lift { .. } => "lift",
+            Self::Strike { .. } => "strike",
         }
     }
 }
@@ -230,6 +255,11 @@ impl Task {
                 building: target.building,
                 anchor: target.anchor,
             },
+            Self::Strike { target, .. } => MissionKind::Strike {
+                owner: target.owner,
+                building: target.building,
+                anchor: target.anchor,
+            },
         }
     }
 
@@ -252,6 +282,12 @@ impl Task {
                 LiftPhase::Fly => Phase::Fly,
                 LiftPhase::Fight { .. } => Phase::Fight,
             },
+            Self::Strike { phase, .. } => match phase {
+                StrikePhase::Gather => Phase::Gather,
+                StrikePhase::Travel => Phase::Travel,
+                StrikePhase::Engage { .. } => Phase::Engage,
+                StrikePhase::Withdraw => Phase::Withdraw,
+            },
         }
     }
 
@@ -262,6 +298,7 @@ impl Task {
             Self::Attack { phase, .. } => attack::timeout(phase),
             Self::Scout { .. } => scouting::TRAVEL_TICKS,
             Self::Lift { phase, .. } => lift::timeout(phase),
+            Self::Strike { phase, .. } => strike::timeout(phase),
         }
     }
 
@@ -279,6 +316,10 @@ impl Task {
             | Self::Lift {
                 phase: LiftPhase::Fight { focus },
                 ..
+            }
+            | Self::Strike {
+                phase: StrikePhase::Engage { focus },
+                ..
             } => Some(focus),
             _ => None,
         }
@@ -289,8 +330,8 @@ impl Mission {
     /// Whether the mission keeps its units from a defense: everything but a
     /// recovering defense, and an attack only once it is fighting. A
     /// travelling attack may have met the enemy since the last decision. A
-    /// scout keeps its scout, and a lift its units once it has left the
-    /// ground.
+    /// scout keeps its scout, a lift its units once it has left the ground,
+    /// and a strike its aircraft once they have set out.
     fn holds(&self, observation: &ObservationData) -> bool {
         match self.task {
             Task::Defend { phase, .. } => phase != DefendPhase::Recover,
@@ -308,10 +349,13 @@ impl Mission {
             },
             Task::Scout { .. } => true,
             Task::Lift { phase, .. } => phase != LiftPhase::Load,
+            Task::Strike { phase, .. } => {
+                matches!(phase, StrikePhase::Travel | StrikePhase::Engage { .. })
+            }
         }
     }
 
-    /// The target of an attack or lift lost while committed to it.
+    /// The target of an attack, lift or strike lost while committed to it.
     fn lost_target(&self) -> Option<(BuildingKind, TilePos)> {
         match self.task {
             Task::Attack {
@@ -321,6 +365,10 @@ impl Mission {
             | Task::Lift {
                 target,
                 phase: LiftPhase::Fly | LiftPhase::Fight { .. },
+            }
+            | Task::Strike {
+                target,
+                phase: StrikePhase::Travel | StrikePhase::Engage { .. },
             } => Some((target.building, target.anchor)),
             _ => None,
         }
@@ -346,7 +394,8 @@ impl Missions {
 
     /// Drops members that are gone, and missions left without members or
     /// without the Foundry they defend. Units aboard a carrier are alive.
-    /// Returns the targets of attacks and lifts wiped out while committed, so
+    /// Returns the targets of attacks, lifts and strikes wiped out while
+    /// committed, so
     /// the seat tries something else for a while.
     pub(crate) fn prune(&mut self, observation: &ObservationData) -> Vec<(BuildingKind, TilePos)> {
         let mut carried: Vec<UnitId> = observation
@@ -378,7 +427,10 @@ impl Missions {
                         .my_buildings
                         .iter()
                         .any(|building| building.id == asset),
-                    Task::Attack { .. } | Task::Scout { .. } | Task::Lift { .. } => true,
+                    Task::Attack { .. }
+                    | Task::Scout { .. }
+                    | Task::Lift { .. }
+                    | Task::Strike { .. } => true,
                 }
         });
         lost
@@ -446,7 +498,9 @@ impl Missions {
         };
         let attacks = count(|task| matches!(task, Task::Attack { .. }));
         let lifts = count(|task| matches!(task, Task::Lift { .. }));
-        if attacks > 1 || lifts > 1 || self.waiting.is_some_and(|since| since > now) {
+        let strikes = count(|task| matches!(task, Task::Strike { .. }));
+        if attacks > 1 || lifts > 1 || strikes > 1 || self.waiting.is_some_and(|since| since > now)
+        {
             return Err("checkpoint mission could not have been recorded".into());
         }
         let on_map = |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
@@ -456,7 +510,9 @@ impl Missions {
                 return Err("checkpoint mission units are malformed".into());
             }
             let target_on_map = match mission.task {
-                Task::Attack { target, .. } | Task::Lift { target, .. } => on_map(target.anchor),
+                Task::Attack { target, .. }
+                | Task::Lift { target, .. }
+                | Task::Strike { target, .. } => on_map(target.anchor),
                 Task::Scout { point } => usize::from(point) < points,
                 Task::Defend { .. } => true,
             };
@@ -523,6 +579,39 @@ fn approach(
                 frame.rank(frame.home, doubled(*tile)),
             )
         })
+}
+
+/// Known enemy buildings and hostile starts.
+fn objectives(observation: &ObservationData, map: &MapModel) -> Vec<Objective> {
+    observation
+        .enemy_buildings
+        .iter()
+        .map(|building| Objective {
+            owner: building.player,
+            building: building.kind,
+            anchor: building.anchor,
+        })
+        .chain(map.hostiles(observation.me).filter_map(|owner| {
+            Some(Objective {
+                owner,
+                building: BuildingKind::Foundry,
+                anchor: map.start(owner)?,
+            })
+        }))
+        .collect()
+}
+
+/// Whether `target` may still stand: it is known, or its ground is out of
+/// sight.
+fn standing(observation: &ObservationData, target: Objective) -> bool {
+    let known = observation.enemy_buildings.iter().any(|building| {
+        (building.player, building.kind, building.anchor)
+            == (target.owner, target.building, target.anchor)
+    });
+    let (width, height) = target.building.base_stats().size;
+    let seen = (0..height)
+        .any(|dy| (0..width).any(|dx| observation.visible(target.anchor.offset(dx, dy))));
+    known || !seen
 }
 
 fn run(units: Vec<UnitId>, goal: TilePos) -> Command {

@@ -5,7 +5,7 @@
 
 use super::{
     AttackPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hits, hunt,
-    insert, mine, run, value,
+    insert, mine, run, standing, value,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -367,7 +367,7 @@ impl Missions {
                 if !all_idle && age < ENGAGE_TICKS {
                     return None;
                 }
-                let standing = plan.standing(target);
+                let standing = standing(observation, target.objective());
                 let next = plan.best(Some(target)).filter(|next| {
                     !standing
                         && members.iter().map(|unit| striking(unit)).sum::<u64>()
@@ -457,19 +457,6 @@ impl Plan<'_> {
             approach,
             score: u64::from(cost) * 1_000 / (100 + distance / 10),
         })
-    }
-
-    /// Whether `target` may still stand: it is known, or its ground is out of
-    /// sight.
-    fn standing(&self, target: Target) -> bool {
-        let known = self.observation.enemy_buildings.iter().any(|building| {
-            (building.player, building.kind, building.anchor)
-                == (target.owner, target.building, target.anchor)
-        });
-        let (width, height) = target.building.base_stats().size;
-        let seen = (0..height)
-            .any(|dy| (0..width).any(|dx| self.observation.visible(target.anchor.offset(dx, dy))));
-        known || !seen
     }
 
     /// Army value the attack on `target` needs: its known local defense
@@ -616,7 +603,7 @@ pub(super) fn building_value(building: &BuildingObs) -> u64 {
 
 /// Units nearest `rally` first until their value reaches `need`, at most
 /// `room` of them, by id.
-fn recruit(
+pub(super) fn recruit(
     frame: HomeFrame,
     fit: &[&UnitObs],
     rally: TilePos,

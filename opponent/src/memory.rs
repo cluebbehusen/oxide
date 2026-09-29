@@ -100,12 +100,14 @@ impl Memory {
         recent(&self.failures, kind, anchor, now)
     }
 
-    /// Remembers giving up attacking or lifting to `kind` at `anchor`.
+    /// Remembers giving up attacking, lifting to or striking `kind` at
+    /// `anchor`.
     pub(crate) fn abandon(&mut self, kind: BuildingKind, anchor: TilePos, now: u64) {
         record(&mut self.abandoned, kind, anchor, now);
     }
 
-    /// Whether attacking or lifting to `kind` at `anchor` was recently given up.
+    /// Whether attacking, lifting to or striking `kind` at `anchor` was recently
+    /// given up.
     pub(crate) fn abandoned(&self, kind: BuildingKind, anchor: TilePos, now: u64) -> bool {
         recent(&self.abandoned, kind, anchor, now)
     }
