@@ -27,11 +27,12 @@ gets one defend mission, the home Foundry's first. Only threats on or beside
 that Foundry's ground count: one across water or a chasm is left to production,
 since chasing it would stall every defender. The mission recruits free units
 that can hit one of its threats, ground units only from that Foundry's ground,
-nearest the Foundry first, until they are worth half again what the threats are.
-It sends them in one Hunt at the threat nearest the Foundry, and sends them
-again only when that threat moves more than three tiles or the mission
-re-engages. With no threat left the mission recovers, and after 120 quiet ticks
-it lets its units go where they stand.
+nearest the Foundry first, until against ground and air attackers alike they are
+worth half again what those attackers are. It sends them in one Hunt at the
+threat nearest the Foundry, and sends them again only when that threat moves
+more than three tiles or the mission re-engages. With no threat left the mission
+recovers, lending its units to any other threatened Foundry, and after 120 quiet
+ticks it lets them go where they stand.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase and lets production spend protected scrap. Missions own only
