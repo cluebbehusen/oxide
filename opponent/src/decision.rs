@@ -156,7 +156,7 @@ impl Ledger {
             .any(|command| match &command.command {
                 Command::Harvest { units, .. }
                 | Command::Build { units, .. }
-                | Command::Move { units, .. } => units.contains(&unit),
+                | Command::Run { units, .. } => units.contains(&unit),
                 _ => false,
             })
     }
@@ -343,7 +343,7 @@ fn scout(
     };
     let centre = footprint_centre(kind, anchor);
     if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger) {
-        ledger.order(Command::Move {
+        ledger.order(Command::Run {
             units: vec![builder],
             goal: anchor,
             queue: false,

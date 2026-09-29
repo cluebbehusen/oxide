@@ -150,7 +150,7 @@ fn an_unexplored_expansion_sends_a_harvester_to_look() {
     assert!(
         commands.iter().any(|command| matches!(
             &command.command,
-            Command::Move { goal, .. } if *goal == far.anchors[0]
+            Command::Run { goal, .. } if *goal == far.anchors[0]
         )),
         "{commands:?}"
     );
@@ -312,7 +312,7 @@ fn a_half_explored_footprint_is_still_scouted() {
     assert!(
         decision.commands.iter().any(|command| matches!(
             &command.command,
-            Command::Move { goal, .. } if *goal == anchor
+            Command::Run { goal, .. } if *goal == anchor
         )),
         "{:?}",
         decision.commands
