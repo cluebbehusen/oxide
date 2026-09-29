@@ -426,6 +426,12 @@ fn buy(
             if !affordable {
                 return;
             }
+            if kind == BuildingKind::Barricade && !defenses::keeps_paths(observation, map, anchor) {
+                persistent.memory.fail(kind, anchor, tick);
+                ledger.protected = 0;
+                persistent.saving.keep_at_most(0);
+                return;
+            }
             let centre = footprint_centre(kind, anchor);
             let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger)
             else {

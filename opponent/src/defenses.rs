@@ -1,8 +1,9 @@
 //! Static defense: Turrets, Bastions and Flak Turrets beside the seat's most
-//! valuable buildings, on the side threats come from, and upgrades for them.
-//! Each is an ordinary investment, worth what it adds to the cover of those
-//! buildings' approaches. A short defense also buys one defense at once where
-//! attackers find a building's approach uncovered.
+//! valuable buildings, on the side threats come from, Arrays watching the
+//! way in, Barricades ahead of the guns, Scuttle Charges on the approach, and
+//! upgrades for them. Each is an ordinary investment, worth what it adds to
+//! the cover of those buildings' approaches. A short defense also buys one
+//! defense at once where attackers find a building's approach uncovered.
 
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
@@ -22,8 +23,32 @@ use std::collections::BinaryHeap;
 /// Buildings worth guarding, most valuable first, at most this many.
 const ASSETS: usize = 6;
 
+/// What one of several Foundries is worth guarding; a lone Foundry is worth
+/// more, and nothing else is worth as much.
+const FOUNDRY_VALUE: u64 = 12;
+
 /// Tiles from a building's centre toward a threat sampled as its approach.
 const APPROACH: [i64; 4] = [3, 6, 9, 12];
+
+/// Tiles from a building's centre toward a threat an Array watches.
+const FAR: [i64; 4] = [9, 12, 15, 18];
+
+/// Tiles an Array's radar reaches.
+const RADAR: i64 = 20;
+
+/// Tiles from a Foundry's centre along its approach where Scuttle Charges
+/// go.
+const MINEFIELD: [i64; 4] = [3, 4, 5, 6];
+
+/// Tiles apart Scuttle Charges stand, so one blast does not set off the
+/// next.
+const CHARGE_SPACING: i32 = 3;
+
+/// Empty tiles between a gun and the Barricade in front of it.
+const BARRICADE_GAP: i32 = 1;
+
+/// Divides an obstacle's worth into investment points.
+const OBSTACLE_POINTS: u64 = 16;
 
 /// Empty tiles between a building and a defense guarding it.
 const STANDOFF: [i32; 2] = [2, 3];
@@ -80,6 +105,9 @@ struct Approach {
     open: Vec<u64>,
     /// For each sample, whether own buildings see it.
     spotted: Vec<bool>,
+    /// Points further along the way in, where an Array watches, and whether
+    /// own buildings already see or pick up each.
+    far: Vec<((i64, i64), bool)>,
     evidence: Evidence,
     /// The threat the samples lead to.
     source: (i64, i64),
@@ -192,15 +220,26 @@ impl<'a> Guard<'a> {
             .chain(&observation.ally_buildings)
             .filter(|building| building.built)
             .map(|building| {
-                let vision = i64::from(building.kind.tier_stats(building.tier).vision) * 2;
+                let vision = i64::from(building.kind.tier_stats(building.tier).vision);
+                let reach = if building.kind == BuildingKind::Array {
+                    vision.max(RADAR)
+                } else {
+                    vision
+                };
                 (
                     footprint_centre(building.kind, building.anchor),
-                    vision * vision,
+                    4 * reach * reach,
                 )
             })
             .collect();
+        let seen = |point: (i64, i64)| {
+            sight
+                .iter()
+                .any(|(centre, reach2)| distance2(*centre, point) <= *reach2)
+        };
         let mut assets = assets(observation, frame);
         for asset in &mut assets {
+            let centre = asset.centre;
             let known = Known {
                 observation,
                 map,
@@ -232,14 +271,10 @@ impl<'a> Guard<'a> {
                         }
                     })
                     .collect();
-                approach.spotted = approach
-                    .samples
-                    .iter()
-                    .map(|point| {
-                        sight.iter().any(|(centre, sight2)| {
-                            (centre.0 - point.0).pow(2) + (centre.1 - point.1).pow(2) <= *sight2
-                        })
-                    })
+                approach.spotted = approach.samples.iter().map(|point| seen(*point)).collect();
+                approach.far = along(centre, approach.source, &FAR)
+                    .into_iter()
+                    .map(|point| (point, seen(point)))
                     .collect();
             }
         }
@@ -287,7 +322,24 @@ impl<'a> Guard<'a> {
     /// for each sample nothing covers yet, one for each only one weapon
     /// covers. A Bastion counts only samples its owner's or an ally's
     /// buildings see, since it fires no further than something spots for it.
-    fn gain(&self, asset: &Asset, kind: BuildingKind, anchor: TilePos, reach: Cover) -> u64 {
+    /// An Array adds two for each point further along the way in that nothing
+    /// sees yet.
+    fn gain(
+        &self,
+        asset: &Asset,
+        kind: BuildingKind,
+        anchor: TilePos,
+        reach: Option<Cover>,
+    ) -> u64 {
+        if kind == BuildingKind::Array {
+            let centre = footprint_centre(kind, anchor);
+            return 2 * self.watched(asset, |point, seen| {
+                !seen && distance2(centre, point) <= 4 * RADAR * RADAR
+            });
+        }
+        let Some(reach) = reach else {
+            return 0;
+        };
         let cover = Cover {
             centre: footprint_centre(kind, anchor),
             ..reach
@@ -309,6 +361,123 @@ impl<'a> Guard<'a> {
             .sum()
     }
 
+    /// Points far along `asset`'s ways in, from the ground and the air, that
+    /// `counts`, given each point and whether own buildings see it.
+    fn watched(&self, asset: &Asset, counts: impl Fn((i64, i64), bool) -> bool) -> u64 {
+        [Domain::Ground, Domain::Air]
+            .into_iter()
+            .filter_map(|domain| asset.approach(domain))
+            .flat_map(|approach| &approach.far)
+            .filter(|(point, seen)| counts(*point, *seen))
+            .count() as u64
+    }
+
+    /// Whether prior evidence may count yet.
+    fn usable(&self, approach: &Approach) -> bool {
+        !matches!(approach.evidence, Evidence::Landing | Evidence::Prior) || self.settled
+    }
+
+    /// The best spot for a Barricade: a tile's gap in front of an own Turret
+    /// or Bastion without one, toward the threat of the building it guards.
+    /// Whether it leaves the seat's paths open is checked when it is bought.
+    fn barricade(&self) -> Option<(TilePos, u64)> {
+        let observation = self.observation;
+        let barricades: Vec<&BuildingObs> = observation
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::Barricade)
+            .collect();
+        let mut sites = Vec::new();
+        for gun in observation.my_buildings.iter().filter(|building| {
+            building.built && matches!(building.kind, BuildingKind::Turret | BuildingKind::Bastion)
+        }) {
+            let size = gun.kind.base_stats().size;
+            let fronted = barricades.iter().any(|barricade| {
+                gap(gun.anchor, size, barricade.anchor, (1, 1)) <= BARRICADE_GAP + 1
+            });
+            if fronted {
+                continue;
+            }
+            let centre = footprint_centre(gun.kind, gun.anchor);
+            let Some((asset, approach)) = self
+                .assets
+                .iter()
+                .filter_map(|asset| Some((asset, asset.approach(Domain::Ground)?)))
+                .filter(|(_, approach)| self.usable(approach))
+                .min_by_key(|(asset, _)| (distance2(asset.centre, centre), asset.centre))
+            else {
+                continue;
+            };
+            let worth = asset.value * 2 * self.weight(approach, BuildingKind::Barricade);
+            let low = -(BARRICADE_GAP + 1);
+            let high = size.0.max(size.1) + BARRICADE_GAP;
+            for tile in (low..=high)
+                .flat_map(|dy| (low..=high).map(move |dx| gun.anchor.offset(dx, dy)))
+                .filter(|tile| gap(gun.anchor, size, *tile, (1, 1)) == BARRICADE_GAP)
+            {
+                let point = doubled(tile);
+                let ahead = (point.0 - centre.0) * (approach.source.0 - centre.0)
+                    + (point.1 - centre.1) * (approach.source.1 - centre.1);
+                if ahead > 0 {
+                    sites.push((worth, self.frame.rank(approach.source, point), tile));
+                }
+            }
+        }
+        first_placeable(sites, |tile| self.placeable(BuildingKind::Barricade, tile))
+    }
+
+    /// The best spot for a Scuttle Charge: on the straight way in to a
+    /// Foundry, a few tiles out, clear of other own charges.
+    fn charge(&self) -> Option<(TilePos, u64)> {
+        let observation = self.observation;
+        let charges: Vec<TilePos> = observation
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::ScuttleCharge)
+            .map(|building| building.anchor)
+            .collect();
+        let mut sites = Vec::new();
+        for asset in self
+            .assets
+            .iter()
+            .filter(|asset| asset.value >= FOUNDRY_VALUE)
+        {
+            let Some(approach) = asset.approach(Domain::Ground) else {
+                continue;
+            };
+            if !self.usable(approach) {
+                continue;
+            }
+            let worth = asset.value * 2 * self.weight(approach, BuildingKind::ScuttleCharge);
+            for tile in along(asset.centre, approach.source, &MINEFIELD)
+                .into_iter()
+                .flat_map(tiles_at)
+            {
+                let clear = charges
+                    .iter()
+                    .all(|charge| charge.chebyshev(tile) >= CHARGE_SPACING);
+                if clear {
+                    sites.push((worth, self.frame.rank(approach.source, doubled(tile)), tile));
+                }
+            }
+        }
+        first_placeable(sites, |tile| {
+            self.placeable(BuildingKind::ScuttleCharge, tile)
+        })
+    }
+
+    /// Whether `kind` may go at `anchor` as far as the seat knows, on ground
+    /// a Harvester of the seat stands on, and was not refused there lately.
+    fn placeable(&self, kind: BuildingKind, anchor: TilePos) -> bool {
+        let crewed = self
+            .map
+            .component(anchor)
+            .is_some_and(|ground| self.crews.contains(&ground));
+        crewed
+            && !self.memory.failed(kind, anchor, self.observation.tick)
+            && placement::check(self.observation, kind, anchor, &[]).is_ok()
+    }
+
     /// The best site for `kind` guarding any asset, as its anchor and worth:
     /// asset value times gain times evidence, placeable as far as the seat
     /// knows and not recently refused. Equal sites go to the one nearest a
@@ -326,21 +495,28 @@ impl<'a> Guard<'a> {
         guarded: impl Fn(&Asset) -> bool,
     ) -> Option<(TilePos, u64)> {
         let size = kind.base_stats().size;
-        let reach = Cover::of(kind.base_stats(), kind, TilePos::new(0, 0))?;
+        let reach = Cover::of(kind.base_stats(), kind, TilePos::new(0, 0));
         let bastion = kind == BuildingKind::Bastion;
         let mut sites = Vec::new();
         for asset in self.assets.iter().filter(|asset| guarded(asset)) {
-            let Some(approach) = asset.approach(domain(kind)) else {
+            // Radar watches for aircraft as well as ground units, so an
+            // Array faces the air approach where no ground one is known.
+            let approach = asset
+                .approach(domain(kind))
+                .or_else(|| (kind == BuildingKind::Array).then(|| asset.approach(Domain::Air))?);
+            let Some(approach) = approach else {
                 continue;
             };
-            let unsettled =
-                matches!(approach.evidence, Evidence::Landing | Evidence::Prior) && !self.settled;
-            let open = approach
-                .open
-                .iter()
-                .zip(&approach.spotted)
-                .any(|(open, spotted)| *open > 0 && (!bastion || *spotted));
-            if unsettled || !open {
+            let open = if kind == BuildingKind::Array {
+                self.watched(asset, |_, seen| !seen) > 0
+            } else {
+                approach
+                    .open
+                    .iter()
+                    .zip(&approach.spotted)
+                    .any(|(open, spotted)| *open > 0 && (!bastion || *spotted))
+            };
+            if !self.usable(approach) || !open {
                 continue;
             }
             for anchor in sites_around(asset, size) {
@@ -366,18 +542,6 @@ impl<'a> Guard<'a> {
         }
         first_placeable(sites, |anchor| self.placeable(kind, anchor))
     }
-
-    /// Whether `kind` may go at `anchor` as far as the seat knows, on ground
-    /// a Harvester of the seat stands on, and was not refused there lately.
-    fn placeable(&self, kind: BuildingKind, anchor: TilePos) -> bool {
-        let crewed = self
-            .map
-            .component(anchor)
-            .is_some_and(|ground| self.crews.contains(&ground));
-        crewed
-            && !self.memory.failed(kind, anchor, self.observation.tick)
-            && placement::check(self.observation, kind, anchor, &[]).is_ok()
-    }
 }
 
 /// The first of `sites`, best worth first and then by rank, that
@@ -400,9 +564,10 @@ fn first_placeable<R: Ord>(
 }
 
 /// Voluntary defenses and defense upgrades worth investing in, with their
-/// scores. Personality weighs each kind: fortification for Turrets and
-/// Bastions, fortification and support for Flak Turrets, fortification and
-/// greed for upgrades.
+/// scores. Personality weighs each kind: fortification for Turrets, Bastions
+/// and Barricades, fortification and support for Flak Turrets, fortification
+/// and guile for Arrays and Scuttle Charges, fortification and greed for
+/// upgrades.
 pub(crate) fn investments(
     observation: &ObservationData,
     map: &MapModel,
@@ -415,6 +580,7 @@ pub(crate) fn investments(
         return Vec::new();
     };
     let fortification = u64::from(traits.fortification);
+    let cunning = (fortification + u64::from(traits.guile)) / 2;
     let weights = [
         (BuildingKind::Turret, fortification),
         (BuildingKind::Bastion, fortification * 6 / 5),
@@ -422,6 +588,7 @@ pub(crate) fn investments(
             BuildingKind::FlakTurret,
             (fortification + u64::from(traits.support)) / 2,
         ),
+        (BuildingKind::Array, cunning / 2),
     ];
     let mut list: Vec<(Investment, u32)> = weights
         .into_iter()
@@ -433,6 +600,24 @@ pub(crate) fn investments(
             ))
         })
         .collect();
+    if let Some((anchor, worth)) = guard.barricade() {
+        let kind = BuildingKind::Barricade;
+        list.push((
+            Investment::Defense { kind, anchor },
+            points(worth * fortification / OBSTACLE_POINTS),
+        ));
+    }
+    let fabricator = observation
+        .my_buildings
+        .iter()
+        .any(|building| building.kind == BuildingKind::Fabricator && building.built);
+    if fabricator && let Some((anchor, worth)) = guard.charge() {
+        let kind = BuildingKind::ScuttleCharge;
+        list.push((
+            Investment::Defense { kind, anchor },
+            points(worth * cunning / OBSTACLE_POINTS),
+        ));
+    }
     let upgrade_weight = (fortification + u64::from(traits.greed)) / 2;
     list.extend(
         observation
@@ -443,17 +628,22 @@ pub(crate) fn investments(
     list
 }
 
-/// An upgrade for a built defense, worth the approach samples it covers by
-/// how sure the seat is of each threat, unless an enemy in sight could hit it
-/// while it is down, from the defense's reach or its own, or the next tier
-/// needs a building the seat has not built.
+/// An upgrade for a built defense, worth the approach samples it covers, or
+/// for an Array the far points its radar watches, each by how sure the seat
+/// is of the threat, unless an enemy in sight could hit it while it is down,
+/// from the defense's reach or its own, or the next tier needs a building the
+/// seat has not built.
 fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(Investment, u32)> {
     let observation = guard.observation;
     if !building.built {
         return None;
     }
     let stats = building.kind.tier_stats(building.tier);
-    let cover = Cover::of(stats, building.kind, building.anchor)?;
+    let cover = Cover::of(stats, building.kind, building.anchor);
+    let array = building.kind == BuildingKind::Array;
+    if cover.is_none() && !array {
+        return None;
+    }
     let next = building.kind.upgrade_from(building.tier)?;
     let ready = next.requires.iter().all(|required| {
         observation
@@ -489,11 +679,12 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
     if !ready || threatened {
         return None;
     }
+    let centre = footprint_centre(building.kind, building.anchor);
     let worth: u64 = guard
         .assets
         .iter()
-        .map(|asset| {
-            [Domain::Ground, Domain::Air]
+        .map(|asset| match cover {
+            Some(cover) => [Domain::Ground, Domain::Air]
                 .into_iter()
                 .filter_map(|domain| Some((domain, asset.approach(domain)?)))
                 .map(|(domain, approach)| {
@@ -504,7 +695,19 @@ fn upgrade(guard: &Guard<'_>, building: &BuildingObs, weight: u64) -> Option<(In
                         .count() as u64;
                     asset.value * covered * approach.evidence.weight()
                 })
-                .sum::<u64>()
+                .sum::<u64>(),
+            None => {
+                let evidence = [Domain::Ground, Domain::Air]
+                    .into_iter()
+                    .filter_map(|domain| asset.approach(domain))
+                    .map(|approach| approach.evidence.weight())
+                    .max()
+                    .unwrap_or(0);
+                let watched = guard.watched(asset, |point, _| {
+                    distance2(centre, point) <= 4 * RADAR * RADAR
+                });
+                asset.value * watched * evidence
+            }
         })
         .sum();
     (worth > 0).then(|| {
@@ -594,7 +797,7 @@ fn assets(observation: &ObservationData, frame: HomeFrame) -> Vec<Asset> {
         .filter_map(|building| {
             let value = match building.kind {
                 BuildingKind::Foundry if foundries.len() == 1 => 16,
-                BuildingKind::Foundry => 12,
+                BuildingKind::Foundry => FOUNDRY_VALUE,
                 BuildingKind::Crucible => 10,
                 BuildingKind::Airworks => 9,
                 BuildingKind::Fabricator => 8,
@@ -730,14 +933,7 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         .map(|source| (source, Evidence::Current))
         .or_else(|| remembered().map(|source| (source, Evidence::Remembered)))
         .or_else(prior)?;
-    let (dx, dy) = (source.0 - centre.0, source.1 - centre.1);
-    let length = dx.abs().max(dy.abs());
-    let mut samples: Vec<(i64, i64)> = APPROACH
-        .iter()
-        .map(|tiles| 2 * tiles)
-        .filter(|step| *step < length)
-        .map(|step| (centre.0 + dx * step / length, centre.1 + dy * step / length))
-        .collect();
+    let mut samples = along(centre, source, &APPROACH);
     if samples.is_empty() {
         samples.push(source);
     }
@@ -745,9 +941,137 @@ fn approach(known: &Known<'_>, asset: &Asset, domain: Domain) -> Option<Approach
         samples,
         open: Vec::new(),
         spotted: Vec::new(),
+        far: Vec::new(),
         evidence,
         source,
     })
+}
+
+/// Points `tiles` tiles from `centre` toward `source`, short of it, in
+/// doubled coordinates. Integer division truncates toward zero, so a
+/// mirrored seat's points mirror these.
+fn along(centre: (i64, i64), source: (i64, i64), tiles: &[i64]) -> Vec<(i64, i64)> {
+    let (dx, dy) = (source.0 - centre.0, source.1 - centre.1);
+    let length = dx.abs().max(dy.abs());
+    tiles
+        .iter()
+        .map(|tiles| 2 * tiles)
+        .filter(|step| *step < length)
+        .map(|step| (centre.0 + dx * step / length, centre.1 + dy * step / length))
+        .collect()
+}
+
+/// The tiles whose centres lie within half a tile of `point`: one when it
+/// falls on a centre, up to four when it falls between them. Choosing among
+/// them is left to the mirror-safe ranking.
+fn tiles_at(point: (i64, i64)) -> Vec<TilePos> {
+    let axis = |value: i64| {
+        let half = value.div_euclid(2);
+        if value.rem_euclid(2) == 1 {
+            vec![half]
+        } else {
+            vec![half - 1, half]
+        }
+    };
+    let ys = axis(point.1);
+    axis(point.0)
+        .into_iter()
+        .flat_map(|x| ys.iter().map(move |y| TilePos::new(x as i32, *y as i32)))
+        .collect()
+}
+
+/// Whether a Barricade at `tile` still lets the seat's home ground reach an
+/// exit beside every own producer, every worked scrap node, and every
+/// hostile start on that ground. One flood fill over the home ground, with
+/// known buildings, known live scrap and the Barricade in the way.
+pub(crate) fn keeps_paths(observation: &ObservationData, map: &MapModel, tile: TilePos) -> bool {
+    let me = observation.me;
+    let Some(start) = map.start(me) else {
+        return false;
+    };
+    let Some(home) = map.component(start) else {
+        return false;
+    };
+    let (width, height) = (observation.map_width, observation.map_height);
+    let index = |tile: TilePos| {
+        ((0..width).contains(&tile.x) && (0..height).contains(&tile.y))
+            .then(|| (tile.y * width + tile.x) as usize)
+    };
+    let mut blocked = vec![false; (width * height) as usize];
+    for building in observation
+        .my_buildings
+        .iter()
+        .chain(&observation.ally_buildings)
+        .chain(&observation.enemy_buildings)
+    {
+        let (w, h) = building.kind.base_stats().size;
+        for footprint in (0..h).flat_map(|dy| (0..w).map(move |dx| building.anchor.offset(dx, dy)))
+        {
+            if let Some(at) = index(footprint) {
+                blocked[at] = true;
+            }
+        }
+    }
+    for (node, amount) in &observation.known_scrap {
+        if let Some(at) = index(*node)
+            && *amount > 0
+        {
+            blocked[at] = true;
+        }
+    }
+    if let Some(at) = index(tile) {
+        blocked[at] = true;
+    }
+    let open = |tile: TilePos| {
+        index(tile).is_some_and(|at| !blocked[at]) && map.component(tile) == Some(home)
+    };
+    let mut reached = vec![false; (width * height) as usize];
+    let mut frontier: Vec<TilePos> = ring(start, BuildingKind::Foundry.base_stats().size)
+        .filter(|tile| open(*tile))
+        .collect();
+    for tile in &frontier {
+        if let Some(at) = index(*tile) {
+            reached[at] = true;
+        }
+    }
+    while let Some(tile) = frontier.pop() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let next = tile.offset(dx, dy);
+            if let Some(at) = index(next)
+                && !reached[at]
+                && open(next)
+            {
+                reached[at] = true;
+                frontier.push(next);
+            }
+        }
+    }
+    let beside = |anchor: TilePos, size: (i32, i32)| {
+        ring(anchor, size).any(|tile| index(tile).is_some_and(|at| reached[at]))
+    };
+    let producers = observation
+        .my_buildings
+        .iter()
+        .filter(|building| building.built && !building.kind.base_stats().produces.is_empty())
+        .all(|building| beside(building.anchor, building.kind.base_stats().size));
+    let nodes = map
+        .home_nodes(me)
+        .iter()
+        .filter(|(node, _)| observation.known_scrap_at(*node))
+        .all(|(node, _)| beside(*node, (1, 1)));
+    let starts = map
+        .hostiles(me)
+        .filter_map(|owner| map.start(owner))
+        .filter(|anchor| {
+            ring(*anchor, BuildingKind::Foundry.base_stats().size)
+                .any(|tile| map.component(tile) == Some(home))
+        })
+        .all(|anchor| beside(anchor, BuildingKind::Foundry.base_stats().size));
+    producers && nodes && starts
+}
+
+fn distance2(a: (i64, i64), b: (i64, i64)) -> i64 {
+    (a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)
 }
 
 /// Anchors for a `size` footprint standing off `asset` by the standoff

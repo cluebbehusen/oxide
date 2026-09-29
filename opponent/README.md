@@ -71,11 +71,22 @@ buys an emergency Turret, or Flak Turret against aircraft, beside a building
 whose approach nothing covers when attackers stand near it, one unfinished at a
 time.
 
-Defenses upgrade like Reclaimers do (Heavy Turret, Bulwark, Burst Flak) once the
-next tier's prerequisite stands, worth the approach they cover by how sure the
-seat is of its threat and weighted by fortification and greed, and never while
-an enemy in sight could hit it, from its own reach or the defense's, while it is
-down at a fifth of its health.
+Arrays watch the far part of those approaches: a site is worth the points out
+there that nothing the seat owns sees yet, and its radar lets Bastions fire that
+far. A Barricade goes a tile in front of a Turret or Bastion that has none, on
+the side of the threat; it is refused at purchase when it would cut the start
+off from a producer's exit, a worked scrap node or a hostile start on home
+ground. Once a Fabricator stands, Scuttle Charges go a few tiles out on the
+straight way in to a Foundry, spread so one blast does not set off the next.
+Fortification weighs Barricades; fortification and guile weigh Arrays and
+charges.
+
+Defenses upgrade like Reclaimers do (Heavy Turret, Bulwark, Burst Flak, Deep
+Array) once the next tier's prerequisite stands, worth the approach they cover,
+or for an Array the far points it watches, by how sure the seat is of its threat
+and weighted by fortification and greed, and never while an enemy in sight could
+hit it, from its own reach or the defense's, while it is down at a fifth of its
+health.
 
 ## Attack
 
