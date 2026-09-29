@@ -261,9 +261,9 @@ pub(crate) fn decide(
                 .map(|(step, price)| NextPurchase { step, price }),
         });
 
-    for (kind, anchor) in persistent.missions.prune(observation) {
-        persistent.memory.abandon(kind, anchor, tick);
-    }
+    persistent
+        .missions
+        .prune(observation, &mut persistent.memory);
     let short = persistent
         .missions
         .defend(observation, map, frame, &mut ledger);

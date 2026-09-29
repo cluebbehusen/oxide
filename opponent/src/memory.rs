@@ -121,6 +121,13 @@ impl Memory {
         &mut self.scouted
     }
 
+    /// Counts scouting point `point` as seen at `now`.
+    pub(crate) fn saw(&mut self, point: usize, now: u64) {
+        if let Some(seen) = self.scouted.get_mut(point) {
+            *seen = now;
+        }
+    }
+
     /// Forgets failures old enough to try again.
     pub(crate) fn forget(&mut self, now: u64) {
         self.failures
