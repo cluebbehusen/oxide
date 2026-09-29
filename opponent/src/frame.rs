@@ -40,6 +40,12 @@ impl HomeFrame {
         ))
     }
 
+    /// A frame around `home` whose ties follow `radial`, both in doubled
+    /// coordinates scaled alike.
+    pub(crate) fn around(home: (i64, i64), radial: (i64, i64)) -> Self {
+        Self { home, radial }
+    }
+
     /// The frame around a Foundry at `anchor` on a map of the given size.
     pub(crate) fn at(anchor: TilePos, width: i32, height: i32) -> Self {
         let home = footprint_centre(BuildingKind::Foundry, anchor);
@@ -62,6 +68,15 @@ impl HomeFrame {
         let cross = self.radial.0 * dy - self.radial.1 * dx;
         (dx * dx + dy * dy, Reverse(dot), cross, to.1, to.0)
     }
+}
+
+/// Empty tiles between two footprints along the wider axis; negative when
+/// they overlap. Measuring between whole footprints keeps it the same for
+/// mirrored pairs, which a distance from a top-left anchor would not.
+pub(crate) fn gap(a: TilePos, a_size: (i32, i32), b: TilePos, b_size: (i32, i32)) -> i32 {
+    let dx = (b.x - (a.x + a_size.0)).max(a.x - (b.x + b_size.0));
+    let dy = (b.y - (a.y + a_size.1)).max(a.y - (b.y + b_size.1));
+    dx.max(dy)
 }
 
 /// A tile's centre in doubled coordinates.

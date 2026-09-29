@@ -139,3 +139,20 @@ fn hidden_enemies_never_change_a_verdict() {
         }
     }
 }
+
+#[test]
+fn explored_ground_out_of_sight_is_claimed_as_a_scaffold() {
+    let state = yard().build().unwrap();
+    let mut observation = ObservationData::fog_honest(&state, PlayerId(0));
+    let anchor = TilePos::new(6, 1);
+    assert_eq!(
+        check(&observation, BuildingKind::Fabricator, anchor, &[]),
+        Ok(Allowed { defer: false })
+    );
+    let index = usize::try_from(anchor.y * observation.map_width + anchor.x).unwrap();
+    observation.visible[index] = false;
+    assert_eq!(
+        check(&observation, BuildingKind::Fabricator, anchor, &[]),
+        Ok(Allowed { defer: true })
+    );
+}

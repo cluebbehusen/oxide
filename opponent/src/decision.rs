@@ -2,7 +2,7 @@
 //! unit-order allowance.
 
 use crate::composition::{self, Needs};
-use crate::frame::{HomeFrame, footprint_centre};
+use crate::frame::{HomeFrame, footprint_centre, gap};
 use crate::income::Income;
 use crate::investments::{self, Investment, Situation, Step};
 use crate::map::MapModel;
@@ -154,9 +154,9 @@ impl Ledger {
             .commands
             .iter()
             .any(|command| match &command.command {
-                Command::Harvest { units, .. } | Command::Build { units, .. } => {
-                    units.contains(&unit)
-                }
+                Command::Harvest { units, .. }
+                | Command::Build { units, .. }
+                | Command::Run { units, .. } => units.contains(&unit),
                 _ => false,
             })
     }
@@ -220,6 +220,8 @@ pub(crate) fn decide(
     );
     let situation = Situation {
         observation,
+        map,
+        memory: &persistent.memory,
         traits: profile.traits,
         saturation: staffing.saturation(),
         income,
@@ -298,17 +300,17 @@ fn buy(
             persistent.saving.attempted(step, building.anchor, tick);
         }
         Step::Build(kind) => {
-            let site = map
-                .spots(observation.me)
-                .iter()
-                .copied()
+            let anchors: Vec<TilePos> = investments::anchors(map, observation, investment, kind)
+                .into_iter()
                 .filter(|anchor| !persistent.memory.failed(kind, *anchor, tick))
-                .find_map(|anchor| {
-                    placement::check(observation, kind, anchor, &ledger.planned)
-                        .ok()
-                        .map(|allowed| (anchor, allowed))
-                });
+                .collect();
+            let site = anchors.iter().copied().find_map(|anchor| {
+                placement::check(observation, kind, anchor, &ledger.planned)
+                    .ok()
+                    .map(|allowed| (anchor, allowed))
+            });
             let Some((anchor, allowed)) = site else {
+                scout(observation, map, frame, &anchors, kind, ledger);
                 return;
             };
             let centre = footprint_centre(kind, anchor);
@@ -320,6 +322,32 @@ fn buy(
             ledger.protected = 0;
             persistent.saving.attempted(step, anchor, tick);
         }
+    }
+}
+
+/// Sends the nearest free Harvester toward the first of `anchors` whose
+/// footprint it has not fully seen, so it can be checked once explored.
+fn scout(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    anchors: &[TilePos],
+    kind: BuildingKind,
+    ledger: &mut Ledger,
+) {
+    let (width, height) = kind.base_stats().size;
+    let Some(anchor) = anchors.iter().copied().find(|anchor| {
+        (0..height).any(|dy| (0..width).any(|dx| !observation.explored(anchor.offset(dx, dy))))
+    }) else {
+        return;
+    };
+    let centre = footprint_centre(kind, anchor);
+    if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger) {
+        ledger.order(Command::Run {
+            units: vec![builder],
+            goal: anchor,
+            queue: false,
+        });
     }
 }
 
@@ -380,10 +408,10 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
         .iter()
         .filter(|unit| armed(unit.kind))
         .filter(|unit| {
-            observation
-                .my_buildings
-                .iter()
-                .any(|building| building.anchor.chebyshev(unit.tile) <= 12)
+            observation.my_buildings.iter().any(|building| {
+                let size = building.kind.base_stats().size;
+                gap(building.anchor, size, unit.tile, (1, 1)) < 12
+            })
         })
         .map(|unit| unit.kind.stats().cost)
         .sum();

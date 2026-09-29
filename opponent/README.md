@@ -16,7 +16,7 @@ node. Paid sites nobody is building get the nearest free Harvester, and idle
 Harvesters go to the reachable worked node with the fewest Harvesters. Every
 idle producer then trains toward the army's needs. Difficulty caps the unit
 orders one decision issues; purchases do not count against that allowance. It
-does not yet attack, defend, scout or expand.
+does not yet attack, defend or scout.
 
 ## Army composition
 
@@ -41,39 +41,54 @@ investment score of the cheapest building that would let it.
 
 Each decision scores its investments: a first Fabricator, Airworks and Crucible,
 another Fabricator or Airworks when all of that kind are busy and income could
-keep one more working, more Reclaimers, and Refinery upgrades. Saturated
-harvesting, time, income, home depletion, army needs and personality set the
-scores. The seat saves for one target at a time. It starts saving only for an
-investment that scores well, keeps it while it still scores, and switches only
-for one that scores clearly higher. Prerequisites come first: saving for
+keep one more working, an expansion Foundry at a scrap field away from every
+start, an Extractor on a free frame on its home ground, more Reclaimers (worth
+more with no expansion left), and Refinery upgrades. Saturated harvesting, time,
+income, home depletion, army needs and personality set the scores.
+
+An expansion site's value weighs the scrap it still holds and its free frames,
+up with greed, against its ground distance from home, how much nearer a hostile
+start it lies, and the danger the seat knows around it, down with greed; home
+depletion raises every expansion. Sites off the seat's home ground, near another
+seat's building or its own Foundry, or failed at every anchor are skipped. An
+Extractor is worth more beside one of the seat's Foundries and less where it has
+seen danger. The seat saves for one target at a time. It starts saving only for
+an investment that scores well, keeps it while it still scores, and switches
+only for one that scores clearly higher. Prerequisites come first: saving for
 Airworks buys a Fabricator.
 
 While saving, a share of the seat's estimated income is protected from ordinary
 spending, up to the next purchase's price. Stance and greed set the share, and
 visible hostile units near the base lower it. Income is estimated from the
 bank's change between decisions plus the seat's own spending. Once the whole
-uncommitted bank covers the next purchase, the seat places it on the first home
-spot its knowledge allows, with the nearest free Harvester, or upgrades the
-building. A purchase missing from the world at the next decision was rejected,
-cancelled or refunded: the seat keeps the target, protects its full price again,
-and skips that spot for a while.
+uncommitted bank covers the next purchase, the seat places it with the nearest
+free Harvester on the first spot its knowledge allows (an expansion site's
+anchors, a frame, or otherwise a home spot) or upgrades the building. If every
+spot is unexplored, the Harvester walks toward one instead. A purchase missing
+from the world at the next decision was rejected, cancelled or refunded: the
+seat keeps the target, protects its full price again, and skips that spot for a
+while.
 
 Placement is checked against the fog-honest observation only: completed
 prerequisites, explored ground, frames, known rock and scrap, known buildings, a
-one-tile gap to the seat's own buildings, visible hostile ground units, its own
-claims, and an open tile beside the footprint. Hidden units and unseen buildings
-never change the verdict; the simulation re-checks on arrival.
+one-tile gap to the seat's own buildings (except for Extractors, which sit where
+the map put their frames), visible hostile ground units, its own claims, and an
+open tile beside the footprint. Ground explored but out of sight is claimed as a
+provisional scaffold. Hidden units and unseen buildings never change the
+verdict; the simulation re-checks on arrival.
 
 ## Boundary
 
 The crate depends on `oxide-sim` and `chassis`, never on `oxide-bot`. It reads
 only its seat's fog-honest `ObservationData` and its own order events, and emits
 ordinary `PlayerCommand`s. Its seats also share one immutable `MapModel`, built
-once per match from the scenario's public map: ground components and the
-authored starts, home building spots, and home scrap. It decides on its
-difficulty's interval and stays silent once the match is decided, after its seat
-surrenders, or while it has no built Foundry. Equal-distance choices are broken
-in a frame anchored on the seat's authored start, so mirrored seats make
+once per match from the scenario's public map: ground components, the authored
+starts and teams, ground distance from every start, home building spots and
+scrap, and expansion sites. Distances between buildings and units are measured
+between whole footprints, so they stay equal for mirrored seats. It decides on
+its difficulty's interval and stays silent once the match is decided, after its
+seat surrenders, or while it has no built Foundry. Equal-distance choices are
+broken in a frame anchored on the seat's authored start, so mirrored seats make
 mirrored choices.
 
 ## Own events

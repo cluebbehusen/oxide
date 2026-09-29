@@ -8,6 +8,7 @@ use oxide_sim::{BuildingId, Command, Event, Faction, Scenario, StallReason, Unit
 use std::sync::Arc;
 
 mod composition;
+mod expansion;
 mod placement;
 mod saving;
 
