@@ -79,6 +79,15 @@ pub(crate) fn gap(a: TilePos, a_size: (i32, i32), b: TilePos, b_size: (i32, i32)
     dx.max(dy)
 }
 
+/// The tiles bordering the footprint of `size` at `anchor`.
+pub(crate) fn ring(anchor: TilePos, size: (i32, i32)) -> impl Iterator<Item = TilePos> {
+    let (width, height) = size;
+    (-1..=height)
+        .flat_map(move |dy| (-1..=width).map(move |dx| (dx, dy)))
+        .filter(move |(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
+        .map(move |(dx, dy)| anchor.offset(dx, dy))
+}
+
 /// A tile's centre in doubled coordinates.
 pub(crate) fn doubled(tile: TilePos) -> (i64, i64) {
     (i64::from(tile.x) * 2 + 1, i64::from(tile.y) * 2 + 1)

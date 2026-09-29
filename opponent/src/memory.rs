@@ -174,6 +174,11 @@ fn recent(list: &[Failure], kind: BuildingKind, anchor: TilePos, now: u64) -> bo
 }
 
 impl SeenUnit {
+    /// The unit's price weighted by how sure the seat is it is still there.
+    pub(crate) fn value(&self, now: u64) -> u64 {
+        u64::from(self.kind.stats().cost) * u64::from(self.confidence(now)) / 1_000
+    }
+
     /// Per-mille confidence that the unit is still roughly where and what it
     /// was.
     pub(crate) fn confidence(&self, now: u64) -> u32 {

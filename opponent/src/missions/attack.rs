@@ -4,8 +4,8 @@
 //! recovers to go again or disband.
 
 use super::{
-    MISSION_CAP, Mission, MissionKind, Missions, Phase, UNIT_CAP, approach, hits, hunt, insert,
-    mine, run, value,
+    AttackPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hits, hunt,
+    insert, mine, run, value,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -51,13 +51,13 @@ const WITHDRAW_TICKS: u64 = 1_200;
 const RECOVER_TICKS: u64 = 1_200;
 
 /// Ticks an attack's `phase` should end within.
-pub(super) fn timeout(phase: Phase) -> u64 {
+pub(super) fn timeout(phase: AttackPhase) -> u64 {
     match phase {
-        Phase::Gather => GATHER_TICKS,
-        Phase::Travel => TRAVEL_TICKS,
-        Phase::Engage => ENGAGE_TICKS,
-        Phase::Withdraw => WITHDRAW_TICKS,
-        Phase::Recover => RECOVER_TICKS,
+        AttackPhase::Gather => GATHER_TICKS,
+        AttackPhase::Travel => TRAVEL_TICKS,
+        AttackPhase::Engage { .. } => ENGAGE_TICKS,
+        AttackPhase::Withdraw => WITHDRAW_TICKS,
+        AttackPhase::Recover => RECOVER_TICKS,
     }
 }
 
@@ -72,8 +72,8 @@ struct Target {
 }
 
 impl Target {
-    fn kind(self) -> MissionKind {
-        MissionKind::Attack {
+    fn objective(self) -> Objective {
+        Objective {
             owner: self.owner,
             building: self.building,
             anchor: self.anchor,
@@ -91,6 +91,27 @@ struct Plan<'a> {
     margin: u64,
 }
 
+impl Mission {
+    /// Moves an attack to `phase` against `target` from `now`, sending its
+    /// members to `goal` when one is given.
+    fn attack_phase(
+        &mut self,
+        target: Target,
+        phase: AttackPhase,
+        now: u64,
+        goal: Option<TilePos>,
+    ) {
+        self.task = Task::Attack {
+            target: target.objective(),
+            phase,
+        };
+        self.since = now;
+        if let Some(goal) = goal {
+            self.goal = goal;
+        }
+    }
+}
+
 impl Missions {
     /// Launches an attack when the free army can beat a target's known
     /// defense now, or advances the one under way.
@@ -105,16 +126,16 @@ impl Missions {
     ) {
         let now = observation.tick;
         let minimum = minimum(profile.stance);
-        let owned = self.owned();
-        let fit: Vec<&UnitObs> = observation
-            .my_units
-            .iter()
-            .filter(|unit| owned.binary_search(&unit.id).is_err() && eligible(unit, FIT))
+        let fit: Vec<&UnitObs> = self
+            .available(observation, false)
+            .into_iter()
+            .filter_map(|id| mine(observation, id))
+            .filter(|unit| eligible(unit, FIT))
             .collect();
         let index = self
             .list
             .iter()
-            .position(|mission| matches!(mission.kind, MissionKind::Attack { .. }));
+            .position(|mission| matches!(mission.task, Task::Attack { .. }));
         let free: u64 = fit.iter().map(|unit| value(unit)).sum();
         let mut producers = observation
             .my_buildings
@@ -176,12 +197,13 @@ impl Missions {
         if ledger.order(hunt(recruits.clone(), rally)) {
             self.list.push(Mission {
                 id: self.next,
-                kind: target.kind(),
-                phase: Phase::Gather,
                 since: plan.observation.tick,
                 units: recruits,
                 goal: rally,
-                focus: None,
+                task: Task::Attack {
+                    target: target.objective(),
+                    phase: AttackPhase::Gather,
+                },
             });
             self.next += 1;
             self.waiting = None;
@@ -200,18 +222,23 @@ impl Missions {
         let observation = plan.observation;
         let now = observation.tick;
         let mission = &self.list[index];
-        let MissionKind::Attack {
-            owner,
-            building,
-            anchor,
-        } = mission.kind
+        let Task::Attack {
+            target:
+                Objective {
+                    owner,
+                    building,
+                    anchor,
+                },
+            phase,
+        } = mission.task
         else {
-            unreachable!("the attack mission's kind");
+            unreachable!("the attack mission's task");
         };
         let rally = plan.rally(owner)?;
-        let phase = mission.phase;
+        let engaged = matches!(phase, AttackPhase::Engage { .. });
+        let regrouping = matches!(phase, AttackPhase::Gather | AttackPhase::Recover);
 
-        if phase != Phase::Engage {
+        if !engaged {
             let wounded: Vec<UnitId> = mission
                 .units
                 .iter()
@@ -223,7 +250,7 @@ impl Missions {
                 if !self
                     .list
                     .iter()
-                    .any(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
+                    .any(|mission| matches!(mission.task, Task::Attack { .. }))
                 {
                     return None;
                 }
@@ -232,10 +259,10 @@ impl Missions {
         let index = self
             .list
             .iter()
-            .position(|mission| matches!(mission.kind, MissionKind::Attack { .. }))?;
+            .position(|mission| matches!(mission.task, Task::Attack { .. }))?;
 
         let current = plan.target(owner, building, anchor);
-        let target = if matches!(phase, Phase::Gather | Phase::Recover) {
+        let target = if regrouping {
             let current =
                 current.filter(|_| !plan.memory.abandoned(building, anchor, observation.tick));
             match (current, plan.best(None)) {
@@ -246,13 +273,15 @@ impl Missions {
             current
         };
         let Some(target) = target else {
-            if matches!(phase, Phase::Gather | Phase::Recover) {
+            if regrouping {
                 self.list.remove(index);
                 return None;
             }
             let mission = &mut self.list[index];
             if ledger.order(run(mission.units.clone(), rally)) {
-                mission.phase = Phase::Recover;
+                if let Task::Attack { phase, .. } = &mut mission.task {
+                    *phase = AttackPhase::Recover;
+                }
                 mission.since = now;
                 mission.goal = rally;
             }
@@ -261,7 +290,10 @@ impl Missions {
         let need = plan.need(target);
         let component = plan.map.component(target.approach);
         let mission = &mut self.list[index];
-        mission.kind = target.kind();
+        mission.task = Task::Attack {
+            target: target.objective(),
+            phase,
+        };
         let members: Vec<&UnitObs> = mission
             .units
             .iter()
@@ -272,7 +304,7 @@ impl Missions {
         let age = now - mission.since;
 
         match phase {
-            Phase::Gather | Phase::Recover => {
+            AttackPhase::Gather | AttackPhase::Recover => {
                 let room = UNIT_CAP - mission.units.len();
                 let fit: Vec<&UnitObs> = fit
                     .iter()
@@ -296,40 +328,38 @@ impl Missions {
                 let ready = striking_strength >= need;
                 if !recruited && (all_idle || age >= timeout(phase)) && ready {
                     if ledger.order(hunt(mission.units.clone(), target.approach)) {
-                        mission.phase = Phase::Travel;
-                        mission.since = now;
-                        mission.goal = target.approach;
+                        mission.attack_phase(
+                            target,
+                            AttackPhase::Travel,
+                            now,
+                            Some(target.approach),
+                        );
                     }
                 } else if age >= timeout(phase) {
                     self.list.remove(index);
                 }
                 None
             }
-            Phase::Travel => {
+            AttackPhase::Travel => {
                 let arrived = members
                     .iter()
                     .any(|unit| unit.tile.chebyshev(target.approach) <= CONTACT_TILES);
                 if arrived || contact(observation, &members) {
-                    mission.phase = Phase::Engage;
-                    mission.since = now;
+                    mission.attack_phase(target, AttackPhase::Engage { focus: None }, now, None);
                     return None;
                 }
                 if (all_idle || age >= TRAVEL_TICKS)
                     && ledger.order(run(mission.units.clone(), rally))
                 {
-                    mission.phase = Phase::Recover;
-                    mission.since = now;
-                    mission.goal = rally;
+                    mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
                     return Some((target.building, target.anchor));
                 }
                 None
             }
-            Phase::Engage => {
+            AttackPhase::Engage { .. } => {
                 if strength < plan.opposition(&members) {
                     if ledger.order(run(mission.units.clone(), rally)) {
-                        mission.phase = Phase::Withdraw;
-                        mission.since = now;
-                        mission.goal = rally;
+                        mission.attack_phase(target, AttackPhase::Withdraw, now, Some(rally));
                         return Some((target.building, target.anchor));
                     }
                     return None;
@@ -345,27 +375,21 @@ impl Missions {
                 });
                 if let Some(next) = next {
                     if ledger.order(hunt(mission.units.clone(), next.approach)) {
-                        mission.kind = next.kind();
-                        mission.phase = Phase::Travel;
-                        mission.since = now;
-                        mission.goal = next.approach;
+                        mission.attack_phase(next, AttackPhase::Travel, now, Some(next.approach));
                     }
                     return None;
                 }
                 if ledger.order(run(mission.units.clone(), rally)) {
-                    mission.phase = Phase::Recover;
-                    mission.since = now;
-                    mission.goal = rally;
+                    mission.attack_phase(target, AttackPhase::Recover, now, Some(rally));
                     if standing {
                         return Some((target.building, target.anchor));
                     }
                 }
                 None
             }
-            Phase::Withdraw => {
+            AttackPhase::Withdraw => {
                 if all_idle || age >= WITHDRAW_TICKS {
-                    mission.phase = Phase::Recover;
-                    mission.since = now;
+                    mission.attack_phase(target, AttackPhase::Recover, now, None);
                 }
                 None
             }
@@ -458,7 +482,7 @@ impl Plan<'_> {
             .iter()
             .filter(|unit| !unit.kind.stats().weapons.is_empty())
             .filter(|unit| unit.tile.chebyshev(target.approach) <= DEFENSE_TILES)
-            .map(|unit| u64::from(unit.kind.stats().cost) * u64::from(unit.confidence(now)) / 1_000)
+            .map(|unit| unit.value(now))
             .sum();
         let buildings: u64 = self
             .observation
@@ -500,7 +524,7 @@ impl Plan<'_> {
             .units()
             .iter()
             .filter(|unit| !unit.kind.stats().weapons.is_empty() && near(unit.tile))
-            .map(|unit| u64::from(unit.kind.stats().cost) * u64::from(unit.confidence(now)) / 1_000)
+            .map(|unit| unit.value(now))
             .sum();
         let buildings: u64 = self
             .observation

@@ -120,8 +120,7 @@ fn a_recovering_defense_lends_its_units_to_another_foundry() {
         "next": 1,
         "list": [{
             "id": 0,
-            "kind": {"mission": "defend", "asset": home.0},
-            "phase": "recover",
+            "task": {"task": "defend", "asset": home.0, "phase": "recover"},
             "since": 12,
             "units": defenders,
             "goal": {"x": 9, "y": 5},

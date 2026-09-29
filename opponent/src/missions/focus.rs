@@ -2,7 +2,7 @@
 //! all already reach one enemy shoot the weakest such enemy together. Nobody
 //! chases, so focusing never pulls a member out of position.
 
-use super::{Missions, Phase, hunt, mine};
+use super::{Missions, hunt, mine};
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled};
 use oxide_sim::observation::{ObservationData, UnitObs};
@@ -22,26 +22,20 @@ impl Missions {
         difficulty: BotDifficulty,
         ledger: &mut Ledger,
     ) {
-        for mission in &mut self.list {
-            if mission.phase != Phase::Engage {
-                mission.focus = None;
-            }
-        }
         if !matches!(difficulty, BotDifficulty::Veteran | BotDifficulty::Prime) {
             return;
         }
-        for mission in self
-            .list
-            .iter_mut()
-            .filter(|mission| mission.phase == Phase::Engage)
-        {
+        for mission in &mut self.list {
             let members: Vec<&UnitObs> = mission
                 .units
                 .iter()
                 .filter_map(|id| mine(observation, *id))
                 .collect();
+            let Some(focus) = mission.task.focus() else {
+                continue;
+            };
             let legal = |enemy: &UnitObs| !shooters(&members, enemy).is_empty();
-            let kept = mission.focus.and_then(|id| {
+            let kept = focus.and_then(|id| {
                 observation
                     .enemy_units
                     .iter()
@@ -65,13 +59,13 @@ impl Missions {
                         queue: false,
                     };
                     if ledger.order(attack) {
-                        mission.focus = Some(enemy.id);
+                        *focus = Some(enemy.id);
                     }
                 }
-                None if mission.focus.is_some()
+                None if focus.is_some()
                     && ledger.order(hunt(mission.units.clone(), mission.goal)) =>
                 {
-                    mission.focus = None;
+                    *focus = None;
                 }
                 None => {}
             }

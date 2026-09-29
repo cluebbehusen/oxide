@@ -451,7 +451,7 @@ fn a_scaffold_stays_pending_until_its_ground_is_confirmed() {
     let mut saving = Saving::default();
     saving.settle(&observation, &candidates, 500, 0, &mut memory);
     let anchor = TilePos::new(9, 8);
-    saving.attempted(Step::Build(BuildingKind::Fabricator), anchor, 0);
+    saving.attempted(Step::Build(BuildingKind::Fabricator), anchor);
 
     let mut scaffold = observation.my_buildings[0].clone();
     scaffold.id = BuildingId(99);

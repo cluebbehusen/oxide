@@ -175,7 +175,7 @@ fn a_stalled_attack_gives_up_its_target_for_a_while() {
     let launch = opponent.act(&state, &mut OwnEvents::default());
     let (members, rally) = hunts(&launch).remove(0);
     let mut json = serde_json::to_value(opponent.checkpoint()).unwrap();
-    json["missions"]["list"][0]["phase"] = "travel".into();
+    json["missions"]["list"][0]["task"]["phase"] = "travel".into();
 
     let mut state = state;
     advance_to(&mut state, 12, &[]);
@@ -331,7 +331,8 @@ fn checkpoints_reject_impossible_attacks() {
     );
     assert_eq!(
         rejected(&|missions| {
-            missions["list"][0]["kind"]["anchor"] = serde_json::json!({"x": i32::MIN, "y": 0});
+            missions["list"][0]["task"]["target"]["anchor"] =
+                serde_json::json!({"x": i32::MIN, "y": 0});
         }),
         "checkpoint mission could not have been recorded",
         "a target off the map"
@@ -346,11 +347,12 @@ fn checkpoints_reject_impossible_attacks() {
         }),
         "checkpoint mission could not have been recorded"
     );
-    assert_eq!(
-        rejected(&|missions| {
-            missions["list"][0]["kind"] = serde_json::json!({"mission": "defend", "asset": 0});
-        }),
-        "checkpoint mission is in a phase its kind lacks"
+    let mut defend_gathering = json.clone();
+    defend_gathering["missions"]["list"][0]["task"] =
+        serde_json::json!({"task": "defend", "asset": 0, "phase": "gather"});
+    assert!(
+        serde_json::from_value::<Checkpoint>(defend_gathering).is_err(),
+        "a defense has no gather phase"
     );
 }
 
@@ -408,8 +410,7 @@ fn the_mission_cap_holds_back_an_attack() {
             let id = at(&state, 6 + index % 8, 14 + index / 8);
             serde_json::json!({
                 "id": index,
-                "kind": {"mission": "defend", "asset": home.0},
-                "phase": "engage",
+                "task": {"task": "defend", "asset": home.0, "phase": {"engage": {"focus": null}}},
                 "since": 0,
                 "units": [id],
                 "goal": {"x": 6, "y": 11},
@@ -455,8 +456,11 @@ fn a_travelling_attack_in_contact_keeps_its_units_from_a_defense() {
         "next": 1,
         "list": [{
             "id": 0,
-            "kind": {"mission": "attack", "owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
-            "phase": "travel",
+            "task": {
+                "task": "attack",
+                "target": {"owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
+                "phase": "travel",
+            },
             "since": 0,
             "units": members,
             "goal": {"x": 42, "y": 11},
@@ -488,8 +492,11 @@ fn reinforcements_gather_before_the_attack_sets_out() {
         "next": 1,
         "list": [{
             "id": 0,
-            "kind": {"mission": "attack", "owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
-            "phase": "gather",
+            "task": {
+                "task": "attack",
+                "target": {"owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
+                "phase": "gather",
+            },
             "since": 0,
             "units": gathered,
             "goal": {"x": 11, "y": 11},
