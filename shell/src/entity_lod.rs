@@ -45,6 +45,30 @@ fn is_entity_source(name: &str) -> bool {
                     .is_some_and(|rest| rest.starts_with('_'))
         })
 }
+fn entity_sources(manifest: &HashMap<String, [f32; 4]>) -> BTreeSet<Source> {
+    manifest
+        .iter()
+        .filter(|(name, _)| {
+            if !is_entity_source(name) {
+                return false;
+            }
+            let Some((body, pose)) = name.rsplit_once('_') else {
+                return true;
+            };
+            if !pose.starts_with("move") && !pose.starts_with("action") {
+                return true;
+            }
+            let Some((stem, faction)) = body.rsplit_once('_') else {
+                return true;
+            };
+            // Layered units draw their hull and mount; only the complete idle
+            // sprite remains in use for portraits. Keep full poses for old atlases.
+            !manifest.contains_key(&format!("rig_{stem}_hull_{faction}"))
+        })
+        .map(|(_, row)| row.map(|value| value as u32))
+        .collect()
+}
+
 fn lod_mix(source: Vec2, physical: Vec2) -> (usize, usize, f32) {
     let ratio = (source.x / physical.x.max(1.0)).max(source.y / physical.y.max(1.0));
     let lod = (ratio.log2() - 0.4).clamp(0.0, 3.0);
@@ -78,11 +102,7 @@ impl EntityLod {
         manifest: &HashMap<String, [f32; 4]>,
         page_height: f32,
     ) -> Result<Self> {
-        let sources: BTreeSet<Source> = manifest
-            .iter()
-            .filter(|(name, _)| is_entity_source(name))
-            .map(|(_, row)| row.map(|v| v as u32))
-            .collect();
+        let sources = entity_sources(manifest);
         let count = sources
             .iter()
             .map(|k| k[1] as usize / page_height as usize + 1)
@@ -370,14 +390,35 @@ fn reduce(image: &Image, source: Source, factor: usize) -> Image {
 mod tests {
     use super::*;
     #[test]
+    fn layered_units_omit_unused_full_poses_but_keep_portraits_and_fallbacks() {
+        let mut manifest = HashMap::from([
+            ("wisp_ferrous".to_owned(), [0.0, 0.0, 128.0, 128.0]),
+            ("wisp_ferrous_move1".to_owned(), [128.0, 0.0, 128.0, 128.0]),
+            (
+                "wisp_ferrous_action2".to_owned(),
+                [256.0, 0.0, 128.0, 128.0],
+            ),
+        ]);
+        assert_eq!(entity_sources(&manifest).len(), 3);
+        manifest.insert(
+            "rig_wisp_hull_ferrous".to_owned(),
+            [384.0, 0.0, 128.0, 128.0],
+        );
+        manifest.insert(
+            "rig_wisp_mount_ferrous_action2".to_owned(),
+            [512.0, 0.0, 128.0, 128.0],
+        );
+        assert_eq!(
+            entity_sources(&manifest),
+            BTreeSet::from([[0, 0, 128, 128], [384, 0, 128, 128], [512, 0, 128, 128],])
+        );
+    }
+
+    #[test]
     fn production_mips_fit_seven_pages_without_discarding_levels() {
         let manifest: HashMap<String, [f32; 4]> =
             serde_json::from_str(include_str!("../../assets/sprites/atlas.json")).unwrap();
-        let sources = manifest
-            .iter()
-            .filter(|(name, _)| is_entity_source(name))
-            .map(|(_, row)| row.map(|v| v as u32))
-            .collect();
+        let sources = entity_sources(&manifest);
         let order = packing_order(&sources);
         assert_eq!(order.len(), sources.len() * LEVELS.len());
         let mut packer = Packer::new();
@@ -391,7 +432,11 @@ mod tests {
             assert!(region.rect.right() < PAGE as f32);
             assert!(region.rect.bottom() < PAGE as f32);
         }
-        assert_eq!(packer.images.len(), 7);
+        assert!(
+            packer.images.len() <= 7,
+            "{} mip pages exceed the seven-page budget",
+            packer.images.len()
+        );
     }
 
     #[test]

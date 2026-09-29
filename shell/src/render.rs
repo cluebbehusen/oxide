@@ -1038,7 +1038,11 @@ fn draw_unit_pass(
                     DrawTextureParams {
                         dest_size: Some(body_size),
                         source: Some(source),
-                        rotation,
+                        rotation: if unit.kind == oxide_sim::UnitKind::Skyhook {
+                            body_rotation
+                        } else {
+                            rotation
+                        },
                         ..Default::default()
                     },
                     zoom,

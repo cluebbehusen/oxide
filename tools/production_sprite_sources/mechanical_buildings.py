@@ -117,7 +117,7 @@ def foundry(faction, work=0):
     box(d, (57, 74, 73, 90), DARK, 2)
     for x in (47, 81):
         box(d, (x, 73, x + 3, 90), BRASS, 1)
-    y = {0: 42, 1: 51, 2: 62, 3: 76, 4: 54}[work]
+    y = (42, 48, 51, 56, 62, 68, 73, 76, 76, 73, 67, 59, 52)[work]
     box(d, (31, y - 5, 99, y + 7), VOID, 2)
     box(d, (34, y - 3, 96, y + 4), paint, 1)
     line(d, [(35, y - 3), (95, y - 3)], EDGE)
@@ -125,7 +125,7 @@ def foundry(faction, work=0):
         box(d, (x, y - 7, x + 5, y + 10), IRON, 1)
     plate(d, (57, y - 7, 74, y + 14), IRON, 3)
     box(d, (61, y + 8, 70, y + 19), BRASS, 1)
-    if work in (2, 3):
+    if 4 <= work <= 8:
         line(d, [(65, y + 19), (65, y + 23)], HOT, 2)
     box(d, (47, 108, 83, 119), VOID, 1)
     for x in (48, 80):
@@ -277,7 +277,7 @@ def crucible(faction, work=0):
     circle(d, (40, 44, 89, 94), DEEP)
     circle(d, (47, 51, 82, 87), VOID)
     # Heavy segmented lid retracts to expose a thin, contained hot seam.
-    opening = {0: 0, 1: 2, 2: 5, 3: 2}[work]
+    opening = (0, 2, 5, 2, 0)[work]
     for side in (-1, 1):
         x = 64 + side * (3 + opening)
         pts = [

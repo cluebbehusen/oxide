@@ -144,12 +144,12 @@ def buzzard(faction, move=0, action=0):
     return base
 
 
-def wisp(faction, move=0, action=0):
+def wisp(faction, move=0, action=0, part=None):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for i, (x, y) in enumerate(((34, 38), (94, 38), (37, 89), (91, 89))):
         strut(d, (64, 61 if y < 64 else 75), (x, y), 3)
-        fan(d, x, y, 12, (move or action) + i % 2, paint, False)
+        fan(d, x, y, 12, move + i % 2, paint, False)
     panel(
         d, [(54, 46), (64, 38), (74, 46), (75, 85), (68, 92), (60, 92), (53, 85)], DARK
     )
@@ -157,9 +157,14 @@ def wisp(faction, move=0, action=0):
     box(d, (60, 72, 68, 81), DEEP, 1)
     sensor(d, 64, 59, paint)
     base = finish(im)
+    if part == "hull":
+        return base
     im, d = canvas()
     gun(d, 64, 34, 20, 5, action)
-    base.alpha_composite(finish(im, False))
+    mount = finish(im, False)
+    if part == "mount":
+        return mount
+    base.alpha_composite(mount)
     return base
 
 
@@ -316,12 +321,16 @@ def sylph(faction, move=0, action=0):
     return base
 
 
-def skyhook(faction, move=0, action=0):
+def skyhook(faction, move=0, action=0, part=None):
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     for x in (25, 103):
         strut(d, (64, 43), (x, 34), 9)
-        fan(d, x, 34, 22, move or action, paint)
+        fan(d, x, 34, 22, move, paint)
+    if part == "hull":
+        return finish(im)
+    if part == "mount":
+        im, d = canvas()
     panel(
         d,
         [
