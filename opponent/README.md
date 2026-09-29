@@ -46,7 +46,8 @@ rather than after the retreating enemy. With no threat left the mission
 recovers, lending its units to any other threatened Foundry, and after 120 quiet
 ticks it lets them go where they stand. Once its own Foundries are answered, an
 ally's Foundry under ground attack gets a defend mission of its own from the
-units left free; an ally's shortfall is never the seat's emergency.
+units left free, which lends them back whenever the seat's own Foundries need
+them; an ally's shortfall is never the seat's emergency.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any

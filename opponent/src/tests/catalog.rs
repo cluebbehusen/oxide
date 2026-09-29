@@ -3,7 +3,7 @@
 //! them gets its turn; the rest are here.
 
 use super::*;
-use crate::investments::{Investment, Situation, candidates};
+use crate::investments::{ADOPT, Investment, Situation, candidates};
 use crate::memory::Memory;
 use crate::profile::PersonalityTraits;
 use oxide_sim::observation::ObservationData;
@@ -12,8 +12,9 @@ fn building(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
     BuildingSpec { player, kind, x, y }
 }
 
-/// What West may invest in on `scenario` at `tick`, with its economy up, no
-/// army to speak of, and every trait high.
+/// What West would save for on `scenario` at `tick` once it scored best,
+/// with its economy up, no army to speak of, and every trait high: every
+/// investment that scores enough to be adopted.
 fn offered(scenario: &Scenario, state: &State, tick: u64) -> Vec<Investment> {
     let mut observation = ObservationData::fog_honest(state, PlayerId(0));
     observation.tick = tick;
@@ -40,6 +41,7 @@ fn offered(scenario: &Scenario, state: &State, tick: u64) -> Vec<Investment> {
     };
     candidates(&situation)
         .into_iter()
+        .filter(|candidate| candidate.score >= ADOPT)
         .map(|candidate| candidate.investment)
         .collect()
 }
@@ -113,8 +115,13 @@ fn every_building_and_upgrade_is_bought_somewhere() {
     offer(&frontier, &state, 3_000);
 
     // Reclaimers, Refineries, a Barricade in front of the Turret, Scuttle
-    // Charges, and the base-tier upgrades once a Fabricator stands.
+    // Charges, and the base-tier upgrades once a Fabricator stands, with an
+    // enemy in sight beyond the defenses' reach.
     let mut built = home.clone();
+    built.units.extend([
+        unit(1, UnitKind::Sentinel, 18, 8),
+        unit(0, UnitKind::Kestrel, 17, 8),
+    ]);
     built.buildings.extend([
         building(0, BuildingKind::Fabricator, 3, 1),
         building(0, BuildingKind::Reclaimer, 1, 9),

@@ -1,7 +1,7 @@
 //! With several enemies, attacks and strikes go after one of them at a time.
 
 use super::{Missions, Objective, Task, objectives, standing};
-use crate::frame::{centre_distance, footprint_centre, gap};
+use crate::frame::{HomeFrame, centre_distance, footprint_centre, gap};
 use crate::map::MapModel;
 use crate::profile::PersonalityTraits;
 use oxide_sim::observation::ObservationData;
@@ -27,7 +27,9 @@ impl Missions {
     /// the one pressing it hardest, then the nearest, less the army it shows,
     /// with guile favoring a small economy, and a bonus for the owner of the
     /// current attack or strike target so the seat does not flip between
-    /// enemies. `None` with one enemy or none.
+    /// enemies. Equal enemies go to the one whose nearest building ranks
+    /// first in the seat's frame, so mirrored seats choose mirrored enemies.
+    /// `None` with one enemy or none.
     pub(crate) fn rival(
         &self,
         observation: &ObservationData,
@@ -44,7 +46,20 @@ impl Missions {
         if owners.len() < 2 {
             return None;
         }
+        let frame = HomeFrame::of(observation, map)?;
         let home = footprint_centre(BuildingKind::Foundry, map.start(observation.me)?);
+        let nearest = |owner: PlayerId| {
+            targets
+                .iter()
+                .filter(|target| target.owner == owner)
+                .map(|target| footprint_centre(target.building, target.anchor))
+                .min_by_key(|centre| {
+                    (
+                        centre_distance(home, *centre),
+                        frame.rank(frame.home, *centre),
+                    )
+                })
+        };
         let current = self.list.iter().find_map(|mission| match mission.task {
             Task::Attack { target, .. } | Task::Strike { target, .. } => Some(target.owner),
             _ => None,
@@ -82,20 +97,16 @@ impl Missions {
                         )
                 })
                 .count() as i64;
-            let distance = targets
-                .iter()
-                .filter(|target| target.owner == owner)
-                .map(|target| {
-                    centre_distance(home, footprint_centre(target.building, target.anchor)) as i64
-                })
-                .min()
-                .unwrap_or(0);
+            let distance = nearest(owner).map_or(0, |centre| centre_distance(home, centre) as i64);
             let steady = if current == Some(owner) { STEADY } else { 0 };
             4 * pressure - presence - TILE * distance - ECONOMY * economy * i64::from(traits.guile)
                 + steady
         };
-        owners
-            .into_iter()
-            .max_by_key(|owner| (score(*owner), Reverse(owner.0)))
+        owners.into_iter().max_by_key(|owner| {
+            (
+                score(*owner),
+                nearest(*owner).map(|centre| Reverse(frame.rank(frame.home, centre))),
+            )
+        })
     }
 }

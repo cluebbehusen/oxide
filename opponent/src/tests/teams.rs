@@ -136,3 +136,97 @@ fn a_duel_has_no_rival() {
         None
     );
 }
+
+#[test]
+fn an_ally_s_defenders_come_home_when_home_is_attacked() {
+    let mut scenario = trio([Some(0), Some(0), Some(1)]);
+    scenario.units.extend([
+        unit(2, UnitKind::Sentinel, 4, 14),
+        unit(2, UnitKind::Warden, 6, 3),
+    ]);
+    let mut state = scenario.build().unwrap();
+    let mut relievers: Vec<UnitId> = [(8, 9), (8, 10), (9, 9), (9, 10)]
+        .into_iter()
+        .map(|(x, y)| at(&state, x, y))
+        .collect();
+    relievers.sort_unstable();
+    let ally = foundries(&state, PlayerId(1))[0];
+    let own = foundries(&state, PlayerId(0))[0];
+    advance_to(&mut state, 12, &[]);
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["missions"] = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {"task": "defend", "asset": ally.0, "phase": {"engage": {"focus": null}}},
+            "since": 0,
+            "units": relievers,
+            "goal": {"x": 4, "y": 14},
+        }],
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    assert!(
+        defends(&trace.unwrap().missions).contains(&own),
+        "{commands:?}"
+    );
+    assert!(
+        hunts(&commands)
+            .iter()
+            .any(|(units, _)| units.iter().any(|unit| relievers.contains(unit))),
+        "the ally's defenders are sent home: {commands:?}"
+    );
+}
+
+/// Four starts in the corners of a square field.
+const CORNERS: [&str; 24] = [
+    "########################",
+    "#......................#",
+    "#......................#",
+    "#..1...............2...#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "#..3...............4...#",
+    "#......................#",
+    "#......................#",
+    "#......................#",
+    "########################",
+];
+
+#[test]
+fn mirrored_seats_pick_mirrored_rivals_among_equals() {
+    let mut scenario = trio([None, None, None]);
+    scenario.map = CORNERS.map(str::to_owned).to_vec();
+    scenario.players.push(PlayerSpec {
+        name: "far".into(),
+        ..scenario.players[0].clone()
+    });
+    scenario.units.clear();
+    let state = scenario.build().unwrap();
+    let model = map(&scenario);
+    let rival = |seat: u8| {
+        let observation = ObservationData::fog_honest(&state, PlayerId(seat));
+        Missions::default().rival(&observation, &model, traits(50))
+    };
+    let mirrored = |seat: PlayerId| PlayerId(3 - seat.0);
+    assert!(
+        matches!(rival(0), Some(PlayerId(1 | 2))),
+        "premise: a neighbour, not the far corner"
+    );
+    assert_eq!(rival(3), rival(0).map(mirrored));
+    assert_eq!(rival(2), rival(1).map(mirrored));
+}

@@ -375,14 +375,22 @@ impl Task {
 
 impl Mission {
     /// Whether the mission keeps its units from a defense: everything but a
-    /// recovering defense, and an attack only once it is fighting. A
+    /// recovering defense or one of an ally's buildings, and an attack only
+    /// once it is fighting. A
     /// travelling attack may have met the enemy since the last decision. A
     /// scout keeps its scout, a lift its units once it has left the ground,
     /// and a strike or raid its units once they have set out and until they
     /// turn back.
     fn holds(&self, observation: &ObservationData) -> bool {
         match self.task {
-            Task::Defend { phase, .. } => phase != DefendPhase::Recover,
+            // An ally's defense lends its units back to the seat's own.
+            Task::Defend { asset, phase } => {
+                phase != DefendPhase::Recover
+                    && observation
+                        .my_buildings
+                        .iter()
+                        .any(|building| building.id == asset)
+            }
             Task::Attack { phase, .. } => match phase {
                 AttackPhase::Engage { .. } => true,
                 AttackPhase::Travel => {
