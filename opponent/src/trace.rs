@@ -3,6 +3,7 @@
 
 use crate::OwnEvent;
 use crate::investments::{Investment, Step};
+use crate::missions::MissionStatus;
 use chassis::grid::TilePos;
 use oxide_sim::{BuildingId, BuildingKind, PlayerId, UnitKind};
 use serde::Serialize;
@@ -30,6 +31,8 @@ pub struct Trace {
     pub target: Option<SavingTarget>,
     /// Scrap held back from ordinary spending after the decision.
     pub protected: u32,
+    /// Missions after the decision, by id.
+    pub missions: Vec<MissionStatus>,
 }
 
 /// One purchase.

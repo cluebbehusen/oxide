@@ -51,10 +51,11 @@ records as the frozen reference it compares against.
   batch, then rerun it under a fresh candidate.
 - Evaluation rows also record each seat's team and elimination tick, the
   producing build and reference digest, omniscient failure detectors (repeated
-  impossible orders, abandoned paid construction, starved production) with
-  per-producer idle diagnostics, and income against a saturated-economy
-  estimate. These are QA evidence computed from authoritative state; they never
-  reach a controller.
+  impossible orders, abandoned paid construction, starved production, and
+  `oxide-opponent` missions stuck in one phase) with per-producer idle
+  diagnostics, and income against a saturated-economy estimate. These are QA
+  evidence computed from authoritative state and the missions a controller
+  reports; they never reach a controller.
 - `bot_matrix` expands a manifest from `evaluation/` into head-to-head pairs of
   `oxide-opponent` against `oxide-bot`, both sides sharing one personality seed,
   plus one `oxide-bot` mirror leg per cell. Mirror rows are cached under the

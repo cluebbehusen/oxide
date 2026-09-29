@@ -10,6 +10,7 @@ mod income;
 mod investments;
 mod map;
 mod memory;
+mod missions;
 mod placement;
 mod profile;
 mod saving;
@@ -20,6 +21,7 @@ pub use checkpoint::Checkpoint;
 pub use events::{OwnEvent, OwnEvents};
 pub use investments::{Investment, Step};
 pub use map::MapModel;
+pub use missions::{MissionKind, MissionStatus, Phase};
 pub use profile::{PersonalityTraits, ResolvedProfile, Specialty};
 pub use trace::{NextPurchase, Purchase, SavingTarget, Trace};
 
@@ -34,7 +36,7 @@ pub struct Opponent {
     player: PlayerId,
     profile: ResolvedProfile,
     map: Arc<MapModel>,
-    persistent: decision::Persistent,
+    persistent: Box<decision::Persistent>,
 }
 
 impl Opponent {
@@ -45,13 +47,18 @@ impl Opponent {
             player,
             profile: ResolvedProfile::resolve(config),
             map,
-            persistent: decision::Persistent::default(),
+            persistent: Box::default(),
         }
     }
 
     /// Scrap the seat is holding back for its saving target.
     pub fn protected_scrap(&self) -> u32 {
         self.persistent.saving.protected()
+    }
+
+    /// The seat's missions as its last decision left them.
+    pub fn missions(&self) -> Vec<MissionStatus> {
+        self.persistent.missions.statuses()
     }
 
     /// The seat this controller drives.
@@ -101,6 +108,7 @@ impl Opponent {
             allowance: decision.allowance,
             target: decision.target,
             protected: decision.protected,
+            missions: self.missions(),
         };
         (decision.commands, Some(trace))
     }
