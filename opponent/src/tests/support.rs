@@ -168,6 +168,23 @@ fn a_worker_away_from_home_runs_from_an_armed_enemy() {
 }
 
 #[test]
+fn a_worker_away_from_home_runs_from_artillery_in_range() {
+    let mut scenario = arena(0);
+    scenario.units.extend([
+        harvester(0, 15, 9),
+        unit(1, UnitKind::Bombard, 15, 1),
+        unit(0, UnitKind::Kestrel, 15, 3),
+    ]);
+    let state = scenario.build().unwrap();
+    let worker = at(&state, 15, 9);
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    assert!(
+        runs(&commands).iter().any(|(units, _)| *units == [worker]),
+        "a Bombard eight tiles off still reaches it: {commands:?}"
+    );
+}
+
+#[test]
 fn a_wounded_army_brings_a_tender() {
     let tenders = |hp: u32| {
         let (mut scenario, ids) = squad(400);

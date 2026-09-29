@@ -17,7 +17,7 @@ use crate::workers;
 use chassis::grid::TilePos;
 use oxide_sim::BuildingKind;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{BuildingStats, Domain, FOUNDRY_REPAIR_PRICE, UnitStats};
+use oxide_sim::stats::{BuildingStats, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS, UnitStats};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -53,9 +53,6 @@ const OBSTACLE_POINTS: u64 = 16;
 
 /// Empty tiles between a building and a defense guarding it.
 const STANDOFF: [i32; 2] = [2, 3];
-
-/// Empty tiles between a Repair Bay and what its aura reaches.
-const BAY_REACH: i32 = 3;
 
 /// Scrap of missing health a Repair Bay's aura must reach to be worth
 /// building.
@@ -499,7 +496,16 @@ impl<'a> Guard<'a> {
             .filter(|unit| unit.kind.stats().domain == Domain::Ground)
             .map(|unit| {
                 let stats = unit.kind.stats();
-                (unit.tile, (1, 1), stats.cost, unit.hp, stats.max_hp)
+                let (x, y) = doubled(unit.tile);
+                (
+                    Span {
+                        x: (x, x),
+                        y: (y, y),
+                    },
+                    stats.cost,
+                    unit.hp,
+                    stats.max_hp,
+                )
             });
         let buildings = observation
             .my_buildings
@@ -513,35 +519,30 @@ impl<'a> Guard<'a> {
                     .construction
                     .as_ref()
                     .map_or(FOUNDRY_REPAIR_PRICE, |construction| construction.cost);
-                let size = building.kind.base_stats().size;
-                (building.anchor, size, price, building.hp, stats.max_hp)
+                let span = Span::of(building.kind.base_stats().size, building.anchor);
+                (span, price, building.hp, stats.max_hp)
             });
-        let wounds: Vec<(TilePos, (i32, i32), u64)> = units
+        let wounds: Vec<(Span, u64)> = units
             .chain(buildings)
-            .filter(|(_, _, _, hp, max)| hp < max)
-            .map(|(tile, size, price, hp, max)| {
+            .filter(|(_, _, hp, max)| hp < max)
+            .map(|(span, price, hp, max)| {
                 let max = u64::from(max.max(1));
                 let missing = u64::from(price) * (max - u64::from(hp).min(max)) / max;
-                (tile, size, missing)
+                (span, missing)
             })
-            .filter(|(tile, footprint, _)| {
-                !bays
-                    .iter()
-                    .any(|bay| gap(*bay, size, *tile, *footprint) <= BAY_REACH)
-            })
+            .filter(|(span, _)| !bays.iter().any(|bay| Span::of(size, *bay).aura(*span)))
             .collect();
-        if wounds.iter().map(|(_, _, missing)| missing).sum::<u64>() < BAY_WOUNDS {
+        if wounds.iter().map(|(_, missing)| missing).sum::<u64>() < BAY_WOUNDS {
             return None;
         }
         let mut sites = Vec::new();
         for asset in self.assets.iter().take(BAY_ASSETS) {
             for anchor in sites_around(asset, size) {
+                let bay = Span::of(size, anchor);
                 let reached: u64 = wounds
                     .iter()
-                    .filter(|(tile, footprint, _)| {
-                        gap(anchor, size, *tile, *footprint) <= BAY_REACH
-                    })
-                    .map(|(_, _, missing)| missing)
+                    .filter(|(span, _)| bay.aura(*span))
+                    .map(|(_, missing)| missing)
                     .sum();
                 if reached >= BAY_WOUNDS {
                     let centre = footprint_centre(BuildingKind::RepairBay, anchor);
@@ -1169,6 +1170,33 @@ fn distance2(a: (i64, i64), b: (i64, i64)) -> i64 {
     (a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)
 }
 
+/// A footprint's extent, or a unit's centre, in doubled coordinates.
+#[derive(Clone, Copy)]
+struct Span {
+    x: (i64, i64),
+    y: (i64, i64),
+}
+
+impl Span {
+    fn of(size: (i32, i32), anchor: TilePos) -> Self {
+        let (x, y) = (2 * i64::from(anchor.x), 2 * i64::from(anchor.y));
+        Span {
+            x: (x, x + 2 * i64::from(size.0)),
+            y: (y, y + 2 * i64::from(size.1)),
+        }
+    }
+
+    /// Whether a Repair Bay over this span heals `other`: as the simulation
+    /// measures, the straight distance between their nearest edges is within
+    /// the aura's radius.
+    fn aura(self, other: Span) -> bool {
+        let apart = |a: (i64, i64), b: (i64, i64)| (a.0 - b.1).max(b.0 - a.1).max(0);
+        let (dx, dy) = (apart(self.x, other.x), apart(self.y, other.y));
+        let reach = (REPAIR_BAY_RADIUS + REPAIR_BAY_RADIUS).to_num::<i64>();
+        dx * dx + dy * dy <= reach * reach
+    }
+}
+
 /// Anchors for a `size` footprint standing off `asset` by the standoff
 /// gaps.
 fn sites_around(asset: &Asset, size: (i32, i32)) -> impl Iterator<Item = TilePos> + '_ {
@@ -1193,4 +1221,33 @@ fn chebyshev(a: (i64, i64), b: (i64, i64)) -> i64 {
 
 fn points(worth: u64) -> u32 {
     u32::try_from(worth).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repair_bay_reaches_by_straight_distance_from_its_edges() {
+        let bay = Span::of((2, 2), TilePos::new(10, 10));
+        let unit = |x: i32, y: i32| {
+            let (x, y) = doubled(TilePos::new(x, y));
+            Span {
+                x: (x, x),
+                y: (y, y),
+            }
+        };
+        assert!(
+            bay.aura(unit(15, 10)),
+            "three and a half tiles straight out"
+        );
+        assert!(!bay.aura(unit(16, 10)), "four and a half tiles out");
+        assert!(
+            !bay.aura(unit(15, 15)),
+            "three tiles clear on both axes is over four tiles away"
+        );
+        let building = Span::of((2, 2), TilePos::new(16, 10));
+        assert!(bay.aura(building), "edges four tiles apart");
+        assert!(!bay.aura(Span::of((2, 2), TilePos::new(15, 15))));
+    }
 }

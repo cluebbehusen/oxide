@@ -17,12 +17,12 @@ another Foundry, and idle Foundries train workers until there are two
 Harvesters' worth per worked node. Once a Fabricator stands, an Excavator, worth
 two Harvesters, fills two open places when the seat can pay for it with scrap to
 spare, less the greedier it is. A harvesting or idle worker away from home runs
-back beside the nearest Foundry from armed enemies in sight. Paid sites nobody
-is building get the nearest free worker. While no armed enemy in sight stands
-near it and the seat has scrap to pay, the damaged building missing the most
-value gets a free worker to weld it, two at most at once. Idle workers go to the
-reachable worked node with the fewest workers, never one inside the reach of
-known enemy weapons. Every idle producer then trains toward the army's needs.
+back beside the nearest Foundry once known enemy fire reaches it. Paid sites
+nobody is building get the nearest free worker. While no armed enemy in sight
+stands near it and the seat has scrap to pay, the damaged building missing the
+most value gets a free worker to weld it, two at most at once. Idle workers go
+to the reachable worked node with the fewest workers, never one inside the reach
+of known enemy weapons. Every idle producer then trains toward the army's needs.
 Difficulty caps the unit orders one decision issues; purchases do not count
 against that allowance.
 
@@ -189,8 +189,8 @@ before.
 
 The seat keeps a Tender, alive or queued, for so much missing health among its
 armed ground units, more the more it leans on support, up to two. A free idle
-Tender welds the free wounded ground unit on its ground missing the most value,
-one Tender to a patient.
+Tender welds the free wounded ground unit on its ground missing the most value;
+one decision sends no two Tenders to the same patient.
 
 ## Army composition
 

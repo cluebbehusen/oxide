@@ -348,6 +348,7 @@ impl Missions {
                 }
                 let tended = members.iter().any(|unit| unit.kind == UnitKind::Tender);
                 if !tended
+                    && mission.units.len() < UNIT_CAP
                     && let Some(tender) = plan.tender(rally, component)
                     && ledger.order(run(vec![tender], rally))
                 {
