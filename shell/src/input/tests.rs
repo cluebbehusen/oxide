@@ -1411,21 +1411,44 @@ fn wheel_notches_and_trackpad_swipes_land_in_the_same_range() {
     // Windows notches (±120), X11 detents (±1), and a firm trackpad
     // swipe all read as whole steps; small fractional trackpad deltas
     // stay gentle.
-    assert_eq!(normalize_wheel(120.0), 1.0);
-    assert_eq!(normalize_wheel(-120.0), -1.0);
-    assert_eq!(normalize_wheel(1.0), 1.0);
-    assert_eq!(normalize_wheel(-1.0), -1.0);
-    assert_eq!(normalize_wheel(2.0), 2.0);
-    assert_eq!(normalize_wheel(10.0), 1.0);
-    assert!(normalize_wheel(0.4) > 0.0 && normalize_wheel(0.4) < 0.1);
+    let generic = WheelUnits::Generic;
+    assert_eq!(normalize_wheel(120.0, generic), 1.0);
+    assert_eq!(normalize_wheel(-120.0, generic), -1.0);
+    assert_eq!(normalize_wheel(1.0, generic), 1.0);
+    assert_eq!(normalize_wheel(-1.0, generic), -1.0);
+    assert_eq!(normalize_wheel(2.0, generic), 2.0);
+    assert_eq!(normalize_wheel(10.0, generic), 1.0);
+    assert!(normalize_wheel(0.4, generic) > 0.0 && normalize_wheel(0.4, generic) < 0.1);
+}
+
+#[test]
+fn mac_trackpad_points_zoom_gently_and_wheel_lines_keep_their_notches() {
+    let mac = WheelUnits::Mac;
+    for points in [1.0, -1.0, 2.0, 3.0, 9.0] {
+        assert!(
+            normalize_wheel(points, mac).abs() < 1.0,
+            "{points} trackpad points must stay under a full notch"
+        );
+    }
+    assert!(normalize_wheel(1.0, mac) < normalize_wheel(2.0, mac));
+    assert!(normalize_wheel(-2.0, mac) < 0.0);
+    for lines in [10.0, -10.0, 20.0, 30.0, 39.9, 40.0, 120.0, 1200.0] {
+        assert_eq!(
+            normalize_wheel(lines, mac),
+            normalize_wheel(lines, WheelUnits::Generic),
+            "a macOS wheel reading of {lines} keeps its existing notch count"
+        );
+    }
 }
 
 #[test]
 fn wheel_bursts_are_capped() {
-    assert_eq!(normalize_wheel(1200.0), 3.0);
-    assert_eq!(normalize_wheel(-1200.0), -3.0);
-    // The cap also catches fast trackpad flicks below the notch cutoff.
-    assert_eq!(normalize_wheel(39.9), 3.0);
+    for units in [WheelUnits::Generic, WheelUnits::Mac] {
+        assert_eq!(normalize_wheel(1200.0, units), 3.0);
+        assert_eq!(normalize_wheel(-1200.0, units), -3.0);
+        // The cap also catches fast trackpad flicks below the notch cutoff.
+        assert_eq!(normalize_wheel(39.9, units), 3.0);
+    }
 }
 
 #[test]
