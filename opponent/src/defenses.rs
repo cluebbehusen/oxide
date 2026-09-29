@@ -17,6 +17,7 @@ use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::stats::{BuildingStats, Domain, UnitStats};
 use oxide_sim::{BuildingKind, UnitKind};
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 /// Buildings worth guarding, most valuable first, at most this many.
 const ASSETS: usize = 6;
@@ -74,6 +75,11 @@ impl Evidence {
 struct Approach {
     /// Points along the way in, in doubled coordinates.
     samples: Vec<(i64, i64)>,
+    /// For each sample, what one more weapon covering it adds: two where
+    /// none covers it yet, one where only one does.
+    open: Vec<u64>,
+    /// For each sample, whether own buildings see it.
+    spotted: Vec<bool>,
     evidence: Evidence,
     /// The threat the samples lead to.
     source: (i64, i64),
@@ -148,8 +154,6 @@ struct Guard<'a> {
     assets: Vec<Asset>,
     /// The seat's own armed buildings, built or not.
     covers: Vec<Cover>,
-    /// Points own buildings see, as centres and squared doubled sight.
-    sight: Vec<((i64, i64), i64)>,
     /// Ground the seat's Harvesters stand on: only there can it build.
     crews: Vec<u32>,
     /// Whether the opening economy is up. Before then, a defense against a
@@ -170,7 +174,7 @@ impl<'a> Guard<'a> {
         exposed: bool,
     ) -> Option<Self> {
         let frame = HomeFrame::of(observation, map)?;
-        let covers = observation
+        let covers: Vec<Cover> = observation
             .my_buildings
             .iter()
             .filter(|building| !building.provisional)
@@ -182,7 +186,7 @@ impl<'a> Guard<'a> {
                 )
             })
             .collect();
-        let sight = observation
+        let sight: Vec<((i64, i64), i64)> = observation
             .my_buildings
             .iter()
             .filter(|building| building.built)
@@ -198,6 +202,38 @@ impl<'a> Guard<'a> {
         for asset in &mut assets {
             asset.ground = approach(observation, map, memory, asset, Domain::Ground, exposed);
             asset.air = approach(observation, map, memory, asset, Domain::Air, exposed);
+            for (domain, approach) in [
+                (Domain::Ground, asset.ground.as_mut()),
+                (Domain::Air, asset.air.as_mut()),
+            ] {
+                let Some(approach) = approach else {
+                    continue;
+                };
+                approach.open = approach
+                    .samples
+                    .iter()
+                    .map(|point| {
+                        match covers
+                            .iter()
+                            .filter(|cover: &&Cover| cover.covers(domain, *point))
+                            .count()
+                        {
+                            0 => 2,
+                            1 => 1,
+                            _ => 0,
+                        }
+                    })
+                    .collect();
+                approach.spotted = approach
+                    .samples
+                    .iter()
+                    .map(|point| {
+                        sight.iter().any(|(centre, sight2)| {
+                            (centre.0 - point.0).pow(2) + (centre.1 - point.1).pow(2) <= *sight2
+                        })
+                    })
+                    .collect();
+            }
         }
         let mut crews: Vec<u32> = observation
             .my_units
@@ -214,7 +250,6 @@ impl<'a> Guard<'a> {
             frame,
             assets,
             covers,
-            sight,
             crews,
             settled,
             exposed,
@@ -244,29 +279,25 @@ impl<'a> Guard<'a> {
     /// for each sample nothing covers yet, one for each only one weapon
     /// covers. A Bastion counts only samples its owner sees, since it fires
     /// no further than something spots for it.
-    fn gain(&self, asset: &Asset, kind: BuildingKind, anchor: TilePos) -> u64 {
-        let Some(cover) = Cover::of(kind.base_stats(), kind, anchor) else {
-            return 0;
+    fn gain(&self, asset: &Asset, kind: BuildingKind, anchor: TilePos, reach: Cover) -> u64 {
+        let cover = Cover {
+            centre: footprint_centre(kind, anchor),
+            ..reach
         };
         let domain = domain(kind);
         let Some(approach) = asset.approach(domain) else {
             return 0;
         };
-        let spotted = |point: (i64, i64)| {
-            kind != BuildingKind::Bastion
-                || self.sight.iter().any(|(centre, sight2)| {
-                    (centre.0 - point.0).pow(2) + (centre.1 - point.1).pow(2) <= *sight2
-                })
-        };
+        let bastion = kind == BuildingKind::Bastion;
         approach
             .samples
             .iter()
-            .filter(|point| cover.covers(domain, **point) && spotted(**point))
-            .map(|point| match self.covered(domain, *point) {
-                0 => 2,
-                1 => 1,
-                _ => 0,
+            .zip(&approach.open)
+            .zip(&approach.spotted)
+            .filter(|((point, _), spotted)| {
+                cover.covers(domain, **point) && (!bastion || **spotted)
             })
+            .map(|((_, open), _)| *open)
             .sum()
     }
 
@@ -278,12 +309,21 @@ impl<'a> Guard<'a> {
     /// placement checks run.
     fn best(&self, kind: BuildingKind) -> Option<(TilePos, u64)> {
         let size = kind.base_stats().size;
+        let reach = Cover::of(kind.base_stats(), kind, TilePos::new(0, 0))?;
+        let bastion = kind == BuildingKind::Bastion;
         let mut sites = Vec::new();
         for asset in &self.assets {
             let Some(approach) = asset.approach(domain(kind)) else {
                 continue;
             };
-            if matches!(approach.evidence, Evidence::Landing | Evidence::Prior) && !self.settled {
+            let unsettled =
+                matches!(approach.evidence, Evidence::Landing | Evidence::Prior) && !self.settled;
+            let open = approach
+                .open
+                .iter()
+                .zip(&approach.spotted)
+                .any(|(open, spotted)| *open > 0 && (!bastion || *spotted));
+            if unsettled || !open {
                 continue;
             }
             for anchor in sites_around(asset, size) {
@@ -294,8 +334,9 @@ impl<'a> Guard<'a> {
                 if !facing {
                     continue;
                 }
-                let worth =
-                    asset.value * self.gain(asset, kind, anchor) * self.weight(approach, kind);
+                let worth = asset.value
+                    * self.gain(asset, kind, anchor, reach)
+                    * self.weight(approach, kind);
                 if worth > 0 {
                     let toward = match approach.evidence {
                         Evidence::Landing | Evidence::Prior => asset.centre,
@@ -306,19 +347,39 @@ impl<'a> Guard<'a> {
                 }
             }
         }
-        sites.sort_by_key(|(worth, rank, _)| (Reverse(*worth), *rank));
-        sites.into_iter().find_map(|(worth, _, anchor)| {
-            let failed = self.memory.failed(kind, anchor, self.observation.tick);
-            let crewed = self
-                .map
-                .component(anchor)
-                .is_some_and(|ground| self.crews.contains(&ground));
-            (crewed && !failed).then_some(())?;
-            placement::check(self.observation, kind, anchor, &[])
-                .ok()
-                .map(|_| (anchor, worth))
-        })
+        first_placeable(sites, |anchor| self.placeable(kind, anchor))
     }
+
+    /// Whether `kind` may go at `anchor` as far as the seat knows, on ground
+    /// a Harvester of the seat stands on, and was not refused there lately.
+    fn placeable(&self, kind: BuildingKind, anchor: TilePos) -> bool {
+        let crewed = self
+            .map
+            .component(anchor)
+            .is_some_and(|ground| self.crews.contains(&ground));
+        crewed
+            && !self.memory.failed(kind, anchor, self.observation.tick)
+            && placement::check(self.observation, kind, anchor, &[]).is_ok()
+    }
+}
+
+/// The first of `sites`, best worth first and then by rank, that
+/// `placeable` allows, with its worth. A heap yields them in that order
+/// without sorting the many that are never tried.
+fn first_placeable<R: Ord>(
+    sites: Vec<(u64, R, TilePos)>,
+    placeable: impl Fn(TilePos) -> bool,
+) -> Option<(TilePos, u64)> {
+    let mut heap: BinaryHeap<Reverse<(Reverse<u64>, R, TilePos)>> = sites
+        .into_iter()
+        .map(|(worth, rank, anchor)| Reverse((Reverse(worth), rank, anchor)))
+        .collect();
+    while let Some(Reverse((Reverse(worth), _, anchor))) = heap.pop() {
+        if placeable(anchor) {
+            return Some((anchor, worth));
+        }
+    }
+    None
 }
 
 /// Voluntary defenses and defense upgrades worth investing in, with their
@@ -640,6 +701,8 @@ fn approach(
         .collect();
     Some(Approach {
         samples,
+        open: Vec::new(),
+        spotted: Vec::new(),
         evidence,
         source,
     })
