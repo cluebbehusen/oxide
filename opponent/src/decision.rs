@@ -141,6 +141,11 @@ impl Ledger {
         self.decision.allowance - self.decision.unit_orders
     }
 
+    /// Unit orders the whole decision may issue.
+    pub(crate) fn allowance(&self) -> u32 {
+        self.decision.allowance
+    }
+
     /// Footprints this decision already committed to.
     pub(crate) fn planned(&self) -> &[(BuildingKind, TilePos)] {
         &self.planned

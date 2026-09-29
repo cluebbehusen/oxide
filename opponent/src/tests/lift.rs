@@ -231,6 +231,26 @@ fn a_severed_seat_lifts_its_army_across_and_takes_the_target() {
 }
 
 #[test]
+fn a_lift_takes_no_more_carriers_than_one_decision_can_launch() {
+    let mut scenario = strait();
+    for (x, y) in [(10, 4), (10, 19), (11, 6), (11, 17)] {
+        scenario.units.push(unit(0, UnitKind::Skyhook, x, y));
+    }
+    for x in 2..10 {
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, 9));
+        scenario.units.push(unit(0, UnitKind::Sentinel, x, 14));
+    }
+    let mut state = scenario.build().unwrap();
+    let mut opponent = seat(&scenario, 0);
+    let history = until_phase(&mut opponent, &mut state, Phase::Fly);
+    let carriers = loads(&history).len();
+    assert!(
+        (1..=4).contains(&carriers),
+        "six Skyhooks stand ready, but a Standard decision's six orders launch four: {carriers}"
+    );
+}
+
+#[test]
 fn remembered_anti_air_sends_the_carriers_around_it() {
     let mut scenario = strait();
     scenario.units.push(unit(1, UnitKind::Flakhound, 27, 11));

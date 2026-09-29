@@ -28,6 +28,11 @@ const FIGHT_TICKS: u64 = 3_600;
 /// Tiles around a target's footprint searched for a landing.
 const LANDING_REACH: i32 = 8;
 
+/// Orders a take-off needs besides one Unload per carrier: a run around
+/// known anti-air and one home. A lift takes no more carriers than leaves
+/// room for them in one decision.
+const TAKE_OFF_ORDERS: u32 = 2;
+
 /// Empty tiles a landing would best leave between itself and the target.
 const LANDING_GAP: i32 = 4;
 
@@ -166,6 +171,7 @@ impl Missions {
             }
         }
         carriers.sort_by_key(rank);
+        carriers.truncate(ledger.allowance().saturating_sub(TAKE_OFF_ORDERS) as usize);
         let mut riders: Vec<&UnitObs> = free
             .iter()
             .copied()
@@ -318,9 +324,10 @@ impl Missions {
     }
 
     /// Sends every loaded carrier to the landing, around known anti-air when
-    /// the straight line crosses it, and home again afterwards. All carriers
-    /// go together or none do. Riders still walking to a carrier stop and
-    /// are let go.
+    /// the straight line crosses it, and home again afterwards, back around
+    /// it when the decision has the orders to spare. All carriers go together
+    /// or none do. Riders still walking to a carrier stop, orders permitting,
+    /// and are let go.
     fn take_off(&mut self, flight: &Flight<'_>, lifting: &Lifting<'_>, ledger: &mut Ledger) {
         let landing = flight.landing;
         let (loaded, empty): (Vec<&UnitObs>, Vec<&UnitObs>) =
@@ -330,9 +337,7 @@ impl Missions {
             return;
         };
         let via = lifting.route(pad, landing);
-        let orders = loaded.len()
-            + if via.is_some() { 3 } else { 1 }
-            + usize::from(!flight.grounded.is_empty());
+        let orders = loaded.len() + usize::from(via.is_some()) + 1;
         if (ledger.room() as usize) < orders {
             return;
         }
@@ -342,7 +347,9 @@ impl Missions {
         for carrier in &loaded {
             ledger.order(unload(*carrier, landing, via.is_some()));
         }
-        if let Some(via) = via {
+        if let Some(via) = via
+            && ledger.room() > 1
+        {
             ledger.order(Command::Run {
                 units: loaded.clone(),
                 goal: via,
@@ -354,7 +361,7 @@ impl Missions {
             goal: pad,
             queue: true,
         });
-        if !flight.grounded.is_empty() {
+        if !flight.grounded.is_empty() && ledger.room() > 0 {
             ledger.order(Command::Stop {
                 units: ids(&flight.grounded),
             });

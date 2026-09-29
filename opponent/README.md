@@ -109,9 +109,9 @@ from one to four. While an idle Airworks waits for the scrap to train one, other
 production waits too, unless a defense is short.
 
 A lift forms only from carriers and passengers that exist: free carriers that
-are idle, empty and over open home ground, and free line and siege units at half
-health or better on home ground, packed into them most value per transport slot
-first. It
+are idle, empty and over open home ground, no more of them than one decision's
+orders can send off together, and free line and siege units at half health or
+better on home ground, packed into them most value per transport slot first. It
 needs those that can hit ground to be worth the stance's minimum and to outweigh
 the target's known defense by the attack margin. The target is the most valuable
 known enemy building, or hostile start not seen cleared, for its distance that
