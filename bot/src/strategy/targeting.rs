@@ -388,8 +388,9 @@ pub(super) fn best_remembered_member<'a>(
 
 pub(super) fn last_strike_anchor(plan: &AirPlan) -> Option<TilePos> {
     match plan.strike_dispatch() {
-        Some(AirStrikeDispatch::Attack { anchor, .. })
-        | Some(AirStrikeDispatch::AttackMove(anchor)) => Some(anchor),
+        Some(AirStrikeDispatch::Attack { anchor, .. }) | Some(AirStrikeDispatch::Hunt(anchor)) => {
+            Some(anchor)
+        }
         None => None,
     }
 }

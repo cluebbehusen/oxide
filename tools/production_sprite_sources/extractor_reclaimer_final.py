@@ -168,12 +168,13 @@ def _belt(
     phase: int,
     *,
     faction: str,
+    step: int = 3,
 ) -> None:
     x0, y0, x1, y1 = bounds
     palette = gen.FACTIONS[faction]
     draw.rounded_rectangle(_box(bounds), radius=_s(2), fill=(*gen.IRON_DARK, 255))
     draw.rectangle(_box((x0 + 2, y0 + 2, x1 - 2, y1 - 2)), fill=(*VOID, 255))
-    offset = phase * 3 % 8
+    offset = phase * step % 8
     for y in range(round(y0) - 8, round(y1) + 8, 8):
         at = y + offset
         if y0 + 2 <= at <= y1 - 2:

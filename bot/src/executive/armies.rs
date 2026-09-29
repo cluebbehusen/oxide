@@ -337,7 +337,7 @@ impl Executive {
                     army.members.extend(members.iter().map(|unit| unit.id));
                     out.push(PlayerCommand {
                         player: me,
-                        command: Command::Move {
+                        command: Command::Run {
                             units: pulled.clone(),
                             goal: rear,
                             queue: false,
@@ -380,7 +380,7 @@ impl Executive {
                     );
                 out.push(PlayerCommand {
                     player: me,
-                    command: Command::Move {
+                    command: Command::Run {
                         units: army.members.clone(),
                         goal: army.staging,
                         queue: false,
@@ -422,7 +422,7 @@ impl Executive {
                     {
                         army.members.clear();
                     }
-                    // A return is an ordinary Move, not permission to reacquire a chase.
+                    // A return is an ordinary Run, not permission to reacquire a chase.
                     continue;
                 }
             }
@@ -489,7 +489,7 @@ impl Executive {
                             army.members.clear();
                         } else {
                             // A live objective still needs a coherent body to
-                            // hold the ground while its attack-move finishes it.
+                            // hold the ground while its hunt finishes it.
                             army.state = ArmyState::Staging;
                             army.staging = target;
 
@@ -555,8 +555,8 @@ impl Executive {
                     {
                         // Losing decisively: leave together, fighting.
                         // Nothing here outruns its pursuers, so an
-                        // oblivious Move retreat is shot in the back for
-                        // free the whole way home — the attack-move falls
+                        // oblivious Run retreat is shot in the back for
+                        // free the whole way home — the hunt falls
                         // back along the same line but answers fire.
                         army.state = ArmyState::Withdrawing;
                         army.target = withdrawal_threat(obs, &members, centroid_frame);
@@ -565,13 +565,13 @@ impl Executive {
                         out.push(PlayerCommand {
                             player: me,
                             command: if !unit_contact {
-                                Command::Move {
+                                Command::Run {
                                     units: army.members.clone(),
                                     goal: army.staging,
                                     queue: false,
                                 }
                             } else {
-                                Command::AttackMove {
+                                Command::Hunt {
                                     units: army.members.clone(),
                                     goal: army.staging,
                                     queue: false,
@@ -616,7 +616,7 @@ impl Executive {
                                 // Focus fire is a shooting decision, not a
                                 // replacement march. If even one compatible
                                 // front-liner would have to chase, retain the
-                                // body's attack-move and let ordinary
+                                // body's hunt and let ordinary
                                 // acquisition handle the contact.
                                 && focus_members
                                     .iter()
@@ -679,7 +679,7 @@ impl Executive {
                                     if !units.is_empty() {
                                         out.push(PlayerCommand {
                                             player: me,
-                                            command: Command::AttackMove {
+                                            command: Command::Hunt {
                                                 units,
                                                 goal: army.target.unwrap_or(army.staging),
                                                 queue: false,
@@ -701,7 +701,7 @@ impl Executive {
                         // that line. Re-staging immediately makes the next
                         // high-cadence think focus a target, chase away from the
                         // fallback, and trigger another identical retreat.
-                        // Its existing attack-move already answers local fire;
+                        // Its existing hunt already answers local fire;
                         // fresh production can muster as a separate body.
                         let threat_remains = army
                             .target
@@ -1093,7 +1093,7 @@ fn march_with_roster<'a>(
         if !escorts.is_empty() {
             out.push(PlayerCommand {
                 player: me,
-                command: Command::Move {
+                command: Command::Run {
                     units: escorts,
                     goal: screen_goal,
                     queue: false,
@@ -1103,13 +1103,13 @@ fn march_with_roster<'a>(
         out.push(PlayerCommand {
             player: me,
             command: if goal == army.staging {
-                Command::Move {
+                Command::Run {
                     units: arty,
                     goal,
                     queue: false,
                 }
             } else {
-                Command::AttackMove {
+                Command::Hunt {
                     units: arty,
                     goal,
                     queue: false,
@@ -1121,7 +1121,7 @@ fn march_with_roster<'a>(
     if !escorts.is_empty() {
         out.push(PlayerCommand {
             player: me,
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: escorts.clone(),
                 goal: target,
                 queue: false,
@@ -1142,7 +1142,7 @@ fn march_with_roster<'a>(
         };
         out.push(PlayerCommand {
             player: me,
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: arty,
                 goal: stand,
                 queue: false,
@@ -1151,7 +1151,7 @@ fn march_with_roster<'a>(
     } else {
         out.push(PlayerCommand {
             player: me,
-            command: Command::Move {
+            command: Command::Run {
                 units: arty,
                 goal: army.staging,
                 queue: false,
@@ -1545,14 +1545,14 @@ mod tests {
         let stand = out
             .iter()
             .find_map(|command| match command.command {
-                Command::AttackMove { goal, .. } => Some(goal),
+                Command::Hunt { goal, .. } => Some(goal),
                 _ => None,
             })
             .unwrap();
         let screen = out
             .iter()
             .find_map(|command| match command.command {
-                Command::Move { goal, .. } => Some(goal),
+                Command::Run { goal, .. } => Some(goal),
                 _ => None,
             })
             .unwrap();
@@ -1565,9 +1565,11 @@ mod tests {
             stand, staging,
             "a Bombard can find a reachable position outside the gun"
         );
-        assert!(out.iter().any(
-            |command| matches!(command.command, Command::AttackMove { goal, .. } if goal == stand)
-        ));
+        assert!(
+            out.iter().any(
+                |command| matches!(command.command, Command::Hunt { goal, .. } if goal == stand)
+            )
+        );
         assert!(
             stand.chebyshev(target) < UnitKind::Sentinel.stats().vision,
             "the screen must keep the artillery objective visible"
@@ -1580,7 +1582,7 @@ mod tests {
             parity_commands
                 .iter()
                 .all(|command| matches!(command.command,
-            Command::Move { goal, .. } | Command::AttackMove { goal, .. } if goal != staging)),
+            Command::Run { goal, .. } | Command::Hunt { goal, .. } if goal != staging)),
             "an admitted escorted assault must not wait forever for range superiority over a Bastion"
         );
         for unit in &mut obs.my_units {
@@ -1650,7 +1652,7 @@ mod tests {
         let commands = executive.maintain_player_facing(PlayerId(0), &obs, staging);
         assert_eq!(executive.armies[0].state, ArmyState::Withdrawing);
         assert!(commands.iter().any(|command| matches!(&command.command,
-            Command::Move { units, goal, .. } if units == &[UnitId(1), UnitId(2)] && *goal == staging)));
+            Command::Run { units, goal, .. } if units == &[UnitId(1), UnitId(2)] && *goal == staging)));
 
         let units = obs.my_units.clone();
         let members: Vec<_> = units.iter().collect();
@@ -1739,7 +1741,7 @@ mod tests {
         assert_eq!(executive.armies[0].target, None);
         assert!(!executive.ground_outcomes[&ArmyId(0)].pending[0].doctrine_eligible);
         assert!(commands.iter().any(
-            |command| matches!(command.command, Command::Move { goal, .. } if goal == staging)
+            |command| matches!(command.command, Command::Run { goal, .. } if goal == staging)
         ));
     }
 
@@ -2686,7 +2688,7 @@ mod tests {
         assert_eq!(executive.armies[0].state, ArmyState::Pushing);
         assert!(matches!(
             &commands[0].command,
-            Command::AttackMove { units, goal, queue: false }
+            Command::Hunt { units, goal, queue: false }
                 if units == &vec![UnitId(1), UnitId(2), UnitId(3)] && *goal == target
         ));
 
@@ -3124,7 +3126,7 @@ mod tests {
 
         assert!(
             commands.is_empty(),
-            "the existing attack-move must remain authoritative instead of making the rear member chase: {commands:?}"
+            "the existing hunt must remain authoritative instead of making the rear member chase: {commands:?}"
         );
         assert_eq!(executive.armies[0].focus, None);
 
@@ -3233,7 +3235,7 @@ mod tests {
             commands,
             vec![PlayerCommand {
                 player: PlayerId(0),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: vec![UnitId(1)],
                     goal: objective,
                     queue: false,
@@ -3389,7 +3391,7 @@ mod tests {
             commands,
             vec![PlayerCommand {
                 player: PlayerId(0),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: vec![UnitId(1), UnitId(3)],
                     goal: target,
                     queue: false,
@@ -3513,7 +3515,7 @@ mod tests {
             commands,
             vec![PlayerCommand {
                 player: PlayerId(0),
-                command: Command::Move {
+                command: Command::Run {
                     units: vec![UnitId(10), UnitId(20)],
                     goal: staging,
                     queue: false,
@@ -3769,12 +3771,12 @@ mod tests {
             );
             assert!(commands.iter().any(|command| matches!(
                 command.command,
-                Command::AttackMove { goal, .. } if goal == target
+                Command::Hunt { goal, .. } if goal == target
             )));
             assert!(
                 commands.iter().any(|command| matches!(
                     command.command,
-                    Command::AttackMove { goal, .. } if goal != target
+                    Command::Hunt { goal, .. } if goal != target
                 )),
                 "the large mixed army sends artillery to its standoff separately"
             );
@@ -3879,7 +3881,7 @@ mod tests {
         assert_eq!(maintained.exhausted_rear, vec![UnitId(1)]);
         assert!(player_commands.iter().any(|command| matches!(
             &command.command,
-            Command::Move { units, .. } if units == &vec![UnitId(3)]
+            Command::Run { units, .. } if units == &vec![UnitId(3)]
         )));
         assert_eq!(maintained.armies[0].state, ArmyState::Withdrawing);
     }
@@ -3937,7 +3939,7 @@ mod tests {
             assert_eq!(executive.rear.len(), if rotate { 64 } else { 0 });
             assert_eq!(commands.len(), usize::from(rotate));
             if rotate {
-                assert!(matches!(&commands[0].command, Command::Move { units, .. }
+                assert!(matches!(&commands[0].command, Command::Run { units, .. }
                     if *units == (0..128).step_by(2).map(UnitId).collect::<Vec<_>>()));
             }
             assert!(
@@ -4212,7 +4214,7 @@ mod tests {
             assert!(
                 matches!(
                     commands.as_slice(),
-                    [PlayerCommand { command: Command::AttackMove { goal, .. }, .. }]
+                    [PlayerCommand { command: Command::Hunt { goal, .. }, .. }]
                         if *goal == turn(player, target)
                 ),
                 "the won fight re-marches on the objective: {commands:?}"
@@ -4510,7 +4512,7 @@ mod tests {
             assert!(
                 commands.iter().any(|command| matches!(
                     &command.command,
-                    Command::AttackMove { units, goal, .. }
+                    Command::Hunt { units, goal, .. }
                         if units == &vec![UnitId(2), UnitId(3)] && *goal == target
                 )),
                 "escorts waiting on the walking gun take the next leg: {commands:?}"
@@ -4592,7 +4594,7 @@ mod tests {
         assert!(
             commands.iter().any(|command| matches!(
                 &command.command,
-                Command::AttackMove { units, .. } if units == &vec![UnitId(1)]
+                Command::Hunt { units, .. } if units == &vec![UnitId(1)]
             )),
             "the walking gun keeps its siege order: {commands:?}"
         );

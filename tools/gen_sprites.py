@@ -3272,7 +3272,41 @@ def icon_move() -> None:
     finish(img, ICON, "icon_move")
 
 
-def icon_attack_move() -> None:
+def icon_run() -> None:
+    img, d = canvas(ICON)
+    points = [
+        (28, 5), (40.5, 18), (31.5, 18), (31.5, 41),
+        (24.5, 41), (24.5, 18), (15.5, 18),
+    ]
+    d.polygon([(s(x), s(y)) for x, y in points], fill=(*BONE, 255))
+    for start, end, y in [(7, 14, 24), (5, 17, 32), (9, 17, 40)]:
+        d.line([(s(start), s(y)), (s(end), s(y))], fill=(*BONE, 255), width=s(3))
+    finish(img, ICON, "icon_run")
+
+
+def icon_hunt() -> None:
+    img, d = canvas(ICON)
+    for points in [
+        [(18, 7), (8, 7), (8, 18)],
+        [(30, 7), (40, 7), (40, 18)],
+        [(8, 30), (8, 40), (18, 40)],
+        [(40, 30), (40, 40), (30, 40)],
+    ]:
+        d.line(
+            [(s(x), s(y)) for x, y in points],
+            fill=(*BONE, 255),
+            width=s(4),
+            joint="curve",
+        )
+    points = [
+        (24, 13), (33, 27), (27, 25), (27, 35),
+        (21, 35), (21, 25), (15, 27),
+    ]
+    d.polygon([(s(x), s(y)) for x, y in points], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_hunt")
+
+
+def icon_advance() -> None:
     """The fighting march: the move arrow wearing blades."""
     img, d = canvas(ICON)
     d.polygon([(s(24), s(4)), (s(40), s(22)), (s(8), s(22))], fill=(*BONE, 255))
@@ -3282,7 +3316,7 @@ def icon_attack_move() -> None:
     d.polygon(
         [(s(44), s(28)), (s(34), s(24)), (s(36), s(33))], fill=(*SCRAP_LIGHT, 255)
     )
-    finish(img, ICON, "icon_attack_move")
+    finish(img, ICON, "icon_advance")
 
 
 def icon_attack() -> None:
@@ -3514,7 +3548,9 @@ def generate(output: Path) -> None:
     accent_masks()
     icon_stop()
     icon_move()
-    icon_attack_move()
+    icon_run()
+    icon_hunt()
+    icon_advance()
     icon_attack()
     icon_patrol()
     icon_harvest()

@@ -391,7 +391,7 @@ fn attack(player: u8, unit: UnitId, victim: UnitId) -> PlayerCommand {
 fn walk(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
     PlayerCommand {
         player: PlayerId(player),
-        command: Command::Move {
+        command: Command::Run {
             units,
             goal: TilePos::new(x, y),
             queue: false,

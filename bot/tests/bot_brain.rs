@@ -70,7 +70,7 @@ fn unseen_enemy_activity_cannot_touch_a_fog_honest_observation() {
         };
         variant.tick(&[cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![wanderer],
                 goal,
                 queue: false,
@@ -206,7 +206,7 @@ fn fog_honest_observation_exposes_only_live_anonymous_salvage_incidents() {
 
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![sentinel],
             goal: TilePos::new(19, 9),
             queue: false,
@@ -473,7 +473,7 @@ fn fog_honest_shows_ghosts_not_live_enemies() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(3, 2),
             queue: false,
@@ -800,7 +800,7 @@ fn own_observations_expose_current_repairs_and_only_the_presence_of_queued_progr
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![queued],
                 goal: TilePos::new(19, 9),
                 queue: false,
@@ -849,7 +849,7 @@ fn own_observations_expose_current_repairs_and_only_the_presence_of_queued_progr
     assert!(active.queue.is_empty());
 
     let queued = state.unit(queued).unwrap();
-    assert!(matches!(queued.order, Order::Move { .. }));
+    assert!(matches!(queued.order, Order::Run { .. }));
     assert!(
         queued
             .queue
@@ -1107,7 +1107,7 @@ fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
             - opening
                 .iter()
                 .filter_map(|command| match &command.command {
-                    Command::Move { units, .. } => Some(
+                    Command::Run { units, .. } => Some(
                         units
                             .iter()
                             .filter(|id| {
@@ -1125,7 +1125,7 @@ fn a_dispatched_defense_that_never_appears_blacklists_only_its_anchor() {
     assert_eq!(
         opening
             .iter()
-            .filter(|command| matches!(command.command, Command::Move { .. }))
+            .filter(|command| matches!(command.command, Command::Run { .. }))
             .count(),
         1,
         "the scout's exact claim must survive the same lowering pass"
@@ -1206,8 +1206,8 @@ fn a_brain_without_an_authored_aircraft_discovers_an_island_opponent() {
     for _ in 0..1_200 {
         let commands = brain.act(&state);
         for command in &commands {
-            if let Command::Move { units, goal, .. }
-            | Command::AttackMove { units, goal, .. }
+            if let Command::Run { units, goal, .. }
+            | Command::Hunt { units, goal, .. }
             | Command::Advance { units, goal, .. } = &command.command
                 && goal.x > 12
             {
@@ -1335,7 +1335,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
 fn wounded_members_rotate_and_repaired_units_return_to_the_draft() {
     // Executive semantics, pinned against a synthetic observation (the
     // executive is a pure function of what it is shown): a member below
-    // the 35% pullback line and out of contact is Move-ordered to the
+    // the 35% pullback line and out of contact is Run-ordered to the
     // rear and dropped from the army; a wounded member still in a fight
     // is left in the line, and the rear reservation remains stable after
     // external healing.
@@ -1417,7 +1417,7 @@ fn wounded_members_rotate_and_repaired_units_return_to_the_draft() {
         "no pullback while the fight is live"
     );
 
-    // Same wound, enemy gone: the rotation fires, with a Move to the
+    // Same wound, enemy gone: the rotation fires, with a Run to the
     // rear tile — not to the army's staging point.
     let calm = obs_with(vec![sentinel(0, 0, 4, 3, 10), sentinel(1, 0, 4, 2, 100)]);
     let cmds = exec.maintain_player_facing(me, &calm, TilePos::new(1, 1));
@@ -1428,7 +1428,7 @@ fn wounded_members_rotate_and_repaired_units_return_to_the_draft() {
     assert!(
         cmds.iter().any(|c| matches!(
             &c.command,
-            Command::Move { units, goal, .. }
+            Command::Run { units, goal, .. }
                 if units == &vec![UnitId(0)] && *goal == TilePos::new(1, 1)
         )),
         "the wounded member was sent to the rear"
@@ -1514,13 +1514,13 @@ fn scripted_brain_repairs_a_timed_out_rear_unit_before_redrafting_it() {
         saw_initial_muster |= commands.iter().any(|command| {
             matches!(
                 &command.command,
-                Command::AttackMove { units, .. } if units.contains(&wounded)
+                Command::Hunt { units, .. } if units.contains(&wounded)
             )
         });
         saw_retreat |= commands.iter().any(|command| {
             matches!(
                 &command.command,
-                Command::Move { units, queue: false, .. } if units == &[wounded]
+                Command::Run { units, queue: false, .. } if units == &[wounded]
             )
         });
         assert!(commands.iter().all(|command| !matches!(
@@ -1669,7 +1669,7 @@ fn scripted_brain_saves_a_visible_expansion_with_its_local_defenders() {
         saw_local_muster |= commands.iter().any(|command| {
             matches!(
                 &command.command,
-                Command::AttackMove { units, goal, queue: false }
+                Command::Hunt { units, goal, queue: false }
                     if units.iter().any(|unit| local_defenders.contains(unit))
                         && goal.chebyshev(expansion_anchor) <= 5
             )
@@ -1759,7 +1759,7 @@ fn scripted_brain_answers_visible_siege_before_it_enters_the_home_radius() {
         saw_response |= commands.iter().any(|command| {
             matches!(
                 &command.command,
-                Command::AttackMove { units, goal, queue: false }
+                Command::Hunt { units, goal, queue: false }
                     if *goal == siege_tile
                         && units.iter().any(|unit| defenders.contains(unit))
             )
@@ -1854,14 +1854,14 @@ fn scripted_brain_completes_a_real_raid_and_releases_the_pair_for_reuse() {
                 } if units == &raiders && *candidate == target => {
                     strike_at.get_or_insert(tick);
                 }
-                Command::AttackMove {
+                Command::Hunt {
                     units,
                     goal,
                     queue: false,
                 } if units == &raiders && *goal == target_tile => {
                     strike_at.get_or_insert(tick);
                 }
-                Command::Move {
+                Command::Run {
                     units,
                     goal,
                     queue: false,

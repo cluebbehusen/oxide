@@ -64,7 +64,7 @@ fn interrupted_unsafe_turret_is_resolved_through_an_ordinary_state_command() {
     assert!(
         evacuation.iter().any(|command| matches!(
             &command.command,
-            Command::Move { units, .. } if units.contains(&active_builder)
+            Command::Run { units, .. } if units.contains(&active_builder)
         )),
         "the visible gun must evacuate the active builder: {evacuation:?}"
     );
@@ -85,7 +85,7 @@ fn interrupted_unsafe_turret_is_resolved_through_an_ordinary_state_command() {
             .unit(active_builder)
             .expect("the active builder survived")
             .order,
-        oxide_sim::state::Order::Idle | oxide_sim::state::Order::Move { .. }
+        oxide_sim::state::Order::Idle | oxide_sim::state::Order::Run { .. }
     ));
     assert!(
         state.building(site).is_some_and(|building| !building.built),
@@ -226,7 +226,7 @@ fn difficulty_attention_limits_competing_operations_without_dropping_active_raid
         let raid_start = prior_raid.think_unrestricted(&profile, tuning, &obs, home, &[], &[]);
         assert!(matches!(
             raid_start.intents.as_slice(),
-            [Intent::AttackMoveUnits { .. }]
+            [Intent::HuntUnits { .. }]
         ));
         let prior_members = prior_raid
             .operation()
@@ -599,7 +599,7 @@ fn coordinated_air_and_bulk_lift_complete_one_shared_objective_cycle() {
                         first_target_unload_tick.get_or_insert(state.current_tick());
                         target_unloads.push(*transport);
                     }
-                    Command::AttackMove { units, goal, .. } if goal.chebyshev(target) <= 6 => {
+                    Command::Hunt { units, goal, .. } if goal.chebyshev(target) <= 6 => {
                         landed_assault.extend(
                             units
                                 .iter()
@@ -707,7 +707,7 @@ fn a_wealthy_island_brain_launches_grouped_bombers_without_a_lift_payload() {
         let commands = brain.act(&state);
         for command in &commands {
             let units = match &command.command {
-                Command::Attack { units, .. } | Command::AttackMove { units, .. } => units,
+                Command::Attack { units, .. } | Command::Hunt { units, .. } => units,
                 _ => continue,
             };
             let bomber_count = units
@@ -985,7 +985,7 @@ fn contested_operation_members_retain_recovery_without_dispatch() {
         "contested members cannot record an unissued return order"
     );
     assert!(result.commands.iter().all(|command| !matches!(
-        &command.command, Command::Move { units, .. } if units.iter().any(|id| team_members.contains(id))
+        &command.command, Command::Run { units, .. } if units.iter().any(|id| team_members.contains(id))
     )));
     let mut restored_lift = brain.mind().lifts.clone();
     assert!(restored_lift.outcomes.pending.is_empty());
@@ -1057,7 +1057,7 @@ fn partial_guile_muster_is_reserved_before_the_generic_army_draft() {
     assert_eq!(complete.reservations, [UnitId(1), UnitId(2)]);
     assert!(matches!(
         complete.intents.as_slice(),
-        [Intent::AttackMoveUnits { units, .. }]
+        [Intent::HuntUnits { units, .. }]
             if units == &[UnitId(1), UnitId(2)]
     ));
 }
@@ -1080,7 +1080,7 @@ fn provisioning_lift_payload_does_not_ground_unreserved_defenders() {
     );
     assert!(muster.iter().any(|command| matches!(
         &command.command,
-        Command::AttackMove { units, goal, queue: false }
+        Command::Hunt { units, goal, queue: false }
             if units.len() == 40 && *goal == staging
     )));
     let army = brain.exec.armies()[0].clone();
@@ -1112,7 +1112,7 @@ fn provisioning_lift_payload_does_not_ground_unreserved_defenders() {
         assert!(
             commands.iter().all(|command| !matches!(
                 &command.command,
-                Command::AttackMove { units, .. }
+                Command::Hunt { units, .. }
                     if units.iter().any(|unit| operation.payload.contains(unit))
             )),
             "think {think} double-booked the frozen lift payload: {commands:?}"
@@ -1159,7 +1159,7 @@ fn provisioning_lift_payload_does_not_ground_unreserved_defenders() {
             assert!(
                 commands.iter().any(|command| matches!(
                     &command.command,
-                    Command::AttackMove {
+                    Command::Hunt {
                         units,
                         goal,
                         queue: false,
@@ -1382,7 +1382,7 @@ impl CommittedCluster {
     fn keep_scout_moving(&mut self) {
         let report = self.state.tick(&[oxide_sim::PlayerCommand {
             player: PlayerId(0),
-            command: Command::Move {
+            command: Command::Run {
                 units: vec![self.scout],
                 goal: TilePos::new(2, 1),
                 queue: false,
@@ -1531,7 +1531,7 @@ fn committed_strike_attacks_a_surviving_member_and_reacquires_a_remembered_one()
     assert!(
         commands.iter().any(|command| matches!(
             &command.command,
-            Command::AttackMove { units, goal, .. }
+            Command::Hunt { units, goal, .. }
                 if goal.chebyshev(CLUSTER_AIRWORKS) <= 2
                     && battle.condors.iter().all(|id| units.contains(id))
         )),

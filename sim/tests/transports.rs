@@ -584,7 +584,7 @@ fn a_boarding_walk_that_cannot_be_routed_yields_to_the_queued_move() {
             ),
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![rider],
                     goal: home,
                     queue: true,

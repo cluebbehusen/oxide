@@ -63,7 +63,7 @@ fn arena(units: Vec<UnitSpec>, buildings: Vec<BuildingSpec>) -> Scenario {
 fn land(player: u8, unit: oxide_sim::ids::UnitId, x: i32, y: i32) -> PlayerCommand {
     cmd(
         player,
-        Command::Move {
+        Command::Run {
             units: vec![unit],
             goal: TilePos::new(x, y),
             queue: false,
@@ -213,7 +213,7 @@ fn takeoff_resumes_flight_from_the_parked_heading() {
     let parked_heading = state.unit(condor).unwrap().heading;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(4, 4),
             queue: false,
@@ -313,7 +313,7 @@ fn flak_ignores_a_parked_condor() {
     };
     state.tick(&[attack()]);
     assert!(
-        matches!(state.unit(flak).unwrap().order, Order::Move { .. }),
+        matches!(state.unit(flak).unwrap().order, Order::Run { .. }),
         "flak was let loose on a parked airframe: {:?}",
         state.unit(flak).unwrap().order
     );
@@ -327,7 +327,7 @@ fn flak_ignores_a_parked_condor() {
     );
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(8, 4),
             queue: false,
@@ -344,7 +344,7 @@ fn flak_ignores_a_parked_condor() {
         state.unit(flak).unwrap().order
     );
     assert!(
-        matches!(state.unit(lancer).unwrap().order, Order::Move { .. }),
+        matches!(state.unit(lancer).unwrap().order, Order::Run { .. }),
         "a ground gun was let loose on an airborne Condor: {:?}",
         state.unit(lancer).unwrap().order
     );
@@ -367,7 +367,7 @@ fn a_parked_condor_scrambles_at_an_enemy_in_reach() {
     land_at(&mut state, condor, 16, 8);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![harvester],
             goal: TilePos::new(15, 9),
             queue: false,
@@ -439,7 +439,7 @@ fn a_tile_filled_during_the_approach_sends_the_landing_around() {
         land(0, condor, 16, 8),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![sentinel],
                 goal: TilePos::new(16, 8),
                 queue: false,
@@ -525,7 +525,7 @@ fn a_wall_side_tile_is_landed_and_left_without_touching_the_wall() {
     // takeoff from it must fly clear without ever pressing on the wall.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(6, 8),
             queue: false,
@@ -564,7 +564,7 @@ fn a_corner_tile_is_snapped_to_ground_the_airframe_can_leave() {
     );
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(6, 6),
             queue: false,
@@ -682,7 +682,7 @@ fn a_landing_survives_a_save_and_load_mid_approach_and_parked() {
     let mut restored = round_trip(&state);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(4, 4),
             queue: false,
@@ -690,7 +690,7 @@ fn a_landing_survives_a_save_and_load_mid_approach_and_parked() {
     )]);
     restored.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(4, 4),
             queue: false,
@@ -726,7 +726,7 @@ fn a_parked_condor_can_be_welded_until_it_takes_off() {
     // Fly past the flak to take some damage.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(16, 8),
             queue: false,
@@ -796,7 +796,7 @@ fn a_parked_condor_can_be_welded_until_it_takes_off() {
     // Takeoff ends the job instead of sending the welder chasing the sky.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(4, 4),
             queue: false,
@@ -918,7 +918,7 @@ fn a_queued_stop_is_flown_over_and_only_the_last_one_landed_on() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![condor],
                 goal: TilePos::new(12, 8),
                 queue: false,
@@ -926,7 +926,7 @@ fn a_queued_stop_is_flown_over_and_only_the_last_one_landed_on() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![condor],
                 goal: TilePos::new(18, 12),
                 queue: true,
@@ -1034,7 +1034,7 @@ fn two_condors_landing_inward_on_adjacent_tiles_keep_their_distance() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![east],
                 goal: TilePos::new(22, 8),
                 queue: false,
@@ -1042,7 +1042,7 @@ fn two_condors_landing_inward_on_adjacent_tiles_keep_their_distance() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![east],
                 goal: TilePos::new(16, 8),
                 queue: true,
@@ -1050,7 +1050,7 @@ fn two_condors_landing_inward_on_adjacent_tiles_keep_their_distance() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![west],
                 goal: TilePos::new(17, 8),
                 queue: false,

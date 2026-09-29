@@ -62,7 +62,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
     // Fly the wisp into the heart of the rock and let it settle.
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![wisp],
             goal: TilePos::new(10, 8),
             queue: false,
@@ -176,7 +176,7 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![wisp],
                 goal: TilePos::new(14, 11),
                 queue: false,
@@ -385,7 +385,7 @@ fn a_dead_attacker_draws_no_answer() {
         // the corpse-retaliation branch this test owns.
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![victim],
                 goal: TilePos::new(10, 10),
                 queue: false,
@@ -711,7 +711,7 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
 
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![wisp],
             goal: TilePos::new(7, 6),
             queue: false,

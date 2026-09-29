@@ -103,7 +103,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
     if kind == UnitKind::Sapper
         && let Some(progress) = state.demolition_preparation
     {
-        return UnitFrame::Action(cycle_index(progress, 2));
+        return UnitFrame::Action(cycle_index(progress, 3));
     }
 
     if kind == UnitKind::Harvester {
@@ -150,11 +150,18 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
 
     if let LocomotionState::Moving { cycle } = state.locomotion {
         return match state.propulsion {
-            PropulsionState::LiftRotors { cycle } => lift_rotor_frame(kind, cycle),
+            PropulsionState::LiftRotors { cycle } => lift_rotor_frame(cycle),
             PropulsionState::None if has_treads(kind) => match tread_phase(cycle) {
                 0 => UnitFrame::Idle,
                 phase => UnitFrame::Moving(phase - 1),
             },
+            PropulsionState::None if matches!(kind, UnitKind::Scuttler | UnitKind::Sapper) => {
+                match cycle_index(cycle, 4) {
+                    0 => UnitFrame::Moving(0),
+                    2 => UnitFrame::Moving(1),
+                    _ => UnitFrame::Idle,
+                }
+            }
             PropulsionState::None => UnitFrame::Moving(cycle_index(cycle, 2)),
         };
     }
@@ -165,7 +172,7 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         return UnitFrame::Action(0);
     }
     if let PropulsionState::LiftRotors { cycle } = state.propulsion {
-        return lift_rotor_frame(kind, cycle);
+        return lift_rotor_frame(cycle);
     }
     preparation.map_or(UnitFrame::Idle, |progress| {
         UnitFrame::Action(unit_preparation_frame(kind, progress))
@@ -192,14 +199,10 @@ pub(super) fn tread_phase(cycle: f32) -> usize {
     cycle_index(cycle, 3)
 }
 
-fn lift_rotor_frame(kind: UnitKind, cycle: f32) -> UnitFrame {
-    if kind == UnitKind::Buzzard {
-        match cycle_index(cycle, 3) {
-            0 => UnitFrame::Idle,
-            phase => UnitFrame::Moving(phase - 1),
-        }
-    } else {
-        UnitFrame::Moving(cycle_index(cycle, 2))
+fn lift_rotor_frame(cycle: f32) -> UnitFrame {
+    match cycle_index(cycle, 3) {
+        0 => UnitFrame::Idle,
+        phase => UnitFrame::Moving(phase - 1),
     }
 }
 
@@ -230,7 +233,11 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
         let body = match state.activity {
             BuildingActivity::Idle => BuildingBodyFrame::Idle,
             BuildingActivity::Production { cycle, .. } => {
-                let frames = if kind == BuildingKind::Airworks { 2 } else { 4 };
+                let frames = match kind {
+                    BuildingKind::Airworks => 2,
+                    BuildingKind::Foundry => 12,
+                    _ => 4,
+                };
                 BuildingBodyFrame::Work(cycle_index(cycle, frames))
             }
             BuildingActivity::AirworksLaunch { progress } => {
@@ -240,10 +247,10 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
                 BuildingBodyFrame::Work(cycle_index(cycle, 6))
             }
             BuildingActivity::Extracting { cycle } => {
-                BuildingBodyFrame::Work(cycle_index(cycle, 3))
+                BuildingBodyFrame::Work(cycle_index(cycle, 4))
             }
             BuildingActivity::Reclaiming { cycle } => {
-                BuildingBodyFrame::Work(cycle_index(cycle, 3))
+                BuildingBodyFrame::Work(cycle_index(cycle, 12))
             }
             BuildingActivity::RepairPulse { progress } => {
                 BuildingBodyFrame::Work(cycle_index(progress, 4))
@@ -470,6 +477,62 @@ mod tests {
 
     use super::*;
     use crate::presentation_animation::{ConstructionState, PropulsionState};
+
+    #[test]
+    fn every_production_pose_resolves_to_authored_work_art() {
+        use crate::presentation_animation::{BuildingActivity, BuildingAnimationState};
+        let atlas: serde_json::Value =
+            serde_json::from_str(include_str!("../../../assets/sprites/atlas.json")).unwrap();
+        for kind in [
+            BuildingKind::Foundry,
+            BuildingKind::Fabricator,
+            BuildingKind::Crucible,
+            BuildingKind::Airworks,
+        ] {
+            for step in 0..=120 {
+                let state = BuildingAnimationState {
+                    construction: None,
+                    attack: None,
+                    weapon: None,
+                    activity: BuildingActivity::Production {
+                        unit: UnitKind::Sentinel,
+                        progress: 0.5,
+                        cycle: step as f32 / 120.0,
+                    },
+                };
+                let BuildingBodyFrame::Work(frame) = building_frame(kind, state).body else {
+                    panic!("producer has no work pose")
+                };
+                assert!(
+                    atlas
+                        .get(format!("{}_ferrous_work{}", kind.name(), frame + 1))
+                        .is_some(),
+                    "{kind:?} selects missing work pose {frame}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn walking_legs_pass_through_neutral_between_opposing_steps() {
+        for kind in [UnitKind::Scuttler, UnitKind::Sapper] {
+            let mut state = unit_state();
+            let frames = [0.0, 0.25, 0.5, 0.75, 1.0].map(|cycle| {
+                state.locomotion = LocomotionState::Moving { cycle };
+                unit_frame(kind, state)
+            });
+            assert_eq!(
+                frames,
+                [
+                    UnitFrame::Moving(0),
+                    UnitFrame::Idle,
+                    UnitFrame::Moving(1),
+                    UnitFrame::Idle,
+                    UnitFrame::Idle
+                ]
+            );
+        }
+    }
 
     #[test]
     fn tread_loop_includes_the_base_phase_instead_of_reversing_between_two_frames() {
@@ -776,7 +839,7 @@ mod tests {
         state.attack = None;
         state.propulsion = PropulsionState::LiftRotors { cycle: 0.0 };
         assert_eq!(unit_frame(UnitKind::Buzzard, state), UnitFrame::Idle);
-        assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Moving(0));
+        assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Idle);
     }
 
     #[test]
@@ -807,26 +870,30 @@ mod tests {
         let mut state = unit_state();
         state.demolition_preparation = Some(0.25);
         assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Action(0));
-        state.demolition_preparation = Some(0.75);
+        state.demolition_preparation = Some(0.5);
         assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Action(1));
+        state.demolition_preparation = Some(0.9);
+        assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Action(2));
         state.demolition_preparation = None;
-        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        state.locomotion = LocomotionState::Moving { cycle: 0.6 };
         assert_eq!(unit_frame(UnitKind::Sapper, state), UnitFrame::Moving(1));
     }
 
     #[test]
-    fn buzzard_rotors_use_the_approved_three_phase_loop_at_rest_and_in_motion() {
+    fn lift_rotors_use_the_complete_three_phase_loop_at_rest_and_in_motion() {
         let mut state = unit_state();
         for (cycle, expected) in [
             (0.0, UnitFrame::Idle),
             (0.34, UnitFrame::Moving(0)),
             (0.67, UnitFrame::Moving(1)),
         ] {
-            state.propulsion = PropulsionState::LiftRotors { cycle };
-            assert_eq!(unit_frame(UnitKind::Buzzard, state), expected);
-            state.locomotion = LocomotionState::Moving { cycle: 0.99 };
-            assert_eq!(unit_frame(UnitKind::Buzzard, state), expected);
-            state.locomotion = LocomotionState::Rest;
+            for kind in [UnitKind::Buzzard, UnitKind::Wisp, UnitKind::Skyhook] {
+                state.propulsion = PropulsionState::LiftRotors { cycle };
+                assert_eq!(unit_frame(kind, state), expected);
+                state.locomotion = LocomotionState::Moving { cycle: 0.99 };
+                assert_eq!(unit_frame(kind, state), expected);
+                state.locomotion = LocomotionState::Rest;
+            }
         }
     }
 
@@ -945,7 +1012,7 @@ mod tests {
         };
         assert_eq!(
             building_frame(BuildingKind::Foundry, state).body,
-            BuildingBodyFrame::Work(3)
+            BuildingBodyFrame::Work(9)
         );
         assert_eq!(
             building_frame(BuildingKind::Crucible, state).body,
@@ -973,12 +1040,12 @@ mod tests {
         state.activity = BuildingActivity::Extracting { cycle: 0.99 };
         assert_eq!(
             building_frame(BuildingKind::Extractor, state).body,
-            BuildingBodyFrame::Work(2)
+            BuildingBodyFrame::Work(3)
         );
         state.activity = BuildingActivity::Reclaiming { cycle: 0.99 };
         assert_eq!(
             building_frame(BuildingKind::Reclaimer, state).body,
-            BuildingBodyFrame::Work(2)
+            BuildingBodyFrame::Work(11)
         );
     }
 

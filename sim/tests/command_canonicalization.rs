@@ -20,9 +20,9 @@ use common::{cmd, run_until, unit};
 /// be placed in one of the two tag lists below.
 fn command_tag(command: &Command) -> usize {
     match command {
-        Command::Move { .. } => 0,
+        Command::Run { .. } => 0,
         Command::Attack { .. } => 1,
-        Command::AttackMove { .. } => 2,
+        Command::Hunt { .. } => 2,
         Command::Harvest { .. } => 3,
         Command::Patrol { .. } => 4,
         Command::Build { .. } => 5,
@@ -253,9 +253,9 @@ fn families(stage: &Stage) -> Vec<Family> {
             }),
         },
         Family {
-            name: "move",
+            name: "run",
             actor: guard,
-            make: Box::new(move |units, queue| Command::Move {
+            make: Box::new(move |units, queue| Command::Run {
                 units,
                 goal: ground,
                 queue,
@@ -271,9 +271,9 @@ fn families(stage: &Stage) -> Vec<Family> {
             }),
         },
         Family {
-            name: "attack-move",
+            name: "hunt",
             actor: guard,
-            make: Box::new(move |units, queue| Command::AttackMove {
+            make: Box::new(move |units, queue| Command::Hunt {
                 units,
                 goal: ground,
                 queue,
@@ -417,7 +417,7 @@ fn a_tripled_append_takes_one_queue_slot() {
         // outright and the append never fires.
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![family.actor],
                 goal: TilePos::new(4, 9),
                 queue: false,
@@ -518,7 +518,7 @@ fn a_repeated_cancellation_subject_edits_once() {
         .map(|(leg, goal)| {
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![subject, other],
                     goal,
                     queue: leg > 0,

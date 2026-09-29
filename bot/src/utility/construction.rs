@@ -473,15 +473,15 @@ impl UtilityPolicy {
         frame: TilePos,
     ) -> bool {
         let (width, height) = BuildingKind::Extractor.base_stats().size;
-        let footprint_explored =
-            (0..height).all(|dy| (0..width).all(|dx| obs.explored(frame.offset(dx, dy))));
+        let frame_discovered =
+            (0..height).any(|dy| (0..width).any(|dx| obs.explored(frame.offset(dx, dy))));
         let visibly_occupied = obs.enemy_units.iter().any(|unit| {
             unit.hp > 0
                 && unit.body_domain() == Domain::Ground
                 && obs.visible(unit.tile)
                 && Self::frame_contains(frame, unit.tile)
         });
-        footprint_explored
+        frame_discovered
             && !visibly_occupied
             && !Self::source_in_salvage_incident(obs, frame)
             && !self.harvest_location_contested(frame)
@@ -4205,18 +4205,16 @@ mod tests {
         deferred_claim.my_units[0].founding = Some((BuildingKind::Extractor, frame));
         assert!(!has_supported_restoration(&policy, &deferred_claim, HOME));
 
-        let mut partially_unknown = ready.clone();
-        let unknown = frame.offset(1, 1);
-        {
-            let partially_unknown = &mut *partially_unknown;
-            partially_unknown.explored
-                [(unknown.y * partially_unknown.map_width + unknown.x) as usize] = false;
+        let mut unknown = ready.clone();
+        for dy in 0..2 {
+            for dx in 0..2 {
+                let tile = frame.offset(dx, dy);
+                let index = (tile.y * unknown.map_width + tile.x) as usize;
+                unknown.explored[index] = false;
+                unknown.visible[index] = false;
+            }
         }
-        assert!(!has_supported_restoration(
-            &policy,
-            &partially_unknown,
-            HOME
-        ));
+        assert!(!has_supported_restoration(&policy, &unknown, HOME));
 
         let mut occupied = ready.clone();
         occupied.enemy_units.push(UnitObs {

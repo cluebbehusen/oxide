@@ -133,7 +133,7 @@ fn a_pocketed_founder_with_a_full_queue_is_not_moved_or_charged() {
     let founder = state.units()[0].id;
     let mut commands = vec![cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![founder],
             goal: TilePos::new(4, 3),
             queue: false,
@@ -142,7 +142,7 @@ fn a_pocketed_founder_with_a_full_queue_is_not_moved_or_charged() {
     commands.extend((0..32).map(|_| {
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![founder],
                 goal: TilePos::new(4, 3),
                 queue: true,
@@ -270,7 +270,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
     // The killer leaves (oblivious walk), or it would eat the relief too.
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![killer],
             goal: TilePos::new(13, 2),
             queue: false,
@@ -454,7 +454,7 @@ fn scouted_sites_are_remembered_as_sites() {
     // Scout retreats out of sight; site keeps building behind the fog.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -492,7 +492,7 @@ fn a_fresh_site_blocks_units_already_walking_through_it() {
     let goal = TilePos::new(12, 6);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal,
             queue: false,
@@ -596,7 +596,7 @@ fn queue_overflow_is_rejected_not_swallowed() {
         .map(|i| {
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![mover],
                     goal: TilePos::new(3 + (i % 10) as i32, 2),
                     queue: true,
@@ -691,7 +691,7 @@ fn placement_requires_current_vision_not_mere_exploration() {
     // Walk home: the ground stays explored but drops out of sight.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -810,7 +810,7 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
     let goal = TilePos::new(11, 8);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal,
             queue: false,
@@ -994,7 +994,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
     assert_eq!(state.building(site).unwrap().hp, 30, "clean 10s from 70");
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![chewer],
             goal: TilePos::new(13, 1),
             queue: false,
@@ -1308,7 +1308,7 @@ fn replacing_the_only_builders_program_refunds_a_queued_site() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(3, 2),
             queue: false,
@@ -1359,7 +1359,7 @@ fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
     let walk_home = TilePos::new(8, 6);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: walk_home,
             queue: true,
@@ -1406,7 +1406,7 @@ fn a_full_order_queue_refuses_placement_with_nothing_spent() {
     // current order is a long march so nothing pops before the probe.
     let mut fill = vec![cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(13, 6),
             queue: false,
@@ -1415,7 +1415,7 @@ fn a_full_order_queue_refuses_placement_with_nothing_spent() {
     for i in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
         fill.push(cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(12 + (i % 2) as i32, 6),
                 queue: true,
@@ -1760,7 +1760,7 @@ fn a_rejected_under_feet_build_leaves_no_trace_on_the_hash() {
     let builder = state.units()[0].id;
     let mut fill = vec![cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(6, 6),
             queue: false,
@@ -1769,7 +1769,7 @@ fn a_rejected_under_feet_build_leaves_no_trace_on_the_hash() {
     for _ in 0..32 {
         fill.push(cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(7, 6),
                 queue: true,
@@ -1934,7 +1934,7 @@ fn a_deferred_build_founds_on_arrival() {
     // Walk home: the spot stays explored but drops out of sight.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2015,7 +2015,7 @@ fn deferred_founder_fixture() -> (State, UnitId, TilePos) {
     let spot = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2033,7 +2033,7 @@ fn cancelling_a_queued_deferred_site_preserves_the_surrounding_program() {
     use oxide_sim::stats::BuildingKind;
 
     let (mut state, builder, spot) = deferred_founder_fixture();
-    let later = Order::Move {
+    let later = Order::Run {
         goal: TilePos::new(3, 5).into(),
     };
     let scrap_before = state.player(PlayerId(0)).scrap;
@@ -2050,7 +2050,7 @@ fn cancelling_a_queued_deferred_site_preserves_the_surrounding_program() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(3, 5),
                 queue: true,
@@ -2137,7 +2137,7 @@ fn cancelling_an_active_deferred_site_promotes_the_next_leg() {
     use oxide_sim::stats::BuildingKind;
 
     let (mut state, builder, spot) = deferred_founder_fixture();
-    let later = Order::Move {
+    let later = Order::Run {
         goal: TilePos::new(3, 5).into(),
     };
     let scrap_before = state.player(PlayerId(0)).scrap;
@@ -2153,7 +2153,7 @@ fn cancelling_an_active_deferred_site_promotes_the_next_leg() {
     )]);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(3, 5),
             queue: true,
@@ -2327,7 +2327,7 @@ fn repeated_pending_cancellation_cannot_retarget_the_next_site() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(3, 2),
                 queue: false,
@@ -2465,12 +2465,12 @@ fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
         .find(|building| building.anchor == second_anchor)
         .unwrap()
         .id;
-    let later = Order::Move {
+    let later = Order::Run {
         goal: TilePos::new(3, 2).into(),
     };
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(3, 2),
             queue: true,
@@ -2516,7 +2516,7 @@ fn reissuing_a_deferred_build_ignores_the_selected_founders_claim() {
     let spot = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2583,7 +2583,7 @@ fn retargeting_a_deferred_build_ignores_the_replaced_footprint() {
     let new_spot = TilePos::new(13, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2654,7 +2654,7 @@ fn a_deferred_build_respects_an_unselected_founders_claim() {
     let overlapping_spot = TilePos::new(13, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![first, second],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2725,7 +2725,7 @@ fn a_deferred_claim_on_taken_ground_is_refunded_when_revealed() {
     let spot = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![founder],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2816,7 +2816,7 @@ fn a_stopped_pending_found_spends_nothing() {
     let spot = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -2916,7 +2916,7 @@ fn intent_verdicts_ignore_what_fog_hides() {
         let scout = state.units()[0].id;
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![scout],
                 goal: TilePos::new(3, 5),
                 queue: false,
@@ -2935,7 +2935,7 @@ fn intent_verdicts_ignore_what_fog_hides() {
         .collect();
     ambushed.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: squad.clone(),
             goal: spot,
             queue: false,
@@ -2989,7 +2989,7 @@ fn a_deferred_crew_founds_once_and_stacks() {
     let spot = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: crew.clone(),
             goal: TilePos::new(2, 6),
             queue: false,
@@ -3051,7 +3051,7 @@ fn cancelling_a_paid_deferred_site_clears_every_crewmates_promise() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![queued_crewmate],
             goal: TilePos::new(3, 2),
             queue: false,
@@ -3187,7 +3187,7 @@ fn a_paid_founder_cannot_lose_its_funding_to_training() {
     let spot = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 6),
             queue: false,

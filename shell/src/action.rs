@@ -103,7 +103,7 @@ pub enum Action {
     JumpToLastAlert,
     Salvage,
     Run,
-    AttackMove,
+    Hunt,
     SetBookmark(u8),
     RecallBookmark(u8),
     RepairUnit,
@@ -152,8 +152,8 @@ impl Action {
             Self::CycleIdleWorker => "Next idle Harvester".into(),
             Self::JumpToLastAlert => "Jump to last alert".into(),
             Self::Salvage => "Salvage building".into(),
-            Self::Run => "Run (move without engaging)".into(),
-            Self::AttackMove => "Attack-move".into(),
+            Self::Run => "Run".into(),
+            Self::Hunt => "Hunt".into(),
             Self::SetBookmark(n) => format!("Set camera bookmark {}", n + 1),
             Self::RecallBookmark(n) => format!("Recall camera bookmark {}", n + 1),
             Self::RepairUnit => "Weld unit".into(),
@@ -190,7 +190,7 @@ impl Action {
             Self::Upgrade => 4 | 8,
             Self::StopOrScrap => UNITS | 4,
             Self::Patrol => UNITS,
-            Self::Salvage | Self::Run | Self::AttackMove | Self::RepairUnit => UNITS | 496,
+            Self::Salvage | Self::Run | Self::Hunt | Self::RepairUnit => UNITS | 496,
             Self::Unload => 2,
             Self::ReturnCargo => 4096 | 496,
             Self::BuildCategory(_) => 16,
@@ -360,7 +360,7 @@ impl BindingMap {
             },
             Binding {
                 chord: Chord::bare(Key::F),
-                action: Action::AttackMove,
+                action: Action::Hunt,
             },
             Binding {
                 chord: Chord::bare(Key::W),
@@ -418,7 +418,7 @@ impl BindingMap {
             // the freed right-index H (TrainSlot 1 moved to K).
             (Action::Run, Key::H),
             // The explicit fighting march sits beside Run.
-            (Action::AttackMove, Key::G),
+            (Action::Hunt, Key::G),
             // Weld crosses to the right hand's remaining top-row key.
             (Action::RepairUnit, Key::Y),
         ] {
@@ -460,8 +460,8 @@ impl BindingMap {
             (CycleIdleWorker, Key::N),
             (JumpToLastAlert, Key::Tab),
             (Salvage, Key::V),
-            (Run, Key::M),
-            (AttackMove, Key::F),
+            (Run, Key::G),
+            (Hunt, Key::F),
             (RepairUnit, Key::C),
             (Upgrade, Key::U),
             (SetRally, Key::Y),
@@ -958,9 +958,9 @@ mod tests {
             Some(Chord::bare(Key::M))
         );
         assert_eq!(
-            map.chord_for(Action::AttackMove),
+            map.chord_for(Action::Hunt),
             Some(Chord::bare(Key::G)),
-            "attack-move crosses beside run"
+            "hunt crosses beside run"
         );
     }
 
@@ -1112,7 +1112,7 @@ mod tests {
         );
         assert_eq!(
             map.resolve_in(Key::G, true, true, Context::BuildCategory(0)),
-            None
+            Some(Action::Run)
         );
     }
 

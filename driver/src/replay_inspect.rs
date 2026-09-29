@@ -372,9 +372,9 @@ fn longest_silence(command_ticks: &[u64], start: u64, total: u64) -> CommandSile
 
 fn command_name(command: &Command) -> &'static str {
     match command {
-        Command::Move { .. } => "move",
+        Command::Run { .. } => "run",
         Command::Attack { .. } => "attack",
-        Command::AttackMove { .. } => "attack_move",
+        Command::Hunt { .. } => "hunt",
         Command::Harvest { .. } => "harvest",
         Command::ReturnCargo { .. } => "return_cargo",
         Command::Patrol { .. } => "patrol",

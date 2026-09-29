@@ -18,7 +18,7 @@ finite patient workload before procurement is valued. Repair cost and patient
 replacement value are distinct. Current threats to specific own assets produce
 protective deployment requests; Support retains exact deployment actors, while
 ordinary Standing Force owns any missing screen or anti-air procurement. An
-out-of-position protector returns with an ordinary Move order, even while busy,
+out-of-position protector returns with an ordinary Run order, even while busy,
 and resumes protection inside the service radius without renewing its deadline.
 Building-patient Bay coverage uses both complete footprint rectangles, matching
 the simulation's aura when valuing new and overlapping service.
@@ -129,14 +129,14 @@ requirement. Missing the preparation deadline enters bounded recovery instead of
 extending or replacing the cohort indefinitely.
 
 The strike attacks the best live member in current sight, preferring the focus.
-When every live member has left sight, it attack-moves toward the best
-remembered member if no known anti-air covers the route or approach; known
-anti-air there recovers the operation as new air defense. Once current sight has
-found every admitted member gone, the operation ends even if those anchors have
-since left sight: before Strike, as a lost objective; after a settled strike, as
-complete, with the whole cluster recorded as observed gone. Before Strike, live
-members that have all been out of sight beyond the active-operation memory end
-the operation as stale intelligence.
+When every live member has left sight, it hunt orders toward the best remembered
+member if no known anti-air covers the route or approach; known anti-air there
+recovers the operation as new air defense. Once current sight has found every
+admitted member gone, the operation ends even if those anchors have since left
+sight: before Strike, as a lost objective; after a settled strike, as complete,
+with the whole cluster recorded as observed gone. Before Strike, live members
+that have all been out of sight beyond the active-operation memory end the
+operation as stale intelligence.
 
 ## Air and lift operations
 

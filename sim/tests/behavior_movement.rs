@@ -19,7 +19,7 @@ fn move_command_walks_unit_to_goal_then_idles() {
     let goal = TilePos::new(13, 2);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal,
             queue: false,
@@ -41,7 +41,7 @@ fn move_routes_around_rock() {
     let goal = TilePos::new(9, 4);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal,
             queue: false,
@@ -60,7 +60,7 @@ fn move_goal_on_rock_snaps_to_nearby_ground() {
     let mover = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal: TilePos::new(6, 3), // rock
             queue: false,
@@ -87,7 +87,7 @@ fn units_ordered_to_one_tile_do_not_stack() {
     let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: ids,
             goal: TilePos::new(8, 4),
             queue: false,
@@ -129,7 +129,7 @@ fn collision_never_pushes_through_rock() {
     let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: ids,
             goal: TilePos::new(5, 3),
             queue: false,
@@ -210,7 +210,7 @@ fn group_moves_fan_out_over_distinct_tiles() {
     let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: ids,
             goal: TilePos::new(10, 4),
             queue: false,
@@ -370,7 +370,7 @@ fn a_harvester_crossing_a_parked_line_never_gets_a_collision_speed_burst() {
     fn timed_walk(mut state: State, mover: UnitId) -> (u64, chassis::fx::Fx) {
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(35, 10),
                 queue: false,
@@ -425,7 +425,7 @@ fn queued_orders_execute_in_sequence() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: a,
                 queue: false,
@@ -433,7 +433,7 @@ fn queued_orders_execute_in_sequence() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: b,
                 queue: true,
@@ -460,7 +460,7 @@ fn queued_advance_executes_after_the_current_leg() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: first,
                 queue: false,
@@ -510,7 +510,7 @@ fn direct_order_replaces_the_whole_queue() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(13, 6),
                 queue: false,
@@ -518,7 +518,7 @@ fn direct_order_replaces_the_whole_queue() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(13, 2),
                 queue: true,
@@ -532,7 +532,7 @@ fn direct_order_replaces_the_whole_queue() {
     let d = TilePos::new(4, 2);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal: d,
             queue: false,
@@ -641,7 +641,7 @@ fn an_unreachable_leg_ends_short_and_the_program_continues() {
         .tick(&[
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![mover],
                     goal: reachable,
                     queue: false,
@@ -649,7 +649,7 @@ fn an_unreachable_leg_ends_short_and_the_program_continues() {
             ),
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![mover],
                     goal: pocket,
                     queue: true,
@@ -657,7 +657,7 @@ fn an_unreachable_leg_ends_short_and_the_program_continues() {
             ),
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![mover],
                     goal: after,
                     queue: true,

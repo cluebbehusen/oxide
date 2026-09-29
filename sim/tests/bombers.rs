@@ -607,7 +607,7 @@ fn a_bomber_ordered_onto_a_corner_building_behind_it_never_touches_the_wall() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![condor],
                 goal: chassis::grid::TilePos::new(19, 2),
                 queue: false,
@@ -615,7 +615,7 @@ fn a_bomber_ordered_onto_a_corner_building_behind_it_never_touches_the_wall() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![condor],
                 goal: chassis::grid::TilePos::new(19, 12),
                 queue: true,

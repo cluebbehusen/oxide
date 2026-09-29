@@ -70,8 +70,8 @@ pub(crate) enum LiveCmd {
         /// Command JSON, e.g. `{"type":"stop","units":[3]}`.
         json: String,
     },
-    /// Attack-move units to a tile (engage everything on the way).
-    AttackMove {
+    /// Hunt units to a tile (engage everything on the way).
+    Hunt {
         /// Acting player index.
         player: u8,
         /// Unit ids, comma-separated.
@@ -89,8 +89,8 @@ pub(crate) enum LiveCmd {
         /// Replay JSON path.
         path: String,
     },
-    /// Move units to a tile.
-    Move {
+    /// Run units to a tile without engaging enemies.
+    Run {
         /// Acting player index.
         player: u8,
         /// Unit ids, comma-separated.
@@ -457,14 +457,14 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 .context("parsing command JSON")?
                 .request
         }
-        LiveCmd::Move {
+        LiveCmd::Run {
             player,
             units: ids,
             to,
             queue,
         } => Request::SendCommand {
             player: PlayerId(player),
-            command: Command::Move {
+            command: Command::Run {
                 units: units(ids),
                 goal: parse_tile(&to)?,
                 queue,
@@ -497,14 +497,14 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                     .collect::<Result<Vec<_>>>()?,
             },
         },
-        LiveCmd::AttackMove {
+        LiveCmd::Hunt {
             player,
             units: ids,
             to,
             queue,
         } => Request::SendCommand {
             player: PlayerId(player),
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: units(ids),
                 goal: parse_tile(&to)?,
                 queue,

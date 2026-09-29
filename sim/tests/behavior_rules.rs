@@ -47,7 +47,7 @@ fn fog_reveals_persists_and_gates_attacks() {
     // Scouting toward it brings it into view…
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(9, 3),
             queue: false,
@@ -59,7 +59,7 @@ fn fog_reveals_persists_and_gates_attacks() {
     let home = TilePos::new(2, 6);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: home,
             queue: false,
@@ -123,7 +123,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     // Scout down to see p1's Foundry (harvester vision 6).
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(9, 5),
             queue: false,
@@ -139,7 +139,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     // Walk home, out of sight of that corner.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(4, 2),
             queue: false,
@@ -165,7 +165,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     // Revisit: seeing the empty ground erases the memory.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(9, 5),
             queue: false,
@@ -196,7 +196,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(9, 4),
             queue: false,
@@ -209,7 +209,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
     let home = TilePos::new(4, 2);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: home,
             queue: false,
@@ -238,7 +238,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
     // Re-scouting reconciles memory with reality.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(9, 4),
             queue: false,
@@ -266,12 +266,12 @@ fn hostile_coordinates_are_rejected_not_panicked() {
         TilePos::new(i32::MAX, i32::MAX),
     ] {
         for command in [
-            Command::Move {
+            Command::Run {
                 units: vec![u],
                 goal,
                 queue: false,
             },
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![u],
                 goal,
                 queue: false,
@@ -342,7 +342,7 @@ fn eliminated_players_cannot_command_survivors() {
     assert!(state.result().is_none(), "two players remain — play on");
     let report = state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![survivor],
             goal: TilePos::new(5, 5),
             queue: false,
@@ -362,7 +362,7 @@ fn commanding_enemy_units_is_rejected() {
     let enemy_unit = state.units()[0].id;
     let report = state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![enemy_unit],
             goal: TilePos::new(2, 2),
             queue: false,
@@ -459,7 +459,7 @@ fn rally_on_unexplored_scrap_does_not_probe_the_map() {
         })
         .unwrap();
     assert!(
-        matches!(state.unit(newborn).unwrap().order, Order::Move { .. }),
+        matches!(state.unit(newborn).unwrap().order, Order::Run { .. }),
         "newborn should walk to unexplored ground, not clairvoyantly harvest"
     );
 }
@@ -482,7 +482,7 @@ fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![scout],
                 goal: TilePos::new(2, 3),
                 queue: false,
@@ -545,7 +545,7 @@ fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
     // The rally honored the memory and issued Harvest. (The harvest brain
     // may already have retargeted a neighboring node — its depleted-node
     // replacement scan is a separate, order-wide behavior — but under the
-    // old live-map rule the newborn would have gotten a plain Move.)
+    // old live-map rule the newborn would have gotten a plain Run.)
     assert!(
         matches!(state.unit(newborn).unwrap().order, Order::Harvest { .. }),
         "stale belief should be acted on honestly, not silently corrected"
@@ -557,7 +557,7 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
     use oxide_sim::stats::BuildingKind;
     // Player 1 stands up a turret, then loses its Foundry. The turret
     // must not keep it in the game — survival means a Foundry.
-    // Five guns: the attack-move meets the turret and its builder on the
+    // Five guns: the hunt meets the turret and its builder on the
     // way in, and that fight must not be a coin flip.
     let mut state = arena(vec![
         unit(1, UnitKind::Harvester, 12, 2),
@@ -584,7 +584,7 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
     run_until(&mut state, 700, |s, _| {
         s.buildings().iter().any(|b| b.anchor == anchor && b.built)
     });
-    // Raze the foundry (attack-move onto it; fire-at-will besieges).
+    // Raze the foundry (hunt onto it; fire-at-will besieges).
     let attackers: Vec<UnitId> = state
         .units()
         .iter()
@@ -600,7 +600,7 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
         .id;
     state.tick(&[cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: attackers,
             goal: TilePos::new(13, 6),
             queue: false,

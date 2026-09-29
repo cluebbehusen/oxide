@@ -25,6 +25,7 @@ from tools.production_sprite_sources.specialists_final import (
 
 
 def render_extractor(faction: str, phase: int) -> Image.Image:
+    phase %= 4
     im, d = canvas()
     paint = gen.FACTIONS[faction]["dark"]
     plate(d, (7, 9, 121, 121), DEEP, 8)
@@ -32,9 +33,9 @@ def render_extractor(faction: str, phase: int) -> Image.Image:
         plate(d, (x - 7, y - 6, x + 7, y + 7), DARK, 3)
         bolt(d, x, y)
     box(d, (29, 27, 101, 100), VOID, 5)
-    original._belt(d, (53, 72, 76, 106), phase, faction=faction)
+    original._belt(d, (53, 72, 76, 106), phase, faction=faction, step=2)
     for j in range(3):
-        y = 77 + (j * 9 + phase * 3) % 25
+        y = 77 + (j * 8 + phase * 2) % 24
         poly(d, [(58, y), (63, y - 2), (68, y + 2), (63, y + 5)], gen.SCRAP_DARK)
         line(d, [(59, y), (63, y - 1)], gen.SCRAP)
     for x in (50, 79):

@@ -132,16 +132,31 @@ def install_machines(registry: dict[str, Image.Image], out: Path) -> None:
             suffix = "" if action == 0 else f"_action{action}"
             put(f"rig_buzzard_mount_{faction}{suffix}", buzzard.mount(faction, action))
 
+        for kind in ("wisp", "skyhook"):
+            render = getattr(aircraft, kind)
+            for phase in range(3):
+                suffix = "" if phase == 0 else f"_move{phase}"
+                put(
+                    f"rig_{kind}_hull_{faction}{suffix}",
+                    render(faction, phase, part="hull"),
+                )
+            for action in range(5):
+                suffix = "" if action == 0 else f"_action{action}"
+                put(
+                    f"rig_{kind}_mount_{faction}{suffix}",
+                    render(faction, action=action, part="mount"),
+                )
+
         for kind, count in (
-            ("foundry", 4),
+            ("foundry", 12),
             ("fabricator", 4),
             ("airworks", 4),
-            ("crucible", 3),
+            ("crucible", 4),
             ("repair_bay", 4),
             ("array", 6),
-            ("extractor", 3),
-            ("reclaimer", 3),
-            ("reclaimer_t1", 3),
+            ("extractor", 4),
+            ("reclaimer", economy.RECLAIMER_WORK_FRAMES),
+            ("reclaimer_t1", economy.RECLAIMER_WORK_FRAMES),
         ):
             render = {
                 "extractor": extractor.render_extractor,
