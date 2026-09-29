@@ -135,6 +135,11 @@ impl Ledger {
         true
     }
 
+    /// Unit orders this decision may still issue.
+    pub(crate) fn room(&self) -> u32 {
+        self.decision.allowance - self.decision.unit_orders
+    }
+
     /// Whether this decision already queued something at `building`.
     pub(crate) fn queued_at(&self, building: BuildingId) -> bool {
         self.decision.purchases.iter().any(
@@ -222,6 +227,11 @@ pub(crate) fn decide(
         income,
         air_strikes,
     );
+    let lift = crate::missions::lift_needed(observation, map, frame);
+    let mut pull = needs.pull(observation);
+    if lift {
+        pull.push((BuildingKind::Airworks, LIFT_PULL));
+    }
     let situation = Situation {
         observation,
         map,
@@ -230,7 +240,7 @@ pub(crate) fn decide(
         saturation: staffing.saturation(),
         income,
         depletion: depletion(observation, map),
-        pull: needs.pull(observation),
+        pull,
     };
     let candidates = investments::candidates(&situation);
     let share = share(observation, profile);
@@ -251,7 +261,9 @@ pub(crate) fn decide(
                 .map(|(step, price)| NextPurchase { step, price }),
         });
 
-    persistent.missions.prune(observation);
+    for (kind, anchor) in persistent.missions.prune(observation) {
+        persistent.memory.abandon(kind, anchor, tick);
+    }
     let short = persistent
         .missions
         .defend(observation, map, frame, &mut ledger);
@@ -262,6 +274,16 @@ pub(crate) fn decide(
         buy(observation, map, frame, persistent, &mut ledger);
     }
     workers::run(observation, map, frame, &foundries, &staffing, &mut ledger);
+    if let Some((kind, anchor)) = persistent.missions.lift(
+        observation,
+        map,
+        frame,
+        profile,
+        &persistent.memory,
+        &mut ledger,
+    ) {
+        persistent.memory.abandon(kind, anchor, tick);
+    }
     persistent.missions.attack(
         observation,
         map,
@@ -277,10 +299,14 @@ pub(crate) fn decide(
         persistent
             .missions
             .scout(observation, map, frame, &mut persistent.memory, &mut ledger);
-    if scout {
-        train_scout(observation, &producers, &mut ledger);
+    let carrying =
+        lift && train_carriers(observation, map, profile, &producers, &mut ledger) && !short;
+    if !carrying {
+        if scout {
+            train_scout(observation, &producers, &mut ledger);
+        }
+        produce(observation, &producers, &mut needs, &mut ledger);
     }
-    produce(observation, &producers, &mut needs, &mut ledger);
 
     persistent.saving.keep_at_most(ledger.available());
     persistent
@@ -385,6 +411,59 @@ fn scout(
         });
     }
     true
+}
+
+/// Keeps enough carriers, alive and queued, to lift the stance's minimum army
+/// at the value per transport slot of the line and siege units at home,
+/// training one at an idle Airworks when short. It is a stock, like the
+/// Harvesters: no mission is promised the carriers it buys. Returns whether
+/// an idle Airworks waits for the scrap to train one, so that cheaper units
+/// do not spend it first.
+fn train_carriers(
+    observation: &ObservationData,
+    map: &MapModel,
+    profile: &ResolvedProfile,
+    producers: &[Producer<'_>],
+    ledger: &mut Ledger,
+) -> bool {
+    let home = map
+        .start(observation.me)
+        .and_then(|start| map.component(start));
+    let (value, slots) = observation
+        .my_units
+        .iter()
+        .filter(|unit| crate::missions::rides(unit.kind) && map.component(unit.tile) == home)
+        .fold((0_u64, 0_u64), |(value, slots), unit| {
+            (
+                value + u64::from(unit.kind.stats().cost),
+                slots + u64::from(unit.kind.stats().transport_size),
+            )
+        });
+    let per_slot = value
+        .checked_div(slots)
+        .map_or(EMPTY_SLOT_VALUE, |value| value.max(1));
+    let capacity = u64::from(UnitKind::Skyhook.stats().transport_capacity).max(1);
+    let minimum = crate::missions::minimum(profile.stance);
+    let wanted = minimum.div_ceil(capacity * per_slot).clamp(1, 4) as usize;
+    let carriers = observation
+        .my_units
+        .iter()
+        .map(|unit| unit.kind)
+        .chain(observation.my_queues.iter().flatten().copied())
+        .filter(|kind| crate::missions::carrier(*kind))
+        .count()
+        + ledger.queued(UnitKind::Skyhook);
+    if carriers >= wanted {
+        return false;
+    }
+    producers
+        .iter()
+        .find(|producer| {
+            producer.building.kind == BuildingKind::Airworks
+                && producer.idle
+                && !ledger.queued_at(producer.building.id)
+        })
+        .is_some_and(|airworks| !ledger.train(airworks.building.id, UnitKind::Skyhook))
 }
 
 /// Trains the scout scouting wants unless the seat already has or is making
@@ -530,6 +609,12 @@ fn depletion(observation: &ObservationData, map: &MapModel) -> u32 {
         .sum();
     (1_000 - left.min(initial) * 1_000 / initial) as u32
 }
+
+/// The value per transport slot assumed with no line or siege unit at home.
+const EMPTY_SLOT_VALUE: u64 = 90;
+
+/// What a needed lift adds to the Airworks' investment score.
+const LIFT_PULL: u32 = 600;
 
 /// Unit orders one decision may issue.
 fn allowance(difficulty: BotDifficulty) -> u32 {

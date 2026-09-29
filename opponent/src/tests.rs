@@ -12,6 +12,7 @@ use std::sync::Arc;
 mod attack;
 mod composition;
 mod expansion;
+mod lift;
 mod missions;
 mod placement;
 mod saving;
@@ -324,6 +325,24 @@ fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
                     target: AttackTarget::Unit(
                         west_units[east_units.iter().position(|id| *id == enemy).unwrap()],
                     ),
+                    queue,
+                },
+                Command::Load {
+                    units: sent,
+                    transport,
+                    queue,
+                } => Command::Load {
+                    units: units(sent),
+                    transport: units(vec![transport])[0],
+                    queue,
+                },
+                Command::Unload {
+                    transport,
+                    at,
+                    queue,
+                } => Command::Unload {
+                    transport: units(vec![transport])[0],
+                    at: rotate(at),
                     queue,
                 },
                 Command::Train { building, kind } => {
