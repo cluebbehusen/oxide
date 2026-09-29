@@ -4,7 +4,7 @@
 
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap};
-use crate::map::MapModel;
+use crate::map::{MapModel, UNREACHABLE};
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::stats::Domain;
@@ -12,6 +12,10 @@ use oxide_sim::{BuildingId, BuildingKind, Command, PlayerId, UnitId};
 use serde::{Deserialize, Serialize};
 
 mod attack;
+mod focus;
+mod scouting;
+
+pub(crate) use scouting::points;
 
 /// Missions the seat runs at once.
 const MISSION_CAP: usize = 16;
@@ -56,6 +60,8 @@ struct Mission {
     units: Vec<UnitId>,
     /// Where the members were last sent.
     goal: TilePos,
+    /// The enemy the members were last told to focus, while engaged.
+    focus: Option<UnitId>,
 }
 
 /// What a mission is for.
@@ -75,6 +81,11 @@ pub enum MissionKind {
         building: BuildingKind,
         /// Its footprint anchor.
         anchor: TilePos,
+    },
+    /// Looks at a place the seat has not seen for a while.
+    Scout {
+        /// The place, by its index among the seat's scouting points.
+        point: u16,
     },
 }
 
@@ -121,6 +132,7 @@ impl MissionKind {
         match self {
             Self::Defend { .. } => "defend",
             Self::Attack { .. } => "attack",
+            Self::Scout { .. } => "scout",
         }
     }
 
@@ -129,6 +141,7 @@ impl MissionKind {
         match (self, phase) {
             (Self::Defend { .. }, Phase::Recover) => QUIET_TICKS,
             (Self::Attack { .. }, phase) => attack::timeout(phase),
+            (Self::Scout { .. }, _) => scouting::TRAVEL_TICKS,
             (Self::Defend { .. }, _) => ENGAGE_TICKS,
         }
     }
@@ -138,6 +151,7 @@ impl MissionKind {
         match self {
             Self::Defend { .. } => matches!(phase, Phase::Engage | Phase::Recover),
             Self::Attack { .. } => true,
+            Self::Scout { .. } => phase == Phase::Travel,
         }
     }
 }
@@ -191,7 +205,7 @@ impl Missions {
                         .my_buildings
                         .iter()
                         .any(|building| building.id == asset),
-                    MissionKind::Attack { .. } => true,
+                    MissionKind::Attack { .. } | MissionKind::Scout { .. } => true,
                 }
         });
     }
@@ -242,11 +256,23 @@ impl Missions {
         let mut short = false;
         for (foundry, threats) in &groups {
             let centre = footprint_centre(foundry.kind, foundry.anchor);
-            let goal = threats
-                .iter()
-                .min_by_key(|threat| frame.rank(centre, doubled(threat.tile)))
-                .expect("a group holds a threat")
-                .tile;
+            let nearest = |threats: &mut dyn Iterator<Item = &&UnitObs>| {
+                threats
+                    .min_by_key(|threat| frame.rank(centre, doubled(threat.tile)))
+                    .map(|threat| threat.tile)
+            };
+            let component = map.component(foundry.anchor);
+            let grounded = nearest(
+                &mut threats
+                    .iter()
+                    .filter(|threat| threat.body_domain() == Domain::Ground),
+            );
+            let Some(goal) = grounded.or_else(|| {
+                let flyer = nearest(&mut threats.iter())?;
+                guard(map, frame, foundry, component, flyer)
+            }) else {
+                continue;
+            };
             let need = threats.iter().map(|threat| value(threat)).sum::<u64>() * 3 / 2;
             let index = self.list.iter().position(
                 |mission| matches!(mission.kind, MissionKind::Defend { asset } if asset == foundry.id),
@@ -258,7 +284,6 @@ impl Missions {
                 .map(value)
                 .sum();
             let room = UNIT_CAP - members.len();
-            let component = map.component(foundry.anchor);
             let mut candidates: Vec<&UnitObs> = observation
                 .my_units
                 .iter()
@@ -296,14 +321,18 @@ impl Missions {
                         since: now,
                         units: recruits,
                         goal,
+                        focus: None,
                     });
                     self.next += 1;
                 }
                 continue;
             };
             let mission = &mut self.list[index];
-            let resend =
-                mission.phase == Phase::Recover || mission.goal.chebyshev(goal) > RETARGET_TILES;
+            // Chasing a threat off the Foundry's ground, such as a flyer over a
+            // chasm, would stall every defender each time it moved.
+            let resend = mission.phase == Phase::Recover
+                || (mission.goal.chebyshev(goal) > RETARGET_TILES
+                    && map.component(goal) == component);
             let mut sent = recruits.clone();
             if resend {
                 sent.extend_from_slice(&mission.units);
@@ -377,7 +406,9 @@ impl Missions {
             return Err("checkpoint mission could not have been recorded".into());
         }
         for mission in &self.list {
-            if !mission.kind.allows(mission.phase) {
+            if !mission.kind.allows(mission.phase)
+                || (mission.focus.is_some() && mission.phase != Phase::Engage)
+            {
                 return Err("checkpoint mission is in a phase its kind lacks".into());
             }
             let sorted = mission.units.windows(2).all(|pair| pair[0] < pair[1]);
@@ -463,6 +494,25 @@ fn threats<'a>(
     groups
 }
 
+/// Where ground defenders wait out an air raid: the tile beside `foundry`, on
+/// its ground, nearest `flyer`. Chasing a flyer's shadow only sends them to
+/// tiles they cannot stand on.
+fn guard(
+    map: &MapModel,
+    frame: HomeFrame,
+    foundry: &BuildingObs,
+    component: Option<u32>,
+    flyer: TilePos,
+) -> Option<TilePos> {
+    let (width, height) = foundry.kind.base_stats().size;
+    (-1..=height)
+        .flat_map(|dy| (-1..=width).map(move |dx| (dx, dy)))
+        .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
+        .map(|(dx, dy)| foundry.anchor.offset(dx, dy))
+        .filter(|tile| component.is_some() && map.component(*tile) == component)
+        .min_by_key(|tile| frame.rank(doubled(flyer), doubled(*tile)))
+}
+
 /// Empty tiles inside which `enemy` threatens a building: the threat gap, or
 /// its longest reach against ground if longer. `None` when it cannot hit
 /// ground at all.
@@ -503,6 +553,37 @@ fn mine(observation: &ObservationData, id: UnitId) -> Option<&UnitObs> {
 fn insert(ids: &mut Vec<UnitId>, id: UnitId) {
     if let Err(index) = ids.binary_search(&id) {
         ids.insert(index, id);
+    }
+}
+
+/// The tile beside the footprint of `building` at `anchor` nearest the
+/// seat's start by ground, or `None` if no ground route reaches it.
+fn approach(
+    map: &MapModel,
+    me: PlayerId,
+    frame: HomeFrame,
+    building: BuildingKind,
+    anchor: TilePos,
+) -> Option<TilePos> {
+    let (width, height) = building.base_stats().size;
+    (-1..=height)
+        .flat_map(|dy| (-1..=width).map(move |dx| (dx, dy)))
+        .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
+        .map(|(dx, dy)| anchor.offset(dx, dy))
+        .filter(|tile| map.distance(me, *tile) != UNREACHABLE)
+        .min_by_key(|tile| {
+            (
+                map.distance(me, *tile),
+                frame.rank(frame.home, doubled(*tile)),
+            )
+        })
+}
+
+fn run(units: Vec<UnitId>, goal: TilePos) -> Command {
+    Command::Run {
+        units,
+        goal,
+        queue: false,
     }
 }
 

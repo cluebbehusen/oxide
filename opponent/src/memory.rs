@@ -1,7 +1,8 @@
 //! What the seat remembers between decisions: enemy units it has seen, with
-//! confidence that fades until they are seen again, and building footprints it
-//! failed to claim, so it tries somewhere else for a while. Enemy buildings
-//! need no memory here: the observation keeps their ghosts.
+//! confidence that fades until they are seen again; footprints it failed to
+//! claim or attack, so it tries somewhere else for a while; and when it last
+//! saw each of its scouting points. Enemy buildings need no memory here: the
+//! observation keeps their ghosts.
 
 use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
@@ -26,6 +27,9 @@ const UNIT_CAP: usize = 128;
 pub(crate) struct Memory {
     units: Vec<SeenUnit>,
     failures: Vec<Failure>,
+    /// Tick each scouting point was last in sight, by point; empty before
+    /// the first decision.
+    scouted: Vec<u64>,
 }
 
 /// An enemy unit as last seen.
@@ -104,14 +108,28 @@ impl Memory {
         })
     }
 
+    /// When each scouting point was last in sight, sized to `points` on first
+    /// use.
+    pub(crate) fn scouted(&mut self, points: usize) -> &mut [u64] {
+        if self.scouted.is_empty() {
+            self.scouted = vec![0; points];
+        }
+        &mut self.scouted
+    }
+
     /// Forgets failures old enough to try again.
     pub(crate) fn forget(&mut self, now: u64) {
         self.failures
             .retain(|failure| now < failure.at + FAILURE_TICKS);
     }
 
-    /// Rejects a restored memory that could not have been recorded by `now`.
-    pub(crate) fn validate(&self, now: u64) -> Result<(), String> {
+    /// Rejects a restored memory that could not have been recorded by `now`
+    /// for a seat with `points` scouting points.
+    pub(crate) fn validate(&self, now: u64, points: usize) -> Result<(), String> {
+        let sized = self.scouted.is_empty() || self.scouted.len() == points;
+        if !sized || self.scouted.iter().any(|tick| *tick > now) {
+            return Err("checkpoint scouting memory does not fit the map".into());
+        }
         if self.failures.len() > FAILURE_CAP || self.units.len() > UNIT_CAP {
             return Err("checkpoint remembers too much".into());
         }
@@ -159,7 +177,7 @@ mod tests {
         }
         assert_eq!(memory.failures.len(), FAILURE_CAP);
         assert!(!memory.failed(BuildingKind::Fabricator, TilePos::new(0, 0), 200));
-        assert_eq!(memory.validate(200), Ok(()));
-        assert!(memory.validate(199).is_err());
+        assert_eq!(memory.validate(200, 0), Ok(()));
+        assert!(memory.validate(199, 0).is_err());
     }
 }
