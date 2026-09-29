@@ -6,17 +6,36 @@ this crate, and the
 [oxide-opponent skill](../.agents/skills/oxide-opponent/SKILL.md) holds its
 working rules.
 
-Each decision spends through one running total in a fixed precedence:
-emergencies, then an affordable saving target, then workers, then production. A
-seat with no Harvester alive or queued queues one even behind other work, from
-protected scrap if it must. Each built Foundry works the four nearest live known
-scrap nodes its ground can reach within twelve tiles, none shared with another
-Foundry, and idle Foundries train Harvesters until there are two per worked
-node. Paid sites nobody is building get the nearest free Harvester, and idle
-Harvesters go to the reachable worked node with the fewest Harvesters. Every
-idle producer then trains toward the army's needs. Difficulty caps the unit
-orders one decision issues; purchases do not count against that allowance. It
-does not yet attack, defend or scout.
+Each decision spends through one running total in a fixed precedence: defense
+and other emergencies, then an affordable saving target, then workers, then
+production. A seat with no Harvester alive or queued queues one even behind
+other work, from protected scrap if it must. Each built Foundry works the four
+nearest live known scrap nodes its ground can reach within twelve tiles, none
+shared with another Foundry, and idle Foundries train Harvesters until there are
+two per worked node. Paid sites nobody is building get the nearest free
+Harvester, and idle Harvesters go to the reachable worked node with the fewest
+Harvesters. Every idle producer then trains toward the army's needs. Difficulty
+caps the unit orders one decision issues; purchases do not count against that
+allowance. It does not yet attack or scout.
+
+## Defense
+
+A visible enemy that can hit ground threatens the seat when it stands within
+eight tiles of one of the seat's buildings, or within its weapon's reach if that
+is longer. Threats group by the built Foundry each is nearest, and each group
+gets one defend mission, the home Foundry's first. Only threats on or beside
+that Foundry's ground count: one across water or a chasm is left to production,
+since chasing it would stall every defender. The mission recruits free units
+that can hit one of its threats, ground units only from that Foundry's ground,
+nearest the Foundry first, until they are worth half again what the threats are.
+It sends them in one Hunt at the threat nearest the Foundry, and sends them
+again only when that threat moves more than three tiles or the mission
+re-engages. With no threat left the mission recovers, and after 120 quiet ticks
+it lets its units go where they stand.
+
+A defense that cannot recruit enough makes the decision an emergency: it skips
+the saving purchase and lets production spend protected scrap. Missions own only
+units that exist; production never works for a mission.
 
 ## Army composition
 
@@ -97,8 +116,9 @@ Each decision also receives the seat's own `OrderStalled` and `CommandRejected`
 events since its previous decision, oldest first. `OwnEvents` holds them: the
 host keeps one per seat beside the controller and calls `record` after every
 tick, and a decision takes them all. A buffer holds at most 64 events and drops
-the oldest first. A tick without a decision leaves the buffer untouched. The
-stub only reports the events in its trace.
+the oldest first. A tick without a decision leaves the buffer untouched. A
+rejection only holds back that decision's income sample; the trace reports the
+events.
 
 ## Selection
 
@@ -110,15 +130,17 @@ headless, saved and recovered sessions build it from the same scenario data.
 
 `Checkpoint` holds the seat and what carries between its decisions: remembered
 enemy units, footprints it recently failed to claim, its income sample, and its
-saving target with the protected amount and any purchase awaiting confirmation.
-The host saves the seat's `OwnEvents` beside it. Restoring it checks that the
-seat is a configured `oxide-opponent` bot in the bound scenario and world and
-that nothing it remembers is from a later tick, rebuilds the profile and
-decision interval from the scenario, and takes the map model built from it. A
-saved buffer over the cap does not load.
+saving target with the protected amount and any purchase awaiting confirmation,
+and its missions with their phases, members and goals. The host saves the seat's
+`OwnEvents` beside it. Restoring it checks that the seat is a configured
+`oxide-opponent` bot in the bound scenario and world and that nothing it
+remembers is from a later tick, rebuilds the profile and decision interval from
+the scenario, and takes the map model built from it. A saved buffer over the cap
+does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,
-saving target with its next purchase, and protected scrap. Traces are
-diagnostics only. `Opponent::protected_scrap` reports the protected amount to
-hosts.
+saving target with its next purchase, protected scrap, and missions. Traces are
+diagnostics only. `Opponent::protected_scrap` and `Opponent::missions` report
+the protected amount and each mission's phase, when it began and the timeout it
+should end within to hosts.

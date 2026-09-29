@@ -4,9 +4,10 @@
 //! are QA evidence for evaluation rows and reports; nothing here reaches a
 //! controller.
 
+use oxide_opponent::MissionStatus;
 use oxide_sim::{Building, BuildingKind, PlayerId, State, UnitKind};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Ticks a failing condition must persist, and the window repeated stalls
 /// must fall inside, before an incident is recorded.
@@ -72,6 +73,11 @@ pub struct SeatFailures {
     /// cheapest unit any of them could legally train. The subject is the
     /// seat and the detail that unit; queueing anything re-arms the seat.
     pub starved_production: FailureTally,
+    /// A mission stayed in one phase for [`FAILURE_WINDOW_TICKS`] past the
+    /// timeout its controller gives that phase. The subject is the mission
+    /// and the detail its kind and phase; each phase is one episode.
+    #[serde(default)]
+    pub stuck_missions: FailureTally,
 }
 
 /// Diagnostic, not an incident: ticks one producer sat idle while the
@@ -113,6 +119,8 @@ struct SeatDetector {
     sites: BTreeMap<u32, Watch>,
     starvation: Starvation,
     idle: BTreeMap<u32, ProducerIdle>,
+    /// Mission phases already reported, by mission id and phase start.
+    stuck: BTreeSet<(u64, u64)>,
 }
 
 /// Detector memory for one evaluation leg. Seats without a controller are not
@@ -243,6 +251,28 @@ impl FailureDetectors {
                     now,
                     index as u32,
                     cheapest.expect("starving implies a legal unit").name(),
+                );
+            }
+        }
+    }
+
+    /// Checks the missions `seat`'s controller reports at `now`.
+    pub(super) fn check_missions(&mut self, seat: u8, now: u64, missions: &[MissionStatus]) {
+        let Some(Some(detector)) = self.seats.get_mut(usize::from(seat)) else {
+            return;
+        };
+        detector.stuck.retain(|(id, since)| {
+            missions
+                .iter()
+                .any(|mission| (mission.id, mission.since) == (*id, *since))
+        });
+        for mission in missions {
+            let overdue = now >= mission.since + mission.timeout + FAILURE_WINDOW_TICKS;
+            if overdue && detector.stuck.insert((mission.id, mission.since)) {
+                detector.failures.stuck_missions.record(
+                    now,
+                    u32::try_from(mission.id).unwrap_or(u32::MAX),
+                    &format!("{} {}", mission.kind.name(), mission.phase.name()),
                 );
             }
         }
@@ -663,5 +693,50 @@ mod tests {
             cheapest_legal_unit(&state, foundry, &[fabricator]).map(|kind| kind.stats().cost),
             Some(CHEAPEST_FOUNDRY_UNIT)
         );
+    }
+
+    #[test]
+    fn a_mission_stuck_past_its_timeout_counts_once_per_phase() {
+        use oxide_opponent::{MissionKind, Phase};
+        let status = |since: u64| MissionStatus {
+            id: 3,
+            kind: MissionKind::Defend {
+                asset: oxide_sim::BuildingId(1),
+            },
+            phase: Phase::Engage,
+            since,
+            timeout: 600,
+            units: 2,
+            goal: chassis::grid::TilePos::new(4, 4),
+        };
+        let mut detectors = FailureDetectors::new([true, false]);
+        let overdue = 600 + FAILURE_WINDOW_TICKS;
+        detectors.check_missions(0, overdue - 1, &[status(0)]);
+        detectors.check_missions(1, overdue, &[status(0)]);
+        detectors.check_missions(0, overdue, &[status(0)]);
+        detectors.check_missions(0, overdue + 12, &[status(0)]);
+        detectors.check_missions(0, overdue + 12, &[status(overdue)]);
+        detectors.check_missions(0, 2 * overdue - 1, &[status(overdue)]);
+        detectors.check_missions(0, 2 * overdue, &[status(overdue)]);
+        let seats = detectors.finish();
+        let stuck = &seats[0].0.stuck_missions;
+        assert_eq!(stuck.incidents, 2);
+        assert_eq!(
+            stuck.examples[0],
+            FailureIncident {
+                tick: overdue,
+                subject: 3,
+                detail: "defend engage".into(),
+            }
+        );
+        assert_eq!(seats[1].0, SeatFailures::default(), "an unwatched seat");
+    }
+
+    #[test]
+    fn failures_recorded_before_the_mission_detector_still_load() {
+        let mut value = serde_json::to_value(SeatFailures::default()).unwrap();
+        value.as_object_mut().unwrap().remove("stuck_missions");
+        let loaded: SeatFailures = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded, SeatFailures::default());
     }
 }

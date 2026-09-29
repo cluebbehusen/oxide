@@ -766,6 +766,9 @@ fn evaluate_plan_artifact_impl(
             let mut protected = vec![0_u32; scenario.players.len()];
             for bot in &bots {
                 protected[usize::from(bot.player().0)] = bot.protected_scrap();
+                if let SeatController::Opponent { controller, .. } = bot {
+                    failures.check_missions(controller.player().0, tick, &controller.missions());
+                }
             }
             failures.check(&state, tick, &protected);
         }

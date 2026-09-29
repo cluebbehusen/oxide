@@ -72,7 +72,8 @@ exact-allocation, forecasting or planning-progress requirements.
 - **Traces:** `--decision-trace-out <file>`, with `--out` and `--candidate`,
   writes one JSONL row per decision. Opponent seats' rows carry this crate's
   `Trace`: tick, player, bank, received own events, spent, purchases, unit-order
-  count, allowance, saving target and protected scrap.
+  count, allowance, saving target, protected scrap, and missions with their
+  phases.
 
 ## Report at handoff
 
@@ -137,6 +138,9 @@ controlled seat. They never reach a controller.
   the cheapest unit any of them may legally train. Queueing anything ends the
   episode. Rows also list each producer's idle, affordable ticks as a
   diagnostic, not an incident.
+- **Stuck missions:** one of this bot's missions stays in one phase for 1,200
+  ticks past the timeout the bot gives that phase. The detector reads the
+  missions the controller reports and never changes them.
 
 Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 (deliveries plus Reclaimer, Extractor and Foundry credits) with a saturation

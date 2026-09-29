@@ -7,6 +7,7 @@ use crate::income::Income;
 use crate::investments::{self, Investment, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
+use crate::missions::Missions;
 use crate::placement;
 use crate::profile::ResolvedProfile;
 use crate::saving::Saving;
@@ -35,6 +36,7 @@ pub(crate) struct Persistent {
     pub(crate) memory: Memory,
     pub(crate) income: Income,
     pub(crate) saving: Saving,
+    pub(crate) missions: Missions,
 }
 
 /// The decision's running total and unit-order allowance. It lives only while
@@ -177,8 +179,9 @@ pub(crate) struct Producer<'a> {
     pub(crate) idle: bool,
 }
 
-/// Emergencies first, then an affordable saving target, then workers, then
-/// production. Missions will sit between workers and production.
+/// Defense first, then worker recovery, then an affordable saving target
+/// unless a defense is short, then workers, then production. A short defense
+/// also frees protected scrap for this decision's production.
 pub(crate) fn decide(
     observation: &ObservationData,
     rejected: bool,
@@ -247,8 +250,16 @@ pub(crate) fn decide(
                 .map(|(step, price)| NextPurchase { step, price }),
         });
 
+    persistent.missions.prune(observation);
+    let short = persistent
+        .missions
+        .defend(observation, map, frame, &mut ledger);
     workers::recover(observation, &foundries, &mut ledger);
-    buy(observation, map, frame, persistent, &mut ledger);
+    if short {
+        ledger.protected = 0;
+    } else {
+        buy(observation, map, frame, persistent, &mut ledger);
+    }
     workers::run(observation, map, frame, &foundries, &staffing, &mut ledger);
     produce(observation, &producers, &mut needs, &mut ledger);
 

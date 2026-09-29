@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod composition;
 mod expansion;
+mod missions;
 mod placement;
 mod saving;
 
@@ -140,6 +141,72 @@ fn surrender(player: u8) -> PlayerCommand {
     }
 }
 
+/// The east seat's counterpart of west `commands` on a half-turn-symmetric
+/// staging: units by their rank among the seat's units, buildings by rank
+/// among its Foundries, and tiles rotated.
+fn mirror(state: &State, commands: Vec<PlayerCommand>) -> Vec<PlayerCommand> {
+    let sorted = |player: u8| {
+        let mut units = seat_units(state, PlayerId(player));
+        units.sort_unstable();
+        units
+    };
+    let (west_units, east_units) = (sorted(0), sorted(1));
+    let units = |units: Vec<UnitId>| {
+        let mut units: Vec<UnitId> = units
+            .into_iter()
+            .map(|unit| east_units[west_units.iter().position(|id| *id == unit).unwrap()])
+            .collect();
+        units.sort_unstable();
+        units
+    };
+    let (width, height) = (state.map().width(), state.map().height());
+    let rotate = |tile: TilePos| TilePos::new(width - 1 - tile.x, height - 1 - tile.y);
+    commands
+        .into_iter()
+        .map(|command| PlayerCommand {
+            player: PlayerId(1),
+            command: match command.command {
+                Command::Harvest {
+                    units: sent,
+                    node,
+                    queue,
+                } => Command::Harvest {
+                    units: units(sent),
+                    node: rotate(node),
+                    queue,
+                },
+                Command::Hunt {
+                    units: sent,
+                    goal,
+                    queue,
+                } => Command::Hunt {
+                    units: units(sent),
+                    goal: rotate(goal),
+                    queue,
+                },
+                Command::Run {
+                    units: sent,
+                    goal,
+                    queue,
+                } => Command::Run {
+                    units: units(sent),
+                    goal: rotate(goal),
+                    queue,
+                },
+                Command::Train { building, kind } => {
+                    let west = foundries(state, PlayerId(0));
+                    let index = west.iter().position(|id| *id == building).unwrap();
+                    Command::Train {
+                        building: foundries(state, PlayerId(1))[index],
+                        kind,
+                    }
+                }
+                other => panic!("this staging never issues {other:?}"),
+            },
+        })
+        .collect()
+}
+
 fn advance_to(state: &mut State, tick: u64, commands: &[PlayerCommand]) {
     state.tick(commands);
     while state.current_tick() < tick {
@@ -193,6 +260,7 @@ fn a_staged_foundry_spreads_its_harvesters_and_trains_toward_saturation() {
             allowance: 6,
             target: None,
             protected: 0,
+            missions: Vec::new(),
         })
     );
     let report = state.tick(&commands);
@@ -480,48 +548,7 @@ fn mirrored_seats_issue_mirrored_commands() {
     let west = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
     let east = seat(&scenario, 1).act(&state, &mut OwnEvents::default());
     assert!(!west.is_empty());
-
-    let rank = |player: PlayerId, unit: UnitId| {
-        let mut units = seat_units(&state, player);
-        units.sort_unstable();
-        units.iter().position(|id| *id == unit).unwrap()
-    };
-    let east_units = {
-        let mut units = seat_units(&state, PlayerId(1));
-        units.sort_unstable();
-        units
-    };
-    let (width, height) = (state.map().width(), state.map().height());
-    let mirrored: Vec<PlayerCommand> = west
-        .into_iter()
-        .map(|command| PlayerCommand {
-            player: PlayerId(1),
-            command: match command.command {
-                Command::Harvest { units, node, queue } => {
-                    let mut units: Vec<UnitId> = units
-                        .into_iter()
-                        .map(|unit| east_units[rank(PlayerId(0), unit)])
-                        .collect();
-                    units.sort_unstable();
-                    Command::Harvest {
-                        units,
-                        node: TilePos::new(width - 1 - node.x, height - 1 - node.y),
-                        queue,
-                    }
-                }
-                Command::Train { building, kind } => {
-                    let west = foundries(&state, PlayerId(0));
-                    let index = west.iter().position(|id| *id == building).unwrap();
-                    Command::Train {
-                        building: foundries(&state, PlayerId(1))[index],
-                        kind,
-                    }
-                }
-                other => panic!("this staging never issues {other:?}"),
-            },
-        })
-        .collect();
-    assert_eq!(mirrored, east);
+    assert_eq!(mirror(&state, west), east);
 }
 
 #[test]

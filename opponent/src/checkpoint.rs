@@ -1,11 +1,12 @@
 //! Controller persistence. The profile and decision interval rebuild from the
 //! scenario and the map model is shared scenario data, so a checkpoint holds
-//! the seat and what carries between its decisions: failed footprints, the
-//! income sample, and the saving target.
+//! the seat and what carries between its decisions: memory, the income
+//! sample, the saving target and missions.
 
 use crate::decision::Persistent;
 use crate::income::Income;
 use crate::memory::Memory;
+use crate::missions::Missions;
 use crate::saving::Saving;
 use crate::{MapModel, Opponent};
 use oxide_sim::scenario::BotController;
@@ -21,6 +22,7 @@ pub struct Checkpoint {
     pub(crate) memory: Memory,
     pub(crate) income: Income,
     pub(crate) saving: Saving,
+    pub(crate) missions: Missions,
 }
 
 impl Opponent {
@@ -31,6 +33,7 @@ impl Opponent {
             memory: self.persistent.memory.clone(),
             income: self.persistent.income,
             saving: self.persistent.saving.clone(),
+            missions: self.persistent.missions.clone(),
         }
     }
 
@@ -60,11 +63,15 @@ impl Opponent {
         checkpoint.memory.validate(now)?;
         checkpoint.income.validate(now)?;
         checkpoint.saving.validate(now)?;
+        checkpoint
+            .missions
+            .validate(now, state.map().width(), state.map().height())?;
         let mut restored = Self::new(checkpoint.player, config, map);
-        restored.persistent = Persistent {
+        *restored.persistent = Persistent {
             memory: checkpoint.memory.clone(),
             income: checkpoint.income,
             saving: checkpoint.saving.clone(),
+            missions: checkpoint.missions.clone(),
         };
         Ok(restored)
     }

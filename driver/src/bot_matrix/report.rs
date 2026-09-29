@@ -155,6 +155,8 @@ pub struct ControllerTally {
     pub abandoned_sites: u64,
     /// Seat-level production-starvation episodes.
     pub starved_production: u64,
+    /// Missions stuck in one phase past its timeout.
+    pub stuck_missions: u64,
     /// Income medians by checkpoint.
     pub income: Vec<IncomeMedian>,
 }
@@ -245,6 +247,7 @@ struct ControllerBuilder {
     repeated_orders: u64,
     abandoned_sites: u64,
     starved_production: u64,
+    stuck_missions: u64,
     income: BTreeMap<u64, Vec<(u32, u32)>>,
 }
 
@@ -325,6 +328,7 @@ pub fn build_report(rows: &[ScoredRow]) -> Result<MatrixReport> {
                 controller.repeated_orders += evidence.failures.repeated_orders.incidents;
                 controller.abandoned_sites += evidence.failures.abandoned_sites.incidents;
                 controller.starved_production += evidence.failures.starved_production.incidents;
+                controller.stuck_missions += evidence.failures.stuck_missions.incidents;
                 for sample in &evidence.income {
                     controller
                         .income
@@ -425,6 +429,7 @@ fn finish(key: GroupKey, builder: GroupBuilder) -> GroupReport {
             repeated_orders: tally.repeated_orders,
             abandoned_sites: tally.abandoned_sites,
             starved_production: tally.starved_production,
+            stuck_missions: tally.stuck_missions,
             income: tally
                 .income
                 .into_iter()
@@ -535,25 +540,27 @@ impl MatrixReport {
         let _ = writeln!(out, "\nfailure incidents");
         let _ = writeln!(
             out,
-            "{:<22} {:<10} {:>9} {:>16} {:>16} {:>18}",
+            "{:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
             "group",
             "controller",
             "seat-legs",
             "repeated orders",
             "abandoned sites",
-            "starved production"
+            "starved production",
+            "stuck missions"
         );
         for group in &self.groups {
             for tally in &group.controllers {
                 let _ = writeln!(
                     out,
-                    "{:<22} {:<10} {:>9} {:>16} {:>16} {:>18}",
+                    "{:<22} {:<10} {:>9} {:>16} {:>16} {:>18} {:>15}",
                     group.group,
                     controller_name(tally.controller),
                     tally.seat_legs,
                     tally.repeated_orders,
                     tally.abandoned_sites,
-                    tally.starved_production
+                    tally.starved_production,
+                    tally.stuck_missions
                 );
             }
         }
@@ -648,6 +655,10 @@ mod tests {
             seat,
             failures: SeatFailures {
                 starved_production: FailureTally {
+                    incidents: starved,
+                    examples: Vec::new(),
+                },
+                stuck_missions: FailureTally {
                     incidents: starved,
                     examples: Vec::new(),
                 },
@@ -821,6 +832,7 @@ mod tests {
         assert_eq!(new.controller, EvaluationControllerKind::Opponent);
         assert_eq!(new.seat_legs, 8);
         assert_eq!(new.starved_production, 4 + 2 * 4);
+        assert_eq!(new.stuck_missions, new.starved_production);
         assert_eq!(old.seat_legs, 8 + 4);
         assert_eq!(
             new.income,
