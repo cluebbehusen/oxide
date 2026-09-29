@@ -11,7 +11,7 @@ use super::{
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
-use crate::frame::{HomeFrame, doubled, footprint_centre, ring};
+use crate::frame::{HomeFrame, centre_distance, doubled, footprint_centre, ring};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::profile::ResolvedProfile;
@@ -149,10 +149,15 @@ impl Missions {
         let rally = air::pad(observation, raid.map, raid.frame, centre)?;
         let goal = mission.goal;
         let units = mission.units.clone();
+        let lost = (target.building, target.anchor);
+        // Gives the target up only once the strike has turned back, so a
+        // decision out of orders does not keep refreshing the give-up.
         let withdraw = |missions: &mut Self, ledger: &mut Ledger| {
-            if ledger.order(run(units.clone(), rally)) {
+            let turned = ledger.order(run(units.clone(), rally));
+            if turned {
                 missions.list[index].set_strike(target, StrikePhase::Withdraw, now, rally);
             }
+            turned
         };
 
         match phase {
@@ -179,22 +184,19 @@ impl Missions {
                     return None;
                 }
                 if all_idle || age >= TRAVEL_TICKS || raid.opposition(&members) > strength {
-                    withdraw(self, ledger);
-                    return Some((target.building, target.anchor));
+                    return withdraw(self, ledger).then_some(lost);
                 }
                 None
             }
             StrikePhase::Engage { .. } => {
                 if raid.opposition(&members) > strength {
-                    withdraw(self, ledger);
-                    return Some((target.building, target.anchor));
+                    return withdraw(self, ledger).then_some(lost);
                 }
                 if !all_idle && age < ENGAGE_TICKS {
                     return None;
                 }
                 if standing(observation, target) {
-                    withdraw(self, ledger);
-                    return Some((target.building, target.anchor));
+                    return withdraw(self, ledger).then_some(lost);
                 }
                 match raid.best(strength, Some(target)) {
                     Some(next) => {
@@ -202,7 +204,9 @@ impl Missions {
                             self.list[index].set_strike(next, StrikePhase::Travel, now, aim);
                         }
                     }
-                    None => withdraw(self, ledger),
+                    None => {
+                        withdraw(self, ledger);
+                    }
                 }
                 None
             }
@@ -281,7 +285,10 @@ impl Raid<'_> {
                     .construction
                     .as_ref()
                     .map_or(0, |construction| construction.cost);
-                let distance = u64::from(start.chebyshev(target.anchor).unsigned_abs());
+                let distance = centre_distance(
+                    footprint_centre(BuildingKind::Foundry, start),
+                    footprint_centre(target.building, target.anchor),
+                );
                 (
                     u64::from(cost) * 1_000 / (100 + distance),
                     std::cmp::Reverse(self.frame.rank(
