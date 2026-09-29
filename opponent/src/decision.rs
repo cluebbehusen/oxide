@@ -180,8 +180,8 @@ pub(crate) struct Producer<'a> {
 }
 
 /// Defense first, then worker recovery, then an affordable saving target
-/// unless a defense is short, then workers, then production. A short defense
-/// also frees protected scrap for this decision's production.
+/// unless a defense is short, then workers, then attacks, then production. A
+/// short defense also frees protected scrap for this decision's production.
 pub(crate) fn decide(
     observation: &ObservationData,
     rejected: bool,
@@ -261,6 +261,14 @@ pub(crate) fn decide(
         buy(observation, map, frame, persistent, &mut ledger);
     }
     workers::run(observation, map, frame, &foundries, &staffing, &mut ledger);
+    persistent.missions.attack(
+        observation,
+        map,
+        frame,
+        profile,
+        &mut persistent.memory,
+        &mut ledger,
+    );
     produce(observation, &producers, &mut needs, &mut ledger);
 
     persistent.saving.keep_at_most(ledger.available());

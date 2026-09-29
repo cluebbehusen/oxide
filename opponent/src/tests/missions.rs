@@ -1,9 +1,5 @@
 use super::*;
 
-fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
-    UnitSpec { player, kind, x, y }
-}
-
 /// The arena with west units and east raiders placed as given.
 fn raided(defenders: &[(UnitKind, i32, i32)], raiders: &[(UnitKind, i32, i32)]) -> Scenario {
     let mut scenario = arena(0);
@@ -14,60 +10,6 @@ fn raided(defenders: &[(UnitKind, i32, i32)], raiders: &[(UnitKind, i32, i32)]) 
         scenario.units.push(unit(1, *kind, *x, *y));
     }
     scenario
-}
-
-fn at(state: &State, x: i32, y: i32) -> UnitId {
-    state
-        .units()
-        .iter()
-        .find(|unit| unit.tile() == TilePos::new(x, y))
-        .unwrap()
-        .id
-}
-
-fn hunts(commands: &[PlayerCommand]) -> Vec<(Vec<UnitId>, TilePos)> {
-    commands
-        .iter()
-        .filter_map(|command| match &command.command {
-            Command::Hunt { units, goal, .. } => Some((units.clone(), *goal)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn run(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
-    PlayerCommand {
-        player: PlayerId(player),
-        command: Command::Run {
-            units,
-            goal: TilePos::new(x, y),
-            queue: false,
-        },
-    }
-}
-
-/// Plays the west seat against scripted east commands until `until`,
-/// returning every west trace.
-fn play(
-    opponent: &mut Opponent,
-    state: &mut State,
-    until: u64,
-    script: &[(u64, PlayerCommand)],
-) -> Vec<Trace> {
-    let mut traces = Vec::new();
-    while state.current_tick() < until {
-        let now = state.current_tick();
-        let (mut commands, trace) = opponent.act_traced(state, &mut OwnEvents::default());
-        traces.extend(trace);
-        commands.extend(
-            script
-                .iter()
-                .filter(|(tick, _)| *tick == now)
-                .map(|(_, command)| command.clone()),
-        );
-        state.tick(&commands);
-    }
-    traces
 }
 
 #[test]

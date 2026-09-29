@@ -1,7 +1,9 @@
 //! What the seat remembers between decisions: enemy units it has seen, with
-//! confidence that fades until they are seen again, and building footprints it
-//! failed to claim, so it tries somewhere else for a while. Enemy buildings
-//! need no memory here: the observation keeps their ghosts.
+//! confidence that fades until they are seen again; building footprints it
+//! failed to claim, so it tries somewhere else for a while; and enemy
+//! buildings it gave up attacking, so it attacks something else for a while.
+//! Enemy buildings need no other memory here: the observation keeps their
+//! ghosts.
 
 use chassis::grid::TilePos;
 use oxide_sim::observation::ObservationData;
@@ -26,6 +28,8 @@ const UNIT_CAP: usize = 128;
 pub(crate) struct Memory {
     units: Vec<SeenUnit>,
     failures: Vec<Failure>,
+    /// Attack targets given up on, oldest first.
+    abandoned: Vec<Failure>,
 }
 
 /// An enemy unit as last seen.
@@ -85,49 +89,71 @@ impl Memory {
 
     /// Remembers that `kind` could not be claimed at `anchor`.
     pub(crate) fn fail(&mut self, kind: BuildingKind, anchor: TilePos, now: u64) {
-        self.failures
-            .retain(|failure| (failure.kind, failure.anchor) != (kind, anchor));
-        if self.failures.len() == FAILURE_CAP {
-            self.failures.remove(0);
-        }
-        self.failures.push(Failure {
-            kind,
-            anchor,
-            at: now,
-        });
+        record(&mut self.failures, kind, anchor, now);
     }
 
     /// Whether `kind` recently failed at `anchor`.
     pub(crate) fn failed(&self, kind: BuildingKind, anchor: TilePos, now: u64) -> bool {
-        self.failures.iter().any(|failure| {
-            (failure.kind, failure.anchor) == (kind, anchor) && now < failure.at + FAILURE_TICKS
-        })
+        recent(&self.failures, kind, anchor, now)
+    }
+
+    /// Remembers giving up the attack on `kind` at `anchor`.
+    pub(crate) fn abandon(&mut self, kind: BuildingKind, anchor: TilePos, now: u64) {
+        record(&mut self.abandoned, kind, anchor, now);
+    }
+
+    /// Whether the attack on `kind` at `anchor` was recently given up.
+    pub(crate) fn abandoned(&self, kind: BuildingKind, anchor: TilePos, now: u64) -> bool {
+        recent(&self.abandoned, kind, anchor, now)
     }
 
     /// Forgets failures old enough to try again.
     pub(crate) fn forget(&mut self, now: u64) {
         self.failures
             .retain(|failure| now < failure.at + FAILURE_TICKS);
+        self.abandoned
+            .retain(|failure| now < failure.at + FAILURE_TICKS);
     }
 
     /// Rejects a restored memory that could not have been recorded by `now`.
     pub(crate) fn validate(&self, now: u64) -> Result<(), String> {
-        if self.failures.len() > FAILURE_CAP || self.units.len() > UNIT_CAP {
+        let full = |list: &[Failure]| list.len() > FAILURE_CAP;
+        if full(&self.failures) || full(&self.abandoned) || self.units.len() > UNIT_CAP {
             return Err("checkpoint remembers too much".into());
         }
         let by_id = self.units.windows(2).all(|pair| pair[0].id < pair[1].id);
         if !by_id || self.units.iter().any(|unit| unit.seen > now) {
             return Err("checkpoint enemy units are out of order".into());
         }
-        let ordered = self
-            .failures
-            .windows(2)
-            .all(|pair| pair[0].at <= pair[1].at);
-        if !ordered || self.failures.iter().any(|failure| failure.at > now) {
+        let ordered = |list: &[Failure]| {
+            list.windows(2).all(|pair| pair[0].at <= pair[1].at)
+                && list.iter().all(|failure| failure.at <= now)
+        };
+        if !ordered(&self.failures) || !ordered(&self.abandoned) {
             return Err("checkpoint failures are out of order".into());
         }
         Ok(())
     }
+}
+
+/// Remembers `kind` at `anchor` in `list`, oldest forgotten first once full.
+fn record(list: &mut Vec<Failure>, kind: BuildingKind, anchor: TilePos, now: u64) {
+    list.retain(|failure| (failure.kind, failure.anchor) != (kind, anchor));
+    if list.len() == FAILURE_CAP {
+        list.remove(0);
+    }
+    list.push(Failure {
+        kind,
+        anchor,
+        at: now,
+    });
+}
+
+/// Whether `list` recorded `kind` at `anchor` recently.
+fn recent(list: &[Failure], kind: BuildingKind, anchor: TilePos, now: u64) -> bool {
+    list.iter().any(|failure| {
+        (failure.kind, failure.anchor) == (kind, anchor) && now < failure.at + FAILURE_TICKS
+    })
 }
 
 impl SeenUnit {

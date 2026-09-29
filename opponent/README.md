@@ -16,7 +16,7 @@ two per worked node. Paid sites nobody is building get the nearest free
 Harvester, and idle Harvesters go to the reachable worked node with the fewest
 Harvesters. Every idle producer then trains toward the army's needs. Difficulty
 caps the unit orders one decision issues; purchases do not count against that
-allowance. It does not yet attack or scout.
+allowance. It does not yet scout.
 
 ## Defense
 
@@ -37,6 +37,27 @@ ticks it lets them go where they stand.
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase and lets production spend protected scrap. Missions own only
 units that exist; production never works for a mission.
+
+## Attack
+
+An attack forms from the free line, siege and anti-air units at half health or
+better when those that can hit ground are worth at least the stance's minimum
+army and outweigh a reachable target's known local defense by a margin set by
+difficulty; anti-air units recruited along the way escort the army but do not
+count toward that. The target is the most valuable known enemy building for its
+distance by ground, or a hostile start when none is known; a better one replaces
+it only while the army gathers or recovers, and only when clearly better. The
+army gathers at a rally near home toward the target's owner, travels, and
+fights. It withdraws to the rally when the enemies it knows of around it,
+remembered or seen, outweigh what it has left, and recovers there to go again or
+disband. Having taken its target it pushes on to the next only while strong
+enough for it. A target it withdrew from, could not reach, or stood idle beside
+is skipped for a while.
+
+Members under 35 percent health leave between fights and run to the rally, and a
+defense may take the attack's units in any phase but a fight. While an army that
+could attack does not, or every producer sits idle, the margin falls step by
+step toward even.
 
 ## Army composition
 
@@ -132,12 +153,12 @@ headless, saved and recovered sessions build it from the same scenario data.
 `Checkpoint` holds the seat and what carries between its decisions: remembered
 enemy units, footprints it recently failed to claim, its income sample, and its
 saving target with the protected amount and any purchase awaiting confirmation,
-and its missions with their phases, members and goals. The host saves the seat's
-`OwnEvents` beside it. Restoring it checks that the seat is a configured
-`oxide-opponent` bot in the bound scenario and world and that nothing it
-remembers is from a later tick, rebuilds the profile and decision interval from
-the scenario, and takes the map model built from it. A saved buffer over the cap
-does not load.
+its missions with their phases, members and goals, and since when it has gone
+without attacking. The host saves the seat's `OwnEvents` beside it. Restoring it
+checks that the seat is a configured `oxide-opponent` bot in the bound scenario
+and world and that nothing it remembers is from a later tick, rebuilds the
+profile and decision interval from the scenario, and takes the map model built
+from it. A saved buffer over the cap does not load.
 
 `Opponent::act_traced` returns a `Trace` of the decision's tick, seat, bank,
 received own events, committed spending, purchases, unit-order count, allowance,

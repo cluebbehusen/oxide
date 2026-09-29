@@ -124,12 +124,17 @@ impl MapModel {
 
     /// The nearest distance from any hostile seat's start to `tile`.
     pub(crate) fn hostile_distance(&self, player: PlayerId, tile: TilePos) -> u16 {
-        (0..self.teams.len())
-            .map(|seat| PlayerId(seat as u8))
-            .filter(|other| self.hostile(player, *other))
+        self.hostiles(player)
             .map(|other| self.distance(other, tile))
             .min()
             .unwrap_or(UNREACHABLE)
+    }
+
+    /// Every seat hostile to `player`, in seat order.
+    pub(crate) fn hostiles(&self, player: PlayerId) -> impl Iterator<Item = PlayerId> + '_ {
+        (0..self.teams.len())
+            .map(|seat| PlayerId(seat as u8))
+            .filter(move |other| self.hostile(player, *other))
     }
 
     fn hostile(&self, a: PlayerId, b: PlayerId) -> bool {

@@ -8,8 +8,10 @@ use crate::map::MapModel;
 use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::stats::Domain;
-use oxide_sim::{BuildingId, BuildingKind, Command, UnitId};
+use oxide_sim::{BuildingId, BuildingKind, Command, PlayerId, UnitId};
 use serde::{Deserialize, Serialize};
+
+mod attack;
 
 /// Missions the seat runs at once.
 const MISSION_CAP: usize = 16;
@@ -37,6 +39,9 @@ pub(crate) struct Missions {
     /// The id the next mission takes.
     next: u64,
     list: Vec<Mission>,
+    /// Since when an army that could attack has not, or production has sat
+    /// idle, with no attack under way.
+    waiting: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,15 +67,31 @@ pub enum MissionKind {
         /// The Foundry the threats are nearest.
         asset: BuildingId,
     },
+    /// Takes an army to a known or presumed enemy building.
+    Attack {
+        /// The building's owner.
+        owner: PlayerId,
+        /// What it is.
+        building: BuildingKind,
+        /// Its footprint anchor.
+        anchor: TilePos,
+    },
 }
 
 /// Where a mission stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
+    /// Assembling at a rally point.
+    Gather,
+    /// On the way to its target.
+    Travel,
     /// Fighting what it was formed for.
     Engage,
-    /// Its purpose is gone for now; it waits before letting its units go.
+    /// Pulling back from a fight it was losing.
+    Withdraw,
+    /// Its purpose is gone for now; it waits, then either resumes or lets its
+    /// units go.
     Recover,
 }
 
@@ -99,6 +120,24 @@ impl MissionKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Defend { .. } => "defend",
+            Self::Attack { .. } => "attack",
+        }
+    }
+
+    /// Ticks `phase` should end within.
+    fn timeout(self, phase: Phase) -> u64 {
+        match (self, phase) {
+            (Self::Defend { .. }, Phase::Recover) => QUIET_TICKS,
+            (Self::Attack { .. }, phase) => attack::timeout(phase),
+            (Self::Defend { .. }, _) => ENGAGE_TICKS,
+        }
+    }
+
+    /// Whether a mission of this kind can be in `phase`.
+    fn allows(self, phase: Phase) -> bool {
+        match self {
+            Self::Defend { .. } => matches!(phase, Phase::Engage | Phase::Recover),
+            Self::Attack { .. } => true,
         }
     }
 }
@@ -107,15 +146,34 @@ impl Phase {
     /// A short name for reports.
     pub fn name(self) -> &'static str {
         match self {
+            Self::Gather => "gather",
+            Self::Travel => "travel",
             Self::Engage => "engage",
+            Self::Withdraw => "withdraw",
             Self::Recover => "recover",
         }
     }
+}
 
-    fn timeout(self) -> u64 {
-        match self {
-            Self::Engage => ENGAGE_TICKS,
-            Self::Recover => QUIET_TICKS,
+impl Mission {
+    /// Whether the mission keeps its units from a defense: everything but a
+    /// recovering defense, and an attack only once it is fighting. A
+    /// travelling attack may have met the enemy since the last decision.
+    fn holds(&self, observation: &ObservationData) -> bool {
+        match self.kind {
+            MissionKind::Defend { .. } => self.phase != Phase::Recover,
+            MissionKind::Attack { .. } => match self.phase {
+                Phase::Engage => true,
+                Phase::Travel => {
+                    let members: Vec<&UnitObs> = self
+                        .units
+                        .iter()
+                        .filter_map(|id| mine(observation, *id))
+                        .collect();
+                    attack::contact(observation, &members)
+                }
+                Phase::Gather | Phase::Withdraw | Phase::Recover => false,
+            },
         }
     }
 }
@@ -130,7 +188,7 @@ impl Missions {
                 kind: mission.kind,
                 phase: mission.phase,
                 since: mission.since,
-                timeout: mission.phase.timeout(),
+                timeout: mission.kind.timeout(mission.phase),
                 units: mission.units.len() as u32,
                 goal: mission.goal,
             })
@@ -156,6 +214,7 @@ impl Missions {
                         .my_buildings
                         .iter()
                         .any(|building| building.id == asset),
+                    MissionKind::Attack { .. } => true,
                 }
         });
     }
@@ -163,8 +222,8 @@ impl Missions {
     /// Answers every threatened Foundry: recruits free units that can hit its
     /// threats until, in each domain it is attacked from, they outweigh the
     /// attackers by half again, and sends them at the threat nearest the
-    /// Foundry. A defense that is only recovering lends its units. Returns
-    /// whether any defense stayed short.
+    /// Foundry. A defense that is only recovering lends its units, as does an
+    /// attack not yet fighting. Returns whether any defense stayed short.
     ///
     /// Only threats standing on or beside the Foundry's ground count. One
     /// across water or a chasm is left to production: chasing it would stall
@@ -180,20 +239,25 @@ impl Missions {
         let now = observation.tick;
         let groups = threats(observation, map, frame);
         for mission in &mut self.list {
-            let MissionKind::Defend { asset } = mission.kind;
+            let MissionKind::Defend { asset } = mission.kind else {
+                continue;
+            };
             let threatened = groups.iter().any(|(foundry, _)| foundry.id == asset);
             if !threatened && mission.phase == Phase::Engage {
                 mission.phase = Phase::Recover;
                 mission.since = now;
             }
         }
-        self.list
-            .retain(|mission| mission.phase != Phase::Recover || now < mission.since + QUIET_TICKS);
+        self.list.retain(|mission| {
+            !matches!(mission.kind, MissionKind::Defend { .. })
+                || mission.phase != Phase::Recover
+                || now < mission.since + QUIET_TICKS
+        });
 
         let mut owned: Vec<UnitId> = self
             .list
             .iter()
-            .filter(|mission| mission.phase != Phase::Recover)
+            .filter(|mission| mission.holds(observation))
             .flat_map(|mission| mission.units.iter().copied())
             .collect();
         owned.sort_unstable();
@@ -263,7 +327,7 @@ impl Missions {
             short |= have[0] < need[0] || have[1] < need[1];
 
             let Some(index) = index else {
-                if recruits.is_empty() || self.list.len() == MISSION_CAP {
+                if recruits.is_empty() || self.list.len() >= MISSION_CAP {
                     continue;
                 }
                 recruits.sort_unstable();
@@ -352,14 +416,29 @@ impl Missions {
         if !ordered || exhausted || self.list.last().is_some_and(|last| last.id >= self.next) {
             return Err("checkpoint mission ids are out of order".into());
         }
+        let attacks = self
+            .list
+            .iter()
+            .filter(|mission| matches!(mission.kind, MissionKind::Attack { .. }))
+            .count();
+        if attacks > 1 || self.waiting.is_some_and(|since| since > now) {
+            return Err("checkpoint mission could not have been recorded".into());
+        }
         for mission in &self.list {
+            if !mission.kind.allows(mission.phase) {
+                return Err("checkpoint mission is in a phase its kind lacks".into());
+            }
             let sorted = mission.units.windows(2).all(|pair| pair[0] < pair[1]);
             if !sorted || mission.units.is_empty() || mission.units.len() > UNIT_CAP {
                 return Err("checkpoint mission units are malformed".into());
             }
             let on_map =
-                (0..width).contains(&mission.goal.x) && (0..height).contains(&mission.goal.y);
-            if mission.since > now || !on_map {
+                |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
+            let target_on_map = match mission.kind {
+                MissionKind::Attack { anchor, .. } => on_map(anchor),
+                MissionKind::Defend { .. } => true,
+            };
+            if mission.since > now || !on_map(mission.goal) || !target_on_map {
                 return Err("checkpoint mission could not have been recorded".into());
             }
         }
