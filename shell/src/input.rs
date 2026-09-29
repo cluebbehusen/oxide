@@ -993,7 +993,7 @@ pub fn poll_events(text_entry: bool) -> Vec<RawEvent> {
     let wheel = mq::mouse_wheel().1;
     if wheel != 0.0 {
         events.push(RawEvent::Wheel {
-            delta: normalize_wheel(wheel),
+            delta: normalize_wheel(wheel, NATIVE_WHEEL_UNITS),
         });
     }
     // Modifier edges land BEFORE ordinary key edges: a chord pressed
@@ -2025,14 +2025,37 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     }
 }
 
+/// How the native layer scales a wheel reading.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WheelUnits {
+    /// miniquad multiplies a macOS wheel's line count by 10 and passes a
+    /// trackpad or Magic Mouse's point deltas through unscaled, so every
+    /// reading under 10 comes from a precise device. Those points arrive
+    /// as small whole numbers that would otherwise read as X11 detents.
+    Mac,
+    /// Windows' ±120 notches, X11's ±1 detents, and Wayland axis values.
+    Generic,
+}
+
+const NATIVE_WHEEL_UNITS: WheelUnits = if cfg!(target_os = "macos") {
+    WheelUnits::Mac
+} else {
+    WheelUnits::Generic
+};
+
+/// Points of macOS trackpad travel per zoom notch.
+const TRACKPAD_POINTS_PER_NOTCH: f32 = 10.0;
+
 /// Normalizes a raw wheel reading toward gentle notch counts. Trackpads
 /// report small continuous deltas, discrete wheels big notchy ones
 /// (±120-ish); both should zoom at a comparable, capped rate. Heuristic —
 /// revisit if a device feels off (small whole numbers — X11-style
 /// detents — count as full notches; fractional deltas are trackpads).
-fn normalize_wheel(raw: f32) -> f32 {
+fn normalize_wheel(raw: f32, units: WheelUnits) -> f32 {
     let delta = if raw.abs() >= 40.0 {
         raw / 120.0
+    } else if units == WheelUnits::Mac && raw.abs() < 10.0 {
+        raw / TRACKPAD_POINTS_PER_NOTCH
     } else if raw.abs() <= 3.0 && raw.fract() == 0.0 {
         // X11-style discrete detents arrive as small whole numbers;
         // trackpads produce fractional deltas. Exact integers are notches.
