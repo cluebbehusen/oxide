@@ -1,9 +1,10 @@
 //! One decision: the precedence it follows, its running total and its
 //! unit-order allowance.
 
+use crate::composition::{self, Needs};
 use crate::frame::{HomeFrame, footprint_centre};
 use crate::income::Income;
-use crate::investments::{self, Situation, Step};
+use crate::investments::{self, Investment, Situation, Step};
 use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::placement;
@@ -168,10 +169,10 @@ impl Ledger {
     }
 }
 
-/// A built own Foundry, and whether its queue was empty when the decision
+/// A built own producer, and whether its queue was empty when the decision
 /// began.
 #[derive(Clone, Copy)]
-pub(crate) struct Foundry<'a> {
+pub(crate) struct Producer<'a> {
     pub(crate) building: &'a BuildingObs,
     pub(crate) idle: bool,
 }
@@ -194,16 +195,36 @@ pub(crate) fn decide(
         return ledger.decision;
     };
     let tick = observation.tick;
-    let foundries = foundries(observation, frame);
+    let producers = producers(observation, frame);
+    let foundries: Vec<Producer<'_>> = producers
+        .iter()
+        .copied()
+        .filter(|producer| producer.building.kind == BuildingKind::Foundry)
+        .collect();
     let staffing = workers::staffing(observation, map, frame, &foundries);
     let earned = persistent.income.observe(tick, observation.scrap, rejected);
     persistent.memory.forget(tick);
+    persistent.memory.observe(observation);
+    let air_strikes = observation
+        .my_buildings
+        .iter()
+        .any(|building| building.kind == BuildingKind::Airworks && building.built)
+        || persistent.saving.investment() == Some(Investment::Tech(BuildingKind::Airworks));
+    let income = persistent.income.per_minute();
+    let mut needs = composition::needs(
+        observation,
+        &persistent.memory,
+        profile.traits,
+        income,
+        air_strikes,
+    );
     let situation = Situation {
         observation,
         traits: profile.traits,
         saturation: staffing.saturation(),
-        income: persistent.income.per_minute(),
+        income,
         depletion: depletion(observation, map),
+        pull: needs.pull(observation),
     };
     let candidates = investments::candidates(&situation);
     let share = share(observation, profile);
@@ -227,7 +248,7 @@ pub(crate) fn decide(
     workers::recover(observation, &foundries, &mut ledger);
     buy(observation, map, frame, persistent, &mut ledger);
     workers::run(observation, map, frame, &foundries, &staffing, &mut ledger);
-    produce(&foundries, &mut ledger);
+    produce(observation, &producers, &mut needs, &mut ledger);
 
     persistent.saving.keep_at_most(ledger.available());
     persistent
@@ -302,30 +323,43 @@ fn buy(
     }
 }
 
-/// Built Foundries, nearest home first.
-fn foundries(observation: &ObservationData, frame: HomeFrame) -> Vec<Foundry<'_>> {
-    let mut foundries: Vec<Foundry<'_>> = observation
+/// Built producers, nearest home first.
+fn producers(observation: &ObservationData, frame: HomeFrame) -> Vec<Producer<'_>> {
+    let mut producers: Vec<Producer<'_>> = observation
         .my_buildings
         .iter()
         .zip(&observation.my_queues)
-        .filter(|(building, _)| building.kind == BuildingKind::Foundry && building.built)
-        .map(|(building, queue)| Foundry {
+        .filter(|(building, _)| building.built && !building.kind.base_stats().produces.is_empty())
+        .map(|(building, queue)| Producer {
             building,
             idle: queue.is_empty(),
         })
         .collect();
-    foundries.sort_by_key(|foundry| {
-        let centre = footprint_centre(BuildingKind::Foundry, foundry.building.anchor);
-        (frame.rank(frame.home, centre), foundry.building.id)
+    producers.sort_by_key(|producer| {
+        let centre = footprint_centre(producer.building.kind, producer.building.anchor);
+        (frame.rank(frame.home, centre), producer.building.id)
     });
-    foundries
+    producers
 }
 
-/// Queues a Sentinel at every Foundry that is still idle.
-fn produce(foundries: &[Foundry<'_>], ledger: &mut Ledger) {
-    for foundry in foundries {
-        if foundry.idle && !ledger.queued_at(foundry.building.id) {
-            ledger.train(foundry.building.id, UnitKind::Sentinel);
+/// Has every idle producer queue the unit it can best train for the most
+/// wanted role, from unprotected scrap.
+fn produce(
+    observation: &ObservationData,
+    producers: &[Producer<'_>],
+    needs: &mut Needs,
+    ledger: &mut Ledger,
+) {
+    for producer in producers {
+        if !producer.idle || ledger.queued_at(producer.building.id) {
+            continue;
+        }
+        let Some(kind) = needs.choose(observation, producer.building.kind, ledger.spendable())
+        else {
+            continue;
+        };
+        if ledger.train(producer.building.id, kind) {
+            needs.queued(kind);
         }
     }
 }
