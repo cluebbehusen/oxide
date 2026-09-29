@@ -4,7 +4,8 @@
 //! recovers to go again or disband.
 
 use super::{
-    Mission, MissionKind, Missions, Phase, UNIT_CAP, approach, hunt, insert, mine, run, value,
+    MISSION_CAP, Mission, MissionKind, Missions, Phase, UNIT_CAP, approach, hits, hunt, insert,
+    mine, run, value,
 };
 use crate::composition::{self, Role};
 use crate::decision::Ledger;
@@ -145,13 +146,16 @@ impl Missions {
             None => self.launch(&plan, &fit, ledger),
             Some(index) => {
                 if let Some(failed) = self.advance(index, &plan, &fit, ledger) {
-                    memory.fail(failed.0, failed.1, now);
+                    memory.abandon(failed.0, failed.1, now);
                 }
             }
         }
     }
 
     fn launch(&mut self, plan: &Plan<'_>, fit: &[&UnitObs], ledger: &mut Ledger) {
+        if self.list.len() >= MISSION_CAP {
+            return;
+        }
         let Some(target) = plan.best(None) else {
             return;
         };
@@ -165,7 +169,7 @@ impl Missions {
             .copied()
             .filter(|unit| reaches(plan.map, unit, component))
             .collect();
-        if fit.iter().map(|unit| value(unit)).sum::<u64>() < need {
+        if fit.iter().map(|unit| striking(unit)).sum::<u64>() < need {
             return;
         }
         let recruits = recruit(plan.frame, &fit, rally, need, UNIT_CAP);
@@ -233,7 +237,7 @@ impl Missions {
         let current = plan.target(owner, building, anchor);
         let target = if matches!(phase, Phase::Gather | Phase::Recover) {
             let current =
-                current.filter(|_| !plan.memory.failed(building, anchor, observation.tick));
+                current.filter(|_| !plan.memory.abandoned(building, anchor, observation.tick));
             match (current, plan.best(None)) {
                 (Some(current), Some(best)) if best.score * 4 < current.score * 5 => Some(current),
                 (_, best) => best,
@@ -275,21 +279,22 @@ impl Missions {
                     .copied()
                     .filter(|unit| reaches(plan.map, unit, component))
                     .collect();
-                let recruits =
-                    recruit(plan.frame, &fit, rally, need.saturating_sub(strength), room);
-                let strength = strength
-                    + recruits
-                        .iter()
-                        .filter_map(|id| mine(observation, *id))
-                        .map(value)
-                        .sum::<u64>();
-                if !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally)) {
+                let striking_strength: u64 = members.iter().map(|unit| striking(unit)).sum();
+                let recruits = recruit(
+                    plan.frame,
+                    &fit,
+                    rally,
+                    need.saturating_sub(striking_strength),
+                    room,
+                );
+                let recruited = !recruits.is_empty() && ledger.order(hunt(recruits.clone(), rally));
+                if recruited {
                     for id in &recruits {
                         insert(&mut mission.units, *id);
                     }
                 }
-                let ready = strength >= need;
-                if (all_idle || age >= timeout(phase)) && ready {
+                let ready = striking_strength >= need;
+                if !recruited && (all_idle || age >= timeout(phase)) && ready {
                     if ledger.order(hunt(mission.units.clone(), target.approach)) {
                         mission.phase = Phase::Travel;
                         mission.since = now;
@@ -333,9 +338,11 @@ impl Missions {
                     return None;
                 }
                 let standing = plan.standing(target);
-                let next = plan
-                    .best(Some(target))
-                    .filter(|next| !standing && strength >= plan.need(*next));
+                let next = plan.best(Some(target)).filter(|next| {
+                    !standing
+                        && members.iter().map(|unit| striking(unit)).sum::<u64>()
+                            >= plan.need(*next)
+                });
                 if let Some(next) = next {
                     if ledger.order(hunt(mission.units.clone(), next.approach)) {
                         mission.kind = next.kind();
@@ -381,7 +388,7 @@ impl Plan<'_> {
             targets
                 .into_iter()
                 .filter(differs)
-                .filter(|target| !self.memory.failed(target.building, target.anchor, now))
+                .filter(|target| !self.memory.abandoned(target.building, target.anchor, now))
                 .max_by_key(|target| {
                     (
                         target.score,
@@ -545,7 +552,7 @@ impl Plan<'_> {
 
 /// Whether any visible armed enemy or seen enemy building is within contact
 /// of a member.
-fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bool {
+pub(super) fn contact(observation: &ObservationData, members: &[&UnitObs]) -> bool {
     let near = |tile: TilePos| {
         members
             .iter()
@@ -595,11 +602,21 @@ fn recruit(
         if have >= need {
             break;
         }
-        have += value(unit);
+        have += striking(unit);
         recruits.push(unit.id);
     }
     recruits.sort_unstable();
     recruits
+}
+
+/// What `unit` adds against a building: its value if it can hit ground.
+/// Anti-air escorts go along but cannot take the target.
+fn striking(unit: &UnitObs) -> u64 {
+    if hits(unit, Domain::Ground) {
+        value(unit)
+    } else {
+        0
+    }
 }
 
 /// A line, siege or anti-air unit at `health` per mille or better.

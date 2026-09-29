@@ -27,13 +27,14 @@ gets one defend mission, the home Foundry's first. Only threats on or beside
 that Foundry's ground count: one across water or a chasm is left to production,
 since chasing it would stall every defender. The mission recruits free units
 that can hit one of its threats, ground units only from that Foundry's ground,
-nearest the Foundry first, until they are worth half again what the threats are.
-It sends them in one Hunt at the grounded threat nearest the Foundry; against
-flyers alone they wait beside the Foundry on the raid's side, where anti-air
-reaches them, since the ground under a flyer may be none they can stand on. It
-sends them again only when its goal moves more than three tiles on the Foundry's
-ground or the mission re-engages. With no threat left the mission recovers, and
-after 120 quiet ticks it lets its units go where they stand.
+nearest the Foundry first, until against ground and air attackers alike they are
+worth half again what those attackers are. It sends them in one Hunt at the
+grounded threat nearest the Foundry; against flyers alone they wait beside the
+Foundry on the raid's side, where anti-air reaches them, since the ground under a
+flyer may be none they can stand on. It sends them again only when its goal
+moves more than three tiles on the Foundry's ground or the mission re-engages.
+With no threat left the mission recovers, lending its units to any other
+threatened Foundry, and after 120 quiet ticks it lets them go where they stand.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase and lets production spend protected scrap. Missions own only
@@ -41,17 +42,19 @@ units that exist; production never works for a mission.
 
 ## Attack
 
-An attack forms when the free line, siege and anti-air units at half health or
-better are worth at least the stance's minimum army and outweigh a reachable
-target's known local defense by a margin set by difficulty. The target is the
-most valuable known enemy building for its distance by ground, or a hostile
-start when none is known; a better one replaces it only while the army gathers
-or recovers, and only when clearly better. The army gathers at a rally near home
-toward the target's owner, travels, and fights. It withdraws to the rally when
-the enemies it knows of around it, remembered or seen, outweigh what it has
-left, and recovers there to go again or disband. Having taken its target it
-pushes on to the next only while strong enough for it. A target it withdrew
-from, could not reach, or stood idle beside is skipped for a while.
+An attack forms from the free line, siege and anti-air units at half health or
+better when those that can hit ground are worth at least the stance's minimum
+army and outweigh a reachable target's known local defense by a margin set by
+difficulty; anti-air units recruited along the way escort the army but do not
+count toward that. The target is the most valuable known enemy building for its
+distance by ground, or a hostile start when none is known; a better one replaces
+it only while the army gathers or recovers, and only when clearly better. The
+army gathers at a rally near home toward the target's owner, travels, and
+fights. It withdraws to the rally when the enemies it knows of around it,
+remembered or seen, outweigh what it has left, and recovers there to go again or
+disband. Having taken its target it pushes on to the next only while strong
+enough for it. A target it withdrew from, could not reach, or stood idle beside
+is skipped for a while.
 
 Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While an army that

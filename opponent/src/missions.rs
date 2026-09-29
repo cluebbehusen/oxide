@@ -169,6 +169,31 @@ impl Phase {
     }
 }
 
+impl Mission {
+    /// Whether the mission keeps its units from a defense: everything but a
+    /// recovering defense, and an attack only once it is fighting. A
+    /// travelling attack may have met the enemy since the last decision. A
+    /// scout keeps its scout.
+    fn holds(&self, observation: &ObservationData) -> bool {
+        match self.kind {
+            MissionKind::Defend { .. } => self.phase != Phase::Recover,
+            MissionKind::Attack { .. } => match self.phase {
+                Phase::Engage => true,
+                Phase::Travel => {
+                    let members: Vec<&UnitObs> = self
+                        .units
+                        .iter()
+                        .filter_map(|id| mine(observation, *id))
+                        .collect();
+                    attack::contact(observation, &members)
+                }
+                Phase::Gather | Phase::Withdraw | Phase::Recover => false,
+            },
+            MissionKind::Scout { .. } => true,
+        }
+    }
+}
+
 impl Missions {
     /// Every mission, by id.
     pub(crate) fn statuses(&self) -> Vec<MissionStatus> {
@@ -211,9 +236,10 @@ impl Missions {
     }
 
     /// Answers every threatened Foundry: recruits free units that can hit its
-    /// threats until they outweigh them by half again, and sends them at the
-    /// threat nearest the Foundry. An attack not yet fighting yields its units
-    /// too. Returns whether any defense stayed short.
+    /// threats until, in each domain it is attacked from, they outweigh the
+    /// attackers by half again, and sends them at the threat nearest the
+    /// Foundry. A defense that is only recovering lends its units, as does an
+    /// attack not yet fighting. Returns whether any defense stayed short.
     ///
     /// Only threats standing on or beside the Foundry's ground count. One
     /// across water or a chasm is left to production: chasing it would stall
@@ -247,9 +273,7 @@ impl Missions {
         let mut owned: Vec<UnitId> = self
             .list
             .iter()
-            .filter(|mission| {
-                matches!(mission.kind, MissionKind::Defend { .. }) || mission.phase == Phase::Engage
-            })
+            .filter(|mission| mission.holds(observation))
             .flat_map(|mission| mission.units.iter().copied())
             .collect();
         owned.sort_unstable();
@@ -273,39 +297,64 @@ impl Missions {
             }) else {
                 continue;
             };
-            let need = threats.iter().map(|threat| value(threat)).sum::<u64>() * 3 / 2;
+            let need = [Domain::Ground, Domain::Air].map(|domain| {
+                threats
+                    .iter()
+                    .filter(|threat| threat.body_domain() == domain)
+                    .map(|threat| value(threat))
+                    .sum::<u64>()
+                    * 3
+                    / 2
+            });
             let index = self.list.iter().position(
                 |mission| matches!(mission.kind, MissionKind::Defend { asset } if asset == foundry.id),
             );
             let members = index.map_or(&[][..], |index| &self.list[index].units);
-            let mut have: u64 = members
-                .iter()
-                .filter_map(|id| mine(observation, *id))
-                .map(value)
-                .sum();
+            let mut have = [Domain::Ground, Domain::Air].map(|domain| {
+                members
+                    .iter()
+                    .filter_map(|id| mine(observation, *id))
+                    .filter(|unit| hits(unit, domain))
+                    .map(value)
+                    .sum::<u64>()
+            });
             let room = UNIT_CAP - members.len();
             let mut candidates: Vec<&UnitObs> = observation
                 .my_units
                 .iter()
                 .filter(|unit| owned.binary_search(&unit.id).is_err())
+                .filter(|unit| !members.contains(&unit.id))
                 .filter(|unit| can_hit_any(unit, threats))
                 .filter(|unit| {
                     unit.kind.stats().domain == Domain::Air || map.component(unit.tile) == component
                 })
                 .collect();
             candidates.sort_by_key(|unit| (frame.rank(centre, doubled(unit.tile)), unit.id));
+            let wanted = |have: &[u64; 2], unit: &UnitObs| {
+                [Domain::Ground, Domain::Air]
+                    .into_iter()
+                    .enumerate()
+                    .any(|(index, domain)| have[index] < need[index] && hits(unit, domain))
+            };
             let mut recruits = Vec::new();
-            for unit in candidates.into_iter().take(room) {
-                if have >= need {
+            for unit in candidates {
+                if recruits.len() == room || (have[0] >= need[0] && have[1] >= need[1]) {
                     break;
                 }
-                have += value(unit);
+                if !wanted(&have, unit) {
+                    continue;
+                }
+                for (index, domain) in [Domain::Ground, Domain::Air].into_iter().enumerate() {
+                    if hits(unit, domain) {
+                        have[index] += value(unit);
+                    }
+                }
                 recruits.push(unit.id);
             }
-            short |= have < need;
+            short |= have[0] < need[0] || have[1] < need[1];
 
             let Some(index) = index else {
-                if recruits.is_empty() || self.list.len() == MISSION_CAP {
+                if recruits.is_empty() || self.list.len() >= MISSION_CAP {
                     continue;
                 }
                 recruits.sort_unstable();
@@ -394,7 +443,8 @@ impl Missions {
             return Err("checkpoint holds too many missions".into());
         }
         let ordered = self.list.windows(2).all(|pair| pair[0].id < pair[1].id);
-        if !ordered || self.list.last().is_some_and(|last| last.id >= self.next) {
+        let exhausted = self.next == u64::MAX;
+        if !ordered || exhausted || self.list.last().is_some_and(|last| last.id >= self.next) {
             return Err("checkpoint mission ids are out of order".into());
         }
         let attacks = self
@@ -416,8 +466,12 @@ impl Missions {
                 return Err("checkpoint mission units are malformed".into());
             }
             let on_map =
-                (0..width).contains(&mission.goal.x) && (0..height).contains(&mission.goal.y);
-            if mission.since > now || !on_map {
+                |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
+            let target_on_map = match mission.kind {
+                MissionKind::Attack { anchor, .. } => on_map(anchor),
+                MissionKind::Defend { .. } | MissionKind::Scout { .. } => true,
+            };
+            if mission.since > now || !on_map(mission.goal) || !target_on_map {
                 return Err("checkpoint mission could not have been recorded".into());
             }
         }
@@ -534,6 +588,15 @@ fn can_hit_any(unit: &UnitObs, threats: &[&UnitObs]) -> bool {
             .iter()
             .any(|threat| weapon.targets.covers(threat.body_domain()))
     })
+}
+
+/// Whether `unit` has a weapon for `domain`.
+fn hits(unit: &UnitObs, domain: Domain) -> bool {
+    unit.kind
+        .stats()
+        .weapons
+        .iter()
+        .any(|weapon| weapon.targets.covers(domain))
 }
 
 /// A unit's price, discounted by its missing health.
