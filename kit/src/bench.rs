@@ -91,7 +91,7 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
     }
 }
 
-/// Sends both armies through each other with crossing attack-moves —
+/// Sends both armies through each other with crossing hunt orders —
 /// the same opening the hash-identity test uses. Without it a "bench"
 /// times parked idle armies: deployment sits outside aggro range, so
 /// no movement, fire, splash, or collision ever runs.
@@ -120,7 +120,7 @@ pub fn engage(state: &mut oxide_sim::State) {
     state.tick(&[
         PlayerCommand {
             player: PlayerId(0),
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: a,
                 goal: goal_a,
                 queue: false,
@@ -128,7 +128,7 @@ pub fn engage(state: &mut oxide_sim::State) {
         },
         PlayerCommand {
             player: PlayerId(1),
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: b,
                 goal: goal_b,
                 queue: false,

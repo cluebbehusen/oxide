@@ -146,7 +146,7 @@ fn snapshot() -> Value {
         ),
         cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![bombard],
                 goal: chassis::grid::TilePos::new(12, 6),
                 queue: false,
@@ -177,7 +177,7 @@ fn ground_motor_speed_is_validated_and_survives_continuation() {
     let id = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![id],
             goal: TilePos::new(8, 5),
             queue: false,
@@ -932,7 +932,7 @@ fn every_checklist_row_refuses_its_forgery() {
             "a walk endpoint at the far end of the coordinate space",
             |d| {
                 d["units"][0]["order"] = json!({
-                    "order": "move",
+                    "order": "run",
                     "goal": {"x": 3, "y": 3, "endpoint": {"x": i32::MAX, "y": 3}},
                 });
             },
@@ -962,7 +962,7 @@ fn every_checklist_row_refuses_its_forgery() {
             "a walk storing its own target as its endpoint",
             |d| {
                 d["units"][0]["queue"] = json!([{
-                    "order": "attack_move",
+                    "order": "hunt",
                     "goal": {"x": 6, "y": 2, "endpoint": {"x": 6, "y": 2}},
                 }]);
             },
@@ -984,7 +984,7 @@ fn every_checklist_row_refuses_its_forgery() {
             "a walk slot at the far end of the coordinate space",
             |d| {
                 d["units"][0]["order"] = json!({
-                    "order": "move",
+                    "order": "run",
                     "goal": {"x": 3, "y": 3, "aim": {"slot": {"x": i32::MAX, "y": 3}}},
                 });
             },
@@ -1235,7 +1235,7 @@ fn every_checklist_row_refuses_its_forgery() {
             "a rider still holding live orders",
             |d| {
                 let mut rider = well_formed_rider(d);
-                rider["order"] = json!({"order": "move", "goal": {"x": 3, "y": 3}});
+                rider["order"] = json!({"order": "run", "goal": {"x": 3, "y": 3}});
                 make_transport(d);
                 d["units"][0]["cargo"] = json!([rider]);
             },
@@ -1558,7 +1558,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                 ),
                 cmd(
                     0,
-                    Command::AttackMove {
+                    Command::Hunt {
                         units: vec![bombard],
                         goal: tile(13, 6),
                         queue: false,
@@ -1583,7 +1583,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                 // placed there at tick 40.
                 cmd(
                     1,
-                    Command::Move {
+                    Command::Run {
                         units: vec![stray],
                         goal: tile(3, 4),
                         queue: false,
@@ -1593,7 +1593,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                 // flight hands over to a landing at once.
                 cmd(
                     0,
-                    Command::Move {
+                    Command::Run {
                         units: vec![condor],
                         goal: tile(6, 6),
                         queue: false,
@@ -1609,7 +1609,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                 // arrives, so the walk ends beside it.
                 cmd(
                     0,
-                    Command::Move {
+                    Command::Run {
                         units: vec![walker],
                         goal: tile(3, 4),
                         queue: false,
@@ -1686,7 +1686,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
             )
         });
         saw_pending |= state.unit(stray).is_some_and(
-            |u| matches!(u.order, oxide_sim::Order::Move { goal } if goal.is_pending()),
+            |u| matches!(u.order, oxide_sim::Order::Run { goal } if goal.is_pending()),
         );
         saw_handoff |= state.unit(condor).is_some_and(
             |u| matches!(u.order, oxide_sim::Order::Land { from, .. } if from == Some(tile(6, 6))),
@@ -1727,8 +1727,8 @@ fn an_off_map_ground_unit_with_an_unreachable_move_ticks_without_panicking() {
     // body out there is a legal state that the endpoint scan must survive.
     base["units"][0]["pos"] =
         serde_json::to_value(Vec2Fx::new(Fx::from_num(-300), Fx::from_num(4))).unwrap();
-    base["units"][0]["order"] = json!({"order": "move", "goal": {"x": 6, "y": 2}});
-    base["units"][0]["queue"] = json!([{"order": "move", "goal": {"x": -2_000, "y": 2_000}}]);
+    base["units"][0]["order"] = json!({"order": "run", "goal": {"x": 6, "y": 2}});
+    base["units"][0]["queue"] = json!([{"order": "run", "goal": {"x": -2_000, "y": 2_000}}]);
     for key in ["path", "leash", "stall_ticks", "drive_speed"] {
         base["units"][0].as_object_mut().unwrap().remove(key);
     }
@@ -1767,7 +1767,7 @@ fn a_pending_rank_past_every_slot_is_accepted_and_walks_to_the_last_one() {
         let resolve = |rank: u8| {
             let mut base = snapshot();
             base["units"][0]["order"] = json!({
-                "order": "move",
+                "order": "run",
                 "goal": {"x": 8, "y": 3, "aim": {"pending": {"rank": rank, "reverse": reverse}}},
             });
             for key in ["path", "stall_ticks", "drive_speed"] {
@@ -1778,7 +1778,7 @@ fn a_pending_rank_past_every_slot_is_accepted_and_walks_to_the_last_one() {
             let walker = state.units()[0].id;
             state.tick(&[]);
             state.validate_invariants().unwrap();
-            let oxide_sim::Order::Move { goal } = state.unit(walker).unwrap().order else {
+            let oxide_sim::Order::Run { goal } = state.unit(walker).unwrap().order else {
                 panic!("the walk stands");
             };
             assert!(

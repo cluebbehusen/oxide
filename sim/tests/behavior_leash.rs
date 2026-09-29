@@ -74,7 +74,7 @@ fn a_victorious_guard_immediately_reacquires_and_remains_stationed() {
     state.tick(&[
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![first],
                 goal: TilePos::new(13, 10),
                 queue: false,
@@ -82,7 +82,7 @@ fn a_victorious_guard_immediately_reacquires_and_remains_stationed() {
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![second],
                 goal: TilePos::new(13, 11),
                 queue: false,
@@ -142,7 +142,7 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![bait],
             goal: TilePos::new(38, 8),
             queue: false,
@@ -150,7 +150,7 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
     )]);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![bait],
             goal: TilePos::new(38, 18),
             queue: true,
@@ -158,7 +158,7 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
     )]);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![bait],
             goal: TilePos::new(3, 18),
             queue: true,
@@ -244,7 +244,7 @@ fn a_dancing_harasser_cannot_hold_the_post_forever() {
     // And the moment the bait actually leaves, the post is recovered.
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![bait],
             goal: TilePos::new(38, 18),
             queue: false,
@@ -315,7 +315,7 @@ fn a_returning_guard_answers_fire() {
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![bait],
             goal: TilePos::new(9, 10),
             queue: false,
@@ -323,7 +323,7 @@ fn a_returning_guard_answers_fire() {
     )]);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![bait],
             goal: TilePos::new(38, 10),
             queue: true,
@@ -396,7 +396,7 @@ fn a_player_attack_is_never_leashed() {
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![prey],
                 goal: TilePos::new(37, 10),
                 queue: false,
@@ -467,7 +467,7 @@ fn reissuing_the_selfsame_attack_clears_the_tether() {
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![prey],
             goal: TilePos::new(22, 10),
             queue: false,
@@ -521,7 +521,7 @@ fn patrol_drops_the_tether_like_any_command() {
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![prey],
             goal: TilePos::new(22, 10),
             queue: false,
@@ -561,7 +561,7 @@ fn stop_drops_the_tether() {
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![prey],
             goal: TilePos::new(22, 10),
             queue: false,
@@ -570,7 +570,7 @@ fn stop_drops_the_tether() {
     tick_until_tethered(&mut state, guard);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![prey],
             goal: TilePos::new(38, 10),
             queue: false,

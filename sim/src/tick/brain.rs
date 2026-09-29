@@ -163,7 +163,7 @@ pub(super) fn run(
         }
         let automatic = matches!(
             state.unit(id).expect("live unit").order,
-            Order::Idle | Order::AttackMove { .. }
+            Order::Idle | Order::Hunt { .. }
         );
         if automatic
             && combat::automatic_radar(state, index, id, false, events, &mut hits, &mut launches)
@@ -189,7 +189,7 @@ pub(super) fn run(
         let reported = events.len();
         match order {
             Order::Idle => idle(state, index, id),
-            Order::Move { .. } => {
+            Order::Run { .. } => {
                 if !land_at_destination(state, index, &mut reach, id, events) {
                     walk(state, index, &mut reach, id, events);
                 }
@@ -230,7 +230,7 @@ pub(super) fn run(
                     launches: &mut launches,
                 },
             ),
-            Order::AttackMove { goal } => attack_move(state, index, &mut reach, id, goal, events),
+            Order::Hunt { goal } => hunt(state, index, &mut reach, id, goal, events),
             Order::Advance { goal } => advance(
                 state,
                 index,
@@ -286,7 +286,7 @@ use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, t
 use economy::{
     advance_upgrades, build, commit_unit_welds, found, harvest, repair, repair_unit, salvage,
 };
-use locomotion::{attack_move, idle, land, land_at_destination, walk};
+use locomotion::{hunt, idle, land, land_at_destination, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
 /// they were decided (unit-id order, then turret-id order). Damage first —

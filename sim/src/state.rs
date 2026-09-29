@@ -103,8 +103,8 @@ pub enum GameResult {
 pub enum Order {
     /// Stand around. Combat units auto-acquire targets in aggro range.
     Idle,
-    /// Walk to a tile, then go idle.
-    Move {
+    /// Run to a tile without firing or engaging, then go idle.
+    Run {
         /// The clicked tile, and where around it this unit is headed.
         goal: Goal,
     },
@@ -131,7 +131,7 @@ pub enum Order {
         /// engagements may only fire while radar remains in reach.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         pursue: bool,
-        /// Where to resume attack-moving once the victim is gone. `None`
+        /// Where to resume hunting once the victim is gone. `None`
         /// for a plain attack order (absent in old replays, hence the
         /// default).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,9 +149,9 @@ pub enum Order {
         building: crate::ids::BuildingId,
     },
     /// March to a tile, engaging anything encountered on the way — the
-    /// stance for actually fighting, as opposed to [`Order::Move`]'s
+    /// stance for actually fighting, as opposed to [`Order::Run`]'s
     /// oblivious walk.
-    AttackMove {
+    Hunt {
         /// The clicked tile, and where around it this unit is headed.
         goal: Goal,
     },
@@ -219,12 +219,10 @@ pub enum Order {
 }
 
 impl Order {
-    /// The goal of a walking order: Move, AttackMove, Advance, or Unload.
+    /// The goal of a walking order: Run, Hunt, Advance, or Unload.
     pub(crate) fn walk_goal(&self) -> Option<Goal> {
         match *self {
-            Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
-                Some(goal)
-            }
+            Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
             Order::Unload { at } => Some(at),
             _ => None,
         }
@@ -233,9 +231,7 @@ impl Order {
     /// [`Order::walk_goal`], for storing a resolved endpoint.
     pub(crate) fn walk_goal_mut(&mut self) -> Option<&mut Goal> {
         match self {
-            Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
-                Some(goal)
-            }
+            Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => Some(goal),
             Order::Unload { at } => Some(at),
             _ => None,
         }
@@ -247,8 +243,8 @@ impl Order {
     /// takes the new aim; every other order must match exactly.
     pub(crate) fn reissue_matches(&self, other: &Order) -> bool {
         match (self, other) {
-            (Order::Move { goal: a }, Order::Move { goal: b })
-            | (Order::AttackMove { goal: a }, Order::AttackMove { goal: b })
+            (Order::Run { goal: a }, Order::Run { goal: b })
+            | (Order::Hunt { goal: a }, Order::Hunt { goal: b })
             | (Order::Advance { goal: a }, Order::Advance { goal: b })
             | (Order::Unload { at: a }, Order::Unload { at: b }) => a.tile() == b.tile(),
             _ => self == other,
@@ -483,7 +479,7 @@ impl Unit {
     /// Completes an engagement without recycling its target into a patrol.
     pub(crate) fn complete_attack(&mut self, resume: Option<Goal>) {
         self.order = if let Some(goal) = resume {
-            Order::AttackMove { goal }
+            Order::Hunt { goal }
         } else {
             if self.leash.take().is_some() {
                 self.settled = crate::stats::LEASH_STATION_TICKS;
@@ -527,7 +523,7 @@ pub struct Building {
     /// Ticks of progress on `queue[0]`.
     pub progress: u32,
     /// Where finished units report: harvesters mine a rallied scrap node,
-    /// combat units attack-move there, everyone else walks. `None` means
+    /// combat units hunt there, everyone else walks. `None` means
     /// stand at the doorstep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<TilePos>,
@@ -2098,9 +2094,7 @@ fn goal_inside_envelope(goal: &Goal) -> bool {
 /// keep reachable orders byte-identical to legacy.
 fn order_goals_canonical(order: &Order) -> bool {
     match order {
-        Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
-            goal.canonical()
-        }
+        Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => goal.canonical(),
         Order::Unload { at } => at.canonical(),
         Order::Attack { resume, .. } => resume.as_ref().is_none_or(Goal::canonical),
         _ => true,
@@ -2118,7 +2112,7 @@ fn order_inside_envelope(order: &Order) -> bool {
         | Order::Repair { .. }
         | Order::Salvage { .. }
         | Order::RepairUnit { .. } => true,
-        Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
+        Order::Run { goal } | Order::Hunt { goal } | Order::Advance { goal } => {
             goal_inside_envelope(goal)
         }
         Order::Harvest { node, anchor, .. } => {
@@ -2153,9 +2147,9 @@ fn harvest_order_inside_zone(order: &Order) -> bool {
 fn order_reference(order: &Order) -> Option<Target> {
     match order {
         Order::Idle
-        | Order::Move { .. }
+        | Order::Run { .. }
         | Order::Harvest { .. }
-        | Order::AttackMove { .. }
+        | Order::Hunt { .. }
         | Order::Advance { .. }
         | Order::Found { .. }
         | Order::Land { .. } => None,

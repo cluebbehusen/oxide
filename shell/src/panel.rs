@@ -35,7 +35,7 @@ pub enum CardIcon {
     },
     /// An order chip that knows what it acts on: the subject's own
     /// sprite under a corner verb badge. Orders with no subject
-    /// (Idle, Move, Advance, Attack-move, Harvest) stay plain
+    /// (Idle, Run, Advance, Hunt, Harvest) stay plain
     /// [`CardIcon::Verb`].
     Order {
         /// The machine or works the verb acts on.
@@ -65,8 +65,8 @@ pub enum VerbIcon {
     Stop,
     /// The oblivious walk.
     Move,
-    /// The fighting march.
-    AttackMove,
+    /// The advance under fire.
+    Advance,
     /// The strike burst.
     Attack,
     /// The loop.
@@ -85,6 +85,8 @@ pub enum VerbIcon {
     Rally,
     /// The three-beat wait.
     Idle,
+    Run,
+    Hunt,
 }
 
 /// What clicking a card does.
@@ -577,9 +579,9 @@ fn order_subject(
             None,
         )),
         Order::Idle
-        | Order::Move { .. }
+        | Order::Run { .. }
         | Order::Harvest { .. }
-        | Order::AttackMove { .. }
+        | Order::Hunt { .. }
         | Order::Advance { .. }
         | Order::Board { .. }
         | Order::Unload { .. }
@@ -600,8 +602,8 @@ fn order_card(
             "Idle",
             "Idle; armed units attack nearby enemies automatically.",
         ),
-        Order::Move { .. } => (
-            VerbIcon::Move,
+        Order::Run { .. } => (
+            VerbIcon::Run,
             "Run",
             "Running without firing or engaging enemies.",
         ),
@@ -634,13 +636,13 @@ fn order_card(
             "Repair",
             "Repairing a damaged building; consumes scrap.",
         ),
-        Order::AttackMove { .. } => (
-            VerbIcon::AttackMove,
-            "Attack-move",
+        Order::Hunt { .. } => (
+            VerbIcon::Hunt,
+            "Hunt",
             "Moving while engaging enemies along the route.",
         ),
         Order::Advance { .. } => (
-            VerbIcon::AttackMove,
+            VerbIcon::Advance,
             "Advance",
             "Moving while the primary weapon fires at targets already in range; never chasing.",
         ),
@@ -1182,11 +1184,11 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             }
         }
     }
-    // Run and Attack-move only differ from a plain move for a machine
+    // Run and Hunt only differ from a plain move for a machine
     // that can shoot. Patrol stays for everyone: an unarmed scout patrols.
     if has_fighter {
         panel.cards.push(Card {
-            icon: CardIcon::Verb(VerbIcon::Move),
+            icon: CardIcon::Verb(VerbIcon::Run),
             title: "Run".into(),
             cost: None,
             hotkey: chord(bindings, Action::Run),
@@ -1200,11 +1202,11 @@ fn build_panel(game: &Scene<'_>, bindings: &BindingMap, build_menu_open: bool) -
             progress: None,
         });
         panel.cards.push(Card {
-            icon: CardIcon::Verb(VerbIcon::AttackMove),
-            title: "Attack-move".into(),
+            icon: CardIcon::Verb(VerbIcon::Hunt),
+            title: "Hunt".into(),
             cost: None,
-            hotkey: chord(bindings, Action::AttackMove),
-            action: CardAction::Dispatch(Action::AttackMove),
+            hotkey: chord(bindings, Action::Hunt),
+            action: CardAction::Dispatch(Action::Hunt),
             enabled: true,
             why: None,
             desc: vec![
@@ -1440,7 +1442,7 @@ mod tests {
             assert!(action.discards_work(), "{action:?}");
         }
         for action in [
-            CardAction::Dispatch(Action::AttackMove),
+            CardAction::Dispatch(Action::Hunt),
             CardAction::ArmRally,
             CardAction::UnloadHere(oxide_sim::UnitId(1)),
             CardAction::FilterKind(UnitKind::Harvester),
@@ -1764,7 +1766,7 @@ mod tests {
             .id;
         game.state.tick(&[PlayerCommand {
             player: game.presentation.human,
-            command: Command::AttackMove {
+            command: Command::Hunt {
                 units: vec![sentinel],
                 goal: TilePos::new(20, 12),
                 queue: false,
@@ -1779,18 +1781,18 @@ mod tests {
             .expect("patrol card");
         assert_eq!(patrol.icon, CardIcon::Verb(VerbIcon::Patrol));
         assert_eq!(patrol.hotkey, "R", "the tooltip chord stays live");
-        let attack_move = panel
+        let hunt = panel
             .cards
             .iter()
-            .find(|c| c.title == "Attack-move")
-            .expect("attack-move card");
-        assert_eq!(attack_move.action, CardAction::Dispatch(Action::AttackMove));
-        assert_eq!(attack_move.hotkey, "F");
+            .find(|c| c.title == "Hunt")
+            .expect("hunt card");
+        assert_eq!(hunt.action, CardAction::Dispatch(Action::Hunt));
+        assert_eq!(hunt.hotkey, "F");
         let chip = &panel.queue[0];
-        assert!(chip.title.starts_with("Attack-move"), "{}", chip.title);
+        assert!(chip.title.starts_with("Hunt"), "{}", chip.title);
         assert_eq!(
             chip.icon,
-            CardIcon::Verb(VerbIcon::AttackMove),
+            CardIcon::Verb(VerbIcon::Hunt),
             "chips wear pictograms, not letters that shadow chords"
         );
     }
@@ -2076,7 +2078,7 @@ mod tests {
         game.presentation.selection.units = vec![harvester];
         let panel = build_for_palette(&game.view(), &BindingMap::classic(), false).expect("panel");
         assert_eq!(panel.title, "Harvester");
-        // Unarmed, it has no Run or Attack-move, and an empty hopper has
+        // Unarmed, it has no Run or Hunt, and an empty hopper has
         // no cargo to return.
         let titles: Vec<&str> = panel.cards.iter().map(|card| card.title.as_str()).collect();
         assert_eq!(titles, ["Patrol", "Salvage", "Weld", "Build"]);
@@ -2114,7 +2116,7 @@ mod tests {
         let goal = chassis::grid::TilePos::new(8, 8);
         game.state.tick(&[oxide_sim::PlayerCommand {
             player: game.presentation.human,
-            command: oxide_sim::Command::AttackMove {
+            command: oxide_sim::Command::Hunt {
                 units: vec![harvester],
                 goal,
                 queue: false,
@@ -2272,12 +2274,12 @@ mod tests {
     fn order_kind(order: &Order) -> usize {
         match order {
             Order::Idle => 0,
-            Order::Move { .. } => 1,
+            Order::Run { .. } => 1,
             Order::Harvest { .. } => 2,
             Order::Attack { .. } => 3,
             Order::Build { .. } => 4,
             Order::Repair { .. } => 5,
-            Order::AttackMove { .. } => 6,
+            Order::Hunt { .. } => 6,
             Order::Salvage { .. } => 7,
             Order::Found { .. } => 8,
             Order::RepairUnit { .. } => 9,
@@ -2304,8 +2306,8 @@ mod tests {
         let program = Program {
             orders: vec![
                 Order::Idle,
-                Order::Move { goal },
-                Order::AttackMove { goal },
+                Order::Run { goal },
+                Order::Hunt { goal },
                 Order::Advance { goal },
                 Order::Attack {
                     target: contact,

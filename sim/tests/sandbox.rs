@@ -23,7 +23,7 @@ fn units_without_foundries_accept_commands_and_keep_running_after_restore() {
     let start = state.units()[0].pos;
     let command = PlayerCommand {
         player: PlayerId(0),
-        command: Command::Move {
+        command: Command::Run {
             units: vec![unit],
             goal: TilePos::new(9, 2),
             queue: false,

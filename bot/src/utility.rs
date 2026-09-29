@@ -1004,7 +1004,7 @@ impl UtilityPolicy {
     fn claim_non_preemptible_intent_units(intent: &Intent, claimed: &mut Vec<UnitId>) {
         match intent {
             Intent::MoveUnits { units, .. }
-            | Intent::AttackMoveUnits { units, .. }
+            | Intent::HuntUnits { units, .. }
             | Intent::AttackUnits { units, .. }
             | Intent::StopUnits { units } => claimed.extend(units.iter().copied()),
             Intent::FormArmyWith { members, .. } => claimed.extend(members.iter().copied()),

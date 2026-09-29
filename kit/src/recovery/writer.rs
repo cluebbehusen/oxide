@@ -301,9 +301,9 @@ fn snapshot(shared: &Shared) -> WriterStatus {
 fn command_bytes(command: &Command) -> usize {
     // Conservative accounting covers cloned vectors, enum storage and queue overhead.
     let (ids, points) = match command {
-        Command::Move { units, .. }
+        Command::Run { units, .. }
         | Command::Attack { units, .. }
-        | Command::AttackMove { units, .. }
+        | Command::Hunt { units, .. }
         | Command::Harvest { units, .. }
         | Command::ReturnCargo { units, .. }
         | Command::Stop { units }

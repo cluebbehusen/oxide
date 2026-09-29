@@ -366,7 +366,7 @@ fn prime_skirmish_recalls_one_public_probe_without_reprobing_during_a_chase() {
                     probes.insert((work.accepted_at, unit));
                     if work.phase == ReconPhaseTrace::Recall {
                         for command in &decision.commands {
-                            if let Command::Move { units, goal, .. } = &command.command
+                            if let Command::Run { units, goal, .. } = &command.command
                                 && units == &[unit]
                             {
                                 recalls.push((tick, unit, *goal));
@@ -532,7 +532,7 @@ fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
     let expected_goal = commands
         .iter()
         .find_map(|command| match &command.command {
-            Command::Move {
+            Command::Run {
                 units,
                 goal,
                 queue: false,
@@ -562,7 +562,7 @@ fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
             command.player == PlayerId(1)
                 && matches!(
                     &command.command,
-                    Command::Move {
+                    Command::Run {
                         units,
                         goal,
                         queue: false,
@@ -587,7 +587,7 @@ fn southeast_brain_maps_public_start_recon_through_an_ordinary_state_command() {
     assert!(
         matches!(
             state.unit(scout).expect("the scout remains alive").order,
-            Order::Move { goal } if goal.tile() == expected_goal
+            Order::Run { goal } if goal.tile() == expected_goal
         ),
         "State must receive the same world-space goal emitted by the rotated Brain"
     );
@@ -713,7 +713,7 @@ fn southeast_brain_ignores_an_unactionable_public_extractor_without_learning_its
             command.player == PlayerId(1)
                 && matches!(
                     &command.command,
-                    Command::Move {
+                    Command::Run {
                         units,
                         goal,
                         queue: false,
@@ -2732,7 +2732,7 @@ fn connected_package_refills_one_lane_until_an_oversized_roster_freezes() {
         strike_orders = strike_orders.saturating_add(ordered_now);
         for command in &decision.commands {
             if preparing_connected
-                && let Command::Move {
+                && let Command::Run {
                     units,
                     goal,
                     queue: false,
@@ -3635,7 +3635,7 @@ fn support_identity_reserves_an_exact_relief_group_for_a_visible_allied_emergenc
         let commands = brain.act(&state);
         command_trace.push((state.current_tick(), commands.clone()));
         relief = commands.iter().find_map(|command| match &command.command {
-            Command::AttackMove { units, goal, .. }
+            Command::Hunt { units, goal, .. }
                 if (allied_foundry.x..allied_foundry.x + allied_foundry_size.0)
                     .contains(&goal.x)
                     && (allied_foundry.y..allied_foundry.y + allied_foundry_size.1)
@@ -3742,7 +3742,7 @@ fn scripted_lift_launches_three_full_manifests_together_and_returns_every_carrie
                     first_unload.get_or_insert((state.current_tick(), boarded.len()));
                     unload_sites.push(*at);
                 }
-                Command::AttackMove { units, goal, .. } if goal.x > 14 => {
+                Command::Hunt { units, goal, .. } if goal.x > 14 => {
                     assaulted.extend(units.iter().copied());
                 }
                 _ => {}
@@ -3927,7 +3927,7 @@ fn scripted_lift_to_a_sealed_drop_disgorges_at_the_nearest_open_sky() {
                 Command::Unload { transport, at, .. } => {
                     drops.entry(*transport).or_default().push(*at);
                 }
-                Command::AttackMove { goal, .. } => assault_goals.push(*goal),
+                Command::Hunt { goal, .. } => assault_goals.push(*goal),
                 _ => {}
             }
         }

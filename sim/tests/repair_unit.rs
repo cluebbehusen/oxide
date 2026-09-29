@@ -23,7 +23,7 @@ const PATIENT_MAX: u32 = 60; // harvester max_hp, the suite's patient
 fn wound(state: &mut State, patient: UnitId, raider: UnitId, floor: u32) -> u32 {
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![raider],
             goal: TilePos::new(6, 2),
             queue: false,
@@ -32,7 +32,7 @@ fn wound(state: &mut State, patient: UnitId, raider: UnitId, floor: u32) -> u32 
     run_until(state, 2_000, |s, _| s.unit(patient).unwrap().hp <= floor);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![raider],
             goal: TilePos::new(12, 6),
             queue: false,
@@ -255,7 +255,7 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
     for (torch, park) in fresh.iter().zip([TilePos::new(3, 2), TilePos::new(5, 2)]) {
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![*torch],
                 goal: park,
                 queue: false,
@@ -326,7 +326,7 @@ fn a_walking_patient_is_chased_not_welded() {
     let goal = TilePos::new(6, 7);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![patient],
             goal,
             queue: false,
@@ -354,7 +354,7 @@ fn a_walking_patient_is_chased_not_welded() {
 
 #[test]
 fn a_move_landing_mid_weld_rides_no_farewell_heal() {
-    // Stationarity is intent: the tick a Move lands, the patient's
+    // Stationarity is intent: the tick a Run lands, the patient's
     // order is set but its path is not built until its own brain runs
     // — on the parity where the welder thinks first, path.is_none()
     // used to let one heal ride the departure. Both parities must
@@ -382,7 +382,7 @@ fn a_move_landing_mid_weld_rides_no_farewell_heal() {
         let before = state.unit(patient).unwrap().hp;
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![patient],
                 goal: TilePos::new(12, 2),
                 queue: false,
@@ -578,7 +578,7 @@ fn a_departing_patient_propagates_through_an_in_reach_weld_chain() {
         let before_pos = state.unit(b).unwrap().pos;
         let report = state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![c],
                 goal: TilePos::new(10, 7),
                 queue: false,
@@ -764,7 +764,7 @@ fn fire_wins_the_tick_and_the_dead_forfeit_their_welds() {
     for raider in [r1, r2] {
         state.tick(&[cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![raider],
                 goal: TilePos::new(5, 3),
                 queue: false,
@@ -842,7 +842,7 @@ fn a_queued_weld_waits_its_turn_then_welds() {
     let waypoint = TilePos::new(10, 2);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![welder],
             goal: waypoint,
             queue: false,
@@ -857,7 +857,7 @@ fn a_queued_weld_waits_its_turn_then_welds() {
         },
     )]);
     assert!(
-        matches!(state.unit(welder).unwrap().order, Order::Move { .. }),
+        matches!(state.unit(welder).unwrap().order, Order::Run { .. }),
         "the march survives the shift-weld"
     );
     assert_eq!(state.unit(welder).unwrap().queue.len(), 1);
@@ -946,7 +946,7 @@ fn weld_refuses_the_healthy_the_foreign_the_flying_and_the_selfish() {
     // the sky.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![flyer],
             goal: TilePos::new(10, 6),
             queue: false,
@@ -963,7 +963,7 @@ fn weld_refuses_the_healthy_the_foreign_the_flying_and_the_selfish() {
     // Pull the flyer home; validation cares only that it is wounded air.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![flyer],
             goal: TilePos::new(4, 7),
             queue: false,

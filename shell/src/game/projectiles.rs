@@ -189,7 +189,7 @@ mod tests {
         for (unit, y) in [(0, 8), (1, 12)] {
             game.pending.push(PlayerCommand {
                 player: PlayerId(0),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: vec![UnitId(unit)],
                     goal: TilePos::new(27, y),
                     queue: false,

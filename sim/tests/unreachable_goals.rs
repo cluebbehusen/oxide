@@ -64,7 +64,7 @@ fn unit(kind: UnitKind, x: i32, y: i32) -> UnitSpec {
 }
 
 fn move_to(units: Vec<UnitId>, goal: TilePos, queue: bool) -> oxide_sim::PlayerCommand {
-    cmd(0, Command::Move { units, goal, queue })
+    cmd(0, Command::Run { units, goal, queue })
 }
 
 /// Every `NoRoute` stall in `events`, by unit, where the unit stood.
@@ -169,7 +169,7 @@ fn crowd(count: i32, top: i32) -> Vec<UnitSpec> {
         .collect()
 }
 
-/// Orders every unit to the island, as one group or one Move each.
+/// Orders every unit to the island, as one group or one Run each.
 fn to_the_island(ids: &[UnitId], group: bool) -> Vec<oxide_sim::PlayerCommand> {
     if group {
         vec![move_to(ids.to_vec(), ISLAND, false)]
@@ -324,7 +324,7 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
             );
             assert_eq!(a.path.is_some(), b.path.is_some(), "{stage}: {l:?} routes");
             match (a.order, b.order) {
-                (Order::Move { goal: ga }, Order::Move { goal: gb }) => {
+                (Order::Run { goal: ga }, Order::Run { goal: gb }) => {
                     assert_eq!(mirror(ga.tile()), gb.tile(), "{stage}: {l:?} goal");
                     assert_eq!(
                         ga.endpoint.map(mirror),
@@ -341,7 +341,7 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
         .tick(&[
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: left.clone(),
                     goal: inside,
                     queue: false,
@@ -349,7 +349,7 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
             ),
             cmd(
                 1,
-                Command::Move {
+                Command::Run {
                     units: right.clone(),
                     goal: mirror(inside),
                     queue: false,
@@ -366,7 +366,7 @@ fn mirrored_groups_sent_into_mirrored_enclosures_settle_symmetrically() {
         endpoints.extend(
             left.iter()
                 .filter_map(|id| match state.unit(*id).unwrap().order {
-                    Order::Move { goal } => goal.endpoint.map(|tile| (tile.y, tile.x)),
+                    Order::Run { goal } => goal.endpoint.map(|tile| (tile.y, tile.x)),
                     _ => None,
                 }),
         );

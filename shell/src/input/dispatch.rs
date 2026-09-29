@@ -15,7 +15,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         && matches!(
             action,
             Action::Run
-                | Action::AttackMove
+                | Action::Hunt
                 | Action::Salvage
                 | Action::RepairUnit
                 | Action::Unload
@@ -230,8 +230,8 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 input.running = false;
                 return;
             }
-            if input.attacking {
-                input.attacking = false;
+            if input.hunting {
+                input.hunting = false;
                 return;
             }
             if !input.rallying.is_empty() {
@@ -310,9 +310,9 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.presentation.toast("No machines selected to run");
             }
         }
-        Action::AttackMove => {
-            if input.attacking {
-                input.attacking = false;
+        Action::Hunt => {
+            if input.hunting {
+                input.hunting = false;
                 return;
             }
             let has_own_unit = game.presentation.selection.units.iter().any(|id| {
@@ -322,10 +322,9 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             });
             if has_own_unit {
                 input.disarm_click_verbs();
-                input.attacking = true;
+                input.hunting = true;
             } else {
-                game.presentation
-                    .toast("No machines selected to attack-move");
+                game.presentation.toast("No machines selected to hunt");
             }
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),

@@ -443,8 +443,8 @@ mod tests {
         assert!(
             state.units().iter().any(|unit| matches!(
                 unit.order,
-                oxide_sim::Order::Move { .. }
-                    | oxide_sim::Order::AttackMove { .. }
+                oxide_sim::Order::Run { .. }
+                    | oxide_sim::Order::Hunt { .. }
                     | oxide_sim::Order::Attack {
                         resume: Some(_),
                         ..

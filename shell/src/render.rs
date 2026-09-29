@@ -1038,7 +1038,11 @@ fn draw_unit_pass(
                     DrawTextureParams {
                         dest_size: Some(body_size),
                         source: Some(source),
-                        rotation,
+                        rotation: if unit.kind == oxide_sim::UnitKind::Skyhook {
+                            body_rotation
+                        } else {
+                            rotation
+                        },
                         ..Default::default()
                     },
                     zoom,
@@ -1180,10 +1184,7 @@ pub fn draw_tutorial(
                 "{build}",
                 &bindings.label(crate::action::Action::ToggleBuildPalette),
             )
-            .replace(
-                "{attack}",
-                &bindings.label(crate::action::Action::AttackMove),
-            )
+            .replace("{hunt}", &bindings.label(crate::action::Action::Hunt))
             .replace("{back}", &bindings.label(crate::action::Action::Back));
         draw_text(
             &line,

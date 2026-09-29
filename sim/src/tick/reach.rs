@@ -679,7 +679,7 @@ mod tests {
         }
         let end = state.units[3].pos;
         state.units[4].pos = end + chassis::fx::Vec2Fx::new(step, Fx::ZERO);
-        state.units[4].order = Order::Move {
+        state.units[4].order = Order::Run {
             goal: TilePos::new(0, 1).into(),
         };
         state.units[5].pos = end + chassis::fx::Vec2Fx::new(step, Fx::ZERO);
@@ -694,7 +694,7 @@ mod tests {
         );
         // A body that starts walking mid-phase still counts: the crowd is the
         // one that stood when the phase began, whoever asks first.
-        state.units[2].order = Order::Move {
+        state.units[2].order = Order::Run {
             goal: TilePos::new(12, 1).into(),
         };
         assert!(reach.crowd_touches(&state, &index, id(&state, 4), endpoint));
@@ -735,7 +735,7 @@ mod tests {
                     + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot as i32), Fx::ZERO);
             }
             let walker = id(&state, 5);
-            state.units[5].order = Order::Move {
+            state.units[5].order = Order::Run {
                 goal: TilePos::new(0, 1).into(),
             };
             let mut index = UnitIndex::new();
@@ -785,7 +785,7 @@ mod tests {
                 unit.pos = endpoint.center()
                     + chassis::fx::Vec2Fx::new(step * Fx::from_num(slot as i32), Fx::ZERO);
             }
-            state.units[LINE + 1].order = Order::Move {
+            state.units[LINE + 1].order = Order::Run {
                 goal: TilePos::new(0, 1).into(),
             };
             state.refresh_vision();
@@ -842,7 +842,7 @@ mod tests {
             .expect("a harvester harvests")
             .ticks_per_scrap;
         let (scout, harvester, walker) = (id(&state, 0), id(&state, 1), id(&state, 2));
-        state.units[0].order = Order::Move {
+        state.units[0].order = Order::Run {
             goal: TilePos::new(0, 4).into(),
         };
         state.units[1].order = Order::Harvest {
@@ -851,7 +851,7 @@ mod tests {
             retiring: false,
         };
         state.units[1].progress = ticks_per_scrap - 1;
-        state.units[2].order = Order::Move {
+        state.units[2].order = Order::Run {
             goal: pocket.into(),
         };
         assert_eq!(state.tick % 2, 0, "premise: the brains run in id order");
@@ -871,7 +871,7 @@ mod tests {
         let unit = state.unit(walker).unwrap();
         assert_eq!(
             unit.order,
-            Order::Move {
+            Order::Run {
                 goal: pocket.into()
             }
         );

@@ -381,7 +381,7 @@ fn a_charge_detonates_under_hostile_treads() {
     let warden = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![warden],
             goal: TilePos::new(16, 4),
             queue: false,
@@ -569,7 +569,7 @@ fn a_barricade_closes_the_corridor() {
     let walker = state.units()[0].id;
     let report = state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![walker],
             goal: TilePos::new(20, 4),
             queue: false,

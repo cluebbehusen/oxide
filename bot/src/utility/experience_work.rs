@@ -33,7 +33,7 @@ mod tests {
                     node: orientation.tile(node),
                     queue: false,
                 };
-                let movement = Command::Move {
+                let movement = Command::Run {
                     units: vec![UnitId(1)],
                     goal: orientation.tile(TilePos::new(7, 3)),
                     queue: queued_move,
@@ -531,12 +531,12 @@ mod tests {
     #[test]
     fn dispatched_move_replaces_harvest_memory_but_queued_move_does_not() {
         let unit = UnitId(3);
-        let immediate = Command::Move {
+        let immediate = Command::Run {
             units: vec![unit],
             goal: TilePos::new(8, 5),
             queue: false,
         };
-        let queued = Command::Move {
+        let queued = Command::Run {
             units: vec![unit],
             goal: TilePos::new(8, 5),
             queue: true,
@@ -1133,7 +1133,7 @@ impl UtilityPolicy {
 /// semantics explicitly.
 fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
     match command {
-        Command::Move {
+        Command::Run {
             units,
             queue: false,
             ..
@@ -1143,7 +1143,7 @@ fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
             queue: false,
             ..
         }
-        | Command::AttackMove {
+        | Command::Hunt {
             units,
             queue: false,
             ..
@@ -1181,9 +1181,9 @@ fn queue_replacing_non_harvest_units(command: &Command) -> Option<&[UnitId]> {
         | Command::ReturnCargo { units, .. }
         | Command::Patrol { units, .. }
         | Command::Stop { units } => Some(units),
-        Command::Move { queue: true, .. }
+        Command::Run { queue: true, .. }
         | Command::Attack { queue: true, .. }
-        | Command::AttackMove { queue: true, .. }
+        | Command::Hunt { queue: true, .. }
         | Command::Harvest { .. }
         | Command::Build { queue: true, .. }
         | Command::Repair { queue: true, .. }

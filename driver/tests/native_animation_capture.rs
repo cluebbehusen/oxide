@@ -23,8 +23,9 @@ use chassis::grid::TilePos;
 use oxide_driver::auto::{ShellGuard, SpawnOptions, spawn_shell, ui};
 use oxide_driver::client::Client;
 use oxide_protocol::{Reply, Request, StateFilter, StateView};
-use oxide_sim::stats::Domain;
-use oxide_sim::{BuildingId, BuildingKind, Command, PlayerId, Target, UnitId, UnitKind};
+use oxide_sim::{
+    BuildingId, BuildingKind, Command, PlayerCommand, PlayerId, Target, UnitId, UnitKind,
+};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,19 +34,7 @@ static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
 
 const MAP_WIDTH: i32 = 32;
 const MAP_HEIGHT: i32 = 22;
-const ALL_UNIT_KINDS: [UnitKind; 11] = [
-    UnitKind::Harvester,
-    UnitKind::Sentinel,
-    UnitKind::Scuttler,
-    UnitKind::Lancer,
-    UnitKind::Bombard,
-    UnitKind::Flakhound,
-    UnitKind::Stinger,
-    UnitKind::Buzzard,
-    UnitKind::Darter,
-    UnitKind::Talon,
-    UnitKind::Wisp,
-];
+const ALL_UNIT_KINDS: [UnitKind; 24] = UnitKind::ALL;
 
 struct NativeCapture {
     shell: Option<ShellGuard>,
@@ -128,6 +117,31 @@ impl NativeCapture {
         }
     }
 
+    fn capture_unit_attack(
+        &mut self,
+        label: &str,
+        attacker: UnitId,
+        cooldown: u32,
+    ) -> Result<Vec<oxide_sim::Event>> {
+        let mut approach = Vec::new();
+        for _ in 0..120 {
+            let events = self.present(1)?;
+            let fired = events.iter().any(|event| unit_fired(event, attacker));
+            approach.push(json!({ "tick": self.state()?.tick, "events": events }));
+            if fired {
+                let mut captured =
+                    self.capture_schedule(label, &combat_capture_schedule(cooldown))?;
+                std::fs::write(
+                    self.output.join(label).join("approach.json"),
+                    serde_json::to_vec_pretty(&approach)?,
+                )?;
+                captured.extend(events);
+                return Ok(captured);
+            }
+        }
+        bail!("{label} never fired within 120 approach ticks")
+    }
+
     fn capture_stage(
         &mut self,
         label: &str,
@@ -205,6 +219,17 @@ impl Drop for NativeCapture {
     }
 }
 
+fn unit_fired(event: &oxide_sim::Event, unit: UnitId) -> bool {
+    match event {
+        oxide_sim::Event::AttackHit { attacker, .. } => *attacker == unit,
+        oxide_sim::Event::ShellLaunched {
+            shooter: Target::Unit(shooter),
+            ..
+        } => *shooter == unit,
+        _ => false,
+    }
+}
+
 fn combat_capture_schedule(cooldown: u32) -> Vec<u64> {
     const REPORT_TICKS: u32 = 8;
     const RELOAD_SAMPLES: u32 = 8;
@@ -233,7 +258,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let mut harness = NativeCapture::spawn()?;
 
     let overview = harness.load(overview_scenario())?;
-    assert_eq!(overview.units.len(), ALL_UNIT_KINDS.len() + 2);
+    assert_eq!(overview.units.len(), 13);
     harness.capture_stage("00-idle-overview", 1, 1)?;
 
     for kind in ALL_UNIT_KINDS {
@@ -247,7 +272,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             .pos;
         harness.command(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(21, 10),
                 queue: false,
@@ -336,14 +361,14 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         0,
         Command::Train {
             building: fabricator,
-            kind: UnitKind::Scuttler,
+            kind: UnitKind::Lancer,
         },
     )?;
-    let events = harness.capture_stage("05-fabricator-production", 12, 8)?;
+    let events = harness.capture_stage("05-fabricator-production", 12, 20)?;
     assert!(events.iter().any(|event| matches!(
         event,
         oxide_sim::Event::UnitTrained {
-            kind: UnitKind::Scuttler,
+            kind: UnitKind::Lancer,
             ..
         }
     )));
@@ -369,9 +394,10 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
                 queue: false,
             },
         )?;
-        let events = harness.capture_schedule(
+        let events = harness.capture_unit_attack(
             &format!("07-unit-fire-reload/{}", kind.name()),
-            &combat_capture_schedule(kind.stats().weapons[0].cooldown_ticks),
+            attacker,
+            kind.stats().weapons[0].cooldown_ticks,
         )?;
         assert!(
             events.iter().any(|event| match event {
@@ -479,21 +505,14 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         .find(|building| building.id == patient.0)
         .context("damaged building disappeared")?
         .hp;
-    let executioner = unit_kind(&repair, 0, UnitKind::Lancer)?;
     harness.command(
-        0,
-        Command::Attack {
-            units: vec![executioner],
-            target: Target::Unit(attacker).into(),
+        1,
+        Command::Run {
+            units: vec![attacker],
+            goal: TilePos::new(27, 18),
             queue: false,
         },
     )?;
-    harness.present(1)?;
-    let repair = harness.state()?;
-    assert!(
-        repair.units.iter().all(|unit| unit.id != attacker.0),
-        "the damage source must be gone before repair capture"
-    );
     harness.clear_presentation()?;
     let welder = unit_kind(&repair, 0, UnitKind::Harvester)?;
     harness.command(
@@ -559,21 +578,14 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         .find(|unit| unit.id == patient.0)
         .context("Repair Bay patient disappeared")?
         .hp;
-    let executioner = unit_kind(&repair_bay, 0, UnitKind::Lancer)?;
     harness.command(
-        0,
-        Command::Attack {
-            units: vec![executioner],
-            target: Target::Unit(attacker).into(),
+        1,
+        Command::Run {
+            units: vec![attacker],
+            goal: TilePos::new(27, 18),
             queue: false,
         },
     )?;
-    harness.present(1)?;
-    let repair_bay = harness.state()?;
-    assert!(
-        repair_bay.units.iter().all(|unit| unit.id != attacker.0),
-        "the damage source must be gone before Repair Bay capture"
-    );
     harness.clear_presentation()?;
     let events = harness.capture_stage("10-repair-bay-pulses", 24, 1)?;
     assert!(events.iter().any(|event| matches!(
@@ -600,7 +612,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
     let condor = unit_kind(&flight, 0, UnitKind::Condor)?;
     harness.command(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: TilePos::new(21, 10),
             queue: false,
@@ -635,7 +647,7 @@ fn captures_promoted_tender_and_condor_in_the_real_shell() -> Result<()> {
         let mover = unit_kind(&movement, 0, kind)?;
         harness.command(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(21, 10),
                 queue: false,
@@ -748,7 +760,7 @@ fn captures_promoted_airworks_and_scouts_in_the_real_shell() -> Result<()> {
         let mover = unit_kind(&movement, 0, kind)?;
         harness.command(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![mover],
                 goal: TilePos::new(21, 10),
                 queue: false,
@@ -838,6 +850,42 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
     for value in scenarios {
         let parsed = oxide_sim::Scenario::from_json(&serde_json::to_string(&value)?)?;
         parsed.build()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn staged_combat_roster_fires_within_the_capture_approach() -> Result<()> {
+    for kind in combat_kinds() {
+        let scenario =
+            oxide_sim::Scenario::from_json(&serde_json::to_string(&unit_duel_scenario(kind))?)?;
+        let mut state = scenario.build()?;
+        let commands = [
+            PlayerCommand {
+                player: PlayerId(1),
+                command: Command::Surrender,
+            },
+            PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Attack {
+                    units: vec![UnitId(0)],
+                    target: Target::Unit(UnitId(1)).into(),
+                    queue: false,
+                },
+            },
+        ];
+        let mut fired = false;
+        for tick in 0..120 {
+            let report = state.tick(if tick == 0 { &commands } else { &[] });
+            fired |= report
+                .events
+                .iter()
+                .any(|event| unit_fired(event, UnitId(0)));
+            if fired {
+                break;
+            }
+        }
+        assert!(fired, "{kind:?} staged duel never fired");
     }
     Ok(())
 }
@@ -1040,19 +1088,10 @@ fn overview_scenario() -> Value {
     )
 }
 
-fn combat_kinds() -> [UnitKind; 10] {
-    [
-        UnitKind::Sentinel,
-        UnitKind::Scuttler,
-        UnitKind::Lancer,
-        UnitKind::Bombard,
-        UnitKind::Flakhound,
-        UnitKind::Stinger,
-        UnitKind::Buzzard,
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
-    ]
+fn combat_kinds() -> impl Iterator<Item = UnitKind> {
+    UnitKind::ALL
+        .into_iter()
+        .filter(|kind| !kind.stats().weapons.is_empty())
 }
 
 fn movement_scenario(kind: UnitKind) -> Value {
@@ -1082,10 +1121,8 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
     let weapon = attacker.stats().weapons[0];
     let target = if weapon.targets.ground {
         UnitKind::Harvester
-    } else if attacker.stats().domain == Domain::Ground {
-        UnitKind::Talon
     } else {
-        UnitKind::Darter
+        UnitKind::Skyhook
     };
     let distance = match attacker {
         UnitKind::Scuttler => 1,
@@ -1109,9 +1146,13 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
     };
     let units = vec![
         unit(0, attacker, 15, 10),
-        unit(1, target, 15 + distance, 10),
+        if matches!(attacker, UnitKind::Condor | UnitKind::Moth) {
+            unit(1, target, 15, 10 - distance)
+        } else {
+            unit(1, target, 15 + distance, 10)
+        },
     ];
-    let buildings = if attacker == UnitKind::Bombard {
+    let buildings = if matches!(attacker, UnitKind::Bombard | UnitKind::Avalanche) {
         vec![structure(0, BuildingKind::Array, 21, 12)]
     } else {
         Vec::new()
@@ -1186,7 +1227,6 @@ fn building_repair_scenario() -> Value {
         &[],
         vec![
             unit(0, UnitKind::Harvester, 12, 10),
-            unit(0, UnitKind::Lancer, 13, 8),
             unit(1, UnitKind::Sentinel, 18, 10),
         ],
         vec![structure(0, BuildingKind::Array, 16, 10)],
@@ -1211,7 +1251,6 @@ fn repair_bay_scenario() -> Value {
         &[],
         vec![
             unit(0, UnitKind::Sentinel, 18, 11),
-            unit(0, UnitKind::Lancer, 15, 9),
             unit(1, UnitKind::Sentinel, 20, 11),
         ],
         vec![structure(0, BuildingKind::RepairBay, 15, 10)],

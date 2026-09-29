@@ -50,7 +50,7 @@ driver live state --map
 driver live fog 0
 driver live step 1
 driver live advance 300
-driver live attack-move 0 --units 3 --to 34,18
+driver live hunt 0 --units 3 --to 34,18
 driver live screenshot -o screenshots/check.png
 driver live save-replay replays/session.json
 ```

@@ -544,7 +544,7 @@ fn rally_routes_fresh_units_by_role() {
         s.player(PlayerId(0)).scrap > scrap_before
     });
 
-    // Rally onto open ground: fresh sentinels attack-move there.
+    // Rally onto open ground: fresh sentinels hunt there.
     state.tick(&[
         cmd(
             0,
@@ -564,7 +564,7 @@ fn rally_routes_fresh_units_by_role() {
     run_until(&mut state, 300, |s, _| {
         s.units().iter().any(|u| {
             u.kind == UnitKind::Sentinel
-                && matches!(u.order, Order::AttackMove { .. } | Order::Attack { .. })
+                && matches!(u.order, Order::Hunt { .. } | Order::Attack { .. })
         })
     });
 }

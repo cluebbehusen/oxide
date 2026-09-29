@@ -2264,7 +2264,7 @@ fn issue_assault(
         return;
     }
     handoff.extend(landed.iter().copied());
-    decision.intents.push(Intent::AttackMoveUnits {
+    decision.intents.push(Intent::HuntUnits {
         units: landed,
         goal: target,
     });
@@ -2302,7 +2302,7 @@ fn sustain_landed_assault(
     assault_waypoints.push(goal);
     assault_waypoints.sort_unstable_by_key(|tile| (tile.y, tile.x));
     assault_waypoints.dedup();
-    decision.intents.push(Intent::AttackMoveUnits {
+    decision.intents.push(Intent::HuntUnits {
         units: survivors,
         goal,
     });
@@ -4534,7 +4534,7 @@ mod tests {
         let walking = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
         assert!(
             walking.intents.is_empty(),
-            "Load and Move are both persistent"
+            "Load and Run are both persistent"
         );
 
         planner.operation.as_mut().unwrap().phase = LiftPhase::Recover;
@@ -4681,12 +4681,12 @@ mod tests {
         obs.tick += 1;
         let handoff = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
-        assert!(handoff.intents.contains(&Intent::AttackMoveUnits {
+        assert!(handoff.intents.contains(&Intent::HuntUnits {
             units: transported.clone(),
             goal: TARGET,
         }));
         assert!(handoff.intents.iter().all(|intent| match intent {
-            Intent::AttackMoveUnits { units, .. } => !units.contains(&failed),
+            Intent::HuntUnits { units, .. } => !units.contains(&failed),
             _ => true,
         }));
         assert!(!handoff.reservations.contains(&failed));
@@ -4833,7 +4833,7 @@ mod tests {
             assault
                 .intents
                 .iter()
-                .filter(|intent| matches!(intent, Intent::AttackMoveUnits { .. }))
+                .filter(|intent| matches!(intent, Intent::HuntUnits { .. }))
                 .count(),
             2
         );
@@ -4852,7 +4852,7 @@ mod tests {
             no_repeat
                 .intents
                 .iter()
-                .all(|intent| !matches!(intent, Intent::AttackMoveUnits { .. }))
+                .all(|intent| !matches!(intent, Intent::HuntUnits { .. }))
         );
         assert!(
             assigned
@@ -4954,7 +4954,7 @@ mod tests {
         assert!(!decision.reservations.contains(&UnitId(900)));
         assert!(decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackMoveUnits { .. } | Intent::Load { .. } | Intent::Unload { .. }
+            Intent::HuntUnits { .. } | Intent::Load { .. } | Intent::Unload { .. }
         )));
     }
 
@@ -5082,7 +5082,9 @@ mod tests {
             landed
                 .intents
                 .iter()
-                .filter(|intent| matches!(intent, Intent::AttackMoveUnits { goal, .. } if *goal == TARGET))
+                .filter(
+                    |intent| matches!(intent, Intent::HuntUnits { goal, .. } if *goal == TARGET)
+                )
                 .count(),
             2
         );
@@ -5166,7 +5168,7 @@ mod tests {
             returning
                 .intents
                 .iter()
-                .all(|intent| !matches!(intent, Intent::AttackMoveUnits { .. }))
+                .all(|intent| !matches!(intent, Intent::HuntUnits { .. }))
         );
 
         let carrier = obs
@@ -5187,7 +5189,7 @@ mod tests {
             released
                 .intents
                 .iter()
-                .all(|intent| !matches!(intent, Intent::AttackMoveUnits { .. }))
+                .all(|intent| !matches!(intent, Intent::HuntUnits { .. }))
         );
     }
 
@@ -5359,7 +5361,7 @@ mod tests {
         let decision = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
-        assert!(decision.intents.contains(&Intent::AttackMoveUnits {
+        assert!(decision.intents.contains(&Intent::HuntUnits {
             units: vec![UnitId(1)],
             goal: TARGET,
         }));
@@ -5386,7 +5388,7 @@ mod tests {
         let recovered = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
-        assert!(recovered.intents.contains(&Intent::AttackMoveUnits {
+        assert!(recovered.intents.contains(&Intent::HuntUnits {
             units: manifest.riders.clone(),
             goal: TARGET,
         }));
@@ -5424,7 +5426,7 @@ mod tests {
         assert_eq!(first_decision, second_decision);
         assert_eq!(first, second, "input order cannot choose the replacement");
         assert!(first.operation().is_some());
-        assert!(first_decision.intents.contains(&Intent::AttackMoveUnits {
+        assert!(first_decision.intents.contains(&Intent::HuntUnits {
             units: riders.clone(),
             goal: replacement,
         }));
@@ -5435,7 +5437,7 @@ mod tests {
         );
         assert!(first_decision.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackMoveUnits { goal, .. }
+            Intent::HuntUnits { goal, .. }
                 if *goal == HOME.offset(8, -8) || *goal == TilePos::new(49, 14)
         )));
     }
@@ -5452,7 +5454,7 @@ mod tests {
         let first = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
         assert!(planner.operation().is_some());
-        assert!(first.intents.contains(&Intent::AttackMoveUnits {
+        assert!(first.intents.contains(&Intent::HuntUnits {
             units: riders.clone(),
             goal: first_goal,
         }));
@@ -5472,13 +5474,13 @@ mod tests {
         obs.tick += 1;
         let second = planner.think_unrestricted(&obs, HOME, &[], LiftAirSupport::Independent);
 
-        assert!(second.intents.contains(&Intent::AttackMoveUnits {
+        assert!(second.intents.contains(&Intent::HuntUnits {
             units: riders.clone(),
             goal: second_goal,
         }));
         assert!(second.intents.iter().all(|intent| !matches!(
             intent,
-            Intent::AttackMoveUnits { goal, .. } if *goal == first_goal
+            Intent::HuntUnits { goal, .. } if *goal == first_goal
         )));
         assert!(
             riders

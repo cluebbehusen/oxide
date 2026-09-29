@@ -78,7 +78,7 @@ fn program(units: &[UnitId], goals: &[TilePos]) -> Vec<PlayerCommand> {
         .map(|(leg, &goal)| {
             cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: units.to_vec(),
                     goal,
                     queue: leg > 0,
@@ -129,7 +129,7 @@ fn the_active_and_a_queued_order_come_out_of_the_program() {
     assert_eq!(keys(&state, id), walks(&[c]), "the active leg comes out");
     let walker = state.unit(id).unwrap();
     assert!(
-        matches!(walker.order, Order::Move { goal } if goal.tile() == c),
+        matches!(walker.order, Order::Run { goal } if goal.tile() == c),
         "the next leg starts at once"
     );
     state.tick(&[cancel(id, walk(c), 0, &[])]);
@@ -183,7 +183,7 @@ fn a_cancelled_harvest_keeps_its_cargo() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![worker],
                 goal: home,
                 queue: true,
@@ -257,7 +257,7 @@ fn an_engagement_on_the_march_goes_with_its_leg() {
     state.tick(&[
         cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: group.clone(),
                 goal: click,
                 queue: false,
@@ -265,7 +265,7 @@ fn an_engagement_on_the_march_goes_with_its_leg() {
         ),
         cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: group.clone(),
                 goal: next,
                 queue: true,
@@ -315,7 +315,7 @@ fn walks_match_by_click_whatever_their_verb() {
     state.tick(&[
         cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![fighter, worker],
                 goal: a,
                 queue: false,
@@ -332,11 +332,11 @@ fn walks_match_by_click_whatever_their_verb() {
     ]);
     assert!(matches!(
         state.unit(worker).unwrap().order,
-        Order::Move { .. }
+        Order::Run { .. }
     ));
     assert!(matches!(
         state.unit(fighter).unwrap().order,
-        Order::AttackMove { .. }
+        Order::Hunt { .. }
     ));
     state.tick(&[cancel(fighter, walk(a), 0, &[worker])]);
     for id in [fighter, worker] {
@@ -355,7 +355,7 @@ fn only_the_named_verb_leaves_a_mixed_program() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![worker],
                 goal: a,
                 queue: false,
@@ -371,7 +371,7 @@ fn only_the_named_verb_leaves_a_mixed_program() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![worker],
                 goal: b,
                 queue: true,
@@ -559,7 +559,7 @@ fn a_landing_that_took_over_a_walk_goes_with_the_walk() {
     assert_eq!(from, Some(click), "test premise");
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![condor],
             goal: next,
             queue: true,
