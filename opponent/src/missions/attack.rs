@@ -603,7 +603,7 @@ pub(super) fn building_value(building: &BuildingObs) -> u64 {
 
 /// Units nearest `rally` first until their value reaches `need`, at most
 /// `room` of them, by id.
-fn recruit(
+pub(super) fn recruit(
     frame: HomeFrame,
     fit: &[&UnitObs],
     rally: TilePos,
