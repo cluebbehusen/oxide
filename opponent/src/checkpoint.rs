@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
     pub(crate) player: PlayerId,
-    pub(crate) memory: Memory,
+    pub(crate) memory: Box<Memory>,
     pub(crate) income: Income,
     pub(crate) saving: Saving,
     pub(crate) missions: Missions,
@@ -30,7 +30,7 @@ impl Opponent {
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             player: self.player,
-            memory: self.persistent.memory.clone(),
+            memory: Box::new(self.persistent.memory.clone()),
             income: self.persistent.income,
             saving: self.persistent.saving.clone(),
             missions: self.persistent.missions.clone(),
@@ -68,7 +68,7 @@ impl Opponent {
             .validate(now, state.map().width(), state.map().height())?;
         let mut restored = Self::new(checkpoint.player, config, map);
         *restored.persistent = Persistent {
-            memory: checkpoint.memory.clone(),
+            memory: (*checkpoint.memory).clone(),
             income: checkpoint.income,
             saving: checkpoint.saving.clone(),
             missions: checkpoint.missions.clone(),
