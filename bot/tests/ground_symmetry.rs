@@ -38,6 +38,10 @@ fn mirrored_economies_and_attack_followups_preserve_positions_and_income() {
         player.bot = true;
         player.bot_config = Some(BotConfig::default());
     }
+    // Rosters differ by faction in price and kind, so only same-faction
+    // seats can keep mirrored banks and rosters.
+    let faction = scenario.players[0].faction;
+    scenario.retint_seat(1, faction);
     let mut state = scenario.build().unwrap();
     let mut bots = seat_bots(&scenario).unwrap();
     let extent = Vec2Fx::new(
