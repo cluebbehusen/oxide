@@ -286,7 +286,7 @@ fn abandoned_sites_rust_away_and_attended_sites_do_not() {
     // Called away: the scaffold decays one hp per period.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(16, 2),
             queue: false,
@@ -308,7 +308,7 @@ fn abandoned_sites_rust_away_and_attended_sites_do_not() {
     // A parked harvester beside the footprint counts as attendance.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![bystander],
             goal: TilePos::new(10, 4),
             queue: false,
@@ -330,7 +330,7 @@ fn abandoned_sites_rust_away_and_attended_sites_do_not() {
     // destroyed-building path.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![bystander],
             goal: TilePos::new(16, 2),
             queue: false,

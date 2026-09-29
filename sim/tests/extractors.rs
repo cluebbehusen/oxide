@@ -212,6 +212,11 @@ fn a_known_frame_snaps_every_visible_tile_without_revealing_an_unknown_one() {
 #[test]
 fn placement_reasons_do_not_disclose_frames_in_unexplored_ground() {
     let state = fog_arena(vec![]).build().unwrap();
+    assert!(
+        oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0))
+            .known_frames
+            .is_empty()
+    );
     let unknown_elsewhere = TilePos::new(23, 4);
 
     for anchor in [FOG_FRAME, FOG_FRAME.offset(1, 1), unknown_elsewhere] {
@@ -239,6 +244,187 @@ fn placement_reasons_do_not_disclose_frames_in_unexplored_ground() {
 }
 
 #[test]
+fn one_explored_corner_allows_deferred_extractor_construction() {
+    for (x, y) in [(10, 4), (10, 5), (23, 4), (23, 5)] {
+        for remembered in [false, true] {
+            let mut state = fog_arena(vec![harvester(0, x, y)]).build().unwrap();
+            let worker = state.units()[0].id;
+            if remembered {
+                state.tick(&[cmd(
+                    0,
+                    Command::Run {
+                        units: vec![worker],
+                        goal: TilePos::new(if x < FOG_FRAME.x { 3 } else { 27 }, y),
+                        queue: false,
+                    },
+                )]);
+                for _ in 0..200 {
+                    state.tick(&[]);
+                }
+            }
+            let tiles = (0..2)
+                .flat_map(|dy| (0..2).map(move |dx| FOG_FRAME.offset(dx, dy)))
+                .collect::<Vec<_>>();
+            let explored: Vec<_> = tiles
+                .iter()
+                .copied()
+                .filter(|tile| state.vision(PlayerId(0)).explored(*tile))
+                .collect();
+            assert_eq!(explored.len(), 1, "only one corner was discovered");
+            assert_eq!(
+                oxide_sim::observation::ObservationData::fog_honest(&state, PlayerId(0))
+                    .known_frames,
+                vec![FOG_FRAME]
+            );
+            assert_eq!(state.vision(PlayerId(0)).visible(explored[0]), !remembered);
+            assert_eq!(
+                state.canonical_build_anchor(PlayerId(0), BuildingKind::Extractor, explored[0]),
+                FOG_FRAME
+            );
+            assert_eq!(
+                state.place_intent_refusal(PlayerId(0), BuildingKind::Extractor, FOG_FRAME),
+                None
+            );
+            assert_eq!(
+                state.place_refusal(PlayerId(0), BuildingKind::Extractor, FOG_FRAME),
+                Some(oxide_sim::PlaceRefusal::Fog)
+            );
+            assert_eq!(
+                state.place_intent_refusal(PlayerId(0), BuildingKind::Fabricator, FOG_FRAME),
+                Some(oxide_sim::PlaceRefusal::Fog)
+            );
+            let bank = state.player(PlayerId(0)).scrap;
+            state.tick(&[cmd(
+                0,
+                Command::Build {
+                    units: vec![worker],
+                    kind: BuildingKind::Extractor,
+                    anchor: FOG_FRAME,
+                    queue: false,
+                    defer: true,
+                },
+            )]);
+            let site = state
+                .buildings()
+                .iter()
+                .find(|b| b.anchor == FOG_FRAME)
+                .unwrap();
+            let site_id = site.id;
+            assert!(site.provisional);
+            assert_eq!(site.progress, 0);
+            assert_eq!(state.player(PlayerId(0)).scrap, bank - 100);
+            state.validate_invariants().unwrap();
+            let mut restored: State =
+                serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            restored.validate_invariants().unwrap();
+            for _ in 0..1_000 {
+                state.tick(&[]);
+                restored.tick(&[]);
+                if state.building(site_id).unwrap().built {
+                    break;
+                }
+            }
+            assert!(state.building(site_id).unwrap().built);
+            assert_eq!(state.hash(), restored.hash());
+        }
+    }
+}
+
+#[test]
+fn one_visible_corner_discloses_an_enemy_extractor_site() {
+    let mut state = fog_arena(vec![harvester(0, 10, 4), harvester(1, 19, 4)])
+        .build()
+        .unwrap();
+    let enemy = state.units()[1].id;
+    state.tick(&[build(1, enemy, BuildingKind::Extractor, FOG_FRAME)]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == FOG_FRAME)
+        .unwrap();
+    assert!(!site.built);
+    assert!(!site.provisional);
+    assert!(state.vision(PlayerId(0)).visible(FOG_FRAME));
+    assert!(!state.vision(PlayerId(0)).explored(FOG_FRAME.offset(1, 1)));
+    assert!(state.building_apparent(PlayerId(0), site));
+    assert!(state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
+    assert_eq!(
+        state.place_intent_refusal(PlayerId(0), BuildingKind::Extractor, FOG_FRAME),
+        Some(oxide_sim::PlaceRefusal::Building)
+    );
+    let observer = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Run {
+            units: vec![observer],
+            goal: TilePos::new(3, 4),
+            queue: false,
+        },
+    )]);
+    for _ in 0..200 {
+        state.tick(&[]);
+    }
+    assert!(!state.vision(PlayerId(0)).visible(FOG_FRAME));
+    assert!(state.extractor_frame_claim_known(PlayerId(0), FOG_FRAME));
+    assert_eq!(
+        state.place_intent_refusal(PlayerId(0), BuildingKind::Extractor, FOG_FRAME),
+        Some(oxide_sim::PlaceRefusal::Building)
+    );
+}
+
+#[test]
+fn an_unseen_unit_on_a_discovered_frame_only_blocks_when_revealed() {
+    for occupied in [false, true] {
+        let mut units = vec![harvester(0, 10, 4)];
+        if occupied {
+            units.push(harvester(1, 17, 5));
+        }
+        let mut state = fog_arena(units).build().unwrap();
+        let worker = state.units()[0].id;
+        assert!(!state.vision(PlayerId(0)).visible(FOG_FRAME.offset(1, 1)));
+        assert_eq!(
+            state.place_intent_refusal(PlayerId(0), BuildingKind::Extractor, FOG_FRAME),
+            None
+        );
+        state.tick(&[cmd(
+            0,
+            Command::Build {
+                units: vec![worker],
+                kind: BuildingKind::Extractor,
+                anchor: FOG_FRAME,
+                queue: false,
+                defer: true,
+            },
+        )]);
+        let site = state
+            .buildings()
+            .iter()
+            .find(|b| b.anchor == FOG_FRAME)
+            .unwrap();
+        let site_id = site.id;
+        assert!(site.provisional);
+        assert_eq!(state.player(PlayerId(0)).scrap, 900);
+        let mut events = Vec::new();
+        for _ in 0..200 {
+            events.extend(state.tick(&[]).events);
+            if state.building(site_id).is_none_or(|site| !site.provisional) {
+                break;
+            }
+        }
+        if occupied {
+            assert!(state.building(site_id).is_none());
+            assert_eq!(state.player(PlayerId(0)).scrap, 1_000);
+            assert!(events.iter().any(|event| matches!(event,
+                Event::BuildCancelled { building, refund: 100, .. } if *building == site_id
+            )));
+        } else {
+            assert!(!state.building(site_id).unwrap().provisional);
+        }
+        state.validate_invariants().unwrap();
+    }
+}
+
+#[test]
 fn an_unseen_enemy_claim_does_not_replace_the_remembered_frame() {
     let mut state = fog_arena(vec![
         harvester(0, FOG_FRAME.x - 2, FOG_FRAME.y),
@@ -253,7 +439,7 @@ fn an_unseen_enemy_claim_does_not_replace_the_remembered_frame() {
 
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![scout],
             goal: TilePos::new(3, 7),
             queue: false,
@@ -313,7 +499,7 @@ fn enemy_provisional_extractor_keeps_the_visible_frame_available_until_activatio
     let enemy_builder = state.units()[1].id;
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![enemy_builder],
             goal: TilePos::new(26, 7),
             queue: false,

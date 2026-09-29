@@ -1413,7 +1413,7 @@ mod tests {
                 path.waypoints[path.next as usize].center() - position,
             );
             unit.pos = position;
-            unit.order = Order::Move {
+            unit.order = Order::Run {
                 goal: path.goal.into(),
             };
             unit.path = Some(path);
@@ -1443,7 +1443,7 @@ mod tests {
                 unit.pos, start,
                 "the worker never escaped the blocked corner"
             );
-            let Order::Move { goal } = unit.order else {
+            let Order::Run { goal } = unit.order else {
                 panic!("test worker lost its move order")
             };
             assert_eq!(unit.pos, goal.tile().center());
@@ -1581,7 +1581,7 @@ mod tests {
             unit.heading =
                 chassis::compass::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.pos = pos;
-            unit.order = Order::AttackMove {
+            unit.order = Order::Hunt {
                 goal: path.goal.into(),
             };
             unit.path = Some(path);
@@ -1964,7 +1964,7 @@ mod tests {
         .expect("blocked waypoint state builds");
         let unit = &mut state.units[0];
         unit.pos = Vec2Fx::new(Fx::lit("5.9"), Fx::lit("2.5"));
-        unit.order = Order::Move {
+        unit.order = Order::Run {
             goal: TilePos::new(6, 2).into(),
         };
         unit.path = Some(PathFollow {
@@ -2047,7 +2047,7 @@ mod tests {
                 chassis::compass::heading_of(path.waypoints[path.next as usize].center() - pos);
             unit.hp = UnitKind::Avalanche.stats().max_hp;
             unit.pos = pos;
-            unit.order = Order::Move {
+            unit.order = Order::Run {
                 goal: path.goal.into(),
             };
             unit.path = Some(path);

@@ -26,7 +26,7 @@ fn every_ground_chassis_pivots_before_moving_and_completes_its_route() {
             let commands = if tick == 0 {
                 vec![cmd(
                     0,
-                    Command::Move {
+                    Command::Run {
                         units: vec![id],
                         goal: TilePos::new(14, 10),
                         queue: false,

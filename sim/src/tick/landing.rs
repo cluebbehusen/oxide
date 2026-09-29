@@ -494,7 +494,7 @@ mod tests {
         state.tick(&[
             PlayerCommand {
                 player: PlayerId(0),
-                command: Command::Move {
+                command: Command::Run {
                     units: vec![a],
                     goal: TilePos::new(14, 7),
                     queue: false,
@@ -502,7 +502,7 @@ mod tests {
             },
             PlayerCommand {
                 player: PlayerId(0),
-                command: Command::Move {
+                command: Command::Run {
                     units: vec![b],
                     goal: TilePos::new(23 - 14, 15 - 7),
                     queue: false,

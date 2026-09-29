@@ -86,7 +86,7 @@ use common::building as structure;
 fn walk(player: u8, units: Vec<UnitId>, goal: TilePos) -> PlayerCommand {
     cmd(
         player,
-        Command::Move {
+        Command::Run {
             units,
             goal,
             queue: false,
@@ -912,7 +912,7 @@ fn the_aura_respects_a_queued_salvage_commitment() {
 
     assert!(matches!(
         state.unit(worker).unwrap().order,
-        oxide_sim::Order::Move { .. }
+        oxide_sim::Order::Run { .. }
     ));
     assert!(state.unit(worker).unwrap().queue.iter().any(
         |order| matches!(order, oxide_sim::Order::Salvage { building } if *building == patient)

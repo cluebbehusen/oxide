@@ -61,7 +61,7 @@ pub enum TeamReliefExitReason {
 /// The persistent order currently owned by a relief operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TeamReliefDispatch {
-    /// Attack-move toward the allied base.
+    /// Hunt toward the allied base.
     Outbound(TilePos),
     /// Focus a currently visible threat near the allied base.
     Threat(Target),
@@ -156,7 +156,7 @@ impl ReliefProposal {
             ..Default::default()
         };
         if relief.phase == TeamReliefPhase::Deploying {
-            decision.intents.push(Intent::AttackMoveUnits {
+            decision.intents.push(Intent::HuntUnits {
                 units: relief.members.clone(),
                 goal: relief.anchor,
             });
@@ -288,7 +288,7 @@ impl TeamReliefPlanner {
             TeamReliefPhase::Deploying => {
                 let dispatch = TeamReliefDispatch::Outbound(relief.anchor);
                 if owns_members && relief.dispatch != Some(dispatch) {
-                    decision.intents.push(Intent::AttackMoveUnits {
+                    decision.intents.push(Intent::HuntUnits {
                         units: relief.members.clone(),
                         goal: relief.anchor,
                     });
@@ -1083,7 +1083,7 @@ mod tests {
             !continued
                 .intents
                 .iter()
-                .any(|intent| matches!(intent, Intent::AttackMoveUnits { .. })),
+                .any(|intent| matches!(intent, Intent::HuntUnits { .. })),
             "active lifecycle does not reissue the committed outbound order"
         );
     }
@@ -1478,7 +1478,7 @@ mod tests {
         assert_eq!(outbound.reservations, members);
         assert_eq!(
             outbound.intents,
-            [Intent::AttackMoveUnits {
+            [Intent::HuntUnits {
                 units: members.clone(),
                 goal: ALLY_BASE,
             }]
@@ -1586,8 +1586,8 @@ mod tests {
                 let mut commanded = Vec::new();
                 for command in &commands {
                     match &command.command {
-                        oxide_sim::Command::Move { units, .. }
-                        | oxide_sim::Command::AttackMove { units, .. }
+                        oxide_sim::Command::Run { units, .. }
+                        | oxide_sim::Command::Hunt { units, .. }
                         | oxide_sim::Command::Attack { units, .. } => {
                             commanded.extend(units.iter().copied());
                         }
@@ -1754,7 +1754,7 @@ mod tests {
         assert_eq!(operation.home_defenders, vec![UnitId(2), UnitId(9)]);
         assert_eq!(
             decision.intents,
-            vec![Intent::AttackMoveUnits {
+            vec![Intent::HuntUnits {
                 units: operation.members.clone(),
                 goal: ALLY_BASE,
             }]
@@ -1780,7 +1780,7 @@ mod tests {
         let outbound = start_relief(&mut planner, &profile(), tuning(), &mut obs, &[], &[]);
         assert!(matches!(
             outbound.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == ALLY_BASE
+            [Intent::HuntUnits { goal, .. }] if *goal == ALLY_BASE
         ));
         assert_eq!(
             planner.operation().map(|operation| operation.phase),
@@ -1875,7 +1875,7 @@ mod tests {
             let operation = planner.operation().expect("relief remains active");
             assert!(matches!(
                 decision.intents.as_slice(),
-                [Intent::AttackMoveUnits { goal, .. }] if *goal == ALLY_BASE
+                [Intent::HuntUnits { goal, .. }] if *goal == ALLY_BASE
             ));
             operation.home_defenders.clone()
         };
@@ -2322,7 +2322,7 @@ mod tests {
             (decision, planner.operation().cloned())
         };
         let expected_decision = StrategicDecision {
-            intents: vec![Intent::AttackMoveUnits {
+            intents: vec![Intent::HuntUnits {
                 units: expected_members.clone(),
                 goal: ALLY_BASE,
             }],
@@ -2566,7 +2566,7 @@ mod tests {
         let decision = start_relief(&mut planner, &profile(), tuning(), &mut obs, &[], &[]);
         assert!(matches!(
             decision.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == ALLY_BASE
+            [Intent::HuntUnits { goal, .. }] if *goal == ALLY_BASE
         ));
     }
 

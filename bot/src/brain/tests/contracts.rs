@@ -109,7 +109,7 @@ fn player_facing_brains_do_not_send_partial_musters_to_remote_expansions() {
             );
             assert!(muster.iter().any(|command| matches!(
                 &command.command,
-                Command::AttackMove { units, goal, queue: false }
+                Command::Hunt { units, goal, queue: false }
                     if units == &members && *goal == staging
             )));
 
@@ -122,7 +122,7 @@ fn player_facing_brains_do_not_send_partial_musters_to_remote_expansions() {
             );
             assert!(commands.iter().all(|command| !matches!(
                 &command.command,
-                Command::AttackMove { units, .. }
+                Command::Hunt { units, .. }
                     if units.iter().any(|unit| members.contains(unit))
             )));
         }
@@ -226,7 +226,7 @@ fn mirrored_wounded_armies_withdraw_to_mirrored_foundry_tiles() {
         assert!(
             formed.iter().any(|command| matches!(
                 &command.command,
-                Command::AttackMove { units, goal, queue: false }
+                Command::Hunt { units, goal, queue: false }
                     if units.len() == 1 && *goal == staging
             )),
             "the wounded machine must begin inside a real army"
@@ -238,7 +238,7 @@ fn mirrored_wounded_armies_withdraw_to_mirrored_foundry_tiles() {
         commands
             .iter()
             .find_map(|command| match &command.command {
-                Command::Move {
+                Command::Run {
                     units,
                     goal,
                     queue: false,

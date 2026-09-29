@@ -590,13 +590,13 @@ pub(super) fn turret_fire(
 }
 
 /// Firing positions for a chaser around an unstandable victim tile:
-/// ring-scanned outward (row-major within a ring — the deterministic
-/// snap every goal uses), keeping only tiles the chaser can stand on
+/// ring-scanned outward, keeping only tiles the chaser can stand on
 /// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
 /// no stand-in at all (ring corners sit √2 further out than their
-/// Chebyshev radius suggests). Candidates come back in scan order; the
-/// caller takes the first it can actually route to. Empty when the
-/// victim sits deeper in blocked ground than any weapon reaches.
+/// Chebyshev radius suggests). Within a ring the scan is row-major, which a
+/// half-turn does not preserve, so a caller that picks one must rank them.
+/// Empty when the victim sits deeper in blocked ground than any weapon
+/// reaches.
 fn chase_stand_ins(
     state: &State,
     domain: Domain,
@@ -1417,7 +1417,7 @@ fn egress_goal(
 
 /// Chase-and-hit. Range is measured to the target's closest point and
 /// shots are buffered. A vanished target — or one no carried weapon can
-/// cover — hands control back to the remembered attack-move (or idle,
+/// cover — hands control back to the remembered hunt (or idle,
 /// where auto-acquire finds the next fight).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn attack(
@@ -1455,7 +1455,7 @@ pub(super) fn attack(
         unit.cooldowns,
     );
 
-    // An attack-mover pounding a building stays alert: an enemy *unit*
+    // An huntr pounding a building stays alert: an enemy *unit*
     // wandering into aggro takes priority (deterministic — acquire prefers
     // units), so marching armies fight back instead of tunnel-visioning.
     if resume.is_some()
@@ -1647,7 +1647,7 @@ pub(super) fn attack(
         if leash.anchor.center().dist_sq(pos) > radius_sq {
             if leash.patience == 0 {
                 let unit = state.unit_mut(id).expect("caller checked");
-                unit.order = Order::Move {
+                unit.order = Order::Run {
                     goal: leash.anchor.into(),
                 };
                 unit.path = None;
@@ -1695,10 +1695,20 @@ pub(super) fn attack(
                 let routed = if direct {
                     route_for(state, kind, tile, target_tile).map(|w| (target_tile, w))
                 } else {
-                    // Scan-order candidates, first one that routes wins:
-                    // an isolated pocket next to the victim must not
-                    // stall a chaser that could fire from the far side.
-                    chase_stand_ins(state, stats.domain, target_tile, weapon.range)
+                    // Nearest ring first, then ranked in the chaser's
+                    // approach frame so a mirrored chaser tries the mirrored
+                    // stand-in; the first that routes wins, so an isolated
+                    // pocket next to the victim must not stall a chaser that
+                    // could fire from the far side.
+                    let mut stand_ins =
+                        chase_stand_ins(state, stats.domain, target_tile, weapon.range);
+                    stand_ins.sort_by_key(|goal| {
+                        (
+                            goal.chebyshev(target_tile),
+                            crate::geometry::rect_approach_key(tile, target_tile, (1, 1), *goal),
+                        )
+                    });
+                    stand_ins
                         .into_iter()
                         .find_map(|goal| route_for(state, kind, tile, goal).map(|w| (goal, w)))
                 };
@@ -1759,7 +1769,7 @@ fn stall_attack(
     if resume.is_none()
         && let Some(leash) = unit.leash
     {
-        unit.order = Order::Move {
+        unit.order = Order::Run {
             goal: leash.anchor.into(),
         };
         unit.path = None;
@@ -1885,7 +1895,7 @@ fn fire_sidearms(
 /// Damage answers back: a hit unit that can fight and isn't already
 /// fighting turns on its attacker — the counter to weapons that outrange
 /// aggro (nothing else ever gets this far: inside aggro, auto-acquire
-/// already found the attacker). An attack-mover keeps its destination as
+/// already found the attacker). An huntr keeps its destination as
 /// the resume point. Brains run in id order, so the first hit of a tick
 /// picks the target deterministically.
 pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
@@ -1913,13 +1923,13 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     }
     let resume = match unit.order {
         Order::Idle => None,
-        Order::AttackMove { goal } => Some(goal),
+        Order::Hunt { goal } => Some(goal),
         // A tethered homecoming answers fire: the walk home resumes
         // through the leash once the attacker falls, so no resume
-        // goal is carried. A plain Move stays oblivious — it is the
+        // goal is carried. A plain Run stays oblivious — it is the
         // player's recall verb, and auto-engaging on damage would
         // undo exactly what it was issued to do.
-        Order::Move { .. } if unit.leash.is_some() => None,
+        Order::Run { .. } if unit.leash.is_some() => None,
         // An attack aimed at something that just died in resolution is no
         // engagement — a victim auto-acquired a neighbor this tick, the
         // neighbor fell in the volley, and without this arm the busy-guard
@@ -2199,7 +2209,7 @@ mod tests {
         let march = |state: &State, player: u8, goal: TilePos| -> PlayerCommand {
             PlayerCommand {
                 player: PlayerId(player),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: state
                         .units
                         .iter()
@@ -2337,7 +2347,7 @@ mod tests {
         let march = |state: &State, player: u8, goal: TilePos| -> PlayerCommand {
             PlayerCommand {
                 player: PlayerId(player),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: state
                         .units
                         .iter()

@@ -1283,7 +1283,7 @@ fn shipped_defense_retains_its_exact_builder_and_site_beside_economic_allocation
 }
 
 #[test]
-fn player_facing_restoration_waits_for_the_full_frame_footprint() {
+fn player_facing_restoration_accepts_any_visible_or_remembered_corner() {
     let home = TilePos::new(2, 10);
     let frame = TilePos::new(8, 10);
     let mut obs = construction_observation(1_000);
@@ -1292,25 +1292,34 @@ fn player_facing_restoration_waits_for_the_full_frame_footprint() {
         observed_building(0, BuildingKind::Foundry, home, true),
     );
     obs.known_frames.push(frame);
-    let hidden = frame.offset(1, 1);
-    let hidden_index = usize::try_from(hidden.y * obs.map_width + hidden.x).unwrap();
-    obs.explored[hidden_index] = false;
     let dials = standard_dials();
 
-    let partial = player_facing_intents(&dials, &obs);
-    assert!(
-        !plans_build(&partial, BuildingKind::Extractor, frame),
-        "a known anchor is not enough to promise an unseen 2x2 footprint: {partial:?}"
-    );
-
-    obs.explored[hidden_index] = true;
-    let complete = player_facing_intents(&dials, &obs);
-    assert_eq!(
-        exact_builder_for(&complete, BuildingKind::Extractor, frame),
-        Some(UnitId(5)),
-        "the restoration becomes legal with the nearest safe exact builder once every footprint \
-         tile is known: {complete:?}"
-    );
+    for corner in 0..4 {
+        for remembered in [false, true] {
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let tile = frame.offset(dx, dy);
+                    let index = (tile.y * obs.map_width + tile.x) as usize;
+                    let known = dy * 2 + dx == corner;
+                    obs.explored[index] = known;
+                    obs.visible[index] = known && !remembered;
+                }
+            }
+            let partial = player_facing_intents(&dials, &obs);
+            assert_eq!(
+                exact_builder_for(&partial, BuildingKind::Extractor, frame),
+                Some(UnitId(5)),
+                "a discovered frame retains its safe exact builder: {partial:?}"
+            );
+            assert!(UtilityPolicy::new().placement_geometry_valid_except(
+                &obs,
+                BuildingKind::Extractor,
+                frame,
+                None,
+                super::FoundationCancellations::default(),
+            ));
+        }
+    }
 }
 
 #[test]

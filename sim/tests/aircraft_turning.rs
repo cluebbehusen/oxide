@@ -26,7 +26,7 @@ fn move_to(state: &mut State, goal: TilePos, queue: bool) {
     let unit = &state.units()[0];
     state.tick(&[cmd(
         unit.player.0,
-        Command::Move {
+        Command::Run {
             units: vec![unit.id],
             goal,
             queue,

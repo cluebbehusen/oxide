@@ -217,7 +217,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 }
 
 /// What a rally means to the fresh unit `newborn`: harvesters mine a
-/// rallied node, fighters attack-move, everyone else walks. The walk
+/// rallied node, fighters hunt, everyone else walks. The walk
 /// resolves the rally like a move of the newborn's own, so it heads for the
 /// rally tile until its owner's team has explored it, and an unreachable
 /// rally ends as close as it can get.
@@ -250,9 +250,9 @@ fn rally_order(state: &State, newborn: UnitId, rally: TilePos) -> Order {
     let reverse = super::goals::spread_scan_reversed(state, rally, &[newborn]);
     let goal = super::goals::issue(state, owner, rally, stats.domain, reverse).goal(0);
     if stats.can_fight() {
-        Order::AttackMove { goal }
+        Order::Hunt { goal }
     } else {
-        Order::Move { goal }
+        Order::Run { goal }
     }
 }
 

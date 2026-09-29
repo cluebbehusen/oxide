@@ -42,7 +42,7 @@ fn wounded_turret(
     // The ranged raiders damage the turret before it defeats them.
     state.tick(&[cmd(
         1,
-        Command::AttackMove {
+        Command::Hunt {
             units: raiders.clone(),
             goal: TilePos::new(3, 4),
             queue: false,
@@ -152,7 +152,7 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
     let opener_staging = TilePos::new(8, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![opener],
             goal: opener_staging,
             queue: false,
@@ -194,7 +194,7 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
         let torch = trained.expect("trained");
         state.tick(&[cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![torch],
                 goal: park,
                 queue: false,
@@ -633,7 +633,7 @@ fn a_queued_repair_waits_its_turn_then_welds() {
     let waypoint = TilePos::new(10, 2);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![welder],
             goal: waypoint,
             queue: false,
@@ -648,7 +648,7 @@ fn a_queued_repair_waits_its_turn_then_welds() {
         },
     )]);
     assert!(
-        matches!(state.unit(welder).unwrap().order, Order::Move { .. }),
+        matches!(state.unit(welder).unwrap().order, Order::Run { .. }),
         "the march survives the shift-repair"
     );
     assert_eq!(state.unit(welder).unwrap().queue.len(), 1);

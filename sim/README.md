@@ -27,6 +27,9 @@ Queued construction pays for one site immediately. Fogged footprints remain
 provisional, nonblocking scaffolds until full visibility verifies the ground.
 Invalid sites and sites abandoned by their last worker before work starts refund
 in full; activation keeps the same site identity and never charges again.
+Discovering any tile of an Extractor frame permits a deferred build on the whole
+frame, including after sight is lost. Known claims still block the order; unseen
+occupants are checked when the full footprint comes into view.
 
 Tile goals keep the tile the player clicked, which must lie on the map. When the
 issuer's team has explored it, a group spreads over the open ground around it at

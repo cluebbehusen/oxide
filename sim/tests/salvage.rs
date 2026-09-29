@@ -79,7 +79,7 @@ fn a_death_leaves_its_price_on_passable_ground() {
     // The grave is still open ground: a unit can be ordered to stand on it.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![walker],
             goal: grave,
             queue: false,
@@ -200,7 +200,7 @@ fn foundations_preserve_wrecks_until_construction_starts() {
     // foundations even when hovering wrecks don't.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![executioner],
             goal: TilePos::new(11, 1),
             queue: false,
@@ -371,7 +371,7 @@ fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
     // Fly the wisp onto the foundry roof; the flakhound will swat it.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![wisp],
             goal: foundry_anchor,
             queue: false,
@@ -379,7 +379,7 @@ fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
     )]);
     state.tick(&[cmd(
         1,
-        Command::Move {
+        Command::Run {
             units: vec![flak],
             goal: TilePos::new(foundry_anchor.x - 2, foundry_anchor.y),
             queue: false,
@@ -1016,7 +1016,7 @@ fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
     // A long march with a salvage queued behind it.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![walker],
             goal: TilePos::new(2, 6),
             queue: false,
@@ -1058,7 +1058,7 @@ fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
     )]);
     let unit = state.unit(walker).unwrap();
     assert!(
-        matches!(unit.order, oxide_sim::Order::Move { .. }),
+        matches!(unit.order, oxide_sim::Order::Run { .. }),
         "the march survives eviction"
     );
     assert!(
@@ -1314,7 +1314,7 @@ fn a_dry_source_hops_only_inside_its_own_deposit() {
     // match cannot decide itself under the harvest.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![executioner],
             goal: TilePos::new(1, 7),
             queue: false,

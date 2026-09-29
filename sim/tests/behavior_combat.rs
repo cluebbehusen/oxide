@@ -216,7 +216,7 @@ fn bombard_retracts_before_retargeting_or_moving_and_resumes_mid_deployment() {
         let commands = if tick == 0 {
             vec![cmd(
                 0,
-                Command::Move {
+                Command::Run {
                     units: vec![id],
                     goal: TilePos::new(16, 10),
                     queue: false,
@@ -601,7 +601,7 @@ fn avalanche_backs_out_of_its_dead_zone_before_firing() {
 }
 
 #[test]
-fn attack_move_engages_on_the_way_then_resumes() {
+fn hunt_engages_on_the_way_then_resumes() {
     // A wider arena than `arena()`: the enemy Foundry must sit outside
     // aggro range of the march route, or the marcher will (correctly)
     // besiege it instead of arriving.
@@ -624,7 +624,7 @@ fn attack_move_engages_on_the_way_then_resumes() {
     let goal = TilePos::new(12, 4);
     state.tick(&[cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: vec![marcher],
             goal,
             queue: false,
@@ -638,7 +638,7 @@ fn attack_move_engages_on_the_way_then_resumes() {
 }
 
 #[test]
-fn attack_move_with_only_harvesters_degrades_to_move() {
+fn hunt_with_only_harvesters_degrades_to_move() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
         .build()
         .unwrap();
@@ -646,7 +646,7 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
     let goal = TilePos::new(10, 2);
     state.tick(&[cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: vec![mover],
             goal,
             queue: false,
@@ -654,7 +654,7 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
     )]);
     assert!(matches!(
         state.unit(mover).unwrap().order,
-        Order::Move { .. }
+        Order::Run { .. }
     ));
     run_until(&mut state, 200, |s, _| {
         s.unit(mover).unwrap().tile() == goal
@@ -1056,7 +1056,7 @@ fn advance_ignores_retaliation_and_pacifists_use_plain_move() {
     ));
     assert!(matches!(
         state.unit(worker).unwrap().order,
-        Order::Move { .. }
+        Order::Run { .. }
     ));
 }
 
@@ -1347,7 +1347,7 @@ fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
     // clean. What the ambush must NOT do is stop the army — the
     // rearguard still arrives. (The retaliation contract itself is
     // covered by the bombard tests; fight-then-win-then-resume by
-    // attack_move_engages_on_the_way_then_resumes.)
+    // hunt_engages_on_the_way_then_resumes.)
     let scenario = Scenario {
         players: players(200),
         ..open_arena(
@@ -1376,7 +1376,7 @@ fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
     state.tick(&[
         cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![marcher],
                 goal,
                 queue: false,
@@ -1384,7 +1384,7 @@ fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
         ),
         cmd(
             0,
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![rearguard],
                 goal: rear_goal,
                 queue: false,
@@ -1500,17 +1500,17 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     // Builder clears the field so the duel is clean.
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![builder],
             goal: TilePos::new(2, 1),
             queue: false,
         },
     )]);
-    // Fog: the rat can't target what it hasn't seen — attack-move in
+    // Fog: the rat can't target what it hasn't seen — hunt in
     // and let fire-at-will find the turret.
     state.tick(&[cmd(
         1,
-        Command::AttackMove {
+        Command::Hunt {
             units: vec![rat],
             goal: TilePos::new(6, 5),
             queue: false,
@@ -1563,7 +1563,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(2, 1),
                 queue: false,
@@ -1571,7 +1571,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
         ),
         cmd(
             1,
-            Command::AttackMove {
+            Command::Hunt {
                 units: vec![lancer],
                 goal: TilePos::new(6, 5),
                 queue: false,
@@ -1616,7 +1616,7 @@ fn turret_fires_at_its_stated_cadence() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![builder],
                 goal: TilePos::new(2, 2),
                 queue: false,
@@ -1624,7 +1624,7 @@ fn turret_fires_at_its_stated_cadence() {
         ),
         cmd(
             1,
-            Command::Move {
+            Command::Run {
                 units: vec![target],
                 goal: TilePos::new(8, 6),
                 queue: false,

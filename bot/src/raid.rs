@@ -107,7 +107,7 @@ pub enum RaidExitReason {
 /// The persistent order currently owned by a raid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RaidDispatch {
-    /// Attack-move toward the last observed objective tile.
+    /// Hunt toward the last observed objective tile.
     Ingress(TilePos),
     /// Attack the stable observed objective.
     Strike(Target),
@@ -377,7 +377,7 @@ impl RaidPlanner {
                     _ => true,
                 };
                 if owns_members && needs_dispatch {
-                    decision.intents.push(Intent::AttackMoveUnits {
+                    decision.intents.push(Intent::HuntUnits {
                         units: raid.members.clone(),
                         goal: raid.last_tile,
                     });
@@ -1200,7 +1200,7 @@ mod tests {
         assert_eq!(decision.reservations, [UnitId(1), UnitId(2)]);
         assert_eq!(
             decision.intents,
-            [Intent::AttackMoveUnits {
+            [Intent::HuntUnits {
                 units: decision.reservations.clone(),
                 goal: TARGET,
             }]
@@ -1297,7 +1297,7 @@ mod tests {
         assert_eq!(complete.reservations, [UnitId(1), UnitId(2)]);
         assert!(matches!(
             complete.intents.as_slice(),
-            [Intent::AttackMoveUnits { units, goal }]
+            [Intent::HuntUnits { units, goal }]
                 if units == &complete.reservations && *goal == TARGET
         ));
         assert!(planner.operation().is_some());
@@ -1336,7 +1336,7 @@ mod tests {
         );
         assert!(matches!(
             ready.intents.as_slice(),
-            [Intent::AttackMoveUnits { units, .. }] if units == &[UnitId(1), UnitId(2)]
+            [Intent::HuntUnits { units, .. }] if units == &[UnitId(1), UnitId(2)]
         ));
     }
 
@@ -1359,7 +1359,7 @@ mod tests {
         let moved = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(
             moved.intents,
-            [Intent::AttackMoveUnits {
+            [Intent::HuntUnits {
                 units: moved.reservations.clone(),
                 goal: TARGET.offset(5, 0),
             }]
@@ -1440,7 +1440,7 @@ mod tests {
                 "guile {guile}"
             );
             assert!(
-                matches!(decision.intents.as_slice(), [Intent::AttackMoveUnits { units, .. }] if units == &[UnitId(1), UnitId(2)]),
+                matches!(decision.intents.as_slice(), [Intent::HuntUnits { units, .. }] if units == &[UnitId(1), UnitId(2)]),
                 "guile {guile}: {decision:?}"
             );
             assert_eq!(planner.operation().unwrap().committed_size, RAID_GROUP_SIZE);
@@ -1592,7 +1592,7 @@ mod tests {
             assert_eq!(launch.reservations, [UnitId(1), UnitId(2)]);
             assert!(matches!(
                 launch.intents.as_slice(),
-                [Intent::AttackMoveUnits { units, goal }]
+                [Intent::HuntUnits { units, goal }]
                     if units == &[UnitId(1), UnitId(2)] && *goal == TARGET
             ));
         }
@@ -1708,7 +1708,7 @@ mod tests {
         let decision = planner.think_unrestricted(&profile(80), tuning, &obs, HOME, &[], &[]);
         assert_eq!(
             decision.intents,
-            [Intent::AttackMoveUnits {
+            [Intent::HuntUnits {
                 units: vec![UnitId(1), UnitId(2)],
                 goal: TARGET,
             }]
@@ -1735,7 +1735,7 @@ mod tests {
 
         assert!(matches!(
             decision.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == TilePos::new(7, 8)
+            [Intent::HuntUnits { goal, .. }] if *goal == TilePos::new(7, 8)
         ));
     }
 
@@ -1853,7 +1853,7 @@ mod tests {
         );
         assert!(matches!(
             ingress.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == TARGET
+            [Intent::HuntUnits { goal, .. }] if *goal == TARGET
         ));
 
         obs.enemy_buildings.push(building(
@@ -1902,7 +1902,7 @@ mod tests {
 
         assert!(matches!(
             decision.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == exposed
+            [Intent::HuntUnits { goal, .. }] if *goal == exposed
         ));
     }
 
@@ -1927,7 +1927,7 @@ mod tests {
 
         assert!(matches!(
             decision.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == production
+            [Intent::HuntUnits { goal, .. }] if *goal == production
         ));
     }
 
@@ -1948,7 +1948,7 @@ mod tests {
 
         assert!(matches!(
             decision.intents.as_slice(),
-            [Intent::AttackMoveUnits { goal, .. }] if *goal == TARGET
+            [Intent::HuntUnits { goal, .. }] if *goal == TARGET
         ));
     }
 

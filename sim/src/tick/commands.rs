@@ -45,16 +45,16 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             continue;
         }
         let outcome = match &pc.command {
-            Command::Move { units, goal, queue } => {
-                apply_move(state, pc.player, &canonical_units(units), *goal, *queue)
+            Command::Run { units, goal, queue } => {
+                apply_run(state, pc.player, &canonical_units(units), *goal, *queue)
             }
             Command::Attack {
                 units,
                 target,
                 queue,
             } => apply_attack(state, pc.player, &canonical_units(units), *target, *queue),
-            Command::AttackMove { units, goal, queue } => {
-                apply_attack_move(state, pc.player, &canonical_units(units), *goal, *queue)
+            Command::Hunt { units, goal, queue } => {
+                apply_hunt(state, pc.player, &canonical_units(units), *goal, *queue)
             }
             Command::Harvest { units, node, queue } => {
                 apply_harvest(state, pc.player, &canonical_units(units), *node, *queue)
@@ -395,14 +395,14 @@ fn apply_group_goal(
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
-fn apply_move(
+fn apply_run(
     state: &mut State,
     player: PlayerId,
     units: &[UnitId],
     goal: TilePos,
     queue: bool,
 ) -> Result<(), RejectReason> {
-    apply_group_goal(state, player, units, goal, queue, |_, goal| Order::Move {
+    apply_group_goal(state, player, units, goal, queue, |_, goal| Order::Run {
         goal,
     })
 }
@@ -457,7 +457,7 @@ fn apply_attack(
                 landed += 1;
             }
         } else if let Some(goal) = walk_goals[(stats.domain == Domain::Air) as usize]
-            && assign(u, Order::Move { goal }, queue)
+            && assign(u, Order::Run { goal }, queue)
         {
             landed += 1;
         }
@@ -470,7 +470,7 @@ fn apply_attack(
         .ok_or(RejectReason::NoValidUnits)
 }
 
-fn apply_attack_move(
+fn apply_hunt(
     state: &mut State,
     player: PlayerId,
     units: &[UnitId],
@@ -479,9 +479,9 @@ fn apply_attack_move(
 ) -> Result<(), RejectReason> {
     apply_group_goal(state, player, units, goal, queue, |unit, goal| {
         if unit.kind.stats().can_fight() {
-            Order::AttackMove { goal }
+            Order::Hunt { goal }
         } else {
-            Order::Move { goal }
+            Order::Run { goal }
         }
     })
 }
@@ -497,7 +497,7 @@ fn apply_advance(
         if unit.kind.stats().can_fight() {
             Order::Advance { goal }
         } else {
-            Order::Move { goal }
+            Order::Run { goal }
         }
     })
 }
@@ -546,7 +546,7 @@ fn apply_harvest(
 }
 
 /// Walk a looping circuit, the whole route one program: each leg spreads
-/// the group over its waypoint like a group move — combat units attack-move
+/// the group over its waypoint like a group move — combat units hunt
 /// each leg, pacifists walk them obliviously.
 fn apply_patrol(
     state: &mut State,
@@ -581,9 +581,9 @@ fn apply_patrol(
             let legs = legs.iter().map(|leg| {
                 let goal = leg.goal(rank);
                 if can_fight {
-                    Order::AttackMove { goal }
+                    Order::Hunt { goal }
                 } else {
-                    Order::Move { goal }
+                    Order::Run { goal }
                 }
             });
             assign_circuit(unit, legs);

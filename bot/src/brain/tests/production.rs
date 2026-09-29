@@ -542,7 +542,7 @@ fn harvester_recovery_cancels_a_due_connected_provider_and_recalls_its_force() {
         .commands
         .iter()
         .filter_map(|command| match &command.command {
-            Command::Move { units, goal, queue }
+            Command::Run { units, goal, queue }
                 if *goal == home && !*queue && units.iter().any(|unit| reserved.contains(unit)) =>
             {
                 Some(units.clone())

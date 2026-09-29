@@ -17,7 +17,7 @@ fn fixture() -> (State, Vec<UnitId>, TilePos) {
     let anchor = TilePos::new(12, 1);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: crew.clone(),
             goal: TilePos::new(2, 6),
             queue: false,

@@ -35,7 +35,7 @@ fn solo_walk(kind: UnitKind, from: (i32, i32), goal: (i32, i32), w: usize, h: us
     let id = state.units()[0].id;
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![id],
             goal: TilePos::new(goal.0, goal.1),
             queue: false,
@@ -71,7 +71,7 @@ fn lab_head_on_swap() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![a],
                 goal: TilePos::new(b_from.0, b_from.1),
                 queue: false,
@@ -79,7 +79,7 @@ fn lab_head_on_swap() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![b],
                 goal: TilePos::new(a_from.0, a_from.1),
                 queue: false,
@@ -130,7 +130,7 @@ fn lab_overtake() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![fast],
                 goal: TilePos::new(37, 10),
                 queue: false,
@@ -138,7 +138,7 @@ fn lab_overtake() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![slow],
                 goal: TilePos::new(33, 10),
                 queue: false,
@@ -176,7 +176,7 @@ fn lab_crossing() {
     state.tick(&[
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![ew],
                 goal: TilePos::new(30, 10),
                 queue: false,
@@ -184,7 +184,7 @@ fn lab_crossing() {
         ),
         cmd(
             0,
-            Command::Move {
+            Command::Run {
                 units: vec![ns],
                 goal: TilePos::new(20, 17),
                 queue: false,
@@ -226,7 +226,7 @@ fn lab_group_march() {
     let goal = TilePos::new(34, 10);
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: ids.clone(),
             goal,
             queue: false,
@@ -277,7 +277,7 @@ fn lab_parked_line() {
         .collect();
     state.tick(&[cmd(
         0,
-        Command::Move {
+        Command::Run {
             units: vec![mover],
             goal: TilePos::new(35, 10),
             queue: false,
@@ -378,7 +378,7 @@ fn lab_bulk_attack() {
         ));
     }
     let mut state = lane_arena(w, h, units).build().expect("builds");
-    // The lab's target is the EAST foundry (2x2 at (w-3, h-3)); attack-move
+    // The lab's target is the EAST foundry (2x2 at (w-3, h-3)); hunt
     // the swarm onto it, the way a player right-clicks a base.
     let foundry = TilePos::new(w as i32 - 3, h as i32 - 3);
     let target_id = state
@@ -390,7 +390,7 @@ fn lab_bulk_attack() {
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: ids,
             goal: foundry,
             queue: false,
@@ -478,7 +478,7 @@ fn lab_bulk_attack_pocket() {
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: ids,
             goal: foundry,
             queue: false,
@@ -550,7 +550,7 @@ fn lab_bulk_attack_ranged() {
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
-        Command::AttackMove {
+        Command::Hunt {
             units: ids,
             goal: foundry,
             queue: false,

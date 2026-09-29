@@ -183,34 +183,34 @@ clicked tile and takes the re-issue's aim, keeping its resolved endpoint only
 while its target is unchanged; the walk replans a path whose destination was
 superseded.
 
-Movement stances are distinct contracts. `Move` walks without engaging,
-`Advance` keeps moving but may take already-visible in-range primary shots, and
-`AttackMove` acquires and pursues enemies along the route. Explicit `Attack`
-commits to its target; idle self-acquisition and retaliation may carry a leash
-back to the unit's station. `Harvest`, `Build`, `Found`, `Repair`, `RepairUnit`,
-and `Salvage` are persistent work programs lowered by unit behavior over later
+Movement stances are distinct contracts. `Run` walks without engaging, `Advance`
+keeps moving but may take already-visible in-range primary shots, and `Hunt`
+acquires and pursues enemies along the route. Explicit `Attack` commits to its
+target; idle self-acquisition and retaliation may carry a leash back to the
+unit's station. `Harvest`, `Build`, `Found`, `Repair`, `RepairUnit`, and
+`Salvage` are persistent work programs lowered by unit behavior over later
 ticks.
 
-`Move`, `AttackMove`, `Advance`, and `Unload`, and the march an `Attack`
-resumes, carry a `Goal`: the clicked tile, the spread slot the unit aims for
-around it, and an optional endpoint. A tile goal must lie on the map, and an
-off-map one is refused as `OutOfBounds`; a goal that cannot be reached is never
-refused. Each movement domain's half of a group snaps the clicked tile to the
-nearest open tile within `GOAL_SNAP_RADIUS` (air clamps onto the map and scans
-three tiles further), then gives its members, in id order, the open tiles
-ring-scanned outward from that center; members past the last open tile share it,
-and with no open tile near the click every member's target stays the clicked
-tile. That resolution happens when the command is issued if the issuer's team
-has explored the clicked tile. Otherwise every member heads for the clicked tile
-itself, keeping its rank and the scan frame fixed at issue, and the end-of-tick
-exposure pass hands each its slot on the first tick its owner's team has
-explored the tile, in active and queued orders and in the marches engagements
-will resume. Resolution reads the real map, like every route; only its trigger
-is player knowledge, so a group never spreads before its owner's team has seen
-the clicked tile. Patrols spread each leg the same way. A rally walk, the walk a
-unit that cannot hit an attack target takes to that target's tile, and an
-`Unload` drop point each resolve as rank 0, so a rally's newborns and a group's
-pacifists share one tile.
+`Run`, `Hunt`, `Advance`, and `Unload`, and the march an `Attack` resumes, carry
+a `Goal`: the clicked tile, the spread slot the unit aims for around it, and an
+optional endpoint. A tile goal must lie on the map, and an off-map one is
+refused as `OutOfBounds`; a goal that cannot be reached is never refused. Each
+movement domain's half of a group snaps the clicked tile to the nearest open
+tile within `GOAL_SNAP_RADIUS` (air clamps onto the map and scans three tiles
+further), then gives its members, in id order, the open tiles ring-scanned
+outward from that center; members past the last open tile share it, and with no
+open tile near the click every member's target stays the clicked tile. That
+resolution happens when the command is issued if the issuer's team has explored
+the clicked tile. Otherwise every member heads for the clicked tile itself,
+keeping its rank and the scan frame fixed at issue, and the end-of-tick exposure
+pass hands each its slot on the first tick its owner's team has explored the
+tile, in active and queued orders and in the marches engagements will resume.
+Resolution reads the real map, like every route; only its trigger is player
+knowledge, so a group never spreads before its owner's team has seen the clicked
+tile. Patrols spread each leg the same way. A rally walk, the walk a unit that
+cannot hit an attack target takes to that target's tile, and an `Unload` drop
+point each resolve as rank 0, so a rally's newborns and a group's pacifists
+share one tile.
 
 When the target lies outside the unit's reachable ground, the unit routes to the
 reachable tile nearest it by squared distance instead, and stores that tile as
@@ -292,24 +292,24 @@ than on the footprint edge point that range is measured to, so a corner shared
 with a neighbouring footprint cannot hand the hit to the neighbour.
 
 Turn-limited aircraft land on any ordinary ground tile, and there is no landing
-command: a flier's ground destination is a landing. A move, attack-move, or
-advance with nothing queued behind it and no patrol loop hands over to an
-internal `Land` order once the airframe is within `LANDING_HANDOFF_REACH` of
-where it is headed (the endpoint of an unreachable goal, resolved before the
-check) and nothing is in acquisition range, snapping to the nearest clear
-landable tile within `GOAL_SNAP_RADIUS`; a handoff that replaces a short walk
-reports the shortfall. With an enemy in reach it keeps the ordinary arrival
-contract and fights as an idle unit would. A tile is landable only when some
-run-in bearing exists whose parked heading the airframe could fly out of again,
-either by a half turn or by straight flight into open ground; corner tiles
-therefore land only with the nose toward the field. The `Land` order flies
-straight in on whatever bearing the tile lies whenever the nose can settle onto
-that line before reaching it; otherwise it flies a run-in entered from a fix
-twice as far out as the initial point on the same bearing, so the leg is joined
-lined up rather than from whatever heading reached it, and then chases a carrot
-on the run-in centerline two turn radii ahead of its own projection. Both fixes
-must sit strictly inside the flight envelope on a heading the airframe can fly
-out of, and the whole line must be open sky; a tile with no such line is not
+command: a flier's ground destination is a landing. A move, hunt, or advance
+with nothing queued behind it and no patrol loop hands over to an internal
+`Land` order once the airframe is within `LANDING_HANDOFF_REACH` of where it is
+headed (the endpoint of an unreachable goal, resolved before the check) and
+nothing is in acquisition range, snapping to the nearest clear landable tile
+within `GOAL_SNAP_RADIUS`; a handoff that replaces a short walk reports the
+shortfall. With an enemy in reach it keeps the ordinary arrival contract and
+fights as an idle unit would. A tile is landable only when some run-in bearing
+exists whose parked heading the airframe could fly out of again, either by a
+half turn or by straight flight into open ground; corner tiles therefore land
+only with the nose toward the field. The `Land` order flies straight in on
+whatever bearing the tile lies whenever the nose can settle onto that line
+before reaching it; otherwise it flies a run-in entered from a fix twice as far
+out as the initial point on the same bearing, so the leg is joined lined up
+rather than from whatever heading reached it, and then chases a carrot on the
+run-in centerline two turn radii ahead of its own projection. Both fixes must
+sit strictly inside the flight envelope on a heading the airframe can fly out
+of, and the whole line must be open sky; a tile with no such line is not
 landable. Acquisition is judged from the landing tile, not from the airframe on
 its way there, so a retreat past a gun still completes; judged from anywhere but
 the unit's own position it is gated on what the player currently sees, since the
@@ -383,13 +383,13 @@ tiles that other friendly workers hold or are heading for are last resorts,
 taken only when every tile around a source is spoken for; a parked worker also
 claims every tile whose center lies within 0.9 tiles of its hull.
 
-Group `Move`, `Advance`, and `AttackMove` commands likewise resolve a blocked
-center and spread per-unit destinations in the approaching body's half-turn
-frame. The same orientation governs both decisions: mirroring a group, its
-requested center, and the map therefore mirrors every lowered unit goal even
-when the requested tile is occupied. Patrol legs, rallies, pacifist walks, and
-drop points take their frames the same way. The frame is fixed when the command
-is issued and kept with a goal still waiting for its tile to be explored, so
+Group `Run`, `Advance`, and `Hunt` commands likewise resolve a blocked center
+and spread per-unit destinations in the approaching body's half-turn frame. The
+same orientation governs both decisions: mirroring a group, its requested
+center, and the map therefore mirrors every lowered unit goal even when the
+requested tile is occupied. Patrol legs, rallies, pacifist walks, and drop
+points take their frames the same way. The frame is fixed when the command is
+issued and kept with a goal still waiting for its tile to be explored, so
 mirrored groups whose clicks are explored on the same tick take mirrored slots
 however far their units have walked since.
 
@@ -449,9 +449,12 @@ hp. A non-stealthy footprint blocks ground from that command onward; the buried
 Scuttle Charge is the deliberate exception. Harvesters raise the site over time.
 Wreck salvage beneath a site remains, with ordinary decay, until the first crew
 work clears its footprint. Cancelling before that work preserves the salvage. A
-deferred build pays for one provisional scaffold and installs a `Found` program
-for its workers. Provisional scaffolds provide no vision, physical occupancy,
-damage target, or construction progress. Once the owner's team sees the entire
+deferred build requires explored ground, except that discovering any tile of an
+Extractor frame makes its entire authored footprint eligible. Known occupants
+still block the order, including remembered enemy claims. An accepted deferred
+build pays for one provisional scaffold and installs a `Found` program for its
+workers. Provisional scaffolds provide no vision, physical occupancy, damage
+target, or construction progress. Once the owner's team sees the entire
 footprint, the simulation checks placement against that knowledge: a blocker
 cancels the scaffold with a full refund; clear ground activates its occupancy
 and converts every matching worker commitment to `Build` using the same building
@@ -595,11 +598,11 @@ identification reveals an incompatible domain. Contact loss also clears defense
 focus and advances queued orders.
 
 Automatic acquisition prefers visible eligible enemies over radar contacts and
-does not acquire building ghosts. Automatic radar fire may stop Idle,
-AttackMove, or Patrol to aim, but cannot pursue, retreat, or start a bomber run.
-Move and Advance retain their existing movement and firing rules. A fireable
-explicit target takes priority. Defenses retain blocked or out-of-range focus
-while firing at fallback targets; Stop clears focus.
+does not acquire building ghosts. Automatic radar fire may stop Idle, Hunt, or
+Patrol to aim, but cannot pursue, retreat, or start a bomber run. Run and
+Advance retain their existing movement and firing rules. A fireable explicit
+target takes priority. Defenses retain blocked or out-of-range focus while
+firing at fallback targets; Stop clears focus.
 
 Ground-capable defenses automatically acquire visible hostile buildings when no
 eligible visible unit is in firing range with a clear shot. Building acquisition

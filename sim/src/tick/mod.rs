@@ -975,7 +975,7 @@ mod tests {
             });
             commands.push(PlayerCommand {
                 player: PlayerId(player),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: vec![UnitId(if player == 0 { 3 } else { 7 })],
                     goal: if player == 0 {
                         TilePos::new(8, 8)
@@ -1092,8 +1092,8 @@ mod tests {
                     );
                     assert_eq!(left_retiring, right_retiring, "{stage}: retirement");
                 }
-                (Order::AttackMove { goal: left_goal }, Order::AttackMove { goal: right_goal })
-                | (Order::Move { goal: left_goal }, Order::Move { goal: right_goal }) => {
+                (Order::Hunt { goal: left_goal }, Order::Hunt { goal: right_goal })
+                | (Order::Run { goal: left_goal }, Order::Run { goal: right_goal }) => {
                     assert_goals_mirror(stage, state, left_goal, right_goal);
                 }
                 (
@@ -1542,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_six_unit_attack_move_spreads_in_each_armys_local_frame() {
+    fn mirrored_six_unit_hunt_spreads_in_each_armys_local_frame() {
         use crate::scenario::{BuildingSpec, UnitSpec};
         use crate::{BuildingKind, Command, PlayerId, UnitId, UnitKind};
 
@@ -1599,7 +1599,7 @@ mod tests {
         let commands = vec![
             PlayerCommand {
                 player: PlayerId(0),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: [3, 8, 10, 12, 14, 16].map(UnitId).into(),
                     goal: TilePos::new(21, 15),
                     queue: false,
@@ -1607,7 +1607,7 @@ mod tests {
             },
             PlayerCommand {
                 player: PlayerId(1),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: [7, 9, 11, 13, 15, 17].map(UnitId).into(),
                     goal: TilePos::new(26, 14),
                     queue: false,
@@ -1677,7 +1677,7 @@ mod tests {
         let commands = vec![
             PlayerCommand {
                 player: PlayerId(0),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: groups[0].into(),
                     goal: clicked,
                     queue: false,
@@ -1685,7 +1685,7 @@ mod tests {
             },
             PlayerCommand {
                 player: PlayerId(1),
-                command: Command::AttackMove {
+                command: Command::Hunt {
                     units: groups[1].into(),
                     goal: mirror_tile(&state, clicked),
                     queue: false,
@@ -1693,7 +1693,7 @@ mod tests {
             },
         ];
         let goal = |state: &State, id| match state.unit(id).expect("sentinel lives").order {
-            Order::AttackMove { goal } => Some(goal),
+            Order::Hunt { goal } => Some(goal),
             Order::Idle => None,
             other => panic!("unit {id} left its march: {other:?}"),
         };

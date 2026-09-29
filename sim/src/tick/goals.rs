@@ -400,7 +400,7 @@ mod tests {
         let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
         let command = PlayerCommand {
             player: PlayerId(0),
-            command: Command::Move {
+            command: Command::Run {
                 units: ids.clone(),
                 goal: clicked,
                 queue: false,
@@ -418,7 +418,7 @@ mod tests {
             let expected = snap_and_spread(&before, clicked, domain, reverse, half.len())
                 .expect("open ground near the click");
             for (id, tile) in half.iter().zip(expected) {
-                let Order::Move { goal } = state.unit(*id).unwrap().order else {
+                let Order::Run { goal } = state.unit(*id).unwrap().order else {
                     panic!("unit {id} got a move");
                 };
                 assert_eq!(goal.tile(), clicked);
@@ -444,8 +444,8 @@ mod tests {
         let mut stale = Goal::pending(explored, 4, reverse);
         stale.endpoint = Some(TilePos::new(0, 0));
         unit.queue = [
-            Order::Move { goal: stale },
-            Order::AttackMove {
+            Order::Run { goal: stale },
+            Order::Hunt {
                 goal: Goal::pending(unexplored, 1, false),
             },
             Order::Advance {
@@ -461,14 +461,14 @@ mod tests {
         assert_eq!(resume, Some(Goal::slotted(explored, slots[2])));
         assert_eq!(
             unit.queue[0],
-            Order::Move {
+            Order::Run {
                 goal: Goal::slotted(explored, slots[4])
             },
             "the endpoint resolved for the clicked tile is dropped"
         );
         assert_eq!(
             unit.queue[1],
-            Order::AttackMove {
+            Order::Hunt {
                 goal: Goal::pending(unexplored, 1, false)
             },
             "an unexplored click keeps waiting"
@@ -486,7 +486,7 @@ mod tests {
         let mut state = world(&FIELD, &[(UnitKind::Sentinel, 5, 6)]);
         let mut goal = Goal::slotted(TilePos::new(4, 4), TilePos::new(6, 6));
         goal.endpoint = Some(TilePos::new(6, 7));
-        state.units[0].order = Order::Move { goal };
+        state.units[0].order = Order::Run { goal };
         let before = state.clone();
         expose(&mut state);
         assert_eq!(state, before);

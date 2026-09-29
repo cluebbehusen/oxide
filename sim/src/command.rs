@@ -19,11 +19,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
-    /// Send units walking to a tile on the map. Once the issuer's team has
+    /// Run to a tile without firing or engaging. Once the issuer's team has
     /// explored the tile, an impassable one snaps to the nearest open tile
     /// within [`crate::stats::GOAL_SNAP_RADIUS`] and the group spreads
     /// around it; until then every unit heads for the tile itself.
-    Move {
+    Run {
         /// The units to move (non-owned and dead ids are skipped).
         units: Vec<UnitId>,
         /// Destination tile.
@@ -40,18 +40,18 @@ pub enum Command {
         units: Vec<UnitId>,
         /// An objective in the issuer's current team knowledge.
         target: AttackTarget,
-        /// Append instead of replace (see [`Command::Move::queue`]).
+        /// Append instead of replace (see [`Command::Run::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
     /// March to a tile engaging everything on the way. Units that cannot
     /// fight walk there obliviously instead.
-    AttackMove {
+    Hunt {
         /// The units to commit.
         units: Vec<UnitId>,
         /// Destination tile (snapped like a move goal).
         goal: TilePos,
-        /// Append instead of replace (see [`Command::Move::queue`]).
+        /// Append instead of replace (see [`Command::Run::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
@@ -62,12 +62,12 @@ pub enum Command {
         units: Vec<UnitId>,
         /// The visible or remembered salvage tile anchoring the zone.
         node: TilePos,
-        /// Append instead of replace (see [`Command::Move::queue`]).
+        /// Append instead of replace (see [`Command::Run::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
     /// Walk a looping circuit of waypoints, engaging everything met on the
-    /// way (legs are attack-moves). The route repeats until another
+    /// way (legs are hunt orders). The route repeats until another
     /// command replaces it.
     Patrol {
         /// The units to commit.
@@ -182,7 +182,7 @@ pub enum Command {
         queue: bool,
     },
     /// Move to a tile while taking primary-weapon shots that are already
-    /// available. Unlike [`Command::AttackMove`], units never chase,
+    /// available. Unlike [`Command::Hunt`], units never chase,
     /// stop for, or retaliate against targets during this move. Units
     /// that cannot fight walk there normally.
     Advance {
@@ -190,7 +190,7 @@ pub enum Command {
         units: Vec<UnitId>,
         /// Destination tile (snapped like a move goal).
         goal: TilePos,
-        /// Append instead of replace (see [`Command::Move::queue`]).
+        /// Append instead of replace (see [`Command::Run::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
