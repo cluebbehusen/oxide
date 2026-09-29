@@ -6866,9 +6866,11 @@ fn knowledge_attack_game() -> Game {
             x: 5,
             y: 6,
         },
+        // Radar reports only the footprint tile nearest the Array, (16, 16);
+        // the rest of the remembered footprint has no contact above it.
         BuildingSpec {
             player: 1,
-            kind: oxide_sim::BuildingKind::Reclaimer,
+            kind: oxide_sim::BuildingKind::Fabricator,
             x: 16,
             y: 16,
         },
@@ -6896,9 +6898,9 @@ fn right_click_uses_building_memory_and_anonymous_contacts_and_stop_clears_focus
     for _ in 0..200 {
         game.state.tick(&[]);
     }
-    assert!(!game.my_vision().visible(TilePos::new(16, 16)));
+    assert!(!game.my_vision().visible(TilePos::new(17, 17)));
     game.presentation.selection.units = vec![gun];
-    let screen = game.presentation.camera.to_screen(vec2(16.5, 16.5));
+    let screen = game.presentation.camera.to_screen(vec2(17.5, 17.5));
     context_order(&mut game, screen, false);
     assert!(matches!(
         game.pending.last().unwrap().command,

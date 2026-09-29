@@ -232,7 +232,9 @@ fn bastion_keeps_a_legal_aim_when_prediction_enters_its_dead_zone() {
 
 #[test]
 fn radar_contacts_enable_bastion_fire_without_acquiring_building_ghosts() {
-    let target_anchor = TilePos::new(13, 10);
+    // The remembered Reclaimer stays inside the Bastion's reach but outside
+    // the Array's ring, so only its memory could invite a shot.
+    let target_anchor = TilePos::new(13, 3);
     let mut scenario = open_arena(
         32,
         22,
@@ -244,7 +246,7 @@ fn radar_contacts_enable_bastion_fire_without_acquiring_building_ghosts() {
     scenario.buildings = vec![
         building(0, BuildingKind::Bastion, 5, 6),
         building(1, BuildingKind::Reclaimer, target_anchor.x, target_anchor.y),
-        building(0, BuildingKind::Array, 5, 16),
+        building(0, BuildingKind::Array, 2, 20),
     ];
     let mut state = scenario.build().unwrap();
     let bastion = building_id(&state, PlayerId(0), BuildingKind::Bastion);
@@ -287,7 +289,7 @@ fn radar_contacts_enable_bastion_fire_without_acquiring_building_ghosts() {
             .any(|ghost| ghost.anchor == target_anchor)
     );
     assert!(!state.can_see(PlayerId(0), radar_tile));
-    assert!(state.vision(PlayerId(0)).contacts().contains(&radar_tile));
+    assert_eq!(state.vision(PlayerId(0)).contacts(), [radar_tile]);
 
     let mut shots = 0;
     for _ in 0..(BuildingKind::Bastion.base_stats().weapons[0].cooldown_ticks + 30) {
