@@ -63,7 +63,6 @@ impl Opponent {
         let points = crate::missions::points(&map, checkpoint.player).len();
         checkpoint.memory.validate(now, points)?;
         checkpoint.income.validate(now)?;
-        checkpoint.saving.validate(now)?;
         checkpoint
             .missions
             .validate(now, state.map().width(), state.map().height(), points)?;

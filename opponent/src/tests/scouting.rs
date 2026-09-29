@@ -216,12 +216,14 @@ fn checkpoints_reject_foreign_scouting_and_stray_focus() {
         rejected(&|json| json["memory"]["scouted"] = serde_json::json!([0, 0])),
         "checkpoint scouting memory does not fit the map"
     );
-    assert_eq!(
-        rejected(&|json| json["missions"]["list"][0]["focus"] = 3.into()),
-        "checkpoint mission is in a phase its kind lacks"
+    let mut focused = json.clone();
+    focused["missions"]["list"][0]["task"]["focus"] = 3.into();
+    assert!(
+        serde_json::from_value::<Checkpoint>(focused).is_err(),
+        "a scout has no focus"
     );
     assert_eq!(
-        rejected(&|json| json["missions"]["list"][0]["kind"]["point"] = 99.into()),
+        rejected(&|json| json["missions"]["list"][0]["task"]["point"] = 99.into()),
         "checkpoint mission could not have been recorded",
         "a point the map does not have"
     );
@@ -245,8 +247,7 @@ fn a_defense_that_stops_fighting_trades_its_focus_for_its_hunt() {
     assert_eq!(sent.len(), 1, "{commands:?}");
     assert_eq!(sent[0].0, members);
     let json = serde_json::to_value(opponent.checkpoint()).unwrap();
-    assert_eq!(json["missions"]["list"][0]["phase"], "recover");
-    assert!(json["missions"]["list"][0]["focus"].is_null());
+    assert_eq!(json["missions"]["list"][0]["task"]["phase"], "recover");
 }
 
 #[test]
@@ -322,12 +323,10 @@ fn the_mission_cap_holds_back_a_scout() {
         .map(|index: i32| {
             serde_json::json!({
                 "id": index,
-                "kind": {"mission": "defend", "asset": home.0},
-                "phase": "engage",
+                "task": {"task": "defend", "asset": home.0, "phase": {"engage": {"focus": null}}},
                 "since": STALE,
                 "units": [at(&state, 6 + index % 8, 14 + index / 8)],
                 "goal": {"x": 6, "y": 11},
-                "focus": null,
             })
         })
         .collect();

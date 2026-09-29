@@ -180,7 +180,7 @@ fn danger(observation: &ObservationData, memory: &Memory, anchor: TilePos) -> u6
             !unit.kind.stats().weapons.is_empty()
                 && gap(anchor, WORKS, unit.tile, (1, 1)) <= DANGER_REACH
         })
-        .map(|unit| u64::from(unit.kind.stats().cost) * u64::from(unit.confidence(now)) / 1_000)
+        .map(|unit| unit.value(now))
         .sum();
     let buildings: u64 = observation
         .enemy_buildings

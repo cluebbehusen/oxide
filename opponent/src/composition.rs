@@ -93,7 +93,7 @@ impl Enemy {
         };
         let mut reaches = [0_u64; 3];
         for unit in memory.units() {
-            let value = u64::from(unit.kind.stats().cost) * u64::from(unit.confidence(now)) / 1_000;
+            let value = unit.value(now);
             if unit.kind.stats().domain == Domain::Air {
                 enemy.air += value;
             } else if !unit.kind.stats().weapons.is_empty() {

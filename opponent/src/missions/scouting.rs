@@ -2,7 +2,7 @@
 //! has not seen for a while, hostile starts first. With no scout it trains
 //! one.
 
-use super::{MISSION_CAP, Mission, MissionKind, Missions, Phase, approach, mine, run};
+use super::{MISSION_CAP, Mission, Missions, Task, approach, mine, run};
 use crate::decision::{Ledger, Producer};
 use crate::frame::{HomeFrame, doubled};
 use crate::map::MapModel;
@@ -81,10 +81,10 @@ impl Missions {
         let index = self
             .list
             .iter()
-            .position(|mission| matches!(mission.kind, MissionKind::Scout { .. }));
+            .position(|mission| matches!(mission.task, Task::Scout { .. }));
         if let Some(index) = index {
             let mission = &self.list[index];
-            let MissionKind::Scout { point } = mission.kind else {
+            let Task::Scout { point } = mission.task else {
                 unreachable!("the scout mission's kind");
             };
             let point = usize::from(point);
@@ -101,7 +101,7 @@ impl Missions {
                 Some((next, goal)) => {
                     if ledger.order(run(vec![scout.id], goal)) {
                         let mission = &mut self.list[index];
-                        mission.kind = MissionKind::Scout { point: next };
+                        mission.task = Task::Scout { point: next };
                         mission.since = now;
                         mission.goal = goal;
                     }
@@ -117,14 +117,13 @@ impl Missions {
         if !stale || self.list.len() >= MISSION_CAP {
             return;
         }
-        let owned = self.owned();
         let home = map
             .start(observation.me)
             .and_then(|start| map.component(start));
-        let mut scouts: Vec<&UnitObs> = observation
-            .my_units
-            .iter()
-            .filter(|unit| owned.binary_search(&unit.id).is_err())
+        let mut scouts: Vec<&UnitObs> = self
+            .available(observation, false)
+            .into_iter()
+            .filter_map(|id| mine(observation, id))
             .filter(|unit| {
                 unit.kind.role() == Role::Scout
                     || (unit.kind == UnitKind::Scuttler && map.component(unit.tile) == home)
@@ -144,12 +143,10 @@ impl Missions {
             if ledger.order(run(vec![scout.id], goal)) {
                 self.list.push(Mission {
                     id: self.next,
-                    kind: MissionKind::Scout { point },
-                    phase: Phase::Travel,
                     since: now,
                     units: vec![scout.id],
                     goal,
-                    focus: None,
+                    task: Task::Scout { point },
                 });
                 self.next += 1;
             }

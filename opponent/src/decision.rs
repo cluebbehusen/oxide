@@ -328,7 +328,7 @@ fn buy(
             };
             ledger.upgrade(id, price);
             ledger.protected = 0;
-            persistent.saving.attempted(step, building.anchor, tick);
+            persistent.saving.attempted(step, building.anchor);
         }
         Step::Build(kind) => {
             let anchors: Vec<TilePos> = investments::anchors(map, observation, investment, kind)
@@ -351,7 +351,7 @@ fn buy(
             };
             ledger.build(builder, kind, anchor, allowed.defer, price);
             ledger.protected = 0;
-            persistent.saving.attempted(step, anchor, tick);
+            persistent.saving.attempted(step, anchor);
         }
     }
 }

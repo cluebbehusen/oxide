@@ -29,7 +29,6 @@ struct Target {
 struct Attempt {
     step: Step,
     anchor: TilePos,
-    at: u64,
 }
 
 impl Saving {
@@ -127,28 +126,16 @@ impl Saving {
 
     /// Records a purchase toward the target for the next decision to check.
     /// The purchase spent what was protected for it.
-    pub(crate) fn attempted(&mut self, step: Step, anchor: TilePos, at: u64) {
+    pub(crate) fn attempted(&mut self, step: Step, anchor: TilePos) {
         self.protected = 0;
         if let Some(target) = &mut self.target {
-            target.attempt = Some(Attempt { step, anchor, at });
+            target.attempt = Some(Attempt { step, anchor });
         }
     }
 
     /// Caps the protected amount by what the decision left uncommitted.
     pub(crate) fn keep_at_most(&mut self, available: u32) {
         self.protected = self.protected.min(available);
-    }
-
-    /// Rejects a restored target that could not have been recorded by `now`.
-    pub(crate) fn validate(&self, now: u64) -> Result<(), String> {
-        let impossible = self
-            .target
-            .and_then(|target| target.attempt)
-            .is_some_and(|attempt| attempt.at > now);
-        if impossible {
-            return Err("checkpoint saving target is from the future".into());
-        }
-        Ok(())
     }
 }
 
