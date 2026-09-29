@@ -298,8 +298,60 @@ fn an_emergency_turret_faces_raiders_only_while_the_approach_is_bare() {
 }
 
 #[test]
+fn an_emergency_turret_answers_a_raider_beside_the_building() {
+    let mut scenario = arena(200);
+    scenario.units.push(unit(1, UnitKind::Sentinel, 6, 5));
+    let state = scenario.build().unwrap();
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    assert!(
+        builds(&commands)
+            .iter()
+            .any(|(kind, _)| *kind == BuildingKind::Turret),
+        "{commands:?}"
+    );
+}
+
+#[test]
+fn an_emergency_turret_guards_the_building_under_attack() {
+    let expansion = TilePos::new(14, 8);
+    let mut scenario = arena(200);
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Foundry, expansion.x, expansion.y));
+    scenario.units.push(unit(1, UnitKind::Sentinel, 16, 10));
+    let state = scenario.build().unwrap();
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    let [(BuildingKind::Turret, anchor)] = builds(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert!(
+        crate::frame::gap(expansion, (2, 2), anchor, (1, 1)) <= 3,
+        "beside the raided Foundry, not the home one: {anchor:?}"
+    );
+}
+
+#[test]
+fn mirrored_seats_face_mirrored_threats_that_tie() {
+    let mut scenario = settled(400);
+    for player in &mut scenario.players {
+        player.bot_config = Some(fortified());
+    }
+    scenario.units.extend([
+        unit(1, UnitKind::Sentinel, 8, 3),
+        unit(1, UnitKind::Sentinel, 8, 8),
+        unit(0, UnitKind::Sentinel, 15, 8),
+        unit(0, UnitKind::Sentinel, 15, 3),
+    ]);
+    let state = scenario.build().unwrap();
+    let west = seat_with(&scenario, 0, fortified()).act(&state, &mut OwnEvents::default());
+    let east = seat_with(&scenario, 1, fortified()).act(&state, &mut OwnEvents::default());
+    assert!(!builds(&west).is_empty(), "premise: {west:?}");
+    assert_eq!(mirror(&state, west), east);
+}
+
+#[test]
 fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
-    let staged = |fabricator: bool, raider: bool| {
+    let staged = |fabricator: bool, raider: Option<(UnitKind, i32)>| {
         let mut scenario = settled(0);
         scenario
             .buildings
@@ -309,8 +361,10 @@ fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
                 .buildings
                 .push(building(0, BuildingKind::Fabricator, 3, 1));
         }
-        if raider {
-            scenario.units.push(unit(1, UnitKind::Sentinel, 11, 5));
+        if let Some((kind, x)) = raider {
+            scenario
+                .units
+                .extend([unit(1, kind, x, 5), unit(0, UnitKind::Kestrel, x - 1, 6)]);
         }
         let state = scenario.build().unwrap();
         let turret = state
@@ -329,11 +383,19 @@ fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
                     }
             })
     };
-    assert!(staged(true, false));
-    assert!(!staged(false, false), "a Heavy Turret needs a Fabricator");
+    assert!(staged(true, None));
+    assert!(!staged(false, None), "a Heavy Turret needs a Fabricator");
     assert!(
-        !staged(true, true),
+        !staged(true, Some((UnitKind::Sentinel, 11))),
         "an upgrade under fire would be caught down"
+    );
+    assert!(
+        staged(true, Some((UnitKind::Sentinel, 16))),
+        "premise: a Sentinel that far cannot reach it"
+    );
+    assert!(
+        !staged(true, Some((UnitKind::Bombard, 16))),
+        "a Bombard that far still can"
     );
 }
 
