@@ -88,9 +88,10 @@ pub struct Vision {
     /// apart from scrap memory because renderers draw them differently
     /// and the harvest brain approaches them differently.
     remembered_wreck: Grid<u32>,
-    /// Radar blips: tiles holding a hostile unit inside an own built
-    /// Array's outer ring but outside true sight. A contact without
-    /// identity — no kind, no owner, no memory (rebuilt every tick).
+    /// Radar blips: tiles holding a hostile unit or one tile of a hostile
+    /// building inside an own built Array's outer ring but outside true
+    /// sight. A contact without identity — no kind, no owner, no memory
+    /// (rebuilt every tick).
     contacts: Vec<TilePos>,
     #[serde(default)]
     tracking: tracking::Tracking,
@@ -990,10 +991,10 @@ pub(crate) fn refresh(state: &mut State) {
             }
         }
 
-        // Radar blips: hostile units inside any own built Array's outer
-        // ring, on ground this player cannot actually see. A tile only —
-        // detection is not identification, and there is no memory: a
-        // contact that leaves the ring is simply gone.
+        // Radar blips: hostile units and buildings inside any own built
+        // Array's outer ring, on ground this player cannot actually see. A
+        // tile only — detection is not identification, and there is no
+        // memory: a contact that leaves the ring is simply gone.
         view.contacts.clear();
         let masts: Vec<TilePos> = state
             .buildings
@@ -1003,16 +1004,35 @@ pub(crate) fn refresh(state: &mut State) {
             .collect();
         if !masts.is_empty() {
             let r = crate::stats::RADAR_DETECT_RADIUS;
+            let ring_distance = |t: TilePos| {
+                masts
+                    .iter()
+                    .map(|m| {
+                        let (dx, dy) = (t.x - m.x, t.y - m.y);
+                        dx * dx + dy * dy
+                    })
+                    .min()
+                    .filter(|&d| d <= r * r)
+            };
             for u in state.units.iter().filter(|u| !allied(u.player)) {
                 let t = u.tile();
-                if view.visible(t) {
+                if !view.visible(t) && ring_distance(t).is_some() {
+                    view.contacts.push(t);
+                }
+            }
+            // A building returns one blip, like a unit of any size. An
+            // undetected charge or hostile provisional site is not apparent
+            // and returns nothing.
+            let viewer = PlayerId(index as u8);
+            for b in state
+                .buildings
+                .iter()
+                .filter(|b| !allied(b.player) && state.building_apparent(viewer, b))
+            {
+                if b.tiles().any(|t| view.visible(t)) {
                     continue;
                 }
-                let detected = masts.iter().any(|m| {
-                    let (dx, dy) = (t.x - m.x, t.y - m.y);
-                    dx * dx + dy * dy <= r * r
-                });
-                if detected {
+                if let Some(t) = radar_return(state, b, ring_distance) {
                     view.contacts.push(t);
                 }
             }
@@ -1024,6 +1044,67 @@ pub(crate) fn refresh(state: &mut State) {
         view.tracking = tracking;
     }
     state.vision = vision;
+}
+
+/// The footprint tile a building's radar return reports: the one nearest a
+/// mast, with distance ties ranked in the footprint's radial map frame. A
+/// footprint centered on the map has no radial frame, so its remaining ties
+/// rank toward the owner's first Foundry and then by seat parity, the fallback
+/// order group spreads use. Mirrored seats therefore report mirrored tiles.
+fn radar_return(
+    state: &State,
+    building: &crate::state::Building,
+    ring_distance: impl Fn(TilePos) -> Option<i32>,
+) -> Option<TilePos> {
+    let map_size = (state.map.width(), state.map.height());
+    let (anchor, size) = (building.anchor, building.stats().size);
+    let ranked: Vec<_> = building
+        .tiles()
+        .filter_map(|t| {
+            let radial = crate::geometry::spawn_doorstep_key(map_size, anchor, size, t);
+            ring_distance(t).map(|d| ((d, radial), t))
+        })
+        .collect();
+    let best = ranked.iter().map(|&(key, _)| key).min()?;
+    let tied: Vec<TilePos> = ranked
+        .into_iter()
+        .filter(|&(key, _)| key == best)
+        .map(|(_, t)| t)
+        .collect();
+    if let [only] = tied[..] {
+        return Some(only);
+    }
+    // Doubled coordinates keep even footprint centers exact.
+    let center = (
+        i64::from(anchor.x) * 2 + i64::from(size.0),
+        i64::from(anchor.y) * 2 + i64::from(size.1),
+    );
+    let toward_home = state
+        .buildings
+        .iter()
+        .filter(|b| {
+            b.player == building.player && !b.provisional && b.kind == BuildingKind::Foundry
+        })
+        .min_by_key(|b| b.id)
+        .map(|foundry| {
+            let (w, h) = foundry.stats().size;
+            (
+                i64::from(foundry.anchor.x) * 2 + i64::from(w) - center.0,
+                i64::from(foundry.anchor.y) * 2 + i64::from(h) - center.1,
+            )
+        })
+        .filter(|&ray| ray != (0, 0));
+    match toward_home {
+        Some((rx, ry)) => tied.into_iter().max_by_key(|t| {
+            let (cx, cy) = (
+                i64::from(t.x) * 2 + 1 - center.0,
+                i64::from(t.y) * 2 + 1 - center.1,
+            );
+            (rx * cx + ry * cy, rx * cy - ry * cx)
+        }),
+        None if building.player.0 % 2 == 1 => tied.last().copied(),
+        None => tied.first().copied(),
+    }
 }
 
 /// Initialize pre-contact snapshots from their validated, stored observations.

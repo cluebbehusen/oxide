@@ -789,8 +789,9 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
         let t = s.unit(intruder).unwrap().tile();
         s.vision(PlayerId(0)).visible(t)
     });
+    let seen = state.unit(intruder).unwrap().tile();
     assert!(
-        state.vision(PlayerId(0)).contacts().is_empty(),
+        !state.vision(PlayerId(0)).contacts().contains(&seen),
         "seen contacts are sightings, not blips"
     );
 }

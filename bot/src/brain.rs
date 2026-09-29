@@ -233,8 +233,9 @@ impl Brain {
             let map = mind
                 .oriented_public_map
                 .get_or_insert_with(|| orientation.briefing(&mind.public_map));
+            let uncleared_starts = self.policy.uncleared_hostile_starts(map, oriented.me);
             mind.battlefield
-                .observe(&oriented, &armies, tuning, Some(map));
+                .observe(&oriented, &armies, tuning, Some(map), &uncleared_starts);
             mind.experience
                 .observe(&oriented, tuning.opponent_force_memory);
             self.policy.observe_work_experience(&oriented);
