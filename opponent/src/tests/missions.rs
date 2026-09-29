@@ -62,6 +62,98 @@ fn an_air_raid_draws_only_units_that_hit_air() {
 }
 
 #[test]
+fn a_mixed_raid_draws_defenders_for_each_domain_it_comes_from() {
+    let scenario = raided(
+        &[
+            (UnitKind::Lancer, 5, 8),
+            (UnitKind::Lancer, 6, 8),
+            (UnitKind::Lancer, 5, 9),
+            (UnitKind::Sentinel, 10, 1),
+        ],
+        &[(UnitKind::Sentinel, 9, 5), (UnitKind::Darter, 9, 6)],
+    );
+    let state = scenario.build().unwrap();
+    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let [(units, _)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert!(
+        units.contains(&at(&state, 10, 1)),
+        "the only unit that hits air joins, however far"
+    );
+    let lancers = units
+        .iter()
+        .filter(|id| {
+            state
+                .units()
+                .iter()
+                .any(|unit| unit.id == **id && unit.kind == UnitKind::Lancer)
+        })
+        .count();
+    assert_eq!(lancers, 2, "and only the Lancers the ground raid needs");
+}
+
+#[test]
+fn a_recovering_defense_lends_its_units_to_another_foundry() {
+    let mut scenario = raided(
+        &[(UnitKind::Sentinel, 5, 8), (UnitKind::Sentinel, 6, 8)],
+        &[(UnitKind::Scuttler, 13, 7)],
+    );
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Foundry,
+        x: 11,
+        y: 9,
+    });
+    let mut state = scenario.build().unwrap();
+    advance_to(&mut state, 12, &[]);
+    let home = foundries(&state, PlayerId(0))[0];
+    let mut defenders = vec![at(&state, 5, 8), at(&state, 6, 8)];
+    defenders.sort_unstable();
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["missions"] = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "kind": {"mission": "defend", "asset": home.0},
+            "phase": "recover",
+            "since": 12,
+            "units": defenders,
+            "goal": {"x": 9, "y": 5},
+        }],
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    let [(units, _)] = &hunts(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert_eq!(units.len(), 1);
+    assert!(defenders.contains(&units[0]));
+    let missions = trace.unwrap().missions;
+    assert!(
+        matches!(
+            missions.as_slice(),
+            [
+                MissionStatus {
+                    id: 0,
+                    phase: Phase::Recover,
+                    units: 1,
+                    ..
+                },
+                MissionStatus {
+                    id: 1,
+                    phase: Phase::Engage,
+                    units: 1,
+                    ..
+                },
+            ]
+        ),
+        "{missions:?}"
+    );
+}
+
+#[test]
 fn defenders_are_released_after_the_threat_ends_and_return_with_it() {
     let scenario = raided(
         &[(UnitKind::Sentinel, 5, 8), (UnitKind::Sentinel, 6, 8)],
@@ -291,6 +383,11 @@ fn checkpoints_reject_impossible_missions() {
     assert_eq!(
         with(&|missions| missions["next"] = 0.into()),
         "checkpoint mission ids are out of order"
+    );
+    assert_eq!(
+        with(&|missions| missions["next"] = u64::MAX.into()),
+        "checkpoint mission ids are out of order",
+        "no id is left for the next mission"
     );
     assert_eq!(
         with(&|missions| {
