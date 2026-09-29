@@ -301,6 +301,83 @@ fn production_progress_visible(
     building.player == game.presentation.human || game.presentation.all_seeing()
 }
 
+fn building_body_sources(
+    sprites: &Sprites,
+    kind: oxide_sim::BuildingKind,
+    tier: u8,
+    faction: oxide_sim::Faction,
+    body: super::motion::BuildingBodyFrame,
+) -> (Rect, Rect) {
+    use super::motion::BuildingBodyFrame;
+    if !matches!(body, BuildingBodyFrame::Construction { .. })
+        && kind == oxide_sim::BuildingKind::Array
+        && let Some(rig) = sprites.array_rig()
+    {
+        return rig.layers(tier, faction)[0];
+    }
+    match body {
+        BuildingBodyFrame::Idle => (
+            sprites.building_tiered(kind, tier, faction),
+            sprites.building_tiered_accent(kind, tier),
+        ),
+        BuildingBodyFrame::Work(work) => (
+            sprites.building_working(kind, tier, faction, work + 1),
+            sprites.building_working_accent(kind, tier, work + 1),
+        ),
+        BuildingBodyFrame::Construction { stage, phase } => (
+            sprites.construction(kind, faction, stage, phase),
+            sprites.construction_accent(kind, stage, phase),
+        ),
+        BuildingBodyFrame::Action(action) => (
+            sprites.building_action(kind, faction, action),
+            sprites.building_action_accent(kind, action),
+        ),
+    }
+}
+
+fn building_contact(
+    game: &crate::game::Scene<'_>,
+    sprites: &Sprites,
+    hit: crate::game::BuildingHit,
+    from: Vec2,
+    aim: Vec2,
+) -> Option<Vec2> {
+    let hit = game
+        .state
+        .building(hit.id)
+        .filter(|building| {
+            game.presentation.all_seeing()
+                || building.player == game.presentation.human
+                || building.tiles().any(|tile| game.my_vision().visible(tile))
+                    && game
+                        .state
+                        .building_apparent(game.presentation.human, building)
+        })
+        .map_or(hit, |building| {
+            crate::game::BuildingHit::capture(game.state, building)
+        });
+    let animation = game.presentation.animations.building_state(
+        hit.facts,
+        crate::presentation_animation::AnimationClock::from_state(
+            game.state,
+            game.presentation.tick_fraction(),
+        ),
+        crate::presentation_animation::AnimationOptions {
+            reduced_motion: reduced_motion(),
+        },
+    );
+    let frame = super::motion::building_frame(hit.kind, animation);
+    let (source, _) = building_body_sources(sprites, hit.kind, hit.tier, hit.faction, frame.body);
+    let (width, height) = hit.kind.tier_stats(hit.tier).size;
+    sprites.building_contact(
+        source,
+        from,
+        aim,
+        hit.anchor,
+        vec2(width as f32, height as f32),
+    )
+}
+
 fn draw_defense_mount(
     game: &crate::game::Scene<'_>,
     sprites: &Sprites,
@@ -524,27 +601,8 @@ pub(crate) fn draw_buildings(game: &crate::game::Scene<'_>, sprites: &Sprites) {
             .then(|| sprites.array_rig())
             .flatten()
             .map(|rig| rig.layers(building.tier, faction));
-        let (source, accent_source) = array_layers.map_or_else(
-            || match frame.body {
-                super::motion::BuildingBodyFrame::Idle => (
-                    sprites.building_tiered(building.kind, building.tier, faction),
-                    sprites.building_tiered_accent(building.kind, building.tier),
-                ),
-                super::motion::BuildingBodyFrame::Work(work) => (
-                    sprites.building_working(building.kind, building.tier, faction, work + 1),
-                    sprites.building_working_accent(building.kind, building.tier, work + 1),
-                ),
-                super::motion::BuildingBodyFrame::Construction { stage, phase } => (
-                    sprites.construction(building.kind, faction, stage, phase),
-                    sprites.construction_accent(building.kind, stage, phase),
-                ),
-                super::motion::BuildingBodyFrame::Action(action) => (
-                    sprites.building_action(building.kind, faction, action),
-                    sprites.building_action_accent(building.kind, action),
-                ),
-            },
-            |layers| layers[0],
-        );
+        let (source, accent_source) =
+            building_body_sources(sprites, building.kind, building.tier, faction, frame.body);
         draw(
             screen.x,
             screen.y,
@@ -1370,11 +1428,17 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                 from,
                 to,
                 splash,
+                building,
                 ..
             } => {
                 use crate::game::ShotStyle;
+                let contact = building
+                    .and_then(|hit| building_contact(game, sprites, hit, from, to))
+                    .filter(|&contact| game.presentation.all_seeing() || sees(contact))
+                    .unwrap_or(to);
                 let a = game.presentation.camera.to_screen(from);
-                let b = game.presentation.camera.to_screen(to);
+                let b = game.presentation.camera.to_screen(contact);
+                let blast = game.presentation.camera.to_screen(to);
                 let age = fx.age_at(game.state.current_tick(), game.presentation.tick_fraction());
                 let progress = (age / style.life()).clamp(0.0, 1.0);
                 let fade = 1.0 - progress;
@@ -1390,7 +1454,7 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     {
                         draw_splash_bloom(
                             sprites,
-                            b,
+                            blast,
                             game.presentation.camera.zoom,
                             radius,
                             impact,
@@ -1411,7 +1475,13 @@ pub(crate) fn draw_fx(game: &crate::game::Scene<'_>, sprites: &Sprites) {
                     // The area bloom is part of the round-arrival phase,
                     // behind the projectiles, rather than an explosion the
                     // rounds visibly fly into.
-                    draw_splash_bloom(sprites, b, game.presentation.camera.zoom, radius, impact);
+                    draw_splash_bloom(
+                        sprites,
+                        blast,
+                        game.presentation.camera.zoom,
+                        radius,
+                        impact,
+                    );
                 }
                 match style {
                     ShotStyle::Contact => {}

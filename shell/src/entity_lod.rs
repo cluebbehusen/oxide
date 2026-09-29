@@ -16,6 +16,7 @@ pub(crate) struct EntityLod {
     materials: Vec<Material>,
     sprites: HashMap<Source, [Region; 4]>,
     bounds: HashMap<Source, Rect>,
+    contacts: HashMap<Source, crate::sprite_contact::SpriteContact>,
     mesh: RefCell<Mesh>,
 }
 fn source_key(rect: Rect) -> Source {
@@ -102,6 +103,18 @@ impl EntityLod {
         let mut packer = Packer::new();
         let mut sprites = HashMap::new();
         let mut bounds = HashMap::new();
+        let contact_sources: BTreeSet<Source> = manifest
+            .iter()
+            .filter(|(name, _)| {
+                oxide_sim::BuildingKind::ALL.iter().any(|&kind| {
+                    name.strip_prefix("rig_")
+                        .unwrap_or(name)
+                        .starts_with(&format!("{}_", crate::assets::building_stem(kind)))
+                }) && !name.contains("_accent")
+            })
+            .map(|(_, row)| row.map(|v| v as u32))
+            .collect();
+        let mut contacts = HashMap::new();
         for &key in &sources {
             let page = key[1] as usize / page_height as usize;
             let local = [key[0], key[1] % page_height as u32, key[2], key[3]];
@@ -119,6 +132,12 @@ impl EntityLod {
                 "sprite exceeds source atlas page"
             );
             bounds.insert(key, opaque_bounds(&originals[page], local));
+            if contact_sources.contains(&key) {
+                contacts.insert(
+                    key,
+                    crate::sprite_contact::SpriteContact::capture(&originals[page], local),
+                );
+            }
         }
         for (key, level) in packing_order(&sources) {
             let page = key[1] as usize / page_height as usize;
@@ -141,12 +160,25 @@ impl EntityLod {
             materials,
             sprites,
             bounds,
+            contacts,
             mesh: RefCell::new(Mesh {
                 vertices: vec![Vertex::new(0.0, 0.0, 0.0, 0.0, 0.0, WHITE); 4],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 texture: None,
             }),
         })
+    }
+    pub(crate) fn contact(
+        &self,
+        source: Rect,
+        from: Vec2,
+        aim: Vec2,
+        origin: Vec2,
+        size: Vec2,
+    ) -> Option<Vec2> {
+        self.contacts
+            .get(&source_key(source))?
+            .contact(from, aim, origin, size)
     }
     pub(crate) fn bounds(&self, source: Rect) -> Rect {
         self.bounds
