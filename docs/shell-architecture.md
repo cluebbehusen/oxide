@@ -578,17 +578,19 @@ simulation state rather than inventing movement or firing delays.
 
 `entity_lod` derives full, half, quarter, and eighth-resolution entity textures
 at startup without changing authored atlas bytes. Regions pack in descending
-size order to avoid wasting full-height rows on small mips. Independent regions
-have extruded borders; reduction, linear sampling, level blending, and
-compositing retain premultiplied alpha. Physical destination size, including DPI
-and both axes, selects levels with a fixed -0.4 detail bias. Secondary UVs and
-blend weights travel in vertex data; immutable page materials preserve batching
-without reordering translucent layers. The material also handles ordinary
-straight-alpha 2D draws and remains active until the screen boundary. Terrain
-and unrelated effects keep nearest-neighbor sampling. Panel and roster portraits
-share this bank, frame visible alpha bounds, and align to physical pixels.
-Layered portraits use union bounds to preserve the relative positions of bases
-and mounts. Construction subjects and scaffolds share the authored canvas; verb
+size order to avoid wasting full-height rows on small mips. Units with layered
+rigs omit unused complete movement/action poses from this cache while retaining
+idle portraits and the independent layers. Independent regions have extruded
+borders; reduction, linear sampling, level blending, and compositing retain
+premultiplied alpha. Physical destination size, including DPI and both axes,
+selects levels with a fixed -0.4 detail bias. Secondary UVs and blend weights
+travel in vertex data; immutable page materials preserve batching without
+reordering translucent layers. The material also handles ordinary straight-alpha
+2D draws and remains active until the screen boundary. Terrain and unrelated
+effects keep nearest-neighbor sampling. Panel and roster portraits share this
+bank, frame visible alpha bounds, and align to physical pixels. Layered
+portraits use union bounds to preserve the relative positions of bases and
+mounts. Construction subjects and scaffolds share the authored canvas; verb
 pictograms fill their destination without portrait cropping.
 
 `strategic_markers` supplies role and allegiance cues between 24 and 16 logical
