@@ -499,7 +499,12 @@ impl<'a> Guard<'a> {
         let bastion = kind == BuildingKind::Bastion;
         let mut sites = Vec::new();
         for asset in self.assets.iter().filter(|asset| guarded(asset)) {
-            let Some(approach) = asset.approach(domain(kind)) else {
+            // Radar watches for aircraft as well as ground units, so an
+            // Array faces the air approach where no ground one is known.
+            let approach = asset
+                .approach(domain(kind))
+                .or_else(|| (kind == BuildingKind::Array).then(|| asset.approach(Domain::Air))?);
+            let Some(approach) = approach else {
                 continue;
             };
             let open = if kind == BuildingKind::Array {
@@ -978,7 +983,7 @@ fn tiles_at(point: (i64, i64)) -> Vec<TilePos> {
 /// Whether a Barricade at `tile` still lets the seat's home ground reach an
 /// exit beside every own producer, every worked scrap node, and every
 /// hostile start on that ground. One flood fill over the home ground, with
-/// known buildings and the Barricade in the way.
+/// known buildings, known live scrap and the Barricade in the way.
 pub(crate) fn keeps_paths(observation: &ObservationData, map: &MapModel, tile: TilePos) -> bool {
     let me = observation.me;
     let Some(start) = map.start(me) else {
@@ -1005,6 +1010,13 @@ pub(crate) fn keeps_paths(observation: &ObservationData, map: &MapModel, tile: T
             if let Some(at) = index(footprint) {
                 blocked[at] = true;
             }
+        }
+    }
+    for (node, amount) in &observation.known_scrap {
+        if let Some(at) = index(*node)
+            && *amount > 0
+        {
+            blocked[at] = true;
         }
     }
     if let Some(at) = index(tile) {
