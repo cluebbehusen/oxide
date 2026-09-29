@@ -100,6 +100,8 @@ struct Plan<'a> {
     tenders: Vec<&'a UnitObs>,
     /// Idle free Sappers.
     sappers: Vec<&'a UnitObs>,
+    /// The enemy to go after first, when there are several.
+    rival: Option<PlayerId>,
 }
 
 impl Mission {
@@ -155,6 +157,7 @@ impl Missions {
         };
         let tenders = spare(UnitKind::Tender);
         let sappers = spare(UnitKind::Sapper);
+        let rival = self.rival(observation, map, profile.traits);
         let index = self
             .list
             .iter()
@@ -187,6 +190,7 @@ impl Missions {
             margin,
             tenders,
             sappers,
+            rival,
         };
         match index {
             None => self.launch(&plan, &fit, ledger),
@@ -563,6 +567,7 @@ impl<'a> Plan<'a> {
 
     /// The best target other than `skip`, or `None`. Known enemy buildings
     /// come first; with none, hostile starts are presumed held.
+    /// With several enemies, the rival's targets come first.
     fn best(&self, skip: Option<Target>) -> Option<Target> {
         let now = self.observation.tick;
         let differs = |target: &Target| {
@@ -591,17 +596,25 @@ impl<'a> Plan<'a> {
             .iter()
             .filter_map(|building| self.target(building.player, building.kind, building.anchor))
             .collect();
-        pick(known).or_else(|| {
-            pick(
-                self.map
-                    .hostiles(self.observation.me)
-                    .filter_map(|owner| {
-                        let anchor = self.map.start(owner)?;
-                        self.target(owner, BuildingKind::Foundry, anchor)
-                    })
-                    .collect(),
-            )
-        })
+        let starts: Vec<Target> = self
+            .map
+            .hostiles(self.observation.me)
+            .filter_map(|owner| {
+                let anchor = self.map.start(owner)?;
+                self.target(owner, BuildingKind::Foundry, anchor)
+            })
+            .collect();
+        let rival = |targets: &[Target]| -> Vec<Target> {
+            targets
+                .iter()
+                .copied()
+                .filter(|target| self.rival.is_none_or(|rival| target.owner == rival))
+                .collect()
+        };
+        pick(rival(&known))
+            .or_else(|| pick(rival(&starts)))
+            .or_else(|| pick(known))
+            .or_else(|| pick(starts))
     }
 
     /// `building` at `anchor` as a target, if the army can reach it.

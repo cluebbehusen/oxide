@@ -48,6 +48,8 @@ struct Raid<'a> {
     margin: u64,
     /// Known fire against aircraft.
     air: Vec<Hazard>,
+    /// The enemy to go after first, when there are several.
+    rival: Option<oxide_sim::PlayerId>,
 }
 
 impl Missions {
@@ -71,6 +73,7 @@ impl Missions {
             minimum: minimum(profile.stance),
             margin: margin(profile.difficulty),
             air: air::hazards(observation, memory, Domain::Air),
+            rival: self.rival(observation, map, profile.traits),
         };
         match self
             .list
@@ -264,12 +267,25 @@ impl Mission {
 impl Raid<'_> {
     /// The most valuable target for its distance that `strength` can strike,
     /// other than `skip`: a known enemy building or hostile start not
-    /// recently given up and not seen gone.
+    /// recently given up and not seen gone, the rival's first when there are
+    /// several enemies.
     fn best(&self, strength: u64, skip: Option<Objective>) -> Option<Objective> {
+        let rival = |target: &Objective| self.rival.is_none_or(|rival| target.owner == rival);
+        self.best_of(strength, skip, rival)
+            .or_else(|| self.best_of(strength, skip, |_| true))
+    }
+
+    fn best_of(
+        &self,
+        strength: u64,
+        skip: Option<Objective>,
+        eligible: impl Fn(&Objective) -> bool,
+    ) -> Option<Objective> {
         let observation = self.observation;
         let start = self.map.start(observation.me)?;
         objectives(observation, self.map)
             .into_iter()
+            .filter(|target| eligible(target))
             .filter(|target| Some(*target) != skip)
             .filter(|target| standing(observation, *target))
             .filter(|target| {

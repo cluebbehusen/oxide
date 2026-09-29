@@ -44,7 +44,10 @@ moves more than three tiles on the Foundry's ground or the mission re-engages,
 and a defense that stops fighting while focused sends its units back to its goal
 rather than after the retreating enemy. With no threat left the mission
 recovers, lending its units to any other threatened Foundry, and after 120 quiet
-ticks it lets them go where they stand.
+ticks it lets them go where they stand. Once its own Foundries are answered, an
+ally's Foundry under ground attack gets a defend mission of its own from the
+units left free, which lends them back whenever the seat's own Foundries need
+them; an ally's shortfall is never the seat's emergency.
 
 A defense that cannot recruit enough makes the decision an emergency: it skips
 the saving purchase, trains no Harvesters beyond the one a seat without any
@@ -113,7 +116,11 @@ fights. It withdraws to the rally when the enemies it knows of around it,
 remembered or seen, outweigh what it has left, and recovers there to go again or
 disband. Having taken its target it pushes on to the next only while strong
 enough for it. A target it withdrew from, could not reach, lost its army to, or
-stood idle beside is skipped for a while.
+stood idle beside is skipped for a while. With several enemies, attacks and
+strikes go after one rival's buildings first: the enemy pressing the seat
+hardest, then the nearest, less the army it shows, with guile favoring a small
+economy and a bonus for the owner of the current target so the seat does not
+flip between enemies.
 
 Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While an army that
@@ -230,10 +237,11 @@ Each idle producer trains for the most wanted role it can serve, or line units
 when nothing is wanted, choosing the unit it can afford now by coarse
 suitability: reach against the enemy's usual reach, durability for the price,
 covering both enemy domains, splash against clustered enemies, affordability at
-the seat's income, and personality. Scouts, carriers, Tenders, Scuttlers and
-Sappers are bought only for scouting, lift, support and raids. A role it needs
-but cannot train at all adds to the investment score of the cheapest building
-that would let it.
+the seat's income, variety (a kind that already makes up most of its role counts
+for less, so every kind of a role gets its turn), and personality. Scouts,
+carriers, Tenders, Scuttlers and Sappers are bought only for scouting, lift,
+support and raids. A role it needs but cannot train at all adds to the
+investment score of the cheapest building that would let it.
 
 ## Investments and saving
 

@@ -1,6 +1,7 @@
 //! The defend mission: every threatened Foundry recruits free units that can
 //! hit its threats and sends them at the threat nearest it, then lets them go
-//! once the threat has been gone a while.
+//! once the threat has been gone a while. An ally's Foundry under ground
+//! attack gets the units the seat's own Foundries leave free.
 
 use super::{
     DefendPhase, MISSION_CAP, Mission, Missions, Task, UNIT_CAP, hits, hunt, insert, mine, value,
@@ -58,7 +59,7 @@ impl Missions {
             let Task::Defend { asset, phase } = &mut mission.task else {
                 continue;
             };
-            let threatened = groups.iter().any(|(foundry, _)| foundry.id == *asset);
+            let threatened = groups.iter().any(|(foundry, _, _)| foundry.id == *asset);
             if let DefendPhase::Engage { focus } = *phase
                 && !threatened
             {
@@ -83,7 +84,7 @@ impl Missions {
 
         let mut free = self.available(observation, true);
         let mut short = false;
-        for (foundry, threats) in &groups {
+        for (foundry, threats, own) in &groups {
             let centre = footprint_centre(foundry.kind, foundry.anchor);
             let nearest = |threats: &mut dyn Iterator<Item = &&UnitObs>| {
                 threats
@@ -98,7 +99,7 @@ impl Missions {
             );
             let Some(goal) = grounded.or_else(|| {
                 let flyer = nearest(&mut threats.iter())?;
-                guard(observation, map, frame, component, flyer)
+                own.then(|| guard(observation, map, frame, component, flyer))?
             }) else {
                 continue;
             };
@@ -155,7 +156,7 @@ impl Missions {
                 }
                 recruits.push(unit.id);
             }
-            short |= have[0] < need[0] || have[1] < need[1];
+            short |= *own && (have[0] < need[0] || have[1] < need[1]);
 
             let Some(index) = index else {
                 if recruits.is_empty() || self.list.len() >= MISSION_CAP {
@@ -222,15 +223,39 @@ fn take(free: &mut Vec<UnitId>, taken: &[UnitId]) {
 }
 
 /// Visible enemies that could hit the seat's buildings, grouped by the built
-/// Foundry each is nearest, home-nearest Foundry first. An enemy joins only
-/// if it stands on or beside that Foundry's ground.
+/// Foundry each is nearest, home-nearest Foundry first, then those that could
+/// hit an ally's buildings, grouped by the ally's Foundry, each marked
+/// whether the Foundry is the seat's own. An enemy joins only if it stands
+/// on or beside that Foundry's ground.
 fn threats<'a>(
     observation: &'a ObservationData,
     map: &MapModel,
     frame: HomeFrame,
+) -> Vec<(&'a BuildingObs, Vec<&'a UnitObs>, bool)> {
+    let mut groups = Vec::new();
+    let mut claimed: Vec<UnitId> = Vec::new();
+    for (buildings, own) in [
+        (&observation.my_buildings, true),
+        (&observation.ally_buildings, false),
+    ] {
+        for (foundry, threats) in besieged(observation, map, frame, buildings, &claimed) {
+            claimed.extend(threats.iter().map(|threat| threat.id));
+            groups.push((foundry, threats, own));
+        }
+    }
+    groups
+}
+
+/// Visible enemies not `claimed` that could hit one of `buildings`, grouped
+/// by the built Foundry among them each is nearest, home-nearest first.
+fn besieged<'a>(
+    observation: &'a ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    buildings: &'a [BuildingObs],
+    claimed: &[UnitId],
 ) -> Vec<(&'a BuildingObs, Vec<&'a UnitObs>)> {
-    let mut foundries: Vec<&BuildingObs> = observation
-        .my_buildings
+    let mut foundries: Vec<&BuildingObs> = buildings
         .iter()
         .filter(|building| building.kind == BuildingKind::Foundry && building.built)
         .collect();
@@ -245,10 +270,13 @@ fn threats<'a>(
         .map(|foundry| (*foundry, Vec::new()))
         .collect();
     for enemy in &observation.enemy_units {
+        if claimed.contains(&enemy.id) {
+            continue;
+        }
         let Some(reach) = ground_reach(enemy) else {
             continue;
         };
-        let near = observation.my_buildings.iter().any(|building| {
+        let near = buildings.iter().any(|building| {
             gap(
                 building.anchor,
                 building.kind.base_stats().size,

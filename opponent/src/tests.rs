@@ -10,6 +10,7 @@ use oxide_sim::{
 use std::sync::Arc;
 
 mod attack;
+mod catalog;
 mod composition;
 mod defenses;
 mod expansion;
@@ -21,6 +22,7 @@ mod saving;
 mod scouting;
 mod strike;
 mod support;
+mod teams;
 
 /// A half-turn-symmetric arena. Each seat's Harvesters stand equally far from
 /// their two nearby scrap nodes, so the split depends on the tie-break.

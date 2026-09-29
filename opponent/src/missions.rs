@@ -21,6 +21,7 @@ mod defense;
 mod focus;
 mod lift;
 mod raid;
+mod rival;
 mod scouting;
 mod strike;
 mod support;
@@ -366,14 +367,22 @@ impl Task {
 
 impl Mission {
     /// Whether the mission keeps its units from a defense: everything but a
-    /// recovering defense, and an attack only once it is fighting. A
+    /// recovering defense or one of an ally's buildings, and an attack only
+    /// once it is fighting. A
     /// travelling attack may have met the enemy since the last decision. A
     /// scout keeps its scout, a lift its units once it has left the ground,
     /// and a strike or raid its units once they have set out and until they
     /// turn back.
     fn holds(&self, observation: &ObservationData) -> bool {
         match self.task {
-            Task::Defend { phase, .. } => phase != DefendPhase::Recover,
+            // An ally's defense lends its units back to the seat's own.
+            Task::Defend { asset, phase } => {
+                phase != DefendPhase::Recover
+                    && observation
+                        .my_buildings
+                        .iter()
+                        .any(|building| building.id == asset)
+            }
             Task::Attack { phase, .. } => match phase {
                 AttackPhase::Engage { .. } => true,
                 AttackPhase::Travel => {
@@ -441,8 +450,8 @@ impl Missions {
     }
 
     /// Drops members that are gone, and missions left without members or
-    /// without the Foundry they defend, remembering what the lost ones were
-    /// after. Units aboard a carrier are alive.
+    /// without the own or allied Foundry they defend, remembering what the
+    /// lost ones were after. Units aboard a carrier are alive.
     pub(crate) fn prune(&mut self, observation: &ObservationData, memory: &mut Memory) {
         let mut carried: Vec<UnitId> = observation
             .my_carried_units
@@ -469,6 +478,7 @@ impl Missions {
                     Task::Defend { asset, .. } => observation
                         .my_buildings
                         .iter()
+                        .chain(&observation.ally_buildings)
                         .any(|building| building.id == asset),
                     Task::Attack { .. }
                     | Task::Scout { .. }
