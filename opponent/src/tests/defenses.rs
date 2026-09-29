@@ -298,8 +298,60 @@ fn an_emergency_turret_faces_raiders_only_while_the_approach_is_bare() {
 }
 
 #[test]
+fn an_emergency_turret_answers_a_raider_beside_the_building() {
+    let mut scenario = arena(200);
+    scenario.units.push(unit(1, UnitKind::Sentinel, 6, 5));
+    let state = scenario.build().unwrap();
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    assert!(
+        builds(&commands)
+            .iter()
+            .any(|(kind, _)| *kind == BuildingKind::Turret),
+        "{commands:?}"
+    );
+}
+
+#[test]
+fn an_emergency_turret_guards_the_building_under_attack() {
+    let expansion = TilePos::new(14, 8);
+    let mut scenario = arena(200);
+    scenario
+        .buildings
+        .push(building(0, BuildingKind::Foundry, expansion.x, expansion.y));
+    scenario.units.push(unit(1, UnitKind::Sentinel, 16, 10));
+    let state = scenario.build().unwrap();
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
+    let [(BuildingKind::Turret, anchor)] = builds(&commands)[..] else {
+        panic!("{commands:?}");
+    };
+    assert!(
+        crate::frame::gap(expansion, (2, 2), anchor, (1, 1)) <= 3,
+        "beside the raided Foundry, not the home one: {anchor:?}"
+    );
+}
+
+#[test]
+fn mirrored_seats_face_mirrored_threats_that_tie() {
+    let mut scenario = settled(400);
+    for player in &mut scenario.players {
+        player.bot_config = Some(fortified());
+    }
+    scenario.units.extend([
+        unit(1, UnitKind::Sentinel, 8, 3),
+        unit(1, UnitKind::Sentinel, 8, 8),
+        unit(0, UnitKind::Sentinel, 15, 8),
+        unit(0, UnitKind::Sentinel, 15, 3),
+    ]);
+    let state = scenario.build().unwrap();
+    let west = seat_with(&scenario, 0, fortified()).act(&state, &mut OwnEvents::default());
+    let east = seat_with(&scenario, 1, fortified()).act(&state, &mut OwnEvents::default());
+    assert!(!builds(&west).is_empty(), "premise: {west:?}");
+    assert_eq!(mirror(&state, west), east);
+}
+
+#[test]
 fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
-    let staged = |fabricator: bool, raider: bool| {
+    let staged = |fabricator: bool, raider: Option<(UnitKind, i32)>| {
         let mut scenario = settled(0);
         scenario
             .buildings
@@ -309,8 +361,10 @@ fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
                 .buildings
                 .push(building(0, BuildingKind::Fabricator, 3, 1));
         }
-        if raider {
-            scenario.units.push(unit(1, UnitKind::Sentinel, 11, 5));
+        if let Some((kind, x)) = raider {
+            scenario
+                .units
+                .extend([unit(1, kind, x, 5), unit(0, UnitKind::Kestrel, x - 1, 6)]);
         }
         let state = scenario.build().unwrap();
         let turret = state
@@ -329,11 +383,19 @@ fn a_defense_upgrades_only_with_its_prerequisite_and_no_threat_near() {
                     }
             })
     };
-    assert!(staged(true, false));
-    assert!(!staged(false, false), "a Heavy Turret needs a Fabricator");
+    assert!(staged(true, None));
+    assert!(!staged(false, None), "a Heavy Turret needs a Fabricator");
     assert!(
-        !staged(true, true),
+        !staged(true, Some((UnitKind::Sentinel, 11))),
         "an upgrade under fire would be caught down"
+    );
+    assert!(
+        staged(true, Some((UnitKind::Sentinel, 16))),
+        "premise: a Sentinel that far cannot reach it"
+    );
+    assert!(
+        !staged(true, Some((UnitKind::Bombard, 16))),
+        "a Bombard that far still can"
     );
 }
 
@@ -398,8 +460,23 @@ fn an_array_watches_the_way_in_and_lets_a_bastion_fire_further() {
 }
 
 #[test]
+fn an_array_watches_for_aircraft_where_no_ground_threat_is_known() {
+    let mut scenario = settled(0);
+    for row in &mut scenario.map[1..11] {
+        row.replace_range(11..13, "##");
+    }
+    scenario.units.extend([
+        unit(1, UnitKind::Darter, 21, 3),
+        unit(0, UnitKind::Kestrel, 20, 3),
+    ]);
+    let state = scenario.build().unwrap();
+    let wanted = wanted_by(0, false, &scenario, &state, &Memory::default(), 85);
+    assert!(offer(&wanted, BuildingKind::Array).is_some(), "{wanted:?}");
+}
+
+#[test]
 fn an_array_deepens_once_a_crucible_stands() {
-    let staged = |crucible: bool| {
+    let staged = |crucible: bool, bombard: bool| {
         let mut scenario = settled(0);
         scenario
             .buildings
@@ -408,6 +485,12 @@ fn an_array_deepens_once_a_crucible_stands() {
             scenario
                 .buildings
                 .push(building(0, BuildingKind::Crucible, 3, 1));
+        }
+        if bombard {
+            scenario.units.extend([
+                unit(1, UnitKind::Bombard, 16, 5),
+                unit(0, UnitKind::Kestrel, 15, 6),
+            ]);
         }
         let state = scenario.build().unwrap();
         let array = state
@@ -426,8 +509,12 @@ fn an_array_deepens_once_a_crucible_stands() {
                     }
             })
     };
-    assert!(staged(true));
-    assert!(!staged(false), "a Deep Array needs a Crucible");
+    assert!(staged(true, false));
+    assert!(!staged(false, false), "a Deep Array needs a Crucible");
+    assert!(
+        !staged(true, true),
+        "a Bombard in range would catch the Array down"
+    );
 }
 
 #[test]
@@ -534,9 +621,9 @@ fn mirrored_seats_watch_bar_and_mine_mirrored_spots() {
     assert_eq!(mirrored, defenses(1));
 }
 
-/// West's start in a pocket whose only way out is (6, 6), with a second at
-/// (6, 9) when `second_exit`, and a Turret guarding the first.
-fn pocket(second_exit: bool) -> Scenario {
+/// West's start in a pocket whose way out is (6, 6), and a Turret guarding
+/// it. The tile at (6, 9) is `second_exit`: open ground, wall or scrap.
+fn pocket(second_exit: char) -> Scenario {
     let mut scenario = arena(400);
     scenario.map = [
         "########################",
@@ -548,10 +635,10 @@ fn pocket(second_exit: bool) -> Scenario {
         "#......................#",
         "#.....#................#",
         "#.....#........s.......#",
-        if second_exit {
-            "#......................#"
-        } else {
-            "#.....#................#"
+        match second_exit {
+            '.' => "#......................#",
+            's' => "#.....s................#",
+            _ => "#.....#................#",
         },
         "#.....#........s.......#",
         "########################",
@@ -569,7 +656,7 @@ fn pocket(second_exit: bool) -> Scenario {
 #[test]
 fn a_seat_does_not_wall_itself_in() {
     let exit = TilePos::new(6, 6);
-    let barricades = |second_exit: bool| {
+    let barricades = |second_exit: char| {
         let scenario = pocket(second_exit);
         let state = scenario.build().unwrap();
         let mut json =
@@ -588,11 +675,18 @@ fn a_seat_does_not_wall_itself_in() {
             .contains(&(BuildingKind::Barricade, exit))
     };
     assert!(
-        barricades(true),
+        barricades('.'),
         "premise: with a second way out the Barricade is bought"
     );
     assert!(
-        !barricades(false),
+        !barricades('#'),
         "the Barricade would close the only way out"
+    );
+    let scrapped = pocket('s');
+    let state = scrapped.build().unwrap();
+    let observation = ObservationData::fog_honest(&state, PlayerId(0));
+    assert!(
+        !defenses::keeps_paths(&observation, &map(&scrapped), exit),
+        "live scrap closes the second way out until it is mined"
     );
 }
