@@ -260,6 +260,8 @@ impl Missions {
                 None
             }
             RaidPhase::Strike => {
+                // Sappers at the target blow it up whatever stands there.
+                let outweighed = outweighed && kind != Raider::Sapper;
                 let done = all_idle || age >= STRIKE_TICKS || !standing(observation, target);
                 if spent || outweighed || done {
                     return withdraw(self, ledger).then_some(lost);
@@ -281,8 +283,8 @@ impl Foray<'_> {
     /// for: for Sappers the most valuable known enemy building for its
     /// distance with little known defense, for the others the enemy
     /// Extractor or Foundry with the least known defense, nearest first.
-    /// Targets recently given up are skipped, and ground raiders need a
-    /// ground route.
+    /// Targets recently raided are skipped, and ground raiders need a ground
+    /// route.
     fn target(&self, kind: Raider, strength: u64) -> Option<(Objective, TilePos)> {
         let observation = self.observation;
         let now = observation.tick;
@@ -297,7 +299,7 @@ impl Foray<'_> {
                 building: building.kind,
                 anchor: building.anchor,
             })
-            .filter(|target| !self.memory.abandoned(target.building, target.anchor, now))
+            .filter(|target| !self.memory.raided(target.building, target.anchor, now))
             .filter_map(|target| {
                 let goal = match kind {
                     Raider::Bomber => {

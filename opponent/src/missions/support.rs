@@ -15,7 +15,8 @@ const WELD_DAMAGE: u64 = 100;
 
 impl Missions {
     /// Has each idle free Tender weld the free wounded ground unit on its
-    /// ground missing the most value, one Tender to a patient.
+    /// ground missing the most value, no two sent to the same patient in one
+    /// decision.
     pub(crate) fn tend(
         &self,
         observation: &ObservationData,

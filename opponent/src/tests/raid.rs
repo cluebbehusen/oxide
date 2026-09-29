@@ -105,8 +105,58 @@ fn an_outweighed_raid_turns_back_and_leaves_its_target_alone() {
     assert_eq!(mission.phase, Phase::Withdraw);
     assert_eq!(runs(&commands), [(raiders(&state), mission.goal)]);
     let json = serde_json::to_value(opponent.checkpoint()).unwrap();
+    let raided = json["memory"]["raided"].to_string();
+    assert!(raided.contains("\"x\":22"), "{raided}");
     let abandoned = json["memory"]["abandoned"].to_string();
-    assert!(abandoned.contains("\"x\":22"), "{abandoned}");
+    assert!(
+        !abandoned.contains("\"x\":22"),
+        "larger missions may still go after it: {abandoned}"
+    );
+}
+
+#[test]
+fn sappers_at_the_target_blow_it_up_whatever_stands_there() {
+    let mut scenario = outpost(UnitKind::Sapper, BuildingKind::Fabricator);
+    scenario.units.push(unit(1, UnitKind::Warden, 20, 11));
+    let mut state = scenario.build().unwrap();
+    let sappers = raiders(&state);
+    let fabricator = building_at(&state, OUTPOST);
+    state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Attack {
+            units: sappers.clone(),
+            target: AttackTarget::Building(fabricator),
+            queue: false,
+        },
+    }]);
+    while state.current_tick() < 12 {
+        state.tick(&[]);
+    }
+    let mut json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    json["missions"] = serde_json::json!({
+        "next": 1,
+        "list": [{
+            "id": 0,
+            "task": {
+                "task": "raid",
+                "target": {"owner": 1, "building": "fabricator", "anchor": {"x": 22, "y": 10}},
+                "phase": "strike",
+            },
+            "since": 0,
+            "units": sappers,
+            "goal": {"x": 21, "y": 10},
+        }],
+    });
+    let checkpoint: Checkpoint = serde_json::from_value(json).unwrap();
+    let mut opponent = Opponent::restore(&checkpoint, &scenario, &state, map(&scenario)).unwrap();
+    let (commands, trace) = opponent.act_traced(&state, &mut OwnEvents::default());
+    assert!(runs(&commands).is_empty(), "{commands:?}");
+    let missions = trace.unwrap().missions;
+    assert_eq!(
+        raid(&missions).map(|mission| mission.phase),
+        Some(Phase::Engage),
+        "{missions:?} {commands:?}"
+    );
 }
 
 #[test]
@@ -144,6 +194,7 @@ fn bombers_too_few_for_a_strike_harry_a_harvest_line() {
 fn sapping(
     phase: serde_json::Value,
     member: bool,
+    since: u64,
 ) -> (State, Opponent, UnitId, Option<BuildingId>) {
     let mut scenario = field();
     let west: Vec<(i32, i32)> = (6..10).flat_map(|x| [(x, 9), (x, 10)]).collect();
@@ -185,7 +236,7 @@ fn sapping(
                 "target": {"owner": 1, "building": "foundry", "anchor": {"x": 43, "y": 11}},
                 "phase": phase,
             },
-            "since": 12,
+            "since": since,
             "units": members,
             "goal": {"x": 11, "y": 11},
         }],
@@ -197,7 +248,7 @@ fn sapping(
 
 #[test]
 fn an_attack_on_a_defended_target_takes_free_sappers_along() {
-    let (state, mut opponent, sapper, _) = sapping(serde_json::json!("recover"), false);
+    let (state, mut opponent, sapper, _) = sapping(serde_json::json!("recover"), false, 12);
     let commands = opponent.act(&state, &mut OwnEvents::default());
     assert!(
         runs(&commands).iter().any(|(units, _)| *units == [sapper]),
@@ -208,11 +259,35 @@ fn an_attack_on_a_defended_target_takes_free_sappers_along() {
 #[test]
 fn a_fighting_attack_sends_its_sappers_at_the_nearest_defense() {
     let (state, mut opponent, sapper, turret) =
-        sapping(serde_json::json!({"engage": {"focus": null}}), true);
+        sapping(serde_json::json!({"engage": {"focus": null}}), true, 12);
     let commands = opponent.act(&state, &mut OwnEvents::default());
     assert_eq!(
         attacks(&commands),
         [(vec![sapper], AttackTarget::Building(turret.unwrap()))]
+    );
+}
+
+#[test]
+fn a_fighting_attack_s_sappers_keep_their_orders_when_it_regroups() {
+    let (state, mut opponent, sapper, turret) =
+        sapping(serde_json::json!({"engage": {"focus": null}}), true, 0);
+    let late = {
+        let mut state = state.clone();
+        while state.current_tick() < 3_612 {
+            state.tick(&[]);
+        }
+        state
+    };
+    let commands = opponent.act(&late, &mut OwnEvents::default());
+    assert!(
+        attacks(&commands).contains(&(vec![sapper], AttackTarget::Building(turret.unwrap()))),
+        "{commands:?}"
+    );
+    assert!(
+        runs(&commands)
+            .iter()
+            .all(|(units, _)| !units.contains(&sapper)),
+        "the retreat leaves the Sapper to its target: {commands:?}"
     );
 }
 

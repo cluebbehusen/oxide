@@ -8,7 +8,7 @@ use crate::map::MapModel;
 use crate::memory::Memory;
 use crate::missions::{self, Hazard};
 use chassis::grid::TilePos;
-use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
+use oxide_sim::observation::{BuildingObs, ObservationData};
 use oxide_sim::stats::{Domain, FOUNDRY_REPAIR_PRICE};
 use oxide_sim::{BuildingKind, Command, UnitId, UnitKind};
 use std::cmp::Reverse;
@@ -36,10 +36,6 @@ const WELD_FLOOR: u32 = 100;
 /// Empty tiles around a building inside which an armed enemy in sight keeps
 /// workers from welding it.
 const WELD_CLEARANCE: i32 = 12;
-
-/// Tiles from an armed enemy in sight inside which a worker away from home
-/// runs back to its Foundry.
-const FLEE_TILES: i32 = 6;
 
 /// Empty tiles from an own Foundry inside which a worker counts as home.
 const HOME_TILES: i32 = 8;
@@ -152,7 +148,7 @@ pub(crate) fn run(
     ledger: &mut Ledger,
 ) {
     let hazards = missions::hazards(observation, memory, Domain::Ground);
-    flee(observation, map, frame, ledger);
+    flee(observation, map, frame, &hazards, ledger);
     resume_sites(observation, map, frame, ledger);
     weld(observation, map, frame, &hazards, ledger);
     assign_idle(observation, map, frame, &staffing.worked, &hazards, ledger);
@@ -172,27 +168,23 @@ fn excavate(observation: &ObservationData, open: usize, greed: u8, ledger: &Ledg
         && ledger.spendable() >= UnitKind::Excavator.stats().cost + spare
 }
 
-/// Sends each harvesting or idle worker away from home that an armed enemy
-/// in sight stands near back beside the nearest own Foundry on its ground.
-fn flee(observation: &ObservationData, map: &MapModel, frame: HomeFrame, ledger: &mut Ledger) {
+/// Sends each harvesting or idle worker away from home that known enemy fire
+/// reaches back beside the nearest own Foundry on its ground. An explicit
+/// harvest order keeps a worker at its node under fire until it is told
+/// otherwise.
+fn flee(
+    observation: &ObservationData,
+    map: &MapModel,
+    frame: HomeFrame,
+    hazards: &[Hazard],
+    ledger: &mut Ledger,
+) {
     let foundries: Vec<&BuildingObs> = observation
         .my_buildings
         .iter()
         .filter(|building| building.kind == BuildingKind::Foundry && building.built)
         .collect();
-    let armed: Vec<&UnitObs> = observation
-        .enemy_units
-        .iter()
-        .filter(|enemy| {
-            enemy
-                .kind
-                .stats()
-                .weapons
-                .iter()
-                .any(|weapon| weapon.targets.ground)
-        })
-        .collect();
-    if armed.is_empty() {
+    if hazards.is_empty() {
         return;
     }
     let size = BuildingKind::Foundry.base_stats().size;
@@ -201,9 +193,9 @@ fn flee(observation: &ObservationData, map: &MapModel, frame: HomeFrame, ledger:
         if !worker(unit.kind) || !working || ledger.employs(unit.id) {
             continue;
         }
-        let threatened = armed
+        let threatened = hazards
             .iter()
-            .any(|enemy| enemy.tile.chebyshev(unit.tile) <= FLEE_TILES);
+            .any(|hazard| hazard.covers(doubled(unit.tile)));
         let home = foundries
             .iter()
             .any(|foundry| gap(foundry.anchor, size, unit.tile, (1, 1)) <= HOME_TILES);
