@@ -310,7 +310,7 @@ pub(crate) fn decide(
             .missions
             .scout(observation, map, frame, &mut persistent.memory, &mut ledger);
     let carrying =
-        lift && train_carriers(observation, map, profile, &producers, &mut ledger) && !short;
+        lift && !short && train_carriers(observation, map, profile, &producers, &mut ledger);
     if !carrying {
         if scout {
             train_scout(observation, &producers, &mut ledger);
@@ -348,12 +348,13 @@ fn buy(
     let Some((step, price)) = investments::step(observation, investment) else {
         return;
     };
-    if ledger.available() < price {
-        return;
-    }
+    let affordable = ledger.available() >= price;
     let tick = observation.tick;
     match step {
         Step::Upgrade(id) => {
+            if !affordable {
+                return;
+            }
             let Some(building) = observation
                 .my_buildings
                 .iter()
@@ -377,12 +378,24 @@ fn buy(
             });
             let Some((anchor, allowed)) = site else {
                 // With nowhere left to look, protecting scrap for a building
-                // that cannot be placed would starve production.
-                if !scout(observation, map, frame, &anchors, kind, ledger) {
-                    ledger.protected = 0;
+                // that cannot be placed would starve production. This is
+                // checked before the bank covers the price, or the protection
+                // would keep building up toward it.
+                match unexplored(observation, &anchors, kind) {
+                    None => {
+                        ledger.protected = 0;
+                        persistent.saving.keep_at_most(0);
+                    }
+                    Some(anchor) if affordable => {
+                        explore(observation, map, frame, anchor, kind, ledger);
+                    }
+                    Some(_) => {}
                 }
                 return;
             };
+            if !affordable {
+                return;
+            }
             let centre = footprint_centre(kind, anchor);
             let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger)
             else {
@@ -395,23 +408,28 @@ fn buy(
     }
 }
 
-/// Sends the nearest free Harvester toward the first of `anchors` whose
-/// footprint it has not fully seen, so it can be checked once explored.
-/// Returns whether any such anchor is left.
-fn scout(
+/// The first of `anchors` whose footprint the seat has not fully seen, which
+/// may turn out placeable once explored.
+fn unexplored(
+    observation: &ObservationData,
+    anchors: &[TilePos],
+    kind: BuildingKind,
+) -> Option<TilePos> {
+    let (width, height) = kind.base_stats().size;
+    anchors.iter().copied().find(|anchor| {
+        (0..height).any(|dy| (0..width).any(|dx| !observation.explored(anchor.offset(dx, dy))))
+    })
+}
+
+/// Sends the nearest free Harvester to look at `anchor`.
+fn explore(
     observation: &ObservationData,
     map: &MapModel,
     frame: HomeFrame,
-    anchors: &[TilePos],
+    anchor: TilePos,
     kind: BuildingKind,
     ledger: &mut Ledger,
-) -> bool {
-    let (width, height) = kind.base_stats().size;
-    let Some(anchor) = anchors.iter().copied().find(|anchor| {
-        (0..height).any(|dy| (0..width).any(|dx| !observation.explored(anchor.offset(dx, dy))))
-    }) else {
-        return false;
-    };
+) {
     let centre = footprint_centre(kind, anchor);
     if let Some(builder) = workers::builder(observation, map, frame, anchor, centre, ledger) {
         ledger.order(Command::Run {
@@ -420,11 +438,10 @@ fn scout(
             queue: false,
         });
     }
-    true
 }
 
 /// Keeps enough carriers, alive and queued, to lift the stance's minimum army
-/// at the value per transport slot of the line and siege units at home,
+/// at the value per transport slot of the units at home a lift could take,
 /// training one at an idle Airworks when short. It is a stock, like the
 /// Harvesters: no mission is promised the carriers it buys. Returns whether
 /// an idle Airworks waits for the scrap to train one, so that cheaper units
@@ -436,19 +453,7 @@ fn train_carriers(
     producers: &[Producer<'_>],
     ledger: &mut Ledger,
 ) -> bool {
-    let home = map
-        .start(observation.me)
-        .and_then(|start| map.component(start));
-    let (value, slots) = observation
-        .my_units
-        .iter()
-        .filter(|unit| crate::missions::rides(unit.kind) && map.component(unit.tile) == home)
-        .fold((0_u64, 0_u64), |(value, slots), unit| {
-            (
-                value + u64::from(unit.kind.stats().cost),
-                slots + u64::from(unit.kind.stats().transport_size),
-            )
-        });
+    let (value, slots) = crate::missions::payload(observation, map);
     let per_slot = value
         .checked_div(slots)
         .map_or(EMPTY_SLOT_VALUE, |value| value.max(1));
