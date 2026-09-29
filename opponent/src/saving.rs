@@ -61,7 +61,7 @@ impl Saving {
         if let Some(target) = &mut self.target
             && let Some(attempt) = target.attempt.take()
         {
-            match outcome(observation, attempt) {
+            match outcome(observation, target.investment, attempt) {
                 Outcome::Placed => {
                     if investments::completes(target.investment, attempt.step) {
                         self.target = None;
@@ -137,7 +137,10 @@ impl Saving {
     pub(crate) fn validate(&self, width: i32, height: i32) -> Result<(), String> {
         let on_map = |tile: TilePos| (0..width).contains(&tile.x) && (0..height).contains(&tile.y);
         let off_map = self.target.is_some_and(|target| {
-            matches!(target.investment, Investment::Extractor(frame) if !on_map(frame))
+            matches!(
+                target.investment,
+                Investment::Extractor(anchor) | Investment::Defense { anchor, .. } if !on_map(anchor)
+            )
                 || target
                     .attempt
                     .is_some_and(|attempt| !on_map(attempt.anchor))
@@ -165,7 +168,7 @@ enum Outcome {
     Missing,
 }
 
-fn outcome(observation: &ObservationData, attempt: Attempt) -> Outcome {
+fn outcome(observation: &ObservationData, investment: Investment, attempt: Attempt) -> Outcome {
     match attempt.step {
         Step::Build(kind) => {
             let site = observation
@@ -184,10 +187,15 @@ fn outcome(observation: &ObservationData, attempt: Attempt) -> Outcome {
             }
         }
         Step::Upgrade(id) => {
+            // The upgrade raises the tier as soon as it is accepted.
+            let tier = match investment {
+                Investment::Upgrade { building, tier } if building == id => tier,
+                _ => 1,
+            };
             let upgraded = observation
                 .my_buildings
                 .iter()
-                .any(|building| building.id == id && building.tier > 0);
+                .any(|building| building.id == id && building.tier >= tier);
             if upgraded {
                 Outcome::Placed
             } else {

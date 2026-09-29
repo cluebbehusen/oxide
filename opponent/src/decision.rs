@@ -2,6 +2,7 @@
 //! unit-order allowance.
 
 use crate::composition::{self, Needs};
+use crate::defenses;
 use crate::frame::{HomeFrame, footprint_centre, gap};
 use crate::income::Income;
 use crate::investments::{self, Situation, Step};
@@ -95,7 +96,7 @@ impl Ledger {
         true
     }
 
-    fn build(
+    pub(crate) fn build(
         &mut self,
         builder: UnitId,
         kind: BuildingKind,
@@ -138,6 +139,11 @@ impl Ledger {
     /// Unit orders this decision may still issue.
     pub(crate) fn room(&self) -> u32 {
         self.decision.allowance - self.decision.unit_orders
+    }
+
+    /// Footprints this decision already committed to.
+    pub(crate) fn planned(&self) -> &[(BuildingKind, TilePos)] {
+        &self.planned
     }
 
     /// Whether this decision already queued something at `building`.
@@ -186,9 +192,10 @@ pub(crate) struct Producer<'a> {
 }
 
 /// Defense first, then worker recovery, then an affordable saving target
-/// unless a defense is short, then workers, then attacks, focus fire and
-/// scouting, then production. A short defense also frees protected scrap for
-/// this decision's production.
+/// unless a defense is short, then workers, then lifts, attacks, strikes,
+/// focus fire and scouting, then production. A short defense instead buys an
+/// emergency static defense, trains no more Harvesters, and frees protected
+/// scrap for this decision's production.
 pub(crate) fn decide(
     observation: &ObservationData,
     rejected: bool,
@@ -227,7 +234,11 @@ pub(crate) fn decide(
         income,
         air_strikes,
     );
-    let lift = crate::missions::lift_needed(observation, map, frame);
+    // A lift carries at least the stance's minimum army, so until the seat has
+    // one it neither pulls toward an Airworks nor holds production for
+    // carriers: an army and home defense come first.
+    let exposed = army(observation) < crate::missions::minimum(profile.stance);
+    let lift = !exposed && crate::missions::lift_needed(observation, map, frame);
     let mut pull = needs.pull(observation);
     if lift {
         pull.push((BuildingKind::Airworks, LIFT_PULL));
@@ -241,6 +252,7 @@ pub(crate) fn decide(
         income,
         depletion: depletion(observation, map),
         pull,
+        exposed,
     };
     let candidates = investments::candidates(&situation);
     let share = share(observation, profile);
@@ -270,10 +282,21 @@ pub(crate) fn decide(
     workers::recover(observation, &foundries, &mut ledger);
     if short {
         ledger.protected = 0;
+        defenses::emergency(observation, map, frame, &persistent.memory, &mut ledger);
     } else {
         buy(observation, map, frame, persistent, &mut ledger);
     }
-    workers::run(observation, map, frame, &foundries, &staffing, &mut ledger);
+    // A short defense leaves scrap to the army: only the recovery Harvester
+    // above is trained while it lasts.
+    workers::run(
+        observation,
+        map,
+        frame,
+        &foundries,
+        &staffing,
+        &mut ledger,
+        !short,
+    );
     if let Some((kind, anchor)) = persistent.missions.lift(
         observation,
         map,
@@ -600,6 +623,16 @@ fn share(observation: &ObservationData, profile: &ResolvedProfile) -> u32 {
         0
     };
     (base + greed - cut).clamp(200, 800) as u32
+}
+
+/// What the seat's armed units cost.
+fn army(observation: &ObservationData) -> u64 {
+    observation
+        .my_units
+        .iter()
+        .filter(|unit| !unit.kind.stats().weapons.is_empty())
+        .map(|unit| u64::from(unit.kind.stats().cost))
+        .sum()
 }
 
 /// Per mille of the scrap that started around the seat's home already gone.

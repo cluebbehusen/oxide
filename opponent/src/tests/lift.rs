@@ -472,10 +472,13 @@ fn severed_seats_buy_carriers_and_the_airworks_they_need() {
     let short = banked(severed.clone(), 200);
     let (commands, _) = decide(&short);
     assert_eq!(army(&commands), 0, "cheaper units wait for the carrier");
-    let mut connected = short;
+    let mut connected = banked(severed.clone(), 400);
     connected.map = FIELD.map(str::to_owned).to_vec();
     let (commands, _) = decide(&connected);
-    assert!(army(&commands) > 0, "premise: the bank buys an army unit");
+    assert!(
+        army(&commands) > 0,
+        "premise: the bank buys an army unit: {commands:?}"
+    );
 
     let mut unequipped = banked(unhooked, 100);
     unequipped

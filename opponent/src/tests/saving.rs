@@ -42,7 +42,8 @@ fn traits() -> PersonalityTraits {
 fn an_affordable_target_is_bought_before_production_spends_the_rest() {
     let scenario = saturated(400);
     let state = scenario.build().unwrap();
-    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let (commands, trace) =
+        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
     let trace = trace.unwrap();
     assert_eq!(
         trace
@@ -63,7 +64,8 @@ fn an_affordable_target_is_bought_before_production_spends_the_rest() {
 fn production_never_spends_scrap_protected_for_the_target() {
     let scenario = saturated(100);
     let state = scenario.build().unwrap();
-    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let (commands, trace) =
+        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
     let trace = trace.unwrap();
     assert!(trace.protected > 0);
     assert!(trace.bank >= UnitKind::Sentinel.stats().cost, "premise");
@@ -83,7 +85,8 @@ fn a_seat_without_harvesters_spends_protected_scrap_on_one() {
         bank - protected < UnitKind::Harvester.stats().cost,
         "premise"
     );
-    let mut checkpoint = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    let mut checkpoint =
+        serde_json::to_value(seat_with(&scenario, 0, thrifty()).checkpoint()).unwrap();
     checkpoint["saving"] = serde_json::json!({
         "protected": protected,
         "target": {"investment": {"tech": "fabricator"}, "attempt": null},
@@ -101,7 +104,7 @@ fn a_seat_without_harvesters_spends_protected_scrap_on_one() {
 fn a_missing_purchase_keeps_the_target_and_tries_another_spot() {
     let scenario = saturated(400);
     let mut state = scenario.build().unwrap();
-    let mut opponent = seat(&scenario, 0);
+    let mut opponent = seat_with(&scenario, 0, thrifty());
     let mut events = OwnEvents::default();
     let (commands, trace) = opponent.act_traced(&state, &mut events);
     let first = builds(&commands);
@@ -131,7 +134,7 @@ fn a_missing_purchase_keeps_the_target_and_tries_another_spot() {
 fn a_cancelled_site_is_bought_again_elsewhere() {
     let scenario = saturated(400);
     let mut state = scenario.build().unwrap();
-    let mut opponent = seat(&scenario, 0);
+    let mut opponent = seat_with(&scenario, 0, thrifty());
     let commands = opponent.act(&state, &mut OwnEvents::default());
     let first = builds(&commands);
     state.tick(&commands);
@@ -158,7 +161,7 @@ fn a_cancelled_site_is_bought_again_elsewhere() {
 fn an_unattended_site_gets_a_builder() {
     let scenario = saturated(400);
     let mut state = scenario.build().unwrap();
-    let mut opponent = seat(&scenario, 0);
+    let mut opponent = seat_with(&scenario, 0, thrifty());
     let commands = opponent.act(&state, &mut OwnEvents::default());
     let builder = commands
         .iter()
@@ -221,8 +224,8 @@ fn first_site(state: &State) -> TilePos {
 fn mirrored_seats_build_on_mirrored_spots() {
     let scenario = saturated(400);
     let state = scenario.build().unwrap();
-    let west = builds(&seat(&scenario, 0).act(&state, &mut OwnEvents::default()));
-    let east = builds(&seat(&scenario, 1).act(&state, &mut OwnEvents::default()));
+    let west = builds(&seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default()));
+    let east = builds(&seat_with(&scenario, 1, thrifty()).act(&state, &mut OwnEvents::default()));
     let (width, height) = (state.map().width(), state.map().height());
     assert_eq!(west.len(), 1);
     assert_eq!(
@@ -331,6 +334,7 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
             income: 400,
             depletion: 0,
             pull: Vec::new(),
+            exposed: false,
         })
         .into_iter()
         .map(|candidate| candidate.investment)
@@ -346,9 +350,18 @@ fn reclaimers_wait_for_the_drip_and_refineries_need_a_fabricator() {
         .find(|building| building.kind == BuildingKind::Reclaimer)
         .unwrap()
         .id;
-    assert!(wanted.contains(&Investment::Refinery(reclaimer)));
+    assert!(wanted.contains(&Investment::Upgrade {
+        building: reclaimer,
+        tier: 1
+    }));
     assert_eq!(
-        investments::step(&observation, Investment::Refinery(reclaimer)),
+        investments::step(
+            &observation,
+            Investment::Upgrade {
+                building: reclaimer,
+                tier: 1
+            }
+        ),
         Some((Step::Build(BuildingKind::Fabricator), 120))
     );
 }
@@ -498,7 +511,7 @@ fn a_harvester_sealed_off_from_the_site_never_builds_it() {
         .find(|unit| unit.tile() == TilePos::new(sealed.x, sealed.y))
         .unwrap()
         .id;
-    let commands = seat(&scenario, 0).act(&state, &mut OwnEvents::default());
+    let commands = seat_with(&scenario, 0, thrifty()).act(&state, &mut OwnEvents::default());
     let (builders, anchor) = commands
         .iter()
         .find_map(|command| match &command.command {
@@ -540,6 +553,7 @@ fn mirrored_seats_rank_equal_extractor_frames_alike() {
             income: 400,
             depletion: 0,
             pull: Vec::new(),
+            exposed: false,
         })
         .into_iter()
         .find_map(|candidate| match candidate.investment {
@@ -593,7 +607,8 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
         });
     }
     let state = scenario.build().unwrap();
-    let (commands, trace) = seat(&scenario, 0).act_traced(&state, &mut OwnEvents::default());
+    let (commands, trace) =
+        seat_with(&scenario, 0, thrifty()).act_traced(&state, &mut OwnEvents::default());
     (commands, trace.unwrap(), foundries(&state, PlayerId(0))[0])
 }
 
@@ -601,7 +616,7 @@ fn nowhere_to_stand(bank: u32) -> (Vec<PlayerCommand>, Trace, BuildingId) {
 fn checkpoints_reject_state_off_the_map_and_survive_extreme_samples() {
     let scenario = saturated(400);
     let state = scenario.build().unwrap();
-    let json = serde_json::to_value(seat(&scenario, 0).checkpoint()).unwrap();
+    let json = serde_json::to_value(seat_with(&scenario, 0, thrifty()).checkpoint()).unwrap();
     let restore = |edit: &dyn Fn(&mut serde_json::Value)| {
         let mut json = json.clone();
         edit(&mut json);
