@@ -64,6 +64,11 @@ records as the frozen reference it compares against.
   difficulty, stance and map family; `bot-matrix-report` re-reads published
   rows. Evaluation inputs live in `evaluation/`, not `scenarios/`, whose every
   file the shell menu, map gates and golden sweeps read.
+- `bot_pressure` runs the staged scenarios in `evaluation/pressure/`: a scripted
+  attacker seat presses one situation (an early rush, air harassment, an
+  artillery siege, a transport drop) on a bot seat, and a check over
+  authoritative state reports whether the bot answered by the deadline. The
+  checks are QA evidence and never reach a controller.
 - `bot_cost` times controller decisions on named workloads: a Skirmish duel, the
   seven-bot Skyhook game, and a staged mature-army match kept under
   `tests/fixtures/performance/` so it stays out of the shipped pool. It reports
