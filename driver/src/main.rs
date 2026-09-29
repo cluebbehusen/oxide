@@ -209,6 +209,24 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Run the staged pressure scenarios: a scripted attacker presses one
+    /// situation on a bot seat, and each scenario reports whether the bot
+    /// answered by its deadline.
+    BotPressure {
+        /// Controller for the defending seat.
+        #[arg(long, default_value = "scripted")]
+        controller: oxide_sim::scenario::BotController,
+        /// Directory of pressure scenarios.
+        #[arg(long, default_value = "driver/evaluation/pressure")]
+        dir: PathBuf,
+        /// Print outcomes as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Save each scenario's replay here, named after the scenario and
+        /// controller.
+        #[arg(long)]
+        replay_dir: Option<PathBuf>,
+    },
     /// Time bot decisions on a fixed workload: average and p99 wall time per
     /// decision and total CPU, per seat and per controller, beside the
     /// fog-honest observation build and oxide-bot's orientation. Seats decide
@@ -891,6 +909,34 @@ fn main() -> Result<()> {
             print_matrix_report(&[rows_path], json)?;
         }
         Cmd::BotMatrixReport { rows, json } => print_matrix_report(&rows, json)?,
+        Cmd::BotPressure {
+            controller,
+            dir,
+            json,
+            replay_dir,
+        } => {
+            use oxide_driver::bot_pressure;
+            let mut outcomes = Vec::new();
+            for pressure in bot_pressure::load_all(&dir)? {
+                let (outcome, replay) =
+                    bot_pressure::run(&pressure, controller, replay_dir.is_some())?;
+                if let (Some(dir), Some(replay)) = (&replay_dir, replay) {
+                    std::fs::create_dir_all(dir)?;
+                    let name = format!(
+                        "{}-{}.json",
+                        pressure.name.replace(' ', "-"),
+                        serde_json::to_value(controller)?.as_str().unwrap_or("bot")
+                    );
+                    replay.save(dir.join(name))?;
+                }
+                outcomes.push(outcome);
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcomes)?);
+            } else {
+                print!("{}", bot_pressure::report(&outcomes));
+            }
+        }
         Cmd::BotCost {
             workload,
             scenario,
@@ -1478,6 +1524,32 @@ mod tests {
         );
         assert!(same_personality_seed);
         assert!(paired);
+    }
+
+    #[test]
+    fn bot_pressure_defaults_to_oxide_bot_and_the_shipped_scenarios() {
+        let cli = Cli::try_parse_from(["oxide-driver", "bot-pressure"]).expect("parses");
+        let Cmd::BotPressure {
+            controller,
+            dir,
+            json,
+            replay_dir,
+        } = cli.cmd
+        else {
+            panic!("bot-pressure parsed as another command")
+        };
+        assert_eq!(controller, oxide_sim::scenario::BotController::Scripted);
+        assert_eq!(dir, PathBuf::from("driver/evaluation/pressure"));
+        assert_eq!((json, replay_dir), (false, None));
+        let cli = Cli::try_parse_from(["oxide-driver", "bot-pressure", "--controller", "opponent"])
+            .expect("parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::BotPressure {
+                controller: oxide_sim::scenario::BotController::Opponent,
+                ..
+            }
+        ));
     }
 
     #[test]

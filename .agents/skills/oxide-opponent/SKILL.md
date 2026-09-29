@@ -77,9 +77,9 @@ exact-allocation, forecasting or planning-progress requirements.
 ## Report at handoff
 
 When handing off a PR, tell Connor its net production and test line change,
-average and p99 time per decision with total CPU, and the smoke-matrix
-comparison, including when they are unfavorable. Keep them out of the PR
-description.
+average and p99 time per decision with total CPU, the smoke-matrix comparison,
+and the pressure scenarios that pass, including when they are unfavorable. Keep
+them out of the PR description.
 
 - **Lines:** `uv run tools/line_report.py <base>` prints the net production and
   test line change per top-level directory from the merge base; `--help` defines
@@ -143,6 +143,30 @@ Income compares scrap earned in the minute before ticks 6,000, 12,000 and 24,000
 estimate: two Harvesters on each of the four nearest scrap nodes that still hold
 scrap for every completed Foundry, at their straight-line round trip, plus those
 credits. No node counts for two Foundries.
+
+## Pressure scenarios
+
+`cargo run --release -p oxide-driver -- bot-pressure --controller opponent` runs
+the staged scenarios in `driver/evaluation/pressure/`; `--replay-dir` saves each
+run for `replay-summary`. A scripted attacker seat, whose Foundry sits on an
+island no ground unit reaches, issues tick-stamped commands for its preset units
+while the bot defends:
+
+- **Early rush:** Sentinels and Scuttlers attack the base; the Foundry must
+  stand at the deadline.
+- **Air switch:** two Buzzards harass the base; the bot must field anti-air (a
+  dedicated anti-air unit or a Flak Turret) within 1,500 ticks of first seeing
+  them.
+- **Siege:** Bombards shell the base with a Kestrel spotting; by the deadline
+  they must be destroyed or out of range. Killing only the spotter does not
+  pass.
+- **Lift drop:** a Skyhook sets four Sentinels down beside the harvest line;
+  every landed unit must be destroyed, unless the Skyhook falls before setting
+  anyone down.
+
+`oxide-bot` passes all four. Scenario files are JSON: the staged scenario, the
+defender and attacker seats, a deadline, the script (unit ids follow scenario
+order) and the check.
 
 ## Review play
 
