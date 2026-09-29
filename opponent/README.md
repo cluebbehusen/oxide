@@ -10,14 +10,21 @@ Each decision spends through one running total in a fixed precedence: defense
 and other emergencies, then an affordable saving target, then workers, then
 lifts, attacks and strikes, focus fire and scouting, then production. Missions
 only give orders; what they need, such as a scout or carriers, production buys.
-A seat with no Harvester alive or queued queues one even behind other work, from
-protected scrap if it must. Each built Foundry works the four nearest live known
-scrap nodes its ground can reach within twelve tiles, none shared with another
-Foundry, and idle Foundries train Harvesters until there are two per worked
-node. Paid sites nobody is building get the nearest free Harvester, and idle
-Harvesters go to the reachable worked node with the fewest Harvesters. Every
-idle producer then trains toward the army's needs. Difficulty caps the unit
-orders one decision issues; purchases do not count against that allowance.
+A seat with no worker alive or queued queues a Harvester even behind other work,
+from protected scrap if it must. Each built Foundry works the four nearest live
+known scrap nodes its ground can reach within twelve tiles, none shared with
+another Foundry, and idle Foundries train workers until there are two
+Harvesters' worth per worked node. Once a Fabricator stands, an Excavator, worth
+two Harvesters, fills two open places when the seat can pay for it with scrap to
+spare, less the greedier it is. A harvesting or idle worker away from home runs
+back beside the nearest Foundry once known enemy fire reaches it. Paid sites
+nobody is building get the nearest free worker. While no armed enemy in sight
+stands near it and the seat has scrap to pay, the damaged building missing the
+most value gets a free worker to weld it, two at most at once. Idle workers go
+to the reachable worked node with the fewest workers, never one inside the reach
+of known enemy weapons. Every idle producer then trains toward the army's needs.
+Difficulty caps the unit orders one decision issues; purchases do not count
+against that allowance.
 
 ## Defense
 
@@ -81,6 +88,10 @@ straight way in to a Foundry, spread so one blast does not set off the next.
 Fortification weighs Barricades; fortification and guile weigh Arrays and
 charges.
 
+A Repair Bay goes up beside one of the two most valuable buildings where its
+aura reaches the most missing value among the seat's wounded ground units and
+damaged buildings that no Repair Bay reaches yet, weighted by support.
+
 Defenses upgrade like Reclaimers do (Heavy Turret, Bulwark, Burst Flak, Deep
 Array) once the next tier's prerequisite stands, worth the approach they cover,
 or for an Array the far points it watches, by how sure the seat is of its threat
@@ -108,6 +119,9 @@ Members under 35 percent health leave between fights and run to the rally, and a
 defense may take the attack's units in any phase but a fight. While an army that
 could attack does not, or every producer sits idle, the margin falls step by
 step toward even.
+
+A free Tender joins an attack while it gathers or recovers, welds its wounded
+while the army regroups there, and follows it otherwise.
 
 At Veteran and Prime, an engaged mission focuses its fire: when every member
 that can hit an enemy near it already reaches that enemy, they shoot the weakest
@@ -173,6 +187,13 @@ before. An air scout flies around known anti-air when the straight line crosses
 it, and a point whose scout was lost on the way counts as seen, so the next
 scout waits until it is stale again.
 
+## Support
+
+The seat keeps a Tender, alive or queued, for so much missing health among its
+armed ground units, more the more it leans on support, up to two. A free idle
+Tender welds the free wounded ground unit on its ground missing the most value;
+one decision sends no two Tenders to the same patient.
+
 ## Army composition
 
 The seat remembers enemy units it has seen for 600 ticks, trusting them less as
@@ -188,8 +209,8 @@ Each idle producer trains for the most wanted role it can serve, or line units
 when nothing is wanted, choosing the unit it can afford now by coarse
 suitability: reach against the enemy's usual reach, durability for the price,
 covering both enemy domains, splash against clustered enemies, affordability at
-the seat's income, and personality. Raiders and support units are left to later
-behavior; scouts and carriers are bought only for scouting and lift. A role it
+the seat's income, and personality. Raiders are left to later behavior; scouts,
+carriers and Tenders are bought only for scouting, lift and support. A role it
 needs but cannot train at all adds to the investment score of the cheapest
 building that would let it.
 
@@ -199,9 +220,9 @@ Each decision scores its investments: a first Fabricator, Airworks and Crucible,
 another Fabricator or Airworks when all of that kind are busy and income could
 keep one more working, an expansion Foundry at a scrap field away from every
 start, an Extractor on a free frame on its home ground, more Reclaimers (worth
-more with no expansion left), static defenses, and upgrades. Saturated
-harvesting, time, income, home depletion, army needs, a needed lift and
-personality set the scores.
+more with no expansion left), static defenses, Repair Bays, and upgrades.
+Saturated harvesting, time, income, home depletion, army needs, a needed lift
+and personality set the scores.
 
 An expansion site's value weighs the scrap it still holds and its free frames,
 up with greed, against its ground distance from home, how much nearer a hostile
@@ -209,19 +230,20 @@ start it lies, and the danger the seat knows around it, down with greed; home
 depletion raises every expansion. Sites off the seat's home ground, near another
 seat's building or its own Foundry, or failed at every anchor are skipped. An
 Extractor is worth more beside one of the seat's Foundries and less where it has
-seen danger. The seat saves for one target at a time. It starts saving only for
-an investment that scores well, keeps it while it still scores, and switches
-only for one that scores clearly higher. Prerequisites come first: saving for
-Airworks buys a Fabricator.
+seen danger, and waits while an armed enemy in sight stands near its frame, as
+one lost there does until the enemy leaves. The seat saves for one target at a
+time. It starts saving only for an investment that scores well, keeps it while
+it still scores, and switches only for one that scores clearly higher.
+Prerequisites come first: saving for Airworks buys a Fabricator.
 
 When it adopts a target a share of its bank is protected from ordinary spending,
 and while it saves a share of its estimated income is added, up to the next
 purchase's price. Stance and greed set the share, and visible hostile units near
 the base lower it. Income is estimated from the bank's change between decisions
 plus the seat's own spending. Once the whole uncommitted bank covers the next
-purchase, the seat places it with the nearest free Harvester on the first spot
-its knowledge allows (an expansion site's anchors, a frame, or otherwise a home
-spot) or upgrades the building. If every spot is unexplored, the Harvester walks
+purchase, the seat places it with the nearest free worker on the first spot its
+knowledge allows (an expansion site's anchors, a frame, or otherwise a home
+spot) or upgrades the building. If every spot is unexplored, the worker walks
 toward one instead; with no spot left to place or explore, nothing is protected,
 so a target that cannot stand anywhere never starves production. A purchase
 missing from the world at the next decision was rejected, cancelled or refunded:

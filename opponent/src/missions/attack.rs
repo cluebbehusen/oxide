@@ -1,8 +1,10 @@
 //! The attack mission: when a known enemy building's local defense is
 //! beatable now by the free army, above a stance-bounded minimum, the army
 //! gathers near home, travels, fights, withdraws from a losing fight, and
-//! recovers to go again or disband.
+//! recovers to go again or disband. A free Tender joins while it regroups,
+//! welds its wounded, and follows it.
 
+use super::support::{patient, weld};
 use super::{
     AttackPhase, MISSION_CAP, Mission, Missions, Objective, Task, UNIT_CAP, approach, hits, hunt,
     insert, mine, run, standing, value,
@@ -17,7 +19,7 @@ use chassis::grid::TilePos;
 use oxide_sim::observation::{BuildingObs, ObservationData, UnitObs};
 use oxide_sim::scenario::{BotDifficulty, BotStance};
 use oxide_sim::stats::Domain;
-use oxide_sim::{BuildingKind, PlayerId, UnitId};
+use oxide_sim::{BuildingKind, PlayerId, UnitId, UnitKind};
 
 /// Tiles between a member and an enemy that make contact.
 const CONTACT_TILES: i32 = 8;
@@ -89,6 +91,8 @@ struct Plan<'a> {
     memory: &'a Memory,
     minimum: u64,
     margin: u64,
+    /// Idle free Tenders.
+    tenders: Vec<&'a UnitObs>,
 }
 
 impl Mission {
@@ -126,11 +130,20 @@ impl Missions {
     ) {
         let now = observation.tick;
         let minimum = minimum(profile.stance);
-        let fit: Vec<&UnitObs> = self
+        let free: Vec<&UnitObs> = self
             .available(observation, false)
             .into_iter()
             .filter_map(|id| mine(observation, id))
+            .collect();
+        let fit: Vec<&UnitObs> = free
+            .iter()
+            .copied()
             .filter(|unit| eligible(unit, FIT))
+            .collect();
+        let tenders: Vec<&UnitObs> = free
+            .iter()
+            .copied()
+            .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
             .collect();
         let index = self
             .list
@@ -162,6 +175,7 @@ impl Missions {
             memory,
             minimum,
             margin,
+            tenders,
         };
         match index {
             None => self.launch(&plan, &fit, ledger),
@@ -299,8 +313,15 @@ impl Missions {
             .iter()
             .filter_map(|id| mine(observation, *id))
             .collect();
-        let all_idle = members.iter().all(|unit| unit.idle);
-        let strength: u64 = members.iter().map(|unit| value(unit)).sum();
+        let all_idle = members
+            .iter()
+            .filter(|unit| unit.kind != UnitKind::Tender)
+            .all(|unit| unit.idle);
+        let strength: u64 = members
+            .iter()
+            .filter(|unit| !unit.kind.stats().weapons.is_empty())
+            .map(|unit| value(unit))
+            .sum();
         let age = now - mission.since;
 
         match phase {
@@ -325,6 +346,14 @@ impl Missions {
                         insert(&mut mission.units, *id);
                     }
                 }
+                let tended = members.iter().any(|unit| unit.kind == UnitKind::Tender);
+                if !tended
+                    && mission.units.len() < UNIT_CAP
+                    && let Some(tender) = plan.tender(rally, component)
+                    && ledger.order(run(vec![tender], rally))
+                {
+                    insert(&mut mission.units, tender);
+                }
                 let ready = striking_strength >= need;
                 if !recruited && (all_idle || age >= timeout(phase)) && ready {
                     if ledger.order(hunt(mission.units.clone(), target.approach)) {
@@ -337,6 +366,15 @@ impl Missions {
                     }
                 } else if age >= timeout(phase) {
                     self.list.remove(index);
+                } else {
+                    for tender in members
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Tender && unit.idle)
+                    {
+                        if let Some(patient) = patient(plan.map, plan.frame, tender, &members) {
+                            ledger.order(weld(tender.id, patient));
+                        }
+                    }
                 }
                 None
             }
@@ -398,6 +436,16 @@ impl Missions {
 }
 
 impl Plan<'_> {
+    /// The idle free Tender nearest `rally` that can get to a target whose
+    /// approach lies in `component`.
+    fn tender(&self, rally: TilePos, component: Option<u32>) -> Option<UnitId> {
+        self.tenders
+            .iter()
+            .filter(|unit| reaches(self.map, unit, component))
+            .min_by_key(|unit| (self.frame.rank(doubled(rally), doubled(unit.tile)), unit.id))
+            .map(|unit| unit.id)
+    }
+
     /// The best target other than `skip`, or `None`. Known enemy buildings
     /// come first; with none, hostile starts are presumed held.
     fn best(&self, skip: Option<Target>) -> Option<Target> {

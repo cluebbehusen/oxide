@@ -22,7 +22,9 @@ mod focus;
 mod lift;
 mod scouting;
 mod strike;
+mod support;
 
+pub(crate) use air::{Hazard, hazards};
 pub(crate) use attack::minimum;
 pub(crate) use lift::{carrier, needed as lift_needed, payload};
 pub(crate) use scouting::points;

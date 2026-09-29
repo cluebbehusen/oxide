@@ -1,10 +1,11 @@
 //! Static defense: Turrets, Bastions and Flak Turrets beside the seat's most
 //! valuable buildings, on the side threats come from, Arrays watching the
-//! way in, Barricades ahead of the guns, Scuttle Charges on the approach, and
-//! upgrades for them. Each is an ordinary investment, worth what it adds to
+//! way in, Barricades ahead of the guns, Scuttle Charges on the approach,
+//! upgrades for them, and a Repair Bay where the seat's wounded are. Each is an ordinary investment, worth what it adds to
 //! the cover of those buildings' approaches. A short defense also buys one
 //! defense at once where attackers find a building's approach uncovered.
 
+use crate::composition;
 use crate::decision::Ledger;
 use crate::frame::{HomeFrame, doubled, footprint_centre, gap, ring};
 use crate::investments::Investment;
@@ -14,9 +15,9 @@ use crate::placement;
 use crate::profile::PersonalityTraits;
 use crate::workers;
 use chassis::grid::TilePos;
+use oxide_sim::BuildingKind;
 use oxide_sim::observation::{BuildingObs, ObservationData};
-use oxide_sim::stats::{BuildingStats, Domain, UnitStats};
-use oxide_sim::{BuildingKind, UnitKind};
+use oxide_sim::stats::{BuildingStats, Domain, FOUNDRY_REPAIR_PRICE, REPAIR_BAY_RADIUS, UnitStats};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -52,6 +53,16 @@ const OBSTACLE_POINTS: u64 = 16;
 
 /// Empty tiles between a building and a defense guarding it.
 const STANDOFF: [i32; 2] = [2, 3];
+
+/// Scrap of missing health a Repair Bay's aura must reach to be worth
+/// building.
+const BAY_WOUNDS: u64 = 300;
+
+/// Divides a Repair Bay's worth into investment points.
+const BAY_POINTS: u64 = 2;
+
+/// Guarded buildings, most valuable first, a Repair Bay may stand beside.
+const BAY_ASSETS: usize = 2;
 
 /// Divides a defense's worth into investment points.
 const POINTS: u64 = 48;
@@ -281,7 +292,7 @@ impl<'a> Guard<'a> {
         let mut crews: Vec<u32> = observation
             .my_units
             .iter()
-            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .filter(|unit| workers::worker(unit.kind))
             .filter_map(|unit| map.component(unit.tile))
             .collect();
         crews.sort_unstable();
@@ -466,6 +477,84 @@ impl<'a> Guard<'a> {
         })
     }
 
+    /// The best spot for a Repair Bay beside one of the most valuable
+    /// buildings: where its aura reaches the most missing value among the
+    /// seat's wounded ground units and damaged buildings that no Repair Bay
+    /// reaches yet, as its anchor and that value.
+    fn bay(&self) -> Option<(TilePos, u64)> {
+        let observation = self.observation;
+        let size = BuildingKind::RepairBay.base_stats().size;
+        let bays: Vec<TilePos> = observation
+            .my_buildings
+            .iter()
+            .filter(|building| building.kind == BuildingKind::RepairBay)
+            .map(|building| building.anchor)
+            .collect();
+        let units = observation
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind.stats().domain == Domain::Ground)
+            .map(|unit| {
+                let stats = unit.kind.stats();
+                let (x, y) = doubled(unit.tile);
+                (
+                    Span {
+                        x: (x, x),
+                        y: (y, y),
+                    },
+                    stats.cost,
+                    unit.hp,
+                    stats.max_hp,
+                )
+            });
+        let buildings = observation
+            .my_buildings
+            .iter()
+            .filter(|building| building.built && building.kind != BuildingKind::RepairBay)
+            .map(|building| {
+                let stats = building.kind.tier_stats(building.tier);
+                let price = building
+                    .kind
+                    .base_stats()
+                    .construction
+                    .as_ref()
+                    .map_or(FOUNDRY_REPAIR_PRICE, |construction| construction.cost);
+                let span = Span::of(building.kind.base_stats().size, building.anchor);
+                (span, price, building.hp, stats.max_hp)
+            });
+        let wounds: Vec<(Span, u64)> = units
+            .chain(buildings)
+            .filter(|(_, _, hp, max)| hp < max)
+            .map(|(span, price, hp, max)| {
+                let max = u64::from(max.max(1));
+                let missing = u64::from(price) * (max - u64::from(hp).min(max)) / max;
+                (span, missing)
+            })
+            .filter(|(span, _)| !bays.iter().any(|bay| Span::of(size, *bay).aura(*span)))
+            .collect();
+        if wounds.iter().map(|(_, missing)| missing).sum::<u64>() < BAY_WOUNDS {
+            return None;
+        }
+        let mut sites = Vec::new();
+        for asset in self.assets.iter().take(BAY_ASSETS) {
+            for anchor in sites_around(asset, size) {
+                let bay = Span::of(size, anchor);
+                let reached: u64 = wounds
+                    .iter()
+                    .filter(|(span, _)| bay.aura(*span))
+                    .map(|(_, missing)| missing)
+                    .sum();
+                if reached >= BAY_WOUNDS {
+                    let centre = footprint_centre(BuildingKind::RepairBay, anchor);
+                    sites.push((reached, self.frame.rank(asset.centre, centre), anchor));
+                }
+            }
+        }
+        first_placeable(sites, |anchor| {
+            self.placeable(BuildingKind::RepairBay, anchor)
+        })
+    }
+
     /// Whether `kind` may go at `anchor` as far as the seat knows, on ground
     /// a Harvester of the seat stands on, and was not refused there lately.
     fn placeable(&self, kind: BuildingKind, anchor: TilePos) -> bool {
@@ -563,11 +652,11 @@ fn first_placeable<R: Ord>(
     None
 }
 
-/// Voluntary defenses and defense upgrades worth investing in, with their
-/// scores. Personality weighs each kind: fortification for Turrets, Bastions
-/// and Barricades, fortification and support for Flak Turrets, fortification
-/// and guile for Arrays and Scuttle Charges, fortification and greed for
-/// upgrades.
+/// Voluntary defenses, defense upgrades and Repair Bays worth investing in,
+/// with their scores. Personality weighs each kind: fortification for
+/// Turrets, Bastions and Barricades, fortification and support for Flak
+/// Turrets, fortification and guile for Arrays and Scuttle Charges,
+/// fortification and greed for upgrades, support for Repair Bays.
 pub(crate) fn investments(
     observation: &ObservationData,
     map: &MapModel,
@@ -616,6 +705,13 @@ pub(crate) fn investments(
         list.push((
             Investment::Defense { kind, anchor },
             points(worth * cunning / OBSTACLE_POINTS),
+        ));
+    }
+    if let Some((anchor, wounds)) = guard.bay() {
+        let kind = BuildingKind::RepairBay;
+        list.push((
+            Investment::Defense { kind, anchor },
+            points(wounds * composition::weight(traits.support) / 1_000 / BAY_POINTS),
         ));
     }
     let upgrade_weight = (fortification + u64::from(traits.greed)) / 2;
@@ -1074,6 +1170,33 @@ fn distance2(a: (i64, i64), b: (i64, i64)) -> i64 {
     (a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)
 }
 
+/// A footprint's extent, or a unit's centre, in doubled coordinates.
+#[derive(Clone, Copy)]
+struct Span {
+    x: (i64, i64),
+    y: (i64, i64),
+}
+
+impl Span {
+    fn of(size: (i32, i32), anchor: TilePos) -> Self {
+        let (x, y) = (2 * i64::from(anchor.x), 2 * i64::from(anchor.y));
+        Span {
+            x: (x, x + 2 * i64::from(size.0)),
+            y: (y, y + 2 * i64::from(size.1)),
+        }
+    }
+
+    /// Whether a Repair Bay over this span heals `other`: as the simulation
+    /// measures, the straight distance between their nearest edges is within
+    /// the aura's radius.
+    fn aura(self, other: Span) -> bool {
+        let apart = |a: (i64, i64), b: (i64, i64)| (a.0 - b.1).max(b.0 - a.1).max(0);
+        let (dx, dy) = (apart(self.x, other.x), apart(self.y, other.y));
+        let reach = (REPAIR_BAY_RADIUS + REPAIR_BAY_RADIUS).to_num::<i64>();
+        dx * dx + dy * dy <= reach * reach
+    }
+}
+
 /// Anchors for a `size` footprint standing off `asset` by the standoff
 /// gaps.
 fn sites_around(asset: &Asset, size: (i32, i32)) -> impl Iterator<Item = TilePos> + '_ {
@@ -1098,4 +1221,33 @@ fn chebyshev(a: (i64, i64), b: (i64, i64)) -> i64 {
 
 fn points(worth: u64) -> u32 {
     u32::try_from(worth).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repair_bay_reaches_by_straight_distance_from_its_edges() {
+        let bay = Span::of((2, 2), TilePos::new(10, 10));
+        let unit = |x: i32, y: i32| {
+            let (x, y) = doubled(TilePos::new(x, y));
+            Span {
+                x: (x, x),
+                y: (y, y),
+            }
+        };
+        assert!(
+            bay.aura(unit(15, 10)),
+            "three and a half tiles straight out"
+        );
+        assert!(!bay.aura(unit(16, 10)), "four and a half tiles out");
+        assert!(
+            !bay.aura(unit(15, 15)),
+            "three tiles clear on both axes is over four tiles away"
+        );
+        let building = Span::of((2, 2), TilePos::new(16, 10));
+        assert!(bay.aura(building), "edges four tiles apart");
+        assert!(!bay.aura(Span::of((2, 2), TilePos::new(15, 15))));
+    }
 }
